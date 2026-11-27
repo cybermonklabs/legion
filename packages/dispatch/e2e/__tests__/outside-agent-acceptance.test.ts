@@ -119,7 +119,7 @@ async function runLeg(
 ): Promise<LegRun> {
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg, ...args],
-    bound: "short",
+    bound: "legRun",
     cwd: scratch("cwd"),
     env,
     from: import.meta.url,
@@ -240,8 +240,8 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
         expect(run.stdout).toContain(name);
       }
     },
-    // The leg, a bounded child under the short bound.
-    rowLimit("short")
+    // The leg, a bounded child under the legRun bound.
+    rowLimit("legRun")
   );
 
   test(
@@ -254,8 +254,8 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
       // The TSV it writes for the workflow's artifact is the one it prints.
       expect(readFileSync(env.OUTSIDE_AGENT_PUBLIC_TSV as string, "utf8")).toBe(run.stdout);
     },
-    // The leg, a bounded child under the short bound; its P9 runs outside-path-reach.sh inside it.
-    rowLimit("short")
+    // The leg, a bounded child under the legRun bound; its P9 runs outside-path-reach.sh inside it.
+    rowLimit("legRun")
   );
 
   test(
@@ -273,8 +273,8 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
         expect(run.stdout).toContain(name);
       }
     },
-    // The leg, a bounded child under the short bound.
-    rowLimit("short")
+    // The leg, a bounded child under the legRun bound.
+    rowLimit("legRun")
   );
 
   test(
@@ -285,8 +285,8 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
       expect(unknownProblems(run, tailnetRows)).toEqual([]);
       expect(readFileSync(env.OUTSIDE_TAILNET_TSV as string, "utf8")).toBe(run.stdout);
     },
-    // The leg, a bounded child under the short bound.
-    rowLimit("short")
+    // The leg, a bounded child under the legRun bound.
+    rowLimit("legRun")
   );
 
   test(
@@ -305,8 +305,8 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
         expect(problems.some((problem) => problem.endsWith("reads PASS, want UNKNOWN"))).toBe(true);
       });
     },
-    // The four copies, one after another, each a bounded child under the short bound.
-    rowLimit("short", "short", "short", "short")
+    // The four copies, one after another, each a bounded child under the legRun bound.
+    rowLimit("legRun", "legRun", "legRun", "legRun")
   );
 });
 
@@ -353,7 +353,10 @@ stranger=$( '${sleep}' ${base}6 >/dev/null 2>&1 & echo $! )
 background="$background $stranger"
 other=$( '${sleep}' ${base}7 >/dev/null 2>&1 & echo $! )
 background="$background $other"
-sleep 1
+# Every leaf runs before any is stopped: a subshell stopped before it starts its leaf leaves no
+# leaf to survive, so the stops wait for the count of the seven leaves running, one read of the
+# process table a poll, not for a second a loaded box can outrun.
+until [ "$(pgrep -fc "^${sleep} ${base}[1-7]\\$")" = 7 ]; do sleep 0.05; done
 stop_child "$stranger"
 reap
 sleep 1
@@ -371,7 +374,7 @@ done
         );
         const { code, stdout } = await runBounded({
           argv: ["bash", shapes],
-          bound: "short",
+          bound: "legRun",
           cwd: scratch("cwd"),
           env: { PATH: process.env.PATH ?? "" },
           from: import.meta.url,
@@ -390,8 +393,8 @@ done
           ].join("\n"),
         });
       },
-      // The shape script, a bounded child under the short bound.
-      rowLimit("short")
+      // The shape script, a bounded child under the legRun bound.
+      rowLimit("legRun")
     );
 
     // await_child looks at its child, pauses (`pause`, a `sleep 0.1`) and looks again, and returns
@@ -850,8 +853,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(held.get("sweep")?.got).toContain("its GitHub proxy rows have no positive control");
         expect(refused.code).toBe(1);
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The two runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun"] })
     );
 
     test(
@@ -889,8 +892,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           expect(each.seen).toEqual([]);
         }
       },
-      // The three runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short"] })
+      // The three runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -942,8 +945,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         });
         expect(rowsOf(local.stdout).get("pins-end")?.got).toContain("OUTSIDE_PINS_REPO is unset");
       },
-      // The five runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+      // The five runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -989,8 +992,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the sweep's fills hold no full member's answer that can fail for GET /api/v1/github/app-installation/{owner}/{repo}"
         );
       },
-      // The three runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short"] })
+      // The three runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1054,8 +1057,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the sweep exited 2: UNKNOWN: GET /api/v1/example is a route the deployment's own index lists and routes.txt lacks"
         );
       },
-      // The four runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+      // The four runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1089,8 +1092,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           expect(rowsOf(run.stdout).get("sweep")?.got).toContain(said);
         });
       },
-      // The three runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short"] })
+      // The three runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1125,8 +1128,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           expect(rowsOf(run.stdout).get("sweep")?.got).toContain(bad);
         });
       },
-      // The five runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+      // The five runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1158,8 +1161,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           );
         }
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The two runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun"] })
     );
 
     test(
@@ -1192,8 +1195,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           }))
         );
       },
-      // The three runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short"] })
+      // The three runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1228,8 +1231,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the sweep beside this leg wrote fills of another version than 4"
         );
       },
-      // The four runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+      // The four runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1271,8 +1274,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         });
         expect(rowsOf(retried.stdout).get("T4")?.got).toContain("reads FAIL");
       },
-      // The four runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+      // The four runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun"] })
     );
 
     // The leg links, at its start, the real program behind each tool its helper, its probe and
@@ -1302,8 +1305,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           }
         }
       },
-      // The run, a bounded child under the short bound.
-      rowLimit("short")
+      // The run, a bounded child under the legRun bound.
+      rowLimit("legRun")
     );
 
     test(
@@ -1324,8 +1327,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           verdicts: { T5: "UNKNOWN" },
         });
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The two runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun"] })
     );
 
     test(
@@ -1372,8 +1375,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         }).toMatchObject({ verdicts: { P5: "FAIL" } });
         expect(rowsOf(duplicated.stdout).get("P5")?.got).toContain("what P5 read first");
       },
-      // The four runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+      // The four runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1404,8 +1407,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(rowsOf(unknown.stdout).get("gate")?.got).toContain("C2 UNKNOWN");
         expect(unknown.code).not.toBe(0);
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The two runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun"] })
     );
 
     test(
@@ -1480,8 +1483,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         );
         expect(rowsOf(refused.stdout).get("T1")?.got).toContain("only the public leg approves");
       },
-      // The six runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
+      // The six runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1504,8 +1507,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         ).rejects.toThrow("a step after the stand-in Dispatch started failed");
         expect(liveStandInDispatches()).toBe(before);
       },
-      // The one run, a bounded child under the short bound; the failed preparation runs no leg.
-      rowLimit("short")
+      // The one run, a bounded child under the legRun bound; the failed preparation runs no leg.
+      rowLimit("legRun")
     );
 
     test(
@@ -1528,8 +1531,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the scripted control peer was shown the ping"
         );
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The two runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun"] })
     );
   }
 );
@@ -1583,8 +1586,8 @@ describe.skipIf(withoutTools)("the browser gate's refusals with no input", () =>
       expect(problems).toContain("exit 0, want 2");
       expect(problems.some((problem) => problem.endsWith("reads PASS, want UNKNOWN"))).toBe(true);
     },
-    // The three legs, one after another, each a bounded child under the short bound.
-    rowLimit("short", "short", "short")
+    // The three legs, one after another, each a bounded child under the legRun bound.
+    rowLimit("legRun", "legRun", "legRun")
   );
 });
 
@@ -1654,8 +1657,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(rowsOf(control.stdout).get("pins")?.got).toContain("edge-listener");
       },
       // Two preparations, then the control run and the browser run one after another, each a
-      // bounded child under the short bound.
-      rowLimit("short", "short")
+      // bounded child under the legRun bound.
+      rowLimit("legRun", "legRun")
     );
 
     test(
@@ -1718,8 +1721,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(rowsOf(local.stdout).get("public")?.got).toContain("OUTSIDE_PUBLIC_COMMAND");
         expect(existsSync(join(local.state, "workflow-args"))).toBe(false);
       },
-      // The four runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+      // The four runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1760,8 +1763,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(Buffer.from(fills ?? "", "base64").toString()).not.toContain("can_fail");
         expect(refused.code).toBe(2);
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The two runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun"] })
     );
 
     test(
@@ -1822,8 +1825,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the run left no outside-edge-grants.tsv"
         );
       },
-      // The six runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
+      // The six runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1881,8 +1884,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         );
         expect(existsSync(join(neither.state, "workflow-args"))).toBe(false);
       },
-      // The three runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short"] })
+      // The three runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1925,8 +1928,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           for (const each of prepared) each.dispatch.stop();
         }
       },
-      // Two preparations, then the three runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short"] })
+      // Two preparations, then the three runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun"] })
     );
 
     test(
@@ -1981,8 +1984,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(verdictsOf(noLimit.stdout)).toMatchObject({ limits: "UNKNOWN" });
         expect(rowsOf(noLimit.stdout).get("limits")?.got).toContain("holds no limit row");
       },
-      // The six runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
+      // The six runs at once, each a bounded child under the legRun bound.
+      rowLimit({ atOnce: ["legRun", "legRun", "legRun", "legRun", "legRun", "legRun"] })
     );
   }
 );

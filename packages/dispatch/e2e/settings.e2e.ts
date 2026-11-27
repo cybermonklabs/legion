@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { type Result, routePath } from "../web/src/api/paths";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
   baseUrl,
@@ -13,14 +14,14 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { openIssueDetails } from "./issue-details";
-import { expect, type Request, test } from "./test";
+import { expect, type Request, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
-/** Whether `request` writes CORE's default repository: a set or a clear. */
-function writesCoreDefaultRepository(request: Request): boolean {
+/** Whether `request` writes the default repository of the project `key`: a set or a clear. */
+function writesDefaultRepository(request: Request, key: string): boolean {
   return (
     request.method() === "PUT" &&
-    new URL(request.url()).pathname === "/api/v1/projects/CORE/default-repository"
+    new URL(request.url()).pathname === `/api/v1/projects/${key}/default-repository`
   );
 }
 
@@ -29,23 +30,24 @@ function writesCoreDefaultRepository(request: Request): boolean {
 test("a person sets a project's default repository in Settings, a new issue of the project resolves to it, and Clear puts it back to None", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const pinned = await createIssue({ project: "CORE", repo: "acme/gadgets", title: "Pinned" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
+  const pinned = await createIssue({ project: coreKey, repo: "acme/gadgets", title: "Pinned" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  const box = page.getByRole("textbox", { exact: true, name: "Default repository of CORE" });
+  const box = page.getByRole("textbox", { exact: true, name: `Default repository of ${coreKey}` });
   const save = page.getByRole("button", {
     exact: true,
-    name: "Save the default repository of CORE",
+    name: `Save the default repository of ${coreKey}`,
   });
   const clear = page.getByRole("button", {
     exact: true,
-    name: "Clear the default repository of CORE",
+    name: `Clear the default repository of ${coreKey}`,
   });
-  // Every write of CORE's default repository the page sends, by its body.
+  // Every write of the project's default repository the page sends, by its body.
   const writes: unknown[] = [];
   page.on("request", (request) => {
-    if (writesCoreDefaultRepository(request)) {
+    if (writesDefaultRepository(request, coreKey)) {
       writes.push(request.postDataJSON());
     }
   });
@@ -76,12 +78,14 @@ test("a person sets a project's default repository in Settings, a new issue of t
     await expect(box).toHaveAttribute("aria-invalid", "true");
     expect(writes).toEqual([]);
 
-    const set = page.waitForResponse((response) => writesCoreDefaultRepository(response.request()));
+    const set = page.waitForResponse((response) =>
+      writesDefaultRepository(response.request(), coreKey)
+    );
     await box.fill("acme/widgets");
     await save.click();
     const setAnswer = await set;
     expect(setAnswer.request().postDataJSON()).toEqual({ repo: "acme/widgets" });
-    expect(await setAnswer.json()).toEqual({ project: "CORE", repo: "acme/widgets" });
+    expect(await setAnswer.json()).toEqual({ project: coreKey, repo: "acme/widgets" });
     await expect(box).toHaveValue("acme/widgets");
     await expect(clear).toBeVisible();
     const shot = testInfo.outputPath(`repository-default-${testInfo.project.name}.png`);
@@ -93,7 +97,7 @@ test("a person sets a project's default repository in Settings, a new issue of t
 
     // A new issue of the project that names no repository resolves to the default, and its page
     // shows it as the issue's repository. An issue with a repository of its own keeps it.
-    const inheriting = await createIssue({ force: true, project: "CORE", title: "Inheriting" });
+    const inheriting = await createIssue({ force: true, project: coreKey, title: "Inheriting" });
     expect(inheriting).toMatchObject({ repo: null, resolved_repo: "acme/widgets" });
     expect(await getIssue(pinned.key)).toMatchObject({
       repo: "acme/gadgets",
@@ -113,12 +117,12 @@ test("a person sets a project's default repository in Settings, a new issue of t
     await page.goto("/settings");
     await expect(box).toHaveValue("acme/widgets");
     const cleared = page.waitForResponse((response) =>
-      writesCoreDefaultRepository(response.request())
+      writesDefaultRepository(response.request(), coreKey)
     );
     await clear.click();
     const clearAnswer = await cleared;
     expect(clearAnswer.request().postDataJSON()).toEqual({ repo: null });
-    expect(await clearAnswer.json()).toEqual({ project: "CORE", repo: null });
+    expect(await clearAnswer.json()).toEqual({ project: coreKey, repo: null });
     await expect(box).toHaveValue("");
     await expect(box).toHaveAttribute("placeholder", "None");
     await expect(clear).toHaveCount(0);
@@ -143,16 +147,17 @@ test("a person sets a project's default repository in Settings, a new issue of t
 test("a late answer to a default repository save does not undo a default another browser set since @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await putProjectDefaultRepository("CORE", "acme/widgets");
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
+  await putProjectDefaultRepository(coreKey, "acme/widgets");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  const box = page.getByRole("textbox", { exact: true, name: "Default repository of CORE" });
+  const box = page.getByRole("textbox", { exact: true, name: `Default repository of ${coreKey}` });
 
   try {
     const held = Promise.withResolvers<void>();
     const savedOnServer = Promise.withResolvers<void>();
-    await page.route("**/api/v1/projects/CORE/default-repository", async (route) => {
+    await page.route(`**/api/v1/projects/${coreKey}/default-repository`, async (route) => {
       if (route.request().method() !== "PUT") return route.fallback();
       const response = await route.fetch();
       savedOnServer.resolve();
@@ -164,7 +169,7 @@ test("a late answer to a default repository save does not undo a default another
 
     await box.fill("acme/gadgets");
     await page
-      .getByRole("button", { exact: true, name: "Save the default repository of CORE" })
+      .getByRole("button", { exact: true, name: `Save the default repository of ${coreKey}` })
       .click();
     await savedOnServer.promise;
     // The page hears the other browser's write: it reads the project list again, and the read
@@ -173,16 +178,16 @@ test("a late answer to a default repository save does not undo a default another
       async (response) =>
         response.request().method() === "GET" &&
         new URL(response.url()).pathname === "/api/v1/projects" &&
-        ((await response.json()) as { default_repo?: string; key: string }[]).some(
-          (project) => project.key === "CORE" && project.default_repo === "acme/widgets"
+        ((await response.json()) as Result<"/api/v1/projects", "get">).some(
+          (project) => project.key === coreKey && project.default_repo === "acme/widgets"
         )
     );
-    await putProjectDefaultRepository("CORE", "acme/widgets");
+    await putProjectDefaultRepository(coreKey, "acme/widgets");
     await heard;
     await expect(box).toHaveValue("acme/gadgets");
 
     const answered = page.waitForResponse((response) =>
-      writesCoreDefaultRepository(response.request())
+      writesDefaultRepository(response.request(), coreKey)
     );
     const readAgain = answered.then(() =>
       page.waitForResponse(
@@ -203,6 +208,7 @@ test("a late answer to a default repository save does not undo a default another
 test("a human creates a project from Settings and immediately creates an issue under it", async ({
   browser,
 }, testInfo) => {
+  const qa = rowKey("QA");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -211,7 +217,7 @@ test("a human creates a project from Settings and immediately creates an issue u
     await expect(
       page.locator("main").getByRole("heading", { exact: true, name: "Projects" })
     ).toBeVisible();
-    await page.getByLabel("Key", { exact: true }).fill("qa");
+    await page.getByLabel("Key", { exact: true }).fill(qa.toLowerCase());
     await page.getByLabel("Name", { exact: true }).fill("Quality");
     // The form asks for the person the new project names, and starts on the one the server would
     // take anyway: the person creating it. The control is read by its role, as every other
@@ -219,20 +225,20 @@ test("a human creates a project from Settings and immediately creates an issue u
     const defaultAssignee = page.getByRole("combobox", { exact: true, name: "Default assignee" });
     await expect(defaultAssignee).toHaveValue("alice");
     await page.getByRole("button", { name: "New project" }).click();
-    await expect(page.getByRole("cell", { exact: true, name: "QA" })).toBeVisible();
+    await expect(page.getByRole("cell", { exact: true, name: qa })).toBeVisible();
     // The architecture sources form offers the new project at once.
-    await expect(page.getByLabel("Source project").locator('option[value="QA"]')).toHaveCount(1);
+    await expect(page.getByLabel("Source project").locator(`option[value="${qa}"]`)).toHaveCount(1);
     // The project names her from the moment it exists, and the row says so.
     await expect(
-      page.getByRole("combobox", { exact: true, name: "Default assignee of QA" })
+      page.getByRole("combobox", { exact: true, name: `Default assignee of ${qa}` })
     ).toHaveValue("alice");
     await page.screenshot({
       path: testInfo.outputPath("project-create-settings.png"),
       fullPage: true,
     });
 
-    const issue = await createIssue({ project: "QA", title: "Track quality issues" });
-    expect(issue.key).toBe("QA-1");
+    const issue = await createIssue({ project: qa, title: "Track quality issues" });
+    expect(issue.key).toBe(`${qa}-1`);
 
     await page.goto(`/issues/${issue.key}`);
     await expect(page).toHaveTitle(`${issue.key} · ${issue.title} · Dispatch`);
@@ -244,7 +250,8 @@ test("a human creates a project from Settings and immediately creates an issue u
 test("an architecture source saves after the GitHub App access check, fails inline once uninstalled, and deletes", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
   await seedFakeGithub({ "legion/arch": { contents: "write", installation_id: 101 } });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -252,12 +259,12 @@ test("an architecture source saves after the GitHub App access check, fails inli
   try {
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Architecture sources" })).toBeVisible();
-    await page.getByLabel("Source project").selectOption("CORE");
+    await page.getByLabel("Source project").selectOption(coreKey);
     await page.getByLabel("Source repository").fill("Legion/Arch");
     const sourceSaved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/Legion/Arch") &&
+        response.url().endsWith(`/api/v1/projects/${coreKey}/architecture-sources/Legion/Arch`) &&
         response.ok()
     );
     await page.getByRole("button", { name: "Add source" }).click();
@@ -268,7 +275,7 @@ test("an architecture source saves after the GitHub App access check, fails inli
 
     // A branch the repository does not have is refused inline with the server's 409, and the
     // stored source keeps its branch.
-    await page.getByLabel("Source project").selectOption("CORE");
+    await page.getByLabel("Source project").selectOption(coreKey);
     await page.getByLabel("Source repository").fill("legion/arch");
     await page.getByLabel("Branch", { exact: true }).fill("no-such-branch");
     await page.getByRole("button", { name: "Add source" }).click();
@@ -284,7 +291,7 @@ test("an architecture source saves after the GitHub App access check, fails inli
     // The App gets uninstalled; re-saving fails its access check inline and the
     // stored source survives.
     await seedFakeGithub({});
-    await page.getByLabel("Source project").selectOption("CORE");
+    await page.getByLabel("Source project").selectOption(coreKey);
     await page.getByLabel("Source repository").fill("legion/arch");
     await page.getByRole("button", { name: "Add source" }).click();
     await expect(
@@ -297,7 +304,7 @@ test("an architecture source saves after the GitHub App access check, fails inli
     });
 
     await page
-      .getByRole("button", { name: "Delete architecture source legion/arch for CORE" })
+      .getByRole("button", { name: `Delete architecture source legion/arch for ${coreKey}` })
       .click();
     await expect(page.getByText("No architecture sources yet.")).toBeVisible();
     await expect(page.getByRole("cell", { exact: true, name: "legion/arch" })).not.toBeVisible();
@@ -309,7 +316,8 @@ test("an architecture source saves after the GitHub App access check, fails inli
 test("Refresh imports the architecture model and a rejected model keeps the previous import", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
   const files = {
     "api.md": "---\ntitle: HTTP API\ndepends_on: [store]\n---\nThe API surface.\n",
     "store.md": "---\ntitle: Store\n---\nThe durable state.\n",
@@ -323,12 +331,12 @@ test("Refresh imports the architecture model and a rejected model keeps the prev
 
   try {
     await page.goto("/settings");
-    await page.getByLabel("Source project").selectOption("CORE");
+    await page.getByLabel("Source project").selectOption(coreKey);
     await page.getByLabel("Source repository").fill("legion/arch");
     const sourceSaved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/legion/arch") &&
+        response.url().endsWith(`/api/v1/projects/${coreKey}/architecture-sources/legion/arch`) &&
         response.ok()
     );
     await page.getByRole("button", { name: "Add source" }).click();
@@ -337,11 +345,13 @@ test("Refresh imports the architecture model and a rejected model keeps the prev
     const synced = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/legion/arch/sync") &&
+        response
+          .url()
+          .endsWith(`/api/v1/projects/${coreKey}/architecture-sources/legion/arch/sync`) &&
         response.ok()
     );
     await page
-      .getByRole("button", { name: "Refresh architecture source legion/arch for CORE" })
+      .getByRole("button", { name: `Refresh architecture source legion/arch for ${coreKey}` })
       .click();
     await synced;
     await expect(page.getByText(`Synced ${commit.slice(0, 12)} · 2 components`)).toBeVisible();
@@ -363,11 +373,13 @@ test("Refresh imports the architecture model and a rejected model keeps the prev
     const rejected = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/legion/arch/sync") &&
+        response
+          .url()
+          .endsWith(`/api/v1/projects/${coreKey}/architecture-sources/legion/arch/sync`) &&
         response.ok()
     );
     await page
-      .getByRole("button", { name: "Refresh architecture source legion/arch for CORE" })
+      .getByRole("button", { name: `Refresh architecture source legion/arch for ${coreKey}` })
       .click();
     await rejected;
     await expect(page.getByText(/duplicate component id/)).toBeVisible();
@@ -387,7 +399,7 @@ test("Refresh imports the architecture model and a rejected model keeps the prev
 // cell is absolutely positioned: without a positioned ancestor inside that container it sits
 // at the scrolled table's own x and widened the page to 417px at 390px.
 test("Settings stays inside the viewport @phone", async ({ browser }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -413,17 +425,29 @@ test("Settings stays inside the viewport @phone", async ({ browser }, testInfo) 
 test("a person sets and changes a project's default assignee, and no write clears one", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const coreKey = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  // Every project names somebody, and the list below is every project of the stack, every
+  // earlier row's beside this row's two: it is read before this row writes, so what it holds at
+  // the end is that and these two, each naming the person written last.
+  const before = (await listProjectDefaultAssignees({ as: "user", login: "alice" })).map((row) => [
+    row.project,
+    row.assignee,
+  ]);
+  await createProject({ key: coreKey, name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control,
   // and OPS names him from the moment it exists: every project names somebody.
-  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
+  await createProject({ key: opsKey, name: "Ops" }, { login: "bob" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
-    const ops = page.getByRole("combobox", { exact: true, name: "Default assignee of OPS" });
+    const core = page.getByRole("combobox", {
+      exact: true,
+      name: `Default assignee of ${coreKey}`,
+    });
+    const ops = page.getByRole("combobox", { exact: true, name: `Default assignee of ${opsKey}` });
     await expect(core).toBeVisible();
     // The sentence under the table: every project names somebody, and no write clears it.
     await expect(
@@ -442,7 +466,7 @@ test("a person sets and changes a project's default assignee, and no write clear
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee"
+        new URL(response.url()).pathname === `/api/v1/projects/${coreKey}/default-assignee`
     );
     await core.selectOption("bob");
     expect((await saved).ok()).toBe(true);
@@ -457,7 +481,7 @@ test("a person sets and changes a project's default assignee, and no write clear
     const changed = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee"
+        new URL(response.url()).pathname === `/api/v1/projects/${coreKey}/default-assignee`
     );
     await core.focus();
     await core.selectOption("alice");
@@ -471,7 +495,10 @@ test("a person sets and changes a project's default assignee, and no write clear
     // Unassigned option sent is a 400, and the project still names its person. The call is made
     // here rather than through `putProjectDefaultAssignee`, whose body the route table now types
     // as a person's email and which cannot express this one.
-    const refused = await fetch(new URL("/api/v1/projects/CORE/default-assignee", baseUrl), {
+    const defaultAssignee = routePath("put", "/api/v1/projects/{key}/default-assignee", {
+      key: coreKey,
+    });
+    const refused = await fetch(new URL(defaultAssignee, baseUrl), {
       body: JSON.stringify({ assignee: null }),
       headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
       method: "PUT",
@@ -481,10 +508,9 @@ test("a person sets and changes a project's default assignee, and no write clear
     await page.reload();
     await expect(core).toHaveValue("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.map((row) => [row.project, row.assignee]).sort()).toEqual([
-      ["CORE", "alice"],
-      ["OPS", "bob"],
-    ]);
+    expect(defaults.map((row) => [row.project, row.assignee]).sort()).toEqual(
+      [...before, [coreKey, "alice"], [opsKey, "bob"]].sort()
+    );
   } finally {
     await context.close();
   }
@@ -493,9 +519,10 @@ test("a person sets and changes a project's default assignee, and no write clear
 test("a default assignee picked while the last pick is saving waits its turn, and the last pick is the one kept", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control.
-  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
+  await createProject({ key: rowKey("OPS"), name: "Ops" }, { login: "bob" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -504,7 +531,7 @@ test("a default assignee picked while the last pick is saving waits its turn, an
     // still on the wire. `wire` records each PUT as it reaches the network and the first's answer.
     const held = Promise.withResolvers<void>();
     const wire: string[] = [];
-    await page.route("**/api/v1/projects/CORE/default-assignee", async (route) => {
+    await page.route(`**/api/v1/projects/${coreKey}/default-assignee`, async (route) => {
       if (route.request().method() !== "PUT") return route.fallback();
       const { assignee } = route.request().postDataJSON() as { assignee: string | null };
       const first = wire.length === 0;
@@ -516,7 +543,10 @@ test("a default assignee picked while the last pick is saving waits its turn, an
       return route.fulfill({ response });
     });
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = page.getByRole("combobox", {
+      exact: true,
+      name: `Default assignee of ${coreKey}`,
+    });
     await expect(core).toBeEnabled();
     await expect(core).toHaveValue("alice");
     await core.focus();
@@ -535,7 +565,7 @@ test("a default assignee picked while the last pick is saving waits its turn, an
     const second = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee" &&
+        new URL(response.url()).pathname === `/api/v1/projects/${coreKey}/default-assignee` &&
         response.request().postDataJSON()?.assignee === "alice"
     );
     held.resolve();
@@ -547,8 +577,8 @@ test("a default assignee picked while the last pick is saving waits its turn, an
     await expect(core).toHaveValue("alice");
     // Every project is listed now, so CORE's own row is the one this reads.
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
-      { assignee: "alice", project: "CORE" },
+    expect(defaults.filter((row) => row.project === coreKey)).toEqual([
+      { assignee: "alice", project: coreKey },
     ]);
   } finally {
     await context.close();
@@ -561,11 +591,13 @@ test("a default assignee picked while the last pick is saving waits its turn, an
 test("default assignee picks made when Settings is left and reopened supersede the pick queued before leaving, and the newest is the one sent after the held save", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
   // Creating OPS as bob and QA as carol makes each a person who has signed in, so both are
   // options in the control.
-  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
-  await createProject({ key: "QA", name: "Quality" }, { login: "carol" });
+  await createProject({ key: rowKey("OPS"), name: "Ops" }, { login: "bob" });
+  const carol = rowPerson("carol");
+  await createProject({ key: rowKey("QA"), name: "Quality" }, { login: carol });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -574,7 +606,7 @@ test("default assignee picks made when Settings is left and reopened supersede t
     // the network and as its answer comes back.
     const held = Promise.withResolvers<void>();
     const wire: string[] = [];
-    await page.route("**/api/v1/projects/CORE/default-assignee", async (route) => {
+    await page.route(`**/api/v1/projects/${coreKey}/default-assignee`, async (route) => {
       if (route.request().method() !== "PUT") return route.fallback();
       const { assignee } = route.request().postDataJSON() as { assignee: string | null };
       const first = wire.length === 0;
@@ -585,17 +617,20 @@ test("default assignee picks made when Settings is left and reopened supersede t
       return route.fulfill({ response });
     });
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = page.getByRole("combobox", {
+      exact: true,
+      name: `Default assignee of ${coreKey}`,
+    });
     await expect(core).toBeEnabled();
     await expect(core).toHaveValue("alice");
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", carol]);
 
     await core.selectOption("bob");
     await expect(core).toHaveValue("bob");
     await expect.poll(() => wire).toEqual(["sent bob"]);
-    await core.selectOption("carol");
-    await expect(core).toHaveValue("carol");
+    await core.selectOption(carol);
+    await expect(core).toHaveValue(carol);
 
     // Away and back inside the app: Settings unmounts and mounts again, the app stays loaded.
     const navigation = page.getByRole("navigation", { name: "Navigation" });
@@ -604,7 +639,7 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await navigation.getByRole("link", { name: "Settings" }).click();
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", carol]);
     await core.selectOption("alice");
     await expect(core).toHaveValue("alice");
 
@@ -615,8 +650,8 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await page.reload();
     await expect(core).toHaveValue("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
-      { assignee: "alice", project: "CORE" },
+    expect(defaults.filter((row) => row.project === coreKey)).toEqual([
+      { assignee: "alice", project: coreKey },
     ]);
     expect(wire).toEqual(["sent bob", "answered bob", "sent alice", "answered alice"]);
   } finally {
@@ -632,17 +667,22 @@ test("default assignee picks made when Settings is left and reopened supersede t
 test("default assignee picks made while a save is out are superseded by the newest, so only it follows the save", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
-  await createProject({ key: "QA", name: "Quality" }, { login: "carol" });
-  await createProject({ key: "ENG", name: "Engineering" }, { login: "dave" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
+  await createProject({ key: rowKey("OPS"), name: "Ops" }, { login: "bob" });
+  // carol and dave are people of the row's own (`rowPerson`, e2e/test.ts), off the people list
+  // again once the row ends.
+  const carol = rowPerson("carol");
+  const dave = rowPerson("dave");
+  await createProject({ key: rowKey("QA"), name: "Quality" }, { login: carol });
+  await createProject({ key: rowKey("ENG"), name: "Engineering" }, { login: dave });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
     const held = Promise.withResolvers<void>();
     const wire: string[] = [];
-    await page.route("**/api/v1/projects/CORE/default-assignee", async (route) => {
+    await page.route(`**/api/v1/projects/${coreKey}/default-assignee`, async (route) => {
       if (route.request().method() !== "PUT") return route.fallback();
       const { assignee } = route.request().postDataJSON() as { assignee: string | null };
       const first = wire.length === 0;
@@ -653,14 +693,17 @@ test("default assignee picks made while a save is out are superseded by the newe
       return route.fulfill({ response });
     });
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = page.getByRole("combobox", {
+      exact: true,
+      name: `Default assignee of ${coreKey}`,
+    });
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol", "dave"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", carol, dave]);
 
     await core.selectOption("bob");
     await expect.poll(() => wire).toEqual(["sent bob"]);
-    for (const pick of ["carol", "dave", "alice"]) {
+    for (const pick of [carol, dave, "alice"]) {
       await core.selectOption(pick);
       await expect(core).toHaveValue(pick);
     }
@@ -671,8 +714,8 @@ test("default assignee picks made while a save is out are superseded by the newe
     await expect(core).toHaveValue("alice");
     expect(wire).toEqual(["sent bob", "answered bob", "sent alice", "answered alice"]);
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
-      { assignee: "alice", project: "CORE" },
+    expect(defaults.filter((row) => row.project === coreKey)).toEqual([
+      { assignee: "alice", project: coreKey },
     ]);
   } finally {
     await context.close();
@@ -685,16 +728,17 @@ test("default assignee picks made while a save is out are superseded by the newe
 test("a default assignee save refused while Settings is left says so when Settings is reopened", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
-  await putProjectDefaultAssignee("CORE", { assignee: "alice" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
+  await createProject({ key: rowKey("OPS"), name: "Ops" }, { login: "bob" });
+  await putProjectDefaultAssignee(coreKey, { assignee: "alice" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
     const held = Promise.withResolvers<void>();
     let answered = false;
-    await page.route("**/api/v1/projects/CORE/default-assignee", async (route) => {
+    await page.route(`**/api/v1/projects/${coreKey}/default-assignee`, async (route) => {
       if (route.request().method() !== "PUT") return route.fallback();
       await held.promise;
       answered = true;
@@ -705,7 +749,10 @@ test("a default assignee save refused while Settings is left says so when Settin
       });
     });
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = page.getByRole("combobox", {
+      exact: true,
+      name: `Default assignee of ${coreKey}`,
+    });
     await expect(core).toBeEnabled();
     await core.focus();
     await expect(core.locator("option")).toHaveText(["alice", "bob"]);
@@ -731,8 +778,9 @@ test("a default assignee save refused while Settings is left says so when Settin
 test("a default assignee the page has not read yet is never shown as Unassigned", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await putProjectDefaultAssignee("CORE", { assignee: "alice" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
+  await putProjectDefaultAssignee(coreKey, { assignee: "alice" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -756,7 +804,10 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
     // calls it failed: page timers, which the page's own clock fires.
     await page.clock.install();
     await page.goto("/settings");
-    const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
+    const core = page.getByRole("combobox", {
+      exact: true,
+      name: `Default assignee of ${coreKey}`,
+    });
     await expect(core).toBeVisible();
     // Not read yet: the control says so and takes no pick.
     await expect(core).toBeDisabled();

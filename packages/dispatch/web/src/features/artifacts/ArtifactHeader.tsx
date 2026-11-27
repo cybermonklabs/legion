@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
+import { routePath } from "../../api/paths";
 import type { Artifact, Version } from "../../api/types";
 import {
   borderDefault,
@@ -47,8 +48,12 @@ export function artifactVersionUrl(
   // pictures keep the year-long cache.
   options: { download?: boolean } = {}
 ): string {
-  const url = `/api/v1/artifacts/${encodeURIComponent(artifactID)}/versions/${version}`;
-  return options.download === true ? `${url}?download=true` : url;
+  return routePath(
+    "get",
+    "/api/v1/artifacts/{id}/versions/{number}",
+    { id: artifactID, number: String(version) },
+    options.download === true ? { download: true } : undefined
+  );
 }
 
 export function formatArtifactBytes(bytes: number | undefined): string {

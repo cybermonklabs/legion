@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 
 import type { BlockSchema } from "@legion/contracts";
 
+import { routePath } from "../web/src/api/paths";
 import { baseUrl } from "./api";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 import { sql } from "./psql";
@@ -58,11 +59,12 @@ export const newerSchemaVersion = builtSchemaVersion + 1;
 /** The schema one process serves now, read through `GET /api/v1/schema/blocks`, which answers the
  *  installed value. With `process` the read is pinned to that process of the two-process lane. */
 export async function installedSchema(process?: DispatchProcess): Promise<BlockSchema> {
-  const response = await fetch(new URL("/api/v1/schema/blocks", baseUrl), {
+  const path = routePath("get", "/api/v1/schema/blocks", {});
+  const response = await fetch(new URL(path, baseUrl), {
     headers: process === undefined ? {} : pinnedTo(process),
   });
   if (!response.ok) {
-    throw new Error(`GET /api/v1/schema/blocks answered ${response.status}`);
+    throw new Error(`GET ${path} answered ${response.status}`);
   }
   return (await response.json()) as BlockSchema;
 }

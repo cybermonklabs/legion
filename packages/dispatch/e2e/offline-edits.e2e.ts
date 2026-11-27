@@ -1,7 +1,7 @@
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, patchIssue } from "./api";
 import { connectedDot, documentEditor, documentTransport, typeAtEnd } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const INITIAL = "# Offline edits\n\nOriginal paragraph.\n";
@@ -59,8 +59,9 @@ async function pendingEditCount(page: Parameters<typeof documentTransport>[0], a
 }
 
 async function makeIssue() {
-  await createProject({ key: "OFFLINE", name: "Offline edits" });
-  return createIssue({ project: "OFFLINE", spec: INITIAL, title: "Persist local edits" });
+  const offline = rowKey("OFFLINE");
+  await createProject({ key: offline, name: "Offline edits" });
+  return createIssue({ project: offline, spec: INITIAL, title: "Persist local edits" });
 }
 
 async function waitForPersistedTyping(
@@ -71,6 +72,20 @@ async function waitForPersistedTyping(
   await expect
     .poll(() => pendingEditCount(page, artifactId), PROBE)
     .toBeGreaterThanOrEqual(text.length);
+}
+
+/** Waits until `page` holds the document: its editor shows INITIAL's paragraph. A row that severs
+ *  the transport and holds its reconnect waits for this first. The connection dot is not enough:
+ *  it reads "connected" from the first frame the server sends (`@hocuspocus/provider`'s
+ *  `resolveConnectionAttempt`), the server's SyncStep1, which holds no document, and the admission
+ *  and the SyncStep2 that mounts the editor come after it. The firefox leg of "unsent edits are
+ *  named, then cleared ..." severed on the dot alone and failed its first attempt in merge-group
+ *  runs 44997871801 and 45774962243 of main, waiting 45 s for the editor. The trace of the second
+ *  run shows the page connected with no editor yet, and the admission and the SyncStep2 reaching
+ *  the route only as the row severed it: neither reached the page, and with the reconnect held
+ *  the page never received the document. */
+async function waitForDocument(page: Parameters<typeof documentTransport>[0]): Promise<void> {
+  await expect(documentEditor(page)).toContainText("Original paragraph.");
 }
 
 // @webkit @firefox: IndexedDB-backed recovery, here an edit the store holds across a reload.
@@ -85,6 +100,7 @@ test("an edit typed while the document transport is down survives a reload @webk
     const transport = await documentTransport(page);
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(connectedDot(page)).toHaveText("connected");
+    await waitForDocument(page);
 
     transport.hold();
     await transport.sever();
@@ -117,6 +133,7 @@ test("unsent edits are named, then cleared after acknowledgement and a connected
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(connectedDot(page)).toHaveText("connected");
+    await waitForDocument(page);
 
     transport.hold();
     await transport.sever();
@@ -162,6 +179,7 @@ test("two disconnected tabs restore each browser-held edit once @webkit @firefox
       expect(connectedDot(firstPage)).toHaveText("connected"),
       expect(connectedDot(secondPage)).toHaveText("connected"),
     ]);
+    await Promise.all([waitForDocument(firstPage), waitForDocument(secondPage)]);
 
     firstTransport.hold();
     secondTransport.hold();
@@ -191,10 +209,11 @@ test("two disconnected tabs restore each browser-held edit once @webkit @firefox
 });
 
 // SLOW(>=2s): three document loads, two status writes and two admissions decided at socket open.
-// @pr: The live document's admission: a read-only admission keeps the reader's edits until a later read-write reload.
-test("read-only admission preserves edits until a later read-write reload @pr", async ({
-  browser,
-}) => {
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the row above keeps the live document's offline
+// edits on the lane, beside `doc-reload-line.e2e.ts`'s row on its admission. The full lane runs
+// this one.
+test("read-only admission preserves edits until a later read-write reload", async ({ browser }) => {
   const issue = await makeIssue();
   const alice = await asUser(browser, "alice");
   const paragraph = "survives a read-only admission";
@@ -203,6 +222,7 @@ test("read-only admission preserves edits until a later read-write reload @pr", 
     const transport = await documentTransport(page);
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(connectedDot(page)).toHaveText("connected");
+    await waitForDocument(page);
 
     transport.hold();
     await transport.sever();

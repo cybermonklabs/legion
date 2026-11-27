@@ -114,7 +114,7 @@ test("the first line is the bullet, the heading, and the kind and the time at it
     const kind = within(card).getByText(DECISION_KIND_WORDS.agent);
     const time = card.querySelector("time");
     expect(bullet).not.toBeNull();
-    expect(time?.getAttribute("datetime")).toBe("2026-11-01T00:00:00Z");
+    expect(time).toHaveAttribute("datetime", "2026-11-01T00:00:00Z");
     for (const [first, second] of [
       [bullet, heading],
       [heading, kind],
@@ -228,7 +228,7 @@ test("a statement's link reads its first line as plain words", async () => {
   });
   try {
     const link = await within(card).findByRole("link", { name: "Warm the index first." });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/spec#b-p1");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/spec#b-p1");
     expect(card.textContent).not.toContain("**");
     expect(card.textContent).not.toContain("Then cut.");
   } finally {
@@ -422,7 +422,7 @@ test("setting off: the bare member draws no author, Unsure as its one level word
   try {
     expect(card.textContent).not.toContain(DECISION_LINE_WORDS.author_unknown);
     expect(within(card).getByText(DECISION_LINE_WORDS.unsure)).toBeDefined();
-    expect(card.querySelector("time")?.getAttribute("datetime")).toBe("2026-11-01T00:00:00Z");
+    expect(card.querySelector("time")).toHaveAttribute("datetime", "2026-11-01T00:00:00Z");
     // The reason is the `Unsure:` paragraph inside the text, which the renderer draws.
     expect(within(card).getByTestId("decision-words").textContent).toContain(
       "Unsure: the index may be slow."

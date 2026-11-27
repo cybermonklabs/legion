@@ -1,4 +1,5 @@
-import { plannerSession, reviewerSession, setLiveSessions } from "./agents";
+import { type Body, type Result, routePath } from "../web/src/api/paths";
+import { agentMention, agentSessions, setLiveSessions } from "./agents";
 import {
   baseUrl,
   createAgentMessage,
@@ -16,14 +17,15 @@ import {
 import { documentEditor } from "./editor";
 import { commentField, pickReference } from "./ref-picker";
 import {
-  PERSON_LOGIN,
+  personReference,
   RENDERED_BODY,
   ROLE_TOKEN,
   referenceAgent,
+  referencePerson,
   UNKNOWN_PERSON_LOGIN,
   UNKNOWN_PERSON_REFERENCE,
 } from "./reference-surfaces";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -58,9 +60,10 @@ async function expandedComment(page: Page, id: string): Promise<Locator> {
 test("a bare address reads as the target's name, a worded link as its author's words, and a rename moves only the first", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const host = await createIssue({ project: "CORE", title: "Reference host" });
-  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const host = await createIssue({ project: core, title: "Reference host" });
+  const target = await createIssue({ project: core, title: "Warm the cache" });
   const address = `dispatch://${target.key}`;
   // One text, three references to the one node and one to a login Dispatch has never held. It
   // is the host's spec and its one comment alike, so the rule is read on two surfaces.
@@ -121,16 +124,18 @@ test("a bare address reads as the target's name, a worded link as its author's w
 test("an address whose target does not exist reads as its writer's words with no link, in a comment as in a document", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const host = await createIssue({ project: "CORE", title: "Reference host" });
-  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const host = await createIssue({ project: core, title: "Reference host" });
+  const target = await createIssue({ project: core, title: "Warm the cache" });
   // An issue, its spec, an item of it and a project that do not exist, beside one that does,
-  // so the row reads the class and knows the page drew its references before it counts.
+  // so the row reads the class and knows the page drew its references before it counts. The
+  // issue is one past the two the row made, and the project is a key no row makes (`rowKey`).
   const missing = [
-    "dispatch://CORE-99",
-    "dispatch://CORE-99/spec",
-    "dispatch://CORE-99/comment/00000000-0000-4000-8000-000000000000",
-    "dispatch://NOPE-1",
+    `dispatch://${core}-99`,
+    `dispatch://${core}-99/spec`,
+    `dispatch://${core}-99/comment/00000000-0000-4000-8000-000000000000`,
+    `dispatch://${rowKey("NOPE")}-1`,
   ];
   const body = `${missing.map((address, index) => `Line ${index + 1} names ${address} here.`).join("\n\n")}\n\nAnd dispatch://${target.key} is real.\n`;
   await editArtifact(
@@ -172,15 +177,17 @@ test("a document its issue does not hold, a component of a project with no archi
 }) => {
   // Each soft read waits its full 15 s while the defect stands, so the row reads both surfaces.
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const host = await createIssue({ project: "CORE", title: "Reference host" });
-  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const host = await createIssue({ project: core, title: "Reference host" });
+  const target = await createIssue({ project: core, title: "Warm the cache" });
   // Each read answers 404: the document by slug (`ARTIFACT_NOT_FOUND`), the architecture of a
-  // project with no source (`SOURCE_NOT_FOUND`). The session id is one no agent ever held.
+  // project with no source (`SOURCE_NOT_FOUND`). The session id is the row's own
+  // (`rowSessionId`), which no agent ever held.
   const missing = [
     `dispatch://${target.key}/artifact/no-such-doc-md`,
-    "dispatch://CORE/component/nope",
-    "dispatch://agent/00000000-0000-4000-8000-000000000000",
+    `dispatch://${core}/component/nope`,
+    `dispatch://agent/${rowSessionId("neverheld")}`,
   ];
   const body = `${missing.map((address, index) => `Line ${index + 1} names ${address} here.`).join("\n\n")}\n\nAnd dispatch://${target.key} is real.\n`;
   await editArtifact(
@@ -233,20 +240,25 @@ test("a document its issue does not hold, a component of a project with no archi
 test("a document's address written with its current name, which is not its slug, links, reads as that name and opens the document, in a comment as in a document, and a block named through it reads as its words", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const host = await createIssue({ project: "CORE", title: "Reference host" });
-  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const host = await createIssue({ project: core, title: "Reference host" });
+  const target = await createIssue({ project: core, title: "Warm the cache" });
   const uploaded = await createIssueArtifact(target.key, {
     content: "# Notes\n\nThe cache warms first.\n",
     name: "notes.md",
   });
   expect(uploaded.artifact.slug).toBe("notes-md");
   const renamed = "launch-notes";
-  const correction = await fetch(new URL(`/api/v1/artifacts/${uploaded.artifact.id}`, baseUrl), {
-    body: JSON.stringify({ name: renamed }),
-    headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
-    method: "PATCH",
-  });
+  const rename: Body<"/api/v1/artifacts/{id}", "patch"> = { name: renamed };
+  const correction = await fetch(
+    new URL(routePath("patch", "/api/v1/artifacts/{id}", { id: uploaded.artifact.id }), baseUrl),
+    {
+      body: JSON.stringify(rename),
+      headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
+      method: "PATCH",
+    }
+  );
   expect(correction.status).toBe(200);
   // The precondition: the read route opens the document by the name the reference writes.
   expect((await getIssueArtifactText(target.key, renamed)).markdown).toContain("warms first");
@@ -320,16 +332,18 @@ test("a session Dispatch holds a record of links though it has ended, a listed o
   browser,
 }) => {
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const host = await createIssue({ project: "CORE", title: "Reference host" });
-  await setLiveSessions([plannerSession]);
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  await createProject({ key: core, name: "Core" });
+  const host = await createIssue({ project: core, title: "Reference host" });
+  await setLiveSessions([planner]);
   const ended = crypto.randomUUID();
   await createAgentMessage(ended, {
     body: "Before you go: write the hand-off.",
     delivery: "aside",
   });
-  const neverHeld = "00000000-0000-4000-8000-000000000001";
-  const listed = `dispatch://agent/${plannerSession.session_id}`;
+  const neverHeld = rowSessionId("neverheld");
+  const listed = `dispatch://agent/${planner.session_id}`;
   const endedAddress = `dispatch://agent/${ended}`;
   const neverHeldAddress = `dispatch://agent/${neverHeld}`;
   const body = `The listed one is ${listed} now.\n\nThe ended one was ${endedAddress} once.\n\nAnd ${neverHeldAddress} never was.\n`;
@@ -344,9 +358,7 @@ test("a session Dispatch holds a record of links though it has ended, a listed o
   try {
     const page = await alice.newPage();
     const expectSessions = async (scope: Locator) => {
-      await expect(
-        scope.getByRole("link", { exact: true, name: plannerSession.title })
-      ).toHaveCount(1);
+      await expect(scope.getByRole("link", { exact: true, name: planner.title })).toHaveCount(1);
       await expect
         .soft(scope.getByRole("link", { exact: true, name: endedAddress }))
         .toHaveCount(1);
@@ -377,10 +389,12 @@ test("a session renamed after it was picked reads as its new name in the pill an
   browser,
 }) => {
   test.setTimeout(180_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const host = await createIssue({ project: "CORE", title: "Reference host" });
-  await setLiveSessions([plannerSession]);
-  const address = `dispatch://agent/${plannerSession.session_id}`;
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  await createProject({ key: core, name: "Core" });
+  const host = await createIssue({ project: core, title: "Reference host" });
+  await setLiveSessions([planner]);
+  const address = `dispatch://agent/${planner.session_id}`;
   const renamed = "Planner renamed";
   const alice = await asUser(browser, "alice");
 
@@ -388,17 +402,17 @@ test("a session renamed after it was picked reads as its new name in the pill an
     const page = await alice.newPage();
     await page.goto(`/issues/${host.key}/conversation`);
     const field = commentField(page);
-    await pickReference(field, "@", plannerSession.title);
-    await expect(field).toHaveValue(`[@${plannerSession.title}](${address})`);
+    await pickReference(field, "@", planner.title);
+    await expect(field).toHaveValue(agentMention(planner));
     await field.press("End");
     await field.pressSequentially(` and [${WORDS}](${address})`);
     const composer = page.getByRole("form", { name: "Comment composer" });
     // One pill for the one party, at its first appearance: the mention.
     const pills = composer.getByRole("region", { name: "References" }).getByRole("link");
-    await expect(pills).toHaveText([`@${plannerSession.title}`]);
+    await expect(pills).toHaveText([`@${planner.title}`]);
 
     // The session is renamed while the draft is open: the pill follows it before the send.
-    await setLiveSessions([{ ...plannerSession, title: renamed }]);
+    await setLiveSessions([{ ...planner, title: renamed }]);
     await expect(pills).toHaveText([`@${renamed}`], { timeout: 30_000 });
 
     const sent = page.waitForResponse(
@@ -407,15 +421,13 @@ test("a session renamed after it was picked reads as its new name in the pill an
         new URL(response.url()).pathname === `/api/v1/issues/${host.key}/comments`
     );
     await composer.getByRole("button", { exact: true, name: "Send" }).click();
-    const stored = (await (await sent).json()) as { body: string; id: string };
+    const stored = (await (await sent).json()) as Result<"/api/v1/issues/{key}/comments", "post">;
     // The text keeps the name the pick wrote; only what it reads as follows the party.
-    expect(stored.body).toBe(`[@${plannerSession.title}](${address}) and [${WORDS}](${address})`);
+    expect(stored.body).toBe(`${agentMention(planner)} and [${WORDS}](${address})`);
     const card = await expandedComment(page, stored.id);
     await expect(card.getByRole("link", { exact: true, name: `@${renamed}` })).toHaveCount(1);
     await expect(card.getByRole("link", { exact: true, name: WORDS })).toHaveCount(1);
-    await expect(
-      card.getByRole("link", { exact: true, name: `@${plannerSession.title}` })
-    ).toHaveCount(0);
+    await expect(card.getByRole("link", { exact: true, name: `@${planner.title}` })).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -430,13 +442,16 @@ test("a bare known person reads as their login with no link, an unknown one as w
   browser,
 }) => {
   test.setTimeout(120_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const host = await createIssue({ project: "CORE", title: "Reference host" });
+  const core = rowKey("CORE");
+  const { reviewer } = agentSessions(rowSessionId);
+  const personLogin = referencePerson();
+  await createProject({ key: core, name: "Core" });
+  const host = await createIssue({ project: core, title: "Reference host" });
   // Dana signs in once, which is what makes her a person Dispatch knows.
-  await userHeaders(PERSON_LOGIN);
+  await userHeaders(personLogin);
   // A role is named while a session the registry lists holds it.
-  await setLiveSessions([{ ...reviewerSession, roles: [ROLE_TOKEN] }]);
-  const person = `dispatch://person/${PERSON_LOGIN}`;
+  await setLiveSessions([{ ...reviewer, roles: [ROLE_TOKEN] }]);
+  const person = personReference();
   const body = `Ask ${person}, ${UNKNOWN_PERSON_REFERENCE} and dispatch://role/${ROLE_TOKEN}.`;
   await editArtifact(
     host.primary_artifact_id,
@@ -454,17 +469,17 @@ test("a bare known person reads as their login with no link, an unknown one as w
     const card = (await expandedComment(page, comment.id)).locator(RENDERED_BODY).first();
     await expect(roleLink(card)).toHaveAttribute("href", `/agents?role=${ROLE_TOKEN}`);
     await expect(card).toContainText(
-      `Ask ${PERSON_LOGIN}, ${UNKNOWN_PERSON_REFERENCE} and ${ROLE_TOKEN}.`
+      `Ask ${personLogin}, ${UNKNOWN_PERSON_REFERENCE} and ${ROLE_TOKEN}.`
     );
-    await expect(card.getByRole("link", { name: PERSON_LOGIN })).toHaveCount(0);
+    await expect(card.getByRole("link", { name: personLogin })).toHaveCount(0);
     await expect(card.getByRole("link", { name: UNKNOWN_PERSON_LOGIN })).toHaveCount(0);
 
     await page.goto(`/issues/${host.key}/spec`);
     const editor = documentEditor(page);
     await expect(roleLink(editor)).toHaveCount(1);
     // The editor draws the known login over the address it stores, as words and no link.
-    await expect(editor.locator("span.dispatch-reference")).toHaveText([PERSON_LOGIN]);
-    await expect(editor.getByRole("link", { name: PERSON_LOGIN })).toHaveCount(0);
+    await expect(editor.locator("span.dispatch-reference")).toHaveText([personLogin]);
+    await expect(editor.getByRole("link", { name: personLogin })).toHaveCount(0);
     await expect(editor).toContainText(UNKNOWN_PERSON_REFERENCE);
     await expect(editor.getByRole("link", { name: UNKNOWN_PERSON_LOGIN })).toHaveCount(0);
   } finally {

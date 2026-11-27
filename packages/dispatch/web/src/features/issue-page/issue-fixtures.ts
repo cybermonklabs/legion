@@ -1,13 +1,15 @@
 import { act } from "@testing-library/react";
 
+import { tick } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { issue } from "../../__tests__/issue-picks";
 import type { Issue, IssueClaim, IssueDetails, UpdateIssueInput } from "../../api/types";
+import { zeroDelaysOnFakeClock } from "./outline-fixtures";
 
 // What tests of the issue's writes share: the server's answer to a PATCH of the issue
 // (`shared-writes.test.ts`, `IssueMargin.test.tsx`, `issue-writes.test.tsx`), the issue the
-// claim's tests claim and release, with the claims they put on it, and the wait the tests of
-// Details' focus make before they read where a hand-off left it.
+// claim's tests claim and release, with the claims they put on it, and the change the tests of
+// Details' focus make and wait out before they read where a hand-off left it.
 
 /** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
 export function narrowIssue(details: IssueDetails): Issue {
@@ -63,14 +65,36 @@ export const claimIssue: Issue = {
   updated_at: "2026-09-24T06:00:00Z",
 };
 
-/** Waits past two frames and a task, by which a hand-off or a keeper that waits for a frame or a
- *  task would have moved the focus. */
-export async function settleFocus(): Promise<void> {
-  await act(async () => {
-    await nextFrame();
-    await nextFrame();
-    const task = Promise.withResolvers<void>();
-    setTimeout(task.resolve, 0);
-    await task.promise;
+/**
+ * Makes `change` on the fake clock and waits it out there: two frames and a task, then two frames
+ * and a task more, by which a hand-off or a keeper that waits for a frame or a task after the
+ * change has moved the focus, and so has one that waits for a frame or a task after those.
+ * Answers what `change` answers.
+ *
+ * The change is made on the fake clock because the wait is for the timers it sets: the keeper
+ * moves the focus a task after the loss it heard (`focus-keeper.ts`), and a read that the focus
+ * did not move proves nothing while that task may still be waiting. On the fake clock `tick(0)`
+ * runs it; a timer the change set on the real clock would still be waiting after this, and
+ * `zeroDelaysOnFakeClock` refuses to start while a zero-delay timer of the real clock waits, which
+ * would carry the change's own past every `tick`. A frame comes on a real turn whichever clock is
+ * installed: happy-dom runs it as an immediate, which the fake clock does not hold. A press inside
+ * `change` is made by `userOnFakeClock()`'s user, and a wait inside it (`waitFor`, `findBy*`)
+ * moves the fake clock as it polls but ends with no turn of the event loop: a change that sets off
+ * a read whose answer its last wait does not wait for is made inside an `act` of its own
+ * (`await act(async () => …)`), whose end turns the loop and lands that answer there, or the
+ * answer updates the page outside `act`.
+ */
+export async function settleFocus<T>(change: () => Promise<T>): Promise<T> {
+  const made = Promise.withResolvers<T>();
+  await zeroDelaysOnFakeClock(async () => {
+    made.resolve(await change());
+    for (let round = 0; round < 2; round += 1) {
+      await act(async () => {
+        await nextFrame();
+        await nextFrame();
+      });
+      await tick(0);
+    }
   });
+  return made.promise;
 }

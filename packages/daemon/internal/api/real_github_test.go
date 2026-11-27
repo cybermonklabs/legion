@@ -206,7 +206,12 @@ func realGitHubApps(t *testing.T) config.GitHubApps {
 	for _, name := range liveProofAppInputs {
 		os.LookupEnv(name)
 	}
-	for _, file := range []string{githubAppsLib, filepath.Join(filepath.Dir(githubAppsLib), "app-logins.ts")} {
+	for _, file := range []string{
+		githubAppsLib,
+		filepath.Join(filepath.Dir(githubAppsLib), "app-logins.ts"),
+		// app-logins.ts imports it.
+		filepath.Join(filepath.Dir(githubAppsLib), "signal-group.ts"),
+	} {
 		if _, err := os.ReadFile(file); err != nil {
 			t.Fatalf("read the live proofs' App lib: %v", err)
 		}

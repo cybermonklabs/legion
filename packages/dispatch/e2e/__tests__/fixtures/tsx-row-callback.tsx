@@ -2,8 +2,8 @@
  *  extension is what the row is a control for: the scan's program resolves this import only
  *  while `jsx` is among its compiler options, and refuses it with TS6142 without one. The
  *  module writes JSX for the same reason a web module does, so the extension is the file's own
- *  and not a costume — `inbox-dismiss.e2e.ts` imports `GROUP_PAGE` out of
- *  `web/src/features/inbox/InboxGroups`, which is a `.tsx` of exactly this kind.
+ *  and not a costume — `issue-page-h.e2e.ts` imports `assigneeControlName` out of
+ *  `web/src/features/issue/AssigneeControl`, which is a `.tsx` of exactly this kind.
  *
  * Its name ends neither `.e2e.ts` nor `.test.ts`, so neither Playwright's `testMatch`
  * (e2e/playwright.config.ts) nor `bun test` collects it; it is imported, and the scan reads it

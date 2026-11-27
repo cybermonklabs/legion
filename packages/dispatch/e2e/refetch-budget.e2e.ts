@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
-import { plannerSession, setLiveSessions } from "./agents";
+import { agentSessions, setLiveSessions } from "./agents";
 import {
   createAgentMessage,
   createAsk,
@@ -18,8 +18,9 @@ import {
 import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
-import { COMPONENT_MODEL, COMPONENT_REFERENCE, COMPONENT_REPO } from "./reference-surfaces";
-import { expect, type Page, type Request, test } from "./test";
+import { COMPONENT_MODEL, COMPONENT_REPO, componentReference } from "./reference-surfaces";
+import { expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
+import { type Traffic, watchTraffic } from "./traffic";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -29,51 +30,6 @@ import { asUser } from "./users";
 // The writer is an autonomous session acting through the bearer API, as in `live.e2e.ts`; only
 // alice's browser is real.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
-
-/** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
- *  detail since the page opened, and whether any request is still in flight. The event feed rides
- *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
- *  request, so none of these counts it. */
-interface Traffic {
-  /** Path and query of each GET under `/api/` since the last `reset`. */
-  readonly gets: string[];
-  /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
-  issueReads(key: string): number;
-  /** Whether no request has been in flight for `ms`. */
-  quietFor(ms: number): boolean;
-  reset(): void;
-}
-
-function watchTraffic(page: Page): Traffic {
-  const gets: string[] = [];
-  const issueReads = new Map<string, number>();
-  const inFlight = new Set<Request>();
-  let lastSettledAt = Date.now();
-  page.on("request", (request) => {
-    inFlight.add(request);
-    const url = new URL(request.url());
-    if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
-    gets.push(`${url.pathname}${url.search}`);
-    const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
-    if (issue !== undefined) {
-      const key = decodeURIComponent(issue);
-      issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
-    }
-  });
-  const settle = (request: Request) => {
-    if (inFlight.delete(request)) lastSettledAt = Date.now();
-  };
-  page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
-  return {
-    gets,
-    issueReads: (key) => issueReads.get(key) ?? 0,
-    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
-    reset: () => {
-      gets.length = 0;
-    },
-  };
-}
 
 /** Waits until no request has been in flight for 500 ms. */
 async function settled(traffic: Traffic): Promise<void> {
@@ -186,34 +142,37 @@ async function createIssues(
 test("budget: 20 title writes to issues the page does not show send at most 5 reads, and a change the page shows lands within 2 s", async ({
   browser,
 }, testInfo) => {
+  const coreKey = rowKey("CORE");
+  const other = rowKey("OTHER");
   test.setTimeout(120_000);
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OTHER", name: "Other" });
-  // The two sources the new references read from: the live session the registry holds, and
-  // CORE's one architecture component.
-  await setLiveSessions([plannerSession]);
+  await createProject({ key: coreKey, name: "Core" });
+  await createProject({ key: other, name: "Other" });
+  // The two sources the new references read from: the live session the registry holds, the
+  // row's own (`rowSessionId`), and the core project's one architecture component.
+  const planner = agentSessions(rowSessionId).planner;
+  await setLiveSessions([planner]);
   await seedFakeGithub({
     [COMPONENT_REPO]: { contents: "read", files: COMPONENT_MODEL, installation_id: 101 },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo: COMPONENT_REPO });
-  expect((await syncArchitectureSource("CORE", COMPONENT_REPO)).last_error).toBeNull();
+  await putArchitectureSource(coreKey, { branch: "main", repo: COMPONENT_REPO });
+  expect((await syncArchitectureSource(coreKey, COMPONENT_REPO)).last_error).toBeNull();
   const pad = (index: number) => String(index + 1).padStart(2, "0");
   const targets = await createIssues(50, (index) => ({
-    project: "CORE",
+    project: coreKey,
     title: `Budget reference ${pad(index)}`,
   }));
   const unshown = await createIssues(20, (index) => ({
-    project: index % 2 === 0 ? "CORE" : "OTHER",
+    project: index % 2 === 0 ? coreKey : other,
     title: `Unshown issue ${pad(index)}`,
   }));
   const links = targets.map((target) => `dispatch://${target.key}`).join("\n");
   const anchor = "The budget anchor sits here.";
   const source = await createIssue({
-    project: "CORE",
+    project: coreKey,
     spec: [anchor, links].join("\n\n"),
     title: "Budget source",
   });
-  const child = await createIssue({ parent: source.key, project: "CORE", title: "Budget child" });
+  const child = await createIssue({ parent: source.key, project: coreKey, title: "Budget child" });
   await patchIssue(child.key, { status: "todo" });
   // One reference of each kind whose target is read from somewhere other than an issue: a
   // party, whose name the shell's own registry poll already holds; a component, read with its
@@ -222,18 +181,19 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
   // which a body of issue references alone would never notice.
   // Three bare session references besides: two sessions that ended, which Dispatch holds a
   // record of (a message sent to each) and the registry no longer lists, and one id no agent ever
-  // held. Each one the registry does not list is asked about in the page's one batched read
-  // (`GET /api/v1/agents/known`), which a page reading once per session would exceed.
+  // held, the row's own (`rowSessionId`), which no write names. Each one the registry does not
+  // list is asked about in the page's one batched read (`GET /api/v1/agents/known`), which a page
+  // reading once per session would exceed.
   const ended = [crypto.randomUUID(), crypto.randomUUID()];
   for (const session of ended) {
     await createAgentMessage(session, { body: "Before you go: the hand-off.", delivery: "aside" });
   }
-  const neverHeld = "00000000-0000-4000-8000-000000000002";
+  const neverHeld = rowSessionId("neverheld");
   const extras = [
-    `[${plannerSession.title}](dispatch://agent/${plannerSession.session_id})`,
+    `[${planner.title}](dispatch://agent/${planner.session_id})`,
     ...ended.map((session) => `dispatch://agent/${session}`),
     `dispatch://agent/${neverHeld}`,
-    COMPONENT_REFERENCE,
+    componentReference(coreKey),
     `dispatch://${source.key}/spec#b-${await blockId(source.primary_artifact_id, anchor)}`,
   ].join("\n");
   // The live spec editor renders a link with its author's text and reads nothing, so the 50
@@ -251,10 +211,9 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
     // INFRA-869's R4: "A `dispatch://` reference reads as its target's title ... an issue as
     // its key and title", so each of the 50 links reads `CORE-<n> Budget reference <nn>` where
     // it read the title alone before.
-    await expect(turns.getByRole("link", { name: /^CORE-\d+ Budget reference \d\d$/ })).toHaveCount(
-      50,
-      { timeout: 60_000 }
-    );
+    await expect(
+      turns.getByRole("link", { name: new RegExp(`^${coreKey}-\\d+ Budget reference \\d\\d$`) })
+    ).toHaveCount(50, { timeout: 60_000 });
     for (const session of ended) {
       await expect(
         turns.getByRole("link", { exact: true, name: `dispatch://agent/${session}` })
@@ -318,9 +277,11 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
 test("sidebar: an issue event while the sidebar's first reads are in flight discards none of them", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OTHER", name: "Other" });
-  const subject = await createIssue({ project: "OTHER", title: "Sidebar subject" });
+  const coreKey = rowKey("CORE");
+  const other = rowKey("OTHER");
+  await createProject({ key: coreKey, name: "Core" });
+  await createProject({ key: other, name: "Other" });
+  const subject = await createIssue({ project: other, title: "Sidebar subject" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -376,8 +337,8 @@ test("sidebar: an issue event while the sidebar's first reads are in flight disc
     release.resolve();
 
     await expect(navigation.getByRole("link", { name: /^Inbox/ })).toBeVisible();
-    await expect(navigation.locator('a[href="/projects/OTHER"]')).toBeVisible();
-    await expect(navigation.locator('a[href="/projects/CORE"]')).toBeVisible();
+    await expect(navigation.locator(`a[href="/projects/${other}"]`)).toBeVisible();
+    await expect(navigation.locator(`a[href="/projects/${coreKey}"]`)).toBeVisible();
     await drainRefreshWindow(page, traffic);
     console.log(
       `REFETCH-SIDEBAR [${testInfo.project.name}] requests sent: inbox ${sent.inbox}, pinned ${sent.pinned}, projects ${sent.projects}`
@@ -394,8 +355,9 @@ test("sidebar: an issue event while the sidebar's first reads are in flight disc
 test("pin: a pin from another tab shows in this tab's sidebar within 2 s with one pinned-list read @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pinned elsewhere" });
+  const coreKey = rowKey("CORE");
+  await createProject({ key: coreKey, name: "Core" });
+  const issue = await createIssue({ project: coreKey, title: "Pinned elsewhere" });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -415,7 +377,7 @@ test("pin: a pin from another tab shows in this tab's sidebar within 2 s with on
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
     const navigation = page.getByRole("navigation", { name: "Navigation" });
-    await expect(navigation.locator('a[href="/projects/CORE"]')).toBeVisible();
+    await expect(navigation.locator(`a[href="/projects/${coreKey}"]`)).toBeVisible();
     const title = await eventBarrier(page, traffic, issue.key, issue.title);
     await drainRefreshWindow(page, traffic);
     pinnedReads = 0;
@@ -438,14 +400,21 @@ test("pin: a pin from another tab shows in this tab's sidebar within 2 s with on
 test("replies: a reply in a thread alice wrote in moves her Inbox count, and one in a thread she never wrote in reads nothing", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const strangers = await createIssue({ project: "CORE", title: "Somebody else's thread" });
-  const own = await createIssue({ project: "CORE", title: "Alice's thread" });
+  const coreKey = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox count holds
+  // this row's one reply and nothing another row left.
+  const me = rowPerson("alice");
+  await createProject({ key: coreKey, name: "Core" }, { login: me });
+  const strangers = await createIssue(
+    { project: coreKey, title: "Somebody else's thread" },
+    { login: me }
+  );
+  const own = await createIssue({ project: coreKey, title: "Alice's thread" }, { login: me });
   const strangerRoot = await createComment(strangers.key, { body: "Bob asks." }, { login: "bob" });
-  const ownRoot = await createComment(own.key, { body: "Alice asks." });
+  const ownRoot = await createComment(own.key, { body: "Alice asks." }, { login: me });
   const session = { actor: { id: "e2e-replier", kind: "session" as const }, as: "agent" as const };
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
@@ -507,20 +476,26 @@ test("replies: a reply in a thread alice wrote in moves her Inbox count, and one
 test("assignee write: an assignee moved between two other people sends no read from this reader's page", async ({
   browser,
 }, testInfo) => {
+  const coreKey = rowKey("CORE");
+  // The reader and carol are people of the row's own (`rowPerson`, e2e/test.ts): the reader's
+  // Inbox count holds this row's one question alone, and carol is off the people list again
+  // once the row ends.
+  const me = rowPerson("alice");
+  const carol = rowPerson("carol");
   // CORE names carol, so nothing the shared token makes here is ever alice's.
-  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
+  await createProject({ key: coreKey, name: "Core" }, { login: carol });
   // The page's own issue carries no question either, so no Inbox row names it: the barrier's
   // title writes on an issue her list holds would be a read she is owed as well, and would
   // count below as if the move had sent it.
-  const open = await createIssue({ project: "CORE", title: "Alice's open page" });
+  const open = await createIssue({ project: coreKey, title: "Alice's open page" }, { login: me });
   // Her one question, on an issue no write below touches: it is what the count reads, and what
   // makes the list this row watches a list with a row in it.
-  const hers = await createIssue({ project: "CORE", title: "Alice's own" });
+  const hers = await createIssue({ project: coreKey, title: "Alice's own" }, { login: me });
   await createAsk(hers.key, { question: "Alice's decision" }, bob);
   // The issue the write moves, which holds no question at all, for the reason above this test.
-  const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
+  const theirs = await createIssue({ project: coreKey, title: "Bob's issue" }, { login: "bob" });
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
@@ -543,7 +518,7 @@ test("assignee write: an assignee moved between two other people sends no read f
     // The write: bob's issue goes to carol. The event names those two and nobody else
     // (`thread_logins`), and alice's page owes nothing for it - her Inbox read holds no row of
     // this issue, and her Reply rows hold no thread on it.
-    await patchIssue(theirs.key, { assignee: "carol" }, bob);
+    await patchIssue(theirs.key, { assignee: carol }, bob);
     // Events reach the page in order: once the barrier's write shows, the assignee write was
     // handled.
     await eventBarrier(page, traffic, open.key, title);
@@ -570,22 +545,29 @@ test("assignee write: an assignee moved between two other people sends no read f
 test("project default: a project's default moved between two other people reads this reader's Inbox once when it holds a question the default decides, and not at all when it holds none", async ({
   browser,
 }, testInfo) => {
+  const coreKey = rowKey("CORE");
+  const opsKey = rowKey("OPS");
+  // The reader and carol are people of the row's own (`rowPerson`, e2e/test.ts): the reader's
+  // Inbox count holds this row's one question alone, and carol is off the people list again
+  // once the row ends.
+  const me = rowPerson("alice");
+  const carol = rowPerson("carol");
   // CORE names bob, and the first write moves it to carol: alice is neither, and the question on
   // the issue nobody holds, which her Inbox lists, is the one the move carries between their two
   // lists. OPS is carol's own project, which is how she is a person who has signed in and so a
   // person the route takes; it holds no question, and the second write moves it to bob.
-  await createProject({ key: "CORE", name: "Core" }, { login: "bob" });
-  await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
+  await createProject({ key: coreKey, name: "Core" }, { login: "bob" });
+  await createProject({ key: opsKey, name: "Ops" }, { login: carol });
   // The page's own issue carries no question, for the reason the row above gives.
-  const open = await createIssue({ project: "CORE", title: "Alice's open page" });
-  const hers = await createIssue({ project: "CORE", title: "Alice's own" });
+  const open = await createIssue({ project: coreKey, title: "Alice's open page" }, { login: me });
+  const hers = await createIssue({ project: coreKey, title: "Alice's own" }, { login: me });
   await createAsk(hers.key, { question: "Alice's decision" }, bob);
   // A create always lands on a person, so the issue nobody holds is created and then cleared.
-  const unheld = await createIssue({ project: "CORE", title: "Nobody holds this" }, bob);
+  const unheld = await createIssue({ project: coreKey, title: "Nobody holds this" }, bob);
   await patchIssue(unheld.key, { assignee: null }, bob);
   await createAsk(unheld.key, { question: "Anyone's decision" }, bob);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
@@ -625,8 +607,8 @@ test("project default: a project's default moved between two other people reads 
     // 1. Her list holds the question on CORE's issue nobody holds, whose person moves from bob
     // to carol: one read of it, and no more.
     const core = await counted(
-      () => putProjectDefaultAssignee("CORE", { assignee: "carol" }, { as: "user", login: "bob" }),
-      "CORE"
+      () => putProjectDefaultAssignee(coreKey, { assignee: carol }, { as: "user", login: "bob" }),
+      coreKey
     );
     expect(
       core.inboxReads,
@@ -639,8 +621,8 @@ test("project default: a project's default moved between two other people reads 
 
     // 2. Her list holds no question of OPS: nothing in it moves, and she reads nothing.
     const ops = await counted(
-      () => putProjectDefaultAssignee("OPS", { assignee: "bob" }, { as: "user", login: "carol" }),
-      "OPS"
+      () => putProjectDefaultAssignee(opsKey, { assignee: "bob" }, { as: "user", login: carol }),
+      opsKey
     );
     expect(
       ops.inboxReads,
@@ -659,10 +641,11 @@ test("project default: a project's default moved between two other people reads 
 test("project board: 20 title writes 250 ms apart send at most 7 list reads and the last title shows within 2 s", async ({
   browser,
 }, testInfo) => {
+  const coreKey = rowKey("CORE");
   test.setTimeout(60_000);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: coreKey, name: "Core" });
   const issues = await createIssues(20, (index) => ({
-    project: "CORE",
+    project: coreKey,
     title: `Board card ${String(index + 1).padStart(2, "0")}`,
   }));
 
@@ -676,13 +659,13 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
       if (
         request.method() === "GET" &&
         url.pathname === "/api/v1/issues" &&
-        url.searchParams.get("project") === "CORE"
+        url.searchParams.get("project") === coreKey
       ) {
         listReads += 1;
       }
     });
     await page.clock.install();
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${coreKey}`);
     await page.getByRole("button", { name: "Board", exact: true }).click();
     const board = page.getByRole("region", { name: "Project board", exact: true });
     const first = issues[0];
@@ -739,10 +722,11 @@ test("project board: 20 title writes 250 ms apart send at most 7 list reads and 
 test("project issues table: 20 title writes 250 ms apart send at most 7 project reads and the last title shows within 2 s", async ({
   browser,
 }, testInfo) => {
+  const coreKey = rowKey("CORE");
   test.setTimeout(60_000);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: coreKey, name: "Core" });
   const parents = await createIssues(3, (index) => ({
-    project: "CORE",
+    project: coreKey,
     title: `Closed parent ${index + 1}`,
   }));
   for (const parent of parents) {
@@ -750,7 +734,7 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
     await patchIssue(parent.key, { status: "done" });
   }
   const issues = await createIssues(20, (index) => ({
-    project: "CORE",
+    project: coreKey,
     title: `Table row ${String(index + 1).padStart(2, "0")}`,
   }));
   for (const [index, issue] of issues.entries())
@@ -764,12 +748,12 @@ test("project issues table: 20 title writes 250 ms apart send at most 7 project 
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (request.method() !== "GET") return;
-      if (url.pathname === "/api/v1/issues" && url.searchParams.get("project") === "CORE")
+      if (url.pathname === "/api/v1/issues" && url.searchParams.get("project") === coreKey)
         projectReads += 1;
-      if (/^\/api\/v1\/issues\/CORE-\d+$/.test(url.pathname)) projectReads += 1;
+      if (new RegExp(`^/api/v1/issues/${coreKey}-\\d+$`).test(url.pathname)) projectReads += 1;
     });
     await page.clock.install();
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${coreKey}`);
     const table = page.getByRole("table", { name: "Project issues table" });
     await expect(table).toBeVisible();
     const first = issues[0];

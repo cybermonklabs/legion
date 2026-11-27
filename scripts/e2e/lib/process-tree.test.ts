@@ -922,6 +922,100 @@ done
   );
 });
 
+// gVisor serves the stat of a task that has exited with its own pid, its group and its session
+// zeroed and its state X. A Job that ran replace-blocks.sh's failed start beside load read this
+// line for its instance, pid 31806, on 2026-11-24, took 0 for the instance's group, and its start
+// loop polled `kill -0 -0`, which always succeeds, to its deadline. No kernel here serves that line
+// on demand, so each row plants a stat through proc_stat_text, the one read of /proc/PID/stat
+// behind proc_stat_field, proc_start and proc_describe (lib/process-tree.sh), and asks for pid
+// 31806. The live entry has the same layout, with its own pid, state S, and a group and session of
+// its own.
+const deadStat =
+  "0 (bash) X 31618 0 0 0 0 0 0 0 0 0 0 0 0 0 20 0 0 0 16659 0 0 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+const liveStat = deadStat.replace(/^0 \(bash\) X 31618 0 0 /, "31806 (bash) S 31618 31806 31806 ");
+const askPlanted = (stat: string) => `planted=${JSON.stringify(stat)}
+proc_stat_text() { printf -v "$2" '%s\\n' "$planted"; }
+echo "group [$(proc_group 31806)] start [$(proc_start 31806)]"`;
+host.describe("proc_group and proc_start on a stat that is not the live entry asked for", () => {
+  test(
+    "print nothing for a dead task's stat as gVisor serves it, its own pid 0 and its state X",
+    () => {
+      const r = run(askPlanted(deadStat));
+      expect(r.err).toBe("");
+      expect(r.out).toBe("group [] start []\n");
+    },
+    slow
+  );
+  test(
+    "print the group and the start of a live entry of the same layout",
+    () => {
+      const r = run(askPlanted(liveStat));
+      expect(r.err).toBe("");
+      expect(r.out).toBe("group [31806] start [16659]\n");
+    },
+    slow
+  );
+  // A process names itself, and a name that holds `) 31806 (`, as `x) 31806 (x` does, puts 31806
+  // before the stat's last ` (`: the pid is the field before the first.
+  test(
+    "print nothing for a stat whose own pid is another, whatever its name holds, or whose state is X",
+    () => {
+      const forged = liveStat.replace(/^31806 \(bash\)/, "0 (x) 31806 (x)");
+      const dead = liveStat.replace(" S ", " X ");
+      const r = run(`${askPlanted(forged)}\n${askPlanted(dead)}`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe("group [] start []\ngroup [] start []\n");
+    },
+    slow
+  );
+});
+
+// proc_describe reads each PID's stat through proc_stat_fields as well, so the dead task's stat is
+// a PID that is gone and prints no line, as ps prints none, where it printed one with group 0
+// before. The live entry of the same layout is the control: its line says proc_describe read the
+// planted stat, which a pid 31806 the machine does not run would not show.
+host.describe("proc_describe on a stat that is not the live entry asked for", () => {
+  test(
+    "prints no line for a dead task's stat as gVisor serves it, and the fields of a live entry of the same layout",
+    () => {
+      const describePlanted = (stat: string) => `planted=${JSON.stringify(stat)}
+proc_stat_text() { printf -v "$2" '%s\\n' "$planted"; }
+echo "[$(proc_describe 31806)]"`;
+      const r = run(`${describePlanted(deadStat)}\n${describePlanted(liveStat)}`);
+      expect(r.err).toBe("");
+      expect(r.out).toMatch(/^\[\]\n\[31806 ppid 31618 pgid 31806 sid 31806 started [^\n]+\]\n$/);
+    },
+    slow
+  );
+});
+
+// kill reads group 0 as the caller's own group and group 1 as -1, every process the caller may
+// signal, so group_signalable (lib/process-tree.sh) refuses both however they reach it, as an
+// empty or non-numeric value or one with a leading zero, and names what it refused.
+host.describe("group_signalable", () => {
+  test(
+    "refuses an empty group, a non-number, 0, 1 and a leading zero, naming each, and passes a group above 1",
+    () => {
+      const r = run(
+        `for g in '' x -5 0 00 1 01 2 31806; do if group_signalable "$g"; then echo "pass [$g]"; else echo "refused [$g]"; fi; done`
+      );
+      expect(r.out).toBe(
+        "refused []\nrefused [x]\nrefused [-5]\nrefused [0]\nrefused [00]\nrefused [1]\nrefused [01]\npass [2]\npass [31806]\n"
+      );
+      expect(r.err.trimEnd().split("\n")).toEqual([
+        "refusing to signal process group '': it is empty",
+        "refusing to signal process group 'x': it is not a number",
+        "refusing to signal process group '-5': it is not a number",
+        "refusing to signal process group '0': kill reads group 0 as the group it is called from",
+        "refusing to signal process group '00': no group is written with a leading zero",
+        "refusing to signal process group '1': kill reads group 1 as -1, every process it may signal",
+        "refusing to signal process group '01': no group is written with a leading zero",
+      ]);
+    },
+    slow
+  );
+});
+
 // A row that fails in until_true (lib/rig.sh) exits inside it, through the harness's `fail`, so the
 // harness's EXIT trap runs where until_true's locals are in scope. One of them was named `started`,
 // and the trap then read that number in place of the row's `started` pids and stopped none of them.

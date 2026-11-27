@@ -6,9 +6,14 @@
 // request, and the broker's own page where they approve it.
 import type { Locator, Page } from "@playwright/test";
 
+import { fixedLogin } from "../../../../packages/dispatch/e2e/users";
+
 /** The harness's signed-in human: the agent machine's operator, and the owner and so the approver
  *  of the demo's one secret. */
-export const operator = "alice@example.com";
+export const operator = fixedLogin(
+  "alice@example.com",
+  "the broker's pictures and walkthrough show the operator's address"
+);
 export const agentHost = "example-host-build";
 export const reason = "Publish the docs preview for PR 42 with the demo API";
 

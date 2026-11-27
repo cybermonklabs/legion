@@ -8,16 +8,17 @@ import {
 import { askCard, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import {
+  asReadingSession,
   expectReadsReferences,
   firstLineForms,
-  READING_SESSION_ID,
   type ReadingWorld,
   readingQuestionBlock,
   readingText,
   scopedTo,
   seedReadingWorld,
 } from "./reading-rows";
-import { expect, test } from "./test";
+import { expect, own, rowPerson, test } from "./test";
+import type { RowLogin } from "./users";
 
 /**
  * The reading list's walk (`e2e/reading-rows.ts`) across the Inbox's questions
@@ -40,13 +41,7 @@ import { expect, test } from "./test";
  * project.
  */
 
-/** The reading world's own session, writing as itself: an ask, a reply and an approval request
- *  are a session's writes, and a Reply row needs somebody other than the reader to have written
- *  in the thread. */
-const readingAgent = {
-  actor: { id: READING_SESSION_ID, kind: "session" as const },
-  as: "agent" as const,
-};
+test.use({ signedIn: own("alice") });
 
 /** Where a host thread's two comments are: the root, which is the thread's id and its Reply
  *  row's, and the reply under it. */
@@ -63,29 +58,34 @@ interface HostThread {
 async function seedHostThread(
   world: ReadingWorld,
   root: string,
-  reply: string
+  reply: string,
+  login: RowLogin
 ): Promise<HostThread> {
-  const head = await createComment(world.host.key, { body: root });
+  const head = await createComment(world.host.key, { body: root }, { login });
   const answer = await createComment(
     world.host.key,
     { body: reply, reply_to: head.id },
-    readingAgent
+    asReadingSession
   );
   return { reply: answer.id, root: head.id };
 }
 
-// SLOW(>=2s): a database reset, the reading world, an ask with its reply, and the Inbox opened
-// on that ask's card; measured at 4.3 s on one run in an issue pod on one worker.
+// SLOW(>=2s): the reading world, an ask with its reply, and the Inbox opened on that ask's
+// card; measured at 4.3 s on one run in an issue pod on one worker.
 test("ask-thread-reply: a reply under an ask draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const world = await seedReadingWorld({ login: rowPerson("alice") });
   const ask = await createAsk(
     world.host.key,
     { options: [{ label: "Now" }, { label: "Later" }], question: "When should the cache warm?" },
-    readingAgent
+    asReadingSession
   );
-  await createComment(world.host.key, { ask_id: ask.id, body: readingText(world) }, readingAgent);
+  await createComment(
+    world.host.key,
+    { ask_id: ask.id, body: readingText(world) },
+    asReadingSession
+  );
 
   await page.goto("/");
   const card = await askCard(page, ask.id);
@@ -94,12 +94,12 @@ test("ask-thread-reply: a reply under an ask draws every form of a stored refere
   await expectReadsReferences(reply, world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, a document and its approval request, and the
-// Inbox opened on that request's reading column, which reads the document under the question.
+// SLOW(>=2s): the reading world, a document and its approval request, and the Inbox opened on
+// that request's reading column, which reads the document under the question.
 test("approval-ask-question: an approval's question in the reading column draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const seeded = await seedReadingWorld();
+  const seeded = await seedReadingWorld({ login: rowPerson("alice") });
   // The approval's question is read against the document it asks about, so that document
   // declares the question a `#id` in the question names, and the world is scoped to it.
   const notes = await createIssueArtifact(
@@ -108,13 +108,13 @@ test("approval-ask-question: an approval's question in the reading column draws 
       content: `# Cache notes\n\nThe cache warms before the queue drains.\n\n${readingQuestionBlock()}\n`,
       name: "cache-notes.md",
     },
-    readingAgent
+    asReadingSession
   );
   const world = await scopedTo(seeded, notes.artifact.id);
   // The server writes the question as its own `Approve …?` and then the summary, so the summary
   // is where the stored text goes.
   const approval = withOpenedAsk(
-    await requestApproval(notes.artifact.id, { summary: readingText(world) }, readingAgent)
+    await requestApproval(notes.artifact.id, { summary: readingText(world) }, asReadingSession)
   );
 
   await page.goto("/");
@@ -123,13 +123,14 @@ test("approval-ask-question: an approval's question in the reading column draws 
   await expectReadsReferences(question, world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, a comment thread, and the Inbox opened on that
-// thread in the reading column; measured at 3.9 s on one run in an issue pod on one worker.
+// SLOW(>=2s): the reading world, a comment thread, and the Inbox opened on that thread in the
+// reading column; measured at 3.9 s on one run in an issue pod on one worker.
 test("inbox-thread-turn: a thread turn's body in the reading column draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
-  const thread = await seedHostThread(world, "Where does the cache warm?", readingText(world));
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
+  const thread = await seedHostThread(world, "Where does the cache warm?", readingText(world), me);
 
   await page.goto("/");
   await selectRow(page, replyRowId(thread.root));
@@ -137,13 +138,14 @@ test("inbox-thread-turn: a thread turn's body in the reading column draws every 
   await expectReadsReferences(turn, world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, a comment thread for each group of forms a
-// first line holds, and the Inbox drawn with the threads' rows; measured at 2.8 s on one run in
-// an issue pod on one worker.
+// SLOW(>=2s): the reading world, a comment thread for each group of forms a first line holds,
+// and the Inbox drawn with the threads' rows; measured at 2.8 s on one run in an issue pod on
+// one worker.
 test("inbox-thread-title: a thread row's title draws every form of a stored reference as a name inside its link", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
   // The title is the first line of the thread root's own text, as the server cuts it, so the
   // stored text is the reader's root: one thread for each group of forms a first line holds
   // whole (`firstLineForms`).
@@ -151,7 +153,7 @@ test("inbox-thread-title: a thread row's title draws every form of a stored refe
   const roots: string[] = [];
   for (const forms of groups) {
     const text = readingText(world, forms);
-    roots.push((await seedHostThread(world, text, "It warms before the drain.")).root);
+    roots.push((await seedHostThread(world, text, "It warms before the drain.", me)).root);
   }
 
   await page.goto("/");

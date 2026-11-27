@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { QueryClient, type QueryKey, QueryObserver } from "@tanstack/react-query";
 
+import { afterOnFakeClock } from "../__tests__/fake-clock";
 import {
   MIN_REFETCH_INTERVAL_MS,
   ownQuery,
@@ -63,10 +64,10 @@ function servedQuery(
       most = Math.max(most, inFlight);
       const fetch = starts.length;
       const { promise, resolve } = Promise.withResolvers<unknown>();
-      setTimeout(() => {
+      afterOnFakeClock(latencyMs, () => {
         inFlight -= 1;
         resolve(respond(fetch));
-      }, latencyMs);
+      });
       return promise;
     },
     queryKey,

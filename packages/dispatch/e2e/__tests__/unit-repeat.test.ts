@@ -1,14 +1,17 @@
 /** e2e/tools/unit-repeat.ts on the junit files real Bun writes (INFRA-1511).
  *
  *  Each row writes tiny test files into a directory of its own and runs Bun over them there,
- *  with `process.execPath`, an explicit `--seed`, `--rerun-each` and Bun's junit reporter. Then
+ *  with `process.execPath`, the arguments the tool gives Bun (`runArguments`: an explicit
+ *  `--seed`, `--rerun-each` and, for a web shard, Bun's `--shard`) and Bun's junit reporter. Then
  *  it hands what Bun left behind to the tool's pure functions. The directory is outside
  *  packages/dispatch, so the package's bunfig.toml does not reach that run. HOME is the same
  *  directory, so no global bunfig of the host reaches it either. Other rows run the tool itself
- *  there instead: on an `--out` the tool must refuse before it starts Bun, and on copies of the
- *  package whose rows never end, which the tool is stopped on, or whose worker or Bun's test
- *  process is killed, or whose step GitHub's runner cancels. unit-repeat-budgets.test.ts holds
- *  the budgets of .github/workflows/dispatch-unit-repeat.yaml to the measurements beside them.
+ *  there instead: on a command line the tool must refuse before it starts Bun (an `--out` that
+ *  names a file, a `--shard` that names no shard, and a harness shard that names no leg), on
+ *  copies of the package whose harness lane it runs as its two legs, and on copies whose rows
+ *  never end, which the tool is stopped on, or whose worker or Bun's test process is killed, or
+ *  whose step GitHub's runner cancels. unit-repeat-budgets.test.ts holds the budgets of
+ *  .github/workflows/dispatch-unit-repeat.yaml to the measurements beside them.
  *
  *  On each rerun Bun 1.4.4 runs the test file's own top-level code again, so a counter declared
  *  there starts again at 0. A module the file imports keeps its state between reruns (measured
@@ -20,23 +23,30 @@
  */
 
 import { expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
+import { type LegRows, legRowFaults } from "../leg-rows";
 import {
+  ALONE_LEGS,
   annotations,
   diedFiles,
+  type JunitText,
   junitAt,
+  type Lane,
   type LaneRun,
+  lanes,
   markdown,
   parseArguments,
   type Report,
   type RowlessKind,
+  runArguments,
   runningFiles,
+  type Shard,
   type Stop,
   summarise,
 } from "../tools/unit-repeat";
@@ -45,6 +55,26 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 const scratch = temporaryDirectories("unit-repeat");
 
 const tool = fileURLToPath(new URL("../tools/unit-repeat.ts", import.meta.url));
+
+/** The files a copy of the tool needs, by their paths under `e2e`: the tool, its preload, the
+ *  module the tool imports (`signalGroup`), and the worker count the package's `test:harness`
+ *  script reads (`--parallel=$(bun e2e/tools/test-workers.ts)`), which a copy of that script runs. */
+const toolFiles = [
+  "tools/unit-repeat.ts",
+  "tools/unit-repeat-progress.ts",
+  "signal-group.ts",
+  "tools/test-workers.ts",
+];
+
+/** Copies `toolFiles` into the package at `directory`, each to its path under that `e2e`. */
+function copyTool(directory: string): void {
+  for (const path of toolFiles) {
+    copyFileSync(
+      fileURLToPath(new URL(`../${path}`, import.meta.url)),
+      join(directory, "e2e", path)
+    );
+  }
+}
 
 const SEED = 4242;
 
@@ -92,7 +122,7 @@ async function spawnBun(
   return { code, output: `${stdout}${stderr}` };
 }
 
-/** Writes `files` into a fresh directory and runs `bun test` there as a lane run would. */
+/** Writes `files` into a fresh directory and runs `bun test` there as a harness lane run would. */
 async function laneRun(
   files: Readonly<Record<string, string>>,
   reruns = 3,
@@ -100,23 +130,35 @@ async function laneRun(
 ): Promise<LaneRun> {
   const directory = scratch();
   for (const [name, text] of Object.entries(files)) await Bun.write(join(directory, name), text);
+  return runIn(directory, reruns, { lane: "harness", shard: null }, environment);
+}
+
+/** Runs `bun test` in `directory` as a run of `of.lane`, or of its shard `of.shard`, would, with
+ *  the arguments the tool gives Bun (`runArguments`) and Bun's junit reporter. */
+async function runIn(
+  directory: string,
+  reruns: number,
+  of: { readonly lane: Lane; readonly shard: Shard | null },
+  environment: Readonly<Record<string, string>> = {}
+): Promise<LaneRun> {
+  const { lane, shard } = of;
   const junit = join(directory, "junit.xml");
   const started = performance.now();
   const { code, output } = await spawnBun(
     directory,
     [
       "test",
-      `--seed=${SEED}`,
-      `--rerun-each=${reruns}`,
+      ...runArguments({ lane, reruns, seed: SEED, shard }),
       "--reporter=junit",
       `--reporter-outfile=${junit}`,
     ],
     environment
   );
   return {
-    lane: "harness",
-    target: "e2e/__tests__",
+    lane,
+    target: lanes[lane].target,
     seed: SEED,
+    shard,
     reruns,
     wallMs: performance.now() - started,
     exitCode: code,
@@ -452,7 +494,9 @@ test(
     // The lie: the tool draws a seed Bun refuses, so the weekly run stops before any test.
     const options = (seed: string) =>
       parseArguments(["--lane", "web", "--out", "out", "--seed", seed], () => 0);
-    expect(options("0")).toEqual({ options: { lane: "web", out: "out", reruns: 20, seed: 0 } });
+    expect(options("0")).toEqual({
+      options: { lane: "web", out: "out", reruns: 20, seed: 0, shard: null },
+    });
     expect(options("4294967295")).toMatchObject({ options: { seed: 4294967295 } });
     for (const refused of ["4294967296", "-1", "1.5", "0x10", ""]) {
       expect(options(refused)).toHaveProperty("problem");
@@ -499,6 +543,431 @@ test(
     expect(await Bun.file(file).text()).toBe(text);
   },
   rowLimit("short")
+);
+
+/** A test file of six rows, the first of which fails on every run: the failing row names the
+ *  file in its report, and the junit file gives the order its rows ran in. */
+function sixRows(file: string): string {
+  const passing = [1, 2, 3, 4, 5].map((row) => `test("${file} passes ${row}", () => {});`);
+  return [
+    'import { test } from "bun:test";',
+    "",
+    `test("${file} fails", () => {`,
+    `  throw new Error("${file}");`,
+    "});",
+    ...passing,
+    "",
+  ].join("\n");
+}
+
+/** Each testcase of `junit`, its file and its name, in the order Bun ran them. */
+function testcasesIn(junit: JunitText): { readonly file: string; readonly name: string }[] {
+  if (!("text" in junit)) throw new Error(junit.unreadable);
+  return [...junit.text.matchAll(/<testcase name="([^"]*)"[^>]*\bfile="([^"]*)"/g)].map(
+    (testcase) => ({ file: testcase[2], name: testcase[1] })
+  );
+}
+
+/** The names of the testcases of `file` in `junit`, in the order Bun ran them. */
+function orderIn(junit: JunitText, file: string): string[] {
+  return testcasesIn(junit)
+    .filter((testcase) => testcase.file === file)
+    .map((testcase) => testcase.name);
+}
+
+test(
+  "the two shards of a web run read its files between them, each file once, and each report names its shard",
+  async () => {
+    // The lie: the tool hands Bun no shard, so each leg of a sharded round reads every file, and
+    // the round runs each row twice as often as it says, at twice the cost. Or a report does not
+    // say which shard it read, so the two legs of a round read as one leg twice. Or a row of a
+    // shard is given a command that names the shard, which runs nothing for a file of any shard
+    // but the first. The web lanes shard by Bun's own `--shard`; the harness lane's two legs are
+    // the next row's.
+    const directory = scratch();
+    const files = ["a.test.ts", "b.test.ts", "c.test.ts"];
+    for (const file of files) await Bun.write(join(directory, file), sixRows(file));
+    const shards: { readonly report: Report; readonly run: LaneRun }[] = [];
+    for (const index of [1, 2]) {
+      const run = await runIn(directory, 1, { lane: "web", shard: { count: 2, index } });
+      shards.push({ report: summarise(run), run });
+    }
+    const read = shards.map(({ report }) => report.failingRows.map((row) => row.file));
+    for (const each of read) expect(each.length).toBeGreaterThan(0);
+    expect(read.flat().sort()).toEqual(files);
+
+    for (const [position, { report, run }] of shards.entries()) {
+      const shard = `${position + 1}/2`;
+      expect(report.shard).toBe(shard);
+      expect(report.oneRun.files).toBe(read[position].length);
+      expect(report.command).toBe(
+        `bun run test:web web/src --seed=${SEED} --rerun-each=1 --shard=${shard}`
+      );
+      const text = markdown(report);
+      expect(text).toStartWith(`## Repeated unit tests: web lane, shard ${shard}\n`);
+      expect(text).toContain(`- Shard: \`${shard}\` of the lane's files`);
+      expect(annotations(report).at(-1)).toStartWith(
+        `::notice title=Repeated unit tests%3A web lane%2C shard ${shard}::`
+      );
+      // Each row's command, run as it reads, runs its file in the order the file ran in its shard.
+      for (const row of report.failingRows) {
+        expect(row.reproduce).toBe(`bun run test:web ${row.file} --seed=${SEED}`);
+        const alone = join(directory, "alone.xml");
+        const { code } = await spawnBun(directory, [
+          "test",
+          ...row.reproduce.replace("bun run test:web ", "").split(" "),
+          "--reporter=junit",
+          `--reporter-outfile=${alone}`,
+        ]);
+        expect(code).toBe(1);
+        expect(orderIn(junitAt(alone), row.file)).toEqual(orderIn(run.junit, row.file));
+      }
+    }
+  },
+  // The two shards and the three files alone, one after another, each a bounded child under the
+  // short bound.
+  rowLimit("short", "short", "short", "short", "short")
+);
+
+test(
+  "a --shard that names no shard of the files is refused as a bad command line, before Bun starts",
+  async () => {
+    // The lie: the tool hands Bun a shard Bun refuses, and Bun exits 1, the status of a run whose
+    // rows failed, although no test ran.
+    const options = (shard: string) =>
+      parseArguments(["--lane", "web", "--out", "out", "--seed", "1", "--shard", shard]);
+    expect(options("2/2")).toMatchObject({ options: { shard: { count: 2, index: 2 } } });
+    expect(options("1/1")).toMatchObject({ options: { shard: { count: 1, index: 1 } } });
+    const refused = ["0/2", "3/2", "a/b", "1/0"];
+    for (const shard of [...refused, "1", "1/2/3", ""]) {
+      expect(options(shard)).toHaveProperty("problem");
+    }
+
+    const directory = scratch();
+    const out = join(directory, "out");
+    for (const shard of refused) {
+      const { code, output } = await spawnBun(directory, [
+        tool,
+        "--lane",
+        "web",
+        "--reruns",
+        "1",
+        "--seed",
+        "1",
+        "--shard",
+        shard,
+        "--out",
+        out,
+      ]);
+      expect(code).toBe(2);
+      expect(output).toContain(
+        `unit-repeat: --shard is <i>/<n>, two whole numbers with n at least 1 and i from 1 to n, not ${shard}`
+      );
+      expect(output).toContain("usage: bun run test:repeat --lane <web|web-cold|harness>");
+      expect(output).not.toContain("seed=1 lane=web");
+      // Refused before the tool's first write, as an --out it cannot use is.
+      expect(existsSync(out)).toBe(false);
+    }
+  },
+  // The four runs of the tool, one after another, each a bounded child under the short bound.
+  rowLimit("short", "short", "short", "short")
+);
+
+test(
+  "a harness --shard that names no leg of the lane is refused as a bad command line, before Bun starts",
+  async () => {
+    // The lie: the harness lane takes a shard it has no leg for, so the tool splits the lane's
+    // files otherwise than its two legs do, and a file runs in two legs of a round or in none.
+    const { alone } = lanes.harness;
+    const options = (shard: string) =>
+      parseArguments(["--lane", "harness", "--out", "out", "--seed", "1", "--shard", shard]);
+    for (const index of [1, 2]) {
+      expect(options(`${index}/${ALONE_LEGS}`)).toMatchObject({
+        options: { shard: { count: ALONE_LEGS, index } },
+      });
+    }
+    const noLeg = `--shard on the harness lane is 1/2, ${alone} alone, or 2/2, the lane without it, not`;
+    const noShard =
+      "--shard is <i>/<n>, two whole numbers with n at least 1 and i from 1 to n, not";
+    const refused = [
+      { shard: "1/3", problem: noLeg },
+      { shard: "3/3", problem: noLeg },
+      { shard: "1/1", problem: noLeg },
+      { shard: "3/2", problem: noShard },
+    ];
+
+    const directory = scratch();
+    const out = join(directory, "out");
+    for (const { shard, problem } of refused) {
+      expect(options(shard)).toEqual({ problem: `${problem} ${shard}` });
+      const { code, output } = await spawnBun(directory, [
+        tool,
+        "--lane",
+        "harness",
+        "--reruns",
+        "1",
+        "--seed",
+        "1",
+        "--shard",
+        shard,
+        "--out",
+        out,
+      ]);
+      expect(code).toBe(2);
+      expect(output).toContain(`unit-repeat: ${problem} ${shard}\n`);
+      expect(output).toContain("usage: bun run test:repeat --lane <web|web-cold|harness>");
+      expect(output).not.toContain("seed=1 lane=harness");
+      // Refused before the tool's first write, as an --out it cannot use is.
+      expect(existsSync(out)).toBe(false);
+    }
+  },
+  // The four runs of the tool, one after another, each a bounded child under the short bound.
+  rowLimit("short", "short", "short", "short")
+);
+
+/** Copies the tool, its preload and the module it imports (`copyTool`) into `directory` as a
+ *  package of `files` under `e2e/__tests__`, with a `test:harness` of two workers whatever the
+ *  machine's CPUs, and answers the path of that copy of the tool. */
+async function plantPackage(
+  directory: string,
+  files: Readonly<Record<string, string>>
+): Promise<string> {
+  const tools = join(directory, "e2e", "tools");
+  const rows = join(directory, "e2e", "__tests__");
+  mkdirSync(tools, { recursive: true });
+  mkdirSync(rows, { recursive: true });
+  copyTool(directory);
+  await Bun.write(
+    join(directory, "package.json"),
+    `${JSON.stringify({ name: "planted-package", private: true, scripts: { "test:harness": "bun test --parallel=2 --timeout 60000" } })}\n`
+  );
+  for (const [name, text] of Object.entries(files)) await Bun.write(join(rows, name), text);
+  return join(tools, "unit-repeat.ts");
+}
+
+/** Each row `junit` holds, as `<file> > <name>`, once however many runs of it it holds. */
+function rowsIn(junit: JunitText): Set<string> {
+  return new Set(testcasesIn(junit).map(({ file, name }) => `${file} > ${name}`));
+}
+
+/** The legs of a lane as `legRowFaults` (e2e/leg-rows.ts) reads them, from the junit files of its
+ *  legs in order: leg N read the lane's `rows`, as `rowsIn` writes them, and ran each row its
+ *  junit file holds. */
+function laneLegs(rows: readonly string[], legs: readonly JunitText[]): LegRows[] {
+  return legs.map((junit, index) => ({
+    leg: `leg ${index + 1}`,
+    ran: [...rowsIn(junit)],
+    selection: rows,
+  }));
+}
+
+/** What a run of the tool left in its `--out`: its report, as JSON and as markdown, and Bun's
+ *  junit file. */
+interface LegOut {
+  readonly report: Report;
+  readonly text: string;
+  readonly junit: JunitText;
+}
+
+/** One matrix row of the workflow, as YAML parses it. */
+type WorkflowRow = Record<string, unknown>;
+
+/** .github/workflows/dispatch-unit-repeat.yaml as YAML parses it, for each reader to cast to the
+ *  part it reads. */
+function unitRepeatWorkflow(): unknown {
+  return Bun.YAML.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
+      ),
+      "utf8"
+    )
+  );
+}
+
+test(
+  "the two harness legs run each row of the lane in exactly one of them, and each failing row's command runs its file as its leg did",
+  async () => {
+    // The lie: the harness lane's two legs between them run a row twice or not at all. The second
+    // leg runs the lane whole, the Codex file too, whose 20 runs then outlast its deadline again;
+    // or the first hands Bun the file as a filter, which runs every file whose path holds it. Or
+    // a leg's report does not say what it ran, or a failing row of a leg is given a command that
+    // runs its file otherwise than the leg did. Here the tool runs both legs over a copy of the
+    // package whose harness lane holds the file the lane runs alone, a file whose path holds
+    // that file's path, and two more, each with a row that fails on every run.
+    const { alone, target } = lanes.harness;
+    if (alone === undefined) throw new Error("the harness lane names no file alone");
+    const planted = [alone, `${alone}x`, `${target}/a.test.ts`, `${target}/b.test.ts`];
+    const directory = scratch();
+    const copy = await plantPackage(
+      directory,
+      Object.fromEntries(planted.map((file) => [file.slice(target.length + 1), sixRows(file)]))
+    );
+    const rows = planted.flatMap((file) =>
+      [`${file} fails`, ...[1, 2, 3, 4, 5].map((row) => `${file} passes ${row}`)].map(
+        (row) => `${file} > ${row}`
+      )
+    );
+    const environment = { HOME: directory, PATH: process.env.PATH ?? "", TMPDIR: tmpdir() };
+    // A run of a copy of the tool and its Bun is a stop row's driver with no stop, and its bound
+    // is that driver's; a command it refuses starts nothing, under the short bound.
+    const runTool = (
+      copyOfTool: string,
+      cwd: string,
+      args: readonly string[],
+      bound: "stoppedLeg" | "short"
+    ) =>
+      runBounded({
+        argv: [process.execPath, copyOfTool, "--lane", "harness", "--reruns", "1", ...args],
+        bound,
+        cwd,
+        env: { ...environment, HOME: cwd },
+        from: import.meta.url,
+      });
+    const readLeg = (out: string): LegOut => ({
+      report: JSON.parse(readFileSync(join(out, "report.json"), "utf8")) as Report,
+      text: readFileSync(join(out, "report.md"), "utf8"),
+      junit: junitAt(join(out, "junit.xml")),
+    });
+
+    const commands = [
+      `bun run test:harness ./${alone} --seed=${SEED} --rerun-each=1`,
+      `bun run test:harness ${target} --seed=${SEED} --rerun-each=1 --path-ignore-patterns=${alone}`,
+    ];
+    const ran = [
+      `the lane's file \`${alone}\` alone`,
+      `the lane's files without \`${alone}\`, which shard 1/2 runs alone`,
+    ];
+    const legs: LegOut[] = [];
+    for (const [position, command] of commands.entries()) {
+      const shard = `${position + 1}/${ALONE_LEGS}`;
+      const out = join(directory, `leg-${position + 1}`);
+      const { code, stdout } = await runTool(
+        copy,
+        directory,
+        ["--seed", String(SEED), "--shard", shard, "--out", out],
+        "stoppedLeg"
+      );
+      expect(code).toBe(1);
+      const leg = readLeg(out);
+      legs.push(leg);
+      expect(leg.report.shard).toBe(shard);
+      expect(leg.report.command).toBe(command);
+      expect(leg.text).toStartWith(`## Repeated unit tests: harness lane, shard ${shard}\n`);
+      expect(leg.text).toContain(`- Lane: \`harness\`, run as \`${command}\`\n`);
+      expect(leg.text).toContain(`- Shard: \`${shard}\`, ${ran[position]}\n`);
+      // The step's log gives the whole command Bun is run with, its reporter and preload too.
+      const running = stdout.split("\n").find((line) => line.startsWith("running "));
+      expect(running).toStartWith(
+        `running ${process.execPath} ${command.slice("bun ".length)} --reporter=junit --reporter-outfile=${join(out, "junit.xml")} --preload `
+      );
+      expect(running).toContain("/e2e/tools/unit-repeat-progress.ts in ");
+    }
+    expect(legs.map((leg) => leg.report.failingRows.map((row) => row.file).sort())).toEqual([
+      [alone],
+      planted.slice(1).sort(),
+    ]);
+    expect(legRowFaults(laneLegs(rows, [legs[0].junit, legs[1].junit]))).toEqual([]);
+
+    // Each failing row's command, run as it reads, runs its file in the order the file ran in its
+    // leg. The command names the file as Bun's filter, as docs/testing.md gives it, so the file
+    // alone's command runs the planted file whose path holds its path too; the order of the
+    // row's own file is what it repeats.
+    for (const leg of legs) {
+      for (const row of leg.report.failingRows) {
+        expect(row.reproduce).toBe(`bun run test:harness ${row.file} --seed=${SEED}`);
+        const again = join(directory, "again.xml");
+        const { code } = await runBounded({
+          argv: [
+            process.execPath,
+            ...row.reproduce.slice("bun ".length).split(" "),
+            "--reporter=junit",
+            `--reporter-outfile=${again}`,
+          ],
+          bound: "short",
+          cwd: directory,
+          env: environment,
+          from: import.meta.url,
+        });
+        expect(code).toBe(1);
+        expect(orderIn(junitAt(again), row.file)).toEqual(orderIn(leg.junit, row.file));
+      }
+    }
+
+    // The controls. A last leg without the ignore pattern, the lane whole, runs the file alone
+    // in both legs, and the check names each of its rows; a missing leg leaves them in none.
+    const aloneRows = rows.filter((row) => row.startsWith(`${alone} > `));
+    const whole = join(directory, "whole");
+    const { code: wholeCode } = await runTool(
+      copy,
+      directory,
+      ["--seed", String(SEED), "--out", whole],
+      "stoppedLeg"
+    );
+    expect(wholeCode).toBe(1);
+    const lane = readLeg(whole);
+    expect(lane.report.command).toBe(commands[1].replace(` --path-ignore-patterns=${alone}`, ""));
+    expect(legRowFaults(laneLegs(rows, [legs[0].junit, lane.junit]))).toEqual([
+      `${aloneRows.length} rows ran on more than one leg: ${aloneRows.map((row) => `${row} (on leg 1, leg 2)`).join("; ")}`,
+    ]);
+    expect(legRowFaults(laneLegs(rows, [legs[1].junit]))).toEqual([
+      `${aloneRows.length} rows of the selection ran on no leg: ${aloneRows.join("; ")}`,
+    ]);
+    // A file alone that is no file of the package is refused for either leg, before Bun starts:
+    // the first would run nothing, and the second, which leaves it out, the whole lane.
+    const bare = scratch();
+    const bareCopy = await plantPackage(bare, { "a.test.ts": sixRows(`${target}/a.test.ts`) });
+    for (const shard of ["1/2", "2/2"]) {
+      const out = join(bare, "out");
+      const { code, stdout, stderr } = await runTool(
+        bareCopy,
+        bare,
+        ["--seed", "1", "--shard", shard, "--out", out],
+        "short"
+      );
+      expect(code).toBe(2);
+      expect(stderr).toContain(
+        `unit-repeat: --shard ${shard} of the harness lane runs ${alone} alone or the lane without it, and `
+      );
+      expect(stderr).toContain(`/${alone} is no file\n`);
+      expect(stdout).not.toContain("seed=1 lane=harness");
+      expect(existsSync(out)).toBe(false);
+    }
+
+    // The workflow runs as many harness legs a round as the lane has, one matrix row each.
+    const workflow = unitRepeatWorkflow() as {
+      jobs?: {
+        repeat?: {
+          strategy?: {
+            matrix?: { shard?: unknown[]; exclude?: WorkflowRow[]; include?: WorkflowRow[] };
+          };
+        };
+      };
+    } | null;
+    const matrix = workflow?.jobs?.repeat?.strategy?.matrix;
+    const legNumbers = Array.from({ length: ALONE_LEGS }, (_, index) => index + 1);
+    expect(
+      (matrix?.include ?? [])
+        .filter((row) => row.lane === "harness")
+        .map((row) => [row.shard, row.shards])
+    ).toEqual(legNumbers.map((leg) => [leg, ALONE_LEGS]));
+    expect(matrix?.shard).toEqual(legNumbers);
+    expect((matrix?.exclude ?? []).filter((row) => row.lane === "harness")).toEqual([]);
+  },
+  // The two legs, the four failing rows' commands, the lane whole and the two refused legs, one
+  // after another, each a bounded child: the tool's runs under the stoppedLeg bound, the rest
+  // under the short bound.
+  rowLimit(
+    "stoppedLeg",
+    "stoppedLeg",
+    "short",
+    "short",
+    "short",
+    "short",
+    "stoppedLeg",
+    "short",
+    "short"
+  )
 );
 
 /** One line of a progress file, as e2e/tools/unit-repeat-progress.ts writes it. */
@@ -667,6 +1136,7 @@ test(
       lane: "harness",
       target: "e2e/__tests__",
       seed: SEED,
+      shard: null,
       reruns: 2,
       wallMs: 9_600,
       exitCode: 143,
@@ -719,6 +1189,7 @@ test(
       lane: "harness",
       target: "e2e/__tests__",
       seed: SEED,
+      shard: null,
       reruns: 2,
       wallMs: 9_600,
       exitCode: 143,
@@ -749,6 +1220,7 @@ test(
       lane: "harness",
       target: "e2e/__tests__",
       seed: SEED,
+      shard: null,
       reruns: 2,
       wallMs: 9_600,
       exitCode: null,
@@ -811,25 +1283,38 @@ function asSubreaper(): string[] {
  *  that nothing has killed or is ending as `left: <pid> <command line>`, then `left behind: <n>`.
  *  A process counts as ended once its state is Z or X, as killed once SIGKILL stands in its shared
  *  pending set (`ShdPnd`, where a kill of a process or a group puts it, and where it stays until
- *  the process is gone), and as ending once its flags carry PF_EXITING. One whose files are gone
- *  between two reads is gone. Each process left is then killed, so the row leaves nothing running.
- *  The walk reads with builtins only, so it starts no process that it would count itself, and it
- *  reads no process outside the driver's own tree.
+ *  the process is gone), and as ending once its flags carry PF_EXITING. One whose stat cannot be
+ *  read is gone, and so is one whose status reads empty, or fails, once its directory is gone.
+ *  Each process left is then killed, so the row leaves nothing running. The walk reads with
+ *  builtins only, so it starts no process that it would count itself, and it reads no process
+ *  outside the driver's own tree.
+ *
+ *  Each status file is read whole, by one `read -d ''`, and its `ShdPnd:` line is found in that one
+ *  text: that read takes the file to its end with no seek between its reads, so the kernel
+ *  generates the text once. A `while read` took one line per `read`, and after each bash seeks a
+ *  file back to the end of the line it took. A `/proc/<pid>/status` is a seq_file, which generates
+ *  its whole text again at each seek (`seq_lseek`, `traverse`), and the lines above `ShdPnd:`
+ *  change length between two texts: `SigQ:` counts the signals pending for every process of the
+ *  same user, so a 9 that becomes 10 moves each later line by a byte, and `FDSize:`, `Threads:`
+ *  and the `Vm` lines change too. The next `read` then began inside a line and took the key as
+ *  `hdPnd:`, or missed it: in the weekly run 45989962328 a driver read its own live status as one
+ *  with no `ShdPnd:` line, in 1 of a row's 20 runs.
  *
  *  It fails closed, printing `left behind: unknown: <why>`, wherever it could not tell: `capable`,
  *  before the driver starts anything, where the driver's own status has no `ShdPnd:` line, as
  *  under gVisor, or its own children list is missing; `seen`, where that list does not show the
  *  pid the driver started, as `$1`; and `count`, where a process's status reads with no `ShdPnd:`
- *  line, which is unknown and not gone. `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the
- *  driver's own pid) are for the row that reads `count` over a stub process tree. */
+ *  line, empty or not, while its directory is still there, which is unknown and not gone.
+ *  `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the driver's own pid) are for the row
+ *  that reads `count` over a stub process tree. */
 const leftBehind = `
 proc=\${PROC_ROOT:-/proc}
 root=\${WALK_ROOT:-$$}
 capable() {
-  local key value shd=no children=no t
-  while read -r key value; do [ "$key" = ShdPnd: ] && shd=yes; done <"$proc/$root/status" 2>/dev/null
+  local status='' children=no t
+  read -r -d '' status <"$proc/$root/status" 2>/dev/null
   for t in "$proc/$root"/task/*/children; do [ -r "$t" ] && children=yes; done
-  [ "$shd" = yes ] || { echo "left behind: unknown: no ShdPnd: line in $proc/$root/status"; return 1; }
+  [[ $'\\n'$status == *$'\\n'ShdPnd:* ]] || { echo "left behind: unknown: no ShdPnd: line in $proc/$root/status"; return 1; }
   [ "$children" = yes ] || { echo "left behind: unknown: no children list under $proc/$root/task"; return 1; }
 }
 seen() {
@@ -852,7 +1337,7 @@ walk() {
   done
 }
 count() {
-  local p stat fields key value shd found unknown=()
+  local p stat fields status shd unknown=()
   left=()
   walk
   for p in "\${tree[@]}"; do
@@ -860,12 +1345,13 @@ count() {
     fields=(\${stat##*) })
     case \${fields[0]} in Z | X) continue ;; esac
     ((fields[6] & 4)) && continue
-    { exec 9<"$proc/$p/status"; } 2>/dev/null || continue
-    shd="" found=no
-    while read -r key value <&9; do [ "$key" = ShdPnd: ] && { shd=$value; found=yes; break; }; done
-    exec 9<&-
-    [ "$found" = yes ] || { unknown+=("$p"); continue; }
-    ((0x$shd & 0x100)) && continue
+    status=""; read -r -d '' status <"$proc/$p/status" 2>/dev/null
+    if [[ $'\\n'$status != *$'\\n'ShdPnd:* ]]; then
+      [ -n "$status" ] || [ -d "$proc/$p" ] || continue
+      unknown+=("$p"); continue
+    fi
+    shd=$'\\n'$status; shd=\${shd#*$'\\n'ShdPnd:}; shd=\${shd%%$'\\n'*}
+    ((0x\${shd//[[:space:]]/} & 0x100)) && continue
     left+=("$p")
   done
   for p in "\${left[@]}" "\${unknown[@]}"; do echo "left: $p $(tr '\\0' ' ' <"$proc/$p/cmdline" 2>/dev/null)"; done
@@ -918,10 +1404,13 @@ const shdPnd = (() => {
  *  `GITHUB_ACTIONS` in any case (`shdPnd`). */
 const driverRow = test.skipIf(!shdPnd && process.env.GITHUB_ACTIONS !== "true");
 
-/** Copies the tool and its preload into `directory` as a package of `files` under
- *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. Runs the
- *  tool there as the harness lane with two reruns, and sends the tool alone the SIGTERM the
- *  step's `timeout` sends, once every one of `marks` exists, or once the tool has ended first.
+/** How many runs of each file `stoppedLeg` has the tool make: its `--reruns`. */
+const STOPPED_LEG_RERUNS = 2;
+
+/** Copies the tool and its preload into `directory` as a package of `files` (`plantPackage`).
+ *  Runs the tool there as the harness lane with `STOPPED_LEG_RERUNS` reruns, and sends the tool
+ *  alone the SIGTERM the step's `timeout` sends, once every one of `marks` exists, or once the
+ *  tool has ended first.
  *  The driver runs as its tree's subreaper (`asSubreaper`), and once the tool has ended it lists
  *  what the leg left (`leftBehind`): no read of the machine's other processes, and no wait for
  *  one to die. `bounds` are the tool's two stop bounds, which the caller sets so that its verdict
@@ -944,18 +1433,7 @@ async function stoppedLeg(
   } = {}
 ): Promise<StoppedLeg> {
   const { hold, killFrom, doneRuns } = how;
-  const tools = join(directory, "e2e", "tools");
-  const rows = join(directory, "e2e", "__tests__");
-  mkdirSync(tools, { recursive: true });
-  mkdirSync(rows, { recursive: true });
-  for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
-    copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
-  }
-  await Bun.write(
-    join(directory, "package.json"),
-    `${JSON.stringify({ name: "stopped-leg", private: true, scripts: { "test:harness": "bun test --parallel=2 --timeout 60000" } })}\n`
-  );
-  for (const [name, text] of Object.entries(files)) await Bun.write(join(rows, name), text);
+  const copy = await plantPackage(directory, files);
   const out = join(directory, "out");
   const driver =
     leftBehind +
@@ -976,11 +1454,11 @@ async function stoppedLeg(
       "driver",
       process.execPath,
       ...(hold === undefined ? [] : ["--preload", hold.preload]),
-      join(tools, "unit-repeat.ts"),
+      copy,
       "--lane",
       "harness",
       "--reruns",
-      "2",
+      String(STOPPED_LEG_RERUNS),
       "--seed",
       String(SEED),
       "--out",
@@ -1370,9 +1848,7 @@ driverRow(
     const tools = join(directory, "e2e", "tools");
     mkdirSync(tools, { recursive: true });
     mkdirSync(rows, { recursive: true });
-    for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
-      copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
-    }
+    copyTool(directory);
     const { scripts } = JSON.parse(
       readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
     ) as { scripts: Record<string, string> };
@@ -1381,17 +1857,16 @@ driverRow(
       `${JSON.stringify({ name: "cancelled-step", private: true, scripts: { "test:repeat": scripts["test:repeat"], "test:harness": scripts["test:harness"], "build:contracts": "true" } })}\n`
     );
     await Bun.write(join(rows, "spins.test.ts"), `${spinningHead}${spinningRow("spins", mark)}`);
-    const workflow = Bun.YAML.parse(
-      readFileSync(
-        fileURLToPath(
-          new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
-        ),
-        "utf8"
-      )
-    ) as { jobs: { repeat: { steps: { name?: string; run?: string }[] } } };
+    const workflow = unitRepeatWorkflow() as {
+      jobs: { repeat: { steps: { name?: string; run?: string }[] } };
+    };
     const step = workflow.jobs.repeat.steps.find((each) => each.name?.startsWith("Run the lane"));
+    // The step's SHARD is unset here, as the workflow leaves it for a lane of one shard, so the
+    // step passes no `--shard` and the copy's one file runs as its lane whole: a harness leg's
+    // shard picks which files run, and nothing of how a signal reaches the tool.
     const text = (step?.run ?? "")
       .replaceAll(`\${{ matrix.lane }}`, "harness")
+      .replaceAll(`\${{ matrix.round }}`, "1")
       .replaceAll(`\${{ matrix.reruns }}`, "2")
       .replaceAll(`\${{ matrix.deadline_seconds }}`, String(CANCELLED_DEADLINE_SECONDS));
     expect(text).toContain("bun run test:repeat");
@@ -1401,11 +1876,20 @@ driverRow(
     mkdirSync(runner);
     // `set -m`, so that the step's bash runs as the runner starts it, with SIGINT not ignored as
     // a shell ignores it for a job it puts in the background with no job control. The driver runs
-    // as its tree's subreaper, and lists what the step left once it has ended (`leftBehind`).
+    // as its tree's subreaper, and lists what the step left once it has ended (`leftBehind`). A
+    // step pid that kill would read as no group the driver started is refused and named, as
+    // lib/process-tree.sh's group_signalable refuses it: kill reads group 0 as the driver's own
+    // group, which holds this test's runner too, and group 1 as every process it may signal.
     const driver =
       leftBehind +
       "capable || exit 2; set -m; bash -e step.sh & step=$!; set +m; " +
-      'seen "$step" || { echo "left behind: unknown: the driver\'s own children do not list the step $step"; kill -KILL -- "-$step" 2>/dev/null; exit 2; }; ' +
+      'seen "$step" || { echo "left behind: unknown: the driver\'s own children do not list the step $step"; ' +
+      'case $step in "") why="it is empty" ;; *[!0-9]*) why="it is not a number" ;; ' +
+      '0) why="kill reads group 0 as the group it is called from" ;; ' +
+      '1) why="kill reads group 1 as -1, every process it may signal" ;; ' +
+      '0*) why="no group is written with a leading zero" ;; *) why= ;; esac; ' +
+      'if [ -n "$why" ]; then echo "refusing to signal process group \'$step\': $why" >&2; ' +
+      'else kill -KILL -- "-$step" 2>/dev/null; fi; exit 2; }; ' +
       'until [ -e "$MARK" ] || ! kill -0 "$step" 2>/dev/null; do sleep 0.05; done; ' +
       'kill -INT "$step" 2>/dev/null; wait "$step"; code=$?; count; exit "$code"';
     const { code, stdout, stderr } = await runBounded({
@@ -1514,11 +1998,19 @@ test(
     const unknown = await run(unmarked, "count");
     expect(unknown).toContain("left behind: unknown: no ShdPnd: line in the status of 9000006\n");
     expect(() => leftOf(unknown, "")).toThrow("could not list what the leg left behind");
+    // A status that reads empty, of a process whose directory is still there, is unknown too: only
+    // one whose directory has gone is gone.
+    const empty = join(directory, "empty");
+    stubTree(empty, { driver: "0000000000000000", below: "0000000000000000" });
+    writeFileSync(join(empty, "9000006", "status"), "");
+    expect(await run(empty, "count")).toContain(
+      "left behind: unknown: no ShdPnd: line in the status of 9000006\n"
+    );
     const blind = join(directory, "blind");
     stubTree(blind, { driver: null, below: "0000000000000000" });
     expect(await run(blind, "capable || exit 2; echo capable")).toBe(
       `left behind: unknown: no ShdPnd: line in ${blind}/9000001/status\n`
     );
   },
-  rowLimit("short", "short", "short")
+  rowLimit("short", "short", "short", "short")
 );

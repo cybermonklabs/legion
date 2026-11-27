@@ -726,7 +726,8 @@ test("below 1280 px the reader's own Assign to me under Unassigned moves the vie
     });
 
     await waitFor(() => expect(address()).toBe("/?item=ask-ob&assignee=unassigned"));
-    expect(screen.getByTestId("inbox-reading-view").getAttribute("data-inbox-reading-row")).toBe(
+    expect(screen.getByTestId("inbox-reading-view")).toHaveAttribute(
+      "data-inbox-reading-row",
       "ask-ob"
     );
     expect(screen.queryByText("This item left your Inbox.")).toBeNull();
@@ -899,7 +900,7 @@ test("below 1280 px an open row that leaves on its own brings the list back at i
     });
     await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
     expect(address()).toBe("/");
-    expect(screen.getByText("This item left your Inbox.").getAttribute("role")).toBe("status");
+    expect(screen.getByText("This item left your Inbox.")).toHaveAttribute("role", "status");
     expect(shortRow("ask-b")).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "History back" }));
     expect(address()).toBe("/agents");
@@ -1005,13 +1006,13 @@ test("below 1280 px the line saying the open row left is a live region that is a
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c"]));
     // The region is there before it has anything to say, so a screen reader hears the line as
     // it appears in it.
-    expect(line()?.getAttribute("role")).toBe("status");
+    expect(line()).toHaveAttribute("role", "status");
     expect(line()?.textContent).toBe("");
 
     await withdraw("ask-a");
     await user.keyboard("j");
     expect(line()?.textContent).toBe("");
-    expect(line()?.getAttribute("role")).toBe("status");
+    expect(line()).toHaveAttribute("role", "status");
 
     await withdraw("ask-b");
     act(() => width.setWidth(1440));
@@ -1117,7 +1118,7 @@ test("below 1280 px a reload onto a thread row whose read lands after the asks' 
 
     await threads.land([replyRow("c1")]);
     const view = await screen.findByTestId("inbox-reading-view");
-    expect(view.getAttribute("data-inbox-reading-row")).toBe("reply:c1");
+    expect(view).toHaveAttribute("data-inbox-reading-row", "reply:c1");
     expect(address()).toBe("/?item=reply:c1");
 
     // And its way back is still the one step through the entry the open pushed.

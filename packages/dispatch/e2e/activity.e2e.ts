@@ -14,7 +14,7 @@ import {
   resolveComment,
 } from "./api";
 import { setEventCreatedAt } from "./seed";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -28,9 +28,10 @@ const agent = {
 test("the Activity tab lists the event rows the Conversation does not draw @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Review this specification.",
     title: "One card per conversation",
   });
@@ -79,8 +80,9 @@ test("the Activity tab lists the event rows the Conversation does not draw @pr",
 // SLOW(>=2s): four messages written in the order the dividers read, three events back-dated and
 // the read watermark set, before one cold load of the Activity tab.
 test("Activity breaks its rows by day and marks where the reader stopped", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Dividers" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Dividers" });
   await createMessage(issue.key, { body: "First yesterday" }, agent);
   await createMessage(issue.key, { body: "Second yesterday" }, agent);
   await createMessage(issue.key, { body: "Third today" }, agent);
@@ -159,8 +161,9 @@ test("Activity breaks its rows by day and marks where the reader stopped", async
 });
 
 test("an Activity row pins into the review margin and unpins from it", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pin an event" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Pin an event" });
   await patchIssue(issue.key, { status: "in_progress" });
 
   const alice = await asUser(browser, "alice");
@@ -194,8 +197,9 @@ test("an Activity row pins into the review margin and unpins from it", async ({ 
 test("an Activity row says a mention that could not be delivered was not delivered", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention of a missing session" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention of a missing session" });
   await createComment(
     issue.key,
     { body: "Look at this, @session:ghost.", mentions: [{ target: "session:ghost" }] },
@@ -232,8 +236,9 @@ test("an Activity row says a mention that could not be delivered was not deliver
 test("an Activity row whose comment event carried the body in part links to the whole comment", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A comment longer than one event" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "A comment longer than one event" });
   // Two 20,000-unit paragraphs: each is inside the 32,000-unit block bound, and together they
   // are past the 32,000 units one event carries, so the event keeps the first paragraph alone.
   const first = "A".repeat(20_000);

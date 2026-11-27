@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 
+import type { Result } from "../web/src/api/paths";
 import { firstLineOf } from "../web/src/features/issue-page/first-line";
 import {
   FOOT_HEIGHT_PROPERTY,
@@ -60,7 +61,7 @@ import {
   UNBROKEN_PATH,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
-import { asPlanner, PROJECT } from "./issue-layout-seed-support";
+import { asPlanner, layoutProject } from "./issue-layout-seed-support";
 import {
   OPEN_QUESTION_BLOCK_ID,
   planTaskBlockId,
@@ -128,7 +129,7 @@ import {
 } from "./issue-page-i";
 import { composerField } from "./issue-page-l";
 import { withIssuePage } from "./issue-page-option";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
@@ -158,8 +159,10 @@ interface OpenedTree {
  *  because the keymap binds only once sign-in resolves. It asserts only that the page loaded,
  *  that the page's opening put the focus on a row of its own and that the focus then left for the
  *  page itself (`gotoIssue`, `expectOpeningLanded`, `focusThePage`): each row below asserts the
- *  key or the tree property it is about first, and `expectTreeDrawn` after it. The suite's
- *  `test` has emptied the database before the row. */
+ *  key or the tree property it is about first, and `expectTreeDrawn` after it. The seed writes
+ *  under the row's own keys (`layoutProject`), beside what the rows before it wrote: the suite's
+ *  `test` empties the database before the worker's first row and before the review corpus's
+ *  seed, not before each row. */
 async function openTree(browser: Browser): Promise<OpenedTree> {
   const seeded = await seedWholeIssue();
   const context = await asUser(browser, "alice");
@@ -333,13 +336,15 @@ async function enterNode(
     .toBe(true);
 }
 
-/** Makes the project CITED and an issue of it whose title runs past a phone's line, and answers
- *  that issue's key, for a document of the seeded project to cite. */
+/** Makes a project of the row's own (`rowKey("CITED")`, e2e/test.ts) and an issue of it whose
+ *  title runs past a phone's line, and answers that issue's key, for a document of the seeded
+ *  project to cite. */
 async function seedCitedIssue(): Promise<string> {
-  await createProject({ key: "CITED", name: "Cited issues" });
+  const project = rowKey("CITED");
+  await createProject({ key: project, name: "Citations" });
   const cited = await createIssue({
     force: true,
-    project: "CITED",
+    project,
     title: "A cited issue of another project, whose title runs past a phone's line",
   });
   return cited.key;
@@ -1468,7 +1473,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     // and hid the header. The issue's one node is a person's comment of 120 paragraphs.
     const tall = await createIssue({
       force: true,
-      project: PROJECT,
+      project: layoutProject(),
       title: "An issue whose first row is taller than the window",
     });
     const long = await createComment(tall.key, {
@@ -1640,7 +1645,7 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
   await phase(browser, seedWholeIssue, async (page) => {
     const deep = await createIssue({
       force: true,
-      project: PROJECT,
+      project: layoutProject(),
       spec: [
         "# A spec whose one statement is under eighty paragraphs",
         "",
@@ -1720,7 +1725,7 @@ test("a row that edits a statement is no taller than the window, and the page ar
   await phase(browser, seedWholeIssue, async (page) => {
     const deep = await createIssue({
       force: true,
-      project: PROJECT,
+      project: layoutProject(),
       spec: [
         "# A spec whose one statement is under eighty paragraphs",
         "",
@@ -1771,7 +1776,7 @@ test("a row that edits a statement is no taller than the window, and the page ar
     const long = await createIssue(
       {
         force: true,
-        project: PROJECT,
+        project: layoutProject(),
         spec: [
           "# Long statements an agent wrote",
           "",
@@ -1834,7 +1839,7 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
     const cited = await seedCitedIssue();
     const spec = await createIssue({
       force: true,
-      project: PROJECT,
+      project: layoutProject(),
       spec: [
         "# A plain statement under a cited issue and a path",
         "",
@@ -1904,7 +1909,7 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
     const columns = Array.from({ length: 16 }, (_, index) => index + 1);
     const spec = await createIssue({
       force: true,
-      project: PROJECT,
+      project: layoutProject(),
       spec: [
         "# A note that holds a table wider than a phone",
         "",
@@ -2048,7 +2053,7 @@ test("a collaborator's caret label near a line's end hangs back inside the row's
     await page.setViewportSize({ height: 900, width: 1280 });
     const spec = await createIssue({
       force: true,
-      project: PROJECT,
+      project: layoutProject(),
       spec: [
         "# A statement two readers edit at once",
         "",
@@ -2175,14 +2180,15 @@ test("the caret Enter puts in a statement stays on screen while the editor draws
   browser,
 }) => {
   await phase(browser, seedWholeIssue, async (page) => {
-    // The cited issues are another project's, so nothing the page reads before the editor opens
-    // has their names in hand.
-    await createProject({ key: "CITED", name: "Cited issues" });
+    // The cited issues are another project's, of the row's own (`rowKey`, e2e/test.ts), so
+    // nothing the page reads before the editor opens has their names in hand.
+    const citedProject = rowKey("CITED");
+    await createProject({ key: citedProject, name: "Citations" });
     const cited: string[] = [];
     for (let number = 1; number <= 60; number += 1) {
       const issue = await createIssue({
         force: true,
-        project: "CITED",
+        project: citedProject,
         title: `A cited issue of another project, number ${number}, whose title runs long`,
       });
       cited.push(issue.key);
@@ -2190,7 +2196,7 @@ test("the caret Enter puts in a statement stays on screen while the editor draws
     const spec = await createIssue(
       {
         force: true,
-        project: PROJECT,
+        project: layoutProject(),
         spec: [
           "# Long statements under words that cite another project",
           "",
@@ -2271,14 +2277,16 @@ test("the words the caret Enter puts in a statement stand still while the editor
   browser,
 }) => {
   await phase(browser, seedWholeIssue, async (page) => {
-    // The cited issues are another project's, so nothing the page reads before the editor opens
-    // has their names in hand, and the editor draws them after the caret is in.
-    await createProject({ key: "CITED", name: "Cited issues" });
+    // The cited issues are another project's, of the row's own (`rowKey`, e2e/test.ts), so
+    // nothing the page reads before the editor opens has their names in hand, and the editor
+    // draws them after the caret is in.
+    const citedProject = rowKey("CITED");
+    await createProject({ key: citedProject, name: "Citations" });
     const cited: string[] = [];
     for (let number = 1; number <= 60; number += 1) {
       const issue = await createIssue({
         force: true,
-        project: "CITED",
+        project: citedProject,
         title: `A cited issue of another project, number ${number}, whose title runs long`,
       });
       cited.push(issue.key);
@@ -2286,7 +2294,7 @@ test("the words the caret Enter puts in a statement stand still while the editor
     const spec = await createIssue(
       {
         force: true,
-        project: PROJECT,
+        project: layoutProject(),
         spec: [
           "# Long statements under words that cite another project",
           "",
@@ -3238,10 +3246,14 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     }
 
     // Another page keeps its hover card: this change touches no page but the issue's, and the
-    // Inbox's owner link opens a card for a resting pointer as it always has.
+    // Inbox's owner link opens a card for a resting pointer as it always has. The link is the
+    // seeded issue's own: the reader's Inbox holds the open questions of every row of the worker
+    // before this one, and its first row may be any of theirs.
     await page.emulateMedia({ forcedColors: "none" });
     await page.goto("/");
-    const owner = page.locator("[data-inbox-row] [data-dispatch-ref]").first();
+    const owner = page
+      .locator(`[data-inbox-row] [data-dispatch-ref="dispatch://${seeded.key}"]`)
+      .first();
     await expect(owner, "the Inbox lists no row of the seeded issue's open question").toBeVisible();
     await owner.hover();
     await expect(
@@ -4599,19 +4611,15 @@ test("a read that drops the focused row with no act of the reader's leaves the f
 
     await page.route(`**/api/v1/issues/${seeded.key}/comments*`, async (route) => {
       const answer = await route.fetch();
-      const body = (await answer.json()) as unknown;
-      const without = (list: readonly { readonly id?: string }[]) =>
-        list.filter((comment) => comment.id !== gone);
-      let json: unknown = body;
-      if (Array.isArray(body)) json = without(body);
-      else if (typeof body === "object" && body !== null) {
-        const record = body as Record<string, unknown>;
-        for (const field of ["comments", "items"]) {
-          const list = record[field];
-          if (Array.isArray(list)) json = { ...record, [field]: without(list) };
-        }
-      }
-      await route.fulfill({ json, response: answer });
+      // The page reads the bare list, with no `order=activity`, which is what the route answers it.
+      const read = (await answer.json()) as Extract<
+        Result<"/api/v1/issues/{key}/comments", "get">,
+        unknown[]
+      >;
+      await route.fulfill({
+        json: read.filter((comment) => comment.id !== gone),
+        response: answer,
+      });
     });
     // Where the page stands once the row holds the focus, before the event.
     await nextFrames(page);

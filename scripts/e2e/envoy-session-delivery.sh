@@ -334,8 +334,10 @@ readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # lib/loopback-dsn.sh for run_database_url_env, the helper a proof that writes a PostgreSQL server
 # reads its caller's DSN with, and psql_env, which runs psql on that DSN by its variable's name,
-# and lib/port-file.sh for read_port_file, which this proof's own await_port_file waits with.
-# Neither file reads a variable of this shell. This proof sources no rig: its await_port_file and
+# lib/port-file.sh for read_port_file, which this proof's own await_port_file waits with,
+# lib/process-tree.sh for group_signalable, which kill_label holds a process group to, and
+# lib/omp-home.sh for omp_natives_dir, the native-module cache each session's home links. None of
+# the four reads a variable of this shell. This proof sources no rig: its await_port_file and
 # keep_port, written for the pid map below, are its own, and lib/rig.sh defines both of those
 # names and a start_held that calls its own await_port_file, so sourcing it for those DSN helpers
 # would leave which await_port_file runs to the order of the two files.
@@ -343,6 +345,8 @@ readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/process-tree.sh
+. "$repo_root/scripts/e2e/lib/process-tree.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$repo_root/scripts/e2e/lib/omp-home.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
@@ -375,14 +379,17 @@ running() {
   [[ "$state" != Z ]]
 }
 # kill_label LABEL SIGNAL: the process started under LABEL, and when it leads its own process group
-# (the proxies and the sessions run under setsid), everything in that group.
+# (the proxies and the sessions run under setsid), everything in that group. A group that cannot be
+# one the run started is refused and named (group_signalable), and nothing is signalled, since the
+# pid is the same value: kill reads group 0 as the group it is called from and group 1 as every
+# process it may signal.
 kill_label() {
   local label=$1 signal=$2 p=${pid[$1]:-} group
   [[ "$p" =~ ^[1-9][0-9]*$ ]] || return 0
   group=""
   if [[ -r "/proc/$p/stat" ]]; then read -r _ _ _ _ group _ <"/proc/$p/stat" 2>/dev/null || true; fi
   if [[ "$group" == "$p" ]]; then
-    kill "-$signal" -- "-$p" 2>/dev/null || true
+    if group_signalable "$p"; then kill "-$signal" -- "-$p" 2>/dev/null || true; fi
   else
     kill "-$signal" "$p" 2>/dev/null || true
   fi

@@ -8,12 +8,13 @@
  *  while the Spec tab's read mark exactly as this row wrote it first, as the visual seed writes its
  *  own, passes, and so does the editor's stamp of the heading's id. It runs on the full lane, the lane of the visual rows
  *  it vouches for: in every merge group, and on a pull request under `full-ci`. It carries no
- *  `@pr` tag because the pull-request lane's real-stack rows are at their budget of 150
- *  (e2e/__tests__/pull-request-lane.test.ts), and a guard that guards no row there has nothing
+ *  `@pr` tag because the pull-request lane is at its row budget (`laneBudget`,
+ *  e2e/__tests__/pull-request-lane.test.ts), and a guard that guards no row there has nothing
  *  to answer for on that lane. */
+import { type Body, routePath } from "../web/src/api/paths";
 import { createIssue, createProject, getArtifact, putDocumentRead } from "./api";
 import { documentEditor, typeAtEnd } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 import { guardSharedCorpus } from "./visual-guard";
 
@@ -24,14 +25,15 @@ const PLANTED_WORDS = "planted words the guard must stop";
 test("the visual review's guard lets the seeded read mark through and stops a planted POST, a moved-back read mark and a typed Yjs update, naming each", async ({
   browser,
 }) => {
-  await createProject({ key: "GUARD", name: "Guard" });
+  const guard = rowKey("GUARD");
+  await createProject({ key: guard, name: "Guard" });
   const issue = await createIssue({
-    project: "GUARD",
+    project: guard,
     spec: `## Guarded\n\n${SEEDED_LINE}\n`,
     title: "Guarded spec",
   });
   const spec = issue.primary_artifact_id ?? "";
-  const readMark = `/api/v1/me/documents/${spec}/read`;
+  const readMark = routePath("put", "/api/v1/me/documents/{id}/read", { id: spec });
   // The spec's read at the version its tab shows, written before the page opens, as the visual
   // seed writes its own spec's (markWhatTheShotPagesRead): the one mark the guard lets through.
   const version = Math.max(...((await getArtifact(spec)).versions ?? []).map((v) => v.number));
@@ -55,18 +57,23 @@ test("the visual review's guard lets the seeded read mark through and stops a pl
 
     // A planted POST, as a page that wrote as it drew would send it: stopped before it leaves the
     // browser, and named.
-    const planted = await page.evaluate(async (key) => {
-      try {
-        const response = await fetch(`/api/v1/issues/${key}/comments`, {
-          body: JSON.stringify({ body: "planted" }),
-          headers: { "Content-Type": "application/json" },
-          method: "POST",
-        });
-        return `answered ${response.status}`;
-      } catch {
-        return "stopped";
-      }
-    }, issue.key);
+    const comments = routePath("post", "/api/v1/issues/{key}/comments", { key: issue.key });
+    const comment: Body<"/api/v1/issues/{key}/comments", "post"> = { body: "planted" };
+    const planted = await page.evaluate(
+      async ([url, body]) => {
+        try {
+          const response = await fetch(url, {
+            body: JSON.stringify(body),
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+          });
+          return `answered ${response.status}`;
+        } catch {
+          return "stopped";
+        }
+      },
+      [comments, comment] as const
+    );
     expect(planted).toBe("stopped");
     expect(writes.stopped).toEqual([
       expect.stringMatching(new RegExp(`^POST /api/v1/issues/${issue.key}/comments `, "u")),
@@ -74,18 +81,22 @@ test("the visual review's guard lets the seeded read mark through and stops a pl
 
     // A read mark the seed never wrote, on the route a seeded one takes: the spec's read moved
     // back to version 0, which the server would take (putDocumentRead). Stopped, and named.
-    const movedBack = await page.evaluate(async (target) => {
-      try {
-        const response = await fetch(target, {
-          body: JSON.stringify({ version: 0 }),
-          headers: { "Content-Type": "application/json" },
-          method: "PUT",
-        });
-        return `answered ${response.status}`;
-      } catch {
-        return "stopped";
-      }
-    }, readMark);
+    const backToZero: Body<"/api/v1/me/documents/{id}/read", "put"> = { version: 0 };
+    const movedBack = await page.evaluate(
+      async ([url, body]) => {
+        try {
+          const response = await fetch(url, {
+            body: JSON.stringify(body),
+            headers: { "Content-Type": "application/json" },
+            method: "PUT",
+          });
+          return `answered ${response.status}`;
+        } catch {
+          return "stopped";
+        }
+      },
+      [readMark, backToZero] as const
+    );
     expect(movedBack).toBe("stopped");
     expect(writes.stopped.slice(1)).toEqual([`PUT ${readMark} {"version":0}`]);
 

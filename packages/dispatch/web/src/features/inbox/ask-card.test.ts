@@ -18,7 +18,7 @@ function focusButtonIn(html: string): void {
   const button = box.querySelector<HTMLButtonElement>("button");
   if (button === null) throw new Error(`the case drew no button: ${html}`);
   button.focus();
-  expect(document.activeElement).toBe(button);
+  expect(button).toHaveFocus();
 }
 
 const ANSWER = '<button type="button">Answer</button>';

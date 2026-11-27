@@ -1,4 +1,4 @@
-import { trimReference } from "@legion/contracts";
+import { readerStep, trimReference } from "@legion/contracts";
 
 import { codeRanges } from "./code-ranges";
 import { partyLink } from "./ref-picker";
@@ -143,6 +143,7 @@ function tailStops(body: string): TailStops {
   const length = body.length;
   const escaped = new Uint8Array(length + 1);
   for (let at = 0; at < length; at += 1) {
+    readerStep();
     if (body.charAt(at) === "\\" && ESCAPABLE.test(body.charAt(at + 1))) {
       escaped[at + 1] = 1;
       at += 1;
@@ -170,6 +171,7 @@ function tailStops(body: string): TailStops {
   let lineBreak = length;
   let blankAfter = false;
   for (let at = length - 1; at >= 0; at -= 1) {
+    readerStep();
     const character = body.charAt(at);
     const plain = escaped[at] === 0;
     const after = at + 1;
@@ -190,7 +192,10 @@ function tailStops(body: string): TailStops {
       if (character !== " " && character !== "\t") blankAfter = false;
     }
     if (plain && character <= " ") space = at;
-    while (lowers > 0 && lowerOpen[lowers - 1] >= open) lowers -= 1;
+    while (lowers > 0 && lowerOpen[lowers - 1] >= open) {
+      readerStep();
+      lowers -= 1;
+    }
     const closes = lowers > 0 ? lower[lowers - 1] - 1 : length;
     stops.bare[at] = closes < space ? closes : space < length ? space : -1;
     lower[lowers] = at;
@@ -272,7 +277,11 @@ function readInlineLinks(body: string): readonly InlineLink[] {
   // escaped backslash and a picture.
   let escaped = -1;
   for (let at = 0; at < body.length; at += 1) {
-    while (nextCode < code.length && (code[nextCode]?.end ?? 0) <= at) nextCode += 1;
+    readerStep();
+    while (nextCode < code.length && (code[nextCode]?.end ?? 0) <= at) {
+      readerStep();
+      nextCode += 1;
+    }
     const range = code[nextCode];
     if (range !== undefined && range.start <= at) {
       at = range.end - 1;

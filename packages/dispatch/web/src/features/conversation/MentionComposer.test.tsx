@@ -421,7 +421,7 @@ test("a key typed letter by letter reads only the summary of the key the typing 
     const field = screen.getByLabelText("Comment");
     await user.click(field);
     await user.keyboard("See CORE-123");
-    await settleRefPickerSearch("fake");
+    await settleRefPickerSearch();
     await tick(20);
     expect(summaryRead.mock.calls.map(([key]) => key)).toEqual(["CORE-123"]);
     expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([
@@ -444,7 +444,7 @@ test("an emptied draft takes its pills with it at once", async () => {
     const field = screen.getByLabelText("Comment");
     await user.click(field);
     await user.paste("See CORE-2");
-    await settleRefPickerSearch("fake");
+    await settleRefPickerSearch();
     await tick(20);
     expect(pillsDrawn(screen.getByRole("region", { name: "References" }))).toEqual([
       { href: "/issues/CORE-2", name: "CORE-2 Warm the cache" },
@@ -4239,7 +4239,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     fireEvent.paste(field, { clipboardData: { files: [file] } });
 
     const send = await screen.findByRole("button", { name: "Uploading file…" });
-    expect(send.hasAttribute("disabled")).toBe(true);
+    expect(send).toHaveAttribute("disabled");
     await user.click(send);
     act(() => {
       field.focus();
@@ -4516,7 +4516,7 @@ test("a spec summary read that failed is not asked again when the composer mount
 async function draftRested(user: UserEvent, draft: string): Promise<void> {
   await user.click(screen.getByLabelText("Comment"));
   await user.paste(draft);
-  await settleRefPickerSearch("fake");
+  await settleRefPickerSearch();
   await tick(20);
 }
 

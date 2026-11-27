@@ -14,7 +14,7 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { expect } from "@playwright/test";
 
-import { createAsk, createIssue, createProject } from "./api";
+import { createAsk, createIssue, createProject, fixedKey } from "./api";
 import {
   closeAssigneeFilter,
   inboxSearchBox,
@@ -563,7 +563,10 @@ test.describe("inbox search", () => {
  * last: it stands above both rows the text leaves, which is what gives `k` nowhere to step.
  */
 const stepped = stubbed(async () => {
-  await createProject({ key: "STEP", name: "Step service" });
+  await createProject({
+    key: fixedKey("STEP", "this file's recordings were made under it"),
+    name: "Step service",
+  });
   const replayIssue = await createIssue({ project: "STEP", title: "Cold replay" });
   await createAsk(replayIssue.key, { question: "Does a cold start need a second pass?" }, PLANNER);
   const leaseIssue = await createIssue({ project: "STEP", title: "Cold lease handover" });

@@ -70,6 +70,7 @@ import type {
   MessageReplyResult,
   MyRepliesResponse,
   OpenAsksResponse,
+  ParentStatusConflictIssue,
   PostHistoryRead,
   Priorities,
   Project,
@@ -102,6 +103,7 @@ import {
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_RETRY_DELAYS_MS,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  parentStatusConflictIssues,
   retriesUnderKey,
   retryNoRoute,
   type Sleep,
@@ -161,13 +163,13 @@ export class DispatchServiceError extends Error {
    * false for an answer something in Dispatch's place wrote (`DispatchGatewayError`).
    */
   readonly fromDispatch: boolean = true;
-  readonly candidates: DispatchServiceErrorShape["candidates"] | undefined;
+  readonly candidates: NonNullable<DispatchServiceErrorShape["candidates"]> | undefined;
   readonly current: DispatchServiceErrorShape["current"] | undefined;
-  readonly mismatches: DispatchServiceErrorShape["mismatches"] | undefined;
+  readonly mismatches: NonNullable<DispatchServiceErrorShape["mismatches"]> | undefined;
   /** A `409 PARENT_STATUS_CONFLICT`'s issues: each one the write would leave out of line. */
-  readonly issues: DispatchServiceErrorShape["issues"] | undefined;
+  readonly issues: ParentStatusConflictIssue[] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
-  readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  readonly changed: NonNullable<DispatchServiceErrorShape["changed"]> | undefined;
   /**
    * Whether Dispatch marked the answer as its refusal of a text for the text alone
    * (`TEXT_REFUSAL_HEADER`), whatever its status: the refusals of the two markdown round trips,
@@ -184,17 +186,18 @@ export class DispatchServiceError extends Error {
     readonly status: number,
     message: string,
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
-     *  its answer's JSON, or another refusal whose members it keeps. */
+     *  its answer's JSON, or another refusal whose members it keeps. A list Go left nil is null in
+     *  the JSON and says what absent says, so the error holds it as absent. */
     details: { readonly [Member in RefusalMember]?: RefusalMembers[Member] | undefined } & {
       readonly textRefusal?: boolean | undefined;
     } = {}
   ) {
     super(message);
-    this.candidates = details.candidates;
+    this.candidates = details.candidates ?? undefined;
     this.current = details.current;
-    this.mismatches = details.mismatches;
-    this.issues = details.issues;
-    this.changed = details.changed;
+    this.mismatches = details.mismatches ?? undefined;
+    this.issues = parentStatusConflictIssues(code, details.issues);
+    this.changed = details.changed ?? undefined;
     this.textRefusal = details.textRefusal ?? false;
     this.hint = details.hint;
   }

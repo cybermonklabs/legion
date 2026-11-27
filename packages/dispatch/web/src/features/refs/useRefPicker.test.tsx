@@ -616,14 +616,14 @@ test("the picker filters as the reader types, moves with the arrows and takes th
   await waitFor(() => expect(drawnRows()).toHaveLength(6));
   // The first row is highlighted until the reader moves; one step down takes the second.
   const options = screen.getAllByRole("option");
-  expect(options[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(options[0]).toHaveAttribute("aria-selected", "true");
   await user.keyboard("{ArrowDown}");
   await waitFor(() =>
-    expect(screen.getAllByRole("option")[1]?.getAttribute("aria-selected")).toBe("true")
+    expect(screen.getAllByRole("option")[1]).toHaveAttribute("aria-selected", "true")
   );
   await user.keyboard("{ArrowUp}{ArrowUp}");
   await waitFor(() =>
-    expect(screen.getAllByRole("option")[5]?.getAttribute("aria-selected")).toBe("true")
+    expect(screen.getAllByRole("option")[5]).toHaveAttribute("aria-selected", "true")
   );
 
   await user.keyboard("{Enter}");
@@ -956,9 +956,10 @@ test("mention suggestions say the agent list is refilling instead of that no age
   // The row kept from the earlier read draws its agent's running state as unknown, never as not
   // running, while the list it would be judged by is refilling.
   const kept = screen.getByRole("option", { name: /^Planner/ });
-  expect(
-    kept.querySelector('[data-agent-name="planner-session"]')?.getAttribute("data-agent-state")
-  ).toBe("unknown");
+  expect(kept.querySelector('[data-agent-name="planner-session"]')).toHaveAttribute(
+    "data-agent-state",
+    "unknown"
+  );
 
   await user.keyboard("nobody");
   await waitFor(() => expect(page.search).toHaveBeenCalledWith("nobody", expect.anything()));
@@ -980,7 +981,7 @@ test("the mention picker draws each agent with its state and no link", async () 
   for (const option of within(list).getAllByRole("option")) {
     const agent = option.querySelector('[data-agent-name="planner-session"]');
     expect(agent?.textContent, option.textContent ?? "").toBe("Planner");
-    await waitFor(() => expect(agent?.getAttribute("data-agent-state")).toBe("running"));
+    await waitFor(() => expect(agent).toHaveAttribute("data-agent-state", "running"));
   }
   expect(list.querySelector("a")).toBeNull();
 });
@@ -1012,7 +1013,7 @@ test("a session's row has its full id as its title and description, and a role's
   }
   const role = within(list).getByRole("option", { name: /^planner/ });
   expect(role).not.toHaveAccessibleDescription();
-  expect(role.hasAttribute("title")).toBe(false);
+  expect(role).not.toHaveAttribute("title");
 });
 
 /** A comment's hit whose snippet is `snippet`, with the tree the server read it into where the

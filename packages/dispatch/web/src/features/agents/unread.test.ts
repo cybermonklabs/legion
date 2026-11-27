@@ -86,16 +86,22 @@ function agentStatesServed(initial: Counts) {
     queryKey: userAgentStateQuery().queryKey,
   });
   const unsubscribe = observer.subscribe(() => {});
-  /** One turn of the real loop: the late-reads lane holds each answer one such turn. */
-  const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+  /** Whether no read of the query is out. */
+  const done = () =>
+    queryClient.getQueryCache().find({ queryKey: userAgentStateQuery().queryKey })?.state
+      .fetchStatus === "idle";
   return {
     answerAll: async () => {
       for (let step = 0; step < 50; step += 1) {
-        await turn();
-        const query = queryClient
-          .getQueryCache()
-          .find({ queryKey: userAgentStateQuery().queryKey });
-        if (out.length === 0 && query?.state.fetchStatus === "idle") return;
+        // A request is out to answer, or the read is done: the late-reads lane holds each answer
+        // a turn of the real loop, so a read the last answer ended is done once that turn ends.
+        await waitFor(() =>
+          expect(
+            out.length > 0 || done(),
+            "no request is out to answer, and the read is still out"
+          ).toBe(true)
+        );
+        if (out.length === 0 && done()) return;
         out.shift()?.();
       }
     },

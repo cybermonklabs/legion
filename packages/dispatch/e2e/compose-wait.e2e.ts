@@ -27,7 +27,7 @@ import {
   openSpec,
   selectEditorText,
 } from "./editor";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const SPEC = [
@@ -79,6 +79,9 @@ async function watchMark(
   untilMs: number,
   log: string[]
 ): Promise<void> {
+  // A sampler, not a wait-for: it runs for the whole span `untilMs` names whatever the page
+  // shows, and the log it builds is what the row asserts on afterwards, so no assertion can
+  // stand in for the loop.
   while (Date.now() - writtenAt < untilMs) {
     // One sample of this instant, by design: the row measures when the span goes, so a read
     // that waited for it to settle would move the sample and blur the log it builds.
@@ -142,8 +145,9 @@ async function theComment(issueKey: string, artifactId: string) {
 }
 
 async function reviewIssue() {
-  await createProject({ key: "CORE", name: "Core" });
-  return createIssue({ project: "CORE", spec: SPEC, title: "Review the spec" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  return createIssue({ project: core, spec: SPEC, title: "Review the spec" });
 }
 
 // SLOW(>=2s): the row watches the sweep's own window go by on the server, which no page clock
@@ -345,8 +349,9 @@ const REPEATED_SPEC = [
 const REPEATED_QUOTE = "the lazy dog";
 
 async function repeatedIssue() {
-  await createProject({ key: "CORE", name: "Core" });
-  return createIssue({ project: "CORE", spec: REPEATED_SPEC, title: "Review the spec" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  return createIssue({ project: core, spec: REPEATED_SPEC, title: "Review the spec" });
 }
 
 /** Selects the second reading of `quote` in the editor, as `selectEditorText` selects the first:
@@ -520,9 +525,10 @@ function readingOffsets(page: Page): Promise<number[]> {
 test("a comment keeps its own reading when another writer adds an earlier one", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: TWO_READINGS_SPEC,
     title: "Review the spec",
   });
@@ -603,9 +609,10 @@ const TWO_PARAGRAPH_SPEC = [
 test("a comment whose own paragraph lost the words is not moved to another paragraph", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: TWO_PARAGRAPH_SPEC,
     title: "Review the spec",
   });
@@ -652,9 +659,10 @@ test("a comment whose own paragraph lost the words is not moved to another parag
 test("a comment is not moved to the block's other reading when its own words are deleted", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: TWO_READINGS_SPEC,
     title: "Review the spec",
   });
@@ -745,9 +753,10 @@ async function selectAcrossBlocks(page: Page, from: string, to: string): Promise
 // SLOW(>=2s): the mark goes to the server's sweep while the tab is away, one settle delay and
 // one unrecorded-mark TTL after it was written, which no page clock can bring forward.
 test("a comment on words that run across two paragraphs keeps its anchor", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: ACROSS_BLOCKS_SPEC,
     title: "Review the spec",
   });
@@ -806,9 +815,10 @@ const ACROSS_BLOCKS_TWICE_SPEC = [
 test("a cross-block refusal does not claim the words moved while they are where they were", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: ACROSS_BLOCKS_TWICE_SPEC,
     title: "Review the spec",
   });
@@ -878,9 +888,10 @@ const WHOLE_BLOCK_ELSEWHERE_SPEC = [
 test("a comment on a whole block is not attached to either reading a rewrite of that block leaves", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: WHOLE_BLOCK_SPEC,
     title: "Review the spec",
   });
@@ -943,9 +954,10 @@ test("a comment on a whole block is not attached to either reading a rewrite of 
 test("a comment on a whole block that is deleted is not moved to the one reading left elsewhere", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: WHOLE_BLOCK_ELSEWHERE_SPEC,
     title: "Review the spec",
   });
@@ -1021,9 +1033,10 @@ const HARD_BREAK_SPEC = [
 test("a comment on a whole block is not moved to a line of another paragraph", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: HARD_BREAK_SPEC,
     title: "Review the spec",
   });

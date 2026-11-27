@@ -43,7 +43,8 @@ test("EventBody renders Markdown event content", async () => {
   try {
     expect(await screen.findByRole("heading", { name: "Status" })).toBeDefined();
     expect(screen.getByText("document", { selector: "strong" })).toBeDefined();
-    expect(screen.getByRole("link", { name: "ready" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "ready" })).toHaveAttribute(
+      "href",
       "https://example.com"
     );
   } finally {
@@ -183,7 +184,8 @@ test("EventBody draws a replaced answer's options from their trees and its text 
     expect(
       [...view.container.querySelectorAll("s strong")].map((bold) => bold.textContent)
     ).toEqual(["Went", "Go"]);
-    expect(view.container.querySelector("s a")?.getAttribute("href")).toBe(
+    expect(view.container.querySelector("s a")).toHaveAttribute(
+      "href",
       "https://example.test/soon"
     );
   } finally {
@@ -455,7 +457,7 @@ test("EventBody links to the whole item when the event carried the body in part"
   try {
     expect(await screen.findByText("The first part.")).not.toBeNull();
     const link = screen.getByRole("link", { name: "Read the whole message" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/messages/message-1");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/messages/message-1");
 
     view.rerender(<EventBody event={markdownMessage} />);
     await waitFor(() => expect(screen.queryByRole("link", { name: /Read the whole/ })).toBeNull());
@@ -504,7 +506,8 @@ test("EventBody links to the whole comment when a comment event carried its body
 
   try {
     expect(await screen.findByText("The first paragraph.")).not.toBeNull();
-    expect(screen.getByRole("link", { name: "Read the whole comment" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Read the whole comment" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/comments/comment-1"
     );
   } finally {
@@ -555,7 +558,8 @@ test("EventBody links a cut comment on a project document through that document"
 
   try {
     expect(await screen.findByText("The first paragraph.")).not.toBeNull();
-    expect(screen.getByRole("link", { name: "Read the whole comment" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Read the whole comment" })).toHaveAttribute(
+      "href",
       "/projects/CORE/documents/runbook?comment=comment-2"
     );
   } finally {

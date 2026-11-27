@@ -1,7 +1,7 @@
 import { createComment, createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
 import { httpsTarget, plainHttpHost, plainHttpSkipReason } from "./plain-http-origin";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asPlainHttpUser } from "./users";
 
 // Runs only in the `chromium-plain-http` project (e2e/playwright.config.ts, e2e/plain-http-origin.ts):
@@ -34,9 +34,10 @@ async function expectPlainHttpOrigin(page: Page): Promise<void> {
 }
 
 test("a document opens and takes a new paragraph with no page error", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue(
-    { project: "CORE", spec: "## Plan\n\nShip it.\n", title: "Plain-HTTP document" },
+    { project: core, spec: "## Plan\n\nShip it.\n", title: "Plain-HTTP document" },
     agent
   );
   const alice = await asPlainHttpUser(browser, "alice");
@@ -62,8 +63,9 @@ test("a document opens and takes a new paragraph with no page error", async ({ b
 });
 
 test("a comment body renders formatted rather than as literal Markdown", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Plain-HTTP comment" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Plain-HTTP comment" });
   await createComment(issue.key, { body: "A **formatted** comment." }, agent);
   const alice = await asPlainHttpUser(browser, "alice");
   try {

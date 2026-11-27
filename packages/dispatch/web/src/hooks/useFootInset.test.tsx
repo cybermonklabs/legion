@@ -283,13 +283,13 @@ async function withTheTable(
 test("a float that goes while the reader stands in the end room it gave a scroller leaves that room in place", async () => {
   await withTheTable({ float: true }, async (box, view) => {
     expect(box).toHaveAttribute(MARK_ATTRIBUTE);
+    expect(box).toHaveAttribute("style", expect.stringContaining("80px"));
     const room = box.getAttribute("style");
-    expect(room).toContain("80px");
     box.scrollTop = 1400;
     view.rerender(<TableUnderFloats float={false} />);
     await nextFrame();
     expect(box).toHaveAttribute(MARK_ATTRIBUTE);
-    expect(box.getAttribute("style")).toBe(room);
+    expect(box).toHaveAttribute("style", room);
   });
 });
 
@@ -304,7 +304,7 @@ test("end room kept after its float went stays through a scroll inside it, and g
     scrollBox(box, 1300);
     await nextFrame();
     expect(box).not.toHaveAttribute(MARK_ATTRIBUTE);
-    expect(box.getAttribute("style") ?? "").not.toContain("80px");
+    expect(box).not.toHaveAttribute("style", expect.stringContaining("80px"));
   });
 });
 
@@ -319,14 +319,14 @@ test("a float that goes while the reader is out of the end room it gave takes th
 
 test("a float that goes while the reader stands in the part of the end room only it needed leaves the room whole until a scroll leaves that part", async () => {
   await withTheTable({ float: true, tall: true }, async (box, view) => {
-    expect(box.getAttribute("style")).toContain("128px");
+    expect(box).toHaveAttribute("style", expect.stringContaining("128px"));
     box.scrollTop = 1400;
     view.rerender(<TableUnderFloats float />);
     await nextFrame();
-    expect(box.getAttribute("style")).toContain("128px");
+    expect(box).toHaveAttribute("style", expect.stringContaining("128px"));
     scrollBox(box, 1340);
     await nextFrame();
-    expect(box.getAttribute("style")).toContain("80px");
+    expect(box).toHaveAttribute("style", expect.stringContaining("80px"));
   });
 });
 

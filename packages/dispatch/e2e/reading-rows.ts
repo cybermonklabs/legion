@@ -3,7 +3,6 @@ import {
   DISPATCH_READING_SURFACES,
   type DispatchReadingForm,
 } from "@legion/contracts";
-import { expect, type Locator, test } from "@playwright/test";
 
 import type { Issue } from "../web/src/api/types";
 import { type FakeSession, setLiveSessions } from "./agents";
@@ -13,8 +12,11 @@ import {
   createProject,
   dashboardOrigin,
   getDocumentQuestions,
+  type RowKey,
 } from "./api";
-import { sessionIds } from "./session-ids";
+import { keyedSearchWord } from "./search";
+import { expect, type Locator, rowKey, rowSessionId, test } from "./test";
+import type { SignInLogin } from "./users";
 
 /**
  * The reading list's walk: each rendered row of
@@ -45,10 +47,28 @@ import { sessionIds } from "./session-ids";
  * into the record its surface shows, and reads it with `expectReadsReferences`.
  */
 
-/** The live session the text names as a party, with the title its name reads as. */
-export const READING_SESSION_ID = sessionIds.tester;
+/** The live session the running row's text names as a party. */
+export function readingSessionId(): string {
+  return rowSessionId("tester");
+}
+
 export const READING_SESSION_TITLE = "Reading tester";
-export const READING_SESSION_REFERENCE = `dispatch://agent/${READING_SESSION_ID}`;
+
+/** The reading world's live session writing as itself. */
+export const asReadingSession = {
+  get actor() {
+    return { id: readingSessionId(), kind: "session" as const };
+  },
+  as: "agent" as const,
+};
+
+/** A second session writes without being the reader or the party named in the text. */
+export const readingAuthor = {
+  get actor() {
+    return { id: rowSessionId("readingauthor"), kind: "session" as const };
+  },
+  as: "agent" as const,
+};
 
 /** The words the text writes for the party: the name the picker wrote when the party was picked,
  *  which the session no longer holds. A surface that drew a mention as its author's words would
@@ -56,9 +76,8 @@ export const READING_SESSION_REFERENCE = `dispatch://agent/${READING_SESSION_ID}
  *  current name (R8). */
 const READING_SESSION_PICKED_NAME = "Old reading name";
 
-/** The word every reading text opens with, which no title of the world holds: the word the
- *  search palette's rows search for, so their hits are the records holding the text. */
-export const READING_LEAD = "Compare";
+/** The start of the row's own search word, which no issue title holds. */
+const READING_LEAD = "Compare";
 
 /** The words the text's worded link writes for the host: a link a person worded keeps those
  *  words, so a surface that showed the host's title instead would have read it as a bare
@@ -83,33 +102,35 @@ const readingSession: FakeSession = {
   dir: "/srv/reading",
   machine_id: "box-reading",
   roles: ["reading-reviewer"],
-  session_id: READING_SESSION_ID,
+  get session_id() {
+    return readingSessionId();
+  },
   title: READING_SESSION_TITLE,
 };
 
 /** The issues and records the text names, the issue that hosts what a world writes, and the
  *  forms the driven row's surface carries. */
 export interface ReadingWorld {
-  /** CORE-1, where a world writes the records it reads, and the node the worded link names,
-   *  which no other form names. Its spec declares the question block. */
+  /** The project of the running row's own, and the word its reading text opens with. */
+  readonly project: RowKey;
+  readonly lead: string;
+  /** The first issue, where a world writes the records it reads, and the node the worded link
+   *  names, which no other form names. Its spec declares the question block. */
   readonly host: Issue;
-  /** CORE-2, named by its bare key. */
+  /** The second issue, named by its bare key. */
   readonly keyed: Issue;
-  /** CORE-3, named by its `dispatch://` address. */
+  /** The third issue, named by its `dispatch://` address. */
   readonly addressed: Issue;
-  /** CORE-4, named by its URL on this dashboard. */
+  /** The fourth issue, named by its URL on this dashboard. */
   readonly linked: Issue;
   /** The address of the ask the question block settled into, in the document the driven
    *  record's `#id` is read against: the host's spec, until `scopedTo` names another. */
   readonly question: string;
-  /** The address of CORE-2's comment, which the text writes with its id cut short. */
+  /** The address of the keyed issue's comment, which the text writes with its id cut short. */
   readonly shortened: string;
   /** The forms the driven row's surface carries, in the order the text writes them. */
   readonly forms: readonly DispatchReadingForm[];
 }
-
-/** The four keys the world makes, in the order it makes them; the seeding refuses any other. */
-const KEYS = ["CORE-1", "CORE-2", "CORE-3", "CORE-4"] as const;
 
 /** The `:::ask` block that declares the question the text names. A record's `#id` is read
  *  against one document - an issue's spec for its comments, asks and messages, the document a
@@ -153,34 +174,45 @@ function carriedForms(): DispatchReadingForm[] {
 }
 
 /**
- * Seeds project CORE with the host, whose spec declares the question block, the three issues
- * the text names and the comment it names by a short id, and lists the session the text names
- * as a party. A row resets the database before it runs (`e2e/test.ts`), so every row that
- * reads the text seeds it first.
+ * Seeds the host, the three issues the text names, and the comment it names by a short id in
+ * the row's own project. It lists the row's own live session, which the text names as a party.
+ * An Inbox row passes its reader's login so the host's asks wait on that person.
  */
-export async function seedReadingWorld(): Promise<ReadingWorld> {
+export async function seedReadingWorld({
+  login,
+}: {
+  readonly login?: SignInLogin;
+} = {}): Promise<ReadingWorld> {
+  const project = rowKey("CORE");
+  const by = { login };
   const forms = carriedForms();
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: project, name: "Core" }, by);
   await setLiveSessions([readingSession]);
-  const host = await createIssue({
-    project: "CORE",
-    spec: `The reading host's spec.\n\n${readingQuestionBlock()}\n`,
-    title: "Reading host",
-  });
-  const keyed = await createIssue({ project: "CORE", title: "Warm the cache" });
-  const addressed = await createIssue({ project: "CORE", title: "Drain the queue" });
-  const linked = await createIssue({ project: "CORE", title: "Ship the index" });
+  const host = await createIssue(
+    {
+      project,
+      spec: `The reading host's spec.\n\n${readingQuestionBlock()}\n`,
+      title: "Reading host",
+    },
+    by
+  );
+  const keyed = await createIssue({ project, title: "Warm the cache" }, by);
+  const addressed = await createIssue({ project, title: "Drain the queue" }, by);
+  const linked = await createIssue({ project, title: "Ship the index" }, by);
   const made = [host.key, keyed.key, addressed.key, linked.key];
-  if (made.join() !== KEYS.join()) {
-    throw new Error(`setup: the reading world made ${made.join(", ")}, not ${KEYS.join(", ")}`);
+  const keys = [1, 2, 3, 4].map((number) => `${project}-${number}`);
+  if (made.join() !== keys.join()) {
+    throw new Error(`setup: the reading world made ${made.join(", ")}, not ${keys.join(", ")}`);
   }
-  const comment = await createComment(keyed.key, { body: READING_COMMENT });
+  const comment = await createComment(keyed.key, { body: READING_COMMENT }, by);
   return {
     addressed,
     forms,
     host,
     keyed,
+    lead: keyedSearchWord(READING_LEAD, project),
     linked,
+    project,
     question: await settledQuestion(host.primary_artifact_id),
     shortened: `dispatch://${keyed.key}/comment/${comment.id}`,
   };
@@ -257,16 +289,19 @@ function formReading(world: ReadingWorld, form: DispatchReadingForm): FormReadin
         written: `dispatch://${world.keyed.key}/comment/${prefix}`,
       };
     }
-    case "party":
+    case "party": {
+      const sessionId = readingSessionId();
+      const reference = `dispatch://agent/${sessionId}`;
       return {
         form,
         name: READING_SESSION_TITLE,
-        opens: `/agents/${READING_SESSION_ID}/live`,
+        opens: `/agents/${sessionId}/live`,
         reads: `@${READING_SESSION_TITLE}`,
-        reference: READING_SESSION_REFERENCE,
+        reference,
         unread: READING_SESSION_PICKED_NAME,
-        written: `[@${READING_SESSION_PICKED_NAME}](${READING_SESSION_REFERENCE})`,
+        written: `[@${READING_SESSION_PICKED_NAME}](${reference})`,
       };
+    }
     case "worded-link":
       // The link's own words, and not the host's name, which a bare address would read as.
       return {
@@ -298,7 +333,7 @@ export function readingText(
   world: ReadingWorld,
   forms: readonly DispatchReadingForm[] = world.forms
 ): string {
-  return `${READING_LEAD} ${formReadings(world, forms)
+  return `${world.lead} ${formReadings(world, forms)
     .map((reading) => reading.written)
     .join(", ")}.`;
 }

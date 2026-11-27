@@ -96,6 +96,23 @@ export type Body<P extends keyof paths, M extends string> = RequestBody<Op<P, M>
 /** What one route answers a caller that reads its body, named by the route and the verb. */
 export type Result<P extends keyof paths, M extends string> = Answer<Op<P, M>>;
 
+/** The JSON body of each answer an operation gives that is no success: its `default`, the common
+ *  `ErrorBody` every refusal the route names no richer body for carries, and each 4xx or 5xx the
+ *  route names a richer body for. */
+type RefusalBody<O> = O extends { responses: infer R }
+  ? {
+      [S in keyof R]: `${S & (string | number)}` extends "default" | `4${string}` | `5${string}`
+        ? R[S] extends { content: { "application/json": infer B } }
+          ? B
+          : never
+        : never;
+    }[keyof R]
+  : never;
+
+/** What one route refuses a caller with, named by the route and the verb: the body a caller that
+ *  reads a refusal itself, rather than through `ApiError`, takes it as. */
+export type Refusal<P extends keyof paths, M extends string> = RefusalBody<Op<P, M>>;
+
 /** The one way a value enters a path: a parameter is encoded, never interpolated raw. */
 function pathSegment(value: string): string {
   return encodeURIComponent(value);
@@ -141,6 +158,21 @@ export function routeUrl(pattern: string, params: object, query?: object): strin
     throw new Error(`${pattern} holds no {${values.keys().next().value}}`);
   }
   return query === undefined ? path : pathWithQuery(path, query);
+}
+
+/** The URL of one route's request for a caller that does not send it through a client's own
+ *  methods: a reader that makes no request of its own (an `<img>`, a link), or a test that sends
+ *  it itself to read its status, its headers or its refusal. It is `routeUrl`'s, built from the
+ *  route's own pattern, path parameters and query parameters, so a route the document no longer
+ *  holds for `verb`, a renamed path parameter and a dropped query parameter are each an error where
+ *  the URL is named. */
+export function routePath<M extends string, P extends PathsOf<M>>(
+  _verb: M,
+  pattern: P,
+  params: PathParams<Op<P, M>>,
+  query?: QueryParams<Op<P, M>>
+): string {
+  return routeUrl(pattern, params, query);
 }
 
 /** `owner/name` as the two path parameters every route that addresses a repository names it in.

@@ -3,27 +3,27 @@
  *
  * `expect.extend` hands a matcher a context whose `utils` is a class instance: its
  * `printReceived`, `printExpected`, `matcherHint` and `stringify` live on that instance's
- * prototype and read its internals. jest-dom destructures them — `const { printReceived } =
- * this.utils` — which unbinds them, so the first one it calls while building a failure message
- * throws `Expected this to be instanceof ExpectMatcherUtils` and that string is the whole of what
- * the reader is told: not the attribute, not the value wanted, not the value found. A passing
- * assertion never builds a message, so the suite stays green and only a failing run shows it.
+ * prototype and read its internals. jest-dom hands some of them on as plain functions —
+ * `printAttribute(this.utils.stringify, …)` — which unbinds them, so the first one it calls that
+ * way while building a failure message throws `Expected this to be instanceof ExpectMatcherUtils`
+ * and that string is the whole of what the reader is told: not the attribute, not the value
+ * wanted, not the value found. A passing assertion never builds a message, so the suite stays
+ * green and only a failing run shows it.
  *
- * So each matcher is called with a context of plain bound functions instead. Nothing of the
- * matcher's own behaviour changes: the same matchers decide the same pass or fail, and the
- * wrapper only replaces the helpers they build their message with.
+ * So each matcher is called with a context of plain bound functions instead. Bun's context also
+ * carries no `diff` at all, which `toHaveStyle` and `toHaveFormValues` build their message with,
+ * so they threw `diffFn is not a function` and `this.utils.diff is not a function` when they
+ * failed; the context gets one here, written from its own `printExpected` and `printReceived`.
+ * Of the helpers jest-dom 7.0.1 reads off the context, `diff` was the one Bun's lacks that it
+ * calls bare: it also reaches for `printWithType`, which Bun's lacks too, inside a `try` that
+ * leaves that line out of the message. Nothing of the matcher's own behaviour changes: the same
+ * matchers decide the same pass or fail, and the wrapper only replaces the helpers they build
+ * their message with.
  *
- * What this cures is the six matchers this suite uses — `toBeInTheDocument` and its negation,
- * `toHaveAttribute`, `toHaveTextContent`, `toHaveFocus`, `toHaveClass` and `toBeEnabled` — each
- * of which now names what it asked for and what it found. It does not cure every matcher jest-dom
- * ships: `toHaveStyle` and `toHaveFormValues` reach for a `this.utils.diff` that Bun's context
- * does not carry at all, and still throw `diffFn is not a function` and
- * `this.utils.diff is not a function` when they fail. No row of this suite calls either, and the
- * first row that wants one supplies that `diff` here rather than finding out the way this was
- * found out.
- *
- * `web/src/__tests__/jest-dom-messages.test.ts` holds the cured path in place by reading the
- * message a failing `toHaveAttribute` throws.
+ * `web/src/__tests__/jest-dom-messages.test.ts` holds this in place by reading the message a
+ * failing `toHaveAttribute`, `toHaveStyle` and `toHaveFormValues` each throw, and asserting that
+ * it names the value asked for and the value found. Those three are what its rows prove; any other
+ * matcher builds its message from the same helpers, but no row reads its failure.
  */
 
 import * as jestDomMatchers from "@testing-library/jest-dom/matchers";
@@ -64,6 +64,24 @@ function boundProperties(source: object, receiver: object): Record<string, unkno
 }
 
 /**
+ * The `diff` jest-dom's `toHaveStyle` and `toHaveFormValues` build their failure message with,
+ * which Bun's context does not carry: the value asked for and the value found, one under the
+ * other, each printed by the context's own `printExpected` and `printReceived`. It marks no
+ * line-by-line difference; what the message needs is that it names both values.
+ */
+function diffFrom(
+  utils: Record<string, unknown>
+): (expected: unknown, received: unknown) => string {
+  return (expected, received) => {
+    const { printExpected, printReceived } = utils;
+    if (typeof printExpected !== "function" || typeof printReceived !== "function") {
+      throw new Error("bun:test's matcher context carries no printExpected or printReceived");
+    }
+    return `Expected:\n${printExpected(expected)}\n\nReceived:\n${printReceived(received)}`;
+  };
+}
+
+/**
  * jest-dom's matchers, each wrapped to run against a context it can read its helpers off.
  *
  * `bun:test` heads a failure with the name the wrapper was written under rather than the one it
@@ -77,7 +95,9 @@ export function reportableJestDomMatchers(): Record<string, Matcher> {
     if (typeof matcher !== "function") continue;
     wrapped[name] = function jestDomMatcher(this: MatcherContext, ...args: unknown[]) {
       const context = boundProperties(this, this);
-      context.utils = boundProperties(this.utils, this.utils);
+      const utils = boundProperties(this.utils, this.utils);
+      utils.diff ??= diffFrom(utils);
+      context.utils = utils;
       return matcher.apply(context as unknown as MatcherContext, args);
     };
   }

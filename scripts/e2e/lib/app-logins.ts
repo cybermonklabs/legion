@@ -44,6 +44,7 @@
 
 import { createSign } from "node:crypto";
 import { writeSync } from "node:fs";
+import { RefusedGroup, signalGroup } from "./signal-group";
 
 /** The two App roles `github_apps` names (internal/appauth, Implement and Review). */
 export type AppRole = "implement" | "review";
@@ -265,8 +266,11 @@ async function runCredentialCommand(
     if (ended !== "") return;
     ended = why;
     try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
+      signalGroup(child.pid, "SIGKILL");
+    } catch (error) {
+      // A pid that kill would read as no group the command leads is refused (signalGroup), and the
+      // refusal is thrown on. Any other error is the kill's own, and the command's pid is killed.
+      if (error instanceof RefusedGroup) throw error;
       child.kill("SIGKILL");
     }
     drainWait.resolve(false);

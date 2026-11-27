@@ -15,6 +15,7 @@ import {
   createIssueArtifact,
   createProject,
   createProjectDocument,
+  fixedKey,
   patchIssue,
 } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
@@ -23,6 +24,9 @@ import { assertPageFits } from "./unclipped";
 
 const session = { actor: { id: "e2e-project", kind: "session" as const }, as: "agent" as const };
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 async function expectTouchTarget(locator: Locator): Promise<void> {
   const box = await locator.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -30,7 +34,7 @@ async function expectTouchTarget(locator: Locator): Promise<void> {
 
 /** One labelled issue and one document, for the phone's own fit. */
 const phoneTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const todo = await createIssue({ project: "CORE", title: "Needs attention" });
   await patchIssue(todo.key, { labels: ["frontend"], status: "todo" });
   await createProjectDocument("CORE", { content: "# Design notes\n", name: "Design notes" });
@@ -39,14 +43,14 @@ const phoneTest = stubbed(async () => {
 
 /** One issue, for the rows that read the filter strip. */
 const filterTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   await createIssue({ project: "CORE", title: "Core work" });
   return { project: "CORE", query: "x".repeat(1_000) };
 });
 
 /** A document citing an artifact of another issue, and a comment citing the document. */
 const referencesTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Reference source" });
   const related = await createIssue({ project: "CORE", title: "Referenced artifact" });
   await createIssueArtifact(issue.key, {
@@ -64,7 +68,7 @@ const referencesTest = stubbed(async () => {
 
 /** One open issue and one closed, so the Done band has something to open. */
 const bandsTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const open = await createIssue({ project: "CORE", title: "Still open" });
   await patchIssue(open.key, { status: "in_progress" });
   const shipped = await createIssue({ project: "CORE", title: "Already shipped" });
@@ -74,7 +78,7 @@ const bandsTest = stubbed(async () => {
 
 /** One issue whose title runs well past a row. */
 const longTitleTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({
     project: "CORE",
     title:

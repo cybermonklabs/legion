@@ -59,6 +59,17 @@ export const DEFAULT_FOLDED_GROUPS: readonly string[] = [LATER_GROUP_KEY];
 /** The band holding every row under **None**, which draws no heading over them. */
 export const ALL_GROUP_KEY = "all";
 
+/** How many rows a band draws at once, and how many more each **Show more** adds. A band of a
+ *  thousand threads is a scroll nobody asked for, and the rows behind the first page are one
+ *  press away. */
+export const GROUP_PAGE = 50;
+
+/** The text of a band's **Show more** while it holds `held` rows back: the rows one press adds,
+ *  at most `GROUP_PAGE`, and the band's heading `label` when it has one. */
+export function showMoreLabel(held: number, label: string | undefined): string {
+  return `Show ${Math.min(held, GROUP_PAGE)} more${label === undefined ? "" : ` in ${label}`}`;
+}
+
 /**
  * What one dimension says about one row, in the vocabulary the address and the Filter control
  * both write: `P0`-`P3`, an urgency word, a row type, a project key, a login - or `none` where

@@ -21,9 +21,10 @@
  *  frames apart.
  *
  *  Four kinds of row read it. The rows by route group open every reviewed route of
- *  `e2e/review-routes.ts` against the review corpus (`e2e/review-seed.ts`) at three desktop
- *  sizes with both floats shown, then close both and read the end room they leave: only room
- *  the reader stands in, and none once every scroller is back at its start. The rows of the
+ *  `e2e/review-routes.ts` against the review corpus (`e2e/review-seed.ts`), which the worker
+ *  seeds once into its database and hands each of them (`reviewCorpus`, e2e/test.ts), at three
+ *  desktop sizes with both floats shown, then close both and read the end room they leave: only
+ *  room the reader stands in, and none once every scroller is back at its start. The rows of the
  *  fixed surface open eight pages, one row each, three for the issues table (the selection bar
  *  hidden; shown with the update banner; shown with the banner dismissed) and two for the live
  *  view (its four smaller sizes; its three desktop sizes), seeded so each page's scrollers reach
@@ -53,7 +54,6 @@ import {
   listIssues,
   seedAgentStreamConversations,
 } from "./api";
-import { expectTimeout } from "./expect-timeout";
 import {
   discardPending,
   dismissBanner,
@@ -88,8 +88,7 @@ import {
   reviewRoutes,
   waitForRouteSettled,
 } from "./review-routes";
-import { seedReviewRoutes } from "./review-seed";
-import { type Browser, expect, type Page, test } from "./test";
+import { type Browser, expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /** A size of the window. */
@@ -217,9 +216,10 @@ async function readEverySize(
 // ---------------------------------------------------------------------------------------------
 
 /** The most routes one row reads, so each row stays well inside the per-row budget
- *  (`testTimeout`, e2e/playwright.config.ts) after the corpus it seeds: a route costs a refused
- *  change on the issues table, two loads and three settled readings, measured at 8 s to 21 s on
- *  an issue pod, against 3.5 s for the corpus. */
+ *  (`testTimeout`, e2e/playwright.config.ts) after the review corpus, which the first row of a
+ *  worker to read it seeds (`reviewCorpus`, e2e/test.ts): a route costs a refused change on the
+ *  issues table, two loads and three settled readings, measured at 8 s to 21 s on an issue pod,
+ *  against 3.5 s for the corpus. */
 const ROUTES_PER_ROW = 2;
 
 /** The open issue of the review corpus whose change the rows by route group refuse
@@ -261,14 +261,12 @@ function routeRows(): ReviewedRoute[][] {
 
 for (const routes of routeRows()) {
   const names = routes.map((route) => route.name).join(", ");
-  // SLOW(>=2s): the review corpus, then for each route a refused change made on the issues table,
-  // a load with both floats and three settled readings of the foot, each at the end of every
-  // scroller.
+  // SLOW(>=2s): preparing the review corpus, then for each route a refused change on the issues
+  // table, a load with both floats and three settled readings at the end of every scroller.
   test(`both floats leave the foot clear on ${names} at three desktop sizes, and no end room once closed @foot`, async ({
     browser,
+    reviewSeed,
   }) => {
-    // The seed's waits give up at the bound this row's own assertions use, inside the row's clock.
-    const seed = await seedReviewRoutes({ boundMs: expectTimeout });
     const refused = (await listIssues("CORE")).find((issue) => issue.title === REFUSED_TITLE);
     if (refused === undefined) throw new Error(`The review corpus holds no "${REFUSED_TITLE}"`);
     const context = await asUser(browser, "alice");
@@ -277,7 +275,7 @@ for (const routes of routeRows()) {
       await routeFloats(page, refused.key);
       for (const route of routes) {
         await page.setViewportSize(ROUTE_SIZES[0]);
-        await openWithFloats(page, refused.key, route.path(seed));
+        await openWithFloats(page, refused.key, route.path(reviewSeed));
         for (const size of ROUTE_SIZES) {
           await page.setViewportSize(size);
           await waitForRouteSettled(page, route, listedRequests(page));
@@ -362,7 +360,7 @@ const MARGIN_WORDS = [
  *  seeds the margin's column. Answers its key. */
 async function seedMarginIssue(): Promise<string> {
   const issue = await createIssue({
-    project: "CORE",
+    project: rowKey("CORE"),
     spec: `${MARGIN_WORDS.map(
       (word) => `The ${word} part holds one line of the review, long enough to wrap on a phone.`
     ).join("\n\n")}\n`,
@@ -410,13 +408,13 @@ async function withTable(
   read: (page: Page, refused: string, other: string) => Promise<void>
 ): Promise<void> {
   const refused = await seedRefusedMove();
-  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const other = await createIssue({ project: rowKey("CORE"), title: "Ship the parser" });
   await seedFillers();
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await routeFloats(page, refused.key);
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${rowKey("CORE")}/issues`);
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await read(page, refused.key, other.key);
   } finally {
@@ -508,7 +506,7 @@ test("the floats leave the foot of the Board clear in every combination at seven
     const board = page.getByRole("region", { name: "Project board" });
     await sweepSurface(page, refused.key, {
       name: "board",
-      path: "/projects/CORE/issues",
+      path: `/projects/${rowKey("CORE")}/issues`,
       ready: async () => {
         await expect(
           board.getByRole("article").filter({ hasText: "Filler issue number 39" })
@@ -530,35 +528,34 @@ test("the floats leave the foot of the Board clear in every combination at seven
 // The Agents page: fourteen live sessions, which run its list past a short window, one ended
 // with an unread reply under them, and three of them selected for broadcast, which brings the
 // broadcast composer to the foot, as the Agents rows of `e2e/issues-table.e2e.ts` seed it.
-// SLOW(>=2s): four combinations of the floats at seven sizes, each a settled reading at the end
-// of every scroller.
+// SLOW(>=2s): four combinations of the floats at seven sizes, each a settled reading at the end of
+// every scroller.
 test("the floats leave the foot of the Agents page clear in every combination at seven sizes @foot", async ({
   browser,
 }) => {
+  // The reader and the sessions are the row's own (`rowPerson` and `rowSessionId`, e2e/test.ts):
+  // the ended session's reply is unread for the person who asked, and what the Agents page lists
+  // is read off what Dispatch keeps under each id.
+  const me = rowPerson("alice");
+  const endedId = rowSessionId("ended");
   const titles = Array.from(
     { length: 14 },
     (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
   );
-  const endedSession = "01a04731-0c07-7000-8000-000000000400";
   // The Agents setup and the issues setup touch nothing in common, so each chain goes out beside
   // the other, and each keeps its own order.
   const [, refused] = await Promise.all([
     (async () => {
       await setLiveSessions([
-        ...titles.map((title, index) =>
-          listedSession(
-            `01a04731-0c07-7000-8000-0000000004${String(index + 1).padStart(2, "0")}`,
-            title
-          )
-        ),
-        listedSession(endedSession, "Ended"),
+        ...titles.map((title, index) => listedSession(rowSessionId(`agent${index}`), title)),
+        listedSession(endedId, "Ended"),
       ]);
-      await seedUnreadReply(endedSession);
-      await setSessionLive(endedSession, false);
+      await seedUnreadReply(endedId, me);
+      await setSessionLive(endedId, false);
     })(),
     seedRefusedMove(),
   ]);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     const broadcast = page.getByRole("region", { name: "Broadcast" });
@@ -645,7 +642,9 @@ test("the floats leave the foot of the Inbox clear in every combination at seven
   browser,
 }) => {
   const [refused, approval] = await Promise.all([seedRefusedMove(), seedApprovalPlace()]);
-  const context = await asUser(browser, "alice");
+  // The reader is the row's own person (`rowPerson`, e2e/test.ts), the one `seedApprovalPlace`
+  // writes the approval for (e2e/inbox-pane-scroll.ts): the Inbox is one person's list.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await sweepSurface(page, refused.key, {
@@ -666,15 +665,17 @@ test("the floats leave the foot of the Inbox clear in every combination at seven
  * `e2e/issues-table.e2e.ts` seeds it, at `sizes` (`sweepSurface`).
  */
 async function sweepLiveView(browser: Browser, sizes: readonly Size[]): Promise<void> {
-  /** A live session whose conversation is at the stream's limit. Its id is a UUID, which
-   *  Dispatch's agent routes require. */
+  /** A live session whose conversation is at the stream's limit, under the row's own id for it
+   *  (`rowSessionId`, e2e/test.ts), a UUID, which Dispatch's agent routes require: the live view
+   *  shows the messages Dispatch keeps for a session by its id, for every person at once, beside
+   *  the turns its replay holds. */
   const live: FakeSession = {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/foot-sweep",
     last_seen: Date.now() - 5_000,
     machine_id: "foot-sweep-host",
     roles: [],
-    session_id: "01a04731-0c07-7000-8000-000000000500",
+    session_id: rowSessionId("live"),
     title: "Sweep",
   };
   const [refused] = await Promise.all([
@@ -725,7 +726,7 @@ const CONVERSATION_MESSAGES = 40;
 /** An issue whose Conversation holds `CONVERSATION_MESSAGES` messages, the newest last written.
  *  Answers its key. */
 async function seedLongConversation(): Promise<string> {
-  const issue = await createIssue({ project: "CORE", title: "A long conversation" });
+  const issue = await createIssue({ project: rowKey("CORE"), title: "A long conversation" });
   // One at a time: the server appends one event at a time per issue, so a burst costs the same,
   // and the tab lists the messages in the order they were written.
   for (let index = 1; index <= CONVERSATION_MESSAGES; index += 1) {
@@ -916,8 +917,12 @@ test("a float over a sticky column leaves body without end room and the Navigati
   browser,
 }) => {
   const refused = await seedRefusedMove();
-  const plain = await createIssue({ project: "CORE", title: "Ship the parser" });
-  const coded = await createIssue({ project: "CORE", spec: CODE_SPEC, title: "Sideways code" });
+  const plain = await createIssue({ project: rowKey("CORE"), title: "Ship the parser" });
+  const coded = await createIssue({
+    project: rowKey("CORE"),
+    spec: CODE_SPEC,
+    title: "Sideways code",
+  });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -1276,7 +1281,7 @@ test("a float that shows for a moment moves no content when it goes @foot", asyn
     for (const size of MOMENT_SIZES) {
       await page.setViewportSize(size);
       const at = `${size.width}x${size.height}`;
-      await page.goto("/projects/CORE/issues");
+      await page.goto(`/projects/${rowKey("CORE")}/issues`);
       // The table does not draw every filler at its start, and the fillers go out side by side
       // in no order; the refused issue, seeded before them, is drawn there, as `withTable`'s rows
       // press it.

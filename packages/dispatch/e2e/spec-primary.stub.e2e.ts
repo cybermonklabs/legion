@@ -5,7 +5,7 @@
  *  which is the one project that takes the ` @phone-only` tag it carries. */
 import { expect } from "@playwright/test";
 
-import { createAsk, createIssue, createProject } from "./api";
+import { createAsk, createIssue, createProject, fixedKey } from "./api";
 import { needsYouCards } from "./editor";
 import { stubbed } from "./stub/stub-test";
 
@@ -14,8 +14,11 @@ const session = {
   as: "agent" as const,
 };
 
+/** The key this file's recordings were made under. */
+const SPEC = fixedKey("SPEC", "this file's recordings were made under it");
+
 const test = stubbed(async () => {
-  await createProject({ key: "SPEC", name: "Spec primary" });
+  await createProject({ key: SPEC, name: "Spec primary" });
   const issue = await createIssue({
     project: "SPEC",
     spec: "Primary document content.",

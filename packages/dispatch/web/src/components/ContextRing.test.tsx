@@ -37,14 +37,14 @@ describe("the context ring", () => {
     const view = render(<Host usage={{ contextWindow: 200_000, tokens: 68_000 }} />);
     try {
       const ring = screen.getByRole("button", { name: "Context window, 34 percent used" });
-      expect(ring.getAttribute("aria-expanded")).toBe("false");
-      expect(ring.getAttribute("title")).toBe("68,000 of 200,000 tokens");
+      expect(ring).toHaveAttribute("aria-expanded", "false");
+      expect(ring).toHaveAttribute("title", "68,000 of 200,000 tokens");
       expect(screen.getByTestId("agent-context-share").textContent).toBe("34% of the window");
       expect(screen.queryByTestId("agent-context-popover")).toBeNull();
 
       await user.click(ring);
       const panel = screen.getByRole("dialog", { name: "Context window" });
-      expect(ring.getAttribute("aria-expanded")).toBe("true");
+      expect(ring).toHaveAttribute("aria-expanded", "true");
       expect(panel.textContent).toContain("68,000 of 200,000 tokens · 34%");
       expect(panel.textContent).toContain("When it is nearly full the session drops its oldest");
       // Nothing in the panel drives the session: no compaction control, no other press.
@@ -131,8 +131,8 @@ describe("the context ring", () => {
 
       await user.keyboard("{Escape}");
       expect(screen.queryByTestId("agent-context-popover")).toBeNull();
-      expect(ring.getAttribute("aria-expanded")).toBe("false");
-      expect(document.activeElement).toBe(ring);
+      expect(ring).toHaveAttribute("aria-expanded", "false");
+      expect(ring).toHaveFocus();
     } finally {
       view.unmount();
     }

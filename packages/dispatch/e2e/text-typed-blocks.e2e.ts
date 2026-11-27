@@ -12,7 +12,15 @@ import {
 } from "./api";
 import { expectTextOnlyDecisions, seedDecisionBody } from "./decision-bodies";
 import { documentEditor, indexedBlockAsk, openWithCaret } from "./editor";
-import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import {
+  type Browser,
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  rowKey,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 // A typed block in a text body (a comment, an ask, a message) is drawn as a document draws it: a
@@ -43,8 +51,9 @@ async function openCommentThread(page: Page, commentId: string): Promise<Locator
 test("a comment's callout shows the document's header with its kind and title", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Callout in a comment" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Callout in a comment" });
   const comment = await createComment(
     issue.key,
     { body: ':::callout{kind="warning" title="Read this"}\nBody text.\n:::\n' },
@@ -98,9 +107,10 @@ async function replyUnderDocumentDecision(
   title: string,
   body: string
 ): Promise<{ alice: BrowserContext; decision: Locator; thread: Locator }> {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Specification\n\nContext.\n",
     title,
   });
@@ -229,10 +239,11 @@ test("a decision in a reply under a document's decision sits flush in its card",
 test("a malformed decision's blank option shows no bullet in a body or a read-only document", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const source = ':::ask{#blank urgency="high"}\nWhich one?\n\n- A: first\n-\n:::\n';
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "## Specification\n\nContext.\n",
     title: "Blank option",
   });
@@ -309,9 +320,10 @@ test("a malformed decision's blank option shows no bullet in a body or a read-on
 test("a document's own decision block draws no line about opening an ask, live, saved or closed", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec:
       "## Specification\n\nContext.\n\n" +
       ':::ask{#storage urgency="high" multiple="false" state="open"}\n' +
@@ -369,7 +381,8 @@ test("typing a new option into a decision with no options stores it as a typed o
     "Typed option",
     "Intro.\n\n:::ask{#a1}\nWhich one?\n:::\n\nAfter.\n",
     "Which one?",
-    "end"
+    "end",
+    rowKey("CORE")
   );
   try {
     await page.keyboard.press("Enter");

@@ -15,7 +15,7 @@ import {
   openRail,
   railAgentRow,
 } from "./rail";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -32,20 +32,27 @@ import { asUser } from "./users";
  *
  * Every read of what a view is doing is the page's own report (`e2e/live-views.ts`) or the word
  * its rail row shows; the suite never counts frames to guess at it.
+ *
+ * Pins are the person's, so the person of every row is one of the row's own (`rowPerson`,
+ * e2e/test.ts): the rail lists this row's pins, and the Inbox the rail opens holds nothing, with
+ * no other row's question selected in it.
  */
 
-/** The eight sessions these rows pin, by id. Each is a UUID: Dispatch's agent routes refuse
- *  anything else, so a session named otherwise would list and have no live view. */
-const RIG_IDS = [
-  "01a0e300-4848-7473-acc5-000000000001",
-  "01a0e300-4848-7473-acc5-000000000002",
-  "01a0e300-4848-7473-acc5-000000000003",
-  "01a0e300-4848-7473-acc5-000000000004",
-  "01a0e300-4848-7473-acc5-000000000005",
-  "01a0e300-4848-7473-acc5-000000000006",
-  "01a0e300-4848-7473-acc5-000000000007",
-  "01a0e300-4848-7473-acc5-000000000008",
-];
+/** How many sessions these rows pin at most. */
+const RIGS = 8;
+
+/** The id of the `index`th session these rows pin: the row's own (`rowSessionId`, e2e/test.ts),
+ *  a UUID, since Dispatch's agent routes refuse anything else, so a session named otherwise would
+ *  list and have no live view. Dispatch keeps the messages a person sends a session, and its
+ *  replies, by its id for every person at once, and the live view shows them. */
+function rigId(index: number): string {
+  return rowSessionId(`rig${index + 1}`);
+}
+
+/** The ids of all `RIGS` sessions, in the order the rows pin them. */
+function rigIds(): string[] {
+  return Array.from({ length: RIGS }, (_, index) => rigId(index));
+}
 
 /** The transcript every rig's replay carries, long enough that the thread scrolls at any
  *  viewport: each turn names the session it belongs to, so a view that came back with another
@@ -61,7 +68,7 @@ function rig(index: number): FakeSession {
     last_seen: Date.now() - 5_000,
     machine_id: "view-host",
     roles: [],
-    session_id: RIG_IDS[index],
+    session_id: rigId(index),
     title: `Rig ${index + 1}`,
   };
 }
@@ -94,8 +101,8 @@ function seedTranscript(index: number, context?: { contextWindow: number; tokens
     frames.push({ ...context, kind: "context", seq: TURNS + 1, v: 1 });
   }
   return publishAgentStreamFrame(
-    RIG_IDS[index],
-    { frames, session_id: RIG_IDS[index], v: 1 },
+    rigId(index),
+    { frames, session_id: rigId(index), v: 1 },
     "replay"
   );
 }
@@ -106,14 +113,18 @@ async function seedPinnedRigs(count: number): Promise<void> {
   for (let index = 0; index < count; index += 1) {
     await seedTranscript(index);
     // One at a time: the rail's order is the order the pins were made in.
-    await putAgentState(RIG_IDS[index], { pinned: true });
+    await putAgentState(rigId(index), { pinned: true }, { login: rowPerson("alice") });
   }
 }
 
 /** One of `sessionId`'s replies to a message the viewer sent it, which counts unread until a
  *  view the viewer is looking at shows it. */
 async function seedUnreadReply(sessionId: string, body: string): Promise<void> {
-  const asked = await createAgentMessage(sessionId, { body: "How far along?", delivery: "aside" });
+  const asked = await createAgentMessage(
+    sessionId,
+    { body: "How far along?", delivery: "aside" },
+    { login: rowPerson("alice") }
+  );
   await replyToMessageDelivery(asked.id, { attempt: 1, body }, { id: sessionId, kind: "session" });
 }
 
@@ -130,7 +141,7 @@ function frontComposer(page: Page): Locator {
 
 /** Waits until `sessionId`'s view is the one in front with its conversation drawn. */
 async function expectInFront(page: Page, index: number): Promise<void> {
-  await expect(frontLiveView(page)).toHaveAttribute("data-session-id", RIG_IDS[index]);
+  await expect(frontLiveView(page)).toHaveAttribute("data-session-id", rigId(index));
   await expect(frontThread(page)).toContainText(`Rig ${index + 1} turn 0:`);
 }
 
@@ -177,11 +188,11 @@ test("a pinned agent comes back with its draft, its place and its Jump to latest
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
 
     await frontComposer(page).fill("the draft that outlives the view");
@@ -189,15 +200,15 @@ test("a pinned agent comes back with its draft, its place and its Jump to latest
     const place = await topTurn(page);
     await expect(frontLiveView(page).getByTestId("jump-to-latest")).toBeVisible();
 
-    await openAgentFromRail(page, RIG_IDS[1]);
+    await openAgentFromRail(page, rigId(1));
     await expectInFront(page, 1);
-    await openAgentFromRail(page, RIG_IDS[2]);
+    await openAgentFromRail(page, rigId(2));
     await expectInFront(page, 2);
     // Three views in, the first is asleep: it comes back from the session, not from the DOM.
-    expect((await readLiveViews(page)).views[RIG_IDS[0]]?.state).toBe("asleep");
+    expect((await readLiveViews(page)).views[rigId(0)]?.state).toBe("asleep");
     await openInboxFromRail(page);
 
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
     await expect(frontComposer(page)).toHaveValue("the draft that outlives the view");
     await expect.poll(() => topTurn(page)).toMatchObject({ id: place.id });
@@ -216,14 +227,14 @@ test("opening all eight pinned agents in turn closes none and refuses none", asy
   browser,
 }) => {
   await seedPinnedRigs(8);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await expectRailAgents(page, RIG_IDS);
+    await expectRailAgents(page, rigIds());
 
-    for (let index = 0; index < RIG_IDS.length; index += 1) {
-      await openAgentFromRail(page, RIG_IDS[index]);
+    for (let index = 0; index < RIGS; index += 1) {
+      await openAgentFromRail(page, rigId(index));
       await expectInFront(page, index);
       // Nothing was refused on the way: the view that opened is reaching its session.
       await expect(page.getByTestId("agent-stream-unavailable")).toHaveCount(0);
@@ -231,12 +242,12 @@ test("opening all eight pinned agents in turn closes none and refuses none", asy
 
     // Nothing was closed: the rail still lists eight, and the page still holds an entry for
     // every one of them - the two mounted and the six asleep.
-    await expectRailAgents(page, RIG_IDS);
+    await expectRailAgents(page, rigIds());
     const views = (await readLiveViews(page)).views;
-    expect(Object.keys(views).sort()).toEqual([...RIG_IDS].sort());
-    expect(views[RIG_IDS[7]]?.state).toBe("live");
-    expect(views[RIG_IDS[6]]?.state).toBe("live 30s");
-    for (const asleep of RIG_IDS.slice(0, 6)) {
+    expect(Object.keys(views).sort()).toEqual(rigIds().sort());
+    expect(views[rigId(7)]?.state).toBe("live");
+    expect(views[rigId(6)]?.state).toBe("live 30s");
+    for (const asleep of rigIds().slice(0, 6)) {
       expect(views[asleep]?.state).toBe("asleep");
     }
   } finally {
@@ -252,35 +263,35 @@ test("the rail reads live, live 30s and asleep for the views the person has open
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
     await openRail(page);
-    await expectRailViewState(page, RIG_IDS[0], "live");
-    await expectRailViewState(page, RIG_IDS[1], "asleep");
+    await expectRailViewState(page, rigId(0), "live");
+    await expectRailViewState(page, rigId(1), "asleep");
     await closeRail(page);
 
-    await openAgentFromRail(page, RIG_IDS[1]);
+    await openAgentFromRail(page, rigId(1));
     await expectInFront(page, 1);
     await openRail(page);
-    await expectRailViewState(page, RIG_IDS[1], "live");
-    await expectRailViewState(page, RIG_IDS[0], "live 30s");
+    await expectRailViewState(page, rigId(1), "live");
+    await expectRailViewState(page, rigId(0), "live 30s");
     await closeRail(page);
 
-    await openAgentFromRail(page, RIG_IDS[2]);
+    await openAgentFromRail(page, rigId(2));
     await expectInFront(page, 2);
     // At once, with nothing waited for: the page's own report, read the moment the third view
     // is in front, already has the first asleep rather than lingering a second time.
     const views = (await readLiveViews(page)).views;
-    expect(views[RIG_IDS[0]]?.state).toBe("asleep");
+    expect(views[rigId(0)]?.state).toBe("asleep");
 
     await openRail(page);
-    await expectRailViewState(page, RIG_IDS[2], "live");
-    await expectRailViewState(page, RIG_IDS[1], "live 30s");
-    await expectRailViewState(page, RIG_IDS[0], "asleep");
+    await expectRailViewState(page, rigId(2), "live");
+    await expectRailViewState(page, rigId(1), "live 30s");
+    await expectRailViewState(page, rigId(0), "asleep");
   } finally {
     await context.close();
   }
@@ -294,31 +305,29 @@ test("a view that slept comes back with its conversation and says that it came b
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
-    await openAgentFromRail(page, RIG_IDS[1]);
-    await openAgentFromRail(page, RIG_IDS[2]);
+    await openAgentFromRail(page, rigId(1));
+    await openAgentFromRail(page, rigId(2));
     await expectInFront(page, 2);
 
     // Asleep is nothing of it on the page: no view element of its own, drawn or hidden.
-    await expect(page.locator(`[data-session-id="${RIG_IDS[0]}"]`)).toHaveCount(0);
-    expect((await readLiveViews(page)).views[RIG_IDS[0]]?.state).toBe("asleep");
+    await expect(page.locator(`[data-session-id="${rigId(0)}"]`)).toHaveCount(0);
+    expect((await readLiveViews(page)).views[rigId(0)]?.state).toBe("asleep");
 
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
     await expect(frontThread(page)).toContainText(`Rig 1 turn ${TURNS - 1}:`);
     await expect(
       frontLiveView(page).getByTitle("Connection to the session's conversation: Live")
     ).toBeVisible();
-    await expect
-      .poll(async () => (await readLiveViews(page)).views[RIG_IDS[0]]?.state)
-      .toBe("live");
+    await expect.poll(async () => (await readLiveViews(page)).views[rigId(0)]?.state).toBe("live");
     await openRail(page);
-    await expectRailViewState(page, RIG_IDS[0], "live");
+    await expectRailViewState(page, rigId(0), "live");
   } finally {
     await context.close();
   }
@@ -331,19 +340,19 @@ test("a sleeping row keeps its name, its running mark and its unread count", asy
   browser,
 }) => {
   await seedPinnedRigs(3);
-  await seedUnreadReply(RIG_IDS[0], "Still building.");
-  const context = await asUser(browser, "alice");
+  await seedUnreadReply(rigId(0), "Still building.");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await openAgentFromRail(page, RIG_IDS[1]);
+    await openAgentFromRail(page, rigId(1));
     await expectInFront(page, 1);
-    await openAgentFromRail(page, RIG_IDS[2]);
+    await openAgentFromRail(page, rigId(2));
     await expectInFront(page, 2);
 
     await openRail(page);
-    await expectRailViewState(page, RIG_IDS[0], "asleep");
-    const row = railAgentRow(page, RIG_IDS[0]);
+    await expectRailViewState(page, rigId(0), "asleep");
+    const row = railAgentRow(page, rigId(0));
     await expect(row.getByRole("link", { exact: true, name: "Rig 1" })).toBeVisible();
     await expect(row.getByRole("img", { exact: true, name: "Running" })).toBeVisible();
     await expect(row.getByTitle("New reply 1")).toHaveText("1");
@@ -361,35 +370,35 @@ test("a reply for a lingering or sleeping agent leaves its count standing until 
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
-    await openAgentFromRail(page, RIG_IDS[1]);
+    await openAgentFromRail(page, rigId(1));
     await expectInFront(page, 1);
-    await openAgentFromRail(page, RIG_IDS[2]);
+    await openAgentFromRail(page, rigId(2));
     await expectInFront(page, 2);
 
     // One reply each: for the agent in front, for the one lingering behind it, and for one
     // asleep.
-    await seedUnreadReply(RIG_IDS[2], "Answering the one in front.");
-    await seedUnreadReply(RIG_IDS[1], "Answering the one lingering.");
-    await seedUnreadReply(RIG_IDS[0], "Answering the one asleep.");
+    await seedUnreadReply(rigId(2), "Answering the one in front.");
+    await seedUnreadReply(rigId(1), "Answering the one lingering.");
+    await seedUnreadReply(rigId(0), "Answering the one asleep.");
 
     await openRail(page);
-    await expect(railAgentRow(page, RIG_IDS[1]).getByTitle("New reply 1")).toHaveText("1");
-    await expect(railAgentRow(page, RIG_IDS[0]).getByTitle("New reply 1")).toHaveText("1");
+    await expect(railAgentRow(page, rigId(1)).getByTitle("New reply 1")).toHaveText("1");
+    await expect(railAgentRow(page, rigId(0)).getByTitle("New reply 1")).toHaveText("1");
     // The agent in front has its replies marked read as it does today.
-    await expect(railAgentRow(page, RIG_IDS[2]).getByTitle(/^New repl/)).toHaveCount(0);
+    await expect(railAgentRow(page, rigId(2)).getByTitle(/^New repl/)).toHaveCount(0);
 
     // Opening the sleeping one is reading it.
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
     await expect(frontThread(page)).toContainText("Answering the one asleep.");
     await openRail(page);
-    await expect(railAgentRow(page, RIG_IDS[0]).getByTitle(/^New repl/)).toHaveCount(0);
+    await expect(railAgentRow(page, rigId(0)).getByTitle(/^New repl/)).toHaveCount(0);
   } finally {
     await context.close();
   }
@@ -403,22 +412,22 @@ test("an agent whose view slept after a context frame shows its ring again when 
 }) => {
   await seedPinnedRigs(3);
   await seedTranscript(0, { contextWindow: 200_000, tokens: 68_000 });
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
     await expect(frontLiveView(page).getByTestId("agent-context-share")).toContainText("34%");
 
-    await openAgentFromRail(page, RIG_IDS[1]);
-    await openAgentFromRail(page, RIG_IDS[2]);
+    await openAgentFromRail(page, rigId(1));
+    await openAgentFromRail(page, rigId(2));
     await expectInFront(page, 2);
-    expect((await readLiveViews(page)).views[RIG_IDS[0]]?.state).toBe("asleep");
+    expect((await readLiveViews(page)).views[rigId(0)]?.state).toBe("asleep");
 
     // Nothing published between the sleep and the waking: the ring is drawn from what the
     // session answers the waking view's replay request with.
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
     await expect(frontLiveView(page).getByTestId("agent-context-share")).toContainText("34%");
   } finally {
@@ -433,15 +442,15 @@ test("Back walks the pages the reader came from, not the agents they looked at",
   browser,
 }) => {
   await seedPinnedRigs(3);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
 
-    await openAgentFromRail(page, RIG_IDS[0]);
+    await openAgentFromRail(page, rigId(0));
     await expectInFront(page, 0);
-    await openAgentFromRail(page, RIG_IDS[1]);
+    await openAgentFromRail(page, rigId(1));
     await expectInFront(page, 1);
 
     await page.goBack();
@@ -461,17 +470,17 @@ test("a hard load of an unpinned agent's live view draws it, and the Inbox and b
 }) => {
   await setLiveSessions([rig(0), rig(1)]);
   await seedTranscript(1);
-  await putAgentState(RIG_IDS[0], { pinned: true });
-  const context = await asUser(browser, "alice");
+  await putAgentState(rigId(0), { pinned: true }, { login: rowPerson("alice") });
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
-    await page.goto(`/agents/${RIG_IDS[1]}/live`);
+    await page.goto(`/agents/${rigId(1)}/live`);
     await expectInFront(page, 1);
     const footer = frontLiveView(page).getByTestId("agent-composer-footer");
     await expect(footer.getByTestId("agent-footer-machine")).toHaveText("view-host");
     await expect(footer.getByTestId("agent-footer-dir")).toContainText("/workspaces/rig-2");
     // The rail lists the person's pins, and this session is not one of them.
-    await expectRailAgents(page, [RIG_IDS[0]]);
+    await expectRailAgents(page, [rigId(0)]);
 
     await openInboxFromRail(page);
     await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();

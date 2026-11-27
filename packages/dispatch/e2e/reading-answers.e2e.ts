@@ -12,30 +12,25 @@
  *
  * Each row writes `readingText` into the one record its surface shows and plain words into any
  * other record the surface needs: the question the reading session asks and the options it
- * offers, the answer and the reply alice writes on it, and the root of a comment thread alice
- * starts and the session answers.
+ * offers, the answer and the reply the reader writes on it, and the root of a comment thread
+ * the reader starts and the session answers.
  */
 import { answerAsk, createAsk, createComment } from "./api";
 import { inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import {
+  asReadingSession,
   expectReadsReferences,
   firstLineForms,
-  READING_SESSION_ID,
   readingText,
   seedReadingWorld,
 } from "./reading-rows";
 import { answeredQuestionPreview, RENDERED_BODY } from "./reference-surfaces";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, own, type Page, rowPerson, test } from "./test";
 
-/** The reading session as an author: it asks every question here and answers alice's thread,
- *  as an agent session writes. */
-const asReadingSession = {
-  actor: { id: READING_SESSION_ID, kind: "session" as const },
-  as: "agent" as const,
-};
+test.use({ signedIn: own("alice") });
 
-/** The options every ask here offers, so that alice's answer picks one. */
+/** The options every ask here offers, so that the reader's answer picks one. */
 const OPTIONS = [{ label: "Yes" }, { label: "No" }];
 
 /** The question of a row whose surface is its answer or its reply: it names nothing, so the one
@@ -51,15 +46,16 @@ function answerRow(page: Page, askId: string): Locator {
 test("answers-subject: an Answers row's question draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
-  // The session asks and alice answers: that is what puts the ask on her Answers page, under the
-  // question the session wrote.
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
+  // The session asks and the reader answers: that is what puts the ask on their Answers page,
+  // under the question the session wrote.
   const ask = await createAsk(
     world.host.key,
     { options: OPTIONS, question: readingText(world) },
     asReadingSession
   );
-  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Yes"] });
+  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Yes"] }, { login: me });
 
   await page.goto("/answers");
   // The row's subject line is the question's preview, drawn in the row itself rather than in its
@@ -72,14 +68,15 @@ test("answers-subject: an Answers row's question draws every form of a stored re
 test("answers-chosen-options: an Answers row's chosen option draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
   const label = readingText(world);
   const ask = await createAsk(
     world.host.key,
     { options: [{ label }, { label: "Later" }], question: PLAIN_QUESTION },
     asReadingSession
   );
-  await answerAsk(ask.id, { expected_edited_at: null, selected: [label] });
+  await answerAsk(ask.id, { expected_edited_at: null, selected: [label] }, { login: me });
 
   await page.goto("/answers");
   // The answer chose that option and wrote no text, so the row's one rendered body is the
@@ -93,7 +90,8 @@ test("answers-chosen-options: an Answers row's chosen option draws every form of
 test("answers-answer: an Answers row's answer draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
   const ask = await createAsk(
     world.host.key,
     { options: OPTIONS, question: PLAIN_QUESTION },
@@ -101,11 +99,11 @@ test("answers-answer: an Answers row's answer draws every form of a stored refer
   );
   // The answer chooses no option, so no option's pill is a second rendered body in its row
   // (`answers-chosen-options` reads that one).
-  await answerAsk(ask.id, {
-    expected_edited_at: null,
-    selected: [],
-    text: readingText(world),
-  });
+  await answerAsk(
+    ask.id,
+    { expected_edited_at: null, selected: [], text: readingText(world) },
+    { login: me }
+  );
 
   await page.goto("/answers");
   // An answer's row draws one rendered body, the text written with the answer, below the
@@ -117,15 +115,16 @@ test("answers-answer: an Answers row's answer draws every form of a stored refer
 test("answers-reply: an Answers row's reply draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
   const ask = await createAsk(
     world.host.key,
     { options: OPTIONS, question: PLAIN_QUESTION },
     asReadingSession
   );
-  // A comment alice writes in the ask's thread is a reply of hers on it, which the Answers page
-  // lists as a row of its own although she gave no answer.
-  await createComment(world.host.key, { ask_id: ask.id, body: readingText(world) });
+  // The reader writes a comment in the ask's thread. The Answers page lists the reply even
+  // though the reader gave no answer.
+  await createComment(world.host.key, { ask_id: ask.id, body: readingText(world) }, { login: me });
 
   await page.goto("/answers");
   const row = answerRow(page, ask.id);
@@ -139,14 +138,19 @@ test("answers-reply: an Answers row's reply draws every form of a stored referen
 test("my-reply-subject: a Reply thread's subject line draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
-  // Alice's root and the session's reply under it make the thread a Reply row of hers, and its
-  // subject line is the root's first line as the server cuts it: one thread for each group of
-  // forms a first line holds whole (`firstLineForms`).
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
+  // The reader's root and the session's reply under it make the thread a Reply row. Its subject
+  // line is the root's first line as the server cuts it: one thread for each group of forms a
+  // first line holds whole (`firstLineForms`).
   const groups = firstLineForms(world);
   const roots: string[] = [];
   for (const forms of groups) {
-    const root = await createComment(world.host.key, { body: readingText(world, forms) });
+    const root = await createComment(
+      world.host.key,
+      { body: readingText(world, forms) },
+      { login: me }
+    );
     await createComment(world.host.key, { body: "On it.", reply_to: root.id }, asReadingSession);
     roots.push(root.id);
   }

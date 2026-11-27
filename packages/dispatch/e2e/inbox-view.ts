@@ -16,6 +16,7 @@ import {
   createComment,
   createIssue,
   createProject,
+  fixedKey,
   getInbox,
   listMyReplies,
   markThreadRead,
@@ -34,6 +35,7 @@ import {
   THREAD_SESSION,
 } from "./inbox-threads";
 import { expandedState } from "./settled";
+import { fixedLogin } from "./users";
 
 /** The list this file reads: every row, whoever holds it, so the fields have something to say. */
 export const INBOX = "/?assignee=everyone";
@@ -86,10 +88,17 @@ export async function seedEveryField(): Promise<{
   rows: readonly ViewRow[];
 }> {
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  // Only inbox-view.stub.e2e.ts seeds this, and its recording was made under these two keys.
+  const recorded = "inbox-view.stub.e2e.ts replays a recording made under it";
+  await createProject({ key: fixedKey("CORE", recorded), name: "Core" });
   // MIRROR names carol, which is how she is a person who has signed in and so a person an
-  // issue below may be handed to; the issue this file makes in MIRROR is alice's own.
-  await createProject({ key: "MIRROR", name: "Mirror" }, { login: "carol" });
+  // issue below may be handed to; the issue this file makes in MIRROR is alice's own. The seed
+  // runs in record mode alone, after the stubbed row's `resetDatabase` (e2e/stub/stub-test.ts),
+  // whose next run deletes her again.
+  await createProject(
+    { key: fixedKey("MIRROR", recorded), name: "Mirror" },
+    { login: fixedLogin("carol", recorded) }
+  );
   const rows: ViewRow[] = [];
 
   const question = async (
@@ -104,7 +113,7 @@ export async function seedEveryField(): Promise<{
     const ask = await createAsk(
       issue.key,
       { question: `${title}: what is the rule?`, ...(urgency === undefined ? {} : { urgency }) },
-      asSession()
+      asSession(THREAD_SESSION)
     );
     rows.push({
       assignee,
@@ -129,7 +138,7 @@ export async function seedEveryField(): Promise<{
   await createComment(
     handed,
     { ask_id: handedAsk?.id, body: "Checking the lease now.", turn: "agent" },
-    asSession()
+    asSession(THREAD_SESSION)
   );
   await question("Clock drift", 3, "med", "alice");
   // Carol's question: the third holder, and the row that was nobody's before every project
@@ -142,7 +151,11 @@ export async function seedEveryField(): Promise<{
     title: "Rollout order",
   });
   await patchIssue(decisionIssue.key, { priority: 1 });
-  const decision = await indexedRow((row) => row.block_id === DECISION_BLOCK);
+  // The Inbox read is every open question of the stack, which can hold an open block of this id
+  // an earlier row of the worker seeded, so the row is found by this issue as well as its block.
+  const decision = await indexedRow(
+    (row) => row.block_id === DECISION_BLOCK && row.issue_key === decisionIssue.key
+  );
   rows.push({
     assignee: "alice",
     id: decision.id,
@@ -162,7 +175,7 @@ export async function seedEveryField(): Promise<{
   const approval = await requestApproval(
     approvalIssue.primary_artifact_id,
     { summary: "The window draft." },
-    asSession()
+    asSession(THREAD_SESSION)
   );
   if (approval.ask === null) throw new Error("the approval request recorded no ask");
   rows.push({
@@ -181,7 +194,8 @@ export async function seedEveryField(): Promise<{
   const comment = await seedCommentThread(
     commentIssue.key,
     "Please fix the flaky clock test.",
-    "Done: the clock test is green."
+    "Done: the clock test is green.",
+    THREAD_SESSION
   );
   rows.push({
     assignee: "alice",
@@ -197,7 +211,8 @@ export async function seedEveryField(): Promise<{
   const message = await seedMessageThread(
     mirrorIssue.key,
     "Where is the nightly build?",
-    "On the mirror, replaying."
+    "On the mirror, replaying.",
+    THREAD_SESSION
   );
   rows.push({
     assignee: "alice",
@@ -209,7 +224,11 @@ export async function seedEveryField(): Promise<{
     urgency: "none",
   });
 
-  const agent = await seedAgentThread({ body: "What is the rollout status?", replies: ["Green."] });
+  const agent = await seedAgentThread({
+    body: "What is the rollout status?",
+    replies: ["Green."],
+    session: THREAD_SESSION,
+  });
   rows.push({
     assignee: "alice",
     id: agentRowId(agent),
@@ -225,7 +244,8 @@ export async function seedEveryField(): Promise<{
   const read = await seedCommentThread(
     readIssue.key,
     "Is the nightly mirror job still at 02:00?",
-    "It moved to 03:00 last week."
+    "It moved to 03:00 last week.",
+    THREAD_SESSION
   );
   const listed = await listMyReplies({ state: "unread" });
   const readRow = (listed.rows ?? []).find((row) => row.thread_id === read);

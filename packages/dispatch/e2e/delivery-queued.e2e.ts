@@ -14,8 +14,7 @@ import {
 } from "./agents";
 import { createIssue, createMessage, createProject, queuedEnvelopesOf } from "./api";
 import { pickReference } from "./ref-picker";
-import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -28,12 +27,18 @@ import { asUser } from "./users";
  * word.
  */
 
+/** The two sessions, each under the running row's own id (`rowSessionId`, e2e/test.ts), which it
+ *  reads from a getter when a row names it, as `agentSessions` (e2e/agents.ts) does: Dispatch
+ *  keeps what is sent to a session, its deliveries and the envelopes it queues, by its id, for
+ *  every person at once, so a repeat of a row under a fixed id would meet its earlier copy's. */
 const planner: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/planner",
   machine_id: "queued-host",
   roles: [],
-  session_id: sessionIds.planner,
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Planner",
 };
 
@@ -42,7 +47,9 @@ const observer: FakeSession = {
   dir: "/workspaces/observer",
   machine_id: "queued-host",
   roles: [],
-  session_id: sessionIds.observer,
+  get session_id() {
+    return rowSessionId("observer");
+  },
   title: "Observer",
 };
 
@@ -61,8 +68,9 @@ async function sentTo(): Promise<unknown[]> {
 
 /** An issue of its own, so one row's conversation is never another's. */
 async function issueFor(title: string): Promise<string> {
-  await createProject({ key: "CORE", name: "Core" });
-  return (await createIssue({ project: "CORE", title })).key;
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  return (await createIssue({ project: core, title })).key;
 }
 
 test("a person's message to a stopped but known session is queued for it, and the listener takes it", async ({
@@ -149,7 +157,6 @@ test("a mention of a stopped but known session is queued for it, and the listene
 test("a broadcast keeps a session that stopped after it was ticked, and queues for it", async ({
   browser,
 }) => {
-  test.skip(test.info().project.name !== "chromium", "one browser proves the broadcast flow");
   // The composer learns of a departure on its 15 s agent poll, which the page's own clock spends.
   await setLiveSessions([planner, observer]);
 
@@ -205,7 +212,6 @@ test("a broadcast keeps a session that stopped after it was ticked, and queues f
 test("the broadcast strip counts a queued copy rather than calling the broadcast delivered", async ({
   browser,
 }) => {
-  test.skip(test.info().project.name !== "chromium", "one browser proves the strip");
   // The composer learns of a departure on its 15 s agent poll, which the page's own clock spends.
   await setLiveSessions([planner, observer]);
 

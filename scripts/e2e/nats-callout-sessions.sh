@@ -226,6 +226,8 @@ withholds() {
 }
 # shellcheck source=scripts/e2e/lib/codex-host.sh
 source "$root/scripts/e2e/lib/codex-host.sh"
+# shellcheck source=scripts/e2e/lib/process-tree.sh
+source "$root/scripts/e2e/lib/process-tree.sh"
 [ -n "$pg_dsn" ] || refuse "name a Postgres server it may create databases on: LEGION_TEST_PG_DSN or DATABASE_URL"
 for tool in bun psql curl jq python3; do
   command -v "$tool" >/dev/null || refuse "$tool is not on PATH"
@@ -332,11 +334,15 @@ teardown() {
   codex_stop
   # A client's input ending is its host going away: each closes the end this shell holds of every
   # fifo before it starts, so it sees the end here, runs its shutdown (deregistering its session)
-  # and exits; one still running 5 s later is killed with its process group.
+  # and exits; one still running 5 s later is killed with its process group. A pid that cannot lead
+  # a group the run started is refused and named (group_signalable), and gets no signal, not even
+  # the wait's signal 0, since the pid is the same value: kill reads group 0 as the group it is
+  # called from, which holds this run, and group 1 as every process it may signal.
   for fd in "${scenario_fds[@]}"; do
     exec {fd}>&-
   done
   for pid in "${scenario_pids[@]}"; do
+    group_signalable "$pid" || continue
     for _ in $(seq 1 50); do
       kill -0 "$pid" 2>/dev/null || break
       sleep 0.1

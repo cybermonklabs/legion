@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # What an alone leg's run left behind: the stack's own server logs, in the job's own log and
-# copied into the one record directory the upload after it takes, beside the sampler's two files
-# the browser step already wrote there.
+# copied into the one record directory the upload after it takes.
 #
 # Who runs it: the step "What the run left behind" of .github/workflows/dispatch-browser.yaml's
 # alone job; .github/ci-notes/dispatch-browser.md#what-the-alone-job-collects-after-a-run says why
 # it runs on every leg and not on a failed one alone. It takes
-# no argument: $RUNNER_TEMP is where the browser step before it wrote the run directory and the
-# sampler's two files.
+# no argument: $RUNNER_TEMP is where the browser step before it wrote the run directory.
 # The runner sets $RUNNER_TEMP for every step.
 #
 # The shard job's step of this name is .github/scripts/dispatch-browser-shard-record.sh, a

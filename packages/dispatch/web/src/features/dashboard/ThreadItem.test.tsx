@@ -130,9 +130,10 @@ test("a comment thread draws its root, the unread write and the reply box, readi
     expect(screen.queryByText("An old reply.")).toBeNull();
     expect(screen.queryByText("My own later word.")).toBeNull();
     expect(screen.getByRole("textbox", { name: "Reply" })).toBeTruthy();
-    expect(
-      screen.getByRole("link", { name: DASHBOARD_WORDS.thread_link }).getAttribute("href")
-    ).toBe(`/issues/${KEY}/comments/c-root`);
+    expect(screen.getByRole("link", { name: DASHBOARD_WORDS.thread_link })).toHaveAttribute(
+      "href",
+      `/issues/${KEY}/comments/c-root`
+    );
     expect(getComment).toHaveBeenCalledWith("c-root");
     expect(listComments).not.toHaveBeenCalled();
   } finally {
@@ -152,9 +153,10 @@ test("a message thread draws its root and the unread write, and links the messag
   try {
     await screen.findByText("The children from the issue read.");
     expect(screen.getByText("The tiles read the results.")).toBeTruthy();
-    expect(
-      screen.getByRole("link", { name: DASHBOARD_WORDS.thread_link }).getAttribute("href")
-    ).toBe(`/issues/${KEY}/messages/m-root`);
+    expect(screen.getByRole("link", { name: DASHBOARD_WORDS.thread_link })).toHaveAttribute(
+      "href",
+      `/issues/${KEY}/messages/m-root`
+    );
     expect(getMessage).toHaveBeenCalledWith(KEY, "m-root");
     expect(listIssueMessages).not.toHaveBeenCalled();
   } finally {
@@ -174,9 +176,10 @@ test("an ask thread draws the ask body and the unread reply, and links the ask",
   try {
     await screen.findByText("Which thread do you mean?");
     expect(view.container.querySelector("[data-ask-body]")).not.toBeNull();
-    expect(
-      screen.getByRole("link", { name: DASHBOARD_WORDS.thread_link }).getAttribute("href")
-    ).toBe(`/issues/${KEY}/asks/${ask.id}`);
+    expect(screen.getByRole("link", { name: DASHBOARD_WORDS.thread_link })).toHaveAttribute(
+      "href",
+      `/issues/${KEY}/asks/${ask.id}`
+    );
     expect(getAsk).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();

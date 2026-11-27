@@ -55,19 +55,29 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { type Browser, expect, type Locator, type Page, test } from "./test";
+import {
+  type Browser,
+  expect,
+  type Locator,
+  type Page,
+  rowKey,
+  rowPerson,
+  rowSessionId,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 test("the table sorts, searches facets and fuzzy text, groups, pages and receives a second page's edit live", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const epic = await createIssue({ project: core, title: "Table epic" });
   await patchIssue(epic.key, { labels: ["epic"] });
   const rows = [];
   for (let index = 0; index < 30; index++) {
     const row = await createIssue({
-      project: "CORE",
+      project: core,
       parent: epic.key,
       title: `Searchable table work ${String(index).padStart(2, "0")}`,
     });
@@ -79,13 +89,13 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
       })
     );
   }
-  const backend = await createIssue({ project: "CORE", title: "Backend unrelated" });
+  const backend = await createIssue({ project: core, title: "Backend unrelated" });
   await patchIssue(backend.key, { labels: ["backend"] });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1920, height: 1080 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const table = page.getByRole("table", { name: "Project issues table" });
     await expect(table).toBeVisible();
     const titleHeader = table
@@ -211,19 +221,20 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
 test("merging an epic moves open descendants through closed intermediates and preserves closed history", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const source = await createIssue({ project: "CORE", title: "Source epic" });
-  const target = await createIssue({ project: "CORE", title: "Target epic" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const source = await createIssue({ project: core, title: "Source epic" });
+  const target = await createIssue({ project: core, title: "Target epic" });
   await patchIssue(source.key, { labels: ["epic"] });
   await patchIssue(target.key, { labels: ["epic"] });
-  const open = await createIssue({ project: "CORE", parent: source.key, title: "Open child" });
+  const open = await createIssue({ project: core, parent: source.key, title: "Open child" });
   const closed = await createIssue({
-    project: "CORE",
+    project: core,
     parent: source.key,
     title: "Completed child",
   });
   const grandchild = await createIssue({
-    project: "CORE",
+    project: core,
     parent: closed.key,
     title: "Open below completed work",
   });
@@ -233,7 +244,7 @@ test("merging an epic moves open descendants through closed intermediates and pr
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.goto("/projects/CORE/issues?group=epic");
+    await page.goto(`/projects/${core}/issues?group=epic`);
     const group = page
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Source epic/ }) });
@@ -261,16 +272,17 @@ test("merging an epic moves open descendants through closed intermediates and pr
 test("selection actions move, remove and create an epic, whose name can then change", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const target = await createIssue({ project: "CORE", title: "Existing container" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const target = await createIssue({ project: core, title: "Existing container" });
   await patchIssue(target.key, { labels: ["epic"] });
-  const first = await createIssue({ project: "CORE", title: "Fix authentication cookies" });
-  const second = await createIssue({ project: "CORE", title: "Audit CSS backgrounds" });
+  const first = await createIssue({ project: core, title: "Fix authentication cookies" });
+  const second = await createIssue({ project: core, title: "Audit CSS backgrounds" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const select = async (key: string) =>
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true }).check();
     await select(first.key);
@@ -325,14 +337,15 @@ test("selection actions move, remove and create an epic, whose name can then cha
 test("New epic over an issue in progress, confirmed, leaves the epic in progress with the issue under it", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const working = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const working = await createIssue({ project: core, title: "Ship the parser" });
   await patchIssue(working.key, { status: "in_progress" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     await page.getByRole("checkbox", { name: `Select ${working.key}`, exact: true }).check();
     await page.getByRole("button", { name: "New epic from these" }).click();
     await page
@@ -345,7 +358,7 @@ test("New epic over an issue in progress, confirmed, leaves the epic in progress
       "“Parser rollout” moves to In progress"
     );
     // The question comes before the create: the project holds no epic yet.
-    expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([working.key]);
+    expect((await listIssues(core)).map((issue) => issue.key)).toEqual([working.key]);
     await question.getByRole("button", { name: "Move into work too" }).click();
     await expect.poll(() => getIssue(working.key).then((issue) => issue.parent)).not.toBeNull();
     const after = await getIssue(working.key);
@@ -368,17 +381,15 @@ test("New epic over an issue in progress, confirmed, leaves the epic in progress
 test("with a refused change pending, New epic from these and Clear selection still take a press @foot", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
-  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const core = rowKey("CORE");
+  const refused = await seedRefusedMove();
+  const other = await createIssue({ project: core, title: "Ship the parser" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
     await refuseChanges(page, refused.key);
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const select = (key: string) =>
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
     await select(refused.key).check();
@@ -591,16 +602,20 @@ async function walkTheBarCombinations(
   sizesFor: (own: { width: number; height: number }) => readonly { width: number; height: number }[]
 ): Promise<void> {
   const refused = await seedRefusedMove();
-  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const other = await createIssue({ project: rowKey("CORE"), title: "Ship the parser" });
   // Enough issues after those two that the table's box scrolls at the desktop sizes, as in the
   // row for the table's last row below. They come after, so the two rows a press picks are drawn
   // while the box is at its start.
   await seedFillers();
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line, which moves the table against the selection bar fixed under the
+  // header (the bulk write row below), and the walk presses the table's rows with the bar shown.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await routeFloats(page, refused.key);
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${rowKey("CORE")}/issues`);
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     const select = (key: string) =>
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
@@ -679,31 +694,30 @@ test("no two of the broadcast composer, Pending changes and the update banner me
 }) => {
   // The setup of `agents-groups.e2e.ts`'s row for the composer: fourteen live sessions, which run
   // the Agents page's list past a short window, and one that has ended with an unread reply to
-  // the reader, which keeps it a row of the section of ended sessions under them.
+  // the reader, which keeps it a row of the section of ended sessions under them. The reader and
+  // the sessions are the row's own (`rowPerson` and `rowSessionId`, e2e/test.ts): the section
+  // lists each session with a reply unread for the person who asked, and what the page lists is
+  // read off what Dispatch keeps under each id.
+  const me = rowPerson("alice");
+  const endedId = rowSessionId("ended");
   const titles = Array.from(
     { length: 14 },
     (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
   );
-  const endedSession = "01a04731-0c07-7000-8000-000000000200";
   // The Agents setup and the issues setup touch nothing in common, so each chain goes out beside
   // the other, and each keeps its own order.
   const [, refused] = await Promise.all([
     (async () => {
       await setLiveSessions([
-        ...titles.map((title, index) =>
-          listedSession(
-            `01a04731-0c07-7000-8000-0000000001${String(index).padStart(2, "0")}`,
-            title
-          )
-        ),
-        listedSession(endedSession, "Ended"),
+        ...titles.map((title, index) => listedSession(rowSessionId(`agent${index}`), title)),
+        listedSession(endedId, "Ended"),
       ]);
-      await seedUnreadReply(endedSession);
-      await setSessionLive(endedSession, false);
+      await seedUnreadReply(endedId, me);
+      await setSessionLive(endedId, false);
     })(),
     seedRefusedMove(),
   ]);
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await routeFloats(page, refused.key);
@@ -805,15 +819,16 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
     actor: { id: "e2e-foot-clearance", kind: "session" as const },
     as: "agent" as const,
   };
-  /** A live session whose conversation is at the stream's limit. Its id is a UUID, which
-   *  Dispatch's agent routes require. */
+  /** A live session whose conversation is at the stream's limit, under the row's own id for it
+   *  (`rowSessionId`, e2e/test.ts), a UUID, which Dispatch's agent routes require: the live view
+   *  shows the messages Dispatch keeps for a session by its id, for every person at once. */
   const live: FakeSession = {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/foot",
     last_seen: Date.now() - 5_000,
     machine_id: "foot-host",
     roles: [],
-    session_id: "01a04731-0c07-7000-8000-000000000300",
+    session_id: rowSessionId("live"),
     title: "Foot",
   };
   // Twelve words of the spec, each the anchor of one question in the margin.
@@ -839,7 +854,7 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
       // A dozen questions, each anchored to its own word of the spec, so the margin's column
       // holds a card for each and scrolls.
       const reviewed = await createIssue({
-        project: "CORE",
+        project: rowKey("CORE"),
         spec: `${words.join(" ")}.\n`,
         title: "Margin review",
       });
@@ -862,7 +877,9 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
       await seedAgentStreamConversations([live.session_id]);
     })(),
   ]);
-  const context = await asUser(browser, "alice");
+  // The reader is the row's own person (`rowPerson`, e2e/test.ts), the one `seedApprovalPlace`
+  // writes the approval for (e2e/inbox-pane-scroll.ts): the Inbox is one person's list.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await routeFloats(page, refused.key);
@@ -932,11 +949,14 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
 test("with the update banner shown, every control of the selection bar takes a press @phone @foot", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const epic = await createIssue({ project: core, title: "Parser rollout" });
   await patchIssue(epic.key, { labels: ["epic"] });
-  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
-  const context = await asUser(browser, "alice");
+  const other = await createIssue({ project: core, title: "Ship the parser" });
+  // The reader is a person of the row's own, for the reason the walk above gives: on a phone the
+  // row presses the bar under the header that draws the reader's counts.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     // Every live process now serves one build the page does not run (`deploymentChanged`).
@@ -945,7 +965,7 @@ test("with the update banner shown, every control of the selection bar takes a p
         json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
       })
     );
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(updateBanner(page)).toBeVisible();
     await page.getByRole("checkbox", { name: `Select ${other.key}`, exact: true }).check();
@@ -980,31 +1000,21 @@ test("with the update banner shown, every control of the selection bar takes a p
 test("with the bar, the banner and Pending changes shown, the table's last row scrolls clear of the floats @foot", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
-  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const core = rowKey("CORE");
+  const refused = await seedRefusedMove();
+  const other = await createIssue({ project: core, title: "Ship the parser" });
   // Enough issues that the table's box scrolls at the desktop sizes below.
   for (let index = 0; index < 40; index++) {
-    await createIssue({ project: "CORE", title: `Filler issue number ${index}` });
+    await createIssue({ project: core, title: `Filler issue number ${index}` });
   }
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
-    // Every live process now serves one build the page does not run (`deploymentChanged`).
-    await page.route("**/api/v1/dashboard/builds", (route) =>
-      route.fulfill({
-        json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
-      })
-    );
-    await page.goto("/projects/CORE/issues");
+    // Every live process now serves one build the page does not run (`deploymentChanged`), and a
+    // move of the refused issue out of its epic is refused (`routeFloats`).
+    await routeFloats(page, refused.key);
+    await page.goto(`/projects/${core}/issues`);
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
     const select = (key: string) =>
@@ -1049,21 +1059,15 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
 test("with a refused change pending, an issue page scrolled to its end keeps the shell's Navigation on the screen @foot", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
-  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const core = rowKey("CORE");
+  const refused = await seedRefusedMove();
+  const other = await createIssue({ project: core, title: "Ship the parser" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
-    await page.goto("/projects/CORE/issues");
+    await refuseChanges(page, refused.key);
+    await page.goto(`/projects/${core}/issues`);
     await page.getByRole("checkbox", { name: `Select ${refused.key}`, exact: true }).check();
     await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
     const pending = pendingWrites(page);
@@ -1106,23 +1110,24 @@ test("with a refused change pending, an issue page scrolled to its end keeps the
 test("a live insertion above a vertically and horizontally scrolled reader keeps their row in place", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Live root epic" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const epic = await createIssue({ project: core, title: "Live root epic" });
   await patchIssue(epic.key, { labels: ["epic"] });
   const parent = await createIssue({
-    project: "CORE",
+    project: core,
     parent: epic.key,
     title: "Closed intermediate",
   });
   await createMessage(parent.key, { body: "Closed intermediate work." });
   await patchIssue(parent.key, { status: "done" });
   for (let index = 0; index < 80; index++)
-    await createIssue({ project: "CORE", title: `B work ${String(index).padStart(3, "0")}` });
+    await createIssue({ project: core, title: `B work ${String(index).padStart(3, "0")}` });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1000, height: 800 });
-    await page.goto("/projects/CORE/issues?sort=title&size=250");
+    await page.goto(`/projects/${core}/issues?sort=title&size=250`);
     // 80 seeded rows and the epic, which is a row of the table like any other.
     await expect(page.getByText("81 of 81 issues", { exact: true })).toBeVisible();
     const scroller = page.getByTestId("issues-table-scroll");
@@ -1154,7 +1159,7 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     const anchor = await visibleAnchor();
     if (!anchor?.key) throw new Error("No visible issue could be anchored after scrolling");
     expect(await scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-    await createIssue({ project: "CORE", parent: parent.key, title: "A newly inserted issue" });
+    await createIssue({ project: core, parent: parent.key, title: "A newly inserted issue" });
     await ancestorRequested.promise;
     expect(await original?.evaluate((element) => element.isConnected)).toBe(true);
     expect(await scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
@@ -1175,13 +1180,18 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
 test("a refused bulk write retries after reload while the other operations have already landed @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Bulk source" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const epic = await createIssue({ project: core, title: "Bulk source" });
   await patchIssue(epic.key, { labels: ["epic"] });
   const rows: Issue[] = [];
   for (const title of ["First move", "Second move", "Third move"])
-    rows.push(await createIssue({ project: "CORE", parent: epic.key, title }));
-  const context = await asUser(browser, "alice");
+    rows.push(await createIssue({ project: core, parent: epic.key, title }));
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line, which moves the table against the selection toolbar fixed under
+  // the header.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 844 });
@@ -1196,7 +1206,7 @@ test("a refused bulk write retries after reload while the other operations have 
         });
       else await route.continue();
     });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     for (const row of rows) {
       await page.getByRole("checkbox", { name: `Select ${row.key}`, exact: true }).check();
       // The bar is fixed to the window, so the geometry that matters is the page at its top,
@@ -1248,19 +1258,22 @@ test("a refused bulk write retries after reload while the other operations have 
 test("phone headers, saved widths, popover focus and short-window paging stay usable @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Phone epic" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const epic = await createIssue({ project: core, title: "Phone epic" });
   await patchIssue(epic.key, { labels: ["epic"] });
-  await createIssue({ project: "CORE", parent: epic.key, title: "Phone member" });
+  await createIssue({ project: core, parent: epic.key, title: "Phone member" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE/issues");
-    await page.evaluate(() =>
-      localStorage.setItem(
-        "dispatch.project-table.CORE",
-        JSON.stringify({ sizing: { title: 450 } })
-      )
+    await page.goto(`/projects/${core}/issues`);
+    await page.evaluate(
+      (project) =>
+        localStorage.setItem(
+          `dispatch.project-table.${project}`,
+          JSON.stringify({ sizing: { title: 450 } })
+        ),
+      core
     );
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload();
@@ -1372,7 +1385,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
 test("compact tables keep three full issues readable after scrolling the page @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   for (const title of [
     "Investigate authorization headers",
     "Review deployment pipeline",
@@ -1381,8 +1395,11 @@ test("compact tables keep three full issues readable after scrolling the page @p
     "Document release verification",
     "Restore unavailable session",
   ])
-    await createIssue({ project: "CORE", title });
-  const context = await asUser(browser, "alice");
+    await createIssue({ project: core, title });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line: the line comes out of the window the table's box is sized from.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     for (const viewport of [
       { width: 390, height: 844 },
@@ -1390,7 +1407,7 @@ test("compact tables keep three full issues readable after scrolling the page @p
     ]) {
       const page = await context.newPage();
       await page.setViewportSize(viewport);
-      await page.goto("/projects/CORE/issues");
+      await page.goto(`/projects/${core}/issues`);
       const box = page.getByTestId("issues-table-scroll");
       await expect(box.locator("[data-issue-row]")).toHaveCount(6);
       const capacity = await box.evaluate((element) => {
@@ -1427,15 +1444,16 @@ test("compact tables keep three full issues readable after scrolling the page @p
 });
 
 test("List and Board share case-insensitive every-label matching", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const both = await createIssue({ project: "CORE", title: "Carries both labels" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const both = await createIssue({ project: core, title: "Carries both labels" });
   await patchIssue(both.key, { labels: ["FrontEnd", "BACKEND"] });
-  const one = await createIssue({ project: "CORE", title: "Carries one label" });
+  const one = await createIssue({ project: core, title: "Carries one label" });
   await patchIssue(one.key, { labels: ["frontend"] });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE/issues?label=frontend&label=backend");
+    await page.goto(`/projects/${core}/issues?label=frontend&label=backend`);
     await expect(page.locator(`[data-issue-row="${both.key}"]`)).toBeVisible();
     await expect(page.locator(`[data-issue-row="${one.key}"]`)).toHaveCount(0);
     await page.getByRole("button", { name: "Board", exact: true }).click();
@@ -1449,10 +1467,12 @@ test("List and Board share case-insensitive every-label matching", async ({ brow
 test("compact windows give the table three full rows and let the page scroll @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   for (let index = 0; index < 8; index++)
-    await createIssue({ project: "CORE", title: `Compact row ${index}` });
-  const context = await asUser(browser, "alice");
+    await createIssue({ project: core, title: `Compact row ${index}` });
+  // The reader is a person of the row's own, for the reason the row above gives.
+  const context = await asUser(browser, rowPerson("alice"));
   try {
     const page = await context.newPage();
     for (const viewport of [
@@ -1460,7 +1480,7 @@ test("compact windows give the table three full rows and let the page scroll @ph
       { width: 900, height: 400 },
     ]) {
       await page.setViewportSize(viewport);
-      await page.goto("/projects/CORE/issues");
+      await page.goto(`/projects/${core}/issues`);
       await expect(page.locator("[data-issue-row]").nth(2)).toBeAttached();
       const visibleRows = await page.getByTestId("issues-table-scroll").evaluate((box) => {
         const bounds = box.getBoundingClientRect();
@@ -1490,14 +1510,15 @@ test("compact windows give the table three full rows and let the page scroll @ph
 test("a roomy window is filled by the box, which grows when the window does", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   for (let index = 0; index < 6; index++)
-    await createIssue({ project: "CORE", title: `Roomy row ${index}` });
+    await createIssue({ project: core, title: `Roomy row ${index}` });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1400, height: 900 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     await expect(page.locator("[data-issue-row]").nth(5)).toBeAttached();
     // The box takes the room the window leaves: the pager's last pixel lands at the window's
     // bottom, less the padding the page keeps under it for the floating selection bar, and
@@ -1568,13 +1589,20 @@ const STEADY_EVERY_MS = 250;
 test("a window resize made while scrolled past the issues table keeps the table's box at its size", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const priority = await createPriority({ owner: "alice", title: "Hold the table's box" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  // The priority's title carries the row's own key, so its id, which the server derives from the
+  // title and refuses a second time (`PRIORITY_EXISTS`), is the row's own too, and its work table
+  // lists the row's forty issues alone.
+  const priority = await createPriority({
+    owner: "alice",
+    title: `Hold the table's box (${core})`,
+  });
   // Each one advances the priority, so its page lists it in the work table and its relation in
   // the margin. Nothing reads their order among themselves, so they go out side by side.
   await Promise.all(
     Array.from({ length: PRIORITY_WORK_ISSUES }, (_, index) =>
-      createIssue({ advances: [priority.id], project: "CORE", title: `Work number ${index}` })
+      createIssue({ advances: [priority.id], project: core, title: `Work number ${index}` })
     )
   );
   const context = await asUser(browser, "alice");
@@ -1641,20 +1669,21 @@ test("a window resize made while scrolled past the issues table keeps the table'
 test("phone status labels are readable and closed issues load from the Status filter @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Triage member" });
-  const todo = await createIssue({ project: "CORE", title: "Todo member" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Triage member" });
+  const todo = await createIssue({ project: core, title: "Todo member" });
   await patchIssue(todo.key, { status: "todo" });
-  const testing = await createIssue({ project: "CORE", title: "Testing member" });
+  const testing = await createIssue({ project: core, title: "Testing member" });
   await patchIssue(testing.key, { status: "testing" });
-  const closed = await createIssue({ project: "CORE", title: "Completed member" });
+  const closed = await createIssue({ project: core, title: "Completed member" });
   await createMessage(closed.key, { body: "Finished this member." });
   await patchIssue(closed.key, { status: "done" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const strip = page.getByRole("group", { name: "Issues by status" });
     // The seed's three open statuses, Triage, Todo and Testing, each draw one cell.
     await expect(strip.getByRole("button")).toHaveCount(3);
@@ -1686,20 +1715,21 @@ test("phone status labels are readable and closed issues load from the Status fi
 });
 
 test("on a desktop the status bar spans its box and stays one short line", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   for (const [status, title] of [
     ["todo", "Queued member"],
     ["testing", "Testing member"],
     ["backlog", "Parked member"],
   ] as const) {
-    const issue = await createIssue({ project: "CORE", title });
+    const issue = await createIssue({ project: core, title });
     await patchIssue(issue.key, { status });
   }
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const strip = page.getByRole("group", { name: "Issues by status" });
     await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
     const geometry = await strip.evaluate((element) => {
@@ -1726,11 +1756,12 @@ test("on a desktop the status bar spans its box and stays one short line", async
 test("a session creator renders its live name, state and conversation link @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const id = "issues-table-creator";
   await setLiveSessions([{ session_id: id, title: "Live table creator" }]);
   const issue = await createIssue(
-    { project: "CORE", title: "Created by a session" },
+    { project: core, title: "Created by a session" },
     {
       as: "agent",
       actor: { kind: "session", id, origin: { session_title: "Stored creator name" } },
@@ -1740,7 +1771,7 @@ test("a session creator renders its live name, state and conversation link @phon
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const row = page.locator(`[data-issue-row="${issue.key}"]`);
     const creatorCell = row.getByRole("cell").filter({
       has: page.getByRole("link", { name: /Live table creator/ }),
@@ -1757,9 +1788,10 @@ test("a session creator renders its live name, state and conversation link @phon
 });
 
 test("an unavailable ancestor uses one retry policy per attempt @phone", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const parent = await createIssue({ project: "CORE", title: "Unavailable ancestor" });
-  await createIssue({ project: "CORE", parent: parent.key, title: "Open child" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const parent = await createIssue({ project: core, title: "Unavailable ancestor" });
+  await createIssue({ project: core, parent: parent.key, title: "Open child" });
   await createMessage(parent.key, { body: "Closed ancestor." });
   await patchIssue(parent.key, { status: "done" });
   const context = await asUser(browser, "alice");
@@ -1771,7 +1803,7 @@ test("an unavailable ancestor uses one retry policy per attempt @phone", async (
       attempts++;
       await route.fulfill({ status: 503, json: { error: "Ancestor unavailable" } });
     });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     await expect(page.getByRole("alert")).toContainText("Could not load 1 ancestor");
     expect(attempts).toBe(3);
     await page.getByRole("button", { name: "Retry loading ancestors" }).click();
@@ -1784,14 +1816,15 @@ test("an unavailable ancestor uses one retry policy per attempt @phone", async (
 });
 
 test("a refused merge move leaves the source open without a close reason", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const source = await createIssue({ project: "CORE", title: "Merge source" });
-  const target = await createIssue({ project: "CORE", title: "Merge destination" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const source = await createIssue({ project: core, title: "Merge source" });
+  const target = await createIssue({ project: core, title: "Merge destination" });
   await patchIssue(source.key, { labels: ["epic"] });
   await patchIssue(target.key, { labels: ["epic"] });
-  const bad = await createIssue({ project: "CORE", parent: source.key, title: "Refused move" });
+  const bad = await createIssue({ project: core, parent: source.key, title: "Refused move" });
   const good = await createIssue({
-    project: "CORE",
+    project: core,
     parent: source.key,
     title: "Independent move",
   });
@@ -1799,7 +1832,7 @@ test("a refused merge move leaves the source open without a close reason", async
   try {
     const page = await context.newPage();
     await refuseChanges(page, bad.key);
-    await page.goto("/projects/CORE/issues?group=epic");
+    await page.goto(`/projects/${core}/issues?group=epic`);
     // The childless destination epic keeps a heading of its own, so the merge starts at the
     // source's rather than at whichever heading comes first.
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
@@ -1822,9 +1855,10 @@ test("a refused merge move leaves the source open without a close reason", async
 test("a stopped committed epic retries one key and reload finishes only its remaining adoption @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const first = await createIssue({ project: "CORE", title: "Preserve the caller identity" });
-  const closed = await createIssue({ project: "CORE", title: "Document release verification" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const first = await createIssue({ project: core, title: "Preserve the caller identity" });
+  const closed = await createIssue({ project: core, title: "Document release verification" });
   const context = await asUser(browser, "alice");
   const held = Promise.withResolvers<void>();
   try {
@@ -1832,7 +1866,7 @@ test("a stopped committed epic retries one key and reload finishes only its rema
     const posts = watchWrites(page, "POST", "/api/v1/issues");
     const committed = dropFirstAnswer(page, "**/api/v1/issues", "POST", held.promise);
     await page.clock.install();
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     await page.getByRole("checkbox", { name: `Select ${first.key}`, exact: true }).check();
     await page.getByRole("checkbox", { name: `Select ${closed.key}`, exact: true }).check();
     await page.getByRole("button", { name: "New epic from these", exact: true }).click();
@@ -1855,7 +1889,7 @@ test("a stopped committed epic retries one key and reload finishes only its rema
     await expect.poll(() => posts.length).toBe(2);
     expect(posts[0]?.key).toEqual(expect.any(String));
     expect(posts[1]?.key).toBe(posts[0]?.key);
-    const epics = (await listIssues("CORE")).filter((issue) => issue.labels?.includes("epic"));
+    const epics = (await listIssues(core)).filter((issue) => issue.labels?.includes("epic"));
     expect(epics).toHaveLength(1);
     const epic = epics[0];
     if (!epic) throw new Error("The committed epic is missing");
@@ -1873,9 +1907,9 @@ test("a stopped committed epic retries one key and reload finishes only its rema
     await expect.poll(() => getIssue(first.key).then((issue) => issue.parent)).toBe(epic.key);
     expect((await getIssue(closed.key)).parent).toBeNull();
     await expect(interrupted).toHaveCount(0);
-    expect(
-      (await listIssues("CORE")).filter((issue) => issue.labels?.includes("epic"))
-    ).toHaveLength(1);
+    expect((await listIssues(core)).filter((issue) => issue.labels?.includes("epic"))).toHaveLength(
+      1
+    );
     expect(posts).toHaveLength(2);
   } finally {
     held.resolve();
@@ -1886,7 +1920,8 @@ test("a stopped committed epic retries one key and reload finishes only its rema
 test("reload mid Start next finishes the recorded order without repeating its completed rank @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const rows = [];
   for (const title of [
     "Queue anchor",
@@ -1894,7 +1929,7 @@ test("reload mid Start next finishes the recorded order without repeating its co
     "Correct query ordering",
     "Publish operator documentation",
   ]) {
-    const issue = await createIssue({ project: "CORE", title });
+    const issue = await createIssue({ project: core, title });
     await patchIssue(issue.key, { status: "todo", labels: ["legion"] });
     rows.push(issue);
   }
@@ -1914,7 +1949,7 @@ test("reload mid Start next finishes the recorded order without repeating its co
       }
       await route.fulfill({ status: 403, json: { error: "Rank refused during reload" } });
     });
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     for (const issue of [first, middle, last])
       await page.getByRole("checkbox", { name: `Select ${issue.key}`, exact: true }).check();
     await page
@@ -1948,23 +1983,24 @@ test("reload mid Start next finishes the recorded order without repeating its co
 test("reload mid merge moves current open descendants then records one reason and closes @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const source = await createIssue({ project: "CORE", title: "Source workflow" });
-  const target = await createIssue({ project: "CORE", title: "Combined destination" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const source = await createIssue({ project: core, title: "Source workflow" });
+  const target = await createIssue({ project: core, title: "Combined destination" });
   await patchIssue(source.key, { labels: ["epic"] });
   await patchIssue(target.key, { labels: ["epic"] });
   const bridge = await createIssue({
-    project: "CORE",
+    project: core,
     parent: source.key,
     title: "Archived intermediate",
   });
   const pendingChild = await createIssue({
-    project: "CORE",
+    project: core,
     parent: bridge.key,
     title: "Retain the retry key",
   });
   const completedChild = await createIssue({
-    project: "CORE",
+    project: core,
     parent: source.key,
     title: "Independent completed move",
   });
@@ -1980,7 +2016,7 @@ test("reload mid merge moves current open descendants then records one reason an
       if (mode === "hold") return;
       await route.fulfill({ status: 403, json: { error: "Move refused during reload" } });
     });
-    await page.goto("/projects/CORE/issues?group=epic");
+    await page.goto(`/projects/${core}/issues?group=epic`);
     // The childless destination epic keeps a heading of its own, so this names the source's.
     const heading = page.locator("tr", {
       has: page.getByRole("link", { name: /Source workflow/ }),
@@ -2002,7 +2038,7 @@ test("reload mid merge moves current open descendants then records one reason an
     expect((await getIssue(source.key)).status).not.toBe("done");
     expect(await listIssueMessages(source.key)).toHaveLength(0);
     const added = await createIssue({
-      project: "CORE",
+      project: core,
       parent: bridge.key,
       title: "New descendant created during interruption",
     });
@@ -2028,13 +2064,14 @@ test("reload mid merge moves current open descendants then records one reason an
 // B1: a `?status=` this bundle does not know — a bookmark, a link from an older deploy — is a
 // filter that matches nothing. The page it opens is the table, never the error boundary.
 test("a status the bundle does not know leaves the whole page standing", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Status row" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Status row" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     for (const status of ["bogus", "Done", "in-progress"]) {
-      await page.goto(`/projects/CORE/issues?status=${status}`);
+      await page.goto(`/projects/${core}/issues?status=${status}`);
       await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
       await expect(page.getByRole("searchbox", { name: "Search issues" })).toBeVisible();
       await expect(page.getByText("Something went wrong in this page")).toHaveCount(0);
@@ -2054,16 +2091,17 @@ test("a status the bundle does not know leaves the whole page standing", async (
 test("an arrow key on the merge select closes no epic, and the confirmed merge does", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const source = await createIssue({ project: "CORE", title: "Arrow source" });
-  const target = await createIssue({ project: "CORE", title: "Arrow target" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const source = await createIssue({ project: core, title: "Arrow source" });
+  const target = await createIssue({ project: core, title: "Arrow target" });
   await patchIssue(source.key, { labels: ["epic"] });
   await patchIssue(target.key, { labels: ["epic"] });
-  const child = await createIssue({ project: "CORE", parent: source.key, title: "Arrow child" });
+  const child = await createIssue({ project: core, parent: source.key, title: "Arrow child" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE/issues?group=epic");
+    await page.goto(`/projects/${core}/issues?group=epic`);
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
     const select = page.getByRole("combobox", { name: "Merge into another epic" });
@@ -2094,14 +2132,15 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
 // F2 (dispatch://INFRA-2542 item 1): a press on a panel's own prose focuses nothing, and the
 // panel must still be the Escape key's owner afterwards.
 test("Escape closes a panel after a click on its own text", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Hint text epic" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const epic = await createIssue({ project: core, title: "Hint text epic" });
   await patchIssue(epic.key, { labels: ["epic"] });
-  await createIssue({ project: "CORE", parent: epic.key, title: "Hint text child" });
+  await createIssue({ project: core, parent: epic.key, title: "Hint text child" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE/issues?group=epic");
+    await page.goto(`/projects/${core}/issues?group=epic`);
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Hint text epic/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
     const hint = page.getByText("To split it, tick some of its issues");
@@ -2128,9 +2167,10 @@ test("Escape closes a panel after a click on its own text", async ({ browser }) 
 test("picker keeps a pick on screen: the priority on the project table, over a list read that answers while its save is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
-  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Priority under a held save" });
+  const other = await createIssue({ project: core, title: "Another issue of the project" });
   await patchIssue(issue.key, { priority: 3 });
   const renamed = "Another issue, renamed while a save is out";
   const context = await asUser(browser, "alice");
@@ -2138,8 +2178,8 @@ test("picker keeps a pick on screen: the priority on the project table, over a l
     const page = await context.newPage();
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
-    const reads = logReads(page, listRead("project", "CORE"));
-    await page.goto("/projects/CORE");
+    const reads = logReads(page, listRead("project", core));
+    await page.goto(`/projects/${core}`);
     const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
     await expect(picker).toHaveValue("3");
 
@@ -2171,10 +2211,11 @@ test("picker keeps a pick on screen: the priority on the project table, over a l
 test("picker keeps a pick on screen: the priority on the table of an item of the Priorities view, over a read that answers while its save is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const item = await createPriority({ owner: "alice", title: "Ship the release" });
-  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
-  const other = await createIssue({ project: "CORE", title: "Another issue of the item" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const item = await createPriority({ owner: "alice", title: `Ship the release (${core})` });
+  const issue = await createIssue({ project: core, title: "Priority under a held save" });
+  const other = await createIssue({ project: core, title: "Another issue of the item" });
   await Promise.all([
     patchIssue(issue.key, { advances: [item.id], priority: 3, status: "in_progress" }),
     patchIssue(other.key, { advances: [item.id], status: "in_progress" }),
@@ -2228,9 +2269,10 @@ test("picker keeps a pick on screen: the priority on the table of an item of the
 test("picker keeps a pick on screen: the priority on a table of the Priorities view's own page, over a read that answers while its save is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
-  const other = await createIssue({ project: "CORE", title: "Another issue in flight" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Priority under a held save" });
+  const other = await createIssue({ project: core, title: "Another issue in flight" });
   // Both are worked on under no priority, so `/priorities` lists both in its table of that fault.
   await Promise.all([
     patchIssue(issue.key, { priority: 3, status: "in_progress" }),
@@ -2242,7 +2284,11 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", "none"));
-    await page.goto("/priorities?tab=none");
+    // The tab lists every issue active under no priority on the worker's stack, and rows before
+    // this one leave theirs there, so it opens newest first: the row's two issues, written last,
+    // are then its first two rows whatever stood before them, as the fault lists of
+    // priorities.e2e.ts open (`n.sort=-updated`).
+    await page.goto("/priorities?tab=none&n.sort=-updated");
     const table = page.getByRole("region", { name: "Active under no priority" });
     // The fault list opens with R6's columns alone; the reader shows the issue's own priority
     // from the column control, as anyone who picks one there does.
@@ -2286,10 +2332,11 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
 test("picker keeps a pick on screen: the assignee in the table of an item of the Priorities view, picked on the issue page and shown from the table's first paint while its save is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const item = await createPriority({ owner: "alice", title: "Ship the release" });
-  const issue = await createIssue({ project: "CORE", title: "Assignee under a held save" });
-  const other = await createIssue({ project: "CORE", title: "Another issue of the item" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const item = await createPriority({ owner: "alice", title: `Ship the release (${core})` });
+  const issue = await createIssue({ project: core, title: "Assignee under a held save" });
+  const other = await createIssue({ project: core, title: "Another issue of the item" });
   await Promise.all([
     patchIssue(issue.key, { advances: [item.id], assignee: "bob", status: "in_progress" }),
     patchIssue(other.key, { advances: [item.id], status: "in_progress" }),

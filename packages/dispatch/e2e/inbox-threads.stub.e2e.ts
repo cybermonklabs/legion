@@ -14,7 +14,14 @@
 import { expect } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import { createAsk, createComment, createIssue, createProject, deleteComment } from "./api";
+import {
+  createAsk,
+  createComment,
+  createIssue,
+  createProject,
+  deleteComment,
+  fixedKey,
+} from "./api";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
 import {
   agentRowId,
@@ -31,6 +38,10 @@ import {
 import { openField } from "./inbox-view";
 import { measureLayout } from "./layout-measure";
 import { stubbed } from "./stub/stub-test";
+import { fixedLogin } from "./users";
+
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
 
 // ---------------------------------------------------------------------------
 // A1: the old Replies link, and the one Inbox count.
@@ -40,10 +51,10 @@ import { stubbed } from "./stub/stub-test";
  *  Inbox count is the sum of exactly those. */
 const repliesList = stubbed(async () => {
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   for (const title of ["Ledger rollout", "Mirror retries"]) {
     const issue = await createIssue({ project: "CORE", title });
-    await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession());
+    await createAsk(issue.key, { question: `${title}: ship tonight?` }, asSession(THREAD_SESSION));
   }
   await setPendingCredentialRequests([
     {
@@ -60,15 +71,21 @@ const repliesList = stubbed(async () => {
   const comment = await seedCommentThread(
     commentIssue.key,
     "Please fix the flaky clock test.",
-    "Done: the clock test is green."
+    "Done: the clock test is green.",
+    THREAD_SESSION
   );
   const messageIssue = await createIssue({ project: "CORE", title: "Build status" });
   const message = await seedMessageThread(
     messageIssue.key,
     "Where is the nightly build?",
-    "On the mirror, replaying."
+    "On the mirror, replaying.",
+    THREAD_SESSION
   );
-  await seedAgentThread({ body: "What is the rollout status?", replies: ["Green."] });
+  await seedAgentThread({
+    body: "What is the rollout status?",
+    replies: ["Green."],
+    session: THREAD_SESSION,
+  });
   return { comment, counted: 6, message };
 });
 
@@ -114,7 +131,7 @@ repliesList(
 // A2: one list of twelve rows, and the Type filter over it.
 // ---------------------------------------------------------------------------
 
-const test = stubbed(seedTwelve);
+const test = stubbed(() => seedTwelve(CORE, THREAD_SESSION));
 
 test("the Type filter counts and narrows the one list of asks, approvals, replies and agent messages @pr", async ({
   page,
@@ -185,13 +202,18 @@ test("the Type filter counts and narrows the one list of asks, approvals, replie
 // ---------------------------------------------------------------------------
 
 /** A person whose login has no cap a phone's row can hold. The deleted line names the deleting
- *  actor by its label, which for a person is the login itself, whole. */
-const LONG_LOGIN = "maximiliana-featherstonehaugh-cholmondeley-worthington-smythe";
+ *  actor by its label, which for a person is the login itself, whole. Only this file's seed signs
+ *  it in, in record mode alone, after the stubbed row's `resetDatabase` (e2e/stub/stub-test.ts),
+ *  whose next run deletes the person again. */
+const LONG_LOGIN = fixedLogin(
+  "maximiliana-featherstonehaugh-cholmondeley-worthington-smythe",
+  "this file's recordings were made under it"
+);
 
 /** A thread the reader wrote in, rooted on that person's note, which they then deleted. */
 const deletedRoot = stubbed(async () => {
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Mirror replay" });
   const root = await createComment(
     issue.key,

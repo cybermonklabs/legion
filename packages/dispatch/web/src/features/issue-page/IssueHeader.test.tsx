@@ -494,7 +494,7 @@ test("a press of the count where only a thread and a stale approval wait moves n
     await waitFor(() => expect(count.textContent).toBe("Waiting on you (2)"));
     await user.click(count);
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(path);
-    expect(document.activeElement, "the press moved the focus off the count").toBe(count);
+    expect(count, "the press moved the focus off the count").toHaveFocus();
   } finally {
     view.unmount();
     restore();
@@ -1069,7 +1069,7 @@ test("the approval chip's keys press its own actions, and only while those take 
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument()
     );
-    expect(document.activeElement).toBe(chip);
+    expect(chip).toHaveFocus();
 
     // `a` presses Approve, whose write is then out: neither key applies until it is answered.
     await user.keyboard("a");
@@ -1589,7 +1589,7 @@ test("Escape and Enter each end the title's edit with the focus back on Edit tit
 
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-    expect(document.activeElement).toBe(document.body);
+    expect(document.body).toHaveFocus();
     await user.keyboard("e");
     await waitFor(() => expect(editor()).toHaveFocus());
     expect(editor()).toHaveValue(issue.title);

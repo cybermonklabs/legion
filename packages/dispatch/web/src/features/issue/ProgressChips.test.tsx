@@ -13,7 +13,7 @@ test("the header's bar fills to done of total and names each count", () => {
   try {
     const tasks = screen.getByTestId("issue-progress-tasks");
     expect(tasks.textContent).toBe("3/4 tasks");
-    expect(tasks.getAttribute("title")).toContain("3 of 4 task-list items");
+    expect(tasks).toHaveAttribute("title", expect.stringContaining("3 of 4 task-list items"));
     const fills = [tasks, screen.getByTestId("issue-progress-children")].map(
       (chip) => (chip.querySelector("[aria-hidden] > span") as HTMLElement).style.width
     );
@@ -49,12 +49,13 @@ test("a count of one is written in the singular, label and title alike", () => {
   try {
     const tasks = screen.getByTestId("issue-progress-tasks");
     expect(tasks.textContent).toBe("1/1 task");
-    expect(tasks.getAttribute("title")).toBe(
+    expect(tasks).toHaveAttribute(
+      "title",
       "1 of 1 task-list item in the spec (- [ ] and - [x], nested lists included) is checked."
     );
     const children = screen.getByTestId("issue-progress-children");
     expect(children.textContent).toBe("0/1 child");
-    expect(children.getAttribute("title")).toBe("0 of 1 child issue is done.");
+    expect(children).toHaveAttribute("title", "0 of 1 child issue is done.");
   } finally {
     view.unmount();
   }

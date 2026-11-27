@@ -138,11 +138,12 @@ test("harnessPorts resolves the stack's ports and keeps both of its refusals", (
 // What a run of more than one stack refuses before it starts anything, and why the list is
 // exactly these. Each variable names a thing ONE stack owns, so a run that honoured it would
 // hand every stack the one database, the one set of servers or the one port - and the rows
-// would then delete each other's fixtures, because e2e/test.ts truncates that database before
-// every row, and fail as though the product were broken. `DISPATCH_E2E_REUSE_SERVERS` is the
-// one that goes unnoticed without a row here: `globalSetup` returns on it before it starts
-// anything, so a `--workers 4 DISPATCH_E2E_REUSE_SERVERS=1` that is not refused puts four
-// workers on one server in silence.
+// would then delete each other's fixtures, because each worker empties that database before its
+// first row and resets the stack's fakes before every row (e2e/test.ts), and fail as though the
+// product were broken. `DISPATCH_E2E_REUSE_SERVERS` is the one that goes unnoticed without a row
+// here: `globalSetup` returns on it before it starts anything, so a
+// `--workers 4 DISPATCH_E2E_REUSE_SERVERS=1` that is not refused puts four workers on one server
+// in silence.
 test("a run of more than one stack refuses every variable one stack owns, by name", () => {
   const refused: Record<string, string> = {
     DATABASE_URL: "postgres://localhost/dispatch",
@@ -170,9 +171,10 @@ test("a run of more than one stack that sets none of them is not refused", () =>
 });
 
 test("a run of more than one stack refuses to start without a Postgres provider", async () => {
-  // Each stack runs a Postgres of its own, because e2e/seed.ts truncates its database before
-  // every row. The refusal comes before a server starts, and it leaves nothing behind: the run
-  // directory it made is removed with everything else the failed start held.
+  // Each stack runs a Postgres of its own, because each worker empties its stack's database
+  // before its first row (e2e/test.ts, through e2e/seed.ts). The refusal comes before a server
+  // starts, and it leaves nothing behind: the run directory it made is removed with everything
+  // else the failed start held.
   await expect(startStacks(2, { env: {} })).rejects.toThrow(
     "2 Playwright workers run 2 stacks, each with a Postgres of its own"
   );

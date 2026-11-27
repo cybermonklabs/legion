@@ -11,7 +11,7 @@ import {
 } from "./api";
 import { mouseDrag } from "./board-drag";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /** What each choice's button says (`CHOICE_LABELS`, ParentStatusDialog.tsx), as a person reads
@@ -31,20 +31,20 @@ interface Standing {
 /** A parent in work with open issues two levels under it: a child in `todo` over a grandchild in
  *  `in_progress`, and a child in `backlog`. Answers the four issues and how each was seeded. */
 async function seedTree(name: string) {
-  const parent = await createIssue({ project: "CORE", title: `${name} parent` });
+  const parent = await createIssue({ project: rowKey("CORE"), title: `${name} parent` });
   const working = await createIssue({
     parent: parent.key,
-    project: "CORE",
+    project: rowKey("CORE"),
     title: `${name} child in todo`,
   });
   const grandchild = await createIssue({
     parent: working.key,
-    project: "CORE",
+    project: rowKey("CORE"),
     title: `${name} grandchild`,
   });
   const waiting = await createIssue({
     parent: parent.key,
-    project: "CORE",
+    project: rowKey("CORE"),
     title: `${name} child in backlog`,
   });
   await Promise.all([
@@ -64,7 +64,7 @@ async function seedTree(name: string) {
 
 /** Each issue of CORE, or each of `keys`, as Dispatch holds it now. */
 async function standing(keys?: readonly string[]): Promise<Record<string, Standing>> {
-  const issues = await listIssues("CORE");
+  const issues = await listIssues(rowKey("CORE"));
   return Object.fromEntries(
     issues
       .filter((issue) => keys === undefined || keys.includes(issue.key))
@@ -151,20 +151,21 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
   // One worker of an issue pod ran this row in 33 s, over half the suite's 60 s row budget, which
   // is sized for rows a fraction of its length.
   test.setTimeout(120_000);
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const first = await seedTree("First");
   const second = await seedTree("Second");
   const third = await seedTree("Third");
-  const shelved = await createIssue({ project: "CORE", title: "Parent on the backlog" });
+  const shelved = await createIssue({ project: core, title: "Parent on the backlog" });
   const child = await createIssue({
     parent: shelved.key,
-    project: "CORE",
+    project: core,
     title: "Child on the backlog",
   });
-  const loose = await createIssue({ project: "CORE", title: "Work under no epic" });
+  const loose = await createIssue({ project: core, title: "Work under no epic" });
   const epic = await createIssue({
     labels: ["epic"],
-    project: "CORE",
+    project: core,
     title: "Epic on the backlog",
   });
   await Promise.all([
@@ -288,7 +289,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
 
     // The project board: P2's card dragged to Done asks the same, and Move them with it closes
     // every open issue under P2.
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board", exact: true }).click();
     const inProgress = page.getByRole("region", { name: "In progress", exact: true });
     const p2 = second.parent.key;
@@ -380,7 +381,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
       isStatusChange
     );
     const loosePatches = watchWrites(page, "PATCH", `/api/v1/issues/${loose.key}`);
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     // The board above left Board as alice's view of the project; the issues table is its List.
     await page.getByRole("button", { name: "List", exact: true }).click();
     const looseSelect = page.getByRole("checkbox", { name: `Select ${loose.key}`, exact: true });

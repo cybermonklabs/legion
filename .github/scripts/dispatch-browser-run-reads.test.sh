@@ -351,17 +351,19 @@ happy_page() {
     "16|lint|success" \
     "17|dispatch-multiprocess|success" \
     "18|dispatch-browser / visual|failure" \
-    "19|dispatch-browser-pr / shard (1)|failure" \
-    "20|dispatch-browser-pr / merge|null"
+    "19|dispatch-browser / embedder|success" \
+    "20|dispatch-browser-pr / shard (1)|failure" \
+    "21|dispatch-browser-pr / merge|null"
 }
 
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
 # stand-in that refuses that many calls and then answers, and the happy page for the answer. It
 # also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
-# and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
-# an earlier case wrote goes with it, so one case's faults never answer another's call, and so
-# do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
-# stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log.
+# and the cases that do set `retry_seconds` themselves after calling it. Any per-call
+# `stderr.<n>` an earlier case wrote goes with it, so one case's faults never answer another's
+# call, and so do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call
+# log, and the stand-in gh's per-call `kill-wrapper.<n>` files and its rate-limit answer and
+# calls, and the stand-in `sleep`'s call log.
 fixture() {
   rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
   rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
@@ -430,31 +432,39 @@ echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
 drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
-check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 7)"
+check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 8)"
 check "each entry holds the four fields and no other" \
-  "$(is "$(jq -r '.[0] | keys | join(",")' "$work/out.json")" "conclusion,id,leg,name")"
+  "$(is "$(jq -r '.[0] | keys | join(",")' "$work/out.json")" "conclusion,id,legs,name")"
 check "a shard job's id, name and conclusion travel unchanged" \
   "$(is "$(field 12 '"\(.id) \(.name) \(.conclusion)"')" '12 dispatch-browser / shard (2) failure')"
 check "the alone job's too" \
   "$(is "$(field 13 '"\(.id) \(.name) \(.conclusion)"')" \
     '13 dispatch-browser / alone (webkit-alone) success')"
-check "the first shard leg reads shard-1" "$(is "$(field 11 .leg)" shard-1)"
-check "the second reads shard-2" "$(is "$(field 12 .leg)" shard-2)"
-check "the alone leg reads alone-webkit-alone" "$(is "$(field 13 .leg)" alone-webkit-alone)"
-check "the multiprocess job carries a null leg" "$(is "$(field 14 .leg)" null)"
-check "and keeps its conclusion" "$(is "$(field 14 .conclusion)" skipped)"
-check "the merge job carries a null leg" "$(is "$(field 15 .leg)" null)"
+check "the first shard job runs the leg shard-1" "$(is "$(field 11 '.legs | @json')" '["shard-1"]')"
+check "the second runs shard-2" "$(is "$(field 12 '.legs | @json')" '["shard-2"]')"
+check "the alone job runs alone-webkit-alone" \
+  "$(is "$(field 13 '.legs | @json')" '["alone-webkit-alone"]')"
+# The two jobs that run on the runner itself, each of whose Playwright runs uploads a blob
+# report under its own leg (.github/scripts/dispatch-browser-host-suite.sh): reading one owes
+# each leg a blob, and reading three merges every leg of a job that did not succeed.
+check "the embedder job runs the leg embedder" \
+  "$(is "$(field 19 '.legs | @json')" '["embedder"]')"
+check "the multiprocess job runs its two legs, the dashboard run and the sign-in run" \
+  "$(is "$(field 14 '.legs | @json')" '["multiprocess-dashboard","multiprocess-signin"]')"
+check "and keeps its conclusion, so reading one owes nothing of it when it is skipped" \
+  "$(is "$(field 14 .conclusion)" skipped)"
+check "the merge job runs no leg" "$(is "$(field 15 '.legs | @json')" '[]')"
 check "and its conclusion, which is null while it runs" "$(is "$(field 15 .conclusion)" null)"
-check "the visual job is kept, with a null leg" "$(is "$(field 18 .leg)" null)"
+check "the visual job is kept, with no leg" "$(is "$(field 18 '.legs | @json')" '[]')"
 check "and keeps its conclusion, so reading three can name it when it is red" \
   "$(is "$(field 18 .conclusion)" failure)"
-check "the binaries job is kept, with a null leg" "$(is "$(field 10 .leg)" null)"
+check "the binaries job is kept, with no leg" "$(is "$(field 10 '.legs | @json')" '[]')"
 check "and keeps its conclusion, so reading three can name a build that failed" \
   "$(is "$(field 10 .conclusion)" success)"
 check "the caller's own jobs are dropped" \
   "$(is "$(jq -r '[.[] | select(.id == 16 or .id == 17)] | length' "$work/out.json")" 0)"
 check "and so are the other caller's" \
-  "$(is "$(jq -r '[.[] | select(.id == 19 or .id == 20)] | length' "$work/out.json")" 0)"
+  "$(is "$(jq -r '[.[] | select(.id == 20 or .id == 21)] | length' "$work/out.json")" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 
 echo "case: the route is this run's attempt endpoint"
@@ -474,8 +484,8 @@ fixture 0
 drive jobs "$work/out.json" dispatch-browser-pr
 check "exits 0" "$(is "$status" 0)"
 check "writes that caller's two jobs and no other" "$(is "$(entries)" 2)"
-check "its shard leg reads shard-1" "$(is "$(field 19 .leg)" shard-1)"
-check "with its own conclusion" "$(is "$(field 19 .conclusion)" failure)"
+check "its shard job runs the leg shard-1" "$(is "$(field 20 '.legs | @json')" '["shard-1"]')"
+check "with its own conclusion" "$(is "$(field 20 .conclusion)" failure)"
 check "and the full lane's shard (1) is not in it" "$(is "$(jq -r '[.[] | select(.id == 11)] | length' "$work/out.json")" 0)"
 
 echo "case: a project name holding a digit, a capital and a space is one leg"
@@ -486,8 +496,21 @@ fixture 0
 page "21|dispatch-browser / alone (Edge 2 alone)|success"
 drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
-check "reads one leg, not three" "$(is "$(entries)" 1)"
-check "holding the project whole" "$(is "$(field 21 .leg)" 'alone-Edge 2 alone')"
+check "reads one job" "$(is "$(entries)" 1)"
+check "running one leg, not three, holding the project whole" \
+  "$(is "$(field 21 '.legs | @json')" '["alone-Edge 2 alone"]')"
+
+echo "case: the legs are read after the caller's prefix, whichever caller it is"
+# ci.yaml's dispatch-browser-pr job calls this workflow too, so the prefix before ` / ` is that
+# job's name rather than `dispatch-browser`: the legs are read from the part after it. The
+# pull-request lane runs the embedder job, and lists the multiprocess job as skipped.
+fixture 0
+page "31|dispatch-browser-pr / embedder|failure" "32|dispatch-browser-pr / multiprocess|skipped"
+drive jobs "$work/out.json" dispatch-browser-pr
+check "exits 0" "$(is "$status" 0)"
+check "the embedder leg" "$(is "$(field 31 '.legs | @json')" '["embedder"]')"
+check "and the two multiprocess legs" \
+  "$(is "$(field 32 '.legs | @json')" '["multiprocess-dashboard","multiprocess-signin"]')"
 
 echo "case: every attempt refused with HTTP 502"
 fixture 3 "HTTP 502"
@@ -749,8 +772,8 @@ retry_seconds=1
 drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
-check "writes the attempt that answered" "$(is "$(entries)" 7)"
-check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
+check "writes the attempt that answered" "$(is "$(entries)" 8)"
+check "with its legs" "$(is "$(field 13 '.legs | @json')" '["alone-webkit-alone"]')"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "and waited the ladder's first second" "$(is "$(sleeps)" 1)"
 
@@ -878,7 +901,7 @@ wait_asked=$(sleeps)
 check "exits 0" "$(is "$status" 0)"
 check "reads the reset from the rate_limit route once" "$(is "$(rate_calls)" 1)"
 check "calls the jobs route twice: refused, then answered" "$(is "$(calls)" 2)"
-check "writes the attempt that answered" "$(is "$(entries)" 7)"
+check "writes the attempt that answered" "$(is "$(entries)" 8)"
 check "logs the wait, naming the reset and the job's limit" \
   "$(contains "$out" "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, within this job's limit at ")"
 check "asks sleep once, for the seconds to a second past the reset" \
@@ -907,6 +930,30 @@ check "after the ladder's three attempts" "$(is "$(calls)" 3)"
 check "each naming the limit it lacks" \
   "$(is "$(grep -c 'names no time limit to wait within' <<<"$out")" 3)"
 check "asks sleep only for the ladder's two waits" "$(is "$(sleeps)" '0|0')"
+
+echo "case: RATE_LIMITED, a reset already past: one more read at once, and no wait loop"
+# The budget at 0 with a reset that has already gone by names no time to wait for. gh_wait_reset
+# reads it as the window turned over (its wake is the reset's next second or now, whichever is
+# later), so it runs the read once more with no pause and fails by name when that read is refused
+# too, and gh_read, with a limit set, stops there. A wait of its own for such a reset would ask
+# again once a second until a cap; the stand-in refuses more reads than the two, so a read that
+# spun on the past reset would read a third time and ask sleep for a second. A paginated read
+# leaves gh_wait_reset no answer of its own, so it reads the rate_limit route after each refused
+# read that exits 1 (`.github/scripts/gh-read.sh#_gh_read_refusal`): once for the refusal that
+# names the past reset, and once for the read after it, which finds the budget still spent.
+fixture 9 "$rate_limited"
+reset=$(($(date +%s) - 60))
+echo "$reset" > "$work/reset"
+drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json" "$caller"
+check "fails the step" "$(is "$status" 1)"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+check "calls the jobs route twice: the refusal, then once more at once" "$(is "$(calls)" 2)"
+check "reads the rate_limit route once for each refused read" "$(is "$(rate_calls)" 2)"
+check "asks sleep for nothing" "$(is "$(sleeps)" '')"
+check "names the budget still spent after its reset" \
+  "$(contains "$out" "^::error::the API budget is still spent after the wait for its reset at $(utc "$reset")")"
+check "and the read's own line names the attempt that decided it" \
+  "$(contains "$out" "attempt 2, which decided the failure, answered HTTP 403; the ladder made 2 attempts")"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.

@@ -32,18 +32,13 @@ export interface CliRun {
  * `options.token` is the bearer the command presents: the harness's shared agent token unless a
  * row hands it one of its own, which is how a row runs the command under a person's own personal
  * token, as an agent acting for its person runs it.
- *
- * `options.stdin` is the bytes the command reads on its standard input, as a pipe hands them to a
- * `--content-file -`, and then the end of that input; without it the command's standard input is
- * ignored.
  */
 export function runDispatch(
   args: readonly string[],
   home: string,
-  { token = e2eAgentToken, stdin }: { readonly token?: string; readonly stdin?: Uint8Array } = {}
+  { token = e2eAgentToken }: { readonly token?: string } = {}
 ): Promise<CliRun> {
-  const argv = [dispatchEntry, ...args];
-  const options = {
+  const child = spawn("bun", [dispatchEntry, ...args], {
     cwd: home,
     env: {
       PATH: process.env.PATH ?? "",
@@ -54,18 +49,9 @@ export function runDispatch(
       DISPATCH_URL: baseUrl,
       DISPATCH_TOKEN: token,
     },
-  };
-  const child =
-    stdin === undefined
-      ? spawn("bun", argv, { ...options, stdio: ["ignore", "pipe", "pipe"] })
-      : spawn("bun", argv, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   const finished = Promise.withResolvers<CliRun>();
-  if (child.stdin !== null) {
-    // A command that exits before it has read the whole input fails the row here rather than
-    // leaving the write's EPIPE unhandled.
-    child.stdin.once("error", finished.reject);
-    child.stdin.end(stdin);
-  }
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8");

@@ -1,6 +1,8 @@
+import { type Body, routePath } from "../web/src/api/paths";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import {
+  agentMention,
   type FakeSession,
   getSentMessages,
   setLiveSessions,
@@ -22,10 +24,14 @@ import {
 } from "./api";
 import { barAction, documentEditor, selectEditorText } from "./editor";
 import { pickReference } from "./ref-picker";
-import { holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Page, test } from "./test";
+import { answeredPost, holdPosts, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
+import { expect, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
+/** The planner session. Its id is the running row's own (`rowSessionId`, e2e/test.ts), read from
+ *  a getter when a row names it, as `agentSessions` (e2e/agents.ts) does: Dispatch keeps a
+ *  comment's deliveries to a session and the replies on them by its id, for every person at
+ *  once, so under a fixed id a repeat of a row would meet the deliveries its earlier copy made. */
 const planner: FakeSession = {
   // The E7b retry assertion resends a steer-mode comment and expects it to succeed - a
   // real live session normally advertises steer, so the fixture must too.
@@ -34,22 +40,22 @@ const planner: FakeSession = {
   last_seen: 1_700_000_000_000,
   machine_id: "e2e",
   roles: ["role-x"],
-  session_id: "planner",
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Planner",
 };
 
-async function issueCommentPayload(page: Page, issueKey: string): Promise<Record<string, unknown>> {
-  const response = page.waitForResponse(
-    (candidate) =>
-      candidate.request().method() === "POST" &&
-      candidate.url().endsWith(`/api/v1/issues/${issueKey}/comments`) &&
-      candidate.status() === 201
-  );
+type IssueCommentBody = Body<"/api/v1/issues/{key}/comments", "post">;
+
+async function issueCommentPayload(page: Page, issueKey: string): Promise<IssueCommentBody> {
+  const path = routePath("post", "/api/v1/issues/{key}/comments", { key: issueKey });
+  const response = answeredPost(page, path, 201);
   await page
     .getByRole("form", { name: "Comment composer" })
     .getByRole("button", { name: "Send" })
     .click();
-  return (await response).request().postDataJSON() as Record<string, unknown>;
+  return (await response).request().postDataJSON() as IssueCommentBody;
 }
 
 /** Types a comment, then clicks Send and the Reply on the turn reading `parent` in one task,
@@ -82,8 +88,9 @@ async function sendBesideReply(page: Page, issueKey: string, parent: string): Pr
   }, reply);
 
   const request = await sent;
-  expect(new URL(request.url()).pathname).toBe(`/api/v1/issues/${issueKey}/comments`);
-  expect(request.postDataJSON()).toEqual({ body: "Status please" });
+  const path = routePath("post", "/api/v1/issues/{key}/comments", { key: issueKey });
+  expect(new URL(request.url()).pathname).toBe(path);
+  expect(request.postDataJSON() as IssueCommentBody).toEqual({ body: "Status please" });
   await expect(field).toHaveValue("Status please");
   await expect(cancelReply).toHaveCount(0);
   refuse();
@@ -96,9 +103,10 @@ async function sendBesideReply(page: Page, issueKey: string, parent: string): Pr
 test("E1 and E2: explicit role mentions deliver once while /btw without a mention stays a plain comment @pr", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention behavior" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention behavior" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -110,7 +118,9 @@ test("E1 and E2: explicit role mentions deliver once while /btw without a mentio
       body: "[@role-x](dispatch://role/role-x)",
       delivery: "btw",
     });
-    await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
+    await expect
+      .poll(() => getSentMessages())
+      .toMatchObject([{ target_session: planner.session_id }]);
 
     await page
       .getByRole("form", { name: "Comment composer" })
@@ -125,14 +135,15 @@ test("E1 and E2: explicit role mentions deliver once while /btw without a mentio
 test("E2b: a project-document comment preserves the canonical mention and strips /aside", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", { content: "# Notes\n\nMention this.", name: "Notes" });
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, { content: "# Notes\n\nMention this.", name: "Notes" });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
-    await page.goto("/projects/CORE/documents/notes");
+    await page.goto(`/projects/${core}/documents/notes`);
     await expect(documentEditor(page)).toContainText("Mention this.");
     await selectEditorText(page, "Mention this");
     await barAction(page, "Comment");
@@ -145,8 +156,12 @@ test("E2b: a project-document comment preserves the canonical mention and strips
         candidate.status() === 201
     );
     await composer.getByRole("button", { name: "Send" }).click();
-    expect((await response).request().postDataJSON()).toMatchObject({
-      body: "[@Planner](dispatch://agent/planner)",
+    const body = (await response).request().postDataJSON() as Body<
+      "/api/v1/artifacts/{id}/comments",
+      "post"
+    >;
+    expect(body).toMatchObject({
+      body: agentMention(planner),
       delivery: "aside",
     });
   } finally {
@@ -155,8 +170,9 @@ test("E2b: a project-document comment preserves the canonical mention and strips
 });
 
 test("a conversation send holds Reply from the same task", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Held conversation" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Held conversation" });
   await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -185,8 +201,9 @@ test("a conversation send holds Reply from the same task", async ({ browser }) =
 // A send's address is fixed in the task that starts it. A Reply clicked in that same task, before
 // React disables it, must not turn the comment on its way into a reply.
 test("a same-task Reply cannot make a conversation comment a reply", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Held conversation" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Held conversation" });
   await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -204,9 +221,10 @@ test("a same-task Reply cannot make a conversation comment a reply", async ({ br
 test("a same-task Reply cannot send a conversation comment to an agent's message thread", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Held conversation" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Held conversation" });
   await createMessage(issue.key, {
     body: "Can this ship?",
     delivery: "btw",
@@ -228,8 +246,9 @@ test("a same-task Reply cannot send a conversation comment to an agent's message
 test("a conversation thread's own reply holds Collapse thread while it is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Held thread" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Held thread" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -268,8 +287,9 @@ test("a conversation thread's own reply holds Collapse thread while it is out", 
 // comments, so the docked composer holds the draft until the server answers, and the comment the
 // server takes lands in the Conversation as on an open issue.
 test("a docked send out when its issue closes posts", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Closed under a send" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Closed under a send" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -314,8 +334,9 @@ test("a docked send out when its issue closes posts", async ({ browser }) => {
 test("a docked send the server answers at 35 s is one keyed write and shows once, with no Retry at the deadline", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Slow server" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Slow server" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -360,8 +381,9 @@ test("a docked send the server answers at 35 s is one keyed write and shows once
 test("a docked send refused while its issue closes offers Retry, which posts on the closed issue", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Closed under a refusal" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Closed under a refusal" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -412,8 +434,9 @@ test("a docked send refused while its issue closes offers Retry, which posts on 
 test("a thread resolved while its own reply is out stays open with the reply and its refusal", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Resolved under a reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Resolved under a reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -447,8 +470,9 @@ test("a thread resolved while its own reply is out stays open with the reply and
 test("a thread's own reply out when the viewport narrows to a phone keeps its draft and refusal", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Narrowed under a reply" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Narrowed under a reply" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
   const alice = await asUser(browser, "alice");
 
@@ -477,6 +501,7 @@ test("a thread's own reply out when the viewport narrows to a phone keeps its dr
 test("E7b and Retry: removing a prefilled mention creates a plain reply, and retries name their target", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   // Two failed sends run end to end here, the seeded mention's and the Retry's, and each waits
   // out the listener take-over window before it settles failed: half a second under the
   // harness's DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW (e2e/run-server.sh), of the twelve seconds
@@ -485,13 +510,13 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
   // The mention's first delivery has to FAIL for a retry to be offered at all: a same-mode
   // retry of a delivery that landed is a repeat that is recognised and dropped, so the row no
   // longer carries a Retry (LEGION-271).
-  await setSessionSendStatus("planner", 404);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reply behavior" });
+  await setSessionSendStatus(planner.session_id, 404);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Reply behavior" });
   const parent = await createComment(issue.key, {
     body: "Parent",
     delivery: "steer",
-    mentions: [{ target: "session:planner" }],
+    mentions: [{ target: `session:${planner.session_id}` }],
   });
   const alice = await asUser(browser, "alice");
 
@@ -504,9 +529,7 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
       .filter({ hasText: "Parent" });
     await card.getByRole("button", { name: "Reply" }).click();
     const composer = page.getByRole("form", { name: "Comment composer" });
-    await expect(composer.getByLabel("Comment")).toHaveValue(
-      "[@Planner](dispatch://agent/planner) "
-    );
+    await expect(composer.getByLabel("Comment")).toHaveValue(`${agentMention(planner)} `);
     await composer.getByLabel("Comment").fill("Plain reply");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
       body: "Plain reply",
@@ -515,12 +538,17 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
     const retry = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
-        candidate.url().endsWith(`/api/v1/comments/${parent.id}/deliveries`)
+        new URL(candidate.url()).pathname ===
+          routePath("post", "/api/v1/comments/{id}/deliveries", { id: parent.id })
     );
     await card.getByRole("button", { name: "Retry" }).click();
-    expect((await retry).request().postDataJSON()).toEqual({
+    const body = (await retry).request().postDataJSON() as Body<
+      "/api/v1/comments/{id}/deliveries",
+      "post"
+    >;
+    expect(body).toEqual({
       delivery: "steer",
-      target: "session:planner",
+      target: `session:${planner.session_id}`,
     });
   } finally {
     await alice.close();
@@ -535,13 +563,14 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
 test("a duplicated mention delivery says the listener already had it, and offers no safe retry", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Duplicate mention" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Duplicate mention" });
   const comment = await createComment(issue.key, {
     body: "@Planner take a look",
     delivery: "steer",
-    mentions: [{ target: "session:planner" }],
+    mentions: [{ target: `session:${planner.session_id}` }],
   });
   // The retry is a duplicate only once the first attempt has reached the listener. The comment
   // answers when it commits, and its mention is sent after that answer, on the mention sender's
@@ -562,7 +591,10 @@ test("a duplicated mention delivery says the listener already had it, and offers
     .toEqual([{ attempt: 1, duplicate: false, state: "sent" }]);
   // The same mention, the same mode: the stand-in recognises the repeated key exactly as
   // JetStream would and answers `duplicate`.
-  await retryCommentDelivery(comment.id, { delivery: "steer", target: "session:planner" });
+  await retryCommentDelivery(comment.id, {
+    delivery: "steer",
+    target: `session:${planner.session_id}`,
+  });
 
   const alice = await asUser(browser, "alice");
   try {
@@ -585,14 +617,15 @@ test("a duplicated mention delivery says the listener already had it, and offers
 // session working behind a cache that is refilling - the session bucket was recreated, another
 // listener's registrations are still arriving - is missing from that list. Dispatch asks about
 // the mentioned session by id now, which reads the session store through, so the comment is
-// delivered; before, the conversation showed "no live session planner" for a session that had
+// delivered; before, the conversation showed "no live session <id>" for a session that had
 // never gone anywhere.
 test("a mention reaches a session the listener's list has dropped while its record stands", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention through a refilling cache" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention through a refilling cache" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -602,12 +635,14 @@ test("a mention reaches a session the listener's list has dropped while its reco
     await pickReference(field, "/btw @", "Planner");
     // The composer offered the mention off the listener's list, and the list drops the session
     // between that read and the send, with the session's own record untouched.
-    await setSessionLive("planner", false);
+    await setSessionLive(planner.session_id, false);
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "[@Planner](dispatch://agent/planner)",
+      body: agentMention(planner),
       delivery: "btw",
     });
-    await expect.poll(() => getSentMessages()).toMatchObject([{ target_session: "planner" }]);
+    await expect
+      .poll(() => getSentMessages())
+      .toMatchObject([{ target_session: planner.session_id }]);
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText("sent");
     await expect(deliveries).not.toContainText("no live session");
@@ -621,9 +656,10 @@ test("a mention reaches a session the listener's list has dropped while its reco
 test("a mention of a session the listener holds no record of is still refused as no live session", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention of an ended session" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention of an ended session" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -631,13 +667,13 @@ test("a mention of a session the listener holds no record of is still refused as
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
     await pickReference(field, "/btw @", "Planner");
-    await setSessionRecord("planner", "absent");
+    await setSessionRecord(planner.session_id, "absent");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "[@Planner](dispatch://agent/planner)",
+      body: agentMention(planner),
       delivery: "btw",
     });
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText(
-      "no live session planner"
+      `no live session ${planner.session_id}`
     );
     expect(await getSentMessages()).toEqual([]);
   } finally {
@@ -653,9 +689,10 @@ test("a mention of a session the listener holds no record of is still refused as
 test("a mention of a session the listener could not read is refused with the listener's reason, not as no live session", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Mention through a silent bus" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Mention through a silent bus" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -665,15 +702,15 @@ test("a mention of a session the listener could not read is refused with the lis
     await pickReference(field, "/btw @", "Planner");
     // The session is there as far as anyone knows; it is the read that fails, which the
     // listener answers 503 with the bus's reason.
-    await setSessionRecord("planner", "unreadable");
+    await setSessionRecord(planner.session_id, "unreadable");
     expect(await issueCommentPayload(page, issue.key)).toEqual({
-      body: "[@Planner](dispatch://agent/planner)",
+      body: agentMention(planner),
       delivery: "btw",
     });
     const deliveries = page.getByRole("list", { name: "Mention deliveries" });
     await expect(deliveries).toContainText("failed");
     await expect(deliveries).toContainText(
-      "envoy listener: GET /v1/registry/planner returned 503: envoy: the message bus did not answer: nats: no responders available"
+      `envoy listener: GET /v1/registry/${planner.session_id} returned 503: envoy: the message bus did not answer: nats: no responders available`
     );
     await expect(deliveries).not.toContainText("no live session");
     expect(await getSentMessages()).toEqual([]);

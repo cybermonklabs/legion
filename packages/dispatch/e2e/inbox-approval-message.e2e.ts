@@ -5,12 +5,14 @@ import {
   createProject,
   editArtifact,
   getArtifact,
+  patchIssue,
   requestApproval,
   withOpenedAsk,
 } from "./api";
 import { holdFirstRequest } from "./editor";
-import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
-import { expect, test } from "./test";
+import { clearedInbox } from "./inbox-drawn";
+import { inboxPane, inboxRow, paneScroller, selectedRow } from "./inbox-pane";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -31,8 +33,6 @@ const session = {
   actor: { id: "e2e-approval-message", kind: "session" as const },
   as: "agent" as const,
 };
-
-const PROJECT = "MSG";
 
 /** The list every row reads: the cleared assignee filter, so a question nobody holds is listed. */
 const INBOX = "/?assignee=everyone";
@@ -87,9 +87,8 @@ const RICH_SUMMARY = [
 const HELD_SUMMARY = "The mirror takes the clock on Thursday.";
 
 /** The question the refused row asks. Its mark sits in the second paragraph on purpose: the
- *  short row draws the whole question through the one renderer on one line, so the mark is on
- *  the page twice, once in that row and once in the drawn question body, and a count of it
- *  shows the body drawn once. */
+ *  short row draws the whole question through the one renderer on one line, so the mark is in
+ *  the row's own list entry once and in the drawn question body once. */
 const FALLBACK_MARK = "The fallback note names the window and who signs it off.";
 const FALLBACK_SUMMARY = `The export window moves to Sunday.\n\n${FALLBACK_MARK}`;
 
@@ -111,10 +110,15 @@ interface Seed {
   specName: string;
 }
 
-/** One issue, one spec at version 1, and one open request to approve it with `summary`. */
+/** One issue, one spec at version 1, and one open request to approve it with `summary`. The
+ *  cleared filter lists every open question of the stack, every earlier row's beside this one, so
+ *  the issue is at P0: the Inbox bands by priority, P0 first, and sorts a band newest first
+ *  (`grouping.ts`), so the request, asked last, heads the list ahead of every older question. */
 async function seedApproval(summary: string): Promise<Seed> {
-  await createProject({ key: PROJECT, name: "Mirror rollout" });
-  const issue = await createIssue({ project: PROJECT, spec: SPEC, title: "Mirror rollout" });
+  const project = rowKey("MSG");
+  await createProject({ key: project, name: "Mirror rollout" });
+  const issue = await createIssue({ project, spec: SPEC, title: "Mirror rollout" });
+  await patchIssue(issue.key, { priority: 0 });
   const artifactId = issue.primary_artifact_id;
   const opened = withOpenedAsk(await requestApproval(artifactId, { summary }, session));
   expect(opened.version).toBe(1);
@@ -134,8 +138,9 @@ async function seedApproval(summary: string): Promise<Seed> {
  * spec and version 1 of the Verification document together.
  */
 async function seedTwoDocuments(): Promise<Seed> {
-  await createProject({ key: PROJECT, name: "Mirror rollout" });
-  const issue = await createIssue({ project: PROJECT, spec: SPEC, title: "Mirror rollout" });
+  const project = rowKey("MSG");
+  await createProject({ key: project, name: "Mirror rollout" });
+  const issue = await createIssue({ project, spec: SPEC, title: "Mirror rollout" });
   const artifactId = issue.primary_artifact_id;
 
   // An approval of version 1 is what the request below is marked against, so the document the
@@ -183,17 +188,26 @@ async function seedTwoDocuments(): Promise<Seed> {
   };
 }
 
-// @pr: An approval: the reading pane has to draw the request's whole question above the document it asks about.
-test("the reading pane draws the request's whole question as markdown above the document @pr", async ({
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the approval rows of `approval.e2e.ts` and
+// `inbox-pane-scroll.e2e.ts` keep an approval read in the Inbox on the lane. The full lane runs
+// this one.
+test("the reading pane draws the request's whole question as markdown above the document", async ({
   browser,
 }) => {
   const seed = await seedApproval(RICH_SUMMARY);
+  // What the page draws first under the cleared filter, by the Inbox's own rules applied to the
+  // server's answer (`clearedInbox`): this row's request, put at the list's head.
+  const cleared = await clearedInbox("alice");
+  expect(cleared.rows[0], "the cleared Inbox does not draw this row's request first").toBe(
+    seed.askId
+  );
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     const pane = inboxPane(page);
 
-    // Nothing is clicked: the Inbox selects the first row when it opens, and this list holds one.
+    // Nothing is clicked: the Inbox selects the first row when it opens, which is this row's.
     await page.goto(INBOX);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.askId);
 
@@ -291,10 +305,11 @@ test("an approval whose document cannot be read falls back to the card, which dr
     await expect(pane.getByTestId("pane-approval-question")).toHaveCount(0);
     await expect(card.getByText(FALLBACK_MARK)).toHaveCount(1);
     await expect(pane.getByText(FALLBACK_MARK)).toHaveCount(1);
-    // Twice on the page in all: the list row draws the same subject in its own line, which the
-    // one renderer flattens whole where the regular-expression stripper it replaced
-    // showed its first line alone.
-    await expect(page.getByText(FALLBACK_MARK)).toHaveCount(2);
+    // Once in the list row too: the list draws the same subject in its own line, which the one
+    // renderer flattens whole where the regular-expression stripper it replaced showed its first
+    // line alone. Scoped to this row's own entry so a retry or repeat in the same worker's
+    // cleared Inbox is not counted beside it.
+    await expect(inboxRow(page, seed.askId).getByText(FALLBACK_MARK)).toHaveCount(1);
   } finally {
     await alice.close();
   }

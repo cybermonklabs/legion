@@ -1,7 +1,7 @@
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame } from "./api";
 import { frontLiveView } from "./live-views";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -19,9 +19,12 @@ import { asUser } from "./users";
  * fails there on its own assertion.
  */
 
-/** The session these rows read: a UUID, which Dispatch's agent routes require, and this file's
- *  own, since the relay's replay is process-global. */
-const COMPLETION_ID = "01a0e812-0005-7000-8000-000000000001";
+/** The session these rows read: the row's own (`rowSessionId`, e2e/test.ts), a UUID, which
+ *  Dispatch's agent routes require. The live view shows the messages Dispatch keeps for a
+ *  session by its id, for every person at once, and the relay's replay is process-global. */
+function completionId(): string {
+  return rowSessionId("completion");
+}
 
 /** The skill a pick writes, and the one name of the list that holds `asd`. */
 const SKILL = "skill:asd-ste100";
@@ -63,7 +66,7 @@ function completionSession(): FakeSession {
     last_seen: Date.now() - 5_000,
     machine_id: "completion-host",
     roles: [],
-    session_id: COMPLETION_ID,
+    session_id: completionId(),
     title: "Completer",
   };
 }
@@ -72,10 +75,10 @@ function completionSession(): FakeSession {
 async function seedCommands(): Promise<void> {
   await setLiveSessions([completionSession()]);
   await publishAgentStreamFrame(
-    COMPLETION_ID,
+    completionId(),
     {
       frames: [{ commands: COMMANDS, kind: "commands", seq: 1, v: 1 }],
-      session_id: COMPLETION_ID,
+      session_id: completionId(),
       v: 1,
     },
     "replay"
@@ -95,7 +98,7 @@ function commandMenu(page: Page): Locator {
 
 /** Opens the live view with the box focused and the list in place, and answers the box. */
 async function openComposer(page: Page): Promise<Locator> {
-  await page.goto(`/agents/${COMPLETION_ID}/live`);
+  await page.goto(`/agents/${completionId()}/live`);
   const input = composer(page);
   await expect(input).toHaveAttribute("placeholder", /\/ for commands/);
   await input.click();

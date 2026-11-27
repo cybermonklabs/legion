@@ -6,11 +6,11 @@ import { withIssuePage } from "./issue-page-option";
 import {
   expectReadsReferences,
   formReadings,
-  READING_LEAD,
-  READING_SESSION_ID,
   READING_SESSION_TITLE,
   type ReadingWorld,
+  readingAuthor,
   readingQuestionBlock,
+  readingSessionId,
   readingText,
   scopedTo,
   seedReadingWorld,
@@ -34,12 +34,6 @@ import { expect, test } from "./test";
  * no question map, so a `#id` in its words is drawn as written, and its driver holds the rest.
  */
 
-/** The agent session these rows write as, so a write is never the reader's own. */
-const readingAgent = {
-  actor: { id: "e2e-reading-agent", kind: "session" as const },
-  as: "agent" as const,
-};
-
 /** The heading of the one decision the decision row writes. */
 const DECISION = "Read the references";
 
@@ -49,7 +43,7 @@ test("activity-event-body: a pinned Activity event draws every form of a stored 
   page,
 }) => {
   const world = await seedReadingWorld();
-  await createComment(world.host.key, { body: readingText(world) }, readingAgent);
+  await createComment(world.host.key, { body: readingText(world) }, readingAuthor);
 
   // The Activity tab draws an event's line and no body; the margin's Pinned tab is where it draws
   // an event's body (`EventBody`), so the comment's row is pinned first.
@@ -75,7 +69,7 @@ test("event-line: an Activity event's line draws every form of the record's text
   const world = await seedReadingWorld();
   // An ask's question is the text of the record its `asked “…”` line quotes. The ask is the
   // host's, so a `#id` in its question is read against the host's spec, which declares it.
-  await createAsk(world.host.key, { question: readingText(world) }, readingAgent);
+  await createAsk(world.host.key, { question: readingText(world) }, readingAuthor);
 
   await page.goto(`/issues/${world.host.key}/activity`);
   // The question block the host's spec declares is an ask of its own, with an `asked “…”` line
@@ -83,7 +77,7 @@ test("event-line: an Activity event's line draws every form of the record's text
   const line = page
     .getByRole("list", { name: "Issue activity" })
     .getByRole("listitem")
-    .filter({ hasText: `asked “${READING_LEAD}` });
+    .filter({ hasText: `asked “${world.lead}` });
   await expect(line).toHaveCount(1);
 
   // The line is in no link or button, so the question it quotes draws inline through the
@@ -102,7 +96,7 @@ test("conversation-reply: a reply turn draws every form of a stored reference th
   const reply = await createMessage(
     world.host.key,
     { body: readingText(world), in_reply_to: root.id },
-    readingAgent
+    readingAuthor
   );
 
   await page.goto(`/issues/${world.host.key}/conversation`);
@@ -117,7 +111,7 @@ test("conversation-message: a message turn draws every form of a stored referenc
   page,
 }) => {
   const world = await seedReadingWorld();
-  const message = await createMessage(world.host.key, { body: readingText(world) }, readingAgent);
+  const message = await createMessage(world.host.key, { body: readingText(world) }, readingAuthor);
 
   await page.goto(`/issues/${world.host.key}/conversation`);
 
@@ -137,7 +131,7 @@ test("conversation-targeted-message: a message sent to a session draws every for
   const message = await createMessage(world.host.key, {
     body: readingText(world),
     delivery: "steer",
-    target: `session:${READING_SESSION_ID}`,
+    target: `session:${readingSessionId()}`,
   });
 
   await page.goto(`/issues/${world.host.key}/conversation`);
@@ -151,7 +145,7 @@ test("reply-quote: the quote above a reply draws every form of its parent's refe
   page,
 }) => {
   const world = await seedReadingWorld();
-  const parent = await createMessage(world.host.key, { body: readingText(world) }, readingAgent);
+  const parent = await createMessage(world.host.key, { body: readingText(world) }, readingAuthor);
   const reply = await createMessage(world.host.key, {
     body: "Reading it now.",
     in_reply_to: parent.id,
@@ -180,7 +174,7 @@ test("conversation-handoff-body: a handoff card's field of words draws every for
     world.host.key,
     "implement",
     { phase: "implement", summary: readingText(world) },
-    readingAgent.actor
+    readingAuthor.actor
   );
 
   await page.goto(`/issues/${world.host.key}/conversation`);
@@ -212,7 +206,7 @@ test("issue-decision: a decision's paragraph draws every form of a stored refere
       content: `${readingQuestionBlock()}\n\n## ${DECISION}\n\n${readingText(seeded)}\n`,
       name: "decisions.md",
     },
-    readingAgent
+    readingAuthor
   );
   expect(decisions.artifact.slug).toBe("decisions-md");
   const world = await scopedTo(seeded, decisions.artifact.id);

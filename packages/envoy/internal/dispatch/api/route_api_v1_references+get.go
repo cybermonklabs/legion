@@ -14,5 +14,10 @@ var _ = declareRoute(routeDecl{
 	// The references read answers graphReferencesRead, whose node carries its text's tree and
 	// whose pin carries the pinned text's, so the route names that read for the reason
 	// GET /api/v1/projects/{key}/architecture names its own.
-	Shape: routeShape{Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
+	Shape: routeShape{
+		Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{},
+		// ?to= resolves an id its reference writes short itself, in a query value the prefix
+		// layer does not touch (wholeReference), and refuses an ambiguous one as that layer does.
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: idAmbiguousError{}}},
+	},
 })

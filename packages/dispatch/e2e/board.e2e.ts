@@ -18,7 +18,7 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
 
@@ -41,10 +41,11 @@ function patchOf(page: Page, key: string) {
 test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const first = await createIssue({ project: "CORE", title: "First card" });
-  const second = await createIssue({ project: "CORE", title: "Second card" });
-  const third = await createIssue({ project: "CORE", title: "Third card" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const first = await createIssue({ project: core, title: "First card" });
+  const second = await createIssue({ project: core, title: "Second card" });
+  const third = await createIssue({ project: core, title: "Third card" });
   // Creation order is the rank order the row asserts; none of these three writes reads it.
   await Promise.all([
     patchIssue(first.key, { status: "todo" }),
@@ -56,7 +57,7 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
   const page = await context.newPage();
   await page.setViewportSize({ width: 1920, height: 900 });
   try {
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
     const board = page.getByRole("region", { name: "Project board" });
     const triage = page.getByRole("region", { name: "Triage" });
@@ -87,7 +88,7 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await page.getByRole("button", { name: "List" }).click();
     await page.getByRole("button", { name: "Triage 2", exact: true }).click();
     await expect(page.locator("[data-issue-row]")).toHaveText([/Third card/, /Second card/]);
-    expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
+    expect((await listIssues(core)).map((issue) => issue.key)).toEqual([
       third.key,
       second.key,
       first.key,
@@ -160,10 +161,11 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
 test("v toggles List and Board; Shift+J/K rank a focused card through the one move path; o, Enter, p and Escape work the card; Space lifts nothing", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const cards = [];
   for (const title of ["Alpha", "Bravo", "Charlie"]) {
-    cards.push(await createIssue({ project: "CORE", title }));
+    cards.push(await createIssue({ project: core, title }));
   }
   const [alpha, bravo, charlie] = cards;
   if (alpha === undefined || bravo === undefined || charlie === undefined) {
@@ -187,7 +189,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
 
     // B5: `v` flips List and Board from the keyboard and persists the choice; on the Documents
     // tab there is no view to flip and it is inert.
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     const listButton = page.getByRole("button", { name: "List" });
     const boardButton = page.getByRole("button", { name: "Board" });
     await expect(listButton).toHaveAttribute("aria-pressed", "true");
@@ -199,7 +201,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     await expect(listButton).toHaveAttribute("aria-pressed", "true");
     expect(await viewPreference()).toBe("list");
     await page.getByRole("tab", { name: "Documents" }).click();
-    await expect(page).toHaveURL(/\/projects\/CORE\/documents$/);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/documents$`));
     await page.locator("body").focus();
     await page.keyboard.press("v");
     await nextFrames(page);
@@ -231,7 +233,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     await expect(todo.getByRole("article")).toHaveText([/Bravo/, /Alpha/, /Charlie/]);
     await expect(alphaCard).toBeFocused();
     await expect(live).toHaveText(`${alpha.key} → Todo, position 2 of 3`);
-    expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
+    expect((await listIssues(core)).map((issue) => issue.key)).toEqual([
       bravo.key,
       alpha.key,
       charlie.key,
@@ -262,7 +264,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     await page.keyboard.press("o");
     await expect(page).toHaveURL(new RegExp(`/issues/${alpha.key}$`));
     await page.goBack();
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/issues$`));
     await expect(alphaCard).toBeVisible();
 
     // ...and so does Enter on the card itself - once: the title link's own Enter is left to
@@ -277,7 +279,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(new RegExp(`/issues/${alpha.key}$`));
     await page.goBack();
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/issues$`));
     // Going back is the second navigation; a doubled Enter would have made one in between.
     expect(navigations).toBe(2);
 
@@ -311,7 +313,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
     const ranked = patchOf(page, alpha.key);
     await page.keyboard.press("Shift+J");
     expect(patches).toEqual([(await ranked).url()]);
-    expect(new URL(page.url()).pathname).toBe("/projects/CORE/issues");
+    expect(new URL(page.url()).pathname).toBe(`/projects/${core}/issues`);
   } finally {
     await context.close();
   }
@@ -320,10 +322,11 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
 test("a stale board refreshes and says so when the server rejects the rank", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const cards = [];
   for (const title of ["Alpha", "Bravo", "Charlie"]) {
-    cards.push(await createIssue({ project: "CORE", title }));
+    cards.push(await createIssue({ project: core, title }));
   }
   const [alpha, bravo, charlie] = cards;
   if (alpha === undefined || bravo === undefined || charlie === undefined) {
@@ -340,13 +343,13 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
       route.close({ code: 1011, reason: "test network drop" })
     );
     await page.setViewportSize({ width: 1920, height: 900 });
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
     const todo = page.getByRole("region", { name: "Todo" });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Bravo/, /Charlie/]);
 
     await patchIssue(alpha.key, { rank: { after: charlie.key } });
-    expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
+    expect((await listIssues(core)).map((issue) => issue.key)).toEqual([
       bravo.key,
       charlie.key,
       alpha.key,
@@ -370,7 +373,7 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
       "The board changed while you were moving this card - refreshed, try again."
     );
     await expect(todo.getByRole("article")).toHaveText([/Bravo/, /Charlie/, /Alpha/]);
-    expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
+    expect((await listIssues(core)).map((issue) => issue.key)).toEqual([
       bravo.key,
       charlie.key,
       alpha.key,
@@ -393,15 +396,16 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
 });
 
 test("board cards carry the unread dot the project list shows", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const unread = await createIssue({ project: "CORE", title: "Unread card" });
-  const read = await createIssue({ project: "CORE", title: "Read card" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const unread = await createIssue({ project: core, title: "Unread card" });
+  const read = await createIssue({ project: core, title: "Read card" });
   await putIssueState(read.key, { last_read_seq: (await getIssue(read.key)).last_seq });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     const unreadRow = page.getByRole("row", { name: `${unread.key} Unread card`, exact: true });
     await expect(unreadRow.locator('[title="Unread"]')).toHaveCount(1);
     await page.getByRole("button", { name: "Board" }).click();
@@ -418,15 +422,16 @@ test("board cards carry the unread dot the project list shows", async ({ browser
 test("project list rows and board cards set an issue's priority in place", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Prioritized card" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Prioritized card" });
   await patchIssue(issue.key, { priority: 1 });
-  const unset = await createIssue({ project: "CORE", title: "Unprioritized card" });
+  const unset = await createIssue({ project: core, title: "Unprioritized card" });
 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     const listRow = page.getByRole("row", { name: `${issue.key} Prioritized card`, exact: true });
     const listControl = listRow.getByLabel(`Priority of ${issue.key}`);
     await expect(priorityBadge(listRow, "P1")).toBeVisible();
@@ -458,7 +463,7 @@ test("project list rows and board cards set an issue's priority in place", async
     await expect(priorityBadge(card, "P2")).toBeVisible();
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 2 });
     // Using the control neither followed the card's link nor dragged the card.
-    expect(new URL(page.url()).pathname).toBe("/projects/CORE/issues");
+    expect(new URL(page.url()).pathname).toBe(`/projects/${core}/issues`);
     await expect(card).not.toHaveClass(/opacity-50/);
     await expect(page.getByRole("region", { name: "Triage" }).getByRole("article")).toHaveText([
       /Prioritized card/,
@@ -501,14 +506,15 @@ test("project list rows and board cards set an issue's priority in place", async
 });
 
 test("board scrolls horizontally inside its own container at 1100px", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Board scrolls without widening the page" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Board scrolls without widening the page" });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
     await page.setViewportSize({ width: 1100, height: 800 });
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
     const boardScroller = page.getByTestId("board-scroll-container");
     await expect(boardScroller).toBeVisible();
@@ -656,10 +662,11 @@ async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
 test("on the phone a finger drives the board: hold lifts, tap opens, swipes scroll and snap @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const cards = [];
   for (const title of ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]) {
-    cards.push(await createIssue({ project: "CORE", title }));
+    cards.push(await createIssue({ project: core, title }));
   }
   const [alpha, bravo] = cards;
   if (alpha === undefined || bravo === undefined) {
@@ -677,7 +684,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     }
   });
   try {
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
     const scroller = page.getByTestId("board-scroll-container");
     const todo = page.getByRole("region", { name: "Todo" });
@@ -735,7 +742,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // card by now; the margin is for a navigation the release could still be sending.
     await sleep(100);
     expect(patches).toEqual([]);
-    expect(new URL(page.url()).pathname).toBe("/projects/CORE/issues");
+    expect(new URL(page.url()).pathname).toBe(`/projects/${core}/issues`);
 
     // A quick tap on the title opens the issue.
     await touchHold(page, await centerOf(alphaCard.getByRole("link")), 0);
@@ -759,7 +766,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     await expect(alphaCard).not.toHaveClass(/opacity-50/);
     // The margin is for a navigation the press could still be sending.
     await sleep(100);
-    expect(new URL(page.url()).pathname).toBe("/projects/CORE/issues");
+    expect(new URL(page.url()).pathname).toBe(`/projects/${core}/issues`);
     expect(patches).toEqual([]);
 
     // K2: hold to lift, carry the card into the right-hand auto-scroll zone (the board scrolls
@@ -817,16 +824,17 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
 test("URL-backed labels drive the List table and Board strip and survive a reload", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Plain card" });
-  const labelled = await createIssue({ project: "CORE", title: "Labelled card" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Plain card" });
+  const labelled = await createIssue({ project: core, title: "Labelled card" });
   await patchIssue(labelled.key, { labels: ["frontend"] });
-  await createIssue({ project: "CORE", title: "Another plain" });
+  await createIssue({ project: core, title: "Another plain" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await expect(page.getByText("Plain card")).toBeVisible();
     // Pick a label from the table header; the Board reads the same label parameter.
     await pickFilterOption(page, "Labels", "frontend");
@@ -857,11 +865,12 @@ test("URL-backed labels drive the List table and Board strip and survive a reloa
 test("a filtered drag names the visible neighbours and the hidden card interleaves without error", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // Todo ranks Alpha < Bravo < Charlie < Delta (creation order); the filter hides Bravo -
   // every other Todo card carries the label.
   const seedCard = async (title: string, labels?: string[]) => {
-    const card = await createIssue({ project: "CORE", title });
+    const card = await createIssue({ project: core, title });
     await patchIssue(
       card.key,
       labels === undefined ? { status: "todo" } : { labels, status: "todo" }
@@ -877,7 +886,7 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
   const page = await context.newPage();
   await page.setViewportSize({ width: 1920, height: 900 });
   try {
-    await page.goto("/projects/CORE?label=keep");
+    await page.goto(`/projects/${core}?label=keep`);
     await page.getByRole("button", { name: "Board" }).click();
     const todo = page.getByRole("region", { name: "Todo" });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Charlie/, /Delta/]);
@@ -911,10 +920,11 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
 test("the board groups into priority swimlanes on a toggle that persists per signed-in user, and dragging across lanes reassigns priority", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const p0 = await createIssue({ project: "CORE", title: "P0 card" });
-  const p3 = await createIssue({ project: "CORE", title: "P3 card" });
-  const none = await createIssue({ project: "CORE", title: "No priority card" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const p0 = await createIssue({ project: core, title: "P0 card" });
+  const p3 = await createIssue({ project: core, title: "P3 card" });
+  const none = await createIssue({ project: core, title: "No priority card" });
   // Creation order is the rank order inside a lane; none of these writes reads it.
   await Promise.all([
     patchIssue(p0.key, { status: "todo", priority: 0 }),
@@ -926,7 +936,7 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
   const page = await context.newPage();
   await page.setViewportSize({ width: 1920, height: 900 });
   try {
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await page.getByRole("button", { name: "Board" }).click();
 
     // Off by default: one flat Todo column holding every card.
@@ -998,13 +1008,14 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 test("the board's view, lanes and edge toggles keep touch-sized targets @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Toggle card" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Toggle card" });
 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     const boardToggle = page.getByRole("button", { name: "Board" });
     await expect(boardToggle).toHaveCSS("min-height", "44px");
     await boardToggle.click();
@@ -1025,9 +1036,10 @@ test("the board's view, lanes and edge toggles keep touch-sized targets @phone @
 
 /** A project with an issue at P3 to pick on and another issue whose rename reads the list. */
 async function boardWithIssueAtP3(): Promise<{ key: string; other: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
-  const other = await createIssue({ project: "CORE", title: "Another issue of the project" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Priority under a held save" });
+  const other = await createIssue({ project: core, title: "Another issue of the project" });
   await Promise.all([
     patchIssue(issue.key, { priority: 3, status: "todo" }),
     patchIssue(other.key, { status: "todo" }),
@@ -1045,6 +1057,7 @@ async function openBoard(page: Page): Promise<void> {
 test("picker keeps a pick on screen: the priority on the project board, over a list read that answers while its save is out", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const { key, other } = await boardWithIssueAtP3();
   const renamed = "Another issue, renamed while a save is out";
   const context = await asUser(browser, "alice");
@@ -1052,8 +1065,8 @@ test("picker keeps a pick on screen: the priority on the project board, over a l
     const page = await context.newPage();
     const shown = await watchShown(page, `Priority of ${key}`);
     const held = await holdIssuePatches(page, key);
-    const reads = logReads(page, listRead("project", "CORE"));
-    await page.goto("/projects/CORE");
+    const reads = logReads(page, listRead("project", core));
+    await page.goto(`/projects/${core}`);
     await openBoard(page);
     const picker = page.getByRole("combobox", { name: `Priority of ${key}` });
     await expect(picker).toHaveValue("3");
@@ -1091,9 +1104,10 @@ test("picker keeps a pick on screen: the priority on the project board, over a l
 test("picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const anchor = await createIssue({ project: "CORE", title: "P0 card" });
-  const issue = await createIssue({ project: "CORE", title: "Picked card" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const anchor = await createIssue({ project: core, title: "P0 card" });
+  const issue = await createIssue({ project: core, title: "Picked card" });
   await Promise.all([
     patchIssue(anchor.key, { priority: 0, status: "todo" }),
     patchIssue(issue.key, { priority: 3, status: "todo" }),
@@ -1105,7 +1119,7 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
   try {
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
-    await page.goto("/projects/CORE");
+    await page.goto(`/projects/${core}`);
     await openBoard(page);
     await page.getByRole("button", { name: "Show lanes" }).click();
     const card = page.getByRole("article", { name: `${issue.key} Picked card` });
@@ -1187,6 +1201,7 @@ test("picker keeps a pick on screen: a card dragged to another priority lane whi
 test("picker keeps a pick on screen: a pick made on the issue page shows on the board opened while its save is out", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   const { key, other } = await boardWithIssueAtP3();
   const renamed = "Another issue, renamed while the board shows the pick";
   const context = await asUser(browser, "alice");
@@ -1194,7 +1209,7 @@ test("picker keeps a pick on screen: a pick made on the issue page shows on the 
     const page = await context.newPage();
     const shown = await watchShown(page, `Priority of ${key}`);
     const held = await holdIssuePatches(page, key);
-    const reads = logReads(page, listRead("project", "CORE"));
+    const reads = logReads(page, listRead("project", core));
     await page.goto(`/issues/${key}`);
     const picker = pagePicker(page, `Priority of ${key}`);
     await expect(picker).toHaveValue("3");
@@ -1206,7 +1221,7 @@ test("picker keeps a pick on screen: a pick made on the issue page shows on the 
     // The picker leaves the screen with its save still out, and the project's list is read
     // from the server, which still holds P3.
     const leftAt = Date.now();
-    await navigateInApp(page, "/projects/CORE");
+    await navigateInApp(page, `/projects/${core}`);
     await openBoard(page);
     const card = page.getByRole("article", { name: `${key} Priority under a held save` });
     await expect(card.getByRole("combobox", { name: `Priority of ${key}` })).toHaveValue("1");

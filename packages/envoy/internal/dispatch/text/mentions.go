@@ -81,6 +81,8 @@ func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
 		}
 	}
 
+	// The candidates are in body order, so they are marked by one walk of the code contexts.
+	bareInCode := codeCursor{ranges: code}
 	resolved := make([]Located, 0, len(candidates))
 	for _, item := range candidates {
 		if item.key != "" {
@@ -88,7 +90,7 @@ func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
 				resolved = append(resolved, Located{
 					Ref:    Ref{Kind: "issue", IssueKey: item.key, ID: item.key},
 					Offset: item.offset,
-					InCode: inCode(code, item.offset),
+					InCode: bareInCode.inCode(item.offset),
 				})
 			}
 			continue
@@ -97,7 +99,7 @@ func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
 			resolved = append(resolved, Located{
 				Ref:    ref,
 				Offset: item.offset,
-				InCode: inCode(code, item.offset),
+				InCode: bareInCode.inCode(item.offset),
 			})
 		}
 	}

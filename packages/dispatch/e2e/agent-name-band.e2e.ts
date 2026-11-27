@@ -1,10 +1,8 @@
-import { expect, test } from "@playwright/test";
-
 import { type FakeSession, setLiveSessions, setSessionLive } from "./agents";
 import { createAgentMessage, replyToMessageDelivery } from "./api";
 import { inboxRow } from "./inbox-pane";
 import { agentRowId } from "./inbox-threads";
-import { resetDatabase } from "./seed";
+import { expect, rowSessionId, test } from "./test";
 import { withAlice } from "./users";
 
 /**
@@ -19,8 +17,8 @@ import { withAlice } from "./users";
  * its reply and then wrote again carrying none, which is what `postDeliveryReply` writes in
  * production. Before the fix the resolved read took the title off the session's newest event, so
  * the later untitled write left the map with no entry for the session and `SessionTitle` fell
- * back to the whole session id - which is what the row then showed. The id below is long and
- * says what it is, so the two outcomes cannot be read for each other.
+ * back to the whole session id - which is what the row then showed. The session's id is a UUID,
+ * long and plainly an id, so the two outcomes cannot be read for each other.
  *
  * It is a file of its own, with a seed of its own, because neither session of the shared
  * `agent-name.ts` fixture has that shape - one stamps a title on every write and one never
@@ -28,17 +26,19 @@ import { withAlice } from "./users";
  * replays, whose write order its own comment holds load-bearing.
  */
 
-/** The session the row is read over. Long and plainly an id, so the title it stamped and the
- *  fallback to its id are nothing alike on the row. */
-const BAND_SESSION_ID = "e2e-agent-name-band-session-5f21c7";
-
 /** The title the session stamps on its reply, which is the name the band must show. */
 const BAND_SESSION_TITLE = "Harbour pilot";
 
+/** The session the row is read over. Its id is the row's own (`rowSessionId`, e2e/test.ts), read
+ *  when the row names it: Dispatch keeps a session's messages, and the titles it stamped on them,
+ *  by its id for every person at once. A UUID is long and plainly an id, so the title it stamped
+ *  and the fallback to its id are nothing alike on the row. */
 const BAND_SESSION: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   roles: [],
-  session_id: BAND_SESSION_ID,
+  get session_id() {
+    return rowSessionId("band");
+  },
   title: BAND_SESSION_TITLE,
 };
 
@@ -53,30 +53,26 @@ const BAND_SESSION: FakeSession = {
 async function seedBandRow(): Promise<string> {
   await setLiveSessions([BAND_SESSION]);
   const message = await createAgentMessage(
-    BAND_SESSION_ID,
+    BAND_SESSION.session_id,
     { body: "How far is the harbour rollout?", delivery: "aside" },
     { login: "alice" }
   );
   await replyToMessageDelivery(
     message.id,
     { attempt: 1, body: "Two berths left to cut over." },
-    { id: BAND_SESSION_ID, kind: "session", origin: { session_title: BAND_SESSION_TITLE } }
+    { id: BAND_SESSION.session_id, kind: "session", origin: { session_title: BAND_SESSION_TITLE } }
   );
   // The later write that carries no title: a follow-up under the reply already there, with an
   // actor holding no origin, as `postDeliveryReply` writes one.
   await replyToMessageDelivery(
     message.id,
     { attempt: 1, body: "Both berths are in." },
-    { id: BAND_SESSION_ID, kind: "session" },
+    { id: BAND_SESSION.session_id, kind: "session" },
     { followUp: true }
   );
-  await setSessionLive(BAND_SESSION_ID, false);
+  await setSessionLive(BAND_SESSION.session_id, false);
   return message.id;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): the seed's five listener and API writes, a sign-in and the Inbox's own first draw;
 // measured at 1.9 s in an issue pod on one worker.
@@ -91,7 +87,7 @@ test("the Inbox's agents band names a session by the title it stamped, not by it
 
     // The name first, so a row naming the session by its id reports the whole line it drew.
     await expect(row).toContainText(BAND_SESSION_TITLE);
-    await expect(row).not.toContainText(BAND_SESSION_ID);
+    await expect(row).not.toContainText(BAND_SESSION.session_id);
     // And the name is the owner line's whole text, not a word inside a longer one.
     await expect(row.getByText(BAND_SESSION_TITLE, { exact: true })).toBeVisible();
   });

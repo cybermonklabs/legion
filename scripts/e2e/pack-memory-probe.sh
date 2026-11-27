@@ -775,10 +775,27 @@ daemon_pid=""
 # The sampler's option that samples the git daemon's tree beside a row the daemon serves, set once
 # the daemon answers.
 daemon_tree=()
+# stop_background ends the cache and the daemon, each with the process group it leads. A pid that
+# cannot lead a group the probe started is refused and named, and gets no signal, since the pid is
+# the same value: kill reads group 0 as the group it is called from, which holds the probe, and
+# group 1 as every process it may signal. This script does not source lib/process-tree.sh, so its
+# group_signalable is written here.
 stop_background() {
-  local pid
+  local pid why
   for pid in "$cache_pid" "$daemon_pid"; do
     [ -n "$pid" ] || continue
+    case $pid in
+      '') why='it is empty' ;;
+      *[!0-9]*) why='it is not a number' ;;
+      0) why='kill reads group 0 as the group it is called from' ;;
+      1) why='kill reads group 1 as -1, every process it may signal' ;;
+      0*) why='no group is written with a leading zero' ;;
+      *) why='' ;;
+    esac
+    if [ -n "$why" ]; then
+      echo "refusing to signal process group '$pid': $why" >&2
+      continue
+    fi
     kill -TERM -- "-$pid" 2> /dev/null || kill -TERM "$pid" 2> /dev/null
     wait "$pid" 2> /dev/null
   done

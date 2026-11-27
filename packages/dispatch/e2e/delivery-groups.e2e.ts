@@ -2,6 +2,11 @@ import { seedSessionGroupsFixture } from "./delivery-seed";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
+// Each row writes the fixture in its own place (`delivery`, e2e/test.ts), and the fixture takes
+// its pull requests, its issue and the groups the row made out again when the row ends: the
+// page's default window and its presets read every pull request of the last weeks whole, and
+// the facet every group.
+
 /** The Parent agent facet's option names, as the facet labels them (`<value>, <n> PR(s)`). */
 async function parentAgentOptions(page: Page): Promise<string[]> {
   await page.getByRole("button", { name: /^Parent agent: / }).click();
@@ -20,8 +25,8 @@ function utcDaysAgo(daysAgo: number): string {
 }
 
 // @pr: Live delivery: a session group is one Parent agent on the delivery page, which no other row reads.
-test("grouping two sessions makes them one Parent agent @pr", async ({ browser }) => {
-  await seedSessionGroupsFixture();
+test("grouping two sessions makes them one Parent agent @pr", async ({ browser, delivery }) => {
+  await seedSessionGroupsFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto("/delivery?mode=list");
@@ -61,8 +66,8 @@ test("grouping two sessions makes them one Parent agent @pr", async ({ browser }
   await context.close();
 });
 
-test("the window control changes what the page counts", async ({ browser }) => {
-  await seedSessionGroupsFixture();
+test("the window control changes what the page counts", async ({ browser, delivery }) => {
+  await seedSessionGroupsFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   await page.goto("/delivery?mode=list");

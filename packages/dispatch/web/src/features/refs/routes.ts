@@ -5,6 +5,7 @@ import {
   isSessionId,
   itemFromSearch,
   PLAIN_ISSUE_TABS,
+  PROJECT_KEY_PATTERN,
   SESSION_ID_PATTERN,
   shortSessionId,
 } from "@legion/contracts";
@@ -204,19 +205,20 @@ function isPlainIssueRoute(
 
 const projectKeyPattern = "[A-Z][A-Z0-9]{1,9}";
 const issueKeyPattern = `${projectKeyPattern}-[1-9]\\d*`;
-const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
-const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
-const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
+export const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
+export const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
 /** The slug Dispatch gives a document, the one a reference can name. */
 const artifactSlugPattern = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
-const issueArtifactReferencePattern = new RegExp(
+export const issueArtifactReferencePattern = new RegExp(
   `^artifact/(${artifactSlugPattern})(?:@v([1-9]\\d*))?$`
 );
 const projectArtifactReferencePattern = new RegExp(
   `^artifact/(${artifactSlugPattern})(?:@v([1-9]\\d*))?(?:/(ask|comment)/([^/?#\\s]+))?$`
 );
+/** A `dispatch://` reference: what names its owner, then the target within it. */
+export const dispatchReferencePattern = /^dispatch:\/\/([^/]+)(?:\/(.*))?$/;
 /** An agent artifact's reference after `dispatch://agent/`: the session id by the server's rule
  *  (`SESSION_ID_PATTERN`), then the artifact's slug and the version it pins. */
 const agentArtifactReferencePattern = new RegExp(
@@ -428,7 +430,7 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
       ? undefined
       : withBlock(parseNodeReference(document), target.block, target.pin);
   }
-  const match = value.match(/^dispatch:\/\/([^/]+)(?:\/(.*))?$/);
+  const match = value.match(dispatchReferencePattern);
   if (match === null) {
     return undefined;
   }
@@ -461,7 +463,7 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
       ? { kind: "person", login: target }
       : undefined;
   }
-  if (!projectKeyOnlyPattern.test(key) || target === undefined) {
+  if (!PROJECT_KEY_PATTERN.test(key) || target === undefined) {
     return undefined;
   }
   const component = target.match(componentReferencePattern);

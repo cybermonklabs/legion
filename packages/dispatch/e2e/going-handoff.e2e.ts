@@ -1,6 +1,6 @@
-import { getSentMessages, plannerSession, resetFakeEnvoy, setLiveSessions } from "./agents";
+import { agentSessions, getSentMessages, resetFakeEnvoy, setLiveSessions } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 // Check k10 of dispatch://INFRA-1042/artifact/verification-md, serving R10: handing the request
@@ -17,9 +17,10 @@ const words = "write up the rota and say who is on call";
 
 // The holder is the shared Planner fixture, which advertises `aside` and `btw`: Dispatch sends
 // a targeted message in the mode it was asked for and never switches it to another, so a
-// session advertising neither would have its delivery fail rather than reach the listener.
-const session = plannerSession.session_id;
-const holder = plannerSession.title;
+// session advertising neither would have its delivery fail rather than reach the listener. It
+// reads the running row's id when used, since Dispatch keeps what is sent to a session by its
+// id. A send from the bar won't appear in another row's session.
+const holder = agentSessions(rowSessionId).planner;
 
 function bar(page: Page): Locator {
   return page.getByRole("dialog", { name: "Search" });
@@ -44,12 +45,12 @@ async function typeWords(page: Page, key: string): Promise<void> {
 
 /** An issue of its own, with a live session holding its claim when `claimed`. */
 async function seedIssue(claimed: boolean): Promise<string> {
-  const issue = await createIssue({ project: "CORE", title: "The watch rota" });
-  await setLiveSessions([plannerSession]);
+  const issue = await createIssue({ project: rowKey("CORE"), title: "The watch rota" });
+  await setLiveSessions([holder]);
   if (claimed) {
     const token = await mintAgentToken("going-handoff", "alice");
     await claimIssue(issue.key, {
-      actor: { id: session, kind: "session", origin: { session_title: holder } },
+      actor: { id: holder.session_id, kind: "session", origin: { session_title: holder.title } },
       as: "agent",
       token,
     });
@@ -59,7 +60,7 @@ async function seedIssue(claimed: boolean): Promise<string> {
 
 test.beforeEach(async () => {
   await resetFakeEnvoy();
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: rowKey("CORE"), name: "Core" });
 });
 
 test("the bar offers the words to the agent on the issue, and only approving sends them @phone", async ({
@@ -87,9 +88,9 @@ test("the bar offers the words to the agent on the issue, and only approving sen
           target: sent.target_session,
         }))
       )
-      .toEqual([{ message: `${key}: ${words}`, target: session }]);
+      .toEqual([{ message: `${key}: ${words}`, target: holder.session_id }]);
     await expect(bar(page).getByTestId("search-send-to-agent-said")).toHaveText(
-      `Sent to ${holder}, the agent on ${key}.`
+      `Sent to ${holder.title}, the agent on ${key}.`
     );
     // One approval is one message: the row is gone, so no second press can send again.
     await expect(offer(page, key)).toBeHidden();

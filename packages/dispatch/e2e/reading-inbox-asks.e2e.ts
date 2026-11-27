@@ -28,28 +28,26 @@
 import { answerAsk, createAsk, createComment, editAsk, resolveAsk } from "./api";
 import { askCard, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
-import { expectReadsReferences, readingText, seedReadingWorld } from "./reading-rows";
+import {
+  readingAuthor as asker,
+  expectReadsReferences,
+  readingText,
+  seedReadingWorld,
+} from "./reading-rows";
 import { RENDERED_BODY } from "./reference-surfaces";
-import { expect, test } from "./test";
+import { expect, own, rowPerson, test } from "./test";
 
-/** The session that asks every question here, answers the reader under the closed ones and
- *  resolves one. It is a session of its own rather than the reading world's, so the one party
- *  any scope here holds is the one the stored text names, never a card's own line naming who
- *  asked or who reworded. */
-const asker = {
-  actor: { id: "e2e-reading-asks", kind: "session" as const },
-  as: "agent" as const,
-};
+test.use({ signedIn: own("alice") });
 
 /** The question of a row whose stored text is somewhere else in the ask: it names nothing, so
  *  the one text in the row that names anything is the one the row reads. */
 const PLAIN_QUESTION = "Which one goes first?";
 
-// SLOW(>=2s): a database reset, the reading world, an open ask, and the Inbox drawn with it.
+// SLOW(>=2s): the reading world, an open ask, and the Inbox drawn with it.
 test("inbox-ask-row: an ask row's one-line question draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const world = await seedReadingWorld({ login: rowPerson("alice") });
   const ask = await createAsk(world.host.key, { question: readingText(world) }, asker);
 
   await page.goto("/");
@@ -60,11 +58,11 @@ test("inbox-ask-row: an ask row's one-line question draws every form of a stored
   await expectReadsReferences(line, world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, an open ask, and the Inbox opened on its card.
+// SLOW(>=2s): the reading world, an open ask, and the Inbox opened on its card.
 test("ask-card-question: an ask card's question draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const world = await seedReadingWorld({ login: rowPerson("alice") });
   const ask = await createAsk(world.host.key, { question: readingText(world) }, asker);
 
   await page.goto("/");
@@ -74,12 +72,11 @@ test("ask-card-question: an ask card's question draws every form of a stored ref
   await expectReadsReferences(card.locator(RENDERED_BODY).first(), world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, an open ask with two options, and the Inbox
-// opened on its card.
+// SLOW(>=2s): the reading world, an open ask with two options, and the Inbox opened on its card.
 test("ask-option-text: an ask option's label and description draw every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const world = await seedReadingWorld({ login: rowPerson("alice") });
   const ask = await createAsk(
     world.host.key,
     {
@@ -100,12 +97,12 @@ test("ask-option-text: an ask option's label and description draw every form of 
   await expectReadsReferences(texts.last(), world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, an open ask reworded once, and the Inbox
-// opened on its card with its earlier wording shown.
+// SLOW(>=2s): the reading world, an open ask reworded once, and the Inbox opened on its card
+// with its earlier wording shown.
 test("ask-edit-history: an ask card's earlier wording draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const world = await seedReadingWorld({ login: rowPerson("alice") });
   const ask = await createAsk(world.host.key, { question: readingText(world) }, asker);
   // The session rewords its question, so the stored text is the wording the card keeps as the
   // version before.
@@ -118,16 +115,21 @@ test("ask-edit-history: an ask card's earlier wording draws every form of a stor
   await expectReadsReferences(history, world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, an ask answered and replied under, and the
-// Inbox opened on its Reply row.
+// SLOW(>=2s): the reading world, an ask answered and replied under, and the Inbox opened on
+// its Reply row.
 test("answered-ask: an answered ask's question and answer draw every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
   const ask = await createAsk(world.host.key, { question: readingText(world) }, asker);
   // The reader's answer is their write in the ask's thread, and the session's reply is the write
   // since, which together make the thread a Reply row of the reader's Inbox.
-  await answerAsk(ask.id, { expected_edited_at: null, selected: [], text: readingText(world) });
+  await answerAsk(
+    ask.id,
+    { expected_edited_at: null, selected: [], text: readingText(world) },
+    { login: me }
+  );
   await createComment(world.host.key, { ask_id: ask.id, body: "Reading both now." }, asker);
 
   await page.goto("/");
@@ -140,30 +142,35 @@ test("answered-ask: an answered ask's question and answer draw every form of a s
   await expectReadsReferences(bodies.last(), world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, an ask answered twice and replied under, and
-// the Inbox opened on its Reply row with its earlier answer shown.
+// SLOW(>=2s): the reading world, an ask answered twice and replied under, and the Inbox opened
+// on its Reply row with its earlier answer shown.
 test("ask-answer-history: an ask card's earlier answer draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
   const ask = await createAsk(world.host.key, { question: PLAIN_QUESTION }, asker);
   // The reader answers with the stored text and then changes the answer, so the stored text is
   // the answer the record keeps as the earlier one.
-  const first = await answerAsk(ask.id, {
-    expected_edited_at: null,
-    selected: [],
-    text: readingText(world),
-  });
+  const first = await answerAsk(
+    ask.id,
+    { expected_edited_at: null, selected: [], text: readingText(world) },
+    { login: me }
+  );
   const answeredAt = first.answer?.at;
   if (answeredAt === undefined) {
     throw new Error("setup: the reader's first answer came back with no answer on the ask");
   }
-  await answerAsk(ask.id, {
-    expected_answer_at: answeredAt,
-    expected_edited_at: null,
-    selected: [],
-    text: "The cache, then the queue.",
-  });
+  await answerAsk(
+    ask.id,
+    {
+      expected_answer_at: answeredAt,
+      expected_edited_at: null,
+      selected: [],
+      text: "The cache, then the queue.",
+    },
+    { login: me }
+  );
   await createComment(world.host.key, { ask_id: ask.id, body: "Taking the cache first." }, asker);
 
   await page.goto("/");
@@ -174,12 +181,13 @@ test("ask-answer-history: an ask card's earlier answer draws every form of a sto
   await expectReadsReferences(history, world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, an ask answered with one option and then
-// another and replied under, and the Inbox opened on its Reply row with its earlier answer shown.
+// SLOW(>=2s): the reading world, an ask answered with one option and then another and replied
+// under, and the Inbox opened on its Reply row with its earlier answer shown.
 test("earlier-chosen-option: the option an ask card's earlier answer chose draws every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
   const label = readingText(world);
   const ask = await createAsk(
     world.host.key,
@@ -188,16 +196,20 @@ test("earlier-chosen-option: the option an ask card's earlier answer chose draws
   );
   // The reader chooses the option holding the stored text and then changes the answer to the
   // other, so the stored text is the option the record's earlier answer chose.
-  const first = await answerAsk(ask.id, { expected_edited_at: null, selected: [label] });
+  const first = await answerAsk(
+    ask.id,
+    { expected_edited_at: null, selected: [label] },
+    { login: me }
+  );
   const answeredAt = first.answer?.at;
   if (answeredAt === undefined) {
     throw new Error("setup: the reader's first answer came back with no answer on the ask");
   }
-  await answerAsk(ask.id, {
-    expected_answer_at: answeredAt,
-    expected_edited_at: null,
-    selected: ["Later"],
-  });
+  await answerAsk(
+    ask.id,
+    { expected_answer_at: answeredAt, expected_edited_at: null, selected: ["Later"] },
+    { login: me }
+  );
   await createComment(world.host.key, { ask_id: ask.id, body: "Taking the cache first." }, asker);
 
   await page.goto("/");
@@ -211,17 +223,22 @@ test("earlier-chosen-option: the option an ask card's earlier answer chose draws
   await expectReadsReferences(history.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): a database reset, the reading world, an ask replied under and resolved, and the
-// Inbox opened on its Reply row.
+// SLOW(>=2s): the reading world, an ask replied under and resolved, and the Inbox opened on
+// its Reply row.
 test("resolved-ask: a resolved ask's question and reason draw every form of a stored reference through the renderer", async ({
   page,
 }) => {
-  const world = await seedReadingWorld();
+  const me = rowPerson("alice");
+  const world = await seedReadingWorld({ login: me });
   const ask = await createAsk(world.host.key, { question: readingText(world) }, asker);
   // The reader's reply under the ask is their write in its thread and the session's reply the
   // write since; once the session resolves the ask it is no open ask, and the Inbox lists that
   // thread as a Reply row.
-  await createComment(world.host.key, { ask_id: ask.id, body: "Does the order matter here?" });
+  await createComment(
+    world.host.key,
+    { ask_id: ask.id, body: "Does the order matter here?" },
+    { login: me }
+  );
   await createComment(world.host.key, { ask_id: ask.id, body: "Settled elsewhere." }, asker);
   await resolveAsk(ask.id, { kind: "resolved", reason: readingText(world) }, asker);
 

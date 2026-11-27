@@ -44,6 +44,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { Browser } from "@playwright/test";
 
 import {
   ASK_APPROVAL_WORDS,
@@ -80,7 +81,7 @@ import {
   ASK_TODAY,
   type DashboardSeed,
   type ItemKind,
-  READER,
+  reader,
   SEEDED_LEGION,
   seedDashboard,
   type WaitingItem,
@@ -122,7 +123,7 @@ import { blockNode, expectOpeningLanded, focusThePage, nodeRow, tree } from "./i
 import { childrenSection, focusedNodeId } from "./issue-page-i";
 import { expectHeaderDrawn, waitingCount } from "./issue-page-p";
 import { decisionsBody } from "./issue-page-q";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, own, type Page, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
 /** Whether the head holds part M's Details facts of a focused node (dispatch://INFRA-3948), which
@@ -153,6 +154,15 @@ const thisMain = mainOfThisRun();
 /** The Dashboard seed on the main this run's server is. */
 function seeded(): Promise<DashboardSeed> {
   return seedDashboard(thisMain());
+}
+
+/** A `phase` of the Dashboard seed, read by the row's own person, the seed's reader (`reader`),
+ *  whom `own("alice")` names in the phase the seed runs in. */
+function seededPhase(
+  browser: Browser,
+  body: (page: Page, seed: DashboardSeed) => Promise<void>
+): Promise<void> {
+  return phase(browser, seeded, body, own("alice"));
 }
 
 /** The name of the view the row has on: its pressed toggle's from 1280 px up, and the one
@@ -232,7 +242,10 @@ async function chord(page: Page, second: "c" | "w"): Promise<void> {
 /** The slug of each document of `key`, by the document's id. */
 async function slugsOf(key: string): Promise<ReadonlyMap<string, string>> {
   return new Map(
-    ((await getIssue(key)).artifacts ?? []).map((artifact) => [artifact.id, artifact.slug])
+    ((await getIssue(key, { login: reader() })).artifacts ?? []).map((artifact) => [
+      artifact.id,
+      artifact.slug,
+    ])
   );
 }
 
@@ -275,7 +288,7 @@ function wordsBeside(
 // and four results read through to the fake GitHub, six questions, five decisions, two approvals
 // and three threads, each written through its route - before one load of the bare address.
 test("Dashboard is the first tab and each of its numbers is the seed's", async ({ browser }) => {
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     await gotoIssue(page, `/issues/${seed.key}`);
     await expectDashboardFirst(page, DESKTOP_WIDTH);
     await expectDashboard(page, "the bare address");
@@ -396,7 +409,7 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
   browser,
 }) => {
   test.setTimeout(240_000);
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     const key = seed.key;
     const widths =
       test.info().project.name === "iphone" ? [PHONE_WIDTH] : [DESKTOP_WIDTH, PHONE_WIDTH];
@@ -484,7 +497,7 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
 
       // A bare address with a words filter opens Conversation narrowed to the nodes whose words
       // hold it: the comment the words are from, and not the message thread.
-      const words = (await getComment(seed.threads.comment)).comment.body;
+      const words = (await getComment(seed.threads.comment, { login: reader() })).comment.body;
       await gotoIssue(page, `/issues/${key}?q=${encodeURIComponent(words)}`);
       await expectConversation(page, "the bare address with ?q=");
       await expect(
@@ -530,7 +543,7 @@ test("the header counts Dashboard's items on every view and drops one per act", 
   browser,
 }) => {
   test.setTimeout(180_000);
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     const key = seed.key;
     const waiting = waitingOf(issuePage(page));
     const counted = (items: number) => `Waiting on you (${items})`;
@@ -634,7 +647,7 @@ test("the header counts Dashboard's items on every view and drops one per act", 
 // SLOW(>=2s): the whole Dashboard seed, then two loads of Dashboard, each followed by a thread's
 // link and waited on until the thread's row holds the focus.
 test("a thread item's link opens the thread", async ({ browser }) => {
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     // dispatch://INFRA-5704 is not on this main, so the link is the thread's own address.
     for (const thread of [
       {
@@ -672,7 +685,7 @@ test("Details on a focused ask reads that ask and its references", async ({ brow
     "Details draws a focused node's facts only with part M's FocusedNodeFacts.tsx " +
       "(dispatch://INFRA-3948), which this head does not hold; part M's branch runs this row"
   );
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     const ask = seed.asks.byOption.id;
     const reference = `dispatch://${seed.key}/ask/${ask}`;
     const reads = watchApiRequests(page);
@@ -754,7 +767,7 @@ test("Dashboard at rest draws neither the writing box nor the read mark, and Con
       "branch holds part L"
   );
   test.setTimeout(120_000);
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     const key = seed.key;
     // Part L's writing box, which the foot keeps mounted and `hidden` while it does not draw it,
     // and the issue's read mark at the end of the outline.
@@ -789,7 +802,7 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
   browser,
 }) => {
   test.setTimeout(120_000);
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     const reads = watchApiRequests(page);
     await gotoIssue(page, presetPath(seed.key, "spec"));
     await expectLoadSettled(reads);
@@ -1021,7 +1034,7 @@ test("every text Dashboard draws carries one mark, the page's on its labels and 
   browser,
 }) => {
   test.setTimeout(120_000);
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     const waiting = waitingOf(issuePage(page));
     const roles = SEEDED_LEGION.roles.filter((role) => role.state !== "retired");
     // Dashboard's own words, and the words of the ask body, the decision card and a thread item
@@ -1046,7 +1059,7 @@ test("every text Dashboard draws carries one mark, the page's on its labels and 
     // The values: the count, the reader every open ask is asked of, and each agent's role. The
     // decision card's author line is a name where the read names one, and the card's own word
     // where it names none.
-    const values = [String(seed.items.length), READER, ...roles.map((role) => role.role)];
+    const values = [String(seed.items.length), reader(), ...roles.map((role) => role.role)];
     const author = seed.decisions.author;
     const authorWord = author === DECISION_LINE_WORDS.author_unknown;
     const authorLine = { author: authorWord ? [] : [author], chrome: authorWord ? [author] : [] };
@@ -1127,7 +1140,7 @@ function offPalette(page: Page): Promise<{ items: string[]; off: string[] }> {
 // SLOW(>=2s): the whole Dashboard seed, then one load of the bare address, one press of the
 // control under the first five, and in each scheme a read polled until its colours settle.
 test("Dashboard draws only the page's colours, in light and in dark", async ({ browser }) => {
-  await phase(browser, seeded, async (page, seed) => {
+  await seededPhase(browser, async (page, seed) => {
     await page.emulateMedia({ colorScheme: "light" });
     await gotoIssue(page, `/issues/${seed.key}`);
     await expectDashboard(page, "the bare address");

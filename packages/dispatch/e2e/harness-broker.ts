@@ -3,11 +3,11 @@
  * (`${VAR-default}`, no colon, so an empty value is not an unset one):
  *
  * - unset: `e2e/fake-broker.ts` on `FAKE_BROKER_PORT`, which the harness starts for a local run and
- *   `resetDatabase()` clears, and where a row seeds the requests it needs; it verifies no caller,
- *   so the server presents the throwaway token in `e2e/fake-broker-account-token`. Beside it a
- *   one-process run starts a real broker and its issuer (`e2e/harness-real-broker.ts`,
- *   `e2e/run-broker.sh`), which the server never reads: a fake row's `approve_url` names one of
- *   its records, so the browser reaches it;
+ *   the reset of the fakes before every row clears (`resetFakes`, e2e/seed.ts), and where a row
+ *   seeds the requests it needs; it verifies no caller, so the server presents the throwaway
+ *   token in `e2e/fake-broker-account-token`. Beside it a one-process run starts a real broker
+ *   and its issuer (`e2e/harness-real-broker.ts`, `e2e/run-broker.sh`), which the server never
+ *   reads: a fake row's `approve_url` names one of its records, so the browser reaches it;
  * - empty: no broker, the credential feature off (the pending list answers `null`, every other
  *   credential route `404 FEATURE_OFF`), as in a deployment that configures none;
  * - a URL: a broker the caller runs, which lists the ServiceAccount whose token is in

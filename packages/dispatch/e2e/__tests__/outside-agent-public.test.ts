@@ -14,7 +14,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { type BoundName, rowLimit, runBounded } from "./bounded-subprocess";
+import { bounds, rowLimit, runBounded, type StderrBound } from "./bounded-subprocess";
 import {
   copyLeg,
   type LegRun,
@@ -39,12 +39,14 @@ interface PublicScenario {
    *  answered trade, false for a refusal, null for an answer the leg cannot read. */
   readonly trades: readonly (boolean | null)[];
   /** The code the relay socket the T5 window holds closes with; it stays open for the whole hold
-   *  the leg asks for where none is given, or where no trade is refused. It closes once the leg
-   *  has made its first trade after the first refused one (the first false of `trades`), which the
-   *  leg makes only after it has read the socket open at that refusal. No time stands for that
-   *  read: a close a fixed 15 s after the socket opened came before a loaded leg's refusal, which
-   *  follows its 10 s between trades and the start of its probe, and the leg then read no socket
-   *  open at the refusal (dispatch://INFRA-3904). */
+   *  the leg asks for where none is given. It closes at the leg's first trade after the first
+   *  refused one (the first false of `trades`), which the leg makes only after it has read the
+   *  socket open at that refusal, and the stand-in answers that trade only once the socket's
+   *  process has ended and the leg's shell has reaped it, so the leg's next read finds it closed.
+   *  No time stands for either read: a close a fixed 15 s after the socket opened was outrun by a
+   *  loaded leg's trades (k5 at 0a773967, Job infra983-k5-head31e-qbkvf). Where no trade is
+   *  refused within the hold, which is the leg's T5 window (OUTSIDE_T5_SECONDS, 1200 s by
+   *  default), the socket stays open for all of it, as the leg makes no first refusal after it. */
   readonly holdCode?: number;
   /** The relay socket closes the moment it opens, with `holdCode`, so it is closed well before
    *  the leg's first refused trade: the leg reads no socket open at the refusal, and a close it
@@ -65,12 +67,13 @@ interface PublicScenario {
   readonly withoutLn?: boolean;
 }
 
-/** The stand-in probe: a Bun process the leg starts for each command it runs, on its own clock,
- *  which no fake timer of this file reaches; it answers from scenario.json beside it. Its `trade`
- *  counts the trades the leg made, in trades.count, and its `hold` reads that count every 25 ms, a
- *  gap no verdict reads, until the trade it closes at: a write of another process raises no event
- *  the hold could await. Without a close, the hold keeps its socket open for the window the leg
- *  asks for, as the real probe does. */
+/** The stand-in probe: a Bun process the leg starts for each command it runs, on the leg's own
+ *  clock, which no fake timer reaches; it answers from scenario.json beside it. Its `hold` reads
+ *  the count of trades its `trade` keeps, and that trade reads whether the hold's process is still
+ *  there, each 25 ms apart, a gap no verdict reads. The trade's wait is held to the short bound,
+ *  which ends a wait that would not end by itself: a hold ends at its first read of the count it
+ *  waits for, so the bound fires only for a hold that is stuck, and the row then fails, by name,
+ *  on the socket left open rather than hanging. */
 const standInProbe = `
 const dir = import.meta.dir;
 const scenario = JSON.parse(await Bun.file(dir + "/scenario.json").text());
@@ -79,7 +82,9 @@ const self = process.env.OUTSIDE_PROBE_SESSION ?? "";
 const print = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 const refusal = (code) => ({ status: 403, code, detail: "refused" });
 const counter = dir + "/trades.count";
+const holder = dir + "/hold.pid";
 const tradesMade = async () => ((await Bun.file(counter).exists()) ? Number(await Bun.file(counter).text()) : 0);
+const ended = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
 const firstRefusal = scenario.trades.indexOf(false);
 const closes = scenario.holdCode !== undefined && firstRefusal !== -1;
 switch (command) {
@@ -118,12 +123,18 @@ switch (command) {
   case "trade": {
     const done = await tradesMade();
     await Bun.write(counter, String(done + 1));
+    if (closes && done === firstRefusal + 1 && (await Bun.file(holder).exists())) {
+      const pid = Number(await Bun.file(holder).text());
+      const until = Date.now() + ${bounds.short};
+      while (!ended(pid) && Date.now() < until) await Bun.sleep(25);
+    }
     const traded = scenario.trades[Math.min(done, scenario.trades.length - 1)];
     if (traded === null) print({ unknown: "the stand-in broker did not answer" });
     else print(traded ? { traded: true, expires_at: Date.now() + 300000 } : { traded: false, status: 403, detail: "refused" });
     break;
   }
   case "hold": {
+    await Bun.write(holder, String(process.pid));
     print({ opened_at: Date.now() });
     if (scenario.holdClosesAtOpen) {
       print({ closed_at: Date.now(), code: scenario.holdCode ?? 4401 });
@@ -146,11 +157,11 @@ switch (command) {
 }
 `;
 
-/** One run of a copy of the public leg against the stand-ins, as `scenario` says; with
- *  `shimFirst`, `asked` is each name the leg asked the version manager for, one a line. */
+/** Runs the public leg against the stand-ins under `publicRun`. The diagnostic row adds `after`.
+ *  With `shimFirst`, `asked` is each name the leg asked the version manager for, one a line. */
 async function publicStandInRun(
   scenario: PublicScenario,
-  bound: BoundName = "publicRun"
+  after?: StderrBound
 ): Promise<LegRun & { readonly asked?: string }> {
   const leg = copyLeg(scratch, publicLeg);
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
@@ -227,7 +238,8 @@ exit 0
   const origin = `http://127.0.0.1:${await closedPort()}`;
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", leg],
-    bound,
+    bound: "publicRun",
+    ...(after === undefined ? {} : { after }),
     cwd: scratch("cwd"),
     env: {
       PATH: path,
@@ -405,13 +417,15 @@ describe.skipIf(skipWithout("bash", "bun"))(
       rowLimit("publicRun")
     );
 
-    // With no close time the real stand-in's hold sleeps for the T5 window (20 minutes). The
-    // 30-second publicT5Diagnostic bound covers the measured public-leg start to this hold under
-    // the row's parallel shape, so the forced hold names the T5 window and live processes.
+    // Every trade answers, so the stand-in leaves the relay open. Start the short bound at
+    // the T5 window line. The leg stays alive in that window, and the failure lists its processes.
     test(
       "a T5 relay hold that never closes leaves a named timeout diagnostic",
       async () => {
-        const failure = await publicStandInRun({ trades: [true] }, "publicT5Diagnostic").then(
+        const failure = await publicStandInRun(
+          { trades: [true] },
+          { line: "outside-agent-public: T5: window open for up to", bound: "publicT5Diagnostic" }
+        ).then(
           () => "the public leg ended before its deliberate held relay bound",
           (error: unknown) => (error instanceof Error ? error.message : String(error))
         );
@@ -422,7 +436,7 @@ describe.skipIf(skipWithout("bash", "bun"))(
           /still running when its bound passed:\n {2}pid=\d+ ppid=\d+ name=/
         );
       },
-      rowLimit("publicT5Diagnostic")
+      rowLimit("publicRun", "publicT5Diagnostic")
     );
   }
 );

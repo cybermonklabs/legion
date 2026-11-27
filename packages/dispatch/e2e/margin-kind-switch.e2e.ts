@@ -14,7 +14,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { type Browser, expect, type Page, test } from "./test";
+import { type Browser, expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The margin composer a selection-bar action opens can switch between Comment, Suggest and Ask;
@@ -37,8 +37,9 @@ async function withReaders(
   title: string,
   run: (readers: Readers) => Promise<void>
 ): Promise<void> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: initialMarkdown, title });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: initialMarkdown, title });
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
   try {

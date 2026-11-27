@@ -1,4 +1,5 @@
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
+import type { PathsOf } from "../web/src/api/paths";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { DWELL_MS } from "../web/src/features/shell/useDwell";
 import {
@@ -14,11 +15,18 @@ import {
 } from "./api";
 import { expectUncovered } from "./layout";
 import { answeredPost, holdPosts, refusePosts, WRITE_REFUSED, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // The phone layout on every project: on a phone a comment's thread opens full-screen over the
 // Conversation, and that is where each of these rows goes and comes back.
+//
+// Each row reads as a person of its own (`rowPerson`, e2e/test.ts), who makes the row's project,
+// issue and comments as alice did. The phone's header draws the reader's Inbox and New replies
+// counts, and alice's, which every row before this one on the worker raises, take a second line:
+// that moves the turns, and the controls on them, against the docked composer, the thread's
+// composers and the pills fixed at the foot of the screen, which is what these rows press and
+// measure.
 const phone = { height: 844, width: 390 };
 const session = {
   actor: { kind: "session" as const, id: "e2e-phone-conversation" },
@@ -125,10 +133,15 @@ async function scrollToOldest(page: Page): Promise<void> {
 test("on a phone, a docked send keeps its composer through a thread and back, which then takes typing @phone @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread round trip" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Phone thread round trip" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -161,10 +174,12 @@ test("on a phone, a docked send keeps its composer through a thread and back, wh
 test("on a phone, Expand thread while a send is out keeps the draft and its refusal @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread refusal" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Phone thread refusal" }, { login: me });
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -202,10 +217,12 @@ test("on a phone, Expand thread while a send is out keeps the draft and its refu
 test("on a phone, a thread reply keeps its composer through Back, and reopening the thread finds it @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread reply" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Phone thread reply" }, { login: me });
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -244,11 +261,16 @@ test("on a phone, a thread reply keeps its composer through Back, and reopening 
 test("on a phone, a thread reply leaves the docked composer's own reply and draft where they were @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread and docked replies" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Phone thread and docked replies" },
+    { login: me }
+  );
   await createMessage(issue.key, { body: "Agent status" }, session);
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -294,10 +316,15 @@ test("on a phone, a thread reply leaves the docked composer's own reply and draf
 test("on a phone, a thread's own reply holds the thread's Reply while it is out @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread inline reply" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Phone thread inline reply" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -337,10 +364,15 @@ test("on a phone, a thread's own reply holds the thread's Reply while it is out 
 test("on a phone, a thread's own reply holds Back and Escape while it is out, and its refusal stays in the thread @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone thread inline refusal" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Phone thread inline refusal" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -384,10 +416,15 @@ test("on a phone, a thread's own reply holds Back and Escape while it is out, an
 test("on a phone, a thread's Reply over its card's refused reply keeps that draft and refusal for after @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Reply over a refused reply" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Reply over a refused reply" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -423,10 +460,15 @@ test("on a phone, a thread's Reply over its card's refused reply keeps that draf
 test("on a phone, Back and Escape from a thread reply's refusal keep its draft and refusal for the thread's return @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Leaving a refused thread reply" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Leaving a refused thread reply" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -479,10 +521,15 @@ test("on a phone, Back and Escape from a thread reply's refusal keep its draft a
 test("on a phone, the reader's own Resolve keeps a thread reply's refusal and its comment @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Resolved over a refused reply" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Resolved over a refused reply" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -517,11 +564,13 @@ test("on a phone, the reader's own Resolve keeps a thread reply's refusal and it
 test("on a phone, a thread reply refused after Back comes back in its own thread on another Reply @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Refused after Back" });
-  const first = await createComment(issue.key, { body: "First comment" });
-  const second = await createComment(issue.key, { body: "Second comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Refused after Back" }, { login: me });
+  const first = await createComment(issue.key, { body: "First comment" }, { login: me });
+  const second = await createComment(issue.key, { body: "Second comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -561,10 +610,12 @@ test("on a phone, a thread reply refused after Back comes back in its own thread
 test("on a phone, a thread's own reply out when the viewport widens keeps its thread, draft and refusal @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Widened under a reply" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Widened under a reply" }, { login: me });
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -600,10 +651,15 @@ test("on a phone, a thread's own reply out when the viewport widens keeps its th
 test("on a phone, a thread resolved while its own reply is out stays open with the reply and its refusal @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Resolved under a phone reply" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Resolved under a phone reply" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -639,10 +695,12 @@ test("on a phone, a thread resolved while its own reply is out stays open with t
 test("on a phone, a thread reply the server never answers lets Back go at the deadline @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Hung thread reply" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Hung thread reply" }, { login: me });
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -691,12 +749,14 @@ test("on a phone, a thread reply the server never answers lets Back go at the de
 test("on a phone, Jump to latest covers none of the docked composer's Retry @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pill over a refusal" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Pill over a refusal" }, { login: me });
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, session);
   }
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -753,12 +813,17 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry @pho
 test("on a phone, the shell's status corner covers none of Jump to latest @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Status corner over the pill" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Status corner over the pill" },
+    { login: me }
+  );
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, session);
   }
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -812,12 +877,17 @@ test("on a phone, the shell's status corner covers none of Jump to latest @phone
 test("on a phone, Jump to latest covers none of the docked composer while the status corner shows @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pill over the composer" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Pill over the composer" },
+    { login: me }
+  );
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, session);
   }
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -864,9 +934,14 @@ test("on a phone, Jump to latest covers none of the docked composer while the st
 test("on a phone, the connection pill covers none of the docked composer @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Connection pill over a refusal" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Connection pill over a refusal" },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
   const narrow = { height: 568, width: 320 };
 
   try {
@@ -904,9 +979,14 @@ test("on a phone, the connection pill covers none of the docked composer @phone"
 test("on a phone, the stuck live-updates pill covers none of the docked composer @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stuck pill over a refusal" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Stuck pill over a refusal" },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
   const narrow = { height: 568, width: 320 };
 
   try {
@@ -952,10 +1032,15 @@ test("on a phone, the stuck live-updates pill covers none of the docked composer
 test("on a phone, the connection pill covers none of a thread's composers @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Connection pill over a thread" });
-  const root = await createComment(issue.key, { body: "Thread root" });
-  const alice = await asUser(browser, "alice");
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Connection pill over a thread" },
+    { login: me }
+  );
+  const root = await createComment(issue.key, { body: "Thread root" }, { login: me });
+  const alice = await asUser(browser, me);
   const narrow = { height: 568, width: 320 };
 
   try {
@@ -1010,13 +1095,15 @@ test("on a phone, the connection pill covers none of a thread's composers @phone
 test("on a phone, Jump to latest stays off a thread opened over the Conversation @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Pill over a thread" });
-  const oldest = await createComment(issue.key, { body: "Oldest comment" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Pill over a thread" }, { login: me });
+  const oldest = await createComment(issue.key, { body: "Oldest comment" }, { login: me });
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Newer turn ${index}` }, session);
   }
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -1048,15 +1135,20 @@ test("on a phone, Jump to latest stays off a thread opened over the Conversation
 test("on a phone, a thread over an older conversation holds the issue's read mark until Back @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Read mark under a thread" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Read mark under a thread" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
   await createMessage(issue.key, { body: "Newest turn" }, session);
   // Nothing here has been read, so both cards carry `New` and a dwell on the newest one - the
   // only card the mark watches - would read the issue through its head.
   const head = (await getIssue(issue.key)).last_seq;
-  const mark = async () => (await getMyState())[issue.key]?.last_read_seq ?? 0;
-  const alice = await asUser(browser, "alice");
+  const mark = async () => (await getMyState(me))[issue.key]?.last_read_seq ?? 0;
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -1087,7 +1179,9 @@ test("on a phone, a thread over an older conversation holds the issue's read mar
     // page's own, which answers only once a `PUT` the dwell started had left the page, and the
     // read of the mark itself.
     await page.clock.runFor(DWELL_MS * 3);
-    await page.evaluate(() => fetch("/api/v1/me/state").then(({ status }) => status));
+    await page.evaluate(() =>
+      fetch("/api/v1/me/state" satisfies PathsOf<"get">).then(({ status }) => status)
+    );
     expect(await mark()).toBe(0);
     expect(marks).toEqual([]);
 
@@ -1116,15 +1210,20 @@ test("on a phone, a thread over an older conversation holds the issue's read mar
 test("on a phone, a comment link to the newest conversation marks the issue read from its thread @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Read mark from the thread" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Read mark from the thread" },
+    { login: me }
+  );
   await createMessage(issue.key, { body: "Older turn" }, session);
   // The link's own comment, made last, so it is the newest conversation: the one card the mark
   // is written from, and the card the thread shows.
-  const newest = await createComment(issue.key, { body: "Newest comment" });
+  const newest = await createComment(issue.key, { body: "Newest comment" }, { login: me });
   const head = (await getIssue(issue.key)).last_seq;
-  const mark = async () => (await getMyState())[issue.key]?.last_read_seq ?? 0;
-  const alice = await asUser(browser, "alice");
+  const mark = async () => (await getMyState(me))[issue.key]?.last_read_seq ?? 0;
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -1146,7 +1245,7 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     });
     // Where the reader comes from, so the back below leaves the issue rather than landing on
     // the Conversation, whose own dwell would write the mark whatever the thread did.
-    await page.goto("/projects/CORE/issues");
+    await page.goto(`/projects/${core}/issues`);
     const issueLink = page
       .getByRole("table", { name: "Project issues table" })
       .getByRole("link", { name: issue.key, exact: true });
@@ -1176,7 +1275,7 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     await written;
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(new RegExp(`/projects/${core}/issues$`));
     expect(await mark()).toBe(head);
   } finally {
     await alice.close();
@@ -1196,11 +1295,16 @@ test("on a phone, a comment link to the newest conversation marks the issue read
 test("on a phone, the newest conversation's read mark moves nothing under a press in its thread @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Read mark under a press" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Read mark under a press" },
+    { login: me }
+  );
   // The one conversation, so the thread the reader opens is the newest one.
-  const root = await createComment(issue.key, { body: "Thread root" });
-  const alice = await asUser(browser, "alice");
+  const root = await createComment(issue.key, { body: "Thread root" }, { login: me });
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -1259,6 +1363,17 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
   }
 });
 
+/** What the sweep did at one scroll position: how many of the issue's tabs, and of the other
+ *  controls above the turns, it tapped, and how many of each it skipped behind the docked
+ *  composer. */
+type SweepStep = {
+  scrolledTo: number;
+  tabsTapped: number;
+  tabsBehindComposer: number;
+  aboveTapped: number;
+  aboveBehindComposer: number;
+};
+
 /** Sweeps the band from the top of the page down to `end` in the page: at every 4 px step it
  *  scrolls, lets two frames pass so the pill's own scroll listener and the render React queues
  *  for it have both landed, and records where a tap at the centre of a control does not reach
@@ -1270,16 +1385,16 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
  *  from where it lands under the controls up off the top of the screen. The pill floats at the
  *  foot, where the list scrolls behind it as it does behind any floating control, so an older
  *  turn's quiet actions - Copy reference, Reply, Pin - pass under it and are not tapped. The
- *  newest card never does: the pill is drawn exactly where the reader is away from the place
- *  the page settled AND that card's head is off the screen (`belongs`, the rule
- *  `use-follow-latest.ts` carries), so a step that draws no pill where it belongs, and a step
- *  that draws one over the card it points at, are both recorded.
- *  Controls whose centre is off screen, or clipped out of view by a scrolling ancestor, are not
- *  tapped either. */
+ *  newest card never does: the pill is drawn only past the place the page settled and only when
+ *  no part of that card is on screen (`belongs`, the rule `use-follow-latest.ts` carries). The
+ *  sweep records both a missing pill where one belongs and an unexpected pill anywhere else.
+ *  Controls whose centre is off the visible band (the screen less the docked composer), or
+ *  clipped out of view by a scrolling ancestor, are not tapped either. Beside the lost taps it
+ *  returns, for every step, the counts `SweepStep` names, so a sweep that tapped nothing shows. */
 async function tapsLostAcrossBand(
   page: Page,
   band: { end: number; settled: number }
-): Promise<string[]> {
+): Promise<{ lost: string[]; steps: SweepStep[] }> {
   return page.evaluate(async ({ end, settled }) => {
     const turns = document.querySelector('[aria-label="Conversation turns"]');
     if (turns === null) throw new Error("expected the Conversation's turns");
@@ -1289,17 +1404,9 @@ async function tapsLostAcrossBand(
       });
     const pillBox = () =>
       document.querySelector('[data-testid="jump-to-latest"]')?.getBoundingClientRect();
-    // The pill is drawn where the reader is away from the place the page settled and no part of
-    // the newest card is on the screen, the band the docked composer covers being no part of it;
-    // while any of that card is on the screen there is nothing to jump to, and the pill would
-    // cover the card it points at (dispatch://INFRA-5200). `undefined` while an edge of the card
-    // is within 8 px of an edge of that screen: there the page's own reading - an
-    // IntersectionObserver on the card, reported a frame after the scroll - and this one can
-    // disagree by a pixel and a frame, so either answer is taken there. Whether the pill covers
-    // anything is read at every step, that one included.
-    const belongs = (top: number): boolean | undefined => {
-      const card = document.querySelector("[data-turn]")?.getBoundingClientRect();
-      if (card === undefined || Math.abs(top - settled) <= 1) return false;
+    // The visible band: the screen less the docked composer's band, below a sticky composer and
+    // above a fixed one.
+    const screenBand = (): { screenTop: number; screenBottom: number } => {
       const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
       const docked = composer === null ? "" : getComputedStyle(composer).position;
       const screenTop =
@@ -1308,13 +1415,36 @@ async function tapsLostAcrossBand(
         composer !== null && docked === "fixed"
           ? composer.getBoundingClientRect().top
           : window.innerHeight;
+      return { screenTop, screenBottom };
+    };
+    // The pill is drawn only past the place the page settled, and only when no part of the newest
+    // card is on the screen, the docked composer's band being no part of it. While any of that card
+    // is on screen there is nothing to jump to, and the pill would cover the card it points at
+    // (dispatch://INFRA-5200). Past the settled place, return `undefined` while an edge of the card
+    // is within 8 px of an edge of that screen: there the page's own reading - an
+    // IntersectionObserver on the card, reported a frame after the scroll - and this one can
+    // disagree by a pixel and a frame, so either answer is taken there. Whether the pill covers
+    // anything is read at every step, that one included.
+    const belongs = (top: number): boolean | undefined => {
+      const card = document.querySelector("[data-turn]")?.getBoundingClientRect();
+      if (card === undefined || top <= settled + 1) return false;
+      const { screenTop, screenBottom } = screenBand();
       if (Math.abs(card.bottom - screenTop) <= 8 || Math.abs(card.top - screenBottom) <= 8) {
         return undefined;
       }
       return !(card.bottom > screenTop && card.top < screenBottom);
     };
     const lost: string[] = [];
+    const steps: SweepStep[] = [];
     for (let top = 1; top <= end; top += 4) {
+      const step: SweepStep = {
+        scrolledTo: top,
+        tabsTapped: 0,
+        tabsBehindComposer: 0,
+        aboveTapped: 0,
+        aboveBehindComposer: 0,
+      };
+      steps.push(step);
       window.scrollTo(0, top);
       // One frame carries the scroll into layout and runs the pill's listener; a step that
       // changes whether the pill shows takes one more for the render React queued for it.
@@ -1327,10 +1457,11 @@ async function tapsLostAcrossBand(
         continue;
       }
       if (shows === false && (pill?.getBoundingClientRect().height ?? 0) > 0) {
-        lost.push(`scrolled to ${top}: Jump to latest over the card it points at`);
+        lost.push(`scrolled to ${top}: unexpected Jump to latest`);
         continue;
       }
       const turnsTopNow = turns.getBoundingClientRect().top;
+      const { screenTop, screenBottom } = screenBand();
       for (const control of document.querySelectorAll<HTMLElement>(
         '[role="tab"], button, a[href], input'
       )) {
@@ -1347,6 +1478,15 @@ async function tapsLostAcrossBand(
         if (pill?.contains(control) || box.width === 0) continue;
         if (box.bottom > turnsTopNow && (!decides || inBand)) continue;
         if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight) continue;
+        // Content scrolls under the docked composer by design, so a control the composer covers
+        // is no tap the pill can take: it is counted and not tapped.
+        const tab = control.getAttribute("role") === "tab";
+        const above = !tab && box.bottom <= turnsTopNow;
+        if (y < screenTop || y >= screenBottom) {
+          if (tab) step.tabsBehindComposer += 1;
+          if (above) step.aboveBehindComposer += 1;
+          continue;
+        }
         let clipped = false;
         for (
           let ancestor = control.parentElement;
@@ -1359,29 +1499,30 @@ async function tapsLostAcrossBand(
           clipped = x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom;
         }
         if (clipped) continue;
+        if (tab) step.tabsTapped += 1;
+        if (above) step.aboveTapped += 1;
         const hit = document.elementFromPoint(x, y);
         const reached = hit !== null && (control.contains(hit) || hit.contains(control));
         const lostToPill = hit !== null && pill?.contains(hit) === true;
-        if (reached || (control.getAttribute("role") !== "tab" && !lostToPill)) continue;
+        if (reached || (!tab && !lostToPill)) continue;
         const name = label ?? (control.closest("label") ?? control).textContent?.trim() ?? "";
         lost.push(
           `scrolled to ${top}: ${name} at ${Math.round(x)},${Math.round(y)} reached ${hit?.outerHTML.slice(0, 80)}`
         );
       }
     }
-    return lost;
+    return { lost, steps };
   }, band);
 }
 
-/** The pill where the page stands now: drawn where the reader is away from the place the page
- *  settled and no part of the newest card is on the screen less the docked composer's band,
- *  absent everywhere else. A card whose edge is within 8 px of an edge of that screen is read
- *  either way, as in the sweep. */
+/** The pill where the page stands now: drawn only past the place the page settled and only when
+ *  no part of the newest card is on the screen less the docked composer's band. Past that place,
+ *  a card whose edge is within 8 px of an edge of the screen is read either way, as in the sweep. */
 async function expectPill(page: Page, pill: Locator, settled: number): Promise<void> {
   // The page settled at this scroll before the call, so one reading of the card decides it here.
   const belongs = await page.evaluate((restingY) => {
     const card = document.querySelector("[data-turn]")?.getBoundingClientRect();
-    if (card === undefined || Math.abs(window.scrollY - restingY) <= 1) return false;
+    if (card === undefined || window.scrollY <= restingY + 1) return false;
     const composer = document.querySelector<HTMLElement>('[aria-label="Comment composer"]');
     const docked = composer === null ? "" : getComputedStyle(composer).position;
     const screenTop =
@@ -1403,39 +1544,51 @@ async function expectPill(page: Page, pill: Locator, settled: number): Promise<v
   }
 }
 
-// On a phone the issue's header, its tabs and the filters sit above the turns, the newest turn
-// just under them, so a reader scrolling back up passes a band where they are on screen while
-// `Jump to latest` shows. The pill is fixed at the foot there, above the docked composer, so
-// every control above the turns keeps its own tap through that band, and so does the newest
-// card's Accept and Reject, the pair the pill took for itself while it sat at the head of the
-// list. The pill is gone while that card's head is on the screen, which is where today's issue
-// header - tall at a phone's width, since its tabs wrap rather than scroll sideways - holds the
-// card at the top of the page: a reader who sees the card the pill carries them to has nothing
-// to jump to (dispatch://INFRA-5200). An older card scrolled through the foot still passes
-// under the pill and loses its quiet taps - Copy reference, Reply, Pin - for as long as it is
-// there, which is accepted.
+// On a phone the issue's header, tabs and filters sit above the turns. A title that wraps to at
+// least three lines at 390 px makes the header tall enough to put the newest card under the
+// composer near the top of the page on every run, without relying on the assignee chip wrapping.
+// The pill must stay off at or above the settled place even there, so the header, tabs and filters
+// keep their taps. Past that place the pill still stays off while any part of the newest card is
+// on screen, so it cannot take that card's Accept and Reject (dispatch://INFRA-5200). An older card
+// passing behind the pill can still lose its quiet taps (Copy reference, Reply, Pin) while covered.
+// The sweep skips a control whose centre is behind the docked composer: content scrolls under
+// that composer by design, so a control it covers is no tap the pill can take. The band it reads
+// is the screen less the composer's box, read at each step: above a fixed composer's top, below a
+// sticky one's bottom. So the skip cannot pass by sweeping nothing, the sweep counts at each step
+// the tabs and the other controls above the turns it tapped and those it skipped behind the
+// composer, the row attaches them as `sweep`, and it fails unless the sweep tapped some of each.
 // SLOW(>=2s): the band is swept 4 px at a time, a frame per step, and every control above the
 // turns, with the suggestion's decisions under it, is hit-tested at each one.
 test("on a phone, Jump to latest covers none of the issue's tabs, the controls above the turns, or the newest card's Accept and Reject above the foot band @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: "The quick brown fox",
-    title: "Pill over the tabs",
-  });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: core,
+      spec: "The quick brown fox",
+      title:
+        "Pill over the tabs when the issue title wraps across three lines above the Conversation on a narrow phone",
+    },
+    { login: me }
+  );
   for (let index = 0; index < 15; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, session);
   }
   // The newest turn, so it is the first card under the band: a collapsed suggestion, whose
   // Accept and Reject sit in the content column, where the pill was painted over them.
-  await createComment(issue.key, {
-    anchor: { artifact: "spec", quote: "quick" },
-    body: "Suggested replacement.",
-    suggestion: { replace_with: "swift" },
-  });
-  const alice = await asUser(browser, "alice");
+  await createComment(
+    issue.key,
+    {
+      anchor: { artifact: "spec", quote: "quick" },
+      body: "Suggested replacement.",
+      suggestion: { replace_with: "swift" },
+    },
+    { login: me }
+  );
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();
@@ -1445,8 +1598,8 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     const jump = page.getByTestId("jump-to-latest");
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(page.getByRole("button", { name: "Accept suggestion" })).toBeVisible();
-    // Where the page settled on the latest turn, the one place in the band with no pill: read
-    // until two reads a poll apart agree, so the page has come to rest there.
+    // Read where the page settled on the latest turn until two reads a poll apart agree.
+    // At or above that place the pill must stay off.
     let settled = Number.NaN;
     await expect
       .poll(async () => {
@@ -1466,15 +1619,36 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
       return box.bottom + window.scrollY;
     });
     // Both ends of the band keep Playwright's own check; the sweep between them runs in the
-    // page, one round trip rather than three per step. The pill is drawn exactly where the
-    // reader is away from where the page settled and the newest card's head is off the screen,
-    // so each end is read against that rule, not against the scroll alone.
+    // page, one round trip rather than three per step. The pill belongs only past the settled
+    // place, with the newest card off screen, so each end is read against both conditions.
     await page.evaluate(() => window.scrollTo(0, 1));
     await expectPill(page, jump, settled);
-    const lost = await tapsLostAcrossBand(page, { end, settled });
+    // The sweep's answer is its whole record: it scrolled and read the page itself at each step.
+    const sweep = await tapsLostAcrossBand(page, { end, settled });
+    const totals = {
+      tabsTapped: 0,
+      tabsBehindComposer: 0,
+      aboveTapped: 0,
+      aboveBehindComposer: 0,
+    };
+    for (const step of sweep.steps) {
+      totals.tabsTapped += step.tabsTapped;
+      totals.tabsBehindComposer += step.tabsBehindComposer;
+      totals.aboveTapped += step.aboveTapped;
+      totals.aboveBehindComposer += step.aboveBehindComposer;
+    }
+    await test.info().attach("sweep", {
+      body: JSON.stringify({ steps: sweep.steps, totals }),
+      contentType: "application/json",
+    });
     await page.evaluate((y) => window.scrollTo(0, y), end);
     await expectPill(page, jump, settled);
-    expect(lost).toEqual([]);
+    expect(sweep.lost).toEqual([]);
+    expect(totals.tabsTapped, "the sweep tapped some of the issue's tabs").toBeGreaterThan(0);
+    expect(
+      totals.aboveTapped,
+      "the sweep tapped some of the controls above the turns"
+    ).toBeGreaterThan(0);
   } finally {
     await alice.close();
   }
@@ -1505,11 +1679,16 @@ function fieldsHolding(page: Page, text: string): Promise<string[]> {
 test("on a phone, a thread reply Dispatch refused keeps its typed text through Cancel reply @phone", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Phone cancel after a refusal" });
-  const earlier = await createComment(issue.key, { body: "Earlier comment" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Phone cancel after a refusal" },
+    { login: me }
+  );
+  const earlier = await createComment(issue.key, { body: "Earlier comment" }, { login: me });
   const typed = "Refused thread reply, typed by hand";
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
 
   try {
     const page = await alice.newPage();

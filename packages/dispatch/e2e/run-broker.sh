@@ -44,7 +44,7 @@ set -euo pipefail
 # trap written down is still a trap - so the value is refused here, at the start of the run,
 # where the name that is wrong is still in hand.
 #
-# DATABASE_URL is the Dispatch suite's own database, which e2e/seed.ts truncates; the broker never
+# DATABASE_URL is the Dispatch suite's own database, which e2e/seed.ts empties; the broker never
 # touches it, and runs instead in a database of its own on the same server, <that database>_broker,
 # dropped and created afresh on every start so each harness begins with no enrollment, request or
 # session.

@@ -66,11 +66,12 @@ import type { ReadTrade } from "../../cipher-client/src/environment";
 import type { TokenSource } from "../../cipher-client/src/source";
 import { type BrokerToken, BrokerTokenClient } from "../../cipher-client/src/token-client";
 import { SCOPE_READ } from "../../cipher-client/src/wire";
-import { baseUrl, createIssue, createProject, listComments } from "./api";
+import { type Refusal, type Result, routePath } from "../web/src/api/paths";
+import { baseUrl, createIssue, createProject, fixedKey, listComments } from "./api";
 import { harnessPorts } from "./harness-ports";
 
 /** The example entry's project (dev-broker.sh's EXCHANGE_PROJECT): its named token writes it. */
-const project = "EXAMPLE";
+const project = fixedKey("EXAMPLE", "dev-broker.sh's example entry's token writes this project");
 /** The session the read entry fixes (dev-broker.sh's READ_SESSION). */
 const readSession = "example-reader-session";
 /** The session dev-broker.sh registered the example entry's pod under (EXCHANGE_SESSION). */
@@ -169,6 +170,13 @@ interface Answer {
   readonly body: Readonly<Record<string, unknown>>;
 }
 
+/** The refusal of each Dispatch route `main` sends (`issuePath`, `comments` and whoami), which
+ *  `present` reads the code of. GET /ws/live is no route of the contract. */
+type SentRefusal =
+  | Refusal<"/api/v1/issues/{key}", "get">
+  | Refusal<"/api/v1/issues/{key}/comments", "post">
+  | Refusal<"/api/v1/whoami", "get">;
+
 /** `value` where it is a JSON object, each member unknown until read; else undefined. */
 function asObject(value: unknown): Readonly<Record<string, unknown>> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -205,9 +213,11 @@ async function present(
     method,
     signal: deadline,
   });
-  // An answer that is not JSON carries no code.
+  // An answer that is not JSON carries no code, and only a refusal names one: a 2xx answer is the
+  // route's result, which carries none.
   const answer = jsonObject(await response.text()) ?? {};
-  const code = typeof answer.code === "string" ? answer.code : "";
+  const refusal = (response.ok ? {} : answer) as Partial<SentRefusal>;
+  const code = typeof refusal.code === "string" ? refusal.code : "";
   return { body: answer, code, status: response.status };
 }
 
@@ -469,8 +479,8 @@ async function main(): Promise<void> {
   const issue = await createIssue({ project, title: "Read by a read-only token" });
   console.log(`seeded ${project}: issue ${issue.key}`);
 
-  const issuePath = `/api/v1/issues/${issue.key}`;
-  const comments = `${issuePath}/comments`;
+  const issuePath = routePath("get", "/api/v1/issues/{key}", { key: issue.key });
+  const comments = routePath("post", "/api/v1/issues/{key}/comments", { key: issue.key });
   // One key for every POST, as one client sending the same write again would. A key belongs to its
   // caller (requestKeyLogin, internal/dispatch/api), and a read-only token is refused before the
   // key is read, so the named token's write runs under it whatever the refused requests did.
@@ -536,8 +546,11 @@ async function main(): Promise<void> {
   const cutWhat = "machine login's read token with a cut";
   await introspects(cutWhat, brokerUrl, brokerDir, cut, "machine-login-with-a-cut");
   const cutPresents = heldToken(cut.token, cut.key);
-  const whoami = await present(cutPresents, "GET", "/api/v1/whoami");
-  const named = whoami.body.cut;
+  const whoami = await present(cutPresents, "GET", routePath("get", "/api/v1/whoami", {}));
+  // Only an agent's answer holds a cut.
+  const named = (
+    whoami.body as Partial<Extract<Result<"/api/v1/whoami", "get">, { kind: "agent" }>>
+  ).cut;
   report(
     `GET /api/v1/whoami [${cutWhat}]`,
     whoami.status === 200 && named === goldenCut,

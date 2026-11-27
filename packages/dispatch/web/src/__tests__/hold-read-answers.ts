@@ -43,7 +43,11 @@ const HELD = Symbol("held by hold-read-answers.ts");
 
 type QueryFunction = ((...args: never[]) => unknown) & { [HELD]?: true };
 
-/** One turn of the real event loop, which a fake clock does not hold. */
+/** One turn of the real event loop, which a fake clock does not hold.
+ *  This one stays on the real clock (INFRA-983): it is no row's wait but the lane's hold itself,
+ *  which moves each read's answer one real turn later under every row of the lane, on the real
+ *  clock or the fake one; a timer of the fake clock would hold the answers of a row that never
+ *  moves it. */
 function realTurn(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setImmediate(resolve);

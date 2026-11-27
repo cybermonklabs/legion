@@ -19,7 +19,13 @@
  * fake GitHub serves, whose body is the component's prose, into the issue's reason through the
  * API, and into comments a person writes through the API.
  */
-import { createComment, patchIssue, putArchitectureSource, syncArchitectureSource } from "./api";
+import {
+  createComment,
+  patchIssue,
+  putArchitectureSource,
+  type RowKey,
+  syncArchitectureSource,
+} from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   expectReadsReferences,
@@ -28,13 +34,13 @@ import {
   seedReadingWorld,
 } from "./reading-rows";
 import { COMPONENT_ID, COMPONENT_REPO, COMPONENT_TITLE, RENDERED_BODY } from "./reference-surfaces";
-import { expect, test } from "./test";
+import { expect, own, rowPerson, test } from "./test";
 
-/** CORE's architecture as reference-surfaces.ts seeds it: the fake GitHub serves the model and
- *  the source sync reads it in. The model file's body, under its front matter, is the
+/** The row's architecture as reference-surfaces.ts seeds it: the fake GitHub serves the model
+ *  and the source sync reads it in. The model file's body, under its front matter, is the
  *  component's prose. The Architecture page is drawn only for a project with a source, so every
  *  row that reads it seeds one. */
-async function seedArchitecture(prose: string): Promise<void> {
+async function seedArchitecture(project: RowKey, prose: string): Promise<void> {
   await seedFakeGithub({
     [COMPONENT_REPO]: {
       contents: "read",
@@ -42,8 +48,8 @@ async function seedArchitecture(prose: string): Promise<void> {
       installation_id: 101,
     },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo: COMPONENT_REPO });
-  const source = await syncArchitectureSource("CORE", COMPONENT_REPO);
+  await putArchitectureSource(project, { branch: "main", repo: COMPONENT_REPO });
+  const source = await syncArchitectureSource(project, COMPONENT_REPO);
   expect(source.last_error).toBeNull();
 }
 
@@ -54,9 +60,9 @@ test("component-prose: a component's prose draws every form but a question id th
 }) => {
   const world = await seedReadingWorld();
   // The component's prose is the text the row reads.
-  await seedArchitecture(readingText(world));
+  await seedArchitecture(world.project, readingText(world));
 
-  await page.goto(`/projects/CORE/architecture?component=${COMPONENT_ID}`);
+  await page.goto(`/projects/${world.project}/architecture?component=${COMPONENT_ID}`);
   const details = page.getByTestId("component-details");
   await expect(details.getByRole("heading", { level: 2, name: COMPONENT_TITLE })).toBeVisible();
   // The prose is the one rendered body of the details: the Code & definition section's text,
@@ -73,10 +79,10 @@ test("not-architectural-reason: a Not architectural row's reason draws every for
   const world = await seedReadingWorld();
   // The component's prose is words of its own, so the reason is the one stored text that names
   // the world's references.
-  await seedArchitecture("The cache service.");
+  await seedArchitecture(world.project, "The cache service.");
   await patchIssue(world.host.key, { components: { mode: "none", reason: readingText(world) } });
 
-  await page.goto("/projects/CORE/architecture?view=none");
+  await page.goto(`/projects/${world.project}/architecture?view=none`);
   const row = page
     .getByTestId("not-architectural-list")
     .getByTestId(`attachment-${world.host.key}`);
@@ -99,36 +105,41 @@ test("issue-components-reason: the issue header's Components line draws every fo
   await expectReadsReferences(line.locator(RENDERED_BODY), world, "link");
 });
 
-// SLOW(>=2s): the reading world, a comment alice writes for each group of forms a first line
-// holds, and her person page drawn.
-test("person-node-title: a person page's node line draws every form of a stored reference through the renderer", async ({
-  page,
-}) => {
-  const world = await seedReadingWorld();
-  // Each comment alice writes is a node she authored (`authored_by`), which her page lists by the
-  // first line of its text, cut by the server to 240 runes: one comment for each group of forms a
-  // first line holds whole (`firstLineForms`, whose groups fit the shorter cut of a thread's
-  // subject, so each fits this one too).
-  const groups = firstLineForms(world);
-  const comments: string[] = [];
-  for (const forms of groups) {
-    const comment = await createComment(
-      world.host.key,
-      { body: readingText(world, forms) },
-      { login: "alice" }
-    );
-    comments.push(comment.id);
-  }
+test.describe(() => {
+  test.use({ signedIn: own("alice") });
 
-  await page.goto("/people/alice");
-  const rows = page.getByRole("list", { name: "Person nodes" }).getByRole("listitem");
-  for (const [index, forms] of groups.entries()) {
-    // Each row is found by its Open link, which opens the comment the row lists. The line above
-    // it is the row's one preview, a text a reader reads and no control, so its references are
-    // links.
-    const row = rows.filter({
-      has: page.locator(`a[href="/issues/${world.host.key}/comments/${comments[index] ?? ""}"]`),
-    });
-    await expectReadsReferences(row.locator("[data-markdown-preview]"), world, "link", forms);
-  }
+  // SLOW(>=2s): the reading world, a comment by the reader for each group of forms a first
+  // line holds, and the reader's person page drawn.
+  test("person-node-title: a person page's node line draws every form of a stored reference through the renderer", async ({
+    page,
+  }) => {
+    const me = rowPerson("alice");
+    const world = await seedReadingWorld({ login: me });
+    // The reader's comments are nodes they authored (`authored_by`). Their page lists each by
+    // the first line of its text, cut by the server to 240 runes. Write one comment for each
+    // group of forms a first line holds whole (`firstLineForms` fits the shorter cut of a
+    // thread subject).
+    const groups = firstLineForms(world);
+    const comments: string[] = [];
+    for (const forms of groups) {
+      const comment = await createComment(
+        world.host.key,
+        { body: readingText(world, forms) },
+        { login: me }
+      );
+      comments.push(comment.id);
+    }
+
+    await page.goto(`/people/${me}`);
+    const rows = page.getByRole("list", { name: "Person nodes" }).getByRole("listitem");
+    for (const [index, forms] of groups.entries()) {
+      // Each row is found by its Open link, which opens the comment the row lists. The line
+      // above it is the row's one preview, a text a reader reads and no control, so its
+      // references are links.
+      const row = rows.filter({
+        has: page.locator(`a[href="/issues/${world.host.key}/comments/${comments[index] ?? ""}"]`),
+      });
+      await expectReadsReferences(row.locator("[data-markdown-preview]"), world, "link", forms);
+    }
+  });
 });

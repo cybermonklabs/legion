@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { precedes } from "../../__tests__/document-order";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { type PageWords, PageWordsProvider } from "../../components/tooltips";
@@ -407,7 +408,7 @@ test("inside NoTooltips no time carries a title", async () => {
     const times = [...body.querySelectorAll("time")];
     // The first line's time, and the earlier approval's.
     expect(times).toHaveLength(2);
-    for (const time of times) expect(time.hasAttribute("title")).toBe(true);
+    for (const time of times) expect(time).toHaveAttribute("title");
   } finally {
     outside.unmount();
   }
@@ -421,7 +422,7 @@ test("inside NoTooltips no time carries a title", async () => {
     await within(body).findByRole("radio", { name: "Approve" });
     const times = [...body.querySelectorAll("time")];
     expect(times).toHaveLength(2);
-    for (const time of times) expect(time.hasAttribute("title")).toBe(false);
+    for (const time of times) expect(time).not.toHaveAttribute("title");
   } finally {
     inside.unmount();
   }
@@ -432,22 +433,27 @@ test("the ask body sends no request", async () => {
   const request = spyOn(globalThis, "fetch").mockRejectedValue(
     new Error("the ask body sent a request")
   );
-  const view = draw(
-    <Body agentNames="cache" ask={approvalAsk()} renderText={plainText} urgencyWord />
-  );
   try {
-    const body = within(bodyOf(view.container));
-    expect(await body.findByRole("radio", { name: "Approve" })).toBeTruthy();
-    expect(body.getByRole("textbox", { name: "Reason" })).toBeTruthy();
-    expect(body.getByRole("combobox", { name: "Hand this question to" })).toBeTruthy();
-    // Every read the body could start has had its chance to.
-    await waitFor(() => expect(body.getByText(/^Approved at version 11/)).toBeTruthy());
-    const tick = Promise.withResolvers<void>();
-    setTimeout(tick.resolve, 0);
-    await tick.promise;
-    expect(request).not.toHaveBeenCalled();
+    // The row holds the fake clock from the draw on, so a read the body would start on a
+    // zero-delay timer of its own is one that `tick(0)` runs.
+    await onFakeClock(async () => {
+      const view = draw(
+        <Body agentNames="cache" ask={approvalAsk()} renderText={plainText} urgencyWord />
+      );
+      try {
+        const body = within(bodyOf(view.container));
+        expect(await body.findByRole("radio", { name: "Approve" })).toBeTruthy();
+        expect(body.getByRole("textbox", { name: "Reason" })).toBeTruthy();
+        expect(body.getByRole("combobox", { name: "Hand this question to" })).toBeTruthy();
+        await waitFor(() => expect(body.getByText(/^Approved at version 11/)).toBeTruthy());
+        // Every read the body could start has had its chance to: its zero-delay timers have run.
+        await tick(0);
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+      }
+    });
   } finally {
-    view.unmount();
     request.mockRestore();
   }
 });

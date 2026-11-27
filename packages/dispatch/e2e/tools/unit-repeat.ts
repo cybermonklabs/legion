@@ -1,10 +1,12 @@
-/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>`:
- *  runs one lane of the Dispatch unit suite with every test run `k` times, and reports each row
- *  that failed (INFRA-1511).
+/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>]
+ *  [--shard <i>/<n>] --out <dir>`: runs one lane of the Dispatch unit suite, or one shard of its
+ *  files, with every test run `k` times, and reports each row that failed (INFRA-1511).
  *
  *    bun run test:repeat --lane web --out /tmp/repeat-web
  *    bun run test:repeat --lane web-cold --reruns 1 --out /tmp/repeat-web-cold
  *    bun run test:repeat --lane harness --reruns 5 --seed 1234 --out /tmp/repeat-harness
+ *    bun run test:repeat --lane web --seed 1234 --shard 1/2 --out /tmp/repeat-web-1
+ *    bun run test:repeat --lane harness --seed 1234 --shard 2/2 --out /tmp/repeat-harness-2
  *
  *  The web lane is `bun run test:web web/src`. The web-cold lane is
  *  `bun run test:web:cold web/src`: the web lane with each module the web app loads lazily held
@@ -12,9 +14,48 @@
  *  them. A rerun of a file keeps the modules its first run loaded, so only the first run of each
  *  file is cold: run that lane with `--reruns 1`. The harness lane is
  *  `bun run test:harness e2e/__tests__`. The tool runs the lane from this package's directory,
- *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter. It
- *  prints the seed before the run starts, so a run killed midway still names its seed. During the
- *  run it prints only Bun's summary lines. Bun's whole output goes to `<out>/bun.log`.
+ *  whatever directory it starts in. It adds `--seed`, `--rerun-each`, what narrows the lane to
+ *  the shard the command line names (below), and Bun's junit reporter. It prints the seed before
+ *  the run starts, so a run killed midway still names its seed, and then the whole command it
+ *  runs. During the run it prints only Bun's summary lines. Bun's whole output goes to
+ *  `<out>/bun.log`.
+ *
+ *  `--shard <i>/<n>` runs the i-th of n shards of the lane's files. On the web and web-cold lanes
+ *  that is Bun's own `--shard`. Bun 1.4.4 deals the files to the shards by their paths, whatever
+ *  the seed (measured over five files under three seeds), so n runs of one lane, one for each
+ *  shard, run each of its files once between them. The workflow runs the web lane so, in two
+ *  shards a round under the round's one seed. A shard other than two whole numbers `<i>/<n>`,
+ *  with n at least 1 and i from 1 to n, is a bad command line, refused before Bun starts: Bun
+ *  would refuse it only once the tool had started it, and exit 1, the status of a run whose rows
+ *  failed.
+ *
+ *  The harness lane runs in two legs, its two shards, around the one file its row of `lanes`
+ *  names as `alone`, the Codex leg's test file. `--shard 1/2` runs that file alone, given to Bun
+ *  as `./<file>`: Bun runs a path that starts so as that one file, where it reads a bare path as a
+ *  filter and runs every file whose path holds it. `--shard 2/2` runs the lane with
+ *  `--path-ignore-patterns=<file>`, which leaves out that file and no other; written as
+ *  `./<file>` it would leave out none (each measured on Bun 1.4.4 over a planted copy of the
+ *  lane). So the two legs run each of the lane's files once between them, all the runs of a file
+ *  in one Bun run of one leg, in Bun's random order. The workflow runs the harness lane so, in
+ *  two legs a round under the round's one seed: in one leg with the rest of the lane, the Codex
+ *  file's 20 runs outlasted the leg's deadline, as .github/ci-notes/dispatch-unit-repeat.md ("The
+ *  harness lane's two legs") says. A harness shard of any count but 2 is a bad command line,
+ *  refused before Bun starts, and so is a harness shard where that file is no file of this
+ *  package: the first leg would run nothing, and the second the whole lane. The report's command
+ *  and its "Shard:" line name what the shard ran: on the web and web-cold lanes its shard of the
+ *  files, on the harness lane the file alone or the lane without it.
+ *
+ *  A row of a shard or a leg is run again as a row of the whole lane is, by the command its
+ *  report gives: `bun run <script> <file> --seed=<n>`, with the lane's script (`test:web`,
+ *  `test:web:cold` or `test:harness`), `--rerun-each=<k>` for a row that first failed on run k,
+ *  and no `--shard`. The shard or the leg picks which files run, and Bun orders a file's rows by
+ *  the seed and the file alone: a file's rows ran in the same order in its shard as alone, under
+ *  two seeds (measured on Bun 1.4.4), and e2e/__tests__/unit-repeat.test.ts runs each failing
+ *  row's command of a web shard and of each harness leg to hold that of both. So the command the
+ *  report gave before shards and legs is still true of their rows. A `--shard` there would be
+ *  false: Bun deals one file alone to the first shard and to none of any other. The same holds of
+ *  a file a stop or a dead worker names (below): its command, and the run that reads its rows'
+ *  names, run the file alone with no `--shard`.
  *
  *  `<out>` then holds `junit.xml`, `bun.log`, `report.json` and `report.md`. Where
  *  `GITHUB_STEP_SUMMARY` is set, `report.md` is also appended to the file it names. Under GitHub
@@ -82,10 +123,10 @@
  *  that cannot be the output directory - a file, a path under a file, a place the tool may not
  *  write - is a bad command line too, refused before Bun starts, and so is a bound's variable
  *  that holds no whole number of milliseconds. e2e/__tests__/unit-repeat.test.ts runs real Bun
- *  and checks the reader and the report on the files Bun writes, a stop of a leg whose rows never
- *  end, a stop whose names run hangs in a hook, a stop that comes while the report is written, a
- *  worker and Bun's test process killed in a row, and the workflow's step cancelled as GitHub's
- *  runner cancels it.
+ *  and checks the reader and the report on the files Bun writes, the two shards of a web run and
+ *  the two legs of a harness run, a stop of a leg whose rows never end, a stop whose names run
+ *  hangs in a hook, a stop that comes while the report is written, a worker and Bun's test
+ *  process killed in a row, and the workflow's step cancelled as GitHub's runner cancels it.
  */
 import {
   appendFileSync,
@@ -94,27 +135,44 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { RefusedGroup, signalGroup } from "../signal-group";
 
 export type Lane = "web" | "web-cold" | "harness";
 
-interface LaneScript {
+export interface LaneScript {
   /** The script of package.json that runs the lane. */
   readonly script: string;
   /** The directory the lane tests. */
   readonly target: string;
+  /** The one file of the lane, from this package's directory, that runs as a leg of its own:
+   *  `--shard 1/2` runs it alone, and `--shard 2/2` runs the lane without it. A lane with none
+   *  takes Bun's own `--shard`. */
+  readonly alone?: string;
 }
 
-const lanes: Readonly<Record<Lane, LaneScript>> = {
+/** Each lane's script and directory. The harness lane's file alone is the Codex leg's, whose 20
+ *  runs outlasted a leg's deadline beside the rest of the lane, as
+ *  .github/ci-notes/dispatch-unit-repeat.md ("The harness lane's two legs") says. */
+export const lanes: Readonly<Record<Lane, LaneScript>> = {
   web: { script: "test:web", target: "web/src" },
   "web-cold": { script: "test:web:cold", target: "web/src" },
-  harness: { script: "test:harness", target: "e2e/__tests__" },
+  harness: {
+    script: "test:harness",
+    target: "e2e/__tests__",
+    alone: "e2e/__tests__/outside-agent-codex.test.ts",
+  },
 };
+
+/** How many legs a lane with a file alone runs in, its shards: `--shard 1/2`, that file alone,
+ *  and `--shard 2/2`, the lane without it. */
+export const ALONE_LEGS = 2;
 
 const laneNames = Object.keys(lanes);
 
@@ -176,7 +234,7 @@ const laneChoice = `<${laneNames.join("|")}>`;
 const laneList = `${laneNames.slice(0, -1).join(", ")} or ${laneNames.at(-1)}`;
 
 const usage =
-  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] --out <dir>\n` +
+  `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] [--shard <i>/<n>] --out <dir>\n` +
   `  --lane ${laneChoice}\n                        ` +
   Object.entries(lanes)
     .map(([lane, { script, target }]) => `${lane} runs \`bun run ${script} ${target}\``)
@@ -185,14 +243,35 @@ const usage =
   `  --reruns <k>          how many times Bun runs each test, at least 1 (default ${DEFAULT_RERUNS})\n` +
   `  --seed <n>            the seed of Bun's random order, from 0 to ${MAX_SEED}\n` +
   "                        (default: a random one)\n" +
+  "  --shard <i>/<n>       run the i-th of n shards of the lane's files, by Bun's --shard,\n" +
+  "                        n at least 1 and i from 1 to n (default: every file); or, on a\n" +
+  "                        lane with a file alone, its legs:\n" +
+  Object.entries(lanes)
+    .flatMap(([lane, { alone }]) =>
+      alone === undefined
+        ? []
+        : [
+            `                        ${lane}: 1/${ALONE_LEGS} runs ${alone} alone,\n`,
+            `                        ${ALONE_LEGS}/${ALONE_LEGS} the lane without it\n`,
+          ]
+    )
+    .join("") +
   "  --out <dir>           where junit.xml, bun.log, report.json and report.md go;\n" +
   "                        made if missing. A relative path is read from the directory the\n" +
   "                        tool runs in, which `bun run` makes packages/dispatch.";
+
+/** One shard of a lane's files, as `--shard <index>/<count>` names it. */
+export interface Shard {
+  readonly index: number;
+  readonly count: number;
+}
 
 export interface RepeatOptions {
   readonly lane: Lane;
   readonly reruns: number;
   readonly seed: number;
+  /** The shard of the lane's files to run, or null for every file. */
+  readonly shard: Shard | null;
   readonly out: string;
 }
 
@@ -211,13 +290,59 @@ function wholeNumber(text: string): number | undefined {
   return Number.isSafeInteger(value) ? value : undefined;
 }
 
+/** The shard `text` names as `<i>/<n>`, two whole numbers with n at least 1 and i from 1 to n, or
+ *  undefined for anything else. */
+function shardOf(text: string): Shard | undefined {
+  const parts = /^([0-9]+)\/([0-9]+)$/.exec(text);
+  if (parts === null) return undefined;
+  const index = wholeNumber(parts[1]);
+  const count = wholeNumber(parts[2]);
+  if (index === undefined || count === undefined || index < 1 || index > count) return undefined;
+  return { count, index };
+}
+
+/** `shard` as Bun's `--shard` and the report write it: `1/2`. */
+function shardText(shard: Shard): string {
+  return `${shard.index}/${shard.count}`;
+}
+
+/** What a leg of `run`'s lane tests, where `target` is the lane's: the target, or, for the first
+ *  leg of a lane with a file alone, that file, as `./<file>`. Bun 1.4.4 runs a path that starts
+ *  so as that one file, and reads a bare one as a filter, which runs every file whose path holds
+ *  it. */
+export function legTarget(run: Pick<RepeatOptions, "lane" | "shard">, target: string): string {
+  const { alone } = lanes[run.lane];
+  return alone !== undefined && run.shard?.index === 1 ? `./${alone}` : target;
+}
+
+/** What narrows `run`'s lane to its shard, after the seed and the reruns: nothing for every file;
+ *  Bun's own `--shard` on a lane with no file alone; and on one with a file alone, nothing for
+ *  its first leg, which `legTarget` narrows, and `--path-ignore-patterns=<file>` for its second,
+ *  which leaves out that file and no other (measured on Bun 1.4.4: a `./<file>` there leaves
+ *  out none). */
+function shardArguments(run: Pick<RepeatOptions, "lane" | "shard">): string[] {
+  const { alone } = lanes[run.lane];
+  if (run.shard === null) return [];
+  if (alone === undefined) return [`--shard=${shardText(run.shard)}`];
+  return run.shard.index === 1 ? [] : [`--path-ignore-patterns=${alone}`];
+}
+
+/** What the tool gives `bun run <script> <legTarget>` before Bun's junit reporter: the run's
+ *  seed, its reruns and what narrows the lane to its shard (`shardArguments`). The report's
+ *  command is the script, the leg's target and these. */
+export function runArguments(
+  run: Pick<RepeatOptions, "lane" | "reruns" | "seed" | "shard">
+): string[] {
+  return [`--seed=${run.seed}`, `--rerun-each=${run.reruns}`, ...shardArguments(run)];
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /** Reads the command line. `seed` gives the seed when the command line names none. */
 export function parseArguments(argv: readonly string[], seed: () => number = randomSeed): Parsed {
-  let values: { lane?: string; reruns?: string; seed?: string; out?: string };
+  let values: { lane?: string; reruns?: string; seed?: string; shard?: string; out?: string };
   try {
     ({ values } = parseArgs({
       args: [...argv],
@@ -226,6 +351,7 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
         out: { type: "string" },
         reruns: { type: "string" },
         seed: { type: "string" },
+        shard: { type: "string" },
       },
       strict: true,
     }));
@@ -246,7 +372,19 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
   if (chosen === undefined || chosen > MAX_SEED) {
     return { problem: `--seed is a whole number from 0 to ${MAX_SEED}, not ${values.seed}` };
   }
-  return { options: { lane, out, reruns, seed: chosen } };
+  const shard = values.shard === undefined ? null : shardOf(values.shard);
+  if (shard === undefined) {
+    return {
+      problem: `--shard is <i>/<n>, two whole numbers with n at least 1 and i from 1 to n, not ${values.shard}`,
+    };
+  }
+  const { alone } = lanes[lane];
+  if (alone !== undefined && shard !== null && shard.count !== ALONE_LEGS) {
+    return {
+      problem: `--shard on the ${lane} lane is 1/${ALONE_LEGS}, ${alone} alone, or ${ALONE_LEGS}/${ALONE_LEGS}, the lane without it, not ${values.shard}`,
+    };
+  }
+  return { options: { lane, out, reruns, seed: chosen, shard } };
 }
 
 export type Outcome = "passed" | "failed" | "skipped";
@@ -480,6 +618,8 @@ export interface LaneRun {
   /** What the lane tested: its directory, or the narrower path a smoke run gives `runLane`. */
   readonly target: string;
   readonly seed: number;
+  /** The shard of the lane's files it ran, or null where it ran every file. */
+  readonly shard: Shard | null;
   readonly reruns: number;
   readonly wallMs: number;
   /** Bun's exit code. It is null when a signal ended Bun. */
@@ -698,6 +838,9 @@ export interface Report {
   readonly github: GithubRun;
   readonly lane: Lane;
   readonly seed: number;
+  /** The shard of the lane's files the run ran, as `--shard` names it (`1/2`), or null where it
+   *  ran every file. */
+  readonly shard: string | null;
   readonly reruns: number;
   /** The lane's command, without the reporter flags. */
   readonly command: string;
@@ -1092,9 +1235,10 @@ export function summarise(run: LaneRun): Report {
     const { file, describe, name } = runs[0];
     // The message of a failed `expect` ends with a newline. The report would show an empty line.
     const message = failed[0].message.trimEnd();
-    // Bun runs a file's rows in an order that depends only on the seed and the file, and it
-    // keeps that order on every rerun (measured on Bun 1.4.4). So the file alone with the seed
-    // and `--rerun-each=n` runs as it did up to run n, the run this row first failed on.
+    // Bun runs a file's rows in an order that depends only on the seed and the file, in a shard
+    // or not, and it keeps that order on every rerun (measured on Bun 1.4.4). So the file alone
+    // with the seed and `--rerun-each=n` runs as it did up to run n, the run this row first failed
+    // on. The command names no shard: the file alone is all of the first shard and none of another.
     const rerun = first > 1 ? ` --rerun-each=${first}` : "";
     failingRows.push({
       file,
@@ -1206,8 +1350,9 @@ export function summarise(run: LaneRun): Report {
     github: githubRun(run.environment),
     lane: run.lane,
     seed: run.seed,
+    shard: run.shard === null ? null : shardText(run.shard),
     reruns: run.reruns,
-    command: `bun run ${script} ${run.target} --seed=${run.seed} --rerun-each=${run.reruns}`,
+    command: `bun run ${script} ${legTarget(run, run.target)} ${runArguments(run).join(" ")}`,
     bunExit,
     wallSeconds: Math.round(run.wallMs / 100) / 10,
     oneRun: {
@@ -1250,6 +1395,22 @@ function fenced(text: string, language: string): string[] {
 /** `count` with its noun: `one` when the count is 1, `many` otherwise. */
 function counted(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
+}
+
+/** What the run was of: its lane, and its shard where it ran one (`web lane, shard 1/2`). */
+function legName(report: Report): string {
+  return `${report.lane} lane${report.shard === null ? "" : `, shard ${report.shard}`}`;
+}
+
+/** What a run of one shard ran, `shard` as `--shard` names it: on a lane with no file alone, its
+ *  shard of the lane's files; on one with a file alone, that file alone or the lane without it. */
+function shardRan(lane: Lane, shard: string): string {
+  const { alone } = lanes[lane];
+  if (alone === undefined)
+    return `${code(shard)} of the lane's files, as Bun's \`--shard\` deals them`;
+  return shard === `1/${ALONE_LEGS}`
+    ? `${code(shard)}, the lane's file ${code(alone)} alone`
+    : `${code(shard)}, the lane's files without ${code(alone)}, which shard 1/${ALONE_LEGS} runs alone`;
 }
 
 function oneRunText(report: Report): string {
@@ -1305,7 +1466,7 @@ function stopLines(stop: StopReport): string[] {
 
 /** The report as markdown, for report.md and the step summary. */
 export function markdown(report: Report): string {
-  const lines = [`## Repeated unit tests: ${report.lane} lane`, ""];
+  const lines = [`## Repeated unit tests: ${legName(report)}`, ""];
   const { github } = report;
   if (github.event !== null) lines.push(`- Event: ${code(github.event)}`);
   if (github.commit !== null) lines.push(`- Commit: ${code(github.commit)}`);
@@ -1315,6 +1476,7 @@ export function markdown(report: Report): string {
   }
   lines.push(
     `- Lane: ${code(report.lane)}, run as ${code(report.command)}`,
+    ...(report.shard === null ? [] : [`- Shard: ${shardRan(report.lane, report.shard)}`]),
     `- Seed: ${code(String(report.seed))}`,
     `- Reruns: ${report.reruns}`,
     `- Bun's exit status: ${report.bunExit}`,
@@ -1509,7 +1671,7 @@ export function annotations(report: Report): string[] {
   lines.push(
     workflowCommand(
       "notice",
-      { title: `Repeated unit tests: ${report.lane} lane` },
+      { title: `Repeated unit tests: ${legName(report)}` },
       `Seed ${report.seed}, ${report.reruns} reruns, ${report.wallSeconds.toFixed(1)} s. ` +
         `One run: ${oneRunText(report)}. All runs: ${testcasesText(report)}. ` +
         `${failuresText(report)} Machine memory, which counts every process and not Bun's ` +
@@ -1548,11 +1710,13 @@ const failedRow = /^\(fail\) (.*?)(?: \[\d+(?:\.\d+)?m?s\])?$/;
 /** Sends SIGKILL to every process of the group `leader` leads: a child the tool spawned with
  *  `detached`, which makes it the leader of a group of its own, and every process it started
  *  that stayed in that group, Bun's test process and its workers among them. A group that has
- *  already ended is no error. */
+ *  already ended is no error. A `leader` that kill would read as no group the tool started, 0 or
+ *  1, is refused, and the refusal thrown (`signalGroup`). */
 function killGroup(leader: number): void {
   try {
-    process.kill(-leader, "SIGKILL");
-  } catch {
+    signalGroup(leader, "SIGKILL");
+  } catch (error) {
+    if (error instanceof RefusedGroup) throw error;
     // ESRCH: no process of the group is left.
   }
 }
@@ -1691,7 +1855,8 @@ function boundMs(bound: (typeof stopBounds)[keyof typeof stopBounds]): number | 
 }
 
 /** Runs the lane once with `options` and writes its report. Answers the exit status: 2, with
- *  nothing run, where `options.out` cannot be the output directory, as for any bad command line.
+ *  nothing run, where `options.out` cannot be the output directory, or where a shard of a lane
+ *  with a file alone names a file that is no file of this package, as for any bad command line.
  *  `target` is the path the lane tests, its whole directory unless a caller names a narrower one:
  *  that is how a smoke run drives the real path over one file, in a pod where a whole lane may
  *  not run. */
@@ -1699,12 +1864,23 @@ export async function runLane(
   options: RepeatOptions,
   target: string = lanes[options.lane].target
 ): Promise<0 | 1 | 2> {
-  const { lane, reruns, seed } = options;
-  const { script } = lanes[lane];
+  const { lane, reruns, seed, shard } = options;
+  const { script, alone } = lanes[lane];
   const graceMs = boundMs(stopBounds.grace);
   const namesBoundMs = boundMs(stopBounds.names);
   if (typeof graceMs === "string") return refuse(graceMs);
   if (typeof namesBoundMs === "string") return refuse(namesBoundMs);
+  // Where the file alone is gone, the first leg would run nothing and the second, which leaves it
+  // out by its path, every file of the lane.
+  if (
+    alone !== undefined &&
+    shard !== null &&
+    statSync(join(packageDirectory, alone), { throwIfNoEntry: false })?.isFile() !== true
+  ) {
+    return refuse(
+      `--shard ${shardText(shard)} of the ${lane} lane runs ${alone} alone or the lane without it, and ${join(packageDirectory, alone)} is no file`
+    );
+  }
   const out = resolve(options.out);
   const junitPath = join(out, "junit.xml");
   const logPath = join(out, "bun.log");
@@ -1721,35 +1897,34 @@ export async function runLane(
   } catch (error) {
     return refuse(`--out ${options.out} cannot be the output directory: ${errorText(error)}`);
   }
-  console.log(`seed=${seed} lane=${lane} reruns=${reruns}`);
-  console.log(`running bun run ${script} ${target} in ${packageDirectory}; its output: ${logPath}`);
+  console.log(
+    `seed=${seed} lane=${lane} reruns=${reruns}${shard === null ? "" : ` shard=${shardText(shard)}`}`
+  );
+  const command = [
+    process.execPath,
+    "run",
+    script,
+    legTarget(options, target),
+    ...runArguments(options),
+    "--reporter=junit",
+    `--reporter-outfile=${junitPath}`,
+    "--preload",
+    progressPreload,
+  ];
+  console.log(`running ${command.join(" ")} in ${packageDirectory}; its output: ${logPath}`);
 
   const started = performance.now();
   // `detached` makes Bun's `bun run` the leader of a process group of its own, which Bun's test
   // process and its workers stay in, so that the tool can kill all of them at once, at the
   // grace's end after a stop and once Bun has ended, and none of them outlives the report.
-  const child = Bun.spawn(
-    [
-      process.execPath,
-      "run",
-      script,
-      target,
-      `--seed=${seed}`,
-      `--rerun-each=${reruns}`,
-      "--reporter=junit",
-      `--reporter-outfile=${junitPath}`,
-      "--preload",
-      progressPreload,
-    ],
-    {
-      cwd: packageDirectory,
-      detached: true,
-      env: { ...process.env, DISPATCH_UNIT_REPEAT_PROGRESS: progressPath },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    }
-  );
+  const child = Bun.spawn(command, {
+    cwd: packageDirectory,
+    detached: true,
+    env: { ...process.env, DISPATCH_UNIT_REPEAT_PROGRESS: progressPath },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   // Read before the stop handler is registered, which cancels them at the grace's end.
   const readers = [child.stdout.getReader(), child.stderr.getReader()];
   const relays = Promise.all(readers.map((reader) => relay(reader, log)));
@@ -1896,6 +2071,7 @@ export async function runLane(
         lane,
         target,
         seed,
+        shard,
         reruns,
         wallMs,
         exitCode: child.exitCode,

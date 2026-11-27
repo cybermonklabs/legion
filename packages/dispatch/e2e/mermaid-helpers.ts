@@ -1,8 +1,10 @@
 // The init-script and worker helpers `e2e/mermaid.e2e.ts`'s rows share: the wrappers that record,
 // hold, refuse or fail the page's `Worker`, the two scroll helpers (one turns the browser's scroll
 // anchoring off, one reads the offset once it settles), and the route that makes the real worker
-// chunk hold a diagram's source.
-import { expect, type Page } from "@playwright/test";
+// chunk hold a diagram's source. And the drawn-diagram helpers that file and
+// `e2e/mermaid.stub.e2e.ts` share: a flowchart body, the diagram a card draws, a comment thread
+// opened in the Conversation, and the check that a card draws its diagram with the source closed.
+import { expect, type Locator, type Page } from "@playwright/test";
 
 // What this file's init scripts keep on the page's window.
 declare global {
@@ -226,4 +228,79 @@ export async function expectHeldAndResponsive(page: Page, holds: () => number): 
     );
     expect(elapsed).toBeLessThan(1_000);
   }
+}
+
+const diagramName = "Rendered Mermaid diagram";
+
+/** A body of `lead` and then one flowchart from `from` to `to`, whose source's first line is
+ *  `graph TD`. */
+export function flowchart(lead: string, from: string, to: string): string {
+  return `${lead}\n\n\`\`\`mermaid\ngraph TD\n  ${from} --> ${to}\n\`\`\`\n`;
+}
+
+/** The drawn diagram inside `card`. */
+export function diagramIn(card: Locator): Locator {
+  return card.getByRole("img", { exact: true, name: diagramName });
+}
+
+function conversationTurns(page: Page): Locator {
+  return page.getByRole("list", { name: "Conversation turns" });
+}
+
+/** The comment thread `rootId` opened in the Conversation, where its bodies render in full
+ *  rather than as the collapsed card's preview. The turn shows `lead`, the root comment's first
+ *  text, before it is expanded, so the click lands on a turn that has rendered. */
+export async function openCommentThread(
+  page: Page,
+  rootId: string,
+  lead: string
+): Promise<Locator> {
+  const turn = conversationTurns(page).locator(`:scope > li[data-turn="comment:${rootId}"]`);
+  await expect(turn).toContainText(lead);
+  const expand = turn.getByRole("button", { exact: true, name: "Expand thread" });
+  const opened = turn.getByRole("button", { exact: true, name: "Collapse thread" });
+  // Retried for the reason the reader's click on `Mermaid source` is below: the page moves
+  // while the turn's diagrams draw, so a click can land on whatever slid under the pointer and
+  // the thread never opens. Measured here on firefox, where the expand click was lost and the
+  // row waited out its budget for a `Collapse thread` that never appeared. The expand button is
+  // gone once the thread is open, so the retry clicks only while it is still there.
+  await expect(async () => {
+    if (await expand.isVisible()) await expand.click();
+    await expect(opened).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 5_000 });
+  return turn;
+}
+
+/** Both halves of the control: `card` shows the drawn diagram holding `labels`, and its source
+ *  (whose first line is `graph TD`) stays out of sight until `Mermaid source` is opened. */
+export async function expectDrawnDiagram(card: Locator, labels: readonly string[]): Promise<void> {
+  const diagram = diagramIn(card);
+  await expect(diagram).toBeVisible();
+  for (const label of labels) {
+    await expect(diagram).toContainText(label);
+  }
+  const source = card.getByText("graph TD");
+  // Mounted, closed inside the disclosure: toBeHidden alone also passes on no match at all.
+  await expect(source).toHaveCount(1);
+  await expect(source).toBeHidden();
+  const disclosure = card.getByText("Mermaid source", { exact: true });
+  // The reader's click is retried until the disclosure opens, because a click can be lost. An
+  // instrumented run of these rows caught it: a document-level `click` listener recorded
+  // `click ARTICLE connected=true`, so the click landed on the `<article>` behind the summary -
+  // the page moved between Playwright's actionability check on the summary and the click's own
+  // dispatch - and no `toggle` fired and no figure was redrawn. Nothing had opened the
+  // disclosure, so the row waited out its whole expect timeout; it failed that way twice in 100
+  // repeats on firefox in a two-worker run of this pod. A click already taken leaves the source
+  // visible, so the retry clicks only while it is still hidden rather than closing what the
+  // first click opened.
+  //
+  // A retried click is no proof of the product's own rule, that a source the reader opened is
+  // drawn open again after a repaint: this helper only gets the reader's click to land. That
+  // rule is proven by the row `a mermaid source a reader opened is open again when the comment
+  // is edited` and by the module's own test file,
+  // `web/src/features/refs/mermaid-diagrams.test.tsx`.
+  await expect(async () => {
+    if (await source.isHidden()) await disclosure.click();
+    await expect(source).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 5_000 });
 }

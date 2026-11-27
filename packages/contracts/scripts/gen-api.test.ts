@@ -164,6 +164,11 @@ describe("gen-api", () => {
     expect(Object.keys(document.paths).length).toBeGreaterThan(100);
     expect(Object.keys(document.components.schemas).length).toBeGreaterThan(100);
     expect(shortfalls(document, source)).toEqual([]);
+    // The union every refusal is read through names the common body and the prefix layer's 409,
+    // which no handler's own shape names.
+    const refusal = source.match(/export type DispatchRefusal =([^;]*);/)?.[1] ?? "";
+    expect(refusal).toContain('components["schemas"]["ErrorBody"]');
+    expect(refusal).toContain('components["schemas"]["IDAmbiguousError"]');
   }, 120_000);
 
   // The control: a document holding a path, a schema and a field the module does not declare is

@@ -15,18 +15,21 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { expect } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
-import { createIssue, createProject } from "./api";
+import { createIssue, createProject, fixedKey } from "./api";
 import { missEntryChunk, pageAssetPath, tabReloads } from "./shell";
 import { stubbed } from "./stub/stub-test";
 
+/** Why this file's projects are made under fixed keys. */
+const RECORDED = "this file's recordings were made under it";
+
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: fixedKey("CORE", RECORDED), name: "Core" });
   const unreachable = await createIssue({ project: "CORE", title: "Unreachable page" });
   const withMargin = await createIssue({ project: "CORE", title: "Has a margin" });
   // Enough projects that the navigation is taller than any viewport under test.
   for (let index = 0; index < 17; index += 1) {
     const key = `P${String(index).padStart(2, "0")}`;
-    await createProject({ key, name: `Project ${key}` });
+    await createProject({ key: fixedKey(key, RECORDED), name: `Project ${key}` });
   }
   return {
     lastProject: "P16",

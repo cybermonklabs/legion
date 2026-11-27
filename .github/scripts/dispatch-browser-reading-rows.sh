@@ -100,13 +100,19 @@ how_ended() {
 # reason this script's head gives. `actions: read` is the caller's, and ci.yaml's job that calls
 # this workflow already holds it.
 # This run's attempt's jobs, read once here and read again by reading three below.
-# The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, leg}
+# The call writes $RUNNER_TEMP/jobs.json: the array of {id, name, conclusion, legs}
 # that both readings take. The jobs API lists the caller's jobs too, and the jobs of ci.yaml's
 # other callers of this workflow that share the run - dispatch-browser beside
 # dispatch-browser-pr on a pull request labelled full-ci, dispatch-references beside
 # dispatch-browser-pr on one that changes what the reference rows test - so the script holds the
-# name to `<caller> / ` and one of this workflow's seven - binaries, shard, alone,
-# multiprocess, embedder, visual and merge - with a matrix leg in brackets after it.
+# name to `<caller> / ` and one of seven of this workflow's nine jobs - binaries, shard, alone,
+# multiprocess, embedder, visual and merge - with a matrix leg in brackets after it. The other
+# two, `quarantine-rows` and `quarantine`, are outside that filter on purpose: they run on the
+# nightly's call alone, write no blob report and gate nothing, so the merge job needs neither and
+# neither reading names them
+# (.github/ci-notes/dispatch-browser.md#the-quarantine-job-where-the-quarantined-rows-gate-nothing).
+# `legs` is every Playwright run of the job that uploads a blob report: one for a shard, an alone
+# leg and the embedder job, two for the multiprocess job, none for the other three.
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:
@@ -148,11 +154,11 @@ how_ended() {
 # could upload is in the list and still owes its blob.
 # A read that fails leaves the list empty, and the check below says so: `|| true` keeps
 # pipefail and `set -e` from ending the script on jq's status first.
-legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$jobs" |
+legs=$(jq -r '.[] | select(.conclusion != "skipped") | .legs[]' "$jobs" |
   sort) || true
 if [ -z "$legs" ]; then
-  echo "::error::this run's jobs hold no shard or alone leg, so there is nothing to" \
-    "hold the merged report against"
+  echo "::error::this run's jobs hold no leg that uploads a blob report, so there is" \
+    "nothing to hold the merged report against"
   exit 1
 fi
 missing=""

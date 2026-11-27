@@ -10,7 +10,7 @@ import {
 import { needsYouCards } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -51,7 +51,7 @@ async function nameDefaultFromSettings(settings: Page, from: string, login: stri
   await settings.goto("/settings");
   const control = settings.getByRole("combobox", {
     exact: true,
-    name: "Default assignee of CORE",
+    name: `Default assignee of ${rowKey("CORE")}`,
   });
   await expect(control).toBeEnabled();
   await expect(control).toHaveValue(from);
@@ -74,21 +74,26 @@ async function conversationCard(page: Page, issueKey: string, askId: string): Pr
 test("a question on an issue nobody holds follows its project's default assignee between two open Inboxes", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
+  // The two readers are people of the row's own (`rowPerson`, e2e/test.ts): each Inbox, its
+  // banner and its count hold this row's question or nothing, and no other row's.
+  const aliceLogin = rowPerson("alice");
+  const bobLogin = rowPerson("bob");
   // CORE names alice: a project created by a person names that person when the call names
   // nobody, which is the step the server took here.
-  const project = await createProject({ key: "CORE", name: "Core" });
-  expect(project.default_assignee).toBe("alice");
+  const project = await createProject({ key: core, name: "Core" }, { login: aliceLogin });
+  expect(project.default_assignee).toBe(aliceLogin);
   // The issue holds nobody, so its question reaches the project's default and no earlier step of
   // the chain can answer for it. A create always lands on a person, so it is created and then
   // cleared.
-  const created = await createIssue({ project: "CORE", title: "Nobody holds this" }, asker);
+  const created = await createIssue({ project: core, title: "Nobody holds this" }, asker);
   const issue = await patchIssue(created.key, { assignee: null }, asker);
   expect(issue.assignee).toBeNull();
   const ask = await createAsk(issue.key, { question: "Which rollout flag?" }, asker);
-  expect((await getAsk(ask.id)).ask.waiting_on_person).toBe("alice");
+  expect((await getAsk(ask.id)).ask.waiting_on_person).toBe(aliceLogin);
 
-  const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  const alice = await asUser(browser, aliceLogin);
+  const bob = await asUser(browser, bobLogin);
   try {
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
@@ -105,7 +110,7 @@ test("a question on an issue nobody holds follows its project's default assignee
 
     // 2. Bob names himself CORE's default from the Settings page, in a page of his own. The
     // question moves with no reload of either Inbox: out of hers, into his, counts and all.
-    await nameDefaultFromSettings(await bob.newPage(), "alice", "bob");
+    await nameDefaultFromSettings(await bob.newPage(), aliceLogin, bobLogin);
 
     await expect(inboxRow(bobPage, ask.id)).toBeVisible();
     await expect(bobPage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
@@ -123,14 +128,14 @@ test("a question on an issue nobody holds follows its project's default assignee
     // 3. The asker then writes alice on the issue itself, which is the step above the project's
     // default: the question moves back, again with no reload, and neither browser made the
     // write.
-    await patchIssue(issue.key, { assignee: "alice" }, asker);
+    await patchIssue(issue.key, { assignee: aliceLogin }, asker);
     await expect(inboxRow(alicePage, ask.id)).toBeVisible();
     await expect(alicePage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
     await expectInboxCount(alicePage, 1);
     await expect(inboxRow(bobPage, ask.id)).toHaveCount(0);
     await expect(bobPage.getByText("Nothing needs you")).toBeVisible();
     await expectInboxCount(bobPage, 0);
-    expect((await getAsk(ask.id)).ask.waiting_on_person).toBe("alice");
+    expect((await getAsk(ask.id)).ask.waiting_on_person).toBe(aliceLogin);
   } finally {
     await alice.close();
     await bob.close();
@@ -142,17 +147,18 @@ test("a question on an issue nobody holds follows its project's default assignee
 test("issue and document pages follow a default move: a question's Asked-of badge names the new default on the issue page and on the document page", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   // CORE names alice, as the row above has it.
-  const project = await createProject({ key: "CORE", name: "Core" });
+  const project = await createProject({ key: core, name: "Core" });
   expect(project.default_assignee).toBe("alice");
   // A question on an issue nobody holds, and one on a project document: no step of the chain
   // above the project's default answers for either.
-  const created = await createIssue({ project: "CORE", title: "Nobody holds this" }, asker);
+  const created = await createIssue({ project: core, title: "Nobody holds this" }, asker);
   const issue = await patchIssue(created.key, { assignee: null }, asker);
   expect(issue.assignee).toBeNull();
   const issueAsk = await createAsk(issue.key, { question: "Which rollout flag?" }, asker);
   const runbook = await createProjectDocument(
-    "CORE",
+    core,
     { content: "# Runbook\n\nRestart, reseed, reopen.\n", name: "Runbook" },
     asker
   );
@@ -172,7 +178,7 @@ test("issue and document pages follow a default move: a question's Asked-of badg
     const issuePage = await alice.newPage();
     const issueCard = await conversationCard(issuePage, issue.key, issueAsk.id);
     const docPage = await alice.newPage();
-    await docPage.goto(`/projects/CORE/documents/${runbook.artifact.slug}`);
+    await docPage.goto(`/projects/${core}/documents/${runbook.artifact.slug}`);
     const docCard = needsYouCards(docPage).getByTestId(`ask-${docAsk.id}`);
     await expect(issueCard).toContainText("Asked of alice");
     await expect(docCard).toContainText("Asked of alice");

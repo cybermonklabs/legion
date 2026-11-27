@@ -1,19 +1,21 @@
+import { type Result, routePath } from "../web/src/api/paths";
 import { agentFilter } from "./agents";
 import { baseUrl, createProjectDocument, userHeaders } from "./api";
 import { recordClipboard } from "./clipboard";
-import { commentField, highlightedRow, refPicker } from "./ref-picker";
+import { commentField, highlightedRow, refPicker, within } from "./ref-picker";
 import {
   COMPONENT_ID,
-  COMPONENT_REFERENCE,
   COMPONENT_TITLE,
-  PERSON_LOGIN,
-  PERSON_REFERENCE,
+  componentReference,
+  personReference,
   ROLE_REFERENCE,
   ROLE_TOKEN,
-  SESSION_ID,
-  SESSION_REFERENCE,
+  referencePerson,
+  referenceSearchWord,
+  referenceSessionId,
   SESSION_TITLE,
   seedReferenceWorld,
+  sessionReference,
 } from "./reference-surfaces";
 import { settledState } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
@@ -56,7 +58,10 @@ async function uploadAgentPicture(sessionID: string): Promise<void> {
   form.append("name", AGENT_FILE);
   form.append("file", new Blob([Buffer.from(TINY_PNG, "base64")], { type: "image/png" }));
   const response = await fetch(
-    new URL(`/api/v1/agents/${encodeURIComponent(sessionID)}/artifacts`, baseUrl),
+    new URL(
+      routePath("post", "/api/v1/agents/{session_id}/artifacts", { session_id: sessionID }),
+      baseUrl
+    ),
     { body: form, headers: await userHeaders("alice"), method: "POST" }
   );
   if (!response.ok) {
@@ -106,14 +111,21 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
   browser,
 }) => {
   test.setTimeout(180_000);
-  const world = await seedReferenceWorld();
-  await createProjectDocument("CORE", {
-    content: "# Glossary\n\nThe cache glossary.\n",
+  const world = await seedReferenceWorld({ tagPickerSearch: true });
+  const core = world.projects.core;
+  const query = referenceSearchWord(core);
+  const sessionID = referenceSessionId();
+  const sessionRef = sessionReference();
+  const componentRef = componentReference(core);
+  const personLogin = referencePerson();
+  const personRef = personReference();
+  await createProjectDocument(core, {
+    content: `# Glossary ${query}\n\nThe cache glossary.\n`,
     name: "glossary.md",
   });
-  await uploadAgentPicture(SESSION_ID);
+  await uploadAgentPicture(sessionID);
   const target = world.target.key;
-  const agentDocument = `dispatch://agent/${SESSION_ID}/artifact/${AGENT_SLUG}`;
+  const agentDocument = `dispatch://agent/${sessionID}/artifact/${AGENT_SLUG}`;
 
   // The thirteen kinds, in the order one draft names them, a document in each of its three
   // owners' forms. A block, a part and the two item blocks follow the node that holds them, and a
@@ -123,35 +135,35 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     {
       kind: "issue",
       opens: () => `/issues/${target}`,
-      query: "#warm",
-      reads: `${target} Warm the cache`,
-      row: /^Warm the cache/,
+      query: `#${query}`,
+      reads: world.targets.Issue.title,
+      row: within(/^Warm the cache/, target),
       writes: `dispatch://${target}`,
     },
     {
       kind: "document of an issue",
       opens: () => `/issues/${target}/artifacts/notes-md`,
-      query: "[[notes",
+      query: `[[${query}`,
       reads: "notes.md",
-      row: /^notes\.md/,
+      row: within(/^notes\.md/, target),
       writes: `dispatch://${target}/artifact/notes-md`,
     },
     {
-      holder: { blocks: "Document blocks", row: /^notes\.md/ },
+      holder: { blocks: "Document blocks", row: within(/^notes\.md/, target) },
       kind: "block of a document",
       opens: (address) => `/issues/${target}/artifacts/notes-md#b-${blockOf(address)}`,
-      query: "[[notes",
+      query: `[[${query}`,
       reads: "The cache notes.",
       row: /^The cache notes\./,
       shape: new RegExp(`^dispatch://${target}/artifact/notes-md#b-[\\w-]+$`),
     },
     {
       kind: "document of a project",
-      opens: () => "/projects/CORE/documents/glossary-md",
-      query: "[[glossary",
+      opens: () => `/projects/${core}/documents/glossary-md`,
+      query: `[[${query}`,
       reads: "glossary.md",
-      row: /^glossary\.md/,
-      writes: "dispatch://CORE/artifact/glossary-md",
+      row: within(/^glossary\.md/, core),
+      writes: `dispatch://${core}/artifact/glossary-md`,
     },
     {
       holder: {
@@ -160,7 +172,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
         row: new RegExp(`^${SESSION_TITLE}\\b`),
       },
       kind: "document of an agent",
-      opens: () => `/agents/${SESSION_ID}/artifacts/${AGENT_SLUG}`,
+      opens: () => `/agents/${sessionID}/artifacts/${AGENT_SLUG}`,
       // The session's name is two words and a door closes on a space, so one word finds it.
       query: `@${SESSION_TITLE.split(" ")[0]}`,
       reads: AGENT_FILE,
@@ -170,36 +182,39 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     {
       kind: "ask",
       opens: (address) => `/issues/${target}/asks/${address.split("/ask/")[1]}`,
-      query: "[[warmed",
-      reads: "Should the cache be warmed first?",
-      row: /^Should the cache be warmed first/,
+      query: `[[${query}`,
+      reads: world.targets.Question.title,
+      row: within(/^Should the cache be warmed first/, target),
       shape: new RegExp(`^dispatch://${target}/ask/[\\w-]+$`),
     },
     {
-      holder: { blocks: "Ask parts", row: /^Should the cache be warmed first/ },
+      holder: { blocks: "Ask parts", row: within(/^Should the cache be warmed first/, target) },
       kind: "part of an ask",
       opens: (address) =>
         `/issues/${target}/asks/${address.slice(`dispatch://${target}/ask/`.length).split("#b-")[0]}#b-${blockOf(address)}`,
-      query: "[[warmed",
-      reads: "Should the cache be warmed first?",
+      query: `[[${query}`,
+      reads: world.targets.Question.title,
       row: /^Should the cache be warmed first\?/,
       shape: new RegExp(`^dispatch://${target}/ask/[\\w-]+#b-[\\w-]+$`),
     },
     {
       kind: "comment",
       opens: (address) => `/issues/${target}/comments/${address.split("/comment/")[1]}`,
-      query: "[[halves",
-      reads: "The warm cache halves start-up time.",
-      row: /^The warm cache halves start-up time/,
+      query: `[[${query}`,
+      reads: world.targets.Comment.title,
+      row: within(/^The warm cache halves start-up time/, target),
       shape: new RegExp(`^dispatch://${target}/comment/[\\w-]+$`),
     },
     {
-      holder: { blocks: "Comment blocks", row: /^The warm cache halves start-up time/ },
+      holder: {
+        blocks: "Comment blocks",
+        row: within(/^The warm cache halves start-up time/, target),
+      },
       kind: "block of a comment",
       opens: (address) =>
         `/issues/${target}/comments/${address.slice(`dispatch://${target}/comment/`.length).split("#b-")[0]}#b-${blockOf(address)}`,
-      query: "[[halves",
-      reads: "The warm cache halves start-up time.",
+      query: `[[${query}`,
+      reads: world.targets.Comment.title,
       row: /^The warm cache halves start-up time\./,
       shape: new RegExp(`^dispatch://${target}/comment/[\\w-]+#b-[\\w-]+$`),
     },
@@ -207,40 +222,40 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       kind: "message of an issue",
       opens: (address) => `/issues/${target}/messages/${address.split("/message/")[1]}`,
       // One word: a door closes on the first space typed after it (`readTrigger`).
-      query: "[[noon",
-      reads: "The rollout finished at noon.",
-      row: /^The rollout finished at noon/,
+      query: `[[${query}`,
+      reads: world.targets.Message.title,
+      row: within(/^The rollout finished at noon/, target),
       shape: new RegExp(`^dispatch://${target}/message/[\\w-]+$`),
     },
     {
-      holder: { blocks: "Message blocks", row: /^The rollout finished at noon/ },
+      holder: { blocks: "Message blocks", row: within(/^The rollout finished at noon/, target) },
       kind: "block of a message",
       opens: (address) =>
         `/issues/${target}/messages/${address.slice(`dispatch://${target}/message/`.length).split("#b-")[0]}#b-${blockOf(address)}`,
-      query: "[[noon",
-      reads: "The rollout finished at noon.",
+      query: `[[${query}`,
+      reads: world.targets.Message.title,
       row: /^The rollout finished at noon\./,
       shape: new RegExp(`^dispatch://${target}/message/[\\w-]+#b-[\\w-]+$`),
     },
     {
       kind: "component",
-      opens: () => `/projects/CORE/architecture?component=${COMPONENT_ID}`,
+      opens: () => `/projects/${core}/architecture?component=${COMPONENT_ID}`,
       query: `@${COMPONENT_TITLE}`,
       reads: COMPONENT_TITLE,
       row: new RegExp(`^${COMPONENT_TITLE}\\b`),
-      writes: COMPONENT_REFERENCE,
+      writes: componentRef,
     },
     // A party is picked as its mention (R4): the mention sign and its name, which the stored
     // record reads as the sign and the party's current name.
     {
       kind: "agent session",
-      opens: () => `/agents/${SESSION_ID}/live`,
+      opens: () => `/agents/${sessionID}/live`,
       // The session's name is two words and a door closes on a space, so one word finds it.
       query: `@${SESSION_TITLE.split(" ")[0]}`,
       reads: `@${SESSION_TITLE}`,
       row: new RegExp(`^${SESSION_TITLE}\\b`),
-      names: SESSION_REFERENCE,
-      writes: `[@${SESSION_TITLE}](${SESSION_REFERENCE})`,
+      names: sessionRef,
+      writes: `[@${SESSION_TITLE}](${sessionRef})`,
     },
     {
       kind: "role",
@@ -256,10 +271,10 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       // Nothing shows a person yet, so their reference opens nothing.
       opens: () => "",
       query: "@dana",
-      reads: `@${PERSON_LOGIN}`,
-      row: new RegExp(`^${PERSON_LOGIN}$`),
-      names: PERSON_REFERENCE,
-      writes: `[@${PERSON_LOGIN}](${PERSON_REFERENCE})`,
+      reads: `@${personLogin}`,
+      row: new RegExp(`^${personLogin}$`),
+      names: personRef,
+      writes: `[@${personLogin}](${personRef})`,
     },
   ];
 
@@ -327,7 +342,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
       .click();
     const answer = await sent;
     expect(answer.status()).toBe(201);
-    const stored = (await answer.json()) as { body: string; id: string };
+    const stored = (await answer.json()) as Result<"/api/v1/issues/{key}/comments", "post">;
     expect(stored.body, "the stored record is what the picker wrote").toBe(body);
 
     // Every reference in the record it stored, read where a person meets it.
@@ -348,14 +363,14 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     }
 
     // The four pages the new kinds open, followed rather than read off an attribute.
-    await card.locator(`a[data-dispatch-ref="${SESSION_REFERENCE}"]`).click();
-    await expect(page).toHaveURL(`/agents/${SESSION_ID}/live`);
+    await card.locator(`a[data-dispatch-ref="${sessionRef}"]`).click();
+    await expect(page).toHaveURL(`/agents/${sessionID}/live`);
     await expect(page.getByRole("heading", { name: SESSION_TITLE }).first()).toBeVisible();
 
     await page.goto(`/issues/${world.host.key}/conversation`);
     const file = await expandedComment(page, stored.id);
     await file.locator(`a[data-dispatch-ref="${agentDocument}"]`).click();
-    await expect(page).toHaveURL(`/agents/${SESSION_ID}/artifacts/${AGENT_SLUG}`);
+    await expect(page).toHaveURL(`/agents/${sessionID}/artifacts/${AGENT_SLUG}`);
     await expect(page).toHaveTitle(`${AGENT_FILE} · Dispatch`);
 
     await page.goto(`/issues/${world.host.key}/conversation`);
@@ -375,8 +390,8 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
 
     await page.goto(`/issues/${world.host.key}/conversation`);
     const third = await expandedComment(page, stored.id);
-    await third.locator(`a[data-dispatch-ref="${COMPONENT_REFERENCE}"]`).click();
-    await expect(page).toHaveURL(`/projects/CORE/architecture?component=${COMPONENT_ID}`);
+    await third.locator(`a[data-dispatch-ref="${componentRef}"]`).click();
+    await expect(page).toHaveURL(`/projects/${core}/architecture?component=${COMPONENT_ID}`);
     await expect(page.getByRole("heading", { name: COMPONENT_TITLE }).first()).toBeVisible();
 
     // The address a person is handed for an issue is the issue's, from whichever tab they are
@@ -399,8 +414,9 @@ test("the live conversation offers an issue's message, and opens each holder's p
   browser,
 }) => {
   test.setTimeout(180_000);
-  const world = await seedReferenceWorld();
+  const world = await seedReferenceWorld({ tagPickerSearch: true });
   const target = world.target.key;
+  const query = `[[${referenceSearchWord(world.projects.core)}`;
   // The four holders of parts and the part each is read for, as the shared field reaches them
   // above. What a pick here writes is followed by the space assistant-ui leaves after it.
   const holders = [
@@ -408,32 +424,32 @@ test("the live conversation offers an issue's message, and opens each holder's p
       blocks: "Document blocks",
       kind: "a document",
       part: /^The cache notes\./,
-      query: "[[notes",
-      row: /^notes\.md/,
+      query,
+      row: within(/^notes\.md/, target),
       shape: new RegExp(`^dispatch://${target}/artifact/notes-md#b-[\\w-]+ $`),
     },
     {
       blocks: "Ask parts",
       kind: "an ask",
       part: /^Should the cache be warmed first\?/,
-      query: "[[warmed",
-      row: /^Should the cache be warmed first/,
+      query,
+      row: within(/^Should the cache be warmed first/, target),
       shape: new RegExp(`^dispatch://${target}/ask/[\\w-]+#b-[\\w-]+ $`),
     },
     {
       blocks: "Comment blocks",
       kind: "a comment",
       part: /^The warm cache halves start-up time\./,
-      query: "[[halves",
-      row: /^The warm cache halves start-up time/,
+      query,
+      row: within(/^The warm cache halves start-up time/, target),
       shape: new RegExp(`^dispatch://${target}/comment/[\\w-]+#b-[\\w-]+ $`),
     },
     {
       blocks: "Message blocks",
       kind: "a message",
       part: /^The rollout finished at noon\./,
-      query: "[[noon",
-      row: /^The rollout finished at noon/,
+      query,
+      row: within(/^The rollout finished at noon/, target),
       shape: new RegExp(`^dispatch://${target}/message/[\\w-]+#b-[\\w-]+ $`),
     },
   ] as const;
@@ -441,7 +457,7 @@ test("the live conversation offers an issue's message, and opens each holder's p
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/agents/${SESSION_ID}/live`);
+    await page.goto(`/agents/${referenceSessionId()}/live`);
     const field = page.getByTestId("agent-composer").locator("textarea");
     await expect(field).toBeVisible();
     const list = refPicker(page);
@@ -454,9 +470,9 @@ test("the live conversation offers an issue's message, and opens each holder's p
 
     // A message of an issue has its own address, as every node of the issue has: it is offered
     // here as in every other box, under its own heading, and a pick writes that address.
-    await open("[[noon");
+    await open(query);
     await liveRowsUnder(list, "Messages")
-      .and(list.getByRole("option", { name: /^The rollout finished at noon/ }))
+      .and(list.getByRole("option", { name: within(/^The rollout finished at noon/, target) }))
       .first()
       .click();
     await expect(field).toHaveValue(new RegExp(`^dispatch://${target}/message/[\\w-]+ $`));

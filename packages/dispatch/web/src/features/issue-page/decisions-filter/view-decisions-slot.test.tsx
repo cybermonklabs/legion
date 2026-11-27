@@ -106,9 +106,7 @@ test("a block no node carries, named on the Decisions view's address, draws the 
     }
   );
   await waitFor(() =>
-    expect(document.activeElement, "the line that names no block does not hold the focus").toBe(
-      heading
-    )
+    expect(heading, "the line that names no block does not hold the focus").toHaveFocus()
   );
   expect(heading.parentElement?.textContent).toContain(
     `That link names no row of ${KEY}'s outline.`

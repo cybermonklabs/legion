@@ -12,12 +12,15 @@ import {
   createProject,
   listIssueAsks,
   putArchitectureSource,
+  type RowKey,
   syncArchitectureSource,
 } from "./api";
 import { blockId, openedThreadCard, setSheet } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { replyRowId } from "./inbox-threads";
-import { sessionIds } from "./session-ids";
+import { keyedSearchWord } from "./search";
+import { fixedPerson, rowKey, rowKeyBehind, rowPerson, rowSessionId } from "./test";
+import type { RowLogin, SignInLogin } from "./users";
 
 /**
  * The one world every reference spec is walked across, and the surfaces it is read on.
@@ -40,12 +43,28 @@ export const referenceAgent = {
  *  spec block whose id a short block reference names. */
 export const ANCHOR = "The margin anchor sits here.";
 
-/** The keys the world's projects and issues take. This repository is public, so the fixture
- *  names no real project. */
-export const HOST_KEY = "CORE-1";
-export const TARGET_KEY = "CORE-2";
-export const OTHER_KEY = "XCORE-1";
-export const ACME_KEY = "ACME-12";
+/** The keys of the world's three projects. The shared text table writes its own (`CORE`, `XCORE`
+ *  and `ACME`: `CORE-1` the host, `CORE-2` the target, `XCORE-1` and `ACME-12`); each row makes
+ *  its world under keys of its own (`rowKey`, e2e/test.ts), and `intoWorld` rewrites a text from
+ *  the one to the other. This repository is public, so the fixture names no real project. */
+export interface ReferenceProjects {
+  readonly core: RowKey;
+  /** `core` behind an `X`, as the table's `XCORE` is `CORE` behind one, so a text that writes the
+   *  one key inside the other (`See XCORE-1 here.`) still does in this world. */
+  readonly xcore: RowKey;
+  readonly acme: RowKey;
+}
+
+/** `text`, written against the shared table's project keys, rewritten into the world's: `CORE`
+ *  becomes `projects.core`, the lower-case `core` the table writes to show a key read without
+ *  case is none becomes the lower case of it, and `ACME` becomes `projects.acme`. `XCORE`
+ *  follows from `CORE`, since the world's `xcore` is its `core` behind an `X`. */
+export function intoWorld(text: string, projects: ReferenceProjects): string {
+  return text.replace(/(CORE|core)(?=[-/~])|ACME(?=-)/g, (key) => {
+    if (key === "ACME") return projects.acme;
+    return key === "core" ? projects.core.toLowerCase() : projects.core;
+  });
+}
 
 /** The question block ids the host's spec declares: every id the shared text table's `#id` rows
  *  name, so the one world answers every row of it (`@legion/contracts`'s
@@ -114,54 +133,94 @@ export interface ShortenableItem {
   readonly reference: string;
 }
 
-/** The architecture CORE imports: one component, which is the only way a component exists -
- *  the fake GitHub serves the model and the source sync reads it in (`e2e/architecture.e2e.ts`). */
+/** The architecture the world's core project imports: one component, which is the only way a
+ *  component exists - the fake GitHub serves the model and the source sync reads it in
+ *  (`e2e/architecture.e2e.ts`). */
 export const COMPONENT_REPO = "legion/reference-arch";
 export const COMPONENT_ID = "web";
 export const COMPONENT_TITLE = "Web";
-export const COMPONENT_REFERENCE = `dispatch://CORE/component/${COMPONENT_ID}`;
 export const COMPONENT_MODEL = { "web.md": `---\ntitle: ${COMPONENT_TITLE}\n---\nThe **SPA**.\n` };
 
-/** The live session a reference names and the role it holds. The id is a UUID because the
- *  agent routes take no other (`agentStreamSessionID`), so a session named anything else would
- *  list on the Agents page with no live view to open. */
-export const SESSION_ID = sessionIds.tester;
+/** The reference that names the component of `project`, a key the row made (`rowKey`,
+ *  e2e/test.ts) and imported `COMPONENT_MODEL` into: the world's `projects.core`. */
+export function componentReference(project: string): string {
+  return `dispatch://${project}/component/${COMPONENT_ID}`;
+}
+
+/** The live session a reference names, whose id is the running row's own (`rowSessionId`,
+ *  e2e/test.ts): a UUID, because the agent routes take no other (`agentStreamSessionID`), so a
+ *  session named anything else would list on the Agents page with no live view to open; and the
+ *  row's own, because Dispatch keeps what a session said and what was said to it by its id, for
+ *  every person at once. Outside a running row it throws, as `rowSessionId` does. */
+export function referenceSessionId(): string {
+  return rowSessionId("tester");
+}
 export const SESSION_TITLE = "Reference tester";
-export const SESSION_REFERENCE = `dispatch://agent/${SESSION_ID}`;
+
+/** The reference that names the running row's live session (`referenceSessionId`). */
+export function sessionReference(): string {
+  return `dispatch://agent/${referenceSessionId()}`;
+}
+
+/** The role the world's live session holds. */
 export const ROLE_TOKEN = "reference-reviewer";
 export const ROLE_REFERENCE = `dispatch://role/${ROLE_TOKEN}`;
 
 /** The session the world's live list holds. */
-const referenceSession: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  dir: "/srv/reference",
-  machine_id: "box-reference",
-  roles: [ROLE_TOKEN],
-  session_id: SESSION_ID,
-  title: SESSION_TITLE,
-};
+function referenceSession(): FakeSession {
+  return {
+    capabilities: ["aside", "btw", "steer"],
+    dir: "/srv/reference",
+    machine_id: "box-reference",
+    roles: [ROLE_TOKEN],
+    session_id: referenceSessionId(),
+    title: SESSION_TITLE,
+  };
+}
 
 /** The person a reference names. A stored login is an email (`model.CanonicalLogin`, and
  *  `text/refs.go`'s `personLoginPattern`), and the two logins the reset re-creates - `alice`
- *  and `bob` - are not, so a reference naming one of them names nobody Dispatch holds. This
- *  person posts on the host, which is what puts them among its people and so among the
- *  picker's rows. */
-export const PERSON_LOGIN = "dana@example.test";
-export const PERSON_REFERENCE = `dispatch://person/${PERSON_LOGIN}`;
+ *  and `bob` - are not, so a reference naming one of them names nobody Dispatch holds; nor is a
+ *  `rowPerson` login (e2e/test.ts). So the person is the running row's own `rowPerson` login at
+ *  a domain, which `fixedPerson` makes a login the sign-ins take and the row's end deletes, as it
+ *  deletes a `rowPerson`. This person posts on the host, which is what puts them among its
+ *  people and so among the picker's rows. Outside a running row it throws, as `rowPerson`
+ *  does. */
+export function referencePerson(): RowLogin {
+  return fixedPerson(
+    `${rowPerson("dana")}@example.test`,
+    "a person reference names an email, which no rowPerson login is; the row's own suffix keeps the person the row's"
+  );
+}
 
-/** A person reference the world answers for nobody: a login nobody has signed in as, which
- *  every surface reads as the words it is written with, with no link (R8). */
+/** The reference that names the running row's person (`referencePerson`). */
+export function personReference(): string {
+  return `dispatch://person/${referencePerson()}`;
+}
+
+/** A person reference the world answers for nobody: a login no row signs in as, which every
+ *  surface reads as the words it is written with, with no link (R8). */
 export const UNKNOWN_PERSON_LOGIN = "nobody@example.test";
 export const UNKNOWN_PERSON_REFERENCE = `dispatch://person/${UNKNOWN_PERSON_LOGIN}`;
 
+/** A picker query that finds the world's tagged records without finding earlier rows' records. */
+export function referenceSearchWord(project: RowKey): string {
+  return keyedSearchWord("cache", project);
+}
+
 export interface ReferenceWorld {
-  /** CORE-1, the host: its spec holds the anchor, filler that puts the questions below the
-   *  fold, and one question block per `QUESTION_IDS`. The texts these specs write live on it. */
+  /** The keys the row made its three projects under, which the table's texts are rewritten
+   *  into (`intoWorld`). */
+  readonly projects: ReferenceProjects;
+  /** Issue 1 of `projects.core`, the table's CORE-1 - the host: its spec holds the anchor,
+   *  filler that puts the questions below the fold, and one question block per `QUESTION_IDS`.
+   *  The texts these specs write live on it. */
   readonly host: Issue;
-  /** CORE-2, the issue references name, which owns the document, question, comment and message
-   *  of `targets`. */
+  /** Issue 2 of `projects.core`, the table's CORE-2, the issue references name, which owns the
+   *  document, question, comment and message of `targets`. */
   readonly target: Issue;
-  /** XCORE-1 and ACME-12, the two other keys a text writes bare. */
+  /** Issue 1 of `projects.xcore` and issue 12 of `projects.acme`, the table's XCORE-1 and
+   *  ACME-12: the two other keys a text writes bare. */
   readonly other: Issue;
   readonly acme: Issue;
   /** The host's spec's questions, by block id. */
@@ -178,31 +237,56 @@ export interface ReferenceWorld {
 const FILLER_PARAGRAPHS = 40;
 
 /**
- * Seeds the world: the three projects, the host whose spec declares every question block, the
- * target with a document, an ask, a comment and a message, the cross-project issue, and the
- * host's own ask, comment, message and spec block whose ids a short reference names.
+ * Seeds the world: the three projects, under the running row's own keys, the host whose spec
+ * declares every question block, the target with a document, an ask, a comment and a message,
+ * the cross-project issue, and the host's own ask, comment, message and spec block whose ids a
+ * short reference names.
  *
- * Beside the records it seeds the parties a reference names: CORE's one architecture component,
- * the live session and the role it holds, and the person whose login is a stored login's own
- * shape, each of them a kind the picker offers and a page a reference opens.
+ * Beside the records it seeds the parties a reference names: the core project's one
+ * architecture component, the live session and the role it holds, and the person whose login is
+ * a stored login's own shape, each of them the running row's own, a kind the picker offers and a
+ * page a reference opens.
  *
  * The keys are deterministic — an issue's key is its project's next number — and the seeding
  * refuses any other, so a change in how keys are minted fails here rather than inside a row.
+ *
+ * `login` is the person who makes the projects and the issues, alice where none is named: an
+ * issue is assigned to whoever made it, so the world's questions wait on that person, and a row
+ * that reads them in its reader's Inbox names a person of its own (`rowPerson`, e2e/test.ts).
+ *
+ * `tagPickerSearch` adds a searchable word of the row's own to the nodes the picker rows take.
+ * The other rows keep the shared table's text unchanged.
  */
-export async function seedReferenceWorld(): Promise<ReferenceWorld> {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "XCORE", name: "Cross core" });
-  await createProject({ key: "ACME", name: "Acme" });
-  // CORE's architecture, the one component a reference names: the fake GitHub serves the model
-  // and the source sync reads it in, which is how every component of a project is made.
+export async function seedReferenceWorld({
+  login,
+  tagPickerSearch = false,
+}: {
+  readonly login?: SignInLogin;
+  readonly tagPickerSearch?: boolean;
+} = {}): Promise<ReferenceWorld> {
+  const core = rowKey("CORE");
+  const searchable = (text: string) =>
+    tagPickerSearch ? `${text} ${referenceSearchWord(core)}` : text;
+  const projects: ReferenceProjects = {
+    acme: rowKey("ACME"),
+    core,
+    xcore: rowKeyBehind("X", core),
+  };
+  const by = { login };
+  await createProject({ key: projects.core, name: "Core" }, by);
+  await createProject({ key: projects.xcore, name: "Cross core" }, by);
+  await createProject({ key: projects.acme, name: "Acme" }, by);
+  // The core project's architecture, the one component a reference names: the fake GitHub
+  // serves the model and the source sync reads it in, which is how every component of a project
+  // is made.
   await seedFakeGithub({
     [COMPONENT_REPO]: { contents: "read", files: COMPONENT_MODEL, installation_id: 101 },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo: COMPONENT_REPO });
-  const source = await syncArchitectureSource("CORE", COMPONENT_REPO);
+  await putArchitectureSource(projects.core, { branch: "main", repo: COMPONENT_REPO });
+  const source = await syncArchitectureSource(projects.core, COMPONENT_REPO);
   expect(source.last_error).toBeNull();
   // The live session and the role it holds: a row of the picker, and a page a reference opens.
-  await setLiveSessions([referenceSession]);
+  await setLiveSessions([referenceSession()]);
   const filler = Array.from(
     { length: FILLER_PARAGRAPHS },
     (_, index) => `Filler paragraph ${index + 1} keeps the questions below the fold.`
@@ -210,16 +294,24 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
   const spec = [ANCHOR, ...filler, ...QUESTION_IDS.map((id) => questionBlock(id, "spec")), ""].join(
     "\n\n"
   );
-  const host = await createIssue({ project: "CORE", spec, title: "Reference host" });
-  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
-  const other = await createIssue({ project: "XCORE", title: "Cross-project target" });
-  // ACME-12 is the twelfth issue of ACME, so eleven stand before it.
-  let acme = await createIssue({ project: "ACME", title: "Acme first" });
+  const host = await createIssue({ project: projects.core, spec, title: "Reference host" }, by);
+  const target = await createIssue({ project: core, title: searchable("Warm the cache") }, by);
+  const other = await createIssue(
+    { project: projects.xcore, title: searchable("Cross-project target") },
+    by
+  );
+  // The table's ACME-12 is the twelfth issue of its project, so eleven stand before it.
+  let acme = await createIssue({ project: projects.acme, title: "Acme first" }, by);
   for (let made = 2; made <= 12; made += 1) {
-    acme = await createIssue({ project: "ACME", title: `Acme number ${made}` });
+    acme = await createIssue({ project: projects.acme, title: `Acme number ${made}` }, by);
   }
   const made = { acme: acme.key, host: host.key, other: other.key, target: target.key };
-  const want = { acme: ACME_KEY, host: HOST_KEY, other: OTHER_KEY, target: TARGET_KEY };
+  const want = {
+    acme: `${projects.acme}-12`,
+    host: `${projects.core}-1`,
+    other: `${projects.xcore}-1`,
+    target: `${projects.core}-2`,
+  };
   for (const [name, key] of Object.entries(want)) {
     if (made[name as keyof typeof made] !== key) {
       throw new Error(`setup: the world made ${JSON.stringify(made)}, not ${JSON.stringify(want)}`);
@@ -228,23 +320,26 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
 
   const document = await createIssueArtifact(
     target.key,
-    { content: "# Notes\n\nThe cache notes.\n", name: "notes.md" },
+    {
+      content: `${searchable("# Notes")}\n\nThe cache notes.\n`,
+      name: "notes.md",
+    },
     referenceAgent
   );
   expect(document.artifact.slug).toBe("notes-md");
   const targetAsk = await createAsk(
     target.key,
-    { question: "Should the cache be warmed first?" },
+    { question: searchable("Should the cache be warmed first?") },
     referenceAgent
   );
   const targetComment = await createComment(
     target.key,
-    { body: "The warm cache halves start-up time." },
+    { body: searchable("The warm cache halves start-up time.") },
     referenceAgent
   );
   const targetMessage = await createMessage(
     target.key,
-    { body: "The rollout finished at noon." },
+    { body: searchable("The rollout finished at noon.") },
     referenceAgent
   );
 
@@ -269,7 +364,11 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
   // The person: their own post on the host, which is what puts them among its people. Writing
   // it signs them in, which is the only way Dispatch holds a person at all. Nothing reads the
   // comment itself; writing it is the whole point.
-  await createComment(host.key, { body: "The cache is the slow part." }, { login: PERSON_LOGIN });
+  await createComment(
+    host.key,
+    { body: "The cache is the slow part." },
+    { login: referencePerson() }
+  );
 
   const questions = await settledQuestions(host.key, "spec", QUESTION_IDS);
   for (const id of ["q2", "q3"]) {
@@ -294,25 +393,26 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
       },
     },
     other,
+    projects,
     questions,
     target,
     targets: {
       Comment: {
         address: `dispatch://${target.key}/comment/${targetComment.id}`,
-        title: "The warm cache halves start-up time.",
+        title: searchable("The warm cache halves start-up time."),
       },
       Document: {
         address: `dispatch://${target.key}/artifact/notes-md`,
         title: "notes.md",
       },
-      Issue: { address: `dispatch://${target.key}`, title: `${target.key} Warm the cache` },
+      Issue: { address: `dispatch://${target.key}`, title: `${target.key} ${target.title}` },
       Message: {
         address: `dispatch://${target.key}/message/${targetMessage.id}`,
-        title: "The rollout finished at noon.",
+        title: searchable("The rollout finished at noon."),
       },
       Question: {
         address: `dispatch://${target.key}/ask/${targetAsk.id}`,
-        title: "Should the cache be warmed first?",
+        title: searchable("Should the cache be warmed first?"),
       },
     },
   };

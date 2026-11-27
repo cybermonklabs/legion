@@ -7,7 +7,8 @@
  *  the short bound ends.
  *
  * That line, and the failure of a child its bound stopped, go to the run's stderr, which CI keeps
- * in a public log, so both name the child as `named` writes it.
+ * in a public log, so both name the child as `named` writes it, and each line of the child's
+ * output that the failure carries is read by `masked` (`wroteTo`).
  *
  * When a child ends, or its bound passes, `runBounded` kills every process the child started
  * (`stopTreeYielding`, which reads the process table without holding this process's event loop,
@@ -54,7 +55,7 @@
  * than any correct one measured. A bound exists so that a child which will never end fails with a
  * name, before its job is killed from outside.
  *
- * The rule for each value: each bound is at least three times the largest reading of its kind.
+ * A start bound is at least three times the largest reading of its kind.
  * The readings behind `short`, `listing` and `generation` are the largest cost lines of the
  * five-run whole-lane checks recorded on the issue that set these bounds, at heads 32078f86 through
  * a691dbe5, each run `bun test --parallel --timeout 60000 e2e/__tests__` under nine busy loops,
@@ -80,6 +81,32 @@
  *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
+ * - `legRun`, against 67.38 s: the slowest run, read loaded, of a script of the outside agent's
+ *   acceptance that starts processes: a leg against stand-ins, or the shapes script. It is one of
+ *   the five runs of `e2e/acceptance/outside-agent-public.sh` that a row of
+ *   `outside-agent-public.test.ts` starts at once against its stand-ins, in a run of the harness
+ *   lane under two busy loops on a pod of 2 CPUs, the shape of INFRA-983's k5 runs, at 019690cf
+ *   on 2026-11-22 (Job infra983-outside-leg-r23b-7pdm8, whose lane ran without the contracts
+ *   built, so its 13 Playwright listing rows failed at once); three more of those five read
+ *   66.62 s to 66.99 s. Three more lane runs in that shape (Job infra983-outside-leg-r23c-ftm77)
+ *   read at most 35.99 s for a public leg and 42.87 s for a run of
+ *   `e2e/acceptance/outside-agent-tailnet.sh`, one of the six that a row of
+ *   `outside-agent-acceptance.test.ts` starts at once, and 22.59 s for a run of the shapes script
+ *   that file writes, which starts seven `sleep`s in the background and stops them. Each file run
+ *   alone 10 times under those loops read at most 36.99 s among its 60 public legs and 20.53 s
+ *   among its 560 tailnet legs (Jobs infra983-outside-leg-r23b-7pdm8 and
+ *   infra983-outside-leg-r23-chnw2). For each of those readings the Job's checkout named
+ *   `twoStackBuild` where the two files named `short`, so no leg or script was cut at 60 s. Under
+ *   `short`, a `bun run test` in that shape at 36c6064e (Job infra983-k5-head27-tzq2p) killed a
+ *   tailnet leg of a row that starts five at once after 63.49 s, beside one of 52.29 s in the
+ *   same row. On GitHub's runners the harness legs of the unit-repeat runs 45050430792,
+ *   45050432184, 45056982889 and 45060828826, 20 runs of the lane each, read at most 17.66 s
+ *   among 14 400 tailnet legs and 42.67 s among 1 440 public ones. Three times 67.38 s, rounded
+ *   up to the minute, is 240 s. `runLeg` and `publicStandInRun` run every leg of their files
+ *   under it, the legs given no input or nothing behind their inputs too, which end in under a
+ *   second; the shapes row runs its script under it as well, and `runLeg` runs
+ *   `e2e/acceptance/outside-agent-grants.sh` under it for the browser gate's row that runs that
+ *   script alone against its stand-in Dispatch.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
@@ -90,12 +117,25 @@
  *   s, and under the `short` bound rows of these runs were killed at 60 s in four whole-file runs.
  *   Three times 175.0 s, rounded up to the minute, is 540 s. A run that stops before any probe, at
  *   an input it refuses, stays under `short`.
- * - `codexRun`, against 55.52 s: the slowest of 29 runs of `e2e/acceptance/outside-agent-codex.sh`
- *   against the stand-ins of `outside-agent-codex.test.ts`, its rows started one, two, three and
- *   five at once, on a dev box of 288 CPUs at a 1-minute load of about 1,100 on 2026-11-21. Under
- *   `short` those runs read 1.94 s to 55.52 s, slowed by the start of the 20 or so Bun processes
- *   each run starts and by the leg's polls. Three times 55.52 s, rounded up to the minute, is
- *   180 s. A run that stops before any Codex starts, at an input it refuses, stays under `short`.
+ * - `codexRun`, against 150.75 s: the slowest run of `e2e/acceptance/outside-agent-codex.sh`
+ *   against the stand-ins of `outside-agent-codex.test.ts` read in the shape of INFRA-983's k5
+ *   runs, the harness lane under two busy loops on a pod of 2 CPUs. It is one of the three runs a
+ *   row starts at once, "C4 fails where the session never holds the probe's message, C1 where the
+ *   edge never lists the session, …", whose unregistered run waits its 23 s list window out: the
+ *   slowest of that row's 10 runs beside the lane in Job infra983-t5hold-cr2-xx8jc at cbfa8cb7 on
+ *   2026-11-23, whose next slowest read 88.69 s; which of the three runs it was is not kept. In
+ *   the same shape the slow-menu row's run read 82.78 s, beside 56.67 s, in a `bun run test` of
+ *   Job infra983-k5-head31c-sdcrv at c16abcd8 the same day; and four runs of the harness lane
+ *   (Jobs infra983-t5hold-m1-zbtbc and infra983-t5hold-m2-8lw79 at cbfa8cb7) kept the times of
+ *   rows, not of runs, the slowest row reading 92.9 s with three runs at once. Their 124.0 s row
+ *   is left out, since it waited out twice the 30 s list window those Jobs gave every run, where
+ *   its untrusted-hooks run now has 3 s. Under the lane and eight busy loops, heavier than that
+ *   shape, runs read 134.4 s (Job infra983-t5hold-cl8-rrxjh) and 244.9 s (Job
+ *   infra983-t5hold-cr8-tbzx6); they are no readings of this rule. Earlier, 29 runs on a dev box
+ *   of 288 CPUs at a 1-minute load of about 1,100 on 2026-11-21, rows started one, two, three and
+ *   five at once, read 1.94 s to 55.52 s, slowed by the start of the 20 or so Bun processes each
+ *   run starts and by the leg's polls. Three times 150.75 s, rounded up to the minute, is 480 s.
+ *   A run that stops before any Codex starts, at an input it refuses, stays under `short`.
  * - `stoppedLeg`, against 28.24 s: the slowest of 35 drivers of the stop rows of
  *   `unit-repeat.test.ts`, each a copy of the repeat tool over a package of one or two files with
  *   its Bun, the stop, the kill or the cancel the row sends, its names runs and its count of what
@@ -119,22 +159,32 @@
  *   between two trades. Under `short` one such run was killed at 60.08 s in a whole-suite run at
  *   62602165bd9e the same day, while five others of the same file took 23.4 s to 33.2 s. Three
  *   times 67.59 s, rounded up to the minute, is 240 s: 3.55 times the larger maximum.
- * - `stuckOnPurpose`, against 309.8 ms: the slowest of 200 shells that wrote 252 lines to stdout,
- *   one to stderr, then slept, started eight at once under six busy loops on a two-CPU pod on
- *   2026-11-24. The diagnostic control below lets its bound pass after five seconds, which is
- *   more than three times that reading and keeps the suite's deliberate stuck child short.
- * - `publicT5Diagnostic`, against 9.905 s: the largest of 150 starts from the public leg's child
- *   spawn to its T5 relay hold, in 30 runs on a three-CPU gVisor build pod beside eight busy loops
- *   on 2026-11-26. Each run used the file's parallel P6 row and its browser row; the starts read
- *   6.018 s minimum, 9.1415 s median and 9.905 s maximum. Three times the maximum is 29.715 s,
- *   rounded up to 30 s.
+ *   This is also the start bound for the T5 diagnostic row.
+ * - `stuckOnPurpose`, against 309.8 ms: how long the child of the row of
+ *   `bounded-subprocess.test.ts` that never ends by itself took from its start until both its
+ *   pipes had carried what it writes before it sleeps, 252 lines to its stdout and one to its
+ *   stderr. That row lets the bound pass and reads what the failure says the child wrote, so the
+ *   bound must pass after the child has written it. The reading is the slowest of 200 such
+ *   children started 8 at once under six busy loops, three per CPU, on a pod of 2 CPUs, on
+ *   2026-11-24; 100 started one at a time under those loops read at most 98.7 ms, and 200 one at
+ *   a time without them at most 18.0 ms. No harness lane ran beside them, and its load can be
+ *   heavier than those loops. Three times 309.8 ms, rounded up to the next 5 s, is 5 s. Every run
+ *   of the lane waits that row's whole bound, so the bound is seconds and not `short`'s minute.
+ * - `publicT5Diagnostic` starts when the public leg prints that its T5 window is open. The leg
+ *   has already told its peer. The shell stays listed as it trades during the 1200 s window.
+ *   The row checks for a live process, not for the first relay socket to open. There is no
+ *   delay to measure before a process is listed, so use the first 5 s step, as for
+ *   `stuckOnPurpose`. Every run of the lane waits the whole bound. `publicRun` covers the leg's
+ *   start separately.
  *
- * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a public T5 diagnostic child after 30 s, a stop
- * row's driver (`stoppedLeg`) after 90 s, a listing after 6 minutes, the generation after 6.5
- * minutes, a run of the Codex leg after 3 minutes, a run of the public leg after 4 minutes, a run
- * of the edge check after 9 minutes, and
- * the two-stack build after 30 minutes.
+ * Where a stuck child fails. The start bound stops a stuck child on a laptop as in CI.
+ * `short` gives it 60 s. A stop row's driver (`stoppedLeg`) gets 90 s. `legRun` gives an
+ * acceptance leg or its shapes script 4 minutes. `publicRun` gives the public leg against
+ * its stand-ins 4 minutes. A listing gets 6 minutes. Generation gets 6.5 minutes. The Codex
+ * leg gets 8 minutes. The edge check gets 9 minutes. The two-stack build gets 30 minutes.
+ * The deliberately stuck child (`stuckOnPurpose`) gets 5 s.
+ * The public T5 diagnostic child also gets 5 s from the T5 window line on stderr
+ * (`publicT5Diagnostic`). `publicRun` still stops it if that bound comes first.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -171,17 +221,23 @@ export const bounds = Object.freeze({
   generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
+  /** One run of a script of the outside agent's acceptance that starts processes: a leg,
+   *  `e2e/acceptance/outside-agent-public.sh` or `outside-agent-tailnet.sh`, against the stand-ins
+   *  of its tests or given no input, or the shapes script of `outside-agent-acceptance.test.ts`. */
+  legRun: 240_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
   /** One run of `e2e/acceptance/outside-agent-codex.sh` against the stand-ins of its tests. */
-  codexRun: 180_000,
+  codexRun: 480_000,
   /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
    *  stop or kill the row sends, and its names runs. */
   stoppedLeg: 90_000,
-  /** The deliberate stuck child that proves a timeout reports its output and live processes. */
+  /** The child of the row of `bounded-subprocess.test.ts` that never ends by itself: a shell that
+   *  writes to both pipes and then sleeps, so its bound passes on purpose and the row reads the
+   *  failure. */
   stuckOnPurpose: 5_000,
-  /** The public leg's start through its T5 hold, measured under the row's parallel shape. */
-  publicT5Diagnostic: 30_000,
+  /** The public leg's open T5 window, counted from its line on stderr. */
+  publicT5Diagnostic: 5_000,
   /** One run of `e2e/acceptance/outside-agent-public.sh` against the stand-ins of its tests. */
   publicRun: 240_000,
 });
@@ -1129,9 +1185,16 @@ interface BoundedRun {
   readonly stdout: string;
 }
 
-interface BoundedOptions extends Child {
-  /** The bound this child is stopped at. */
+/** A second bound that starts when the given text first appears in a stderr line. */
+export interface StderrBound {
+  readonly line: string;
   readonly bound: BoundName;
+}
+
+interface BoundedOptions extends Child {
+  /** The bound counted from the start, even if the stderr text never appears. */
+  readonly bound: BoundName;
+  readonly after?: StderrBound;
   /** The working directory, or undefined for this process's. */
   readonly cwd?: string;
   /** Writes every cost line this child captured on to this process's stderr. One caller passes
@@ -1145,36 +1208,71 @@ interface BoundedOptions extends Child {
  *  and the wait does not hang on it. */
 const pipeGrace = 2_000;
 
-/** How many of the last lines of each pipe a stuck child's failure carries. The last lines name
- * the step just before it waited, while the cap keeps a noisy child from taking over CI's log. */
+/** Reads one pipe to its end into `chunks`, decoding as it goes, so what arrived before a cancel
+ *  is kept. A `cancel()` of the reader ends the loop the way the end of the stream does.
+ *  `onText` sees the decoded text as it arrives. */
+async function drain(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  chunks: string[],
+  onText?: (text: string) => void
+): Promise<void> {
+  const decoder = new TextDecoder();
+  for (let read = await reader.read(); !read.done; read = await reader.read()) {
+    const text = decoder.decode(read.value, { stream: true });
+    chunks.push(text);
+    onText?.(text);
+  }
+  const text = decoder.decode();
+  chunks.push(text);
+  onText?.(text);
+}
+
+/** Records the first match. Keep only enough text to match across chunk boundaries. */
+function stderrArrival(line: string) {
+  if (line === "") throw new Error("runBounded: after.line must not be empty");
+  const { promise, resolve } = Promise.withResolvers<number>();
+  let tail: string | undefined = "";
+  return {
+    arrived: promise,
+    read: (chunk: string) => {
+      if (tail === undefined) return;
+      const text = tail + chunk;
+      if (text.includes(line)) {
+        tail = undefined;
+        resolve(performance.now());
+      } else {
+        tail = text.slice(Math.max(0, text.length - line.length + 1));
+      }
+    },
+  };
+}
+
+/** How many of the last lines of each pipe a stuck child's failure carries (`wroteTo`). The last
+ *  lines are where the child stopped: the step it printed before it waited. Two hundred of each
+ *  are a few screens, enough for the steps before the wait, and keep the failure of a child that
+ *  printed for minutes to about 400 lines in CI's log. */
 const tailLines = 200;
 
-/** What a stuck child wrote to one pipe, for its failure: only the last `tailLines`, each masked
- * before it reaches CI's public log. */
+/** What a stuck child wrote to `pipe`, whose whole text is `text`, as its failure carries it: a
+ *  heading that names the pipe and how many lines the child wrote to it, then the last
+ *  `tailLines` of those lines, each read by `masked` and indented two spaces; or, where the child
+ *  wrote nothing to it, one line that says so. A line ends at a line break, or at the end of
+ *  `text` where the last one has none. `masked` reads each line on its own, so a mask never
+ *  reaches past its line: the failure goes to the run's stderr, which CI keeps in a public log,
+ *  and a child can write a connection string with its password, which is why `driverSaid` of
+ *  `replace-blocks-guard.test.ts` reads its driver's stderr through `masked` too. The indent sets
+ *  the child's lines apart from the headings, and no line of the child's then starts with
+ *  `marker`, so a caller that relays the cost lines of its child's stderr (`relaysLines`) never
+ *  relays one of them. */
 function wroteTo(pipe: "stderr" | "stdout", text: string): string {
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
   if (lines.length === 0) return `it wrote nothing to its ${pipe}`;
+  const wrote = `it wrote ${lines.length} ${lines.length === 1 ? "line" : "lines"} to its ${pipe}`;
   const shown = lines.slice(-tailLines);
-  const count = `${lines.length} ${lines.length === 1 ? "line" : "lines"}`;
   const heading =
-    shown.length === lines.length
-      ? `it wrote ${count} to its ${pipe}:`
-      : `it wrote ${count} to its ${pipe}, the last ${tailLines} of them here:`;
+    shown.length < lines.length ? `${wrote}, the last ${tailLines} of them here:` : `${wrote}:`;
   return [heading, ...shown.map((line) => `  ${masked(line)}`)].join("\n");
-}
-
-/** Reads one pipe to its end into `chunks`, decoding as it goes, so what arrived before a cancel
- *  is kept. A `cancel()` of the reader ends the loop the way the end of the stream does. */
-async function drain(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  chunks: string[]
-): Promise<void> {
-  const decoder = new TextDecoder();
-  for (let read = await reader.read(); !read.done; read = await reader.read()) {
-    chunks.push(decoder.decode(read.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
 }
 
 /** Starts one child, waits for it, and answers what it did.
@@ -1194,16 +1292,19 @@ async function drain(
  *  would fail every row of theirs that reads a refusal. A caller that does refuse a non-zero exit
  *  builds its message from `named`.
  *
- *  The bound covers the whole wait: the child's exit and the end of both pipes, so a process the
- *  child left holding a pipe is stuck as the child itself would be. It holds at any depth, since
- *  a child started inside another bounded child has a bound and a kill of its own, and its
- *  failure is named before its ancestor's bound fires. When the bound passes,
- *  `stopTreeYielding` kills the child and every process it started, the pipes get `pipeGrace` to
- *  end and are then cancelled, and this throws a message naming the file that started the child,
- *  the command with its arguments, the environment the caller gave it, the bound and the time
- *  waited. */
+ *  The start bound covers the child's exit and the end of both pipes. A process the child
+ *  leaves holding a pipe can keep that wait from ending. If `after` is set, the first match
+ *  in stderr starts a second bound. The earlier deadline stops the wait.
+ *  `stopTreeYielding` kills the child and every process it started. The pipes get `pipeGrace`
+ *  to end before they are cancelled. The first line of the failure names the child, the bound
+ *  that fired and the time waited. If the second bound fired, it also gives the stderr text
+ *  the bound was counted from. `runningAtBound` lists the processes still running when the
+ *  bound passed. `wroteTo` gives the last `tailLines` lines of each pipe under its own
+ *  heading, or says that the pipe was empty. */
 export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
-  const { argv, bound, cwd, env, from, relaysLines = false } = options;
+  const { after, argv, bound, cwd, env, from, relaysLines = false } = options;
+  // Before the spawn: an empty `after.line` throws here, so options it refuses start no child.
+  const stderrLine = after === undefined ? undefined : stderrArrival(after.line);
   const started = performance.now();
   const token = crypto.randomUUID();
   const ancestors = process.env[tokensVariable];
@@ -1232,14 +1333,24 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   const whole = Promise.all([
     child.exited,
     drain(stdoutReader, stdoutChunks),
-    drain(stderrReader, stderrChunks),
+    drain(stderrReader, stderrChunks, stderrLine?.read),
   ]);
   let stuck = false;
+  let expiredAfter: StderrBound | undefined;
   let stuckProcesses = "";
   // Read once the child and its pipes ended, before its kill; a stuck child throws instead.
   let endedAt = Number.NaN;
   try {
-    const settled = await beforeDeadline(whole, performance.now() + bounds[bound]);
+    const deadline = performance.now() + bounds[bound];
+    let settled =
+      stderrLine === undefined
+        ? await beforeDeadline(whole, deadline)
+        : await beforeDeadline(Promise.race([whole, stderrLine.arrived]), deadline);
+    if (typeof settled === "number" && after !== undefined) {
+      const afterDeadline = settled + bounds[after.bound];
+      settled = await beforeDeadline(whole, Math.min(deadline, afterDeadline));
+      if (afterDeadline < deadline) expiredAfter = after;
+    }
     endedAt = Date.now();
     if (settled === pastDeadline) {
       stuck = true;
@@ -1286,8 +1397,13 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
           : ` | exit ${child.exitCode}`);
   process.stderr.write(`${marker} ${name} | ${ms} ms${ended}\n`);
   if (stuck) {
+    const expired = expiredAfter?.bound ?? bound;
+    const countedFrom =
+      expiredAfter === undefined
+        ? ""
+        : ` counted from stderr text ${JSON.stringify(masked(expiredAfter.line))}`;
     throw new Error(
-      `the bounded child ${name} did not end inside the ${bound} bound of ${bounds[bound]} ms: ` +
+      `the bounded child ${name} did not end inside the ${expired} bound of ${bounds[expired]} ms${countedFrom}: ` +
         `it and every process it started were killed after ${ms} ms\n` +
         `${stuckProcesses || "the process table was not read before the child was killed"}\n` +
         `${wroteTo("stdout", stdout)}\n${wroteTo("stderr", stderr)}`

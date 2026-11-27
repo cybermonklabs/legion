@@ -15,20 +15,22 @@ import {
   pickerHeadings,
   pickerRows,
   refPicker,
+  within,
 } from "./ref-picker";
 import {
   ANCHOR,
   COMPONENT_TITLE,
-  PERSON_LOGIN,
   ROLE_REFERENCE,
   ROLE_TOKEN,
-  SESSION_REFERENCE,
+  referencePerson,
+  referenceSearchWord,
   SESSION_TITLE,
   seedReferenceWorld,
+  sessionReference,
 } from "./reference-surfaces";
-import { expect, test } from "./test";
+import { expect, rowSessionId, test } from "./test";
 import { asUser } from "./users";
-import { NO_MATCH } from "./writing-boxes";
+import { noMatch } from "./writing-boxes";
 
 /**
  * The picker's three doors: one picker behind `[[`, `@` and `#`.
@@ -71,7 +73,8 @@ test("the three doors open one list over the same rows, each ranking the kinds i
   browser,
 }) => {
   test.setTimeout(120_000);
-  const world = await seedReferenceWorld();
+  const world = await seedReferenceWorld({ tagPickerSearch: true });
+  const query = referenceSearchWord(world.projects.core);
   const alice = await asUser(browser, "alice");
 
   try {
@@ -100,7 +103,7 @@ test("the three doors open one list over the same rows, each ranking the kinds i
     // Each row is found by its own words: a role's line names the session holding it, so the
     // session's name alone would match that row too.
     for (const row of [
-      PERSON_LOGIN,
+      referencePerson(),
       new RegExp(`^${SESSION_TITLE}\\b`),
       new RegExp(`^${ROLE_TOKEN}\\b`),
       new RegExp(`^${COMPONENT_TITLE}\\b`),
@@ -133,9 +136,9 @@ test("the three doors open one list over the same rows, each ranking the kinds i
       ["[[", "all"],
     ] as const) {
       await field.fill("");
-      const list = await openRefPicker(field, `${door}cache`);
+      const list = await openRefPicker(field, `${door}${query}`);
       await expect
-        .poll(() => pickerRows(list), { message: `the ${name} door found no issue for "cache"` })
+        .poll(() => pickerRows(list), { message: `the ${name} door found no issue for ${query}` })
         .toContain(`Issues: ${world.target.title}`);
       const headings = await pickerHeadings(list);
       opened[name] = { headings, rows: await pickerRows(list) };
@@ -147,8 +150,10 @@ test("the three doors open one list over the same rows, each ranking the kinds i
 
     // A node of another project, found through the search route and written as its address.
     await field.fill("");
-    const other = await openRefPicker(field, "#Cross-project");
-    await other.getByRole("option", { name: world.other.title }).click();
+    const other = await openRefPicker(field, `#${query}`);
+    // The query finds both projects of this row. The option detail includes the issue key.
+    const otherRow = within(new RegExp(`^${world.other.title}`), world.other.key);
+    await other.getByRole("option", { name: otherRow }).click();
     await expect(field).toHaveValue(`dispatch://${world.other.key}`);
   } finally {
     await alice.close();
@@ -161,7 +166,7 @@ test("the arrows move, Enter and Tab take the row, and the pick lands at the car
   browser,
 }) => {
   test.setTimeout(120_000);
-  const world = await seedReferenceWorld();
+  const world = await seedReferenceWorld({ tagPickerSearch: true });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -193,15 +198,17 @@ test("the arrows move, Enter and Tab take the row, and the pick lands at the car
       .poll(async () => (await pickerRows(list)).slice(0, 1))
       .toEqual([`Agents: ${SESSION_TITLE}`]);
     await field.press("Tab");
-    await expect(field).toHaveValue(`[@${SESSION_TITLE}](${SESSION_REFERENCE})`);
+    await expect(field).toHaveValue(`[@${SESSION_TITLE}](${sessionReference()})`);
     await expect(field).toBeFocused();
 
     // A door opens in the address of a link the reader is writing, and the pick there is the
     // address alone, which completes that link. The query is a whole word: the search route
     // matches words, not the first letters of one.
     await field.fill("");
-    await field.pressSequentially("[the warm one](#cache");
-    await list.getByRole("option", { name: world.target.title }).click();
+    await field.pressSequentially(`[the warm one](#${referenceSearchWord(world.projects.core)}`);
+    // The option detail identifies the target's issue key among this row's matches.
+    const targetRow = within(new RegExp(`^${world.target.title}`), world.target.key);
+    await list.getByRole("option", { name: targetRow }).click();
     await expect(field).toHaveValue(`[the warm one](dispatch://${world.target.key}`);
   } finally {
     await alice.close();
@@ -214,7 +221,7 @@ test("a space or Escape closes the picker over the typed words, a query nothing 
   browser,
 }) => {
   test.setTimeout(120_000);
-  const world = await seedReferenceWorld();
+  const world = await seedReferenceWorld({ tagPickerSearch: true });
   const alice = await asUser(browser, "alice");
 
   // The four controls share one box, the Conversation's comment composer that the two rows
@@ -230,11 +237,12 @@ test("a space or Escape closes the picker over the typed words, a query nothing 
     // door, its query and the words after the space. The list has a row to take when the space
     // is typed, so the space is what declines it. The unit row is useRefPicker.test.tsx's "a
     // space typed before a row is taken closes the picker, leaving a heading a heading".
-    const answered = await openRefPicker(field, "@cache");
+    const query = referenceSearchWord(world.projects.core);
+    const answered = await openRefPicker(field, `@${query}`);
     await expect.poll(() => pickerRows(answered)).toContain(`Issues: ${world.target.title}`);
     await field.pressSequentially(" is warm");
     await expect(list).toHaveCount(0);
-    await expect(field).toHaveValue("@cache is warm");
+    await expect(field).toHaveValue(`@${query} is warm`);
 
     // Escape closes the list and leaves the trigger the reader typed, and the list stays shut
     // while the reader writes on after it. The unit rows are useRefPicker.test.tsx's "Escape
@@ -254,11 +262,11 @@ test("a space or Escape closes the picker over the typed words, a query nothing 
     // unit row is useRefPicker.test.tsx's "the list says it is loading, that nothing matches,
     // and that Dispatch is unreachable".
     await field.fill("");
-    const empty = await openRefPicker(field, `[[${NO_MATCH}`);
+    const empty = await openRefPicker(field, `[[${noMatch()}`);
     await expect(empty.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
     await expect(empty.getByRole("option")).toHaveCount(0);
     await field.press("Enter");
-    await expect(field).toHaveValue(`[[${NO_MATCH}\n`);
+    await expect(field).toHaveValue(`[[${noMatch()}\n`);
     await expect(list).toHaveCount(0);
 
     // Ctrl+K in the composer, with the list open, opens the search palette and no other dialog:
@@ -328,10 +336,16 @@ test("a delivering comment picker omits non-routable sessions that the document 
 }) => {
   test.setTimeout(120_000);
   const world = await seedReferenceWorld();
+  // The sessions are the row's own (`rowSessionId`). A `.` and a `:` are characters an address
+  // may hold (`SESSION_ID_PATTERN`) and a delivery route may not (`sessionRouteIDPattern`,
+  // `features/refs/routes.ts`), so the two ids no route reaches are the row's own id with one of
+  // them in it.
+  const dottedSession = `${rowSessionId("dotted")}.session`;
+  const colonSession = `${rowSessionId("colon")}:session`;
   await setLiveSessions([
-    { session_id: "route-session", title: "Route reachable" },
-    { session_id: "route.session", title: "Route dotted" },
-    { session_id: "route:session", title: "Route colon" },
+    { session_id: rowSessionId("routable"), title: "Route reachable" },
+    { session_id: dottedSession, title: "Route dotted" },
+    { session_id: colonSession, title: "Route colon" },
   ]);
   const alice = await asUser(browser, "alice");
   try {
@@ -352,7 +366,7 @@ test("a delivering comment picker omits non-routable sessions that the document 
     await dotted.click();
     await expect
       .poll(async () => (await getArtifactText(world.host.primary_artifact_id)).markdown)
-      .toContain("dispatch://agent/route.session");
+      .toContain(`dispatch://agent/${dottedSession}`);
   } finally {
     await alice.close();
   }

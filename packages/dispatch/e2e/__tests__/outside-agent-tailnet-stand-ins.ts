@@ -287,7 +287,8 @@ function standInPath(
   // browser gate's run (state/browser) runs its step `The delisting window` at once, kept in
   // state/window, unless state/no-window says the run skips it; `gh run view --json status,jobs`
   // prints `<run status> <that step's status>`, as the leg's jq asks, and counts each read in
-  // state/window-reads.
+  // state/window-reads. `gh run watch` leaves state/watched before it waits, the mark the browser
+  // gate's run reads of a leg that is past its removal (browserStandIn).
   script(
     join(bin, "gh"),
     `#!/usr/bin/env bash
@@ -333,7 +334,7 @@ case $1 in
         ;;
       'view '*'--json status'*) if [ -f "$state/run-exit" ]; then echo completed; else echo in_progress; fi ;;
       'view '*'--json conclusion'*) if [ "$(cat "$state/run-exit")" = 0 ]; then echo success; else echo failure; fi ;;
-      'watch '*) while [ ! -f "$state/run-exit" ]; do sleep 0.2; done ;;
+      'watch '*) : >"$state/watched"; while [ ! -f "$state/run-exit" ]; do sleep 0.2; done ;;
       'download '*)
         name='' dir=''
         while [ "$#" -gt 0 ]; do
@@ -568,10 +569,14 @@ export const linkToken = "owner-made-token";
 /** The browser gate's stand-ins: the owner commands, which keep the access list in state/listed and
  *  each link they made in state/links, and the workflow's run. The run writes the browser checks'
  *  artifacts (each `.txt` and `.code`, the driver's outside-edge.tsv and the sweep's two files),
- *  then, unless state/no-window says it skips its step `The delisting window`, waits up to 30 s for
- *  the owner's removal (state/removed), writes outside-edge-t5.tsv with T5-cookie's and
- *  T5-passkey's `at=` the given seconds after it, and ends the step. It exits with the worst exit
- *  it recorded. Returns the run's script and the leg's environment beside it. */
+ *  then, unless state/no-window says it skips its step `The delisting window`, waits for the
+ *  owner's removal (state/removed) or for the leg's watch of the run (state/watched), writes
+ *  outside-edge-t5.tsv with T5-cookie's and T5-passkey's `at=` the given seconds after it reads
+ *  the removal, and ends the step. The leg watches the run only once its removal step is done, so
+ *  a watch with no removal is a leg that made none, and the step then ends as the real one ends
+ *  at its deadline, with no 401. No time stands for either fact: a wait of 30 s for the removal
+ *  was a clock a loaded leg could outrun between the step's start and its removal. It exits with
+ *  the worst exit it recorded. Returns the run's script and the leg's environment beside it. */
 function browserStandIn(
   state: string,
   inputs: string,
@@ -662,11 +667,7 @@ if [ -f '${state}/no-window' ]; then
   echo completed >'${state}/window'
   exit "$worst"
 fi
-waited=0
-while [ ! -f '${state}/removed' ] && [ "$waited" -lt 300 ]; do
-  sleep 0.1
-  waited=$((waited + 1))
-done
+while [ ! -f '${state}/removed' ] && [ ! -f '${state}/watched' ]; do sleep 0.1; done
 now=$(date -u +%s)
 if [ -f '${state}/removed' ]; then
   printf 'T5-cookie\\tthe cookie\\t401 at=%s\\tPASS\\nT5-passkey\\tthe passkey\\trefused at=%s: 403\\tPASS\\n' "$((now + ${browser.cookieAfter ?? 1}))" "$((now + ${browser.passkeyAfter ?? 2}))" >"$out/outside-edge-t5.tsv"

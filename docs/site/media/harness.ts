@@ -190,11 +190,17 @@ export async function seedDispatchWorkspace(): Promise<DispatchWorkspace> {
   const { seedMeasuresFixture, seedPipelineRows } = await import(
     "../../../packages/dispatch/e2e/delivery-seed"
   );
-  const { createComment, editArtifact, getIssue, getIssueCoverage } = await dispatchApi();
+  const { createComment, editArtifact, fixedKey, getIssue, getIssueCoverage } = await dispatchApi();
   // The e2e suite's 15 s for the seed's two waits: a seed that never settles fails naming what it
   // waited for, well inside the STEP_TIMEOUT_MS a shot set's reset and seed run under.
   const seedBoundMs = 15_000;
-  const seeded = await seedWorkspace({ boundMs: seedBoundMs });
+  // The docs' pictures and walkthroughs show these keys, in the navigation and in every issue's
+  // key, and each set reseeds them into a database it has just reset.
+  const pictured = "the docs pictures show this key";
+  const seeded = await seedWorkspace({
+    boundMs: seedBoundMs,
+    projects: { core: fixedKey("CORE", pictured), ops: fixedKey("OPS", pictured) },
+  });
   await seedMeasuresFixture();
   await seedPipelineRows();
   // The requirements go between the summary and the open question, where a spec states them,

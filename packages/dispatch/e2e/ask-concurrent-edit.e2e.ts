@@ -9,7 +9,15 @@ import {
   selectTextIn,
 } from "./editor";
 import { settledState } from "./settled";
-import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import {
+  type Browser,
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  rowKey,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 // sjawhar/legion#2433: two collaborators editing one decision block at once can leave it holding what its
@@ -41,8 +49,9 @@ function optionList(page: Page, index: number): Locator {
 
 /** Creates the issue whose spec holds the decision a1 and waits until it is an open ask. */
 async function seedDecision() {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: SPEC, title: "Crossed options" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: SPEC, title: "Crossed options" });
   await indexedBlockAsk(issue.key, "a1");
   return issue;
 }

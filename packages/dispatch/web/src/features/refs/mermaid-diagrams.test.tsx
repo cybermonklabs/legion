@@ -4,11 +4,10 @@ import * as mermaidRenderer from "@legion/proof-editor/mermaid-render";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
-import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { afterOnFakeClock, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { userOnFakeClock } from "../../__tests__/user";
 import { MarkdownBody } from "./MarkdownBody";
@@ -42,7 +41,9 @@ function withQueries(children: ReactNode): ReactNode {
  * answers each request on a later task with `answer`'s reply: the worker module's own
  * `answerMermaidRequest` by default, run on the test's thread; a reply of `undefined` never
  * arrives, as from a worker stuck in a layout. `sent` records each request's source as it is
- * posted. A terminated one posts nothing more.
+ * posted. A terminated one posts nothing more. Each of those tasks is a timer of the fake clock
+ * every case here holds (`afterOnFakeClock`), so it comes when the case moves that clock, with
+ * `tick` or a Testing Library wait, and never on how loaded the machine is.
  */
 class FakeWorker {
   static created: FakeWorker[] = [];
@@ -60,10 +61,10 @@ class FakeWorker {
   constructor() {
     FakeWorker.created.push(this);
     const fails = FakeWorker.startFails;
-    setTimeout(() => {
+    afterOnFakeClock(FakeWorker.readyDelayMs, () => {
       if (fails) this.emit("error", new Event("error"));
       else this.emit("message", { data: { ready: true } });
-    }, FakeWorker.readyDelayMs);
+    });
   }
 
   addEventListener(type: string, listener: (event: unknown) => void): void {
@@ -72,10 +73,10 @@ class FakeWorker {
 
   postMessage(request: MermaidRequest): void {
     FakeWorker.sent.push(request.source);
-    setTimeout(() => {
+    afterOnFakeClock(0, () => {
       const reply = FakeWorker.answer(request);
       if (reply !== undefined) this.emit("message", { data: reply });
-    }, 0);
+    });
   }
 
   terminate(): void {
@@ -100,8 +101,12 @@ describe("Mermaid diagrams", () => {
   const pageWorker = globalThis.Worker;
 
   // The worker, the drawn-source cache and a failure are module state that outlives every render,
-  // so each case starts from a page that has started and drawn nothing.
-  beforeEach(() => {
+  // so each case starts from a page that has started and drawn nothing. Each case runs on the fake
+  // clock, which the stand-in worker's tasks are timers of; the markdown engine is loaded first,
+  // on the real clock, since it loads on real turns that no move of the fake clock gives, so a
+  // body paints in its layout effect and only the worker is late.
+  beforeEach(async () => {
+    await warmMarkdownRenderer();
     FakeWorker.created = [];
     FakeWorker.answer = answerMermaidRequest;
     FakeWorker.startFails = false;
@@ -109,11 +114,13 @@ describe("Mermaid diagrams", () => {
     FakeWorker.sent = [];
     globalThis.Worker = FakeWorker as unknown as typeof Worker;
     resetMermaidDiagrams();
+    jest.useFakeTimers();
   });
 
   afterEach(() => {
     resetMermaidDiagrams();
     globalThis.Worker = pageWorker;
+    realClock();
   });
 
   const fence = (source: string): string => `\`\`\`mermaid\n${source}\n\`\`\`\n`;
@@ -331,8 +338,8 @@ describe("Mermaid diagrams", () => {
   });
 
   test("a body whose source changes or that unmounts before the worker answers draws only the newest source", async () => {
-    // With the engine loaded the body paints in its layout effect, so only the worker is late.
-    await warmMarkdownRenderer();
+    // The engine is loaded (`beforeEach`), so the body paints in its layout effect and only the
+    // worker is late.
     const view = render(<MarkdownBody markdown={fence("sequenceDiagram\n  Alice->>Bob: First")} />);
     const gone = render(<MarkdownBody markdown={fence("sequenceDiagram\n  Erin->>Finn: Gone")} />);
     // Each superseded code block stays in an element of its own, the one the re-paint replaced
@@ -345,6 +352,9 @@ describe("Mermaid diagrams", () => {
       expect(figuresIn(view.container)).toHaveLength(0);
       gone.unmount();
       view.rerender(<MarkdownBody markdown={fence("sequenceDiagram\n  Carol->>Dave: Second")} />);
+      // A Testing Library wait moves the fake clock before the microtasks already queued run, as
+      // no task of a page's ever does, so they run first here, without the clock moving.
+      await settle();
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
       expect(diagramIn(figuresIn(view.container)[0])?.textContent).toContain("Second");
       // The unmount and the re-paint cancelled both earlier draws in one task, and the cancel's
@@ -360,7 +370,6 @@ describe("Mermaid diagrams", () => {
   });
 
   test("a source drawn before draws in the layout effect that paints its body", async () => {
-    await warmMarkdownRenderer();
     const source = fence("sequenceDiagram\n  Alice->>Bob: Again");
     const first = render(<MarkdownBody markdown={source} />);
     try {
@@ -396,8 +405,6 @@ describe("Mermaid diagrams", () => {
   // A body is painted whole: a turn streaming above a diagram, an edit landing, a new decision
   // card all build its disclosure anew. A reader reading the source of one keeps it.
   test("a source a reader opened is open again after the body is painted anew", async () => {
-    await warmMarkdownRenderer();
-    jest.useFakeTimers();
     const user = userOnFakeClock();
     const diagram = fence("sequenceDiagram\n  Alice->>Bob: Kept");
     const view = render(<MarkdownBody markdown={`Lead:\n\n${diagram}`} />);
@@ -417,7 +424,6 @@ describe("Mermaid diagrams", () => {
       expect(repainted?.open).toBe(true);
       expect(view.container).toHaveTextContent("Lead, and more of it:");
     } finally {
-      realClock();
       view.unmount();
     }
   });
@@ -425,8 +431,6 @@ describe("Mermaid diagrams", () => {
   // A thread collapsed and expanded again mounts the body afresh, with the source drawn before,
   // so the disclosure is built inside the layout effect, from the cache. It is built open.
   test("a source a reader opened is open again after the body is mounted afresh", async () => {
-    await warmMarkdownRenderer();
-    jest.useFakeTimers();
     const user = userOnFakeClock();
     const diagram = fence("sequenceDiagram\n  Alice->>Bob: Remounted");
     const view = render(<MarkdownBody markdown={diagram} />);
@@ -436,7 +440,6 @@ describe("Mermaid diagrams", () => {
       // A task, as above, so the opening is written down whenever the head runs `toggle`.
       await tick(10);
     } finally {
-      realClock();
       view.unmount();
     }
     const again = render(<MarkdownBody markdown={diagram} />);
@@ -451,8 +454,7 @@ describe("Mermaid diagrams", () => {
   // What is remembered is the source, not the block: an edit draws a diagram the reader has not
   // opened, and the source they did open is theirs again wherever it comes back.
   test("an edited source draws closed, and the source the reader opened comes back open", async () => {
-    await warmMarkdownRenderer();
-    const user = userEvent.setup();
+    const user = userOnFakeClock();
     const first = fence("sequenceDiagram\n  Alice->>Bob: First");
     const edited = fence("sequenceDiagram\n  Alice->>Bob: Edited");
     const view = render(<MarkdownBody markdown={first} />);
@@ -484,8 +486,6 @@ describe("Mermaid diagrams", () => {
   // opening away from dropping the oldest of them - and that one still draws open here, so
   // neither drawing the refusal open nor the reader's closing it was written down as an opening.
   test("a refused source draws open whatever the reader does, and takes no room from their openings", async () => {
-    await warmMarkdownRenderer();
-    jest.useFakeTimers();
     const user = userOnFakeClock();
     const sources = Array.from(
       { length: 32 },
@@ -518,7 +518,6 @@ describe("Mermaid diagrams", () => {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(2));
       expect(openIn(view.container)).toEqual([true, true]);
     } finally {
-      realClock();
       view.unmount();
     }
   });
@@ -527,8 +526,6 @@ describe("Mermaid diagrams", () => {
   // read through the drawn result: with a 33rd source opened, the first of the 33 is the one the
   // next paint draws closed again, and every later one is still the reader's.
   test("the thirty-third source a reader opens costs the first its place, and no other", async () => {
-    await warmMarkdownRenderer();
-    jest.useFakeTimers();
     const user = userOnFakeClock();
     const sources = Array.from(
       { length: 33 },
@@ -547,7 +544,6 @@ describe("Mermaid diagrams", () => {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(33));
       expect(openIn(view.container)).toEqual(sources.map((_, index) => index > 0));
     } finally {
-      realClock();
       view.unmount();
     }
   });
@@ -568,7 +564,6 @@ describe("Mermaid diagrams", () => {
   // repaint below reads what the click wrote and nothing else. Drop the `click` listener from
   // `drawBlock` and this case alone fails, `Expected: true, Received: false`.
   test("a source the reader opens is open in a body painted anew inside their own click", async () => {
-    await warmMarkdownRenderer();
     const diagram = fence("sequenceDiagram\n  Alice->>Bob: Same task");
     const view = render(<MarkdownBody markdown={`Lead:\n\n${diagram}`} />);
     try {
@@ -593,8 +588,6 @@ describe("Mermaid diagrams", () => {
   // sends no click - reaches the memory through `toggle` alone, which is why that listener
   // stays beside the click's.
   test("a source the code opens, with no click of the reader's, is open in a body painted anew", async () => {
-    await warmMarkdownRenderer();
-    jest.useFakeTimers();
     const diagram = fence("sequenceDiagram\n  Alice->>Bob: Opened by the code");
     const view = render(<MarkdownBody markdown={`Lead:\n\n${diagram}`} />);
     try {
@@ -611,7 +604,6 @@ describe("Mermaid diagrams", () => {
       expect(repainted).not.toBe(first);
       expect(repainted?.open).toBe(true);
     } finally {
-      realClock();
       view.unmount();
     }
   });
@@ -633,8 +625,12 @@ describe("Mermaid diagrams", () => {
     }
   });
 
+  /** The time limit the two rows below set through `resetMermaidDiagrams`. It is theirs, not the
+   *  page's 5 s, so they move the fake clock by it. */
+  const TIME_LIMIT_MS = 50;
+
   test("a source the worker has not drawn within the time limit is refused, and a fresh worker draws the next", async () => {
-    resetMermaidDiagrams(50);
+    resetMermaidDiagrams(TIME_LIMIT_MS);
     const draw = spyOn(mermaidRenderer, "renderMermaidMarkup");
     FakeWorker.answer = (request) =>
       request.source.includes("Stuck") ? undefined : answerMermaidRequest(request);
@@ -642,7 +638,14 @@ describe("Mermaid diagrams", () => {
       <MarkdownBody markdown={`Big:\n\n${fence("sequenceDiagram\n  Stuck->>Bob: Hi")}`} />
     );
     try {
-      await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
+      // Half the limit after the worker was handed the source, the source is still the worker's.
+      await tick(TIME_LIMIT_MS / 2);
+      expect(FakeWorker.sent).toEqual([expect.stringContaining("Stuck->>Bob: Hi")]);
+      expect(figuresIn(view.container)).toHaveLength(0);
+      expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([false]);
+
+      await tick(TIME_LIMIT_MS);
+      expect(figuresIn(view.container)).toHaveLength(1);
       const [figure] = figuresIn(view.container);
       expect(figure.querySelector('[role="status"]')?.textContent).toBe(
         "Unable to render Mermaid diagram: it did not finish within 0.05 seconds"
@@ -655,8 +658,10 @@ describe("Mermaid diagrams", () => {
       expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([true]);
 
       view.rerender(<MarkdownBody markdown={fence("sequenceDiagram\n  Alice->>Bob: After")} />);
-      await waitFor(() =>
-        expect(diagramIn(figuresIn(view.container)[0])?.textContent).toContain("After")
+      // Within half the limit, so what draws is the fresh worker's answer, not a refusal.
+      await tick(TIME_LIMIT_MS / 2);
+      expect(diagramIn(figuresIn(view.container)[0] ?? view.container)?.textContent).toContain(
+        "After"
       );
       expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([true, false]);
       // The renderer ran for the next source, inside the stand-in worker; the refused source
@@ -673,13 +678,22 @@ describe("Mermaid diagrams", () => {
   // A worker's chunk can take longer to download and load than the time limit; the limit is for
   // drawing one source, so it starts when the worker posts `ready` and is handed that source.
   test("a worker that loads slower than the time limit still draws: the limit starts when the worker is ready", async () => {
-    resetMermaidDiagrams(50);
-    FakeWorker.readyDelayMs = 150;
+    resetMermaidDiagrams(TIME_LIMIT_MS);
+    FakeWorker.readyDelayMs = TIME_LIMIT_MS * 3;
     const view = render(
       <MarkdownBody markdown={`Slow:\n\n${fence("sequenceDiagram\n  Alice->>Bob: Loaded")}`} />
     );
     try {
-      await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
+      // Twice the limit on, the worker is still loading: it has been handed nothing, and nothing
+      // is refused.
+      await tick(TIME_LIMIT_MS * 2);
+      expect(FakeWorker.sent).toEqual([]);
+      expect(figuresIn(view.container)).toHaveLength(0);
+      expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([false]);
+
+      // Past its ready delay the worker posts `ready`, is handed the source, and draws it.
+      await tick(FakeWorker.readyDelayMs);
+      expect(figuresIn(view.container)).toHaveLength(1);
       const [figure] = figuresIn(view.container);
       expect(figure.querySelector('[role="status"]')?.textContent).toBeUndefined();
       expect(diagramIn(figure)?.textContent).toContain("Loaded");
@@ -694,7 +708,6 @@ describe("Mermaid diagrams", () => {
   // one, so it is never sent: a reader who leaves a page of slow diagrams does not wait for them
   // on the next page.
   test("a source no body still waits for is never sent to the worker", async () => {
-    await warmMarkdownRenderer();
     resetMermaidDiagrams(60_000);
     const sent: string[] = [];
     FakeWorker.answer = (request) => {
@@ -728,8 +741,6 @@ describe("Mermaid diagrams", () => {
   // each paint cancels the draw and asks for the same source again in one commit, so the source
   // the worker is drawing keeps its place and its draw.
   test("a body re-painted while the worker draws its source neither stops the worker nor sends the source again", async () => {
-    await warmMarkdownRenderer();
-    jest.useFakeTimers();
     resetMermaidDiagrams(60_000);
     const sent: MermaidRequest[] = [];
     FakeWorker.answer = (request) => {
@@ -766,7 +777,6 @@ describe("Mermaid diagrams", () => {
       expect(view.container).toHaveTextContent("More text after it");
       expect(sent).toHaveLength(1);
     } finally {
-      realClock();
       view.unmount();
     }
   });
@@ -774,7 +784,6 @@ describe("Mermaid diagrams", () => {
   // The time limit is a minute here, so the next body's diagram drawing within `waitFor`'s second
   // proves it never waited for the source no body shows.
   test("unmounting the only body whose source the worker is drawing stops the worker, caches nothing, and a fresh worker draws the next", async () => {
-    await warmMarkdownRenderer();
     resetMermaidDiagrams(60_000);
     const sent: string[] = [];
     FakeWorker.answer = (request) => {
@@ -814,8 +823,6 @@ describe("Mermaid diagrams", () => {
   });
 
   test("a worker that fails to start leaves every block as code, logs once, and is tried again once the window is online", async () => {
-    await warmMarkdownRenderer();
-    jest.useFakeTimers();
     FakeWorker.startFails = true;
     const logged = quietConsoleError();
     const failures = () =>
@@ -843,7 +850,6 @@ describe("Mermaid diagrams", () => {
       expect(FakeWorker.created).toHaveLength(2);
       expect(failures()).toHaveLength(1);
     } finally {
-      realClock();
       logged.mockRestore();
       view.unmount();
     }
@@ -874,6 +880,8 @@ describe("Mermaid diagrams", () => {
       const cancelAlone = requestMermaidDrawing(alone, () => drawn.push("alone, cancelled"));
       cancelShared();
       cancelAlone();
+      // As in the body's case above, the cancels' microtask runs before the clock moves.
+      await settle();
       await waitFor(() => expect(drawn).toContain("shared, kept"));
       // A source still queued would be answered before the queue settles, so its draw would run.
       await mermaidDrawsSettled();
@@ -961,15 +969,10 @@ describe("Mermaid diagrams", () => {
     });
   });
 
+  // A row below whose promise never settles fails at the test's own deadline, the `--timeout` of
+  // `test:web`, rather than on a race of its own: such a race against real time is an assertion
+  // that the draws settle within it, which a slow machine fails for being slow.
   describe("mermaidDrawsSettled", () => {
-    /** Whether `promise` settles within `ms`, so a promise that never resolves fails the case on
-     *  its assertion rather than on the test's timeout. This wait stays on the real clock where
-     *  the rest of the file moved to a fake one (INFRA-1505): a fake clock only moves when the
-     *  test moves it, so the losing side of the race would never come up and the race would
-     *  decide nothing. */
-    const settlesWithin = (promise: Promise<void>, ms: number): Promise<boolean> =>
-      Promise.race([promise.then(() => true), Bun.sleep(ms).then(() => false)]);
-
     test("resolves at once when no source is waiting", async () => {
       let settled = false;
       void mermaidDrawsSettled().then(() => {
@@ -987,7 +990,9 @@ describe("Mermaid diagrams", () => {
       const settled = mermaidDrawsSettled().then(() => {
         events.push("settled");
       });
-      expect(await settlesWithin(settled, 2000)).toBe(true);
+      // The stand-in's `ready` and its two answers, one after the other, a task each.
+      for (let task = 0; task < 3; task += 1) await tick(0);
+      await settled;
       expect(events).toEqual(["first", "second", "settled"]);
     });
 
@@ -999,7 +1004,10 @@ describe("Mermaid diagrams", () => {
         requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: Never", (drawing) =>
           drawn.push(drawing)
         );
-        expect(await settlesWithin(mermaidDrawsSettled(), 1000)).toBe(true);
+        const settled = mermaidDrawsSettled();
+        // The stand-in fails to start on its first task.
+        await tick(0);
+        await settled;
         expect(logged).toHaveBeenCalledTimes(1);
         expect(drawn).toEqual([{ unavailable: true }]);
       } finally {

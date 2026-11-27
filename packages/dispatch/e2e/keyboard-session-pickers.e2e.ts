@@ -1,7 +1,7 @@
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { listAgentMessages, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
-import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
-import { asUser } from "./users";
+import { type Browser, type BrowserContext, expect, type Page, rowSessionId, test } from "./test";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * The live view's header pickers switch an Oh My Pi session's model and thinking level (INFRA-195),
@@ -25,16 +25,19 @@ import { asUser } from "./users";
 const MODELS = ["anthropic/model-a", "anthropic/model-b", "openai/model-c"];
 const LEVELS = ["auto", "low", "medium", "high"];
 
-/** A live session of the row's own: the relay's replay and responder are process-global, so a
- *  session another row seeded would carry that row's frames into this one. The numbers follow
- *  `agent-view-settings.e2e.ts`'s rows, which use 1 to 10. */
+/** A live session under the running row's own id (`rowSessionId`, e2e/test.ts): the relay's
+ *  replay and responder are process-global, so a session another row seeded would carry that
+ *  row's frames into this one, and Dispatch keeps the switches sent to a session and its answers
+ *  by its id, for every person at once, so a repeat of a row under one fixed id would read the
+ *  switches its earlier copy sent. `row` numbers both the session's logical id (`pickersN`) and
+ *  the title the header draws. */
 function liveSession(row: number): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/settings",
     machine_id: "settings-host",
     roles: [],
-    session_id: `01a0e0c1-0195-7000-8000-${String(row).padStart(12, "0")}`,
+    session_id: rowSessionId(`pickers${row}`),
     title: `Settings ${row}`,
   };
 }
@@ -83,7 +86,7 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 /** A browser context signed in as `login`, and a page at a 1280 × 800 desktop. */
 async function viewer(
   browser: Browser,
-  login: string
+  login: SignInLogin
 ): Promise<{ context: BrowserContext; page: Page }> {
   const context = await asUser(browser, login);
   const page = await context.newPage();

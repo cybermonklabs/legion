@@ -1,7 +1,7 @@
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createComment, createIssue, createProject, getArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { expect, type Locator, test } from "./test";
+import { expect, type Locator, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // A bare web address after punctuation or an escaped scheme colon is a link remark-gfm reads, and
@@ -46,9 +46,10 @@ test.describe("a bare web address is a link in a document written through the AP
   // is ten link lookups per surface.
   // @pr: The bare-address family's one row on the real stack: a link written through the API must read as a link in the document and in a comment.
   test("after punctuation or an escaped scheme colon @pr", async ({ browser }) => {
-    await createProject({ key: "CORE", name: "Core" });
+    const core = rowKey("CORE");
+    await createProject({ key: core, name: "Core" });
     const issue = await createIssue({
-      project: "CORE",
+      project: core,
       spec: entry.markdown,
       title: "Address links",
     });

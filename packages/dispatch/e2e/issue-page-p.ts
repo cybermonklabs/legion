@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import type { IssueDecisions } from "../web/src/api/types";
+import { type Result, routePath } from "../web/src/api/paths";
 import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import {
@@ -9,11 +9,14 @@ import {
   createIssue,
   createIssueArtifact,
   createProject,
+  fixedKey,
   getIssue,
   patchIssue,
+  type RowKey,
   userHeaders,
 } from "./api";
 import { filterRow } from "./issue-page";
+import { rowKey } from "./test";
 import { assertWhole } from "./unclipped";
 
 declare global {
@@ -67,6 +70,38 @@ export function viewportAt(width: number): { readonly height: number; readonly w
 export const MEASURED_TITLE =
   "Dispatch's issue page is redesigned from design research: an ordered body and a header that fits, with nothing lost";
 
+/** The project of `seedHeader`'s issue in the rows that read the header's 390 px limit on it:
+ *  the literal key "HDR" the limit was measured on (`PHONE_TITLE`), fixed rather than a key of
+ *  the row's own (`rowKey`, e2e/test.ts). The crumbs "HDR › HDR-1 › HDR-2" share row one with
+ *  the navigation's control, so their width is part of what the limit measures, and a generated
+ *  key's five more characters change it: under a wide suffix the control takes a line of its own
+ *  and the header grows by 28 px (INFRA-1196 decision 398). A fixed key is the same text on every
+ *  run of a row, and Dispatch deletes no project, so each row that draws it empties the database
+ *  before it seeds (`resetDatabase`, e2e/seed.ts); none of those rows then finds another's
+ *  project, so all of them draw this one key. */
+export const MEASURED_KEY = fixedKey(
+  "HDR",
+  "the header's phone limits hold for a key whose crumbs fit beside the navigation control (INFRA-1196 decision 398); a generated suffix changes the width being measured"
+);
+
+/** `MEASURED_TITLE` less one word, "design", 108 characters: the title the rows that read the
+ *  header's 390 px limit set (`expectHeaderWithinItsLimit`). Without the word the title takes
+ *  3 lines at 390 px rather than 4, in Dispatch Inter and in both fallbacks of web/src/styles.css
+ *  ("Inter fallback" and "Inter fallback DejaVu"), in every column from 341 px up. Its first line
+ *  is the measured title's own, and the other two each end 5 px or more short of 362 px.
+ *
+ *  The limit, 8 lines and 250 px with no request waiting and 9 lines and 280 px with one, was
+ *  measured on the 20-label seed, the measured title and the literal key "HDR", whose crumbs
+ *  "HDR › HDR-1 › HDR-2" (19 characters) fit on row one beside the navigation's control. The
+ *  rows that read it on `seedHeader`'s issue draw that key (`MEASURED_KEY`), so their crumbs are
+ *  the ones it was measured on; the large gated root's row draws a fixed key of its own,
+ *  "LIKE". The word was dropped while those rows drew keys of their own (`rowKey`,
+ *  e2e/test.ts), whose crumbs took Details onto a line of its own; the rows keep the title, and
+ *  the limit stays as measured rather than grow for a key whose crumbs wrap (INFRA-1196 decision
+ *  398). */
+export const PHONE_TITLE =
+  "Dispatch's issue page is redesigned from research: an ordered body and a header that fits, with nothing lost";
+
 /** Twenty labels, the most Dispatch lets an issue hold (`maxIssueLabels`,
  *  `packages/envoy/internal/dispatch/api/issue_queries.go`): more than the header's line holds
  *  at 1440 px and at 390 px, so it ends with the count of those left over. */
@@ -93,9 +128,6 @@ export const TWENTY_LABELS = [
   "web",
 ] as const;
 
-/** The project the seed writes in. */
-export const HEADER_PROJECT = "HDR";
-
 /** The agent session that asks the seed's questions: a question it asks on an issue alice holds
  *  waits on alice (`waiting_on_person`). */
 export const asAgent = {
@@ -108,6 +140,10 @@ export interface HeaderSeed {
   readonly childKeys: readonly string[];
   readonly key: string;
   readonly parentKey: string;
+  /** The project the seed writes in: the row's own (`rowKey("HDR")`, e2e/test.ts), or the key a
+   *  row names (`MEASURED_KEY` for the rows that read the header's 390 px limit), which the
+   *  header draws as text before the key. */
+  readonly project: string;
   readonly specArtifactId: string;
 }
 
@@ -116,18 +152,20 @@ export interface HeaderSeed {
  * progress whose route reaches nobody, so the parent draws the header's one route marker; the
  * issue under it in progress, at P1, assigned to alice, with a spec and a Verification document,
  * three children (one done, one in progress, one to do) and two questions an agent asked, which
- * wait on alice. No approval request is open: a row that needs one asks for it.
+ * wait on alice. No approval request is open: a row that needs one asks for it. The project is the
+ * row's own (`rowKey("HDR")`) unless a row names one, as the rows that read the header's 390 px
+ * limit name `MEASURED_KEY`.
  *
  * The parent is in work, so the chain keeps Dispatch's parent-status rule (R24): a pick of the
  * issue's status into work is one the rule asks nothing of, and the page sends its PATCH after the
  * dry run, which Dispatch answers as the rule is on whatever its setting. A close is not: a row
  * that closes the issue closes its open children first (`closeOpenChildren`).
  */
-export async function seedHeader(): Promise<HeaderSeed> {
-  await createProject({ key: HEADER_PROJECT, name: "Header" });
+export async function seedHeader(project: RowKey = rowKey("HDR")): Promise<HeaderSeed> {
+  await createProject({ key: project, name: "Header" });
   const parent = await createIssue({
     force: true,
-    project: HEADER_PROJECT,
+    project,
     spec: "The parent's plan.",
     title: "The parent of the header's issue",
   });
@@ -135,7 +173,7 @@ export async function seedHeader(): Promise<HeaderSeed> {
   const issue = await createIssue({
     force: true,
     parent: parent.key,
-    project: HEADER_PROJECT,
+    project,
     spec: ":::requirement{#r1}\nThe header fits.\n:::\n",
     title: "The header's issue",
   });
@@ -153,7 +191,7 @@ export async function seedHeader(): Promise<HeaderSeed> {
     const child = await createIssue({
       force: true,
       parent: issue.key,
-      project: HEADER_PROJECT,
+      project,
       title,
     });
     await patchIssue(child.key, { status });
@@ -165,6 +203,7 @@ export async function seedHeader(): Promise<HeaderSeed> {
     childKeys,
     key: issue.key,
     parentKey: parent.key,
+    project,
     specArtifactId: issue.primary_artifact_id ?? "",
   };
 }
@@ -327,13 +366,15 @@ export function waitingCount(page: Page): Locator {
 /** The issue's decisions as the server reads them for alice, each with `waiting_review`
  *  (`GET /api/v1/issues/{key}/decisions`). `e2e/api.ts` wraps no read of the route, so this is a
  *  plain fetch with her sign-in, as `e2e/bare-references.e2e.ts` reads an issue. */
-export async function issueDecisions(key: string): Promise<IssueDecisions> {
-  const path = `/api/v1/issues/${encodeURIComponent(key)}/decisions`;
+export async function issueDecisions(
+  key: string
+): Promise<Result<"/api/v1/issues/{key}/decisions", "get">> {
+  const path = routePath("get", "/api/v1/issues/{key}/decisions", { key });
   const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders("alice") });
   if (!response.ok) {
     throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
   }
-  return (await response.json()) as IssueDecisions;
+  return response.json();
 }
 
 /** Details, the drawer over the right of the page. */
@@ -658,9 +699,9 @@ function headerReading(page: Page): Promise<HeaderReading | null> {
 /**
  * The header's height limit at `width`: at 1440 px 3 lines and 130 px, and 4 lines and 130 px
  * where the issue's project gates two or three steps, since the header then draws one approval
- * entry for each (R3, decision 213); at 390 px, on the 20-label seed and the measured title,
- * 8 lines and 250 px while no approval request waits on the reader and 9 lines and 280 px while
- * one does. No other width has a limit.
+ * entry for each (R3, decision 213); at 390 px, on the 20-label seed and `PHONE_TITLE`, 8 lines
+ * and 250 px while no approval request waits on the reader and 9 lines and 280 px while one
+ * does. No other width has a limit.
  */
 function headerLimit(
   width: number,

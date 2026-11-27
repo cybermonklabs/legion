@@ -5,6 +5,7 @@ import { http, type RequestHandler } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../api/client";
+import type { Body } from "../api/paths";
 import type {
   Artifact,
   ArtifactText,
@@ -71,7 +72,7 @@ export function decisionsAndReadMarkHandlers(): RequestHandler[] {
     // Opening a document the viewer has never read records the version they are looking at: the
     // page's own write of the route above.
     http.put("/api/v1/me/documents/:id/read", async ({ params, request }) => {
-      const { version } = (await request.json()) as { version: number };
+      const { version } = (await request.json()) as Body<"/api/v1/me/documents/{id}/read", "put">;
       return Response.json({
         artifact_id: String(params.id),
         read_at: "2026-09-09T00:00:00Z",

@@ -691,6 +691,7 @@ describe("every committed recording answers the display tree of every stored tex
       "Decision.text",
       "GraphExcerptWithTrees.text",
       "GraphNodeRead.text",
+      "IDCandidate.first_line",
       "InboxRow.question",
       "IssueAskRow.question",
       "IssueOpenAsk.question",

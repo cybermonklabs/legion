@@ -21,6 +21,7 @@ import {
   stateBody,
   useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
+import { signalGroup } from "./signal-group";
 
 // The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
 // is a hang guard, not a verdict, for every row of this file that states none of its own.
@@ -331,7 +332,7 @@ describe("an interrupted run cleans up and actually stops", () => {
     });
     try {
       await daemon.reached;
-      process.kill(-proc.pid, "SIGINT");
+      signalGroup(proc.pid, "SIGINT");
       daemon.release();
       expect(await proc.exited).toBe(130);
       const stray = readdirSync(evidence).filter((f) => /\.raw\.[^.]{6}$/.test(f));

@@ -55,12 +55,13 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       chooser.focus();
       await user.keyboard(key);
       expect(screen.queryByRole("menu"), `${key} did not open the menu`).not.toBeNull();
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
       expect(document.activeElement, `${key} left the focus off the view that is on`).toBe(
         menuItem("spec")
       );
       await user.keyboard("{Escape}");
       expect(screen.queryByRole("menu"), "Escape did not close the menu").toBeNull();
-      expect(document.activeElement, "Escape left the focus off the control").toBe(chooser);
+      expect(chooser, "Escape left the focus off the control").toHaveFocus();
     }
 
     // Down and Up move one view, wrapping at each end; Home and End go to the ends.
@@ -76,6 +77,7 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       ["{ArrowUp}", "plan"],
     ] as const) {
       await user.keyboard(key);
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the key.
       expect(document.activeElement, `${key} did not move to ${PRESET_NAMES[to]}`).toBe(
         menuItem(to)
       );
@@ -86,15 +88,16 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
       presetPath("CORE-1", "plan")
     );
-    expect(document.activeElement, "a chosen view left the focus off the control").toBe(chooser);
+    expect(chooser, "a chosen view left the focus off the control").toHaveFocus();
 
     // Tab closes the menu and moves on from the control, not through the five.
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Tab}");
     expect(screen.queryByRole("menu"), "Tab left the menu open").toBeNull();
-    expect(document.activeElement, "Tab did not move on from the control").toBe(
-      screen.getByRole("button", { name: "after the row" })
-    );
+    expect(
+      screen.getByRole("button", { name: "after the row" }),
+      "Tab did not move on from the control"
+    ).toHaveFocus();
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -119,7 +122,7 @@ test("a press on a view control leaves the focus where it is, and moves to the v
     row.focus();
     const spec = screen.getByRole("button", { name: "Spec" });
     await user.pointer({ keys: "[MouseLeft>]", target: spec });
-    expect(document.activeElement, "the press's mousedown took the focus").toBe(row);
+    expect(row, "the press's mousedown took the focus").toHaveFocus();
     await user.pointer({ keys: "[/MouseLeft]", target: spec });
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
       presetPath("CORE-1", "spec")
@@ -149,9 +152,9 @@ test("a press on a view control's count leaves the focus where it is, and moves 
     const count = view.container.querySelector<HTMLElement>('[data-preset-count="spec"]');
     if (count === null) throw new Error("Spec draws no count");
     await user.pointer({ keys: "[MouseLeft>]", target: count });
-    expect(document.activeElement, "the press's mousedown on the count took the focus").toBe(row);
+    expect(row, "the press's mousedown on the count took the focus").toHaveFocus();
     await user.pointer({ keys: "[/MouseLeft]", target: count });
-    expect(document.activeElement, "the press's click on the count took the focus").toBe(row);
+    expect(row, "the press's click on the count took the focus").toHaveFocus();
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
       presetPath("CORE-1", "spec")
     );
@@ -177,14 +180,13 @@ test("a press on the one control leaves the focus where it is, then opens its me
     row.focus();
     const chooser = screen.getByRole("button", { name: /^Spec\b/ });
     await user.pointer({ keys: "[MouseLeft>]", target: chooser });
-    expect(document.activeElement, "the press's mousedown on the one control took the focus").toBe(
-      row
-    );
+    expect(row, "the press's mousedown on the one control took the focus").toHaveFocus();
     await user.pointer({ keys: "[/MouseLeft]", target: chooser });
     expect(screen.queryByRole("menu"), "the press did not open the menu").not.toBeNull();
-    expect(document.activeElement, "the menu opened with the focus off the view that is on").toBe(
-      menuItem("spec")
-    );
+    expect(
+      menuItem("spec"),
+      "the menu opened with the focus off the view that is on"
+    ).toHaveFocus();
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -228,9 +230,7 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     const chooser = screen.getByRole("button", { name: /^Spec\b/ });
     chooser.focus();
     await user.keyboard("{Enter}");
-    expect(document.activeElement, "Enter left the focus off the view that is on").toBe(
-      menuItem("spec")
-    );
+    expect(menuItem("spec"), "Enter left the focus off the view that is on").toHaveFocus();
     const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
 
     // The dialog holds the focus itself until its control takes it a frame after it opens; with
@@ -239,9 +239,7 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     try {
       await user.keyboard("?");
       expect(dialog(), "? drew no dialog").not.toBeNull();
-      expect(document.activeElement, "the dialog left the focus behind it as it opened").toBe(
-        dialog()
-      );
+      expect(dialog(), "the dialog left the focus behind it as it opened").toHaveFocus();
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();
@@ -256,14 +254,13 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     // focus on the page, and the Escape's target is no part of the dialog.
     await user.keyboard("?");
     await waitFor(() =>
-      expect(document.activeElement, "the dialog's frame gave its control no focus").toBe(
-        screen.getByRole("button", { name: "in the dialog" })
-      )
+      expect(
+        screen.getByRole("button", { name: "in the dialog" }),
+        "the dialog's frame gave its control no focus"
+      ).toHaveFocus()
     );
     await user.click(screen.getByText("Words of the dialog"));
-    expect(document.activeElement, "a press on the dialog's text kept the focus off the page").toBe(
-      document.body
-    );
+    expect(document.body, "a press on the dialog's text kept the focus off the page").toHaveFocus();
     await user.keyboard("{Escape}");
     expect(dialog(), "Escape with the focus on the page left the dialog open").toBeNull();
     expect(
@@ -273,7 +270,7 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu"), "the next Escape left the menu open").toBeNull();
-    expect(document.activeElement, "that Escape left the focus off the control").toBe(chooser);
+    expect(chooser, "that Escape left the focus off the control").toHaveFocus();
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -380,9 +377,7 @@ test("Dashboard is the first control, draws no count, and a press of it while it
       within(screen.getByRole("toolbar")).getAllByRole("button")[0],
       "Dashboard is not the row's first control"
     ).toBe(dashboard);
-    expect(dashboard.getAttribute("aria-describedby"), "Dashboard is described by a signal").toBe(
-      null
-    );
+    expect(dashboard, "Dashboard is described by a signal").not.toHaveAttribute("aria-describedby");
     expect(
       view.container.querySelector('[data-preset-count="dashboard"]'),
       "Dashboard drew a count"
@@ -405,7 +400,7 @@ test("Dashboard is the first control, draws no count, and a press of it while it
   );
   try {
     await user.click(screen.getByRole("button", { name: PRESET_NAMES.dashboard }));
-    expect(screen.getAllByRole("menuitemradio")[0]?.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getAllByRole("menuitemradio")[0]).toHaveAttribute("aria-checked", "true");
     expect(screen.getAllByRole("menuitemradio")[0]).toBe(menuItem("dashboard"));
     await user.click(menuItem("conversation"));
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(

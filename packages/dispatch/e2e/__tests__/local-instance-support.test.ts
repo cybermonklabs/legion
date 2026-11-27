@@ -21,16 +21,20 @@ import {
   Supervisor,
   shellQuote,
 } from "../local-instance-support";
+import { RefusedGroup, signalGroup, signalUnlessGone } from "../signal-group";
 import { bounds, eventually, rowLimit, runBounded, watch } from "./bounded-subprocess";
 
 const makeDirectory = temporaryDirectories("local-instance-support");
 
-/** True while any process of group `pgid` is alive: signal 0 to the group reaches every member. */
+/** True while any process of group `pgid` is alive: signal 0 to the group reaches every member.
+ *  A `pgid` that kill would read as no group a row started, 0 or 1, is refused, and the refusal
+ *  thrown (`signalGroup`): `kill -0 -0` names this process's own group and always succeeds. */
 function groupAlive(pgid: number): boolean {
   try {
-    process.kill(-pgid, 0);
+    signalGroup(pgid, 0);
     return true;
-  } catch {
+  } catch (error) {
+    if (error instanceof RefusedGroup) throw error;
     return false;
   }
 }
@@ -74,15 +78,12 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
  *  ends by itself once its `read` gives up, after its row. */
 const outlastsRow = rowLimit("short", "short", "short", "short", "short") / 1000;
 
-/** Sends SIGKILL to `pid`, a process or, when negative, a process group, where it is still
- *  alive: what a stop under test left behind, so a failed row leaves no sleep running. A process
- *  the stop ended answers ESRCH, which is no failure; any other error is the row's own. */
-function killLeft(pid: number): void {
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
+/** Sends SIGKILL, where it is still alive, to what a stop under test left behind, so a failed row
+ *  leaves no sleep running: the process `target`, or every process of the group `target.group`
+ *  leads (`signalUnlessGone`). A process the stop ended answers ESRCH, which is no failure; any
+ *  other error is the row's own, a group `signalGroup` refuses among them. */
+function killLeft(target: number | { readonly group: number }): void {
+  signalUnlessGone(target, "SIGKILL");
 }
 
 /** One macrotask turn. It resolves on a `setImmediate`, which comes only once the microtask
@@ -312,8 +313,8 @@ describe("Supervisor.stop", () => {
             () => !groupAlive(leader) && !processAlive(alone)
           );
         } finally {
-          killLeft(-leader);
-          killLeft(-quiet);
+          killLeft({ group: leader });
+          killLeft({ group: quiet });
           if (grandchild !== undefined) killLeft(grandchild);
         }
       },
@@ -339,7 +340,7 @@ describe("Supervisor.stop", () => {
         );
         expect(stop.atReturn(), "the leader's group outlived the stop").toBe(false);
       } finally {
-        killLeft(-quiet);
+        killLeft({ group: quiet });
       }
     },
     // The wait for the stop's return, which the short bound of `eventually` ends.
@@ -365,7 +366,7 @@ describe("Supervisor.stop", () => {
         await eventually(`the stop of the interrupted step ${pid} to return`, stop.returned);
         expect(stop.atReturn(), "the interrupted step's group outlived the stop").toBe(false);
       } finally {
-        if (pid !== undefined) killLeft(-pid);
+        if (pid !== undefined) killLeft({ group: pid });
       }
     },
     // Two waits the short bound of `eventually` ends, one after the other: the step's pid in its

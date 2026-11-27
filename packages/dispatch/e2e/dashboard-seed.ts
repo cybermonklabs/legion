@@ -35,6 +35,7 @@ import {
   mintAgentToken,
   patchIssue,
   putProjectDefaultRepository,
+  type RowKey,
   recordCheckResult,
   requestApproval,
   reviewArtifact,
@@ -44,47 +45,52 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { awaitBlockAsk, pause } from "./issue-layout-seed-support";
-import { LEGION_PROJECT, seedLegionDaemon } from "./legion-seed";
+import { nameLegionDaemon } from "./legion-seed";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
+import { rowKey, rowPerson, rowSessionId } from "./test";
+import type { RowLogin } from "./users";
 
-/** The person every Dashboard row signs in as: the assignee of each seeded issue, so every open
- *  question of it waits on her unless it is handed on. */
-export const READER = "alice";
+/** The person every Dashboard row signs in as, the running row's own (`rowPerson`, e2e/test.ts):
+ *  the assignee of each seeded issue, so every open question of it waits on her unless it is
+ *  handed on. A spec's own context signs in as the same person (`own("alice")`), and the seed
+ *  writes and reads as her (`{ login: reader() }`). */
+export function reader(): RowLogin {
+  return rowPerson("alice");
+}
 
-/** The project of every issue Legion runs: the one `e2e/legion-seed.ts` names a daemon for. */
-export const DASHBOARD_PROJECT = LEGION_PROJECT;
-
-/** A project that names no daemon, for the issue Legion does not run. */
-export const QUIET_PROJECT = "QUIET";
-
-/** The session the Legion daemon of the Dashboard project writes as (`legionDaemonSessionOf` in
- *  `packages/envoy/internal/dispatch/api/issue_role_holders.go`). */
-export const DAEMON_SESSION = `legion-daemon:${DASHBOARD_PROJECT}`;
+/** The project of every issue Legion runs, under a key of the running row's own (`rowKey`,
+ *  e2e/test.ts): `seedLegionState` names its daemon (`e2e/legion-seed.ts`). */
+function dashboardProject(): RowKey {
+  return rowKey("ACME");
+}
 
 /** The daemon's state address: a port nothing listens on, so the sampler's own reads fail at
  *  once, write no observation, and leave the rows `seedLegionState` writes standing. */
 const NOTHING_ANSWERS = "http://127.0.0.1:9";
 
-/** The agent that plans the issue, asks its questions, writes its decisions and replies. */
+/** The agent that plans the issue, asks its questions, writes its decisions and replies, under a
+ *  session of the running row's own (`rowSessionId`, e2e/test.ts), read when a write names it:
+ *  Dispatch keeps what a session writes by its id, for every person at once. */
 const PLANNER: Actor = {
-  id: "dashboard-planner",
+  get id() {
+    return rowSessionId("planner");
+  },
   kind: "session",
   origin: { session_title: "Planner (dashboard)" },
 };
 const asPlanner = { actor: PLANNER, as: "agent" as const };
 
-/** The agent that records the results. */
+/** The agent that records the results, under a session of the running row's own, as `PLANNER`. */
 const TESTER: Actor = {
-  id: "dashboard-tester",
+  get id() {
+    return rowSessionId("tester");
+  },
   kind: "session",
   origin: { session_title: "Tester (dashboard)" },
 };
 const asTester = { actor: TESTER, as: "agent" as const };
-
-/** The Legion daemon, which begins a thread the threads part leaves out. */
-const DAEMON: Actor = { id: DAEMON_SESSION, kind: "session" };
 
 /** The commit the seeded pull request's head is at, so a result recorded there stands. */
 const HEAD_SHA = "d".repeat(40);
@@ -113,24 +119,30 @@ export interface MainHolds {
 
 /** Asks the server which `main` it is: it writes a probe `decisions.md` on a scratch issue of a
  *  project of its own, and reads the scratch issue's tree. Each answer is read from the route
- *  itself, never from a version string. The scratch project is the reset's to remove. */
+ *  itself, never from a version string. The scratch project's key and its writer are the running
+ *  row's own (`rowKey`, `reader`): a file's `beforeAll` that asks runs inside its first row. */
 export async function mainHolds(): Promise<MainHolds> {
-  const project = `P${randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
-  await createProject({ key: project, name: "Which main this is" });
-  const probe = await createIssue({ project, title: "A probe of the decisions route" });
+  const project = rowKey("PROBE");
+  const me = reader();
+  await createProject({ key: project, name: "Which main this is" }, { login: me });
+  const probe = await createIssue(
+    { project, title: "A probe of the decisions route" },
+    { login: me }
+  );
   let decisionsAreNodes = false;
   try {
-    await createIssueArtifact(probe.key, {
-      content: "## A probe decision\n\nNothing rests on it.\n",
-      name: "decisions.md",
-    });
+    await createIssueArtifact(
+      probe.key,
+      { content: "## A probe decision\n\nNothing rests on it.\n", name: "decisions.md" },
+      { login: me }
+    );
   } catch (refusal) {
     const said = refusal instanceof Error ? refusal.message : String(refusal);
     if (!(said.includes("failed: 409 ") && said.includes("DECISIONS_ARE_NODES"))) throw refusal;
     decisionsAreNodes = true;
   }
   const tree = await fetch(new URL(`/api/v1/issues/${probe.key}/tree`, baseUrl), {
-    headers: await userHeaders(READER),
+    headers: await userHeaders(me),
   });
   // A main without the route answers it as no route at all.
   if (tree.status !== 200 && tree.status !== 404) {
@@ -197,12 +209,12 @@ export const EVERY_CLAIM_STATE: readonly SeededRole[] = [
 export async function seedLegionState(key: string, legion: LegionStateSeed): Promise<void> {
   const project = key.slice(0, key.indexOf("-"));
   if (legion.configured) {
-    if (project !== LEGION_PROJECT) {
-      throw new Error(`${key} is not of ${LEGION_PROJECT}, the project e2e/legion-seed.ts names`);
+    if (project !== dashboardProject()) {
+      throw new Error(`${key} is not of ${dashboardProject()}, the row's Dashboard project`);
     }
-    // Each row starts from an emptied database (`e2e/test.ts`'s `freshDatabase`), and seeds one
-    // issue's Legion state, so the project names no daemon yet.
-    await seedLegionDaemon(NOTHING_ANSWERS);
+    // The project is the row's own (`dashboardProject`), which created it, and the row seeds
+    // one issue's Legion state, so the project names no daemon yet.
+    await nameLegionDaemon(dashboardProject(), NOTHING_ANSWERS);
   }
   const observed = [
     ...(legion.phase === null ? [] : [{ field: "phase", value: legion.phase }]),
@@ -271,7 +283,7 @@ export async function writeHandoff(key: string, phase: HandoffPhase, token: stri
 /** The seed's rounds: Planning 2, Implementing 3, Testing 1 and Reviewing none, in that order,
  *  each under the one agent token the reader mints for them. */
 export async function writeRounds(key: string): Promise<void> {
-  const token = await mintAgentToken(`dashboard-rounds-${randomUUID().slice(0, 8)}`, READER);
+  const token = await mintAgentToken(`dashboard-rounds-${randomUUID().slice(0, 8)}`, reader());
   for (const phase of ["plan", "implement", "test", "review"] as const) {
     for (let round = 0; round < ROUNDS[phase]; round += 1) await writeHandoff(key, phase, token);
   }
@@ -281,24 +293,31 @@ export async function writeRounds(key: string): Promise<void> {
 // The issues
 // ---------------------------------------------------------------------------------------------
 
-/** One issue of the Dashboard project, assigned to the reader, with its Legion state and no
- *  other record: what the phase rows and the agents row read. */
+/** One issue of the Dashboard project, made by the reader and assigned to her, with its Legion
+ *  state and no other record: what the phase rows and the agents row read. */
 export async function seedPhaseIssue(legion: LegionStateSeed): Promise<string> {
-  await createProject({ key: DASHBOARD_PROJECT, name: "Acme" });
-  const issue = await createIssue({ project: DASHBOARD_PROJECT, title: "Draw the phase track" });
+  const project = dashboardProject();
+  const me = reader();
+  await createProject({ key: project, name: "Acme" }, { login: me });
+  const issue = await createIssue({ project, title: "Draw the phase track" }, { login: me });
   await seedLegionState(issue.key, legion);
   return issue.key;
 }
 
-/** An issue Legion does not run, where nothing waits on the reader: its project names no daemon,
- *  and nobody wrote on it but the reader, who created it. */
+/** An issue Legion does not run, where nothing waits on the reader: its project, the row's own
+ *  (`rowKey`), names no daemon, and nobody wrote on it but the reader, who created it. */
 export async function seedQuietIssue(): Promise<string> {
-  await createProject({ key: QUIET_PROJECT, name: "Quiet" });
-  const issue = await createIssue({
-    project: QUIET_PROJECT,
-    spec: ":::requirement{#r1}\nNothing on this issue waits on anyone.\n:::\n",
-    title: "An issue Legion does not run",
-  });
+  const project = rowKey("QUIET");
+  const me = reader();
+  await createProject({ key: project, name: "Quiet" }, { login: me });
+  const issue = await createIssue(
+    {
+      project,
+      spec: ":::requirement{#r1}\nNothing on this issue waits on anyone.\n:::\n",
+      title: "An issue Legion does not run",
+    },
+    { login: me }
+  );
   return issue.key;
 }
 
@@ -339,7 +358,7 @@ export interface DashboardSeed {
     readonly replied: string;
     /** The open question whose turn is the planner's: the reader replied last. */
     readonly agentsTurn: string;
-    /** The open question handed on to bob. */
+    /** The open question handed on to another person, the row's own (`rowPerson("bob")`). */
     readonly handedOn: string;
     /** The approval request on the spec, and the version it asks the reader to approve. */
     readonly approval: { readonly id: string; readonly version: number };
@@ -555,7 +574,7 @@ interface DecisionRead {
 /** The issue's decisions: the bare member's `decisions`, or the `entries` of a main where
  *  decisions are nodes, read for the fields the seed waits on. */
 async function readDecisions(key: string, holds: MainHolds): Promise<readonly DecisionRead[]> {
-  const read = await getIssueDecisions(key);
+  const read = await getIssueDecisions(key, { login: reader() });
   if (!holds.decisionsAreNodes) {
     return (read.decisions ?? []).map((decision) => ({
       heading: decision.heading,
@@ -621,7 +640,7 @@ async function awaitCheckStates(key: string): Promise<void> {
   );
   const deadline = Date.now() + 20_000;
   for (;;) {
-    const checks = (await getIssueResults(key)).checks ?? [];
+    const checks = (await getIssueResults(key, { login: reader() })).checks ?? [];
     const seen = new Map(checks.map((check) => [check.block_id, checkStanding(check).state]));
     if (
       [...wanted].every(([id, state]) => state === undefined || seen.get(id) === state) &&
@@ -645,7 +664,7 @@ async function awaitApproval(
 ): Promise<void> {
   const deadline = Date.now() + 20_000;
   for (;;) {
-    const approval = ((await getIssue(key)).artifacts ?? []).find(
+    const approval = ((await getIssue(key, { login: reader() })).artifacts ?? []).find(
       (artifact) => artifact.id === artifactId
     )?.approval;
     if (approval?.state === state && (by === undefined || approval.by?.id === by)) return;
@@ -667,7 +686,7 @@ async function awaitApproval(
  *   pull request of the issue, recorded first, and five at `HEAD_SHA`, the commit the page names;
  * - questions that wait on the reader (one with options, one without, and one whose thread the
  *   reader wrote in and the planner wrote in last), one whose turn is the planner's and one
- *   handed on to bob, and one the reader answered;
+ *   handed on to another person (`rowPerson("bob")`), and one the reader answered;
  * - decisions: two that wait for the reader's review, one she kept, one replaced and one of kind
  *   `person`;
  * - an approval request on the spec at a version newer than the one she approved;
@@ -683,16 +702,19 @@ export async function seedDashboard(
   holds: MainHolds,
   legion: LegionStateSeed = SEEDED_LEGION
 ): Promise<DashboardSeed> {
-  await createProject({ key: DASHBOARD_PROJECT, name: "Acme" });
+  const project = dashboardProject();
+  const me = reader();
+  // The person a question is handed on to, the row's own as the reader is.
+  const other = rowPerson("bob");
+  await createProject({ key: project, name: "Acme" }, { login: me });
   // The server keeps what it last read of a repository for five minutes across rows, so each
   // seed reads one of its own (`issue-layout-seed-support.ts`, `seedIssueWithDocuments`).
   const repository = `acme/dashboard-${randomUUID().slice(0, 8)}`;
-  await putProjectDefaultRepository(DASHBOARD_PROJECT, repository);
-  const issue = await createIssue({
-    project: DASHBOARD_PROJECT,
-    spec: specText(),
-    title: "Dashboard on today's issue page",
-  });
+  await putProjectDefaultRepository(project, repository, { login: me });
+  const issue = await createIssue(
+    { project, spec: specText(), title: "Dashboard on today's issue page" },
+    { login: me }
+  );
   const key = issue.key;
   const specArtifactId = issue.primary_artifact_id ?? "";
   await seedFakeGithub({
@@ -714,7 +736,7 @@ export async function seedDashboard(
   if (holds.treeRead) {
     // dispatch://INFRA-1253: the issue is born converted, and the rows read its converted path.
     const tree = await fetch(new URL(`/api/v1/issues/${key}/tree`, baseUrl), {
-      headers: await userHeaders(READER),
+      headers: await userHeaders(me),
     });
     const body: unknown = await tree.json();
     if (typeof body !== "object" || body === null || !("converted" in body)) {
@@ -725,15 +747,16 @@ export async function seedDashboard(
 
   const children: string[] = [];
   for (const index of CHILD_STATUSES.keys()) {
-    const child = await createIssue({
-      parent: key,
-      project: DASHBOARD_PROJECT,
-      title: `Dashboard part ${index + 1}`,
-    });
+    const child = await createIssue(
+      { parent: key, project, title: `Dashboard part ${index + 1}` },
+      { login: me }
+    );
     children.push(child.key);
   }
   await Promise.all(
-    children.map((child, index) => patchIssue(child, { status: CHILD_STATUSES[index] }))
+    children.map((child, index) =>
+      patchIssue(child, { status: CHILD_STATUSES[index] }, { login: me })
+    )
   );
   const done = children.filter((_, index) => CHILD_STATUSES[index] === "done");
 
@@ -741,7 +764,7 @@ export async function seedDashboard(
   await seedLegionState(key, legion);
 
   // The questions that are no item: one the reader answered, which a person's decision names;
-  // one whose turn is the planner's, since the reader wrote last; and one handed on to bob.
+  // one whose turn is the planner's, since the reader wrote last; and one handed on to `other`.
   const answered = await createAsk(
     key,
     { question: "Where does a person answer a question on this issue?" },
@@ -752,9 +775,13 @@ export async function seedDashboard(
     { question: "Which reads does the first load send?" },
     asPlanner
   );
-  await createComment(key, { ask_id: agentsTurn.id, body: "The issue, its asks and handoffs." });
+  await createComment(
+    key,
+    { ask_id: agentsTurn.id, body: "The issue, its asks and handoffs." },
+    { login: me }
+  );
   const handedOn = await createAsk(key, { question: "Who reviews the tile words?" }, asPlanner);
-  await handAskOn(handedOn.id, "bob");
+  await handAskOn(handedOn.id, other, { login: me });
 
   // The questions that wait on the reader, oldest first.
   const byOption = await createAsk(
@@ -779,7 +806,11 @@ export async function seedDashboard(
     { question: "Does a reply from here mark the thread read?" },
     asPlanner
   );
-  await createComment(key, { ask_id: replied.id, body: "Which thread do you mean?" });
+  await createComment(
+    key,
+    { ask_id: replied.id, body: "Which thread do you mean?" },
+    { login: me }
+  );
   await createComment(
     key,
     { ask_id: replied.id, body: "The comment thread the item draws." },
@@ -788,22 +819,22 @@ export async function seedDashboard(
 
   // The decisions, then the reader's answer that makes one a person's.
   const words = seededDecisions(key, answered.id);
-  await answerAsk(answered.id, {
-    expected_edited_at: null,
-    selected: [],
-    text: "Where the question is drawn.",
-  });
+  await answerAsk(
+    answered.id,
+    { expected_edited_at: null, selected: [], text: "Where the question is drawn." },
+    { login: me }
+  );
   const written = await writeDecisions(key, specArtifactId, holds, words);
   const keptId = written.ids.kept;
   const kept = written.read.find((decision) => decision.id === keptId);
-  await keepDecision(written.documentId, keptId, kept?.textSha256 ?? "");
+  await keepDecision(written.documentId, keptId, kept?.textSha256 ?? "", { login: me });
   await awaitDecisions(key, holds, "the first waiting and one kept", (decisions) =>
     decisions.some((one) => one.id === keptId && one.kept && !one.waiting)
   );
   const second = await writeSecondDecision(key, specArtifactId, written.documentId, holds, words);
 
   // The approval request on the spec, at a version newer than the one the reader approved.
-  await reviewArtifact(specArtifactId, { state: "approved" }, { login: READER });
+  await reviewArtifact(specArtifactId, { state: "approved" }, { login: me });
   await editArtifact(
     specArtifactId,
     { ops: [{ find: REQUIREMENTS.r4, op: "replace", with: R4_AGAIN }] },
@@ -821,7 +852,7 @@ export async function seedDashboard(
     asPlanner
   );
   const verificationArtifactId = verification.artifact.id;
-  await reviewArtifact(verificationArtifactId, { state: "approved" }, { login: READER });
+  await reviewArtifact(verificationArtifactId, { state: "approved" }, { login: me });
   // The result at the earlier pull request's head first, so the newest result of the issue is at
   // `HEAD_SHA`, the commit the page names.
   const earlierFirst = [
@@ -852,10 +883,14 @@ export async function seedDashboard(
     { ops: [{ find: VERIFICATION_LEAD, op: "replace", with: VERIFICATION_LEAD_AGAIN }] },
     asPlanner
   );
-  await awaitApproval(key, verificationArtifactId, "stale", READER);
+  await awaitApproval(key, verificationArtifactId, "stale", me);
 
   // The threads, each with a write the reader has not read.
-  const comment = await createComment(key, { body: "Does the count drop as soon as I act?" });
+  const comment = await createComment(
+    key,
+    { body: "Does the count drop as soon as I act?" },
+    { login: me }
+  );
   await createComment(
     key,
     { body: "It drops when the write lands, with no reload.", reply_to: comment.id },
@@ -866,18 +901,22 @@ export async function seedDashboard(
     { body: "The tiles read the results and the coverage." },
     asPlanner
   );
-  await createMessage(key, { body: "And the children?", in_reply_to: message.id });
+  await createMessage(key, { body: "And the children?", in_reply_to: message.id }, { login: me });
   await createMessage(
     key,
     { body: "The children from the issue read.", in_reply_to: message.id },
     asPlanner
   );
+  // The Legion daemon begins a thread the threads part leaves out, as the session the project's
+  // daemon writes as (`legionDaemonSessionOf` in
+  // `packages/envoy/internal/dispatch/api/issue_role_holders.go`).
+  const daemonSession = `legion-daemon:${project}`;
   const daemon = await createMessage(
     key,
     { body: "Planning started." },
-    { actor: DAEMON, as: "agent" }
+    { actor: { id: daemonSession, kind: "session" }, as: "agent" }
   );
-  await createMessage(key, { body: "Thank you.", in_reply_to: daemon.id });
+  await createMessage(key, { body: "Thank you.", in_reply_to: daemon.id }, { login: me });
   await createMessage(key, { body: "The plan is on its way.", in_reply_to: daemon.id }, asPlanner);
   await awaitUnread(key, [comment.id, message.id, daemon.id]);
 
@@ -923,15 +962,15 @@ export async function seedDashboard(
     ],
     key,
     names: [
-      READER,
-      "bob",
+      me,
+      other,
       PLANNER.id,
       PLANNER.origin?.session_title ?? "",
       TESTER.id,
       TESTER.origin?.session_title ?? "",
-      DAEMON_SESSION,
+      daemonSession,
       key,
-      DASHBOARD_PROJECT,
+      project,
       ...children,
       ...legion.roles.map(({ role }) => role),
     ],
@@ -1003,7 +1042,11 @@ async function writeDecisions(
       asPlanner
     );
     const person = await awaitBlockAsk(key, "a-person");
-    await answerAsk(person, { expected_edited_at: null, selected: [], text: words.person.words });
+    await answerAsk(
+      person,
+      { expected_edited_at: null, selected: [], text: words.person.words },
+      { login: reader() }
+    );
     const read = await awaitDecisions(key, holds, "each decision block", (decisions) =>
       ["d-kept", "d-first", "d-replaced"].every((id) => decisions.some((one) => one.id === id))
     );
@@ -1139,7 +1182,8 @@ async function writeSecondDecision(
 async function awaitUnread(key: string, threads: readonly string[]): Promise<void> {
   const deadline = Date.now() + 20_000;
   for (;;) {
-    const rows = (await listMyReplies({ issue: key, state: "unread" })).rows ?? [];
+    const rows =
+      (await listMyReplies({ issue: key, state: "unread" }, { login: reader() })).rows ?? [];
     if (threads.every((thread) => rows.some((row) => row.thread_id === thread))) return;
     if (Date.now() > deadline) {
       throw new Error(
@@ -1193,11 +1237,16 @@ export interface AskTodaySeed extends DashboardSeed {
 export async function seedAskToday(holds: MainHolds): Promise<AskTodaySeed> {
   const seed = await seedDashboard(holds);
   const { key } = seed;
-  const picture = await uploadIssueFile(key, {
-    bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
-    contentType: "image/png",
-    name: "rollout.png",
-  });
+  const me = reader();
+  const picture = await uploadIssueFile(
+    key,
+    {
+      bytes: new Uint8Array(Buffer.from(ONE_PIXEL_PNG, "base64")),
+      contentType: "image/png",
+      name: "rollout.png",
+    },
+    me
+  );
   const oldWords = "The first batch starts at dawn.";
   const notes = await createIssueArtifact(
     key,
@@ -1258,8 +1307,12 @@ export async function seedAskToday(holds: MainHolds): Promise<AskTodaySeed> {
     },
     asPlanner
   );
-  await createComment(key, { ask_id: thread.id, body: "Does the next batch use the same order?" });
-  await handAskOn(thread.id, "bob");
+  await createComment(
+    key,
+    { ask_id: thread.id, body: "Does the next batch use the same order?" },
+    { login: me }
+  );
+  await handAskOn(thread.id, rowPerson("bob"), { login: me });
   await createComment(key, { ask_id: thread.id, body: ASK_TODAY.reply }, asPlanner);
   await awaitUnread(key, [thread.id]);
 
@@ -1268,20 +1321,28 @@ export async function seedAskToday(holds: MainHolds): Promise<AskTodaySeed> {
     { options: [...ASK_TODAY.options], question: "Which batch should run first?" },
     asPlanner
   );
-  const first = await answerAsk(changed.id, {
-    expected_edited_at: null,
-    selected: [ASK_TODAY.options[0].label],
-    text: "Start with the first batch.",
-  });
+  const first = await answerAsk(
+    changed.id,
+    {
+      expected_edited_at: null,
+      selected: [ASK_TODAY.options[0].label],
+      text: "Start with the first batch.",
+    },
+    { login: me }
+  );
   if (first.answer === null) throw new Error("The first answer is missing from the write response");
-  await answerAsk(changed.id, {
-    expected_answer_at: first.answer.at,
-    expected_edited_at: null,
-    selected: [ASK_TODAY.options[1].label],
-    text: ASK_TODAY.changeAnswer,
-  });
+  await answerAsk(
+    changed.id,
+    {
+      expected_answer_at: first.answer.at,
+      expected_edited_at: null,
+      selected: [ASK_TODAY.options[1].label],
+      text: ASK_TODAY.changeAnswer,
+    },
+    { login: me }
+  );
   const declined = await createAsk(key, { question: ASK_TODAY.declined }, asPlanner);
-  await declineAsk(declined.id, { note: "The release owner decides this one." });
+  await declineAsk(declined.id, { note: "The release owner decides this one." }, { login: me });
   const questionShaped = await createAsk(key, { question: ASK_TODAY.questionShaped }, asPlanner);
 
   // The second decision already shapes r4, which seedDashboard edited after the tie.
@@ -1303,7 +1364,7 @@ export async function seedAskToday(holds: MainHolds): Promise<AskTodaySeed> {
   if (!holds.decisionsAreNodes) {
     const deadline = Date.now() + 20_000;
     for (;;) {
-      const changed = (await getIssueDecisions(key)).decisions?.find(
+      const changed = (await getIssueDecisions(key, { login: me })).decisions?.find(
         (decision) => decision.heading === words.second.heading
       );
       const tie = changed?.links?.find(({ to }) => to.block_id === "r4");

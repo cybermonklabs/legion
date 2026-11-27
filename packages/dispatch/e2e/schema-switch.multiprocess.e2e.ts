@@ -15,8 +15,7 @@
  * then reads which process is behind. Both processes hold an editor socket opened before the
  * change, so whichever turns out to be the second one has the socket the last step needs.
  */
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
+import { type Body, routePath } from "../web/src/api/paths";
 import {
   baseUrl,
   createIssue,
@@ -49,13 +48,15 @@ import {
   pinnedTo,
   processPinCookie,
 } from "./harness-processes";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, rowKey, test } from "./test";
 import { signIn } from "./users";
 
+// The database's reset, before the worker's first row and before the review corpus's seed, and
+// the fakes' before every row are the `test` this file imports (e2e/test.ts); the store's block
+// schema is neither - the reset keeps the schema's own nodes (`e2e/seed.ts`) - so it is put back
+// here as well as at the row's end: a row that failed before its own restore must not leave the
+// next one, or the lane's other specs, on another schema.
 test.beforeEach(async () => {
-  await resetDatabase();
-  // Both ends of the restore: a row that failed before its own must not leave the next one, or
-  // the lane's other specs, on another schema.
   await restoreStoreSchema();
 });
 
@@ -87,8 +88,14 @@ async function uploadThrough(
   markdown: string
 ): Promise<{ body: string; status: number }> {
   const precondition = await documentBase(artifact, { process: target });
-  const response = await fetch(new URL(`/api/v1/issues/${issueKey}/artifacts`, baseUrl), {
-    body: JSON.stringify({ content: markdown, name, precondition }),
+  const upload: Body<"/api/v1/issues/{key}/artifacts", "post"> = {
+    content: markdown,
+    name,
+    precondition,
+  };
+  const path = routePath("post", "/api/v1/issues/{key}/artifacts", { key: issueKey });
+  const response = await fetch(new URL(path, baseUrl), {
+    body: JSON.stringify(upload),
     headers: {
       ...(await userHeaders("alice", target)),
       ...pinnedTo(target),
@@ -138,9 +145,10 @@ async function storedVersions(
 
 // SLOW(>=2s): two processes, two editor tabs, a migration one of them misses, and the catch-up.
 test("two processes agree on the installed schema", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "The first line.",
     title: "Two processes and one schema",
   });

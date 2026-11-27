@@ -280,7 +280,7 @@ test("the title is a heading holding the whole title, and no field shows until i
   await user.click(heading);
   const title = screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
   expect(title.value).toBe(long);
-  expect(document.activeElement).toBe(title);
+  expect(title).toHaveFocus();
   expect(heading.contains(title)).toBe(true);
 });
 
@@ -298,9 +298,7 @@ test("the header carries the title in place and the owner, and no line of order 
   // a plain field.
   await user.click(screen.getByRole("button", { name: "Owner BET and LINUX controllers" }));
   expect(screen.getByRole("combobox", { name: "Owner" })).toBeDefined();
-  expect(screen.getByRole("link", { name: "‹ Priorities" }).getAttribute("href")).toBe(
-    "/priorities"
-  );
+  expect(screen.getByRole("link", { name: "‹ Priorities" })).toHaveAttribute("href", "/priorities");
 });
 
 test("the description is a disclosure that closes, and the work fills the page below it", async () => {
@@ -326,7 +324,7 @@ test("the description is the documents' editor, with no action on a selection, a
   // The editor Dispatch's documents are written in, holding the markdown as it reads: the
   // heading is a heading, and no source is shown.
   expect(box.classList.contains("ProseMirror")).toBe(true);
-  expect(box.getAttribute("contenteditable")).toBe("true");
+  expect(box).toHaveAttribute("contenteditable", "true");
   expect(
     within(box).getByRole("heading", { name: "Rocq and Lean speed work restarted" })
   ).toBeDefined();
@@ -347,7 +345,7 @@ test("the description is the documents' editor, with no action on a selection, a
   expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
   // Leaving the editor writes nothing more: what it holds is written already.
   await user.tab();
-  expect(document.activeElement).not.toBe(box);
+  expect(box).not.toHaveFocus();
   expect(patch).toHaveBeenCalledTimes(1);
 });
 
@@ -430,10 +428,10 @@ test("the title's notice stands outside the heading, which is named by the title
   // The field and its notice stay tied all the same, and so do the heading and the notice once
   // the reader has left the field.
   expect(notice.id).not.toBe("");
-  expect(title.getAttribute("aria-describedby")).toBe(notice.id);
+  expect(title).toHaveAttribute("aria-describedby", notice.id);
   await user.tab();
   expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
-  expect(heading.getAttribute("aria-describedby")).toBe(notice.id);
+  expect(heading).toHaveAttribute("aria-describedby", notice.id);
   expect(patch).not.toHaveBeenCalled();
 });
 
@@ -443,15 +441,15 @@ test("the keyboard reaches the description's editor from the disclosure above it
   const { box } = await editors.named("Description");
   screen.getByRole("button", { name: "Description" }).focus();
   await user.tab();
-  expect(document.activeElement).toBe(box);
+  expect(box).toHaveFocus();
 });
 
 test("a reader who may not write reads the description in the same editor, read-only", async () => {
   const { editors, patch } = page("rocq-lean", [], false);
   const { box } = await editors.named("Description");
   expect(within(box).getByText("Speedruns run again.")).toBeDefined();
-  expect(box.getAttribute("contenteditable")).toBe("false");
-  expect(box.getAttribute("aria-readonly")).toBe("true");
+  expect(box).toHaveAttribute("contenteditable", "false");
+  expect(box).toHaveAttribute("aria-readonly", "true");
   expect(patch).not.toHaveBeenCalled();
 });
 
@@ -466,7 +464,7 @@ test("an empty description is, for a writer, the prompt above the empty editor",
   const { box } = await editors.named("Description");
   expect(screen.getByText("No description is written. Write one below.")).toBeDefined();
   expect(box.textContent).toBe("");
-  expect(box.getAttribute("contenteditable")).toBe("true");
+  expect(box).toHaveAttribute("contenteditable", "true");
 });
 
 test("the owner is a chip beside the title, which opens into its field and writes the owner", async () => {
@@ -474,7 +472,7 @@ test("the owner is a chip beside the title, which opens into its field and write
   const { patch } = page();
   await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
   const owner = screen.getByRole("combobox", { name: "Owner" });
-  expect(document.activeElement).toBe(owner);
+  expect(owner).toHaveFocus();
   await user.clear(owner);
   await user.type(owner, "LINUX controller");
   await user.tab();
@@ -488,7 +486,7 @@ test("the owner is a chip beside the title, which opens into its field and write
 // The changes to one priority go out in press order (`priority:<id>`): a change made while an
 // earlier one is out waits for it, so an older write never lands after a newer one.
 test("a change made while an earlier change to the priority is out waits for it", async () => {
-  const user = userEvent.setup();
+  const user = userEvent.setup({ delay: null });
   const { patch } = page();
   const first = Promise.withResolvers<Priority>();
   patch.mockImplementationOnce(() => first.promise);
@@ -499,10 +497,15 @@ test("a change made while an earlier change to the priority is out waits for it"
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   const title = await openTitle(user);
-  await user.type(title, " again");
-  await user.tab();
-  await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
-  expect(patch).toHaveBeenCalledTimes(1);
+  await onFakeClock(async () => {
+    await user.type(title, " again");
+    await user.tab();
+    // Leaving the field saves at once and clears `SAVE_AFTER_MS`, so only the write's microtasks
+    // sit between the blur and `patch`; jumping `SAVE_AFTER_MS` on the fake clock settles those
+    // and proves no timer left behind sends the second change either.
+    await jump(SAVE_AFTER_MS);
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
   await act(async () => first.resolve(saved("rocq-lean")));
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
   expect(patch.mock.calls[1]?.[1]).toEqual({
@@ -525,7 +528,8 @@ test("the page carries no tab strip, no version control and no delete", async ()
 test("one link out leaves the scope, naming the issues and why", async () => {
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
   const out = await screen.findByRole("link", { name: "Open in CORE" });
-  expect(out.getAttribute("href")).toBe(
+  expect(out).toHaveAttribute(
+    "href",
     "/projects/CORE/issues?only=CORE-1%2CCORE-4&onlyLabel=Rocq+and+Lean+speed+work+restarted&nofilter=1"
   );
 });
@@ -1246,7 +1250,7 @@ test.each([
     if (!refusedFirst) await refuse();
     await waitFor(() => expect(box.textContent).not.toContain("Mine."));
     expect(box.textContent).toBe("Rocq and Lean speed work restartedSpeedruns run again.");
-    expect(box.getAttribute("contenteditable")).toBe("false");
+    expect(box).toHaveAttribute("contenteditable", "false");
     expect(screen.getByText(/^Dispatch cannot read this description as markdown/)).toBeDefined();
     expect(patch).toHaveBeenCalledTimes(1);
   }

@@ -281,14 +281,6 @@ const HAND_NAMED_TEXTS: readonly HandNamedText[] = [
     },
   },
   {
-    field: "first_line",
-    what: "A candidate's first line, on the page that tells two items with one short id apart: the head of the stored text the candidate is, cut by the server, whose tree is `first_line_tree` in the refusal's hand-written shape (`IDCandidate`), for every candidate but a document's, whose first line is its file's name. The my-replies read sends a reply's `first_line` with no tree, and no page of the dashboard draws it.",
-    tree: {
-      file: "packages/dispatch/web/src/features/issue/ItemMatchList.tsx",
-      written: "first_line_tree",
-    },
-  },
-  {
     field: "heading",
     what: "A decision's heading: the words its writer put above the passage. The server sends no tree beside it; its tree is the first heading of the decision's `text_tree` (`decisionHeadingTree`).",
     tree: {

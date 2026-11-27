@@ -1,15 +1,10 @@
 import { type FakeSession, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame, putAgentState } from "./api";
-import {
-  COST_RIG_IDS,
-  expectConversationInFront,
-  frontTurns,
-  seedPinnedRigsAtLimit,
-} from "./live-view-cost";
+import { expectConversationInFront, frontTurns, seedPinnedRigsAtLimit } from "./live-view-cost";
 import { frontLiveView, type ViewRestore, watchViewRestore } from "./live-views";
 import { openAgentFromRail } from "./rail";
-import { expect, type Page, test } from "./test";
-import { asUser } from "./users";
+import { expect, type Page, rowPerson, rowSessionId, test } from "./test";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * What the agent surfaces cost in time (INFRA-812). Every row here reads a wall clock - a
@@ -27,6 +22,12 @@ import { asUser } from "./users";
  * the work the row measured. The untimed half of each of those checks runs in `chromium` and
  * `iphone` as any other row does: the live view's cost in `agent-view-cost.e2e.ts`, and the
  * windowed list's in `agents-window.e2e.ts`.
+ *
+ * Every session a row seeds here is the row's own (`rowSessionId`, e2e/test.ts): the live view
+ * shows the messages Dispatch keeps for a session, by its id for every person at once, beside the
+ * turns its replay holds, and the Agents page groups a session by what Dispatch keeps under its
+ * id. The person who pins the rail's agents is the row's own too (`rowPerson`): the rail lists
+ * every pin they hold.
  */
 
 declare global {
@@ -37,8 +38,8 @@ declare global {
   }
 }
 
-/** The six hundred sessions of R7's own measured case, all `Idle`: no pin, no open ask and no
- *  Dispatch activity, which is the page a person opens. */
+/** The six hundred sessions of R7's own measured case, under ids of the row's own: all `Idle`,
+ *  with no pin, no open ask and no Dispatch activity, which is the page a person opens. */
 function workers(): FakeSession[] {
   const seen = Date.now() - 5_000;
   return Array.from({ length: 600 }, (_, index) => ({
@@ -47,7 +48,7 @@ function workers(): FakeSession[] {
     last_seen: seen,
     machine_id: "window-host",
     roles: [],
-    session_id: `01a0e812-0c12-7000-8000-${String(index).padStart(12, "0")}`,
+    session_id: rowSessionId(`worker${index}`),
     title: `Worker ${String(index).padStart(3, "0")}`,
   }));
 }
@@ -57,7 +58,10 @@ const planner: FakeSession = {
   dir: "/workspaces/planner",
   machine_id: "planner-host",
   roles: [],
-  session_id: "01a0e0c1-0812-7000-8000-00000000d14a",
+  // The row's own (`rowSessionId`), read when a row names it.
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Planner",
 };
 
@@ -77,26 +81,25 @@ const replay = {
       v: 1,
     },
   ],
-  session_id: planner.session_id,
+  // The planner's, read when a row publishes the replay.
+  get session_id() {
+    return planner.session_id;
+  },
   v: 1,
 };
 
-/** The three agents R2's own case pins, by id. Each is a UUID: Dispatch's agent routes refuse
- *  anything else, so a session named otherwise would list and have no live view at all. */
-const ORDINARY_IDS = [
-  "01a0e812-0d17-7000-8000-000000000001",
-  "01a0e812-0d17-7000-8000-000000000002",
-  "01a0e812-0d17-7000-8000-000000000003",
-];
+/** How many agents R2's own case pins. */
+const ORDINARY_RIGS = 3;
 
 /** How many turns each of those three answers a viewer's replay request with: a conversation a
  *  person has had, which is what R2 claims its half second for, and nowhere near the two
  *  hundred turns of the stream's limit. */
 const ORDINARY_TURNS = 6;
 
-/** One of R2's own case: a live session for the rail to pin. `last_seen` is taken when the row
- *  seeds, never at this module's scope, which a worker evaluates once and every later spec of
- *  that worker ages. */
+/** One of R2's own case: the `index`th live session for the rail to pin, under the running
+ *  row's own id for it (`rowSessionId`, e2e/test.ts). `last_seen` is taken when the row seeds,
+ *  never at this module's scope, which a worker evaluates once and every later spec of that
+ *  worker ages. */
 function ordinaryRig(index: number): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
@@ -104,21 +107,24 @@ function ordinaryRig(index: number): FakeSession {
     last_seen: Date.now() - 5_000,
     machine_id: "ordinary-host",
     roles: [],
-    session_id: ORDINARY_IDS[index],
+    session_id: rowSessionId(`ordinary${index + 1}`),
     title: `Ordinary ${index + 1}`,
   };
 }
 
 /**
- * Three live sessions, each pinned and each answering the next viewer's replay request with a
- * six-turn conversation. The pins go one at a time, since the rail's order is the order they
- * were made in. Three is the fewest that lets a view sleep: opening a third view puts the
- * first to sleep at once (`features/agent-view/live-views.ts`), so the first of these is the
- * sleeping view the ordinary wake comes back to.
+ * Three live sessions, each pinned by `login` and each answering the next viewer's replay request
+ * with a six-turn conversation, and answers their ids in the order they were pinned. The pins go
+ * one at a time, since the rail's order is the order they were made in. Three is the fewest that
+ * lets a view sleep: opening a third view puts the first to sleep at once
+ * (`features/agent-view/live-views.ts`), so the first of these is the sleeping view the ordinary
+ * wake comes back to.
  */
-async function seedPinnedOrdinaryRigs(): Promise<void> {
-  await setLiveSessions(ORDINARY_IDS.map((_, index) => ordinaryRig(index)));
-  for (const [index, sessionID] of ORDINARY_IDS.entries()) {
+async function seedPinnedOrdinaryRigs(login: SignInLogin): Promise<string[]> {
+  const sessions = Array.from({ length: ORDINARY_RIGS }, (_, index) => ordinaryRig(index));
+  const ids = sessions.map((session) => session.session_id);
+  await setLiveSessions(sessions);
+  for (const [index, sessionID] of ids.entries()) {
     const frames = Array.from({ length: ORDINARY_TURNS }, (_, turn) => ({
       kind: "message",
       message: {
@@ -137,8 +143,9 @@ async function seedPinnedOrdinaryRigs(): Promise<void> {
       v: 1,
     }));
     await publishAgentStreamFrame(sessionID, { frames, session_id: sessionID, v: 1 }, "replay");
-    await putAgentState(sessionID, { pinned: true });
+    await putAgentState(sessionID, { pinned: true }, { login });
   }
+  return ids;
 }
 
 /** Waits until `sessionID`'s view is the one in front with its six turns drawn, which is the
@@ -275,8 +282,9 @@ test("the live view opens on the session's transcript", async ({ browser }) => {
 test("a sleeping view of an ordinary conversation comes back with its fastest wake inside half a second", async ({
   browser,
 }) => {
-  await seedPinnedOrdinaryRigs();
-  const context = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const ordinary = await seedPinnedOrdinaryRigs(me);
+  const context = await asUser(browser, me);
   try {
     // One wake: a page of its own, which opens the three pinned views in turn and then comes
     // back to the first. The page is closed when its reading is taken, so nothing this row
@@ -285,18 +293,18 @@ test("a sleeping view of an ordinary conversation comes back with its fastest wa
       const page = await context.newPage();
       try {
         await page.goto("/");
-        for (const sessionID of ORDINARY_IDS) {
+        for (const sessionID of ordinary) {
           await openAgentFromRail(page, sessionID);
           await expectOrdinaryConversationInFront(page, sessionID);
         }
         // The first of the three has been asleep since the third was opened: nothing of it is
         // mounted, it holds no subscription, and coming back to it is the session's replay
         // again.
-        await expect(page.locator(`[data-session-id="${ORDINARY_IDS[0]}"]`)).toHaveCount(0);
+        await expect(page.locator(`[data-session-id="${ordinary[0]}"]`)).toHaveCount(0);
 
-        const restored = await watchViewRestore(page, ORDINARY_IDS[0]);
-        await openAgentFromRail(page, ORDINARY_IDS[0]);
-        await expectOrdinaryConversationInFront(page, ORDINARY_IDS[0]);
+        const restored = await watchViewRestore(page, ordinary[0]);
+        await openAgentFromRail(page, ordinary[0]);
+        await expectOrdinaryConversationInFront(page, ordinary[0]);
         const restore = await restored();
         // Where this wake's wait went, kept on the result whether or not the row passes, as
         // the row below keeps it: the three parts are what reading a slow wake starts from.
@@ -400,8 +408,9 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
   browser,
 }) => {
   test.setTimeout(240_000);
-  await seedPinnedRigsAtLimit();
-  const context = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const rigs = await seedPinnedRigsAtLimit(me);
+  const context = await asUser(browser, me);
   try {
     // One wake: a page of its own, which opens all eight pinned views in turn and then comes
     // back to the first. The page is closed when its reading is taken, so nothing this row
@@ -410,18 +419,18 @@ test("a sleeping view at the stream's worst case comes back with its fastest wak
       const page = await context.newPage();
       try {
         await page.goto("/");
-        for (const sessionID of COST_RIG_IDS) {
+        for (const sessionID of rigs) {
           await openAgentFromRail(page, sessionID);
           await expectConversationInFront(page, sessionID);
         }
         // The first of the eight has been asleep since the third was opened: nothing of it is
         // mounted, it holds no subscription, and coming back to it is the session's replay
         // again.
-        await expect(page.locator(`[data-session-id="${COST_RIG_IDS[0]}"]`)).toHaveCount(0);
+        await expect(page.locator(`[data-session-id="${rigs[0]}"]`)).toHaveCount(0);
 
-        const restored = await watchViewRestore(page, COST_RIG_IDS[0]);
-        await openAgentFromRail(page, COST_RIG_IDS[0]);
-        await expectConversationInFront(page, COST_RIG_IDS[0]);
+        const restored = await watchViewRestore(page, rigs[0]);
+        await openAgentFromRail(page, rigs[0]);
+        await expectConversationInFront(page, rigs[0]);
         const restore = await restored();
         // Where this wake's wait went, kept on the result whether or not the row passes: the
         // three parts are what calibrating this bound is argued from, and reading them after

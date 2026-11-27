@@ -373,7 +373,7 @@ test("the line draws the session's reply through the renderer, with a working li
       )
     );
     expect(status.querySelector("strong")?.textContent).toBe("openai/model-c");
-    expect(status.querySelector("a")?.getAttribute("href")).toBe("https://example.test/notes");
+    expect(status.querySelector("a")).toHaveAttribute("href", "https://example.test/notes");
   } finally {
     view.unmount();
   }

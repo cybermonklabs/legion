@@ -64,9 +64,7 @@ test("the opener passes over a control of its row that refuses a press with aria
     const usable = view.getByRole("button", { name: "Retry" });
     view.getByRole("button", { name: "Open at labels" }).click();
     await waitFor(() =>
-      expect(document.activeElement, "the opener focused a control that refuses a press").toBe(
-        usable
-      )
+      expect(usable, "the opener focused a control that refuses a press").toHaveFocus()
     );
     view.getByRole("button", { name: "Press at labels" }).click();
     await waitFor(() =>

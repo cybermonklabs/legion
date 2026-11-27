@@ -24,7 +24,6 @@
  * The text names the session whose row and live view show it as its party, which is the one
  * session the reading world lists.
  */
-import type { Message } from "../web/src/api/types";
 import { agentRow, getSentMessages } from "./agents";
 import {
   createAgentMessage,
@@ -35,8 +34,9 @@ import {
 } from "./api";
 import { frontLiveView } from "./live-views";
 import {
+  asReadingSession,
   expectReadsReferences,
-  READING_SESSION_ID,
+  readingSessionId,
   readingText,
   seedReadingWorld,
 } from "./reading-rows";
@@ -47,7 +47,7 @@ import { expect, type Locator, type Page, test } from "./test";
  *  conversation is on screen only once it is open. */
 async function openReadingRow(page: Page): Promise<Locator> {
   await page.goto("/agents");
-  const row = agentRow(page, READING_SESSION_ID);
+  const row = agentRow(page, readingSessionId());
   const toggle = row.locator("[data-agent-toggle]");
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -62,7 +62,7 @@ function messageTheSession(issue: string, body: string) {
   return createMessage(issue, {
     body,
     delivery: "aside",
-    target: `session:${READING_SESSION_ID}`,
+    target: `session:${readingSessionId()}`,
   });
 }
 /** Sets what the reading session answers a viewer's replay request with: one finished turn of
@@ -70,8 +70,9 @@ function messageTheSession(issue: string, body: string) {
  *  stands in for the session; answering a replay makes it a responder, as a running session
  *  with a streaming plugin is. */
 async function replayTurn(parts: readonly { text: string; type: "reasoning" | "text" }[]) {
+  const sessionId = readingSessionId();
   await publishAgentStreamFrame(
-    READING_SESSION_ID,
+    sessionId,
     {
       frames: [
         {
@@ -81,7 +82,7 @@ async function replayTurn(parts: readonly { text: string; type: "reasoning" | "t
           v: 1,
         },
       ],
-      session_id: READING_SESSION_ID,
+      session_id: sessionId,
       v: 1,
     },
     "replay"
@@ -98,11 +99,12 @@ test("agents-row-reply: a row's reply turn draws every form of a stored referenc
   // The question is plain words, so the quote of it the reply turn draws above its own body
   // holds no reference to be read in place of the reply's.
   const asked = await messageTheSession(world.host.key, "What should I read next?");
-  const reply = (await replyToMessageDelivery(
+  const reply = await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: readingText(world) },
-    { id: READING_SESSION_ID, kind: "session" }
-  )) as Message;
+    asReadingSession.actor
+  );
+  if (!("id" in reply)) throw new Error("setup: the delivery returned no reply message");
   const row = await openReadingRow(page);
   // The reply's body alone: the turn also names its author through `AgentName` and quotes the
   // question in a preview, and neither is the stored reply.
@@ -129,7 +131,7 @@ test("agents-row-message: a row's targeted message card draws every form of a st
 /** A message a person sends the reading session alone, on no issue, which the session's row
  *  shows like any message sent to it: a record of no document (`direct-message`). */
 function messageTheSessionAlone(body: string) {
-  return createAgentMessage(READING_SESSION_ID, { body, delivery: "aside" });
+  return createAgentMessage(readingSessionId(), { body, delivery: "aside" });
 }
 
 // SLOW(>=2s): the reading world's listener and API writes, a message to the session and its
@@ -142,11 +144,12 @@ test("agents-row-reply/direct-message: a row's reply to a message sent on no iss
   // The question is plain words, so the quote of it the reply turn draws above its own body
   // holds no reference to be read in place of the reply's.
   const asked = await messageTheSessionAlone("What should I read next?");
-  const reply = (await replyToMessageDelivery(
+  const reply = await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: readingText(world) },
-    { id: READING_SESSION_ID, kind: "session" }
-  )) as Message;
+    asReadingSession.actor
+  );
+  if (!("id" in reply)) throw new Error("setup: the delivery returned no reply message");
   const row = await openReadingRow(page);
   const body = row.locator(`li[data-reply][data-turn="message:${reply.id}"] div.dispatch-markdown`);
   await expectReadsReferences(body, world, "link");
@@ -173,7 +176,7 @@ test("agent-turn-text: a live turn's text part draws every form but a question i
 }) => {
   const world = await seedReadingWorld();
   await replayTurn([{ text: readingText(world), type: "text" }]);
-  await page.goto(`/agents/${READING_SESSION_ID}/live`);
+  await page.goto(`/agents/${readingSessionId()}/live`);
   // The turn holds its one text part and nothing else: no model is reported and it is not
   // streaming, so neither line above the part is drawn.
   const turn = frontLiveView(page).getByTestId("agent-message-assistant");
@@ -192,7 +195,7 @@ test("agent-turn-reasoning: a live turn's reasoning draws every form but a quest
     { text: readingText(world), type: "reasoning" },
     { text: "Reading both now.", type: "text" },
   ]);
-  await page.goto(`/agents/${READING_SESSION_ID}/live`);
+  await page.goto(`/agents/${readingSessionId()}/live`);
   const reasoning = frontLiveView(page).getByTestId("agent-reasoning");
   await expectReadsReferences(reasoning, world, "link");
 });
@@ -205,8 +208,9 @@ const SWITCHED_MODEL = "anthropic/model-b";
  *  and the built-ins it runs typed input for, so the live view's header offers its pickers. The
  *  frames are spelt as the wire carries them, as `e2e/agent-view-settings.e2e.ts` spells them. */
 async function replaySettings() {
+  const sessionId = readingSessionId();
   await publishAgentStreamFrame(
-    READING_SESSION_ID,
+    sessionId,
     {
       frames: [
         {
@@ -228,7 +232,7 @@ async function replaySettings() {
           v: 1,
         },
       ],
-      session_id: READING_SESSION_ID,
+      session_id: sessionId,
       v: 1,
     },
     "replay"
@@ -244,7 +248,7 @@ async function sentDelivery(body: string): Promise<{ attempt: number; id: string
   await expect
     .poll(async () => {
       const frame = (await getSentMessages()).find((sent) => sent.message === body);
-      const stored = (await listAgentMessages(READING_SESSION_ID)).find(
+      const stored = (await listAgentMessages(readingSessionId())).find(
         (row) => row.message.body === body
       );
       if (frame === undefined || stored === undefined) return false;
@@ -266,7 +270,7 @@ test("session-switch-answer: the header's line after a model switch draws every 
 }) => {
   const world = await seedReadingWorld();
   await replaySettings();
-  await page.goto(`/agents/${READING_SESSION_ID}/live`);
+  await page.goto(`/agents/${readingSessionId()}/live`);
   const model = page.getByRole("combobox", { name: "Model" });
   await expect(model).toHaveValue(MODEL);
 
@@ -279,7 +283,7 @@ test("session-switch-answer: the header's line after a model switch draws every 
   await replyToMessageDelivery(
     delivery.id,
     { attempt: delivery.attempt, body: readingText(world) },
-    { id: READING_SESSION_ID, kind: "session" }
+    asReadingSession.actor
   );
   await expect(status).toContainText("The session answered:");
 
@@ -300,10 +304,10 @@ test("agent-held-send: the live view's held message draws every form but a quest
   // the live view holds the draft as the viewer's own message, unsent.
   const refuse = await refusePosts(
     page,
-    `**/api/v1/agents/${READING_SESSION_ID}/messages`,
+    `**/api/v1/agents/${readingSessionId()}/messages`,
     MESSAGE_REFUSED
   );
-  await page.goto(`/agents/${READING_SESSION_ID}/live`);
+  await page.goto(`/agents/${readingSessionId()}/live`);
   const view = frontLiveView(page);
   await expect(view.getByTestId("agent-message-assistant")).toContainText(
     "Ready for the next step."

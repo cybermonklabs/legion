@@ -245,7 +245,7 @@ test("below 1280 px a plain click on a thread row's title opens the row in place
     await user.click(title() as HTMLElement);
     expect(followed).toEqual([true, false]);
     const view = await screen.findByTestId("inbox-reading-view");
-    expect(view.getAttribute("data-inbox-reading-row")).toBe("reply:c9");
+    expect(view).toHaveAttribute("data-inbox-reading-row", "reply:c9");
   } finally {
     document.removeEventListener("click", record);
   }

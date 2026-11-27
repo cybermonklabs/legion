@@ -31,14 +31,14 @@ test("Sparkbars draws a bar per day and one dashed target line", () => {
   render(<Sparkbars format={asNumber} max={0} met={atLeast20} points={points} target={20} />);
   const svg = screen.getByRole("img", { name: "per-day trend" });
 
-  expect(svg.getAttribute("viewBox")).toBe("0 0 30 28");
-  expect(svg.getAttribute("preserveAspectRatio")).toBe("none");
+  expect(svg).toHaveAttribute("viewBox", "0 0 30 28");
+  expect(svg).toHaveAttribute("preserveAspectRatio", "none");
   expect(bars(svg)).toHaveLength(3);
   const lines = svg.querySelectorAll("line");
   expect(lines).toHaveLength(1);
   const line = lines[0];
-  expect(line?.getAttribute("class")).toBe(chartBar.targetLine);
-  expect(line?.getAttribute("stroke-dasharray")).toBe("3 2");
+  expect(line).toHaveAttribute("class", chartBar.targetLine);
+  expect(line).toHaveAttribute("stroke-dasharray", "3 2");
   // The scale's top is the largest of max, 1.25 x the target and the tallest bar: 25 here.
   expect(Number(line?.getAttribute("y1"))).toBeCloseTo(28 - (20 / 25) * 28);
 });
@@ -47,9 +47,9 @@ test("Sparkbars colours a bar that meets the target met and one that misses it m
   render(<Sparkbars format={asNumber} max={0} met={atLeast20} points={points} target={20} />);
   const [meets, misses] = bars(screen.getByRole("img", { name: "per-day trend" }));
 
-  expect(meets?.getAttribute("class")).toBe(chartBar.met);
-  expect(meets?.getAttribute("height")).toBe("28");
-  expect(misses?.getAttribute("class")).toBe(chartBar.missed);
+  expect(meets).toHaveAttribute("class", chartBar.met);
+  expect(meets).toHaveAttribute("height", "28");
+  expect(misses).toHaveAttribute("class", chartBar.missed);
   expect(Number(misses?.getAttribute("height"))).toBeCloseTo((10 / 25) * 28);
 });
 
@@ -58,15 +58,15 @@ test("Sparkbars draws a one-pixel stub on a day with nothing to measure", () => 
   const svg = screen.getByRole("img", { name: "per-day trend" });
   const stub = bars(svg)[2];
 
-  expect(stub?.getAttribute("class")).toBe(chartBar.empty);
-  expect(stub?.getAttribute("height")).toBe("1");
-  expect(stub?.getAttribute("y")).toBe("27");
+  expect(stub).toHaveAttribute("class", chartBar.empty);
+  expect(stub).toHaveAttribute("height", "1");
+  expect(stub).toHaveAttribute("y", "27");
   expect(titles(svg)).toEqual([
     "2026-09-25: 25/day",
     "2026-09-26: 10/day",
     "2026-09-27 (partial day): no runs",
   ]);
-  expect(svg.querySelectorAll("g")[2]?.getAttribute("opacity")).toBe("0.4");
+  expect(svg.querySelectorAll("g")[2]).toHaveAttribute("opacity", "0.4");
 });
 
 test("Sparkbars without a target draws every bar neutral and no line", () => {
@@ -94,8 +94,8 @@ test("SpreadBars draws the p90 behind the median each day and one dashed target 
   render(<SpreadBars days={days} format={asMinutes} noun="runs" target={45} />);
   const svg = screen.getByRole("img", { name: "per-day median and p90" });
 
-  expect(svg.getAttribute("viewBox")).toBe("0 0 36 36");
-  expect(svg.getAttribute("preserveAspectRatio")).toBe("none");
+  expect(svg).toHaveAttribute("viewBox", "0 0 36 36");
+  expect(svg).toHaveAttribute("preserveAspectRatio", "none");
   // Two bars on each measured day and the stub on the empty one.
   expect(bars(svg)).toHaveLength(5);
   const [p90, median] = bars(svg);
@@ -104,7 +104,7 @@ test("SpreadBars draws the p90 behind the median each day and one dashed target 
   expect(Number(median?.getAttribute("height"))).toBeCloseTo((30 / 80) * 36);
   const lines = svg.querySelectorAll("line");
   expect(lines).toHaveLength(1);
-  expect(lines[0]?.getAttribute("class")).toBe(chartBar.targetLine);
+  expect(lines[0]).toHaveAttribute("class", chartBar.targetLine);
   expect(Number(lines[0]?.getAttribute("y1"))).toBeCloseTo(36 - (45 / 80) * 36);
 });
 
@@ -114,10 +114,10 @@ test("SpreadBars colours each bar met under the target and missed at or over it"
     screen.getByRole("img", { name: "per-day median and p90" })
   );
 
-  expect(p90Under?.getAttribute("class")).toBe(chartBar.metFaint);
-  expect(medianUnder?.getAttribute("class")).toBe(chartBar.met);
-  expect(p90Over?.getAttribute("class")).toBe(chartBar.missedFaint);
-  expect(medianOver?.getAttribute("class")).toBe(chartBar.missed);
+  expect(p90Under).toHaveAttribute("class", chartBar.metFaint);
+  expect(medianUnder).toHaveAttribute("class", chartBar.met);
+  expect(p90Over).toHaveAttribute("class", chartBar.missedFaint);
+  expect(medianOver).toHaveAttribute("class", chartBar.missed);
 });
 
 test("SpreadBars draws a stub on a day with nothing to measure, naming the noun and today", () => {
@@ -125,15 +125,15 @@ test("SpreadBars draws a stub on a day with nothing to measure, naming the noun 
   const svg = screen.getByRole("img", { name: "per-day median and p90" });
   const stub = bars(svg)[4];
 
-  expect(stub?.getAttribute("class")).toBe(chartBar.empty);
-  expect(stub?.getAttribute("height")).toBe("1");
-  expect(stub?.getAttribute("y")).toBe("35");
+  expect(stub).toHaveAttribute("class", chartBar.empty);
+  expect(stub).toHaveAttribute("height", "1");
+  expect(stub).toHaveAttribute("y", "35");
   expect(titles(svg)).toEqual([
     "2026-09-25: median 30m, p90 40m, 4 runs",
     "2026-09-26: median 50m, p90 80m, 3 runs",
     "2026-09-27 (today so far): no runs",
   ]);
-  expect(svg.querySelectorAll("g")[2]?.getAttribute("opacity")).toBe("0.55");
+  expect(svg.querySelectorAll("g")[2]).toHaveAttribute("opacity", "0.55");
 });
 
 test("SpreadBars without a target draws the neutral pair and no line", () => {

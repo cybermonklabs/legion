@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
-import { onFakeClock, settle } from "../../__tests__/fake-clock";
+import { afterOnFakeClock, onFakeClock, settle } from "../../__tests__/fake-clock";
 import {
   type KeptTab,
   keptTab,
@@ -925,7 +925,9 @@ test("two writes answered 401 at once while the sign-in check is out are each re
       // comes while the first write's check is still out.
       queryFn: () => {
         const check = Promise.withResolvers<{ event_head: string; kind: "user"; login: string }>();
-        setTimeout(() => check.resolve({ event_head: "0", kind: "user", login: "alice" }), 200);
+        afterOnFakeClock(200, () =>
+          check.resolve({ event_head: "0", kind: "user", login: "alice" })
+        );
         return check.promise;
       },
       queryKey: ["whoami"],

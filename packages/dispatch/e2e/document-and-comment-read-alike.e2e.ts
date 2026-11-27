@@ -1,6 +1,7 @@
+import type { Refusal, Result } from "../web/src/api/paths";
 import { createComment, createIssue, createProject, getIssueArtifactText } from "./api";
 import { documentEditor, openSpec } from "./editor";
-import { type Browser, expect, type Locator, type Page, test } from "./test";
+import { type Browser, expect, type Locator, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The server's reader (the Go reader behind every document) and the browser's engine (the one
@@ -33,8 +34,9 @@ async function seed({
   spec?: string;
   title: string;
 }): Promise<{ commentId: string; key: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title }, agentSession);
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title }, agentSession);
   const commentId =
     body === undefined ? "" : (await createComment(issue.key, { body }, agentSession)).id;
   return { commentId, key: issue.key };
@@ -76,10 +78,13 @@ async function openFirstVersion(page: Page, key: string): Promise<Locator> {
   return page.getByTestId("version-view");
 }
 
-/** The 400 answer's own body behind a write the server refused, taken out of the message `request`
- *  builds around it (`<method> <path> failed: <status> <body>`), so a refusal's code and the words
- *  it names are compared as the server wrote them. A write the server accepted fails here. */
-async function refusalOf(write: Promise<unknown>): Promise<{ code?: string; error?: string }> {
+/** The 400 answer's own body behind a write of an issue (`createIssue`, `POST /api/v1/issues`)
+ *  the server refused, taken out of the message `request` builds around it (`<method> <path>
+ *  failed: <status> <body>`), so a refusal's code and the words it names are compared as the
+ *  server wrote them. A write the server accepted fails here. */
+async function issueRefusalOf(
+  write: Promise<Result<"/api/v1/issues", "post">>
+): Promise<Refusal<"/api/v1/issues", "post">> {
   const refusal = await write.then(
     () => undefined,
     (error: unknown) => error
@@ -87,7 +92,7 @@ async function refusalOf(write: Promise<unknown>): Promise<{ code?: string; erro
   expect(refusal, "the write was accepted").toBeInstanceOf(Error);
   const message = refusal instanceof Error ? refusal.message : "";
   expect(message).toContain(" failed: 400 ");
-  return JSON.parse(message.slice(message.indexOf("{")));
+  return JSON.parse(message.slice(message.indexOf("{"))) as Refusal<"/api/v1/issues", "post">;
 }
 
 // 1. A definition's paragraph runs over a line of pipes and dashes, and an indented line of `=`
@@ -244,8 +249,8 @@ test("a NUL reads as the replacement character in the spec editor and in a past 
 }) => {
   const { key } = await seed({ spec: `# NUL\n\n${nulReference}`, title: "A NUL in a paragraph" });
 
-  const raw = await refusalOf(
-    createIssue({ project: "CORE", spec: "a\u0000b\n", title: "A raw NUL" }, agentSession)
+  const raw = await issueRefusalOf(
+    createIssue({ project: rowKey("CORE"), spec: "a\u0000b\n", title: "A raw NUL" }, agentSession)
   );
   expect(raw.code).toBe("NUL_CHARACTER");
   expect(raw.error).toContain("spec holds a NUL character (U+0000) at character 2");

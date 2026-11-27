@@ -14,12 +14,14 @@ import {
   createProject,
   getInbox,
   patchIssue,
+  type RowKey,
   replyToMessageDelivery,
   requestApproval,
 } from "./api";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
 import { sessionIds } from "./session-ids";
+import type { SignInLogin } from "./users";
 
 /**
  * The Inbox's thread rows, seeded: a Reply row (a thread the reader wrote in that somebody else
@@ -35,8 +37,7 @@ import { sessionIds } from "./session-ids";
  * `user_threads` itself.
  */
 
-/** The session every seeded thread is answered by: live, and taking all three delivery modes, so
- *  a thread's composer has somewhere to send and a Send is a Send. */
+/** The fixed session the stubbed rows recorded. It takes all three delivery modes. */
 export const THREAD_SESSION: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   roles: [],
@@ -44,66 +45,76 @@ export const THREAD_SESSION: FakeSession = {
   title: "Release bot",
 };
 
-/** A second session, for a row that must stay the other session's: its reply is unread in the
- *  Agents page's own count whatever the Inbox marks read. */
-export const OTHER_SESSION: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  roles: [],
-  session_id: sessionIds.reviewer,
-  title: "Review bot",
-};
+/** `THREAD_SESSION` with an id read from a getter when the row uses it, as in `agentSessions`
+ *  (e2e/agents.ts). Real-stack specs pass `rowSessionId` (e2e/test.ts) so stubbed specs can import
+ *  this module without importing the real-stack fixtures. Dispatch stores sends, replies and
+ *  read marks by session id, so a fixed id would give a row's Agent rows and conversation the
+ *  earlier rows' activity. Stubbed specs replay recordings with the fixed `THREAD_SESSION` id. */
+export function rowThreadSession(sessionId: (logical: string) => string): FakeSession {
+  return {
+    ...THREAD_SESSION,
+    get session_id() {
+      return sessionId("releasebot");
+    },
+  };
+}
 
 /** The session as an author: what a write of its own names itself. */
-export function sessionActor(session: FakeSession = THREAD_SESSION): Actor {
+export function sessionActor(session: FakeSession): Actor {
   return { id: session.session_id, kind: "session" };
 }
 
 /** The options a write made as the session carries. */
-export function asSession(session: FakeSession = THREAD_SESSION) {
+export function asSession(session: FakeSession) {
   return { actor: sessionActor(session), as: "agent" as const };
 }
 
-/** A comment thread the reader wrote in: their root, then the session's reply. */
+/** A comment thread the reader wrote in: their root, then the session's reply. The reader is
+ *  `login`, alice unless a row names a person of its own (`rowPerson`, e2e/test.ts). */
 export async function seedCommentThread(
   issueKey: string,
   root: string,
   reply: string,
-  session: FakeSession = THREAD_SESSION
+  session: FakeSession,
+  login: SignInLogin = "alice"
 ): Promise<string> {
-  const head = await createComment(issueKey, { body: root });
+  const head = await createComment(issueKey, { body: root }, { login });
   await createComment(issueKey, { body: reply, reply_to: head.id }, asSession(session));
   return head.id;
 }
 
-/** An issue message conversation the reader started, with the session's reply under it. */
+/** An issue message conversation the reader, `login`, started, with the session's reply under
+ *  it. */
 export async function seedMessageThread(
   issueKey: string,
   root: string,
   reply: string,
-  session: FakeSession = THREAD_SESSION
+  session: FakeSession,
+  login: SignInLogin = "alice"
 ): Promise<string> {
-  const head = await createMessage(issueKey, { body: root });
+  const head = await createMessage(issueKey, { body: root }, { login });
   await createMessage(issueKey, { body: reply, in_reply_to: head.id }, asSession(session));
   return head.id;
 }
 
 /**
- * An ask the session wrote and the reader answered, with the session's reply in its thread. The
- * answer is the reader's own write in the thread, which is what makes it theirs; the ask is
- * answered, so it is no open ask and the Inbox lists it as a Reply row alone.
+ * An ask the session wrote and the reader, `login`, answered, with the session's reply in its
+ * thread. The answer is the reader's own write in the thread, which is what makes it theirs; the
+ * ask is answered, so it is no open ask and the Inbox lists it as a Reply row alone.
  */
 export async function seedAskThread(
   issueKey: string,
   question: string,
   reply: string,
-  session: FakeSession = THREAD_SESSION
+  session: FakeSession,
+  login: SignInLogin = "alice"
 ): Promise<string> {
   const ask = await createAsk(
     issueKey,
     { options: [{ label: "Ship" }, { label: "Hold" }], question },
     asSession(session)
   );
-  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
+  await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] }, { login });
   await createComment(issueKey, { ask_id: ask.id, body: reply }, asSession(session));
   return ask.id;
 }
@@ -124,43 +135,51 @@ async function sessionReply(
 }
 
 /**
- * A one-off message the reader sent the session, with one reply per entry of `replies`: the
- * first answers the delivery, and each after it is a follow-up threaded under it, which is how a
- * session writes more than once into one exchange.
+ * A one-off message the reader, `login`, sent the session, with one reply per entry of
+ * `replies`: the first answers the delivery, and each after it is a follow-up threaded under it,
+ * which is how a session writes more than once into one exchange.
  */
 export async function seedAgentThread({
   body,
   delivery = "btw",
+  login = "alice",
   replies,
-  session = THREAD_SESSION,
+  session,
 }: {
   body: string;
   delivery?: "aside" | "btw" | "steer";
+  login?: SignInLogin;
   replies: readonly string[];
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<string> {
-  const sent = await createAgentMessage(session.session_id, { body, delivery });
+  const sent = await createAgentMessage(session.session_id, { body, delivery }, { login });
   for (const [index, reply] of replies.entries()) {
     await sessionReply(sent.id, reply, session, index > 0);
   }
   return sent.id;
 }
 
-/** The session's own copy of a broadcast, with its reply: an Agent row like any other one-off. */
+/** The session's own copy of a broadcast `login` sent, with its reply: an Agent row like any
+ *  other one-off. */
 export async function seedBroadcastThread({
   body,
+  login = "alice",
   reply,
-  session = THREAD_SESSION,
+  session,
 }: {
   body: string;
+  login?: SignInLogin;
   reply: string;
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<string> {
-  const broadcast = await createBroadcast({
-    body,
-    delivery: "btw",
-    session_ids: [session.session_id],
-  });
+  const broadcast = await createBroadcast(
+    {
+      body,
+      delivery: "btw",
+      session_ids: [session.session_id],
+    },
+    { login }
+  );
   const copy = (broadcast.recipients ?? []).find(
     (recipient) => recipient.session_id === session.session_id
   );
@@ -172,20 +191,22 @@ export async function seedBroadcastThread({
 }
 
 /**
- * A Send the session took as a turn of its live conversation, with a reply under it. The Inbox
- * lists no Agent row for such a message however the session answers it, while the Agents page's
- * **New replies** badge still counts that reply.
+ * A Send `login` made that the session took as a turn of its live conversation, with a reply
+ * under it. The Inbox lists no Agent row for such a message however the session answers it,
+ * while the Agents page's **New replies** badge still counts that reply.
  */
 export async function seedAcceptedSend({
   body,
+  login = "alice",
   reply,
-  session = THREAD_SESSION,
+  session,
 }: {
   body: string;
+  login?: SignInLogin;
   reply: string;
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<string> {
-  const sent = await createAgentMessage(session.session_id, { body, delivery: "steer" });
+  const sent = await createAgentMessage(session.session_id, { body, delivery: "steer" }, { login });
   await acceptAgentDelivery(sent.id, 1, sessionActor(session));
   await sessionReply(sent.id, reply, session, false);
   return sent.id;
@@ -222,7 +243,7 @@ export async function seedBulkReplyThreads({
   login = "alice",
   olderThan = 0,
   prefix,
-  session = THREAD_SESSION,
+  session,
 }: {
   count: number;
   issueKey: string;
@@ -231,7 +252,7 @@ export async function seedBulkReplyThreads({
   olderThan?: number;
   /** What each root and reply says, before its number: `<prefix> root 7`, `<prefix> reply 7`. */
   prefix: string;
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<void> {
   await sql(`
     with roots as (
@@ -259,13 +280,13 @@ export async function seedBulkAgentThreads({
   count,
   login = "alice",
   prefix,
-  session = THREAD_SESSION,
+  session,
 }: {
   count: number;
   login?: string;
   /** What each message and reply says, before its number: `<prefix> ask 7`, `<prefix> answer 7`. */
   prefix: string;
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<void> {
   await sql(`
     with roots as (
@@ -403,10 +424,15 @@ export interface Twelve {
   readonly replies: readonly string[];
 }
 
-/** The Inbox row `match` names, once the server has indexed the block that carries it. */
-async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
-  await expect.poll(async () => (await getInbox()).some(match)).toBe(true);
-  const row = (await getInbox()).find(match);
+/** The Inbox row `match` names in `login`'s own list, once the server has indexed the block that
+ *  carries it. */
+async function indexedRow(
+  login: SignInLogin,
+  match: (row: InboxRow) => boolean
+): Promise<InboxRow> {
+  const ownList = () => getInbox({ login }, { assignee: "me" });
+  await expect.poll(async () => (await ownList()).some(match)).toBe(true);
+  const row = (await ownList()).find(match);
   if (row === undefined) throw new Error("the seeded question left the Inbox before it was read");
   return row;
 }
@@ -421,29 +447,51 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
  * instead (`myRepliesOwner`, the server's replies.go).
  *
  * Shared by `inbox-threads.stub.e2e.ts` and `inbox-threads.e2e.ts`, whose rows read the same
- * list from two layers.
+ * list from two layers. `project` is the key of the project the issues are made in: the
+ * real-stack rows pass their own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording
+ * made under `CORE`. `login` is the reader every row is seeded for, alice unless a real-stack
+ * row names a person of its own (`rowPerson`). `session` is the session that answers every
+ * thread: `THREAD_SESSION` for the stubbed rows, the row's own on the real stack
+ * (`rowThreadSession`).
  */
-export async function seedTwelve(): Promise<Twelve> {
-  await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+export async function seedTwelve(
+  project: RowKey,
+  session: FakeSession,
+  login: SignInLogin = "alice"
+): Promise<Twelve> {
+  await setLiveSessions([session]);
+  await createProject({ key: project, name: "Core" }, { login });
 
   for (const title of ["Lease handover", "Retry budget"]) {
-    const issue = await createIssue({ project: "CORE", title });
-    await createAsk(issue.key, { question: `${title}: what is the rule?` }, asSession());
+    const issue = await createIssue({ project, title }, { login });
+    await createAsk(issue.key, { question: `${title}: what is the rule?` }, asSession(session));
   }
-  await createIssue({ project: "CORE", spec: decisionSpec, title: "Rollout order" });
-  await indexedRow((row) => row.block_id === DECISION_BLOCK);
+  const decisionIssue = await createIssue(
+    { project, spec: decisionSpec, title: "Rollout order" },
+    { login }
+  );
+  // Waits for this issue's block to be indexed. A block id is no key of its own: `login` is alice
+  // when the stubbed rows record, and her list can hold an open block of this id an earlier row
+  // of the worker seeded, which would end the wait before this one stands. So the row is found
+  // by its issue as well as by its block.
+  await indexedRow(
+    login,
+    (row) => row.block_id === DECISION_BLOCK && row.issue_key === decisionIssue.key
+  );
 
   for (const title of ["Mirror runbook", "Clock drift"]) {
-    const issue = await createIssue({
-      project: "CORE",
-      spec: `# ${title}\n\nThe mirror replays what the ledger wrote.\n`,
-      title,
-    });
+    const issue = await createIssue(
+      {
+        project,
+        spec: `# ${title}\n\nThe mirror replays what the ledger wrote.\n`,
+        title,
+      },
+      { login }
+    );
     await requestApproval(
       issue.primary_artifact_id,
       { summary: `The ${title} draft.` },
-      asSession()
+      asSession(session)
     );
   }
 
@@ -452,34 +500,56 @@ export async function seedTwelve(): Promise<Twelve> {
     ["Audit clock", "Please fix the flaky clock test.", "Done: the clock test is green."],
     ["Lease renewal", "The lease renews twice an hour.", "It renews once an hour now."],
   ] as const) {
-    const issue = await createIssue({ project: "CORE", title });
-    replies.push(await seedCommentThread(issue.key, root, reply));
+    const issue = await createIssue({ project, title }, { login });
+    replies.push(await seedCommentThread(issue.key, root, reply, session, login));
   }
-  const messageIssue = await createIssue({ project: "CORE", title: "Build status" });
+  const messageIssue = await createIssue({ project, title: "Build status" }, { login });
   replies.push(
-    await seedMessageThread(messageIssue.key, "Where is the nightly build?", "On the mirror.")
+    await seedMessageThread(
+      messageIssue.key,
+      "Where is the nightly build?",
+      "On the mirror.",
+      session,
+      login
+    )
   );
-  const askIssue = await createIssue({ project: "CORE", title: "Window size" });
+  const askIssue = await createIssue({ project, title: "Window size" }, { login });
   await patchIssue(askIssue.key, { assignee: "bob" });
   const askThread = await seedAskThread(
     askIssue.key,
     "Which window does the mirror replay?",
-    "Replaying the last hour now."
+    "Replaying the last hour now.",
+    session,
+    login
   );
   replies.push(askThread);
 
   const agents = [
-    await seedAgentThread({ body: "What is the rollout status?", replies: ["Green."] }),
-    await seedBroadcastThread({ body: "Stand by for the rollout.", reply: "Standing by." }),
+    await seedAgentThread({
+      body: "What is the rollout status?",
+      login,
+      replies: ["Green."],
+      session,
+    }),
+    await seedBroadcastThread({
+      body: "Stand by for the rollout.",
+      login,
+      reply: "Standing by.",
+      session,
+    }),
     await seedAgentThread({
       body: "Steer: hold the mirror.",
       delivery: "steer",
+      login,
       replies: ["Holding."],
+      session,
     }),
   ];
   const accepted = await seedAcceptedSend({
     body: "Steer: take this as your own turn.",
+    login,
     reply: "Took it.",
+    session,
   });
   return { accepted, agents, askThread, listed: 12, replies };
 }

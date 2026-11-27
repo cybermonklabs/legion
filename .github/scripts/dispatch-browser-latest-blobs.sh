@@ -35,9 +35,10 @@
 #
 # Several artifacts matched: each entry of <download-dir> must be a directory named
 # `<job>-blob-<leg>-<attempt>`, where <attempt> is the run of digits at the end and <leg> is
-# everything between the prefix and it (`shard-1`, `alone-webkit-alone`). A name that does not
-# read is a failure, not a file passed over: a blob silently dropped is a merged report short of
-# a leg's rows, which reads as a shorter suite rather than as an error.
+# everything between the prefix and it (`shard-1`, `alone-webkit-alone`, `embedder`,
+# `multiprocess-signin`). A name that does not read is a failure, not a file passed over: a blob
+# silently dropped is a merged report short of a leg's rows, which reads as a shorter suite
+# rather than as an error.
 #
 # One artifact matched: actions/download-artifact extracts it into <download-dir> itself and not
 # into a directory named for it; the note that cites the action's source is

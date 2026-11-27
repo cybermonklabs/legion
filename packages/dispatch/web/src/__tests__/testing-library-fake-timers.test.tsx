@@ -1,15 +1,21 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { render, screen } from "@testing-library/react";
 import { type ReactNode, useEffect, useState } from "react";
-import { realClock } from "./fake-clock";
+import { afterOnFakeClock, realClock } from "./fake-clock";
 
 afterEach(realClock);
 
-/** A node that arrives only when a timer fires, which is the whole product this test needs. */
+/** How long `Later` waits before it draws its node. */
+const LATER_MS = 100;
+
+/** A node that arrives only when a timer fires, which is the whole product this test needs. The
+ *  timer is set with `afterOnFakeClock`, which refuses the real clock: this test proves what a
+ *  Testing Library wait does with the fake clock, so a timer of the real clock would prove
+ *  nothing here. */
 function Later(): ReactNode {
   const [shown, setShown] = useState(false);
   useEffect(() => {
-    const timer = setTimeout(() => setShown(true), 100);
+    const timer = afterOnFakeClock(LATER_MS, () => setShown(true));
     return () => clearTimeout(timer);
   }, []);
   return <div>{shown ? "later" : "not yet"}</div>;
@@ -27,9 +33,10 @@ function Later(): ReactNode {
 // half that discriminates. With the line removed it fails naming the missing global; the `findBy`
 // below passes either way on this pod, because something outside the held clock still delivers
 // the effect's timer here (a timer scheduled under `jest.useFakeTimers()` does not fire on its
-// own: a probe of one ran to its 20 s deadline). So the wait below is the behaviour the line
-// exists for rather than a discriminator on this machine, and the jest-global assertion is what
-// turns a removal into a red test instead of a timeout that names nothing.
+// own: a probe of one ran to its 20 s deadline), and the held clock reads 101 ms on after it
+// either way. So the wait below, and the clock read after it, are the behaviour the line exists
+// for rather than a discriminator on this machine, and the jest-global assertion is what turns a
+// removal into a red test instead of a timeout that names nothing.
 //
 // `jestFakeTimersAreEnabled` has a second half, and the `setTimeout` assertion below is it: after
 // the global, the library asks whether `setTimeout` carries a `clock` property or an
@@ -46,10 +53,13 @@ test("a Testing Library wait advances the fake clock a test installed", async ()
       (setTimeout as unknown as { _isMockFunction?: boolean })._isMockFunction === true
   ).toBe(true);
 
+  const before = Date.now();
   const view = render(<Later />);
   try {
     expect(screen.getByText("not yet")).toBeDefined();
     expect(await screen.findByText("later")).toBeDefined();
+    // The wait moved the held clock to the timer: the clock reads at least its delay on.
+    expect(Date.now() - before).toBeGreaterThanOrEqual(LATER_MS);
   } finally {
     view.unmount();
   }

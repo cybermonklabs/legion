@@ -55,7 +55,7 @@ var prefixLimit = strconv.Itoa(prefixCandidateLimit)
 // and on a candidate of any other kind; a block candidate is a block of a document
 // (blockPrefixCandidates), which no correction marks.
 type Candidate struct {
-	Kind          string            `json:"kind"`
+	Kind          string            `json:"kind" enum:"ask,comment,message,artifact,block"`
 	ID            string            `json:"id"`
 	Ref           string            `json:"ref"`
 	IssueKey      string            `json:"issue_key,omitempty"`

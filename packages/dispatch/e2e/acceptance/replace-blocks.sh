@@ -104,7 +104,8 @@ script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 readonly script_dir
 readonly repo_root="$script_dir/../../../.."
 # On a host with /proc, proc_group reads one process's group from its own /proc entry, where `ps -p`
-# reads every process on the host for that answer; elsewhere it asks ps.
+# reads every process on the host for that answer; elsewhere it asks ps. group_signalable refuses a
+# group no kill may be sent to (start_instance, stop_instance).
 # shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/process-tree.sh
 . "$repo_root/scripts/e2e/lib/process-tree.sh"
 # A postgres:// URL reaches psql without its password, which goes in PGPASSWORD for that psql
@@ -332,31 +333,41 @@ issue_key=""
 # stop_instance stops the Dispatch this run started, and is best effort: a cleanup that fails must
 # never hide the check that failed. The instance leads a session of its own, so the whole group
 # gets the signal: `bun run dispatch:local` is reached through two `bun run` parents, and the
-# harness stops its own processes when its signal fires.
+# harness stops its own processes when its signal fires. A group group_signalable refuses
+# (lib/process-tree.sh), which names it, gets no signal: kill reads group 0 as this run's own
+# group, which under a test runner holds the runner too, and group 1 as every process the run may
+# signal. The instance's own pid gets the signal then, as where no group was read.
 stop_instance() {
-  local waited=0
+  local waited=0 group=$instance_group
   [[ -n "$instance_pid" ]] || return 0
-  if [[ -n "$instance_group" ]]; then
-    kill -TERM -"$instance_group" 2>/dev/null || return 0
+  [[ -z "$group" ]] || group_signalable "$group" || group=""
+  if [[ -n "$group" ]]; then
+    kill -TERM -"$group" 2>/dev/null || return 0
   else
     kill -TERM "$instance_pid" 2>/dev/null || return 0
   fi
   while ((waited < 60)); do
-    instance_running || return 0
+    instance_running "$group" || return 0
     sleep 0.5
     waited=$((waited + 1))
   done
-  if [[ -n "$instance_group" ]]; then
-    kill -KILL -"$instance_group" 2>/dev/null || true
+  if [[ -n "$group" ]]; then
+    kill -KILL -"$group" 2>/dev/null || true
   else
     kill -KILL "$instance_pid" 2>/dev/null || true
   fi
 }
 
-# instance_running reports whether any process of the instance is still alive.
+# instance_running GROUP reports whether any process of the instance is still alive: of GROUP, or
+# the instance's own pid where GROUP is empty. Each caller hands it a group group_signalable has
+# passed, or none: start_instance checks the group it read once, after its read, and stop_instance
+# checks it again, as its own. On gVisor the group of an instance that had just exited once read as
+# 0, and `kill -0 -0`, sent to this run's own group, always succeeds, so the start's wait ran to its
+# deadline.
 instance_running() {
-  if [[ -n "$instance_group" ]]; then
-    kill -0 -"$instance_group" 2>/dev/null
+  local group=$1
+  if [[ -n "$group" ]]; then
+    kill -0 -"$group" 2>/dev/null
   else
     kill -0 "$instance_pid" 2>/dev/null
   fi
@@ -403,7 +414,7 @@ instance_log_tail() {
 # is bounded and says what it waits for, and an instance that stops while it starts fails the run
 # with the last lines of its log before its hand-over message (instance_log_tail).
 start_instance() {
-  local deadline=$((SECONDS + instance_seconds)) own_group line
+  local deadline=$((SECONDS + instance_seconds)) own_group group line
   printf 'replace-blocks.sh: starting a Dispatch of its own with bun run dispatch:local. It builds the dashboard, builds the server and seeds %s first, so this takes minutes.\n' \
     "$seeded_database"
   (cd "$repo_root" && DATABASE_URL="$database_url" exec setsid bun run dispatch:local) \
@@ -423,6 +434,10 @@ start_instance() {
     instance_group=""
     sleep 0.2
   done
+  # The group read, or none where group_signalable refuses it, which names it here, once: the
+  # wait below then polls the instance's own pid.
+  group=$instance_group
+  [[ -z "$group" ]] || group_signalable "$group" || group=""
   while :; do
     line="$(grep -m 1 -F '  Open (signed in as alice): ' "$work/instance.log" 2>/dev/null || true)"
     if [[ -n "$line" ]]; then
@@ -433,7 +448,7 @@ start_instance() {
       printf 'replace-blocks.sh: the instance is up at %s.\n' "$base"
       return 0
     fi
-    instance_running ||
+    instance_running "$group" ||
       fail setup "the Dispatch this run started" \
         "it stopped while it started; the last lines of its log: $(instance_log_tail)"
     ((SECONDS < deadline)) ||

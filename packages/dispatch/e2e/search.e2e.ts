@@ -9,8 +9,14 @@ import {
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
-import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
-import { expect, test } from "./test";
+import {
+  keyedSearchWord,
+  openSearchFromRail,
+  searchSession,
+  searchTerm,
+  seedSearchFixture,
+} from "./search";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -24,7 +30,11 @@ import { asUser } from "./users";
 test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to its highlighted term", async ({
   browser,
 }) => {
-  const fixture = await seedSearchFixture();
+  const core = rowKey("CORE");
+  // The word searched for holds the row's own key (`keyedSearchWord`, e2e/search.ts): search
+  // reads every project of the stack, and only this row's items hold it.
+  const term = keyedSearchWord(searchTerm, core);
+  const fixture = await seedSearchFixture(core, term);
   const context = await asUser(browser, "alice");
 
   try {
@@ -38,7 +48,7 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
     const search = page.getByRole("combobox", { name: "Search" });
     await expect(dialog).toBeVisible();
     await expect(search).toBeFocused();
-    await search.fill(searchTerm);
+    await search.fill(term);
 
     const options = dialog.getByRole("option");
     // Three rows, in the server's order: the issue whose spec holds the term (an issue's
@@ -50,13 +60,13 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
     );
     const documentResult = dialog.getByRole("option", { name: /^doc spec\.md / });
     await expect(documentResult).toBeVisible();
-    await expect(documentResult.locator("mark")).toHaveText([searchTerm, searchTerm]);
+    await expect(documentResult.locator("mark")).toHaveText([term, term]);
     await expect(dialog.locator('[role="presentation"]')).toHaveCount(2);
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-1: Navigation instruments"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}-1: Navigation instruments"]`)
     ).toBeVisible();
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-2: Other work"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}-2: Other work"]`)
     ).toBeVisible();
 
     const documentID = await documentResult.getAttribute("id");
@@ -69,23 +79,20 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
     await expect(search).toHaveAttribute("aria-activedescendant", documentID as string);
     await search.press("Enter");
 
-    await expect(page).toHaveURL(
-      new RegExp(`/issues/${fixture.firstIssueKey}/spec\\?q=${searchTerm}$`)
-    );
+    await expect(page).toHaveURL(new RegExp(`/issues/${fixture.firstIssueKey}/spec\\?q=${term}$`));
     const editor = documentEditor(page);
-    await expect(editor).toContainText(searchTerm);
+    await expect(editor).toContainText(term);
     await expect(editor).toBeInViewport();
     await expect
       .poll(() =>
-        page.evaluate(() => {
+        page.evaluate((word) => {
           // Playwright's TypeScript context lacks CSS Highlight API declarations.
           const css = CSS as unknown as { highlights?: Map<string, Highlight> };
           const highlights = css.highlights?.get("dispatch-search");
           return (
-            highlights !== undefined &&
-            [...highlights].some((range) => range.toString() === "astrolabe")
+            highlights !== undefined && [...highlights].some((range) => range.toString() === word)
           );
-        })
+        }, term)
       )
       .toBe(true);
     await expect(dialog).toHaveCount(0);
@@ -102,16 +109,21 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
 test("a search term lists marked document, comment, ask, and issue-title results in issue groups", async ({
   browser,
 }) => {
-  await seedSearchFixture();
-  const titleIssue = await createIssue({ project: "CORE", title: "Astrolabe calibration" });
-  await createAsk(titleIssue.key, { question: "Who calibrates the astrolabe?" }, searchSession);
+  const core = rowKey("CORE");
+  // The word searched for holds the row's own key (`keyedSearchWord`, e2e/search.ts), and so
+  // does the title that starts with it: only this row's items hold it.
+  const term = keyedSearchWord(searchTerm, core);
+  const titleWord = keyedSearchWord("Astrolabe", core);
+  await seedSearchFixture(core, term);
+  const titleIssue = await createIssue({ project: core, title: `${titleWord} calibration` });
+  await createAsk(titleIssue.key, { question: `Who calibrates the ${term}?` }, searchSession);
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
     await openSearchFromRail(page, false);
     const search = page.getByRole("combobox", { name: "Search" });
-    await search.fill(searchTerm);
+    await search.fill(term);
 
     // Scoped to the palette: inbox rows carry a priority <select> whose options share the role.
     const dialog = page.getByRole("dialog", { name: "Search" });
@@ -120,17 +132,22 @@ test("a search term lists marked document, comment, ask, and issue-title results
     // its spec (an issue's keyword vector carries its primary document's text) and whose own
     // title never held it, so its row marks nothing.
     await expect(options).toHaveCount(5);
-    for (const name of [/^issue Astrolabe calibration/, /^doc /, /^comment /, /^ask /]) {
+    for (const name of [
+      new RegExp(`^issue ${titleWord} calibration`),
+      /^doc /,
+      /^comment /,
+      /^ask /,
+    ]) {
       const option = dialog.getByRole("option", { name });
       await expect(option).toHaveCount(1);
-      await expect(option.locator("mark").first()).toHaveText(/astrolabe/i);
+      await expect(option.locator("mark").first()).toHaveText(new RegExp(term, "i"));
     }
     const foundByItsSpec = dialog.getByRole("option", { name: /^issue Navigation instruments/ });
     await expect(foundByItsSpec).toHaveCount(1);
     await expect(foundByItsSpec.locator("mark")).toHaveCount(0);
     await expect(dialog.locator('[role="presentation"]')).toHaveCount(3);
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE-4: Astrolabe calibration"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}-4: ${titleWord} calibration"]`)
     ).toBeVisible();
   } finally {
     await context.close();
@@ -140,22 +157,25 @@ test("a search term lists marked document, comment, ask, and issue-title results
 test("an ask hit says whether it is answered, and an answered one shows its latest answer, who gave it and the options chosen", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Planetarium" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Planetarium" });
+  // Each question names the row's own key (`rowKey`, e2e/test.ts) beside the word it is found
+  // by: search reads every project of the stack, and only this row's three asks hold both.
   const answered = await createAsk(
     issue.key,
     {
       options: [{ label: "Brass" }, { label: "Steel" }],
-      question: "Which orrery frame do we keep?",
+      question: `Which orrery frame do we keep in ${core}?`,
     },
     searchSession
   );
   const resolved = await createAsk(
     issue.key,
-    { question: "Should the orrery gears be oiled?" },
+    { question: `Should the orrery gears be oiled in ${core}?` },
     searchSession
   );
-  await createAsk(issue.key, { question: "Who winds the orrery?" }, searchSession);
+  await createAsk(issue.key, { question: `Who winds the orrery of ${core}?` }, searchSession);
   const first = await answerAsk(answered.id, {
     expected_edited_at: null,
     selected: ["Brass"],
@@ -182,7 +202,7 @@ test("an ask hit says whether it is answered, and an answered one shows its late
   try {
     const page = await context.newPage();
     await openSearchFromRail(page, false);
-    await page.getByRole("combobox", { name: "Search" }).fill("orrery");
+    await page.getByRole("combobox", { name: "Search" }).fill(`orrery ${core}`);
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     await expect(dialog.getByRole("option")).toHaveCount(3);
@@ -224,9 +244,10 @@ test("an ask hit says whether it is answered, and an answered one shows its late
 test("a search for an issue key names the issue in every hit that cites it, marked whole", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const cited = await createIssue({ project: "CORE", title: "Gyroscope alignment" });
-  const citing = await createIssue({ project: "CORE", title: "Bench work" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const cited = await createIssue({ project: core, title: "Gyroscope alignment" });
+  const citing = await createIssue({ project: core, title: "Bench work" });
   await createComment(citing.key, {
     body: `Tracked as dispatch://${cited.key} since Monday.`,
   });
@@ -261,12 +282,15 @@ test("a search for an issue key names the issue in every hit that cites it, mark
 test("a search hit draws no reference the comment it quotes holds in code, and no worded link's markdown", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const cited = await createIssue({ project: "CORE", title: "Gyroscope alignment" });
-  const citing = await createIssue({ project: "CORE", title: "Bench work" });
-  await createComment(citing.key, { body: `Run \`${cited.key}\` locally tagcodespan.` });
+  const core = rowKey("CORE");
+  const codeTag = keyedSearchWord("tagcodespan", core);
+  const wordedTag = keyedSearchWord("tagworded", core);
+  await createProject({ key: core, name: "Core" });
+  const cited = await createIssue({ project: core, title: "Gyroscope alignment" });
+  const citing = await createIssue({ project: core, title: "Bench work" });
+  await createComment(citing.key, { body: `Run \`${cited.key}\` locally ${codeTag}.` });
   await createComment(citing.key, {
-    body: `See [the gyroscope](dispatch://${cited.key}) now tagworded.`,
+    body: `See [the gyroscope](dispatch://${cited.key}) now ${wordedTag}.`,
   });
   const context = await asUser(browser, "alice");
 
@@ -276,14 +300,14 @@ test("a search hit draws no reference the comment it quotes holds in code, and n
     const box = page.getByRole("combobox", { name: "Search" });
     const dialog = page.getByRole("dialog", { name: "Search" });
 
-    await box.fill("CORE tagcodespan");
-    const code = dialog.getByRole("option", { name: /tagcodespan/ });
+    await box.fill(`${core} ${codeTag}`);
+    const code = dialog.getByRole("option", { name: new RegExp(codeTag) });
     await expect(code).toHaveCount(1);
     await expect.soft(code.locator("[data-dispatch-ref]")).toHaveCount(0);
     await expect.soft(code).not.toContainText(cited.title);
 
-    await box.fill("CORE tagworded");
-    const worded = dialog.getByRole("option", { name: /tagworded/ });
+    await box.fill(`${core} ${wordedTag}`);
+    const worded = dialog.getByRole("option", { name: new RegExp(wordedTag) });
     await expect(worded).toHaveCount(1);
     await expect.soft(worded).not.toContainText("](");
     await expect.soft(worded).not.toContainText(cited.title);
@@ -303,19 +327,23 @@ test("a search hit draws no reference the comment it quotes holds in code, and n
 test("a search hit cut inside a code span, a worded link or an address reads as the text it quotes", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const cited = await createIssue({ project: "CORE", title: "Gyroscope alignment" });
-  const citing = await createIssue({ project: "CORE", title: "Bench work" });
+  const core = rowKey("CORE");
+  const spanTag = keyedSearchWord("tagcutspan", core);
+  const linkTag = keyedSearchWord("tagcutlink", core);
+  const addressTag = keyedSearchWord("tagcutaddress", core);
+  await createProject({ key: core, name: "Core" });
+  const cited = await createIssue({ project: core, title: "Gyroscope alignment" });
+  const citing = await createIssue({ project: core, title: "Bench work" });
   const words =
     "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen " +
     "sixteen seventeen eighteen nineteen twenty";
   await createComment(citing.key, {
-    body: `Before it: \`${words} ${cited.key} tagcutspan ${words}\` after it.`,
+    body: `Before it: \`${words} ${cited.key} ${spanTag} ${words}\` after it.`,
   });
   await createComment(citing.key, {
-    body: `Before it: [${words} tagcutlink ${words}](dispatch://${cited.key}) after it.`,
+    body: `Before it: [${words} ${linkTag} ${words}](dispatch://${cited.key}) after it.`,
   });
-  await createComment(citing.key, { body: "Ask dispatch://person/alice first tagcutaddress." });
+  await createComment(citing.key, { body: `Ask dispatch://person/alice first ${addressTag}.` });
   const context = await asUser(browser, "alice");
 
   try {
@@ -324,24 +352,24 @@ test("a search hit cut inside a code span, a worded link or an address reads as 
     const box = page.getByRole("combobox", { name: "Search" });
     const dialog = page.getByRole("dialog", { name: "Search" });
 
-    await box.fill("tagcutspan");
-    const code = dialog.getByRole("option", { name: /tagcutspan/ });
+    await box.fill(spanTag);
+    const code = dialog.getByRole("option", { name: new RegExp(spanTag) });
     await expect(code).toHaveCount(1);
-    await expect.soft(code.locator("code")).toContainText(`${cited.key} tagcutspan`);
+    await expect.soft(code.locator("code")).toContainText(`${cited.key} ${spanTag}`);
     await expect.soft(code.locator("[data-dispatch-ref]")).toHaveCount(0);
     await expect.soft(code).not.toContainText(cited.title);
 
-    await box.fill("tagcutlink");
-    const worded = dialog.getByRole("option", { name: /tagcutlink/ });
+    await box.fill(linkTag);
+    const worded = dialog.getByRole("option", { name: new RegExp(linkTag) });
     await expect(worded).toHaveCount(1);
     await expect
       .soft(worded.locator(`[data-dispatch-ref="dispatch://${cited.key}"]`))
-      .toContainText("tagcutlink");
+      .toContainText(linkTag);
     await expect.soft(worded).not.toContainText("](");
     await expect.soft(worded).not.toContainText(cited.title);
 
-    await box.fill("tagcutaddress");
-    const address = dialog.getByRole("option", { name: /tagcutaddress/ });
+    await box.fill(addressTag);
+    const address = dialog.getByRole("option", { name: new RegExp(addressTag) });
     await expect(address).toHaveCount(1);
     await expect.soft(address).toContainText("Ask dispatch://person/alice first");
   } finally {
@@ -365,9 +393,10 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
   // Each soft read that fails waits out its own 15 s, and a run against a wrong pass should name
   // every body whose marks moved, so the row has room for all twelve.
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Bench work" });
-  const missing = "CORE-99";
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Bench work" });
+  const missing = `${core}-99`;
   const bodies = [
     {
       query: "sha",
@@ -398,9 +427,9 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
       shows: "#1234",
     },
     {
-      query: "CORE",
+      query: core,
       text: `The release is blocked on ${missing} until the vendor answers our question on Friday.`,
-      marks: ["CORE"],
+      marks: [core],
       refs: 0,
       shows: missing,
     },
@@ -425,6 +454,10 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
     await openSearchFromRail(page, false);
     const search = page.getByRole("combobox", { name: "Search" });
     const dialog = page.getByRole("dialog", { name: "Search" });
+    // Narrow the bar to this row's project: search reads every project of the stack, and earlier
+    // rows (or a repeat of this one) may hold the same plain words ("sha", "utf", "#general").
+    await dialog.getByRole("button", { name: "Project" }).click();
+    await dialog.getByRole("button", { name: core }).click();
     for (const body of bodies) {
       await search.fill(body.query);
       const hit = dialog.getByRole("option", { name: /^comment / }).filter({ hasText: body.shows });
@@ -434,7 +467,7 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
       await expect.soft(hit.locator("[data-dispatch-ref]"), body.query).toHaveCount(body.refs);
     }
     // The query that marks a part of a real key, which the link pass links.
-    await search.fill("CORE");
+    await search.fill(core);
     const linked = dialog
       .getByRole("option", { name: /^comment / })
       .filter({ hasText: "is waiting on" });
@@ -459,11 +492,12 @@ test("a search mark stays as the server sent it, and a reference it falls in tha
 test("a search mark inside a reference stays on the words as the server sent it, and marks only a title whole", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Bench work" });
-  const missingIssue = "dispatch://CORE-99";
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Bench work" });
+  const missingIssue = `dispatch://${core}-99`;
   const missingDocument = `dispatch://${issue.key}/artifact/no-such-doc-md`;
-  const missingComponent = "dispatch://CORE/component/nope";
+  const missingComponent = `dispatch://${core}/component/nope`;
   await createComment(issue.key, {
     body: `Compare dispatch://${issue.key}, ${missingIssue} and ${missingDocument} before the quokka review.`,
   });
@@ -481,17 +515,17 @@ test("a search mark inside a reference stays on the words as the server sent it,
     const search = page.getByRole("combobox", { name: "Search" });
     const dialog = page.getByRole("dialog", { name: "Search" });
 
-    await search.fill("CORE");
+    await search.fill(core);
     const hit = dialog.getByRole("option", { name: /^comment / }).filter({ hasText: "quokka" });
     await expect(hit).toHaveCount(1);
     // The issue's title has not come, so its address is words, marked where the server marked it.
     await expect(hit.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
       `dispatch://${issue.key}`
     );
-    await expect(hit.locator("mark")).toHaveText(["CORE", "CORE", "CORE"]);
+    await expect(hit.locator("mark")).toHaveText([core, core, core]);
 
     summaryHeld.resolve();
-    await expect(hit.locator("mark")).toHaveText([`${issue.key} Bench work`, "CORE", "CORE"]);
+    await expect(hit.locator("mark")).toHaveText([`${issue.key} Bench work`, core, core]);
     await expect(hit.locator(`[data-dispatch-ref="dispatch://${issue.key}"]`)).toHaveText(
       `${issue.key} Bench work`
     );
@@ -502,12 +536,12 @@ test("a search mark inside a reference stays on the words as the server sent it,
     await expect(hit.locator("[data-dispatch-missing][href]")).toHaveCount(0);
     await expect(hit.locator("[data-dispatch-ref]")).toHaveCount(1);
 
-    await search.fill("CORE/component/nope");
+    await search.fill(`${core}/component/nope`);
     const component = dialog
       .getByRole("option", { name: /^comment / })
       .filter({ hasText: missingComponent });
     await expect(component).toHaveCount(1);
-    await expect(component.locator("mark")).toHaveText(["CORE/component/nope"]);
+    await expect(component.locator("mark")).toHaveText([`${core}/component/nope`]);
     await expect(component.locator("[data-dispatch-missing]")).toHaveText([missingComponent]);
     await expect(component.locator("[data-dispatch-missing][href]")).toHaveCount(0);
     await expect(component.locator("[data-dispatch-ref]")).toHaveCount(0);
@@ -530,13 +564,14 @@ test("a search mark inside a reference stays on the words as the server sent it,
 test("a search hit on a stored autolink's key reads as the issue it links to, and a worded link keeps its words", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Bench work" });
-  await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Bench work" });
+  await createProjectDocument(core, {
     content: `See <dispatch://${issue.key}> since Monday.\n`,
     name: "Autolink notes",
   });
-  await createProjectDocument("CORE", {
+  await createProjectDocument(core, {
     content: `See [the design](dispatch://${issue.key}) since Tuesday.\n`,
     name: "Worded notes",
   });
@@ -545,7 +580,7 @@ test("a search hit on a stored autolink's key reads as the issue it links to, an
   try {
     const page = await context.newPage();
     await openSearchFromRail(page, false);
-    await page.getByRole("combobox", { name: "Search" }).fill("CORE");
+    await page.getByRole("combobox", { name: "Search" }).fill(core);
     const dialog = page.getByRole("dialog", { name: "Search" });
 
     const autolink = dialog.getByRole("option", { name: /^doc / }).filter({ hasText: "Monday" });
@@ -577,15 +612,20 @@ test("a search hit on a stored autolink's key reads as the issue it links to, an
 test("a project-document hit is grouped under the document and opens it; a message hit opens its Conversation turn", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const document = await createProjectDocument("CORE", {
-    content: "# Design notes\n\nThe sextant sights the horizon.\n",
+  const core = rowKey("CORE");
+  // The word searched for holds the row's own key (`keyedSearchWord`, e2e/search.ts), and so do
+  // the title and the message that start with it: only this row's items hold it.
+  const term = keyedSearchWord("sextant", core);
+  const sentenceWord = keyedSearchWord("Sextant", core);
+  await createProject({ key: core, name: "Core" });
+  const document = await createProjectDocument(core, {
+    content: `# Design notes\n\nThe ${term} sights the horizon.\n`,
     name: "Design notes",
   });
-  const issue = await createIssue({ project: "CORE", title: "Sextant work" });
+  const issue = await createIssue({ project: core, title: `${sentenceWord} work` });
   const message = await createMessage(
     issue.key,
-    { body: "Sextant calibration done." },
+    { body: `${sentenceWord} calibration done.` },
     searchSession
   );
   const context = await asUser(browser, "alice");
@@ -594,18 +634,18 @@ test("a project-document hit is grouped under the document and opens it; a messa
     const page = await context.newPage();
     await openSearchFromRail(page, false);
     const search = page.getByRole("combobox", { name: "Search" });
-    await search.fill("sextant");
+    await search.fill(term);
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     await expect(dialog.getByRole("option")).toHaveCount(3);
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE: Design notes"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}: Design notes"]`)
     ).toBeVisible();
     await expect(
-      dialog.locator('[role="presentation"][aria-label="CORE: Design notes"]')
+      dialog.locator(`[role="presentation"][aria-label="${core}: Design notes"]`)
     ).not.toHaveAttribute("data-status");
     await expect(
-      page.locator(`[role="presentation"][aria-label="${issue.key}: Sextant work"]`)
+      page.locator(`[role="presentation"][aria-label="${issue.key}: ${sentenceWord} work"]`)
     ).toHaveAttribute("data-status", "triage");
 
     await dialog.getByRole("option", { name: /^message / }).click();
@@ -616,16 +656,16 @@ test("a project-document hit is grouped under the document and opens it; a messa
     );
     await expect(
       page.getByRole("list", { name: "Conversation turns" }).locator('li[aria-current="true"]')
-    ).toContainText("Sextant calibration done.");
+    ).toContainText(`${sentenceWord} calibration done.`);
 
     // The palette opens on the page the reader is already on: Ctrl+K, not another load.
     await page.keyboard.press("Control+k");
-    await page.getByRole("combobox", { name: "Search" }).fill("sextant");
+    await page.getByRole("combobox", { name: "Search" }).fill(term);
     await dialog.getByRole("option", { name: /^doc / }).click();
     await expect(page).toHaveURL(
-      new RegExp(`/projects/CORE/documents/${document.artifact.slug}\\?q=sextant$`)
+      new RegExp(`/projects/${core}/documents/${document.artifact.slug}\\?q=${term}$`)
     );
-    await expect(documentEditor(page)).toContainText("sextant");
+    await expect(documentEditor(page)).toContainText(term);
   } finally {
     await context.close();
   }
@@ -636,10 +676,14 @@ test("a project-document hit is grouped under the document and opens it; a messa
 test("the palette's keyboard hints show for a pointer and not for a touch reader @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Conversation view" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createIssue({ project: core, title: "Conversation view" });
 
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): the Inbox behind the
+  // palette holds none of another row's questions, whose priority selects carry options of
+  // their own, so the first option on the page is the palette's.
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");

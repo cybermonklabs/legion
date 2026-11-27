@@ -55,20 +55,23 @@
  *  wall-clock path behind `--shuffle`, which Playwright takes as the seed" and "a wall-clock
  *  path behind `--only-changed`, which Playwright takes as a git ref".
  *
- *    --list --shuffle e2e/claim.e2e.ts       listed 1,373 tests in 191 files, exit 0: the
- *                                            default selection, the path taken as the seed and
- *                                            no file filtered
- *    --list --only-changed e2e/claim.e2e.ts  listed 0 tests in 0 files, exit 1, `--only-changed
- *                                            <path>` printing `Cannot detect changed files for
- *                                            --only-changed mode: git diff <path> --name-only`
+ *    --list --shuffle e2e/claim-unresponsive.e2e.ts       listed 1,479 tests in 209 files,
+ *                                                         exit 0: the default selection, the
+ *                                                         path taken as the seed and no file
+ *                                                         filtered
+ *    --list --only-changed e2e/claim-unresponsive.e2e.ts  listed 0 tests in 0 files, exit 1,
+ *                                                         `--only-changed <path>` printing
+ *                                                         `Cannot detect changed files for
+ *                                                         --only-changed mode: git diff <path>
+ *                                                         --name-only`
  *
- *  Those 1,373 rows are what a listing that names no project holds, and not the whole suite:
+ *  Those 1,479 rows are what a listing that names no project holds, and not the whole suite:
  *  the three wall-clock projects carry `default: false` (`clockProjectNames`,
  *  `e2e/configurations.ts`) and stand outside it. Measured at this head against
- *  `e2e/playwright.config.ts`, `--list` alone lists `Total: 1373 tests in 191 files`, `--list`
- *  naming `chromium-alone`, `firefox-alone` and `webkit-alone` lists `Total: 54 tests in 3
- *  files`, and `--list` naming all fifteen projects of the config lists `Total: 1427 tests in
- *  194 files`, which is the suite.
+ *  `e2e/playwright.config.ts`, `--list` alone lists `Total: 1479 tests in 209 files`, `--list`
+ *  naming `chromium-alone`, `firefox-alone` and `webkit-alone` lists `Total: 51 tests in 3
+ *  files`, and `--list` naming all fifteen projects of the config lists `Total: 1530 tests in
+ *  212 files`, which is the suite.
  *
  *  Together the two sets of readings settle every class. A REQUIRED-value option takes the next
  *  token whatever it looks like, a `--ui` included, which is why `--grep --ui` lists rows. An
@@ -77,11 +80,12 @@
  *  --project chromium` names `chromium` to `projectsOnCommandLine`, rather than swallowing the
  *  `--project` and answering that the run names no project
  *  (`e2e/__tests__/projects-on-command-line.test.ts` holds the row). It TAKES a token that does
- *  not begin with a dash, which is why `--shuffle e2e/claim.e2e.ts` shuffles by that path and
- *  filters no file. That is the half `clockFileOnCommandLine` rests on, and the two rows named
- *  above are its evidence. A VARIADIC option (`--project <project-name...>`) behaves as a
- *  required one for its first value and stops at the next dash token, so `--project --ui` reads
- *  `--ui` as a project name and `--project chromium --ui` leaves `--ui` a flag.
+ *  not begin with a dash, which is why `--shuffle e2e/claim-unresponsive.e2e.ts` shuffles by
+ *  that path and filters no file. That is the half `clockFileOnCommandLine` rests on, and the
+ *  two rows named above are its evidence. A VARIADIC option (`--project <project-name...>`)
+ *  behaves as a required one for its first value and stops at the next dash token, so
+ *  `--project --ui` reads `--ui` as a project name and `--project chromium --ui` leaves `--ui` a
+ *  flag.
  */
 
 /** The class an option's value belongs to, as `bunx playwright test --help` writes it: a required

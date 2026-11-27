@@ -1,7 +1,7 @@
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createProject, createProjectDocument } from "./api";
 import { connectedDot, documentEditor, expectParagraphReadings } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { withAlice } from "./users";
 
 // A letter right after a literal backslash, beside an emphasis run, is one the writer spells as a
@@ -26,16 +26,17 @@ const entry = fixture("writer-spells-a-flanked-letter-after-a-backslash");
 test("a document with escapes beside emphasis around a tilde is stored, and its page draws the runs the engine reads @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const document = await createProjectDocument(
-    "CORE",
+    core,
     { content: entry.markdown, name: "spelling.md" },
     agentSession
   );
   const { slug } = document.artifact;
   expect(slug).toBe("spelling-md");
   await withAlice(browser, async (page) => {
-    await page.goto(`/projects/CORE/documents/${slug}`);
+    await page.goto(`/projects/${core}/documents/${slug}`);
     await expect(connectedDot(page)).toHaveText("connected");
     await expectParagraphReadings(documentEditor(page), entry.reading.paragraphs);
   });

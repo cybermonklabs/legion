@@ -1,6 +1,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
+import type { Result } from "../web/src/api/paths";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -20,7 +21,7 @@ import {
   syncArchitectureSource,
   uploadAgentPicture,
 } from "./api";
-import { seedDeliveryFixture } from "./delivery-seed";
+import { type DeliveryPlace, seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -32,9 +33,19 @@ import {
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
-import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
+import {
+  type Browser,
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  rowKey,
+  rowPerson,
+  rowSessionId,
+  test,
+} from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
-import { signIn } from "./users";
+import { type RowLogin, signIn } from "./users";
 
 /**
  * A rolling release of Dispatch runs two builds at once behind one load balancer: a page one
@@ -103,27 +114,33 @@ const machine = "two-builds-host";
  *  this window hold those at any drawing wider than 192 px. */
 const windowLayout = "b05b,80x24,0,0[80x12,0,0,0,80x11,0,13{40x11,0,13,1,39x11,41,13,2}]";
 
-const session: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  dir: "/workspaces/two-builds",
-  machine_id: machine,
-  roles: ["planner"],
-  // The live view's stream hook takes a session uuid only, as a real session id is.
-  session_id: "019a2b3c-0559-7000-8000-000000000559",
-  title: "Two builds planner",
-  tmux_place: {
-    layout: windowLayout,
-    pane_id: "%0",
-    pane_index: 0,
-    server_pid: "4242",
-    session_name: "main",
-    socket: "/tmp/tmux-1000/default",
-    window_id: "@1",
-    window_index: 1,
-    window_name: "agents",
-    zoomed: false,
-  },
-};
+/** The session the walk seeds, under an id of the row's own (`rowSessionId`, e2e/test.ts): the
+ *  walk uploads its picture to the session's conversation as `shot.png`, and an upload under a
+ *  name the conversation already holds is that picture's next version, so a session another row
+ *  of the worker had seeded would draw no `shot.png version 1`. The live view's stream hook takes
+ *  a session uuid only, as a real session id is, which `rowSessionId` answers. */
+function rowSession(): FakeSession {
+  return {
+    capabilities: ["aside", "btw", "steer"],
+    dir: "/workspaces/two-builds",
+    machine_id: machine,
+    roles: ["planner"],
+    session_id: rowSessionId("planner"),
+    title: "Two builds planner",
+    tmux_place: {
+      layout: windowLayout,
+      pane_id: "%0",
+      pane_index: 0,
+      server_pid: "4242",
+      session_name: "main",
+      socket: "/tmp/tmux-1000/default",
+      window_id: "@1",
+      window_index: 1,
+      window_name: "agents",
+      zoomed: false,
+    },
+  };
+}
 
 /** The text each seeded thing shows, which its route's landmark finds. */
 const shown = {
@@ -171,20 +188,31 @@ const messageAuthor = {
 interface Seeded {
   readonly agentArtifact: string;
   readonly broadcast: string;
+  /** The window `/delivery` opens on to show the timeline's runs (`DeliveryPlace`). */
+  readonly deliveryQuery: string;
   readonly document: string;
   readonly issue: string;
   readonly issueArtifact: string;
   readonly priority: string;
+  /** The person the walk signs in as and writes the issue's comment as: a person of the row's
+   *  own (`rowPerson`, e2e/test.ts), whose page lists that one comment. */
+  readonly reader: RowLogin;
+  /** The id of the session the walk seeded (`rowSession`). */
+  readonly session: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
- *  project with an architecture source, an issue with a spec, a child, a comment, a message
- *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
- *  in flight that advances it, and the delivery timeline's runs. */
-async function seedEveryRoute(): Promise<Seeded> {
+ *  project with an architecture source, an issue with a spec, a child, a comment the row's own
+ *  reader (`rowPerson`) wrote, a message holding a Mermaid diagram and a document artifact, a
+ *  project document, a live session with a broadcast, a replayed conversation and a picture, a
+ *  priority with a description and an issue in flight that advances it, and the delivery
+ *  timeline's runs, in the row's own place. */
+async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
+  const core = rowKey("CORE");
+  const reader = rowPerson("alice");
+  const session = rowSession();
   await setLiveSessions([session]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
   await seedFakeGithub({
     "acme/architecture": {
       contents: "read",
@@ -192,15 +220,15 @@ async function seedEveryRoute(): Promise<Seeded> {
       installation_id: 559,
     },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo: "acme/architecture" });
-  expect((await syncArchitectureSource("CORE", "acme/architecture")).last_error).toBeNull();
+  await putArchitectureSource(core, { branch: "main", repo: "acme/architecture" });
+  expect((await syncArchitectureSource(core, "acme/architecture")).last_error).toBeNull();
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: `# Rollout\n\n${shown.spec}`,
     title: shown.issue,
   });
-  await createIssue({ parent: issue.key, project: "CORE", title: shown.child });
-  await createComment(issue.key, { body: shown.comment });
+  await createIssue({ parent: issue.key, project: core, title: shown.child });
+  await createComment(issue.key, { body: shown.comment }, { login: reader });
   await createMessage(
     issue.key,
     { body: `\`\`\`mermaid\ngraph TD\n  ${diagram.from} --> ${diagram.to}\n\`\`\`\n\n${longList}` },
@@ -210,19 +238,21 @@ async function seedEveryRoute(): Promise<Seeded> {
     content: `# Rollout notes\n\n${shown.issueArtifact}\n`,
     name: "rollout-notes.md",
   });
-  const document = await createProjectDocument("CORE", {
+  const document = await createProjectDocument(core, {
     content: `# Handbook\n\n${shown.document}\n`,
     name: "handbook.md",
   });
   // The priorities page draws its table only where a priority is written, and a priority's own
   // page draws the work advancing it, so one priority is written with an issue in flight under
-  // it; the page's tabs for its two fault lists are drawn whatever those hold.
+  // it; the page's tabs for its two fault lists are drawn whatever those hold. Its title carries
+  // the row's own key, so its id, which the server derives from the title and refuses a second
+  // time (`PRIORITY_EXISTS`), is the row's own too.
   const priority = await createPriority({
     description: "Every page is served from either build while a release overlaps the two.",
     owner: "alice",
-    title: "Serve every page from both builds",
+    title: `Serve every page from both builds (${core})`,
   });
-  const advancing = await createIssue({ project: "CORE", title: "Pin assets to one process" });
+  const advancing = await createIssue({ project: core, title: "Pin assets to one process" });
   await patchIssue(advancing.key, { advances: [priority.id], status: "in_progress" });
   const broadcast = await createBroadcast({
     body: "Report **status**.",
@@ -264,14 +294,17 @@ async function seedEveryRoute(): Promise<Seeded> {
     "replay"
   );
   const agentArtifact = await uploadAgentPicture(session.session_id, "shot.png");
-  await seedDeliveryFixture();
+  await seedDeliveryFixture(delivery);
   return {
     agentArtifact,
     broadcast: broadcast.id,
+    deliveryQuery: delivery.timelineQuery,
     document: document.artifact.slug,
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
     priority: priority.id,
+    reader,
+    session: session.session_id,
   };
 }
 
@@ -303,12 +336,10 @@ function openDocument(page: Page, text: string): readonly Locator[] {
   return [documentEditor(page).filter({ hasText: text }), connectedDot(page)];
 }
 
-/** The timeline fixture's day (`seedDeliveryFixture`). */
-const deliveryWindow = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
-
 function visits(seed: Seeded): readonly Visit[] {
+  const core = rowKey("CORE");
   const issue = `/issues/${seed.issue}`;
-  const agent = `/agents/${session.session_id}`;
+  const agent = `/agents/${seed.session}`;
   return [
     { route: "/", shows: (page) => [heading(page, "Inbox")], url: "/" },
     {
@@ -384,7 +415,7 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, machine),
         page
           .getByTestId("window-layout")
-          .locator(`[data-testid="window-pane"][data-agent="${session.session_id}"]`),
+          .locator(`[data-testid="window-pane"][data-agent="${seed.session}"]`),
       ],
       url: `/machines/${machine}`,
     },
@@ -479,34 +510,34 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, "Core"),
         page.getByRole("tab", { name: "Architecture", selected: true }),
       ],
-      url: "/projects/CORE",
+      url: `/projects/${core}`,
     },
     {
       route: "/projects/:key/architecture",
       shows: (page) => [
         page.getByTestId("architecture-source").filter({ hasText: "acme/architecture/main" }),
       ],
-      url: "/projects/CORE/architecture",
+      url: `/projects/${core}/architecture`,
     },
     {
       route: "/projects/:key/issues",
       shows: (page) => [
         page.locator("#project-issues-panel").getByText(shown.issue, { exact: true }).first(),
       ],
-      url: "/projects/CORE/issues",
+      url: `/projects/${core}/issues`,
     },
     {
       route: "/projects/:key/documents",
       shows: (page) => [
         page.locator("#project-documents-panel").getByRole("listitem", { name: "handbook.md" }),
       ],
-      url: "/projects/CORE/documents",
+      url: `/projects/${core}/documents`,
     },
     {
       loads: ["editor"],
       route: "/projects/:key/documents/:slug",
       shows: (page) => openDocument(page, shown.document),
-      url: `/projects/CORE/documents/${seed.document}`,
+      url: `/projects/${core}/documents/${seed.document}`,
     },
     {
       route: "/credentials/*",
@@ -527,27 +558,28 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, "Delivery timeline"),
         page.getByTestId("delivery-chart").locator("canvas").first(),
       ],
-      url: `/delivery?${deliveryWindow}`,
+      url: `/delivery?${seed.deliveryQuery}`,
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     {
-      // The walk is signed in as alice (`signIn` below), and alice is who `seedEveryRoute`
-      // writes the issue's comment as (e2e/api.ts's default author), so her page lists that
-      // comment. Its words are what says the page drew the store's answer rather than its
-      // loading skeleton or its empty state.
+      // The walk is signed in as its reader (`signIn` below), a person of the row's own
+      // (`rowPerson`, e2e/test.ts), and the reader is who `seedEveryRoute` writes the issue's
+      // comment as, so the reader's page lists that comment and no other row's: both walks write
+      // the same words, and a page both wrote to as alice lists them twice. Its words are what
+      // says the page drew the store's answer rather than its loading skeleton or its empty state.
       route: "/people/:login",
       shows: (page) => [
-        heading(page, "alice"),
+        heading(page, seed.reader),
         page.getByRole("list", { name: "Person nodes" }).getByText(shown.comment),
       ],
-      url: "/people/alice",
+      url: `/people/${seed.reader}`,
     },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
     {
       // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
       // no visit above loads it. This visit is last because the init script stays on the walk's
       // one context: an issue visit after it would draw the new page rather than today's.
-      prepare: (page) => withIssuePage(page.context(), "alice"),
+      prepare: (page) => withIssuePage(page.context(), seed.reader),
       route: "/issues/:key/*",
       shows: (page) => [
         page
@@ -566,13 +598,15 @@ function isAsset(url: URL): boolean {
 /** Opens every visit with the page document, API calls and sockets on `pageProcess` (the pin
  *  cookie) and every `/assets/` request on `assetProcess` (the pin header, which wins over the
  *  cookie), and then asks that every script and stylesheet of `pageProcess`'s build was answered
- *  200: the page names only its own build's chunks. */
+ *  200: the page names only its own build's chunks. The delivery timeline's runs are written in
+ *  the row's own place (`delivery`, e2e/test.ts). */
 async function walk(
   browser: Browser,
+  delivery: DeliveryPlace,
   pageProcess: DispatchProcess,
   assetProcess: DispatchProcess
 ): Promise<void> {
-  const seed = await seedEveryRoute();
+  const seed = await seedEveryRoute(delivery);
   const planned = visits(seed);
   expect(
     walkRoutes.filter((route) => !planned.some((visit) => visit.route === route.path)),
@@ -588,7 +622,7 @@ async function walk(
   const assetsFrom = `Dispatch ${assetProcess.toUpperCase()}`;
   const context = await browser.newContext();
   await context.addCookies([{ name: processPinCookie, url: baseUrl, value: pageProcess }]);
-  await signIn(context, "alice");
+  await signIn(context, seed.reader);
   await context.route(isAsset, (route) =>
     route.continue({ headers: { ...route.request().headers(), [processPinHeader]: assetProcess } })
   );
@@ -700,16 +734,18 @@ const walkTimeout = 300_000;
 
 test("every route renders with its page from Dispatch A and every asset from Dispatch B", async ({
   browser,
+  delivery,
 }) => {
   test.setTimeout(walkTimeout);
-  await walk(browser, "a", "b");
+  await walk(browser, delivery, "a", "b");
 });
 
 test("every route renders with its page from Dispatch B and every asset from Dispatch A", async ({
   browser,
+  delivery,
 }) => {
   test.setTimeout(walkTimeout);
-  await walk(browser, "b", "a");
+  await walk(browser, delivery, "b", "a");
 });
 
 /** Opens the inbox in a signed-in tab whose page, API calls and sockets are all `process`'s (the
@@ -721,7 +757,10 @@ test("every route renders with its page from Dispatch B and every asset from Dis
 async function focusedTab(
   browser: Browser,
   process: DispatchProcess
-): Promise<{ readonly page: Page; readonly builds: unknown }> {
+): Promise<{
+  readonly page: Page;
+  readonly builds: Result<"/api/v1/dashboard/builds", "get">;
+}> {
   const context = await browser.newContext();
   await context.addCookies([{ name: processPinCookie, url: baseUrl, value: process }]);
   await signIn(context, "alice");
@@ -734,7 +773,7 @@ async function focusedTab(
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   const response = await answered;
   expect(response.status()).toBe(200);
-  const builds: unknown = await response.json();
+  const builds = (await response.json()) as Result<"/api/v1/dashboard/builds", "get">;
   await response.finished();
   await page.evaluate(async () => {
     for (let frame = 0; frame < 3; frame++) {

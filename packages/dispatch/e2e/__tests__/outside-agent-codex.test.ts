@@ -65,6 +65,23 @@ const release = "5.0.1";
  *  directory; a run of the leg whose cleanup took minutes (the deletion of a tree of 80 879
  *  entries) went unseen before this row. */
 const exitAfterRows = 60_000;
+/** OUTSIDE_CODEX_LIST_SECONDS for a run whose stand-in Codex files its session record. The leg's
+ *  own default, 30 s, is a real Codex's. The stand-in files its record and puts its session on the
+ *  list before its turn's first request, so each wait this window bounds ends at the leg's first
+ *  read, and the window has only to outlast the leg's own way to that read. The reading: in Jobs
+ *  infra983-t5hold-m1-zbtbc and infra983-t5hold-m2-8lw79 at cbfa8cb7 (four runs of the harness
+ *  lane under two busy loops on a gVisor pod of 2 CPUs, the shape of INFRA-983's k5 runs, on
+ *  2026-11-23, the leg's two waits timed by a patch of those Jobs alone), each of the 264 records
+ *  the stand-in filed came 0.002 s to 4.0 s before its window opened; the leg first read the
+ *  records at most 0.48 s after its window opened (272 waits), and the list at most 7.28 s after
+ *  (132 waits, the next slowest 1.82 s). At 3 s, a k5 run at c16abcd8 (Job
+ *  infra983-k5-head31c-sdcrv) read a slow-menu run's record as never filed. Three times 7.28 s is
+ *  21.8 s: rounded up, plus the 1 s the leg's whole-second clock can take off a window, 23 s. A
+ *  run whose record comes waits no longer for it, since the leg's poll ends at the read. */
+const listSeconds = 23;
+/** OUTSIDE_CODEX_START_SECONDS for a run that names none: the leg's own default, 90 s
+ *  (`start_seconds` in e2e/acceptance/outside-agent-codex.sh). */
+const startSeconds = 90;
 /** The screens a run that passes answers, as each row's evidence names them: the folder trust of a
  *  first start in a git repository, the two first-run screens, and the envoy_send approval. */
 const answeredScreens =
@@ -136,8 +153,18 @@ interface CodexScenario {
   readonly tarballMismatch?: boolean;
   /** The integrity npm records for @openai/codex is not the pinned one. */
   readonly codexIntegrity?: "other";
-  /** OUTSIDE_CODEX_START_SECONDS (default 30): how long each start may hold before its turn. */
+  /** OUTSIDE_CODEX_START_SECONDS (default `startSeconds`, the real leg's own): how long each start
+   *  may hold before its turn. The leg's `drive` ends at the turn's first logged request, so only
+   *  a run held by a screen waits the window out, and a run whose start nothing holds ends as
+   *  soon under 90 s as under 30.
+   *  Under a loaded lane 30 s was too short: in k5's loaded Job at 1582cf67
+   *  (infra983-k5-head32c-68z46), the row "answering the first start otherwise than the outside
+   *  person is told to fails the rows it breaks..." failed when the screen 'Hooks need review'
+   *  drew its move after the 30 s window had closed. */
   readonly startSeconds?: number;
+  /** OUTSIDE_CODEX_LIST_SECONDS (default `listSeconds`): how long the leg waits for each run's
+   *  session record, and for the edge to list the session. */
+  readonly listSeconds?: number;
   /** The first-run menus draw each move late, 2.5 s after the keys, as a slow machine's Codex can:
    *  a key sent before the last move is drawn is one move more. A move comes sooner than that
    *  once the leg has looked at the pane three times since, seeing the old one each time. */
@@ -185,6 +212,19 @@ const named = scenario.tokenNames ? " Its token names project EXAMPLE." : " It m
 console.log("Session " + process.env.CODEX_THREAD_ID + " acts for " + owner + ": issues you create without an assignee are assigned to " + owner + "." + named);
 `;
 }
+
+/** The stand-in `codex`'s reader of the keys its pane was sent, which the stand-in `tmux` appends a
+ *  line each: `keys()` answers the keys sent since its last call. It reads only whole lines, those
+ *  before the file's last newline, so a key `send-keys` is still writing is read once it is whole,
+ *  never as a part that counts as read and is lost: the menu would then wait for a move the leg
+ *  has already sent, and the leg sends no key twice. */
+const keysReader = `let consumed = 0;
+const keys = () => {
+  const all = readFileSync(join(pane, "keys"), "utf8").split("\\n").slice(0, -1).filter((key) => key !== "");
+  const fresh = all.slice(consumed);
+  consumed = all.length;
+  return fresh;
+};`;
 
 /** The stand-in `codex`: a Bun script with this run's state directory written into it. Its
  *  interactive start (`--no-daemon`) runs in the stand-in tmux's pane: it shows the two first-run
@@ -244,13 +284,7 @@ const show = (lines) => {
   writeFileSync(join(pane, "screen.writing"), lines.join("\\n") + "\\n");
   renameSync(join(pane, "screen.writing"), join(pane, "screen"));
 };
-let consumed = 0;
-const keys = () => {
-  const all = readFileSync(join(pane, "keys"), "utf8").split("\\n").filter((key) => key !== "");
-  const fresh = all.slice(consumed);
-  consumed = all.length;
-  return fresh;
-};
+${keysReader}
 // A slow screen reads the keys sent and draws the move only every 2.5 s.
 const pause = scenario.slowScreens ? 2500 : 25;
 const menu = async (title, options) => {
@@ -384,7 +418,10 @@ if (run === "main") {
     }
     const fails = scenario.sendFails || !allowed;
     if (!fails && !scenario.outboundDropped) {
-      writeFileSync(join(state, "outbound"), JSON.stringify({ text: plan.outbound, from: session, to: plan.outboundTo }));
+      // Whole or not there, as the screen is written: the probe's receiver parses the file the
+      // moment it is there, and one it read between its creation and its write would be empty.
+      writeFileSync(join(state, "outbound.writing"), JSON.stringify({ text: plan.outbound, from: session, to: plan.outboundTo }));
+      renameSync(join(state, "outbound.writing"), join(state, "outbound"));
     }
     log({ step: "sent", ok: !fails, detail: scenario.sendFails ? "tool call error: Envoy is not ready" : allowed ? "delivered to " + plan.outboundTo : "tool call cancelled" });
   } else {
@@ -660,8 +697,9 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
       OUTSIDE_PEER_SESSION: "example-peer",
       OUTSIDE_DEVICE_LOGIN_HOME: loginHome,
       OUTSIDE_LEGION_CHECKOUT: repo.dir,
-      OUTSIDE_CODEX_LIST_SECONDS: "3",
-      OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? 30),
+      // The window `listSeconds` states its reading; a run that files no record takes its own.
+      OUTSIDE_CODEX_LIST_SECONDS: String(scenario.listSeconds ?? listSeconds),
+      OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? startSeconds),
       OUTSIDE_CODEX_TSV: rows,
       // An input the leg no longer takes: the pass row reads that its provenance helper got none.
       OUTSIDE_NPM_REGISTRY: "http://registry.invalid",
@@ -880,6 +918,8 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     async () => {
       const [dropped, unregistered, wrongOwner] = await Promise.all([
         codexStandInRun({ inboundDropped: true }),
+        // The unregistered run must read its record and the list before its window runs out, so
+        // it takes the measured window, as a run that waits for the record does, and waits it out.
         codexStandInRun({ registers: false }),
         codexStandInRun({
           whoami: { main: { exit: 0, owner: "someone@example.com" }, "edge-refused": { exit: 2 } },
@@ -1087,7 +1127,10 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     "answering the first start otherwise than the outside person is told to fails the rows it breaks: hooks left untrusted, C1, C4 and C5; the new model, C2 and C3",
     async () => {
       const [noTrust, newModel] = await Promise.all([
-        codexStandInRun({ firstStart: "no-trust" }),
+        // With the hooks untrusted no run files a record, so each of its two record waits runs its
+        // window out and reads nothing: 3 s keeps them short, and a leg too slow to read inside
+        // them reads the same, no record.
+        codexStandInRun({ firstStart: "no-trust", listSeconds: 3 }),
         codexStandInRun({ firstStart: "new-model" }),
       ]);
       const notPass = (run: CodexRun, names: readonly string[]) =>
@@ -1120,8 +1163,9 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
   test(
     "a first-run menu that draws each move late is answered with the entry it names, never one past it",
     async () => {
-      // The leg's own default start window, 90 s: four screens drawn 2.5 s late are no start held.
-      const run = await codexStandInRun({ slowScreens: true, startSeconds: 90 });
+      // The leg's own default start window (`startSeconds`): four screens drawn 2.5 s late are no
+      // start held.
+      const run = await codexStandInRun({ slowScreens: true });
       expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
         verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
       });
@@ -1856,4 +1900,39 @@ describe("the Codex leg's stand-in model, on the requests Codex sends it", () =>
       });
     }
   });
+});
+
+describe.skipIf(skipWithout("bun"))("the stand-in Codex's keys", () => {
+  test(
+    "a key whose line is read half-written is read once it is whole, not lost: a Down written in two parts, then an Enter, reads as Down and Enter",
+    async () => {
+      // The read between the two parts is the one a menu makes while the leg's send-keys is still
+      // writing the line; this script makes it at that point every time, with no clock.
+      const pane = scratch("keys-pane");
+      const reader = script(
+        join(scratch("keys-reader"), "read-keys.ts"),
+        `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const pane = ${JSON.stringify(pane)};
+${keysReader}
+writeFileSync(join(pane, "keys"), "Do");
+const first = keys();
+appendFileSync(join(pane, "keys"), "wn\\nEnter\\n");
+console.log(JSON.stringify([first, keys()]));
+`
+      );
+      const { code, stdout } = await runBounded({
+        argv: ["bun", reader],
+        bound: "short",
+        env: { PATH: process.env.PATH ?? "" },
+        from: import.meta.url,
+      });
+      expect({ code, read: JSON.parse(stdout) }).toEqual({
+        code: 0,
+        read: [[], ["Down", "Enter"]],
+      });
+    },
+    // The one reader, a bounded child under the short bound.
+    rowLimit("short")
+  );
 });

@@ -76,7 +76,10 @@ type routeShape struct {
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
 	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
-	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
+	// Refusals are this route's refusal bodies richer than errorBody, each with its status: the
+	// ones its handler writes. The 409 the prefix layer writes in front of the handler of a route
+	// that resolves an id written short is its declaration's ID's to state (idRoute.refusals), and
+	// the emitter reads the two together (routeRefusals).
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
 	// its bytes rather than modelling them; empty for every other route.

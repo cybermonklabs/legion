@@ -2,13 +2,8 @@ import type { ReactNode } from "react";
 
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { borderDefault, linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
-import type { InboxGroup } from "./grouping";
+import { type InboxGroup, showMoreLabel } from "./grouping";
 import type { InboxListRow } from "./list-row";
-
-/** How many rows a band draws at once, and how many more each **Show more** adds. A band of a
- *  thousand threads is a scroll nobody asked for, and the rows behind the first page are one
- *  press away. */
-export const GROUP_PAGE = 50;
 
 /**
  * One band as items of the Inbox's single list: its heading, the rows it is drawing, and
@@ -68,8 +63,7 @@ export function groupItems({
           onClick={() => onShowMore(group.key)}
           type="button"
         >
-          Show {Math.min(held, GROUP_PAGE)} more
-          {group.label === undefined ? "" : ` in ${group.label}`}
+          {showMoreLabel(held, group.label)}
         </button>
       </li>
     ) : null,

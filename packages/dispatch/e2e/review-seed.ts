@@ -19,6 +19,7 @@ import {
   createIssueArtifact,
   createPlanReview,
   createPriority,
+  fixedKey,
   getArtifact,
   getBroadcast,
   getIssue,
@@ -38,12 +39,26 @@ import { awaitFact } from "./local-instance-support";
 import { sql } from "./psql";
 import type { ReviewSeed, SeededReadMarks } from "./review-routes";
 import { sessionIds } from "./session-ids";
-import { asWorkspaceSession, reviewSessions, seedWorkspace, workspaceSessions } from "./workspace";
+import {
+  asWorkspaceSession,
+  reviewSessions,
+  seedWorkspace,
+  sendWorkspaceBroadcast,
+  workspaceSessions,
+} from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
  *  and the Spec tab draws beside the block it shaped. */
 const DECISION = "Seed one corpus for both review layers";
 const REASON = "Chosen so a scan and a shot read the same page.";
+
+/** Why the corpus's project keys are fixed rather than a row's own: it is seeded once into each
+ *  database a worker holds, and every review row of that worker reads that one copy
+ *  (`reviewCorpus`, e2e/test.ts), so no two rows make it; the visual review's baselines and the
+ *  accessibility pass's recording were taken under these keys. */
+const SEEDED_ONCE = "the review corpus is seeded once into each database a worker holds";
+/** The corpus's two projects, the ones `seedWorkspace` makes. */
+const PROJECTS = { core: fixedKey("CORE", SEEDED_ONCE), ops: fixedKey("OPS", SEEDED_ONCE) };
 
 /** The person `/people/:login` is opened on: the login `seedWorkspace()` makes every human
  *  write of this corpus as (`e2e/workspace.ts`'s `alice`, which is also `e2e/api.ts`'s default
@@ -88,15 +103,39 @@ function firstMachine(): string {
  *  a later run. */
 type Holder = "planner" | "tester" | "reviewer" | "cacheWarm" | "untitled";
 
-/** One issue this corpus adds to `seedWorkspace`'s: its project and title, the status it stands
- *  in, the priority whose work it is by that priority's place in `priorities` (from 0), or none,
- *  and the session that claimed it, where one did. */
+/** One issue this corpus adds to `seedWorkspace`'s: its project, by its name in `PROJECTS`, and
+ *  title, the status it stands in, the priority whose work it is by that priority's place in
+ *  `priorities` (from 0), or none, and the session that claimed it, where one did. */
 interface Work {
-  readonly project: "CORE" | "OPS";
+  readonly project: keyof typeof PROJECTS;
   readonly title: string;
   readonly status: Exclude<IssueStatus, "done">;
   readonly under: number | null;
   readonly holder?: Holder;
+}
+
+/** Marks read every reply a recipient of the broadcast `broadcastId` wrote to its copy, the write
+ *  the broadcast page makes as it draws them (`useMarkShownRepliesRead`). Answers the replies it
+ *  marked, by session. */
+async function markBroadcastRepliesRead(
+  broadcastId: string
+): Promise<Record<string, readonly string[]>> {
+  const broadcast = await getBroadcast(broadcastId);
+  const agents: Record<string, readonly string[]> = {};
+  for (const recipient of broadcast.recipients ?? []) {
+    // The page's own filter: a reply its session wrote, by kind and id, which is what the server
+    // takes in `read_replies` and refuses the whole write over one that fails it.
+    const shown = (recipient.replies ?? [])
+      .filter(
+        (reply) => reply.author.kind === "session" && reply.author.id === recipient.session_id
+      )
+      .map((reply) => reply.id);
+    if (shown.length > 0) {
+      await putAgentState(recipient.session_id, { read_replies: shown });
+      agents[recipient.session_id] = [...(agents[recipient.session_id] ?? []), ...shown];
+    }
+  }
+  return agents;
 }
 
 /** The work this corpus adds beside `seedWorkspace`'s issues, in the order it is created, shaped
@@ -124,7 +163,7 @@ interface Work {
 const WORK = {
   composerOrder: {
     holder: "planner",
-    project: "CORE",
+    project: "core",
     status: "in_progress",
     title:
       "The broadcast composer keeps each recipient's place in the send order when the list it " +
@@ -133,7 +172,7 @@ const WORK = {
   },
   tokenRotation: {
     holder: "tester",
-    project: "OPS",
+    project: "ops",
     status: "testing",
     title:
       "Rotating the agent token on a build host restarts no session that holds a claim, and a " +
@@ -142,7 +181,7 @@ const WORK = {
   },
   railCount: {
     holder: "reviewer",
-    project: "CORE",
+    project: "core",
     status: "needs_review",
     title:
       "The Inbox count on the rail settles within a second of a reply being read on another " +
@@ -152,7 +191,7 @@ const WORK = {
   },
   heartbeats: {
     holder: "untitled",
-    project: "OPS",
+    project: "ops",
     status: "retro",
     title:
       "A machine that misses three heartbeats in a row is listed as unresponsive rather than " +
@@ -161,7 +200,7 @@ const WORK = {
   },
   runOnPush: {
     holder: "reviewer",
-    project: "CORE",
+    project: "core",
     status: "in_progress",
     title:
       "Each change starts its verification run the moment it is pushed, before any reviewer is " +
@@ -170,7 +209,7 @@ const WORK = {
   },
   runRecord: {
     holder: "planner",
-    project: "CORE",
+    project: "core",
     status: "in_progress",
     title:
       "The record a verification run leaves beside a change names the commit it read, the " +
@@ -178,7 +217,7 @@ const WORK = {
     under: 0,
   },
   reviewerSees: {
-    project: "CORE",
+    project: "core",
     status: "testing",
     title:
       "A reviewer opening a change sees whether its checks ran, passed and read its newest " +
@@ -187,7 +226,7 @@ const WORK = {
   },
   queueHolds: {
     holder: "tester",
-    project: "OPS",
+    project: "ops",
     status: "needs_review",
     title:
       "The review queue holds back a change whose checks have not finished, and lets it through " +
@@ -195,7 +234,7 @@ const WORK = {
     under: 0,
   },
   readPast: {
-    project: "CORE",
+    project: "core",
     status: "todo",
     title:
       "A check that failed on a change that is right can be read past with a reason, and the " +
@@ -203,14 +242,14 @@ const WORK = {
     under: 0,
   },
   retireSweep: {
-    project: "OPS",
+    project: "ops",
     status: "todo",
     title:
       "Retire the nightly verification sweep once every change runs its own checks before review",
     under: 0,
   },
   forcePush: {
-    project: "CORE",
+    project: "core",
     status: "triage",
     title:
       "The verification record of a change survives a force-push, and says which of its results " +
@@ -218,7 +257,7 @@ const WORK = {
     under: 0,
   },
   touchedRows: {
-    project: "CORE",
+    project: "core",
     status: "retro",
     title:
       "The browser suite runs only the rows that read the pages a change touches, and says which " +
@@ -226,7 +265,7 @@ const WORK = {
     under: 0,
   },
   runResumes: {
-    project: "OPS",
+    project: "ops",
     status: "in_progress",
     title:
       "A verification run still going when its build host is replaced resumes on the next host " +
@@ -235,7 +274,7 @@ const WORK = {
     under: 0,
   },
   recordInMargin: {
-    project: "CORE",
+    project: "core",
     status: "icebox",
     title:
       "Show a change's verification record in the margin of its pull request, beside the lines " +
@@ -243,13 +282,13 @@ const WORK = {
     under: 0,
   },
   docsCommands: {
-    project: "OPS",
+    project: "ops",
     status: "todo",
     title: "The docs build fails when a page names a command the command-line tool no longer has",
     under: 1,
   },
   releaseCompare: {
-    project: "OPS",
+    project: "ops",
     status: "in_progress",
     title:
       "The release run compares its checks with the last release's and stops on any reading " +
@@ -257,33 +296,33 @@ const WORK = {
     under: 2,
   },
   releaseStopped: {
-    project: "OPS",
+    project: "ops",
     status: "testing",
     title:
       "A release that stopped says which reading it missed, on the release's own page, in one line",
     under: 2,
   },
   notesLine: {
-    project: "CORE",
+    project: "core",
     status: "needs_review",
     title: "Each change carries a line for the release notes, or says why its readers need none",
     under: 3,
   },
   buildProgress: {
-    project: "OPS",
+    project: "ops",
     status: "in_progress",
     title: "A build writes what it has done so far where the next host can read it",
     under: 4,
   },
   drainWaits: {
-    project: "OPS",
+    project: "ops",
     status: "todo",
     title:
       "The drain of a host waits for its builds to write their progress before the host is returned",
     under: 4,
   },
   oneRecord: {
-    project: "CORE",
+    project: "core",
     status: "in_progress",
     title:
       "Every check writes its result to the one record a change keeps, with the commit it read",
@@ -291,7 +330,7 @@ const WORK = {
   },
   foldReports: {
     holder: "cacheWarm",
-    project: "CORE",
+    project: "core",
     status: "backlog",
     title:
       "Fold the unit suites' and the browser suites' reports into the one record a change keeps, " +
@@ -299,14 +338,14 @@ const WORK = {
     under: 5,
   },
   searchMisses: {
-    project: "CORE",
+    project: "core",
     status: "todo",
     title:
       "The hundred searches that opened no page last month each open the page that answers them",
     under: 6,
   },
   flakyList: {
-    project: "CORE",
+    project: "core",
     status: "in_progress",
     title:
       "The suites record which rows failed on which commit, and list a row that failed and then " +
@@ -314,14 +353,14 @@ const WORK = {
     under: 7,
   },
   flakyWeekly: {
-    project: "CORE",
+    project: "core",
     status: "retro",
     title:
       "The weekly read of the flaky list fixes the row at its top and writes down what made it flaky",
     under: 7,
   },
   patchRun: {
-    project: "OPS",
+    project: "ops",
     status: "testing",
     title:
       "A patch run builds an image the day a security patch is released and replaces the hosts " +
@@ -329,7 +368,7 @@ const WORK = {
     under: 8,
   },
   setupCommand: {
-    project: "CORE",
+    project: "core",
     status: "todo",
     title:
       "The one command that starts the stack on a new machine loads the sample data and opens " +
@@ -337,7 +376,7 @@ const WORK = {
     under: 9,
   },
   costPage: {
-    project: "OPS",
+    project: "ops",
     status: "in_progress",
     title:
       "A daily page shows what the build fleet and the checks spent on each merged change, beside " +
@@ -345,14 +384,14 @@ const WORK = {
     under: 10,
   },
   typedKept: {
-    project: "CORE",
+    project: "core",
     status: "needs_review",
     title:
       "What a person types into a session is kept where the next host can read it, as they type it",
     under: 11,
   },
   loadRun: {
-    project: "OPS",
+    project: "ops",
     status: "triage",
     title:
       "A load run opens each page the way a reader does at ten times today's traffic and lists " +
@@ -361,7 +400,7 @@ const WORK = {
   },
   handOver: {
     holder: "cacheWarm",
-    project: "OPS",
+    project: "ops",
     status: "in_progress",
     title:
       "A build host drained for replacement while a verification run still holds it waits for " +
@@ -376,7 +415,7 @@ const WORK = {
     under: null,
   },
   runSummary: {
-    project: "OPS",
+    project: "ops",
     status: "testing",
     title:
       "A change opened for review shows, above its first line, one summary of every check its " +
@@ -632,24 +671,8 @@ async function markWhatTheShotPagesRead(
   issue: string,
   specId: string
 ): Promise<SeededReadMarks> {
-  const broadcast = await getBroadcast(broadcastId);
-  const agents: Record<string, readonly string[]> = {};
-  let replies = 0;
-  for (const recipient of broadcast.recipients ?? []) {
-    // The page's own filter: a reply its session wrote, by kind and id, which is what the server
-    // takes in `read_replies` and refuses the whole write over one that fails it.
-    const shown = (recipient.replies ?? [])
-      .filter(
-        (reply) => reply.author.kind === "session" && reply.author.id === recipient.session_id
-      )
-      .map((reply) => reply.id);
-    if (shown.length > 0) {
-      await putAgentState(recipient.session_id, { read_replies: shown });
-      agents[recipient.session_id] = [...(agents[recipient.session_id] ?? []), ...shown];
-      replies += shown.length;
-    }
-  }
-  if (replies === 0) {
+  const agents = await markBroadcastRepliesRead(broadcastId);
+  if (Object.keys(agents).length === 0) {
     throw new Error(
       "seedReviewRoutes: the broadcast holds no reply its recipients wrote, so its page marks " +
         "nothing read and the rows' Agents badge reads a state no baseline holds"
@@ -708,16 +731,16 @@ export async function seedReviewRoutes({
 }: {
   readonly boundMs: number;
 }): Promise<ReviewSeed> {
-  const workspace = await seedWorkspace({ boundMs });
+  const workspace = await seedWorkspace({ boundMs, projects: PROJECTS });
   // The registry with the two claim holders beside the workspace's sessions, written before any
   // of them claims an issue, so the Agents page lists them and each claim reads as held.
   await setLiveSessions(reviewSessions);
   const issue = workspace.issues.workflow;
 
-  // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings row written a second time and
-  // then the Pipeline's own rows, and `delivery_settings` holds one row, so the two fixtures are
-  // seeded as their halves: the settings and the timeline's rows, then `seedPipelineRows()`,
-  // which only updates that one row's job names before writing the Pipeline's runs.
+  // The timeline's fixture writes the delivery settings, which `delivery_settings` holds as one
+  // row, and its own rows; `seedPipelineRows()` then only updates that row's job names before
+  // writing the Pipeline's runs. Both are written in the place the fixtures spell, with no place
+  // of a row's (e2e/delivery-seed.ts).
   await seedDeliveryFixture();
   await seedPipelineRows();
 
@@ -801,7 +824,7 @@ Each page is read once it is drawn.
   const keys = {} as Record<WorkName, string>;
   for (const name of names) {
     const { project, title } = WORK[name];
-    keys[name] = (await createIssue({ project, title })).key;
+    keys[name] = (await createIssue({ project: PROJECTS[project], title })).key;
   }
 
   // The priorities `/priorities` lists, the first of which `/priorities/:id` opens, and the work
@@ -848,7 +871,7 @@ Each page is read once it is drawn.
 
   // The slug of the `Runbook` document `seedWorkspace` creates: read back rather than assumed,
   // so a rename there fails this seed instead of the page it opens.
-  const runbook = await getProjectArtifact("CORE", "runbook");
+  const runbook = await getProjectArtifact(PROJECTS.core, "runbook");
 
   // Nothing owed before any row draws: a settlement the document service still owes runs when a
   // page opens that document's room and writes a version the shot would draw, and a result's
@@ -875,7 +898,17 @@ Each page is read once it is drawn.
     // The id the create answered, which is this title written as a slug: read back rather than
     // spelled again here, so the rule that derives it stays the server's.
     priority: priority.id,
-    project: "CORE",
+    project: PROJECTS.core,
     projectDocumentSlug: runbook.slug,
   };
+}
+
+/** Sends a new copy of the corpus's broadcast (`sendWorkspaceBroadcast`) and returns its id.
+ *  `reviewCorpus` (e2e/test.ts) restores the live sessions first. The copy keeps the original
+ *  body and recipient order and marks the planner's reply read. `ownBroadcasts` deletes it when
+ *  the row ends. */
+export async function seedReviewBroadcast(): Promise<string> {
+  const broadcast = await sendWorkspaceBroadcast();
+  await markBroadcastRepliesRead(broadcast.id);
+  return broadcast.id;
 }

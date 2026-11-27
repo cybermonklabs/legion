@@ -95,7 +95,11 @@
  * of `e2e/__tests__/bounded-subprocess.ts` or `listing` of `e2e/__tests__/playwright-listing.ts`,
  * each read from the file's imports as `rowLimit` is, or calls a function of the file's own that
  * waits: a function declaration, or a variable bound to an arrow or a function expression, at
- * any scope, whose body calls one of those two or another such function. A call of `whether` or
+ * any scope, whose body calls one of those two or another such function. A function of the file's
+ * own handed by name to a call or a `new` - the `runStandIn` of `prepared.map(runStandIn)`, the
+ * `fn` of `Promise.all(xs.map(fn))` or of `.then(fn)` - is called by what it is handed to, so the
+ * scan reads that reference as a call of the function, as
+ * `web/src/__tests__/real-clock-waits.test.ts` finds a wait handed on. A call of `whether` or
  * `eventually` of `e2e/__tests__/bounded-subprocess.ts` is read the same way, as a wait under the
  * `short` bound: each reads a state another process reaches until that bound has passed, so a
  * row that makes one states `rowLimit("short")` or more, as for a `short` child. It waits as well
@@ -151,11 +155,15 @@
  *   import declaration, or of `listing` (fixture:122, fixture:149), which it destructures off
  *   an `import()`; and a call of a member of a name bound to an `import()` of their module, or of
  *   a name destructured off a `require` of it under another name ("a bounded export reached
- *   through import() or require is read as an imported one"). Only a call waits: a row that
- *   names `runBounded` as a value and calls nothing is recorded nowhere (fixture:140).
+ *   through import() or require is read as an imported one"). Only a call waits, and a function
+ *   of the file's own handed on by name (below): a row that names `runBounded` as a value and calls
+ *   nothing is recorded nowhere (fixture:140).
  * - A wait through a function declaration of the file's own whose body makes such a call: a
  *   call of it in a row's body (fixture:89), or its name as the row's body (fixture:97,
  *   fixture:99).
+ * - A wait through a function of the file's own handed by name to a call, in a row's body or in
+ *   another function of the file's: to `map`, to `then` and to `Promise.all(...map(...))` ("a
+ *   function of the file's own handed on by name is read as a call of it").
  * - A wait through a name: a reference, in a row's body, to a name the file binds at module load
  *   to an expression that holds such a call (fixture:109, fixture:115, fixture:135, and "the
  *   rows of the listing files are read as waiting for their listings"), or that a hook assigns
@@ -186,10 +194,10 @@
  *   waiting name although it holds a number, and a row that refers to `code` and states no
  *   `rowLimit` is refused as a row that waits for a bounded child;
  * - a name a row declares that a waiting function of the file also bears. `reachOf` matches a
- *   call to a waiting function of the file's own by its bare name, so a row that declares
- *   `const helper = ...`, where `helper` also names a waiting function of the file, and calls
- *   it, is read as waiting for what the file's `helper` reaches, and is refused where it states
- *   no `rowLimit`;
+ *   call to a waiting function of the file's own by its bare name, and `waitsUnder` such a
+ *   function handed on, so a row that declares `const helper = ...`, where `helper` also names a
+ *   waiting function of the file, and calls it or hands it on, is read as waiting for what the
+ *   file's `helper` reaches, and is refused where it states no `rowLimit`;
  * - a row body that is neither inline nor a function the file declares - `helpers.body`, an
  *   imported function, or `made` where `made` is bound to what a call answered. `isBody` reads
  *   it as no body, so `limitOf` reads it as the row's limit, and the row is refused as one whose
@@ -775,8 +783,8 @@ function reachOf(call: ts.CallExpression, waiting: WaitingNames): Reach | undefi
   return ts.isIdentifier(call.expression) ? waiting.helpers.get(call.expression.text) : undefined;
 }
 
-/** One place code waits: a call that reaches a bounded export, or a reference to a name bound to
- *  such a call. */
+/** One place code waits: a call that reaches a bounded export, a function of the file's own that
+ *  waits handed on by name, or a reference to a name bound to such a call. */
 type Wait = { readonly node: ts.CallExpression | ts.Identifier; readonly reach: Reach };
 
 /** Whether `name` is read as a value where it stands, rather than standing as a property's name,
@@ -817,10 +825,24 @@ function declaredUnder(node: ts.Node): Set<string> {
   return declared;
 }
 
+/** Whether `name` is handed by name to a call or a `new` as one of its arguments, under
+ *  parentheses, `await`, `!`, `as`, `satisfies` and a type assertion: the `runStandIn` of
+ *  `prepared.map(runStandIn)` and the `fn` of `.then(fn)`, each called by what it is handed to.
+ *  The callee of a call is no argument of it. */
+function isHandedOn(name: ts.Identifier): boolean {
+  let at: ts.Node = name;
+  while (ts.isExpression(at.parent) && unwrapped(at.parent) !== at.parent) at = at.parent;
+  const parent = at.parent;
+  if (!ts.isCallExpression(parent) && !ts.isNewExpression(parent)) return false;
+  return parent.arguments?.some((argument) => argument === at) ?? false;
+}
+
 /** Every place under `body` that waits, at any depth, in the order the file writes them: each
- *  call that reaches a bounded export, and, where `readsNames` holds, each reference to a name
- *  bound to a waiting call that `body` does not declare itself. A name passed as a value - the
- *  `runBounded` of `.map(runBounded)` - is no call and no such name, so it is no wait. */
+ *  call that reaches a bounded export, each function of the file's own that waits and is handed
+ *  on by name (`isHandedOn`), which what it is handed to calls, and, where `readsNames` holds,
+ *  each reference to a name bound to a waiting call that `body` does not declare itself. An
+ *  export passed as a value - the `runBounded` of `.map(runBounded)` - is no call, no function of
+ *  the file's own and no such name, so it is no wait. */
 function waitsUnder(body: ts.Node, waiting: WaitingNames, readsNames: boolean): Wait[] {
   const declared = readsNames ? declaredUnder(body) : new Set<string>();
   const waits: Wait[] = [];
@@ -828,9 +850,13 @@ function waitsUnder(body: ts.Node, waiting: WaitingNames, readsNames: boolean): 
     if (ts.isCallExpression(node)) {
       const reach = reachOf(node, waiting);
       if (reach !== undefined) waits.push({ node, reach });
-    } else if (readsNames && ts.isIdentifier(node) && !declared.has(node.text)) {
-      const reach = waiting.values.get(node.text);
-      if (reach !== undefined && isReference(node)) waits.push({ node, reach });
+    } else if (ts.isIdentifier(node)) {
+      const reach =
+        (isHandedOn(node) ? waiting.helpers.get(node.text) : undefined) ??
+        (readsNames && !declared.has(node.text) && isReference(node)
+          ? waiting.values.get(node.text)
+          : undefined);
+      if (reach !== undefined) waits.push({ node, reach });
     }
     ts.forEachChild(node, visit);
   };

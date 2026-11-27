@@ -5,7 +5,7 @@
  *  this row holds the table itself (dispatch://INFRA-5200). */
 import { createIssue, createProject } from "./api";
 import { pinFontFaces } from "./layout-check";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { withAlice } from "./users";
 
 const LONG_TITLE =
@@ -16,10 +16,11 @@ test.use({ locale: "en-US", timezoneId: "UTC" });
 test("a document table whose cell names an issue with a long title is no wider than its column", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const named = await createIssue({ project: "CORE", title: LONG_TITLE });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const named = await createIssue({ project: core, title: LONG_TITLE });
   const document = await createIssue({
-    project: "CORE",
+    project: core,
     spec: [
       "The steps of the plan, one per row.",
       "",

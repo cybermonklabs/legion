@@ -7,7 +7,7 @@ import {
   documentBase,
   getIssueCoverage,
 } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /** Two requirements, so one can be served while the other is not. */
@@ -40,8 +40,9 @@ async function coverageOf(issue: string, blockId: string): Promise<RequirementCo
 test("a requirement no check serves is flagged on the Spec tab, and a check that serves it clears the flag @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "COV", name: "Coverage" });
-  const issue = await createIssue({ project: "COV", spec, title: "Requirement coverage" });
+  const cov = rowKey("COV");
+  await createProject({ key: cov, name: "Coverage" });
+  const issue = await createIssue({ project: cov, spec, title: "Requirement coverage" });
   const oneCheck = `:::check{#c1 serves="dispatch://${issue.key}/spec#b-r1" surface="browser" run="bun run e2e -- e2e/coverage.e2e.ts"}
 Every requirement of the spec is listed.
 :::
@@ -98,8 +99,9 @@ A requirement nothing checks is flagged.
 test("a requirement's Referenced-by list shows the plan task that serves it, and loses it when that task goes", async ({
   browser,
 }) => {
-  await createProject({ key: "COV", name: "Coverage" });
-  const issue = await createIssue({ project: "COV", spec, title: "Referenced by a plan task" });
+  const cov = rowKey("COV");
+  await createProject({ key: cov, name: "Coverage" });
+  const issue = await createIssue({ project: cov, spec, title: "Referenced by a plan task" });
   const plan = await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is built.
 

@@ -11,6 +11,7 @@ import {
   createIssue,
   createProject,
   createProjectDocument,
+  fixedKey,
   patchIssue,
 } from "./api";
 import { inboxList, selectedRow } from "./inbox-pane";
@@ -31,13 +32,16 @@ const session = {
   as: "agent" as const,
 };
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 /**
  * Rows across three priority bands and both turn bands: a P0 issue's ask, three on a P2 issue
  * of which one has been handed back to its session, and a document's ask, which has no issue
  * and so no priority at all.
  */
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const urgent = await createIssue({ project: "CORE", title: "Urgent issue" });
   await patchIssue(urgent.key, { priority: 0 });
   const steady = await createIssue({ project: "CORE", title: "Steady issue" });

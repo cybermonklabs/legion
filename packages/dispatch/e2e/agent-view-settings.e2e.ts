@@ -1,3 +1,4 @@
+import { type Refusal, routePath } from "../web/src/api/paths";
 import {
   type FakeSession,
   getSentMessages,
@@ -15,8 +16,16 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { settledState } from "./settled";
-import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
-import { asUser } from "./users";
+import {
+  type Browser,
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  rowSessionId,
+  test,
+} from "./test";
+import { asUser, type SignInLogin } from "./users";
 
 /**
  * The live view's header shows the model and thinking level an Oh My Pi session runs now, as its
@@ -27,8 +36,9 @@ import { asUser } from "./users";
  * so what it sends is read back from the fake Envoy and from Dispatch's stored thread.
  *
  * The frames are spelt here as the wire carries them, never imported from the SPA or the
- * contracts, so the file runs unchanged against the commit before the change and each row fails
- * there on its own assertion.
+ * contracts, so each row fails on its own assertion against a server from before the change. The
+ * requests these rows send themselves take their route's URL and answer from the generated
+ * contract (`routePath` and `Refusal`).
  */
 
 /** The phone layout runs on Chromium (the `iphone` project) and on WebKit (`webkit-iphone`). */
@@ -52,15 +62,18 @@ const PENDING_PLACEHOLDER = "Waiting for the session to answer the switch…";
  *  one eight times over. */
 const PROBE = { intervals: [50, 50, 100, 100, 250] };
 
-/** A live session of the row's own: the relay's replay and responder are process-global, so a
- *  session another row seeded would carry that row's frames into this one. */
+/** A live session under the running row's own id (`rowSessionId`, e2e/test.ts): the relay's
+ *  replay and responder are process-global, so a session another row seeded would carry that
+ *  row's frames into this one, and Dispatch keeps the switches sent to a session and its answers
+ *  by its id, for every person at once. `row` numbers both the session's logical id (`settingsN`)
+ *  and the title the header draws. */
 function liveSession(row: number): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/settings",
     machine_id: "settings-host",
     roles: [],
-    session_id: `01a0e0c1-0195-7000-8000-${String(row).padStart(12, "0")}`,
+    session_id: rowSessionId(`settings${row}`),
     title: `Settings ${row}`,
   };
 }
@@ -127,7 +140,7 @@ function freshReplay(sessionID: string): Record<string, unknown> {
 async function viewer(
   browser: Browser,
   project: string,
-  login: string
+  login: SignInLogin
 ): Promise<{ context: BrowserContext; page: Page }> {
   const context = await asUser(browser, login);
   const page = await context.newPage();
@@ -645,11 +658,14 @@ test("a person's own token sends a switch recorded as them with the agent beside
   await setLiveSessions([session]);
   await publishAgentStreamFrame(id, freshReplay(id), "replay");
   const personal = await mintAgentToken("switcher", "alice");
-  /** The agent the person's token acts through, which `session=` names on the send. */
-  const agentSession = "e2e-switch-agent";
+  /** The agent the person's token acts through, which `session=` names on the send: the row's
+   *  own (`rowSessionId`), since Dispatch records the act under that id on what it stores. */
+  const agentSession = rowSessionId("switcher");
   expect(await getSentMessages()).toEqual([]);
 
-  const messagesPath = `/api/v1/agents/${encodeURIComponent(id)}/messages`;
+  const messagesPath = routePath("post", "/api/v1/agents/{session_id}/messages", {
+    session_id: id,
+  });
   const switchBody = { body: "/model anthropic/model-b", delivery: "steer" };
   // The shared token holds no scope, so the gate refuses it before the body is read: the actor
   // it names changes nothing.
@@ -659,14 +675,24 @@ test("a person's own token sends a switch recorded as them with the agent beside
     method: "POST",
   });
   expect(shared.status).toBe(403);
-  expect(await shared.json()).toEqual(expect.objectContaining({ code: "OAUTH_SCOPE_REQUIRED" }));
+  const sharedRefusal = (await shared.json()) as Refusal<
+    "/api/v1/agents/{session_id}/messages",
+    "post"
+  >;
+  expect(sharedRefusal.code).toBe("OAUTH_SCOPE_REQUIRED");
   expect(shared.headers.get("WWW-Authenticate")).toBe(
     'Bearer error="insufficient_scope", scope="person"'
   );
   expect(await getSentMessages()).toEqual([]);
   expect(await listAgentMessages(id)).toEqual([]);
 
-  const sent = await fetch(new URL(`${messagesPath}?session=${agentSession}`, baseUrl), {
+  const asAgent = routePath(
+    "post",
+    "/api/v1/agents/{session_id}/messages",
+    { session_id: id },
+    { session: agentSession }
+  );
+  const sent = await fetch(new URL(asAgent, baseUrl), {
     body: JSON.stringify(switchBody),
     headers: { Authorization: `Bearer ${personal}`, "Content-Type": "application/json" },
     method: "POST",
@@ -687,7 +713,13 @@ test("a person's own token sends a switch recorded as them with the agent beside
   // The session may not take it as its own turn: the act is what refuses it, and the person
   // typed nothing.
   const accept = await fetch(
-    new URL(`/api/v1/messages/${stored.id}/deliveries/${stored.attempt}/accept`, baseUrl),
+    new URL(
+      routePath("post", "/api/v1/messages/{id}/deliveries/{attempt}/accept", {
+        attempt: String(stored.attempt),
+        id: stored.id,
+      }),
+      baseUrl
+    ),
     {
       body: JSON.stringify({ actor: { id, kind: "session" } }),
       headers: { Authorization: `Bearer ${e2eAgentToken}`, "Content-Type": "application/json" },
@@ -695,7 +727,11 @@ test("a person's own token sends a switch recorded as them with the agent beside
     }
   );
   expect(accept.status).toBe(409);
-  expect(await accept.json()).toEqual(expect.objectContaining({ code: "ACCEPT_WRITTEN_BY_AGENT" }));
+  const acceptRefusal = (await accept.json()) as Refusal<
+    "/api/v1/messages/{id}/deliveries/{attempt}/accept",
+    "post"
+  >;
+  expect(acceptRefusal.code).toBe("ACCEPT_WRITTEN_BY_AGENT");
 
   const alice = await viewer(browser, "chromium", "alice");
   const bob = await viewer(browser, "chromium", "bob");

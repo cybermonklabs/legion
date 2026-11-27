@@ -1,6 +1,6 @@
 import { createIssue, createProject, getIssue } from "./api";
 import { openBoard, seedBoard } from "./keyboard";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -14,8 +14,9 @@ import { asUser } from "./users";
 test("c opens the create dialog; project and title create an issue the API returns and the SPA opens @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
+  const ops = rowKey("OPS");
+  await createProject({ key: rowKey("CORE"), name: "Core" });
+  await createProject({ key: ops, name: "Operations" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -31,14 +32,14 @@ test("c opens the create dialog; project and title create an issue the API retur
     // `c` inside the dialog's own inputs types; it never reopens or steals the key.
     await title.fill("c");
     await expect(title).toHaveValue("c");
-    await dialog.getByRole("combobox", { name: "Project" }).selectOption("OPS");
+    await dialog.getByRole("combobox", { name: "Project" }).selectOption(ops);
     await title.fill("Keyboard-created issue");
     await page.screenshot({
       path: testInfo.outputPath(`create-issue-${testInfo.project.name}.png`),
     });
     await title.press("Enter");
 
-    await expect(page).toHaveURL(/\/issues\/OPS-1(\/|$)/);
+    await expect(page).toHaveURL(new RegExp(`/issues/${ops}-1(/|$)`));
     await expect(dialog).toHaveCount(0);
     await expect(
       page
@@ -46,9 +47,9 @@ test("c opens the create dialog; project and title create an issue the API retur
         .getByRole("heading", { level: 1, name: "Keyboard-created issue" })
     ).toBeVisible();
     await expect
-      .poll(() => getIssue("OPS-1"))
+      .poll(() => getIssue(`${ops}-1`))
       .toMatchObject({
-        project: "OPS",
+        project: ops,
         title: "Keyboard-created issue",
       });
 
@@ -75,13 +76,14 @@ function patchOf(page: Page, key: string) {
 test("Shift+L/H move a focused card to the top of the adjacent status through the one move path: into Done closes, out of Done reopens, Triage has no previous", async ({
   browser,
 }) => {
-  const { bravo, delta, echo, foxtrot } = await seedBoard();
-  const golf = await createIssue({ project: "CORE", title: "Golf" });
+  const core = rowKey("CORE");
+  const { bravo, delta, echo, foxtrot } = await seedBoard(core);
+  const golf = await createIssue({ project: core, title: "Golf" });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1920, height: 900 });
-    await openBoard(page);
+    await openBoard(page, core);
     const live = page.getByRole("status", { name: "Board announcements" });
     const inProgress = page.getByRole("region", { name: "In progress" });
     const retro = page.getByRole("region", { name: "Retro" });

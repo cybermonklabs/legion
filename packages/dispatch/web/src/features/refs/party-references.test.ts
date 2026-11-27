@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { referenceReading } from "@legion/contracts";
 
+import { expectOnePass } from "../../__tests__/one-pass";
 import { replyPrefill, seededDraft } from "../conversation/composer-draft";
 
 import { loadedEngine, warmMarkdownRenderer } from "./markdown-engine";
@@ -438,21 +439,23 @@ test("a backslash escapes punctuation only, so a space or a line break after one
 
 // A `](` that opens no link - parentheses that never balance, a title that never closes - is read
 // through stops found once for the whole text, never across the rest of its paragraph, so a draft
-// of thousands of them is read in time that grows with its length, not with its square (8,000 of
-// either took 6 to 12 seconds read to the end of the text), and still reads the link after them.
-test("a draft of thousands of `](` that open no link is read in linear time, and its real link still found", () => {
+// of thousands of them is read in one pass (8,000 of either took 6 to 12 seconds read to the end
+// of the text), and still reads the link after them. One pass is what a count shows, not a clock:
+// the reader's loops (`reader-steps.ts`) take at most four times their steps, and a few more, on a
+// draft of four times the `](`, the 8,000 of each body being the longer read.
+test("a draft of thousands of `](` that open no link is read in one pass, and its real link still found", () => {
   const tail = ` [@Alice](${AGENT}) now.`;
+  const quarter = 2000;
   // The third: every title closes at the one `)`, and a long run of spaces after it stands
   // before something that is no `)`.
   for (const body of [
-    `${"[a](((".repeat(8000)}${tail}`,
-    `${"[a](x (".repeat(8000)}${tail}`,
-    `${"[a](x (".repeat(8000)})${" ".repeat(8000)}.${tail}`,
+    (n: number) => `${"[a](((".repeat(n)}${tail}`,
+    (n: number) => `${"[a](x (".repeat(n)}${tail}`,
+    (n: number) => `${"[a](x (".repeat(n)})${" ".repeat(n)}.${tail}`,
   ]) {
-    const started = performance.now();
-    const links = inlineLinks(body);
-    expect(performance.now() - started).toBeLessThan(3000);
-    expect(links.map((link) => body.slice(link.addressStart, link.addressEnd))).toEqual([AGENT]);
+    const links = expectOnePass((n) => inlineLinks(body(n)), quarter);
+    const read = body(4 * quarter);
+    expect(links.map((link) => read.slice(link.addressStart, link.addressEnd))).toEqual([AGENT]);
   }
   // A blank line ends the paragraph, and the link with it.
   expect(inlineLinks(`[@Alice](\n\n${AGENT})`)).toEqual([]);

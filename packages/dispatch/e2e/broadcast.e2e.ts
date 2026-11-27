@@ -20,57 +20,73 @@ import {
   replyToMessageDelivery,
 } from "./api";
 import { navigateInApp } from "./sends";
-import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowPerson, rowSessionId, test } from "./test";
 import { assertPageFits } from "./unclipped";
-import { asUser } from "./users";
+import { asUser, type SignInLogin } from "./users";
 
 // No `last_seen`: the fixture answers every read of the session with the current time. A literal
 // computed when this module is imported ages with the whole suite, and a session ten minutes
 // "old" falls under `Quiet` rather than under the group this spec reads - which is how long a
 // full run takes to reach here.
-const planner: FakeSession = {
+const plannerFields: Omit<FakeSession, "session_id"> = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/planner",
   machine_id: "build-host",
   roles: ["planner"],
-  session_id: sessionIds.planner,
   title: "Planner",
 };
-const tester: FakeSession = {
+const testerFields: Omit<FakeSession, "session_id"> = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/tester",
   machine_id: "build-host",
   roles: ["tester"],
-  session_id: sessionIds.tester,
   title: "Tester",
 };
-const reviewer: FakeSession = {
+const reviewerFields: Omit<FakeSession, "session_id"> = {
   capabilities: ["aside"],
   dir: "/workspaces/reviewer",
   machine_id: "review-host",
   roles: ["reviewer"],
-  session_id: sessionIds.reviewer,
   title: "Reviewer",
 };
 
 // A third session for the order proof and the race below: it advertises both modes, so the
 // browser includes it in the first send and only the server can exclude it in the second.
-const observer: FakeSession = {
+const observerFields: Omit<FakeSession, "session_id"> = {
   capabilities: ["btw", "steer"],
   dir: "/workspaces/observer",
   machine_id: "build-host",
   roles: [],
-  session_id: sessionIds.observer,
   title: "Observer",
 };
+
+/** The four sessions above under ids of the running row's own (`rowSessionId`, e2e/test.ts):
+ *  Dispatch keeps what a session said and what was said to it by its id, for every person at
+ *  once, so under a fixed id a session carries every earlier row's messages and replies, and is
+ *  no session Dispatch has never heard from. Within a row each call answers the same ids. */
+function rowSessions(): {
+  readonly observer: FakeSession;
+  readonly planner: FakeSession;
+  readonly reviewer: FakeSession;
+  readonly tester: FakeSession;
+} {
+  return {
+    observer: { ...observerFields, session_id: rowSessionId("observer") },
+    planner: { ...plannerFields, session_id: rowSessionId("planner") },
+    reviewer: { ...reviewerFields, session_id: rowSessionId("reviewer") },
+    tester: { ...testerFields, session_id: rowSessionId("tester") },
+  };
+}
 
 // SLOW(>=2s): the whole broadcast flow in a real browser - the fold, four ticks, the send, a live
 // answer and the list that follows it.
 test("a broadcast lists recipient cards in the non-alphabetical order the sender ticked them", async ({
   browser,
 }, testInfo) => {
-  await setLiveSessions([planner, tester, reviewer, observer]);
+  // Sessions of the row's own: `Idle` holds the sessions Dispatch has never heard from, which a
+  // session under an id an earlier row wrote with is not.
+  const own = rowSessions();
+  await setLiveSessions([own.planner, own.tester, own.reviewer, own.observer]);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -118,7 +134,7 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
     // One message per recipient: the listener was asked to send once to every selected session.
     const sends = await getSentMessages();
     expect(sends.map((entry) => entry.target_session).sort()).toEqual(
-      [observer.session_id, planner.session_id, tester.session_id].sort()
+      [own.observer.session_id, own.planner.session_id, own.tester.session_id].sort()
     );
 
     // The Planner answers its own delivery, and the open view picks the answer up from the
@@ -127,13 +143,13 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
     if (summary === undefined) throw new Error("the broadcast was not recorded");
     const stored = await getBroadcast(summary.id);
     const plannerMessage = (stored.recipients ?? []).find(
-      (recipient) => recipient.session_id === planner.session_id
+      (recipient) => recipient.session_id === own.planner.session_id
     );
     if (plannerMessage === undefined) throw new Error("the planner received no message");
     await replyToMessageDelivery(
       plannerMessage.message.id,
       { attempt: 1, body: "Standing down; build is green." },
-      { id: planner.session_id, kind: "session" }
+      { id: own.planner.session_id, kind: "session" }
     );
     await expect(view.getByText("Standing down; build is green.")).toBeVisible();
     await expect(
@@ -160,7 +176,11 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
 test("a broadcast written as a numbered list renders as a list on the broadcast page, the Agents page and the broadcasts list", async ({
   browser,
 }, testInfo) => {
-  await setLiveSessions([planner, tester]);
+  // Sessions of the row's own: the Agents page below counts both under `Idle`, which holds the
+  // sessions Dispatch has never heard from, and a session under an id an earlier row wrote with
+  // is not one.
+  const own = rowSessions();
+  await setLiveSessions([own.planner, own.tester]);
   // Longer than a Broadcasts row is wide on any project's viewport, so the list's preview has
   // something to cut: the row's own assertion below fails if it ever fits on one line unclamped.
   const intro =
@@ -268,6 +288,7 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
 test("a Broadcasts row keeps its sender above its link and fits the screen @phone @phone-only", async ({
   browser,
 }, testInfo) => {
+  const { planner } = rowSessions();
   await setLiveSessions([planner]);
   // Longer than the row is wide on any project's viewport, so the preview has something to cut.
   await createBroadcast({
@@ -307,6 +328,7 @@ test("a Broadcasts row keeps its sender above its link and fits the screen @phon
 test("a session that goes away before the send is excluded by the server and named on the broadcast, and a failed recipient can be retried there", async ({
   browser,
 }, testInfo) => {
+  const { observer, planner, tester } = rowSessions();
   await setLiveSessions([planner, tester, observer]);
   // The Tester's listener answers every send 503, past the take-over window too, so its copy
   // fails. A 404 would not do: Dispatch queues a copy for a session no store of the listener's
@@ -366,6 +388,7 @@ test("a session that goes away before the send is excluded by the server and nam
 test("a broadcast reaches sessions the listener's list has dropped while their records stand", async ({
   browser,
 }) => {
+  const { planner, tester } = rowSessions();
   await setLiveSessions([planner, tester]);
 
   const alice = await asUser(browser, "alice");
@@ -410,6 +433,7 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
 test("a second identical send of one composition is answered the original broadcast, so every agent hears it once @pr", async ({
   browser,
 }) => {
+  const { planner, tester } = rowSessions();
   await setLiveSessions([planner, tester]);
 
   const alice = await asUser(browser, "alice");
@@ -457,6 +481,7 @@ test("a session that leaves between a refused send and its restore is still in t
   browser,
 }) => {
   // The page learns of a departure on its 15 s agent poll, which the page's own clock spends.
+  const { observer, planner } = rowSessions();
   await setLiveSessions([planner, observer]);
 
   const alice = await asUser(browser, "alice");
@@ -517,14 +542,20 @@ test("a session that leaves between a refused send and its restore is still in t
   }
 });
 
-/** A broadcast from alice to `sessions`, each of which has answered its copy, as the
+/** A broadcast from `login` to `sessions`, each of which has answered its copy, as the
  *  `dispatch message` reply does. */
-async function answeredBroadcast(sessions: readonly string[]): Promise<string> {
-  const sent = await createBroadcast({
-    body: "Report status.",
-    delivery: "steer",
-    session_ids: [...sessions],
-  });
+async function answeredBroadcast(
+  sessions: readonly string[],
+  login: SignInLogin = "alice"
+): Promise<string> {
+  const sent = await createBroadcast(
+    {
+      body: "Report status.",
+      delivery: "steer",
+      session_ids: [...sessions],
+    },
+    { login }
+  );
   expect(sent.excluded).toEqual([]);
   for (const recipient of sent.recipients ?? []) {
     await replyToMessageDelivery(
@@ -550,10 +581,17 @@ function agentRow(page: Page, title: string): Locator {
 test("opening a broadcast reads the answers it shows, on the badge, every agent's row and the viewer's other tabs", async ({
   browser,
 }, testInfo) => {
-  await setLiveSessions([planner, tester, observer]);
-  const id = await answeredBroadcast([tester.session_id, observer.session_id, planner.session_id]);
+  // The reader is a person of the row's own (`rowPerson`) and the sessions are the row's own
+  // (`rowSessions`): "New replies" counts one person's unread answers over every session, and an
+  // agent's row counts what its session holds, so each holds this row's answers and no other
+  // row's.
+  const me = rowPerson("alice");
+  const own = rowSessions();
+  await setLiveSessions([own.planner, own.tester, own.observer]);
+  const sessions = [own.tester.session_id, own.observer.session_id, own.planner.session_id];
+  const id = await answeredBroadcast(sessions, me);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const agents = await alice.newPage();
     await agents.goto("/agents");
@@ -566,7 +604,7 @@ test("opening a broadcast reads the answers it shows, on the badge, every agent'
     await page.goto(`/agents/broadcasts/${id}`);
     const view = page.getByRole("region", { name: "Broadcast" });
     await expect(view.getByText("3 of 3 answered")).toBeVisible();
-    for (const session of [tester.session_id, observer.session_id, planner.session_id]) {
+    for (const session of sessions) {
       await expect(view.getByText(`${session} reporting.`)).toBeVisible();
     }
     await expect(page.getByText(/^New repl/)).toHaveCount(0);
@@ -590,28 +628,44 @@ test("opening a broadcast reads the answers it shows, on the badge, every agent'
 test("opening a broadcast leaves unread the answers it does not show, older and newer", async ({
   browser,
 }, testInfo) => {
-  await setLiveSessions([planner, tester, observer]);
-  const older = await createAgentMessage(planner.session_id, {
-    body: "Where is the dashboard?",
-    delivery: "aside",
-  });
+  // The reader is a person of the row's own (`rowPerson`) and the sessions are the row's own
+  // (`rowSessions`): "New replies" counts one person's unread answers, and a session's read mark
+  // covers every reply it holds, so each holds this row's answers and no other row's.
+  const me = rowPerson("alice");
+  const own = rowSessions();
+  await setLiveSessions([own.planner, own.tester, own.observer]);
+  const older = await createAgentMessage(
+    own.planner.session_id,
+    {
+      body: "Where is the dashboard?",
+      delivery: "aside",
+    },
+    { login: me }
+  );
   await replyToMessageDelivery(
     older.id,
     { attempt: 1, body: "At /dash." },
-    { id: planner.session_id, kind: "session" }
+    { id: own.planner.session_id, kind: "session" }
   );
-  const id = await answeredBroadcast([tester.session_id, observer.session_id, planner.session_id]);
-  const newer = await createAgentMessage(tester.session_id, {
-    body: "Did the rerun pass?",
-    delivery: "aside",
-  });
+  const id = await answeredBroadcast(
+    [own.tester.session_id, own.observer.session_id, own.planner.session_id],
+    me
+  );
+  const newer = await createAgentMessage(
+    own.tester.session_id,
+    {
+      body: "Did the rerun pass?",
+      delivery: "aside",
+    },
+    { login: me }
+  );
   await replyToMessageDelivery(
     newer.id,
     { attempt: 1, body: "Two passed." },
-    { id: tester.session_id, kind: "session" }
+    { id: own.tester.session_id, kind: "session" }
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/agents");

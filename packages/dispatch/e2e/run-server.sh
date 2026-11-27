@@ -15,8 +15,9 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # send for a role: route, and the rows mention roles.
 #
 # DATABASE_URL is the one required caller input. The harness has no fake
-# Postgres and e2e/seed.ts truncates the named database before every scenario,
-# so silently selecting a shared default would make the destructive write
+# Postgres and each Playwright worker empties the named database before its
+# first row (e2e/test.ts, through e2e/seed.ts), so silently selecting a shared
+# default would make the destructive write
 # target ambiguous. FAKE_ENVOY_PORT and FAKE_GITHUB_PORT (and FAKE_BROKER_PORT
 # for the default broker switch below) name the fakes the caller started, whose
 # ports e2e/harness-start.ts reads from their reports.

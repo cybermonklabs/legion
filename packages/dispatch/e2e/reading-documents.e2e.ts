@@ -25,11 +25,13 @@ import {
   createMessage,
   createProjectDocument,
   editArtifact,
+  type RowKey,
   reviewArtifact,
 } from "./api";
 import { blockId, connectedDot, documentEditor, openedThreadCard, openSpec } from "./editor";
 import {
   expectReadsReferences,
+  readingAuthor,
   readingQuestionBlock,
   readingText,
   scopedTo,
@@ -43,12 +45,6 @@ import {
 } from "./reference-surfaces";
 import { expect, type Page, test } from "./test";
 
-/** The agent session these rows write as, so a write is never the reader's own. */
-const readingAgent = {
-  actor: { id: "e2e-reading-agent", kind: "session" as const },
-  as: "agent" as const,
-};
-
 /** The paragraph of the project document every margin thread here is anchored to. */
 const ANCHOR = "The reading anchor sits here.";
 
@@ -60,19 +56,19 @@ const DECISION = "Store the notices";
  *  the question block. A review of the document and a comment anchored to it are read against
  *  the document itself, so it declares the question a `#id` in them names, and a row whose text
  *  is one of those records takes its world through `scopedTo`. */
-async function seedReadingDocument(): Promise<{ id: string; slug: string }> {
+async function seedReadingDocument(project: RowKey): Promise<{ id: string; slug: string }> {
   const { artifact } = await createProjectDocument(
-    "CORE",
+    project,
     { content: `${ANCHOR}\n\n${readingQuestionBlock()}\n`, name: "reading.md" },
-    readingAgent
+    readingAuthor
   );
   return { id: artifact.id, slug: artifact.slug };
 }
 
 /** Opens the project document and waits until its editor shows the anchor and its document is
  *  connected, so a margin card the row reaches for next stands at its mark. */
-async function openReadingDocument(page: Page, slug: string): Promise<void> {
-  await page.goto(`/projects/CORE/documents/${slug}`);
+async function openReadingDocument(page: Page, project: RowKey, slug: string): Promise<void> {
+  await page.goto(`/projects/${project}/documents/${slug}`);
   await expect(documentEditor(page)).toContainText(ANCHOR);
   await expect(connectedDot(page)).toHaveText("connected");
 }
@@ -82,7 +78,7 @@ function anchoredThread(document: { id: string; slug: string }, body: string) {
   return createArtifactComment(
     document.id,
     { anchor: { artifact: document.slug, quote: ANCHOR }, body },
-    readingAgent
+    readingAuthor
   );
 }
 
@@ -92,7 +88,7 @@ test("approval-review-reason: a reviewer's reason in the Reviews dialog draws ev
   page,
 }) => {
   const seeded = await seedReadingWorld();
-  const document = await seedReadingDocument();
+  const document = await seedReadingDocument(seeded.project);
   const world = await scopedTo(seeded, document.id);
   await reviewArtifact(
     document.id,
@@ -100,7 +96,7 @@ test("approval-review-reason: a reviewer's reason in the Reviews dialog draws ev
     { login: "bob" }
   );
 
-  await openReadingDocument(page, document.slug);
+  await openReadingDocument(page, world.project, document.slug);
   // The header's chip opens the dialog that lists every review, each with its reason drawn
   // beneath it as a body of its own.
   await page.getByRole("button", { name: "Changes requested" }).click();
@@ -118,7 +114,7 @@ test("margin-decision-passage: a margin decision card's passage draws every form
   await editArtifact(
     spec,
     { ops: [{ after: "end", markdown: SHAPED, op: "insert" }] },
-    readingAgent
+    readingAuthor
   );
   const shaped = await blockId(spec, SHAPED);
   // A decision stands beside a spec block it links, so its passage is the reading text and the
@@ -132,7 +128,7 @@ test("margin-decision-passage: a margin decision card's passage draws every form
       content: `${readingQuestionBlock()}\n\n## ${DECISION}\n\n${readingText(world)} Shapes dispatch://${world.host.key}/spec#b-${shaped}.\n`,
       name: "decisions.md",
     },
-    readingAgent
+    readingAuthor
   );
   const scoped = await scopedTo(world, artifact.id);
 
@@ -149,7 +145,7 @@ test("margin-pinned-conversation: a conversation pinned to the margin draws ever
   page,
 }) => {
   const world = await seedReadingWorld();
-  const message = await createMessage(world.host.key, { body: readingText(world) }, readingAgent);
+  const message = await createMessage(world.host.key, { body: readingText(world) }, readingAuthor);
 
   // The reader pins the conversation from its turn, as a person does, and the margin's Pinned
   // tab draws the pinned card's own body.
@@ -173,7 +169,7 @@ test("margin-suggestion-diff: a suggestion card's replacement draws every form b
   page,
 }, testInfo) => {
   const world = await seedReadingWorld();
-  const document = await seedReadingDocument();
+  const document = await seedReadingDocument(world.project);
   const suggestion = await createArtifactComment(
     document.id,
     {
@@ -181,10 +177,10 @@ test("margin-suggestion-diff: a suggestion card's replacement draws every form b
       body: "Suggested replacement.",
       suggestion: { replace_with: readingText(world) },
     },
-    readingAgent
+    readingAuthor
   );
 
-  await openReadingDocument(page, document.slug);
+  await openReadingDocument(page, world.project, document.slug);
   // The collapsed card and the opened one draw the same diff, clamped and whole: what accepting
   // would take out, and what it would write in its place, each as its exact characters.
   const collapsed = await collapsedMarginThread(page, testInfo.project.name, suggestion.id);
@@ -206,11 +202,11 @@ test("margin-comment-body: a thread card's comment draws every form of a stored 
   page,
 }, testInfo) => {
   const seeded = await seedReadingWorld();
-  const document = await seedReadingDocument();
+  const document = await seedReadingDocument(seeded.project);
   const world = await scopedTo(seeded, document.id);
   const root = await anchoredThread(document, readingText(world));
 
-  await openReadingDocument(page, document.slug);
+  await openReadingDocument(page, world.project, document.slug);
   const card = await openMarginThread(page, testInfo.project.name, root.id);
   await expectReadsReferences(card.locator(RENDERED_BODY), world, "link");
 });
@@ -221,11 +217,11 @@ test("margin-thread-preview: a collapsed thread card's preview draws every form 
   page,
 }, testInfo) => {
   const seeded = await seedReadingWorld();
-  const document = await seedReadingDocument();
+  const document = await seedReadingDocument(seeded.project);
   const world = await scopedTo(seeded, document.id);
   const root = await anchoredThread(document, readingText(world));
 
-  await openReadingDocument(page, document.slug);
+  await openReadingDocument(page, world.project, document.slug);
   const collapsed = await collapsedMarginThread(page, testInfo.project.name, root.id);
   // The collapsed card is the toggle that opens its thread, and its host is still a record a
   // reader reads - the Conversation's whole default view of a turn is this card - so its

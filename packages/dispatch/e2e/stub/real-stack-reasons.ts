@@ -28,7 +28,7 @@ import { sourceFiles } from "../source-files";
 
 export const realStackReasons: Record<string, string> = {
   "accessibility.e2e.ts":
-    "three of its scanned routes wait on the live document's connected status, which the Yjs socket alone gives",
+    "each of its scanned routes draws a part of its page from a socket no recording replays - the live document's Yjs socket, or a `/ws/live` frame the contract fixtures do not carry - and its `realStackScan` in `e2e/review-routes.ts` says which",
   "activity.e2e.ts":
     "pins/unpins and asserts the refetched margin; pins first, then asserts on the server's stored body",
   "address-links.e2e.ts": "asserts in the live spec editor (`/ws/doc`) as well as the Conversation",
@@ -73,8 +73,6 @@ export const realStackReasons: Record<string, string> = {
   "architecture-sources.e2e.ts": "fake GitHub import, saves and a reload",
   "architecture.e2e.ts":
     "a status write must move the server-computed bar; the server's import refusal is the assertion",
-  "artifact-dry-run.e2e.ts":
-    "runs the real `dispatch artifact` with `--dry-run` and without against the server over every text an upload refuses for the text alone, and compares the two answers with what the server stored",
   "artifacts.e2e.ts": "uploads, version compare, document sockets and a 503 refetch",
   "ask-blocks.e2e.ts":
     "decision answers the server records, and pastes in the live document editor",
@@ -98,8 +96,6 @@ export const realStackReasons: Record<string, string> = {
   "claim-refilling.e2e.ts": "the claim's lapse is the server's judgement against the agent list",
   "claim-unresponsive.e2e.ts":
     "unresponsive, takeable and a second agent's refusal are server decisions",
-  "claim.e2e.ts":
-    "a claim is taken, refused and released by the server, and the page reads back what it decided",
   "close-withdraws-asks.e2e.ts":
     "close withdraws asks server-side, then reopen and version history are re-read",
   "closed-issue-posting.e2e.ts": "posts on a closed issue and asserts the server accepted them",
@@ -224,7 +220,7 @@ export const realStackReasons: Record<string, string> = {
   "keyboard-issue.e2e.ts":
     "writes a priority and a pin, then reloads; the server's refusal; asserts what was written",
   "keyboard-palette.e2e.ts":
-    "the action is a write; the server's search answer; the server's search hits",
+    "the action is a write; the hits the server's search answers over every project of the stack, read at the row's start and held to the bar; the server's search hits",
   "keyboard-session-pickers.e2e.ts": "the switch is sent to the live session and its answer read",
   "keyboard.e2e.ts": "creates an issue and opens what the API returned; status and rank writes",
   "keyed-send.e2e.ts": "idempotency keys and one delivery proved against the server",

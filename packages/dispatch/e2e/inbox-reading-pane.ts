@@ -23,23 +23,40 @@ import {
   handAskOn,
   listMyReplies,
   patchIssue,
+  type RowKey,
   requestApproval,
   withOpenedAsk,
 } from "./api";
 import { blockId } from "./editor";
 import { inboxList, inboxPane } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { rowSessionId } from "./test";
+import type { SignInLogin } from "./users";
 
 export const session = {
   actor: { id: "e2e-reading-pane", kind: "session" as const },
   as: "agent" as const,
 };
 
-/** The list the whole file reads: the cleared assignee filter, so the project document's own
- *  question - which nobody holds, a document having no assignee - is listed beside the rest. */
+/** The list the stubbed rows read: the cleared assignee filter, so the project document's own
+ *  question - which nobody holds, a document having no assignee - is listed beside the rest, as
+ *  it was when their recording was made. */
 export const INBOX = "/?assignee=everyone";
 
-export { inboxAt } from "./inbox-pane-scroll";
+/** The address the Inbox writes for a selected row (`buildInboxPath`: the item, then the filter). */
+export function inboxAt(askId: string): string {
+  return `/?item=${askId}&assignee=everyone`;
+}
+
+/** The list the real-stack rows read: the reader's own, which holds every question `seedInbox`
+ *  makes - the reader made the project, so its document's question reaches them too - and no
+ *  question another row made. Their reader is a person of the row's own (`rowPerson`,
+ *  e2e/test.ts), and the cleared filter would list every open question of the stack. */
+export const OWN_INBOX = "/";
+
+/** The address the Inbox writes for a row selected in the reader's own list, a thread row's colon
+ *  escaped as the Inbox's own address escapes it. */
+export { inboxAt as ownInboxAt } from "./inbox-pane-scroll";
 
 // ---------------------------------------------------------------------------
 // The first spec: one section of 36 lines above the decision block.
@@ -150,12 +167,19 @@ export interface Seed {
  *  quarter-second after the row was already there, and every row of this file pays the seed. */
 const INDEX_PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-/** The Inbox row `match` names, once the server has indexed the block or opened the question. */
-async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> {
+/** The row `match` names in `login`'s own Inbox, once the server has indexed the block or opened
+ *  the question. Every match names the row's owner (the issue or the document the seed made) as
+ *  well as its block, since a block id is no key of its own: a real-stack row's reader is its own
+ *  person, but `login` is alice when the stubbed rows record, and her list can hold an open block
+ *  of that id an earlier row of the worker seeded. */
+async function indexedRow(
+  login: SignInLogin,
+  match: (row: InboxRow) => boolean
+): Promise<InboxRow> {
   let found: InboxRow | undefined;
   await expect
     .poll(async () => {
-      found = (await getInbox()).find(match);
+      found = (await getInbox({ login }, { assignee: "me" })).find(match);
       return found !== undefined;
     }, INDEX_PROBE)
     .toBe(true);
@@ -170,9 +194,14 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
  * decision block of a spec, the request to approve version 4 of a spec approved at version 3, a
  * first request to approve another document, an anchored question, a question in no document, and
  * the decision block of a project document, which no issue priority orders.
+ *
+ * `project` is the key of the project they are made in: `inbox-reading-pane.e2e.ts` passes its
+ * row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `PANE`.
+ * `login` is the reader every question waits on, alice unless a real-stack row names a person of
+ * its own (`rowPerson`).
  */
-export async function seedInbox(): Promise<Seed> {
-  await createProject({ key: "PANE", name: "Pane rollout" });
+export async function seedInbox(project: RowKey, login: SignInLogin = "alice"): Promise<Seed> {
+  await createProject({ key: project, name: "Pane rollout" }, { login });
 
   // Every question is its own issue or document, and the Inbox orders them by the priorities set
   // here rather than by the order they were made, so each chain goes out beside the others
@@ -181,21 +210,22 @@ export async function seedInbox(): Promise<Seed> {
   const [decision, approval, firstApproval, { anchored, plain }, documentDecision] =
     await Promise.all([
       (async () => {
-        const issue = await createIssue({
-          project: "PANE",
-          spec: decisionSpec,
-          title: "Rollout order",
-        });
+        const issue = await createIssue(
+          { project, spec: decisionSpec, title: "Rollout order" },
+          { login }
+        );
         await patchIssue(issue.key, { priority: 0 });
-        const row = await indexedRow((indexed) => indexed.block_id === DECISION_BLOCK);
+        const row = await indexedRow(
+          login,
+          (indexed) => indexed.block_id === DECISION_BLOCK && indexed.issue_key === issue.key
+        );
         return { issueKey: issue.key, row };
       })(),
       (async () => {
-        const issue = await createIssue({
-          project: "PANE",
-          spec: `# ${APPROVAL_HEADING}\n\n${PLACEHOLDER}\n`,
-          title: "Ledger rollout",
-        });
+        const issue = await createIssue(
+          { project, spec: `# ${APPROVAL_HEADING}\n\n${PLACEHOLDER}\n`, title: "Ledger rollout" },
+          { login }
+        );
         await patchIssue(issue.key, { priority: 1 });
         const artifactId = issue.primary_artifact_id;
         await editArtifact(
@@ -218,7 +248,7 @@ export async function seedInbox(): Promise<Seed> {
         await answerAsk(
           atThree.ask.id,
           { expected_edited_at: null, selected: ["Approve"] },
-          { login: "alice" }
+          { login }
         );
         await editArtifact(
           artifactId,
@@ -242,11 +272,14 @@ export async function seedInbox(): Promise<Seed> {
         return { artifactId, askId: atFour.ask.id };
       })(),
       (async () => {
-        const issue = await createIssue({
-          project: "PANE",
-          spec: "# Lease handover\n\nThe lease moves with the ledger, never with the mirror.\n",
-          title: "Lease handover",
-        });
+        const issue = await createIssue(
+          {
+            project,
+            spec: "# Lease handover\n\nThe lease moves with the ledger, never with the mirror.\n",
+            title: "Lease handover",
+          },
+          { login }
+        );
         await patchIssue(issue.key, { priority: 2 });
         return {
           ...withOpenedAsk(
@@ -260,18 +293,21 @@ export async function seedInbox(): Promise<Seed> {
         };
       })(),
       (async () => {
-        const anchoredIssue = await createIssue({
-          project: "PANE",
-          spec: "The mirror replays the ledger on a cold start.\n",
-          title: "Cold start",
-        });
+        const anchoredIssue = await createIssue(
+          {
+            project,
+            spec: "The mirror replays the ledger on a cold start.\n",
+            title: "Cold start",
+          },
+          { login }
+        );
         await patchIssue(anchoredIssue.key, { priority: 3 });
         const anchored = await createAsk(
           anchoredIssue.key,
           { anchor: { artifact: "spec", quote: ANCHOR_QUOTE }, question: ANCHORED_QUESTION },
           session
         );
-        const plainIssue = await createIssue({ project: "PANE", title: "Retry budget" });
+        const plainIssue = await createIssue({ project, title: "Retry budget" }, { login });
         await patchIssue(plainIssue.key, { priority: 3 });
         const plain = await createAsk(
           plainIssue.key,
@@ -281,11 +317,16 @@ export async function seedInbox(): Promise<Seed> {
         return { anchored, plain };
       })(),
       (async () => {
-        await createProjectDocument("PANE", {
+        const created = await createProjectDocument(project, {
           content: documentContent,
           name: "mirror-runbook.md",
         });
-        return indexedRow((indexed) => indexed.block_id === DOCUMENT_BLOCK);
+        // A project document's question belongs to the document, so it carries no issue key.
+        return indexedRow(
+          login,
+          (indexed) =>
+            indexed.block_id === DOCUMENT_BLOCK && indexed.artifact_id === created.artifact.id
+        );
       })(),
     ]);
   expect(firstApproval.version).toBe(1);
@@ -308,13 +349,12 @@ export async function seedInbox(): Promise<Seed> {
 // of each kind the column draws.
 // ---------------------------------------------------------------------------
 
-export const OPEN_PROJECT = "OPEN";
 /** The heading of each document, which neither of the other two holds. */
 export const OPEN_SPEC_HEADING = "Spec heading only here";
 export const OPEN_TALK_HEADING = "Talk heading only here";
 export const OPEN_RUNBOOK_HEADING = "Runbook heading";
-/** The decision blocks, each id once across the three documents, since `indexedRow` matches a
- *  row by its block id alone. */
+/** The decision blocks, each id once across the three documents, since `indexedRow` tells the
+ *  rows of the one issue apart by their block ids alone. */
 export const OPEN_TALK_DECISION = "open-talk-decision";
 export const OPEN_BEFORE_HEADING = "open-talk-before-heading";
 const OPEN_SPEC_DECISION = "open-spec-decision";
@@ -388,7 +428,7 @@ export interface OpenPageSeed {
   quotedBlockId: string;
   /** 5: a question in no document. */
   plain: string;
-  /** 6: a decision block under the heading of a project document, handed to alice. */
+  /** 6: a decision block under the heading of a project document, handed to the reader. */
   runbookDecision: string;
   /** 7: a decision block of the second document that no heading stands above. */
   beforeHeading: string;
@@ -405,29 +445,46 @@ export interface OpenPageSeed {
 
 /**
  * One question of each kind an issue holds, a project document's decision block, and the Reply
- * thread of an answered decision block, all waiting on alice, who makes the project and the issue
- * and so is their assignee. The order is the point: answering question 8 writes its block's state
- * and saves a new version of `talk.md`, and a request to approve keeps the person's turn only
- * while no write has moved the document past the version it names, so every write to `talk.md`
- * comes before question 3.
+ * thread of an answered decision block, all waiting on `login`, who makes the project and the
+ * issue and so is their assignee. The order is the point: answering question 8 writes its block's
+ * state and saves a new version of `talk.md`, and a request to approve keeps the person's turn
+ * only while no write has moved the document past the version it names, so every write to
+ * `talk.md` comes before question 3.
+ *
+ * `project` is the key of the project they are made in and `login` the reader, both the row's
+ * own (`rowKey`, `rowPerson`, e2e/test.ts), so the reader's Inbox holds these questions and no
+ * other row's. The session that asks, replies and requests the approval is the row's own too
+ * (`rowSessionId`): Dispatch keeps what a session writes by its id, for every person at once.
  */
-export async function seedOpenPage(): Promise<OpenPageSeed> {
-  await createProject({ key: OPEN_PROJECT, name: "Open page" });
-  const issue = await createIssue({ project: OPEN_PROJECT, spec: openSpec, title: "Talk week" });
-  const { artifact: talk } = await createIssueArtifact(issue.key, {
-    content: talkContent,
-    name: "talk.md",
-  });
-  const { artifact: runbook } = await createProjectDocument(OPEN_PROJECT, {
-    content: runbookContent,
-    name: "runbook.md",
-  });
+export async function seedOpenPage(project: RowKey, login: SignInLogin): Promise<OpenPageSeed> {
+  const asSession = {
+    actor: { id: rowSessionId("asker"), kind: "session" as const },
+    as: "agent" as const,
+  };
+  await createProject({ key: project, name: "Open page" }, { login });
+  const issue = await createIssue({ project, spec: openSpec, title: "Talk week" }, { login });
+  const { artifact: talk } = await createIssueArtifact(
+    issue.key,
+    { content: talkContent, name: "talk.md" },
+    { login }
+  );
+  const { artifact: runbook } = await createProjectDocument(
+    project,
+    { content: runbookContent, name: "runbook.md" },
+    { login }
+  );
+  const inIssue = (block: string) => (row: InboxRow) =>
+    row.block_id === block && row.issue_key === issue.key;
   const [talkDecision, specDecision, runbookDecision, beforeHeading, answered] = await Promise.all([
-    indexedRow((row) => row.block_id === OPEN_TALK_DECISION),
-    indexedRow((row) => row.block_id === OPEN_SPEC_DECISION),
-    indexedRow((row) => row.block_id === OPEN_RUNBOOK_DECISION),
-    indexedRow((row) => row.block_id === OPEN_BEFORE_HEADING),
-    indexedRow((row) => row.block_id === OPEN_ANSWERED),
+    indexedRow(login, inIssue(OPEN_TALK_DECISION)),
+    indexedRow(login, inIssue(OPEN_SPEC_DECISION)),
+    // A project document's question belongs to the document, so it carries no issue key.
+    indexedRow(
+      login,
+      (row) => row.block_id === OPEN_RUNBOOK_DECISION && row.artifact_id === runbook.id
+    ),
+    indexedRow(login, inIssue(OPEN_BEFORE_HEADING)),
+    indexedRow(login, inIssue(OPEN_ANSWERED)),
   ]);
 
   // Question 8's answer writes `state="answered"` into its block in the answer's own
@@ -435,7 +492,7 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
   await answerAsk(
     answered.id,
     { expected_edited_at: null, selected: [ANSWERED_OPTIONS[0]] },
-    { login: "alice" }
+    { login }
   );
   await expect
     .poll(async () => {
@@ -450,7 +507,7 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
       anchor: { artifact: talk.slug, quote: "a quote points at" },
       question: "Does every talk quote its sources?",
     },
-    session
+    asSession
   );
   const quotedBlockId = quoted.anchor?.block_id;
   if (quotedBlockId === undefined || quotedBlockId === null) {
@@ -459,25 +516,28 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
   const plain = await createAsk(
     issue.key,
     { options: [{ label: "Yes" }, { label: "No" }], question: "Should the talk be recorded?" },
-    session
+    asSession
   );
-  await handAskOn(runbookDecision.id, "alice");
+  await handAskOn(runbookDecision.id, login, { login });
 
-  // The session's reply in question 8's thread, after alice's answer: her Reply thread.
+  // The session's reply in question 8's thread, after the reader's answer: their Reply thread.
   await createComment(
     issue.key,
     { ask_id: answered.id, body: "The host closes it, then." },
-    session
+    asSession
   );
   await expect
     .poll(
-      async () => ((await listMyReplies()).rows ?? []).some((row) => row.thread_id === answered.id),
-      { ...INDEX_PROBE, message: "item 8 is alice's Reply thread" }
+      async () =>
+        ((await listMyReplies({}, { login })).rows ?? []).some(
+          (row) => row.thread_id === answered.id
+        ),
+      { ...INDEX_PROBE, message: "item 8 is the reader's Reply thread" }
     )
     .toBe(true);
 
   const approval = withOpenedAsk(
-    await requestApproval(talk.id, { summary: "The talk as it stands." }, session)
+    await requestApproval(talk.id, { summary: "The talk as it stands." }, asSession)
   );
 
   const [talkHeading, specHeading, runbookHeading] = await Promise.all([

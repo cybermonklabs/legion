@@ -8,7 +8,7 @@ import {
 } from "./api";
 import { blockId } from "./editor";
 import { serveWithoutDisplayTrees } from "./strip-trees";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 
 // The decision records end to end, against the real server: an agent writes `decisions.md` with
 // one decision that links two spec blocks, and a person reads it on the Spec tab beside those
@@ -31,9 +31,10 @@ const LISTED_CHANGE = "Measure the file store first.";
 test("a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change @pr", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Notices are lost today.\n\nStore each notice.\n\nShow the newest first.\n",
     title: "Decision records",
   });
@@ -122,9 +123,10 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
 test("a decision written as a list keeps its link and its key, and anchors its Change on the words that list flattens to @pr", async ({
   page,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Notices are lost today.\n\nStore each notice.\n",
     title: "Decisions written as a list",
   });
@@ -190,11 +192,14 @@ test("a decision written as a list keeps its link and its key, and anchors its C
 // block is drawn once, with its own text and nothing else. The reading this row refuses is the
 // one two rounds of this change got wrong: a body handed a text that is not its own draws that
 // whole text in every slot.
-// @pr: The Decisions tab of an answer with no reading draws each block once, with its own text.
-test("a decision whose answer carries no reading is drawn block by block @pr", async ({ page }) => {
-  await createProject({ key: "CORE", name: "Core" });
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the two rows above keep the Decisions tab on the
+// lane. The full lane runs this one.
+test("a decision whose answer carries no reading is drawn block by block", async ({ page }) => {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Notices are lost today.\n",
     title: "Decisions with no reading",
   });

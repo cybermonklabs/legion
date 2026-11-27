@@ -43,16 +43,29 @@
  *      --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone \
  *      --project=webkit-alone --workers=1 --reporter=list,json
  *    bun e2e/tools/check-slow-rows.ts /tmp/clock-report.json
+ *
+ *  `bun e2e/tools/check-slow-rows.ts --p95 <ms> [--slow-ms 2000]` reads one figure instead of a
+ *  report: a lane's 95th percentile row duration against the same bar, which is R2's p95 target
+ *  (dispatch://INFRA-983, decisions item 25). It prints the comparison and exits 1 when the
+ *  figure is at or above the bar, 0 when it is under; the merge job of
+ *  .github/workflows/dispatch-browser.yaml's "Reading four" step calls it for each class of row,
+ *  so the bar that step reads is `slowRowMs` below and written nowhere else.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 
+/** The bar a row of the suite is held to: under two seconds, or a marker that says why not. A
+ *  lane's 95th percentile is held to it too, as a target (`p95AgainstBar`). */
+export const slowRowMs = 2000;
+
 const usage =
   "usage: bun e2e/tools/check-slow-rows.ts <report.json> [--slow-ms <n>] [--dir <e2e>]\n" +
+  "       bun e2e/tools/check-slow-rows.ts --p95 <ms> [--slow-ms <n>]\n" +
   "  <report.json>  a Playwright JSON report (--reporter=json, PLAYWRIGHT_JSON_OUTPUT_NAME)\n" +
-  "  --slow-ms      the threshold a row carries a marker for (default 2000)\n" +
-  "  --dir          the directory whose *.e2e.ts hold the markers (default e2e)";
+  `  --slow-ms      the threshold a row carries a marker for (default ${slowRowMs})\n` +
+  "  --dir          the directory whose *.e2e.ts hold the markers (default e2e)\n" +
+  "  --p95          a lane's 95th percentile row duration, read against the threshold";
 
 /** The marker's exact form. The reason is what the row's author wrote after the colon. */
 const markerPattern = /^\s*\/\/\s*SLOW\(>=2s\):\s*(?<reason>.+?)\s*$/u;
@@ -240,21 +253,46 @@ export function judge(rows: readonly Row[], markers: readonly Marker[], slowMs: 
   };
 }
 
+/** R2's p95 target (dispatch://INFRA-983, decisions item 25): a lane's 95th percentile row
+ *  duration against the bar one row is held to, read as `judge` reads a row, so a figure at the
+ *  bar is over it. It is a target and not a gate: the merge job writes the comparison into its
+ *  summary and warns when the figure is over, and fails nothing on it. */
+export function p95AgainstBar(
+  p95Ms: number,
+  slowMs: number = slowRowMs
+): { over: boolean; text: string } {
+  const over = p95Ms >= slowMs;
+  return { over, text: `${p95Ms} ms, ${over ? "at or above" : "under"} the ${slowMs} ms bar` };
+}
+
 /** The command line, or the usage and exit 2. `parseArgs` refuses an unknown flag and a flag
  *  whose value is missing, which is the same bad command line as a value the checks here refuse,
  *  so both leave the same way. */
-function readArguments(): { report: string; slowMs: number; dir: string } {
+function readArguments():
+  | { dir: string; report: string; slowMs: number }
+  | { p95Ms: number; slowMs: number } {
   try {
     const { positionals, values } = parseArgs({
       allowPositionals: true,
-      options: { dir: { type: "string" }, "slow-ms": { type: "string" } },
+      options: {
+        dir: { type: "string" },
+        p95: { type: "string" },
+        "slow-ms": { type: "string" },
+      },
       strict: true,
     });
-    const slowMs = Number(values["slow-ms"] ?? 2000);
-    const dir = values.dir ?? "e2e";
-    if (positionals.length !== 1 || !Number.isFinite(slowMs) || slowMs <= 0 || dir === "") {
-      throw new Error(usage);
+    const slowMs = Number(values["slow-ms"] ?? slowRowMs);
+    if (!Number.isFinite(slowMs) || slowMs <= 0) throw new Error(usage);
+    if (values.p95 !== undefined) {
+      const p95Ms = Number(values.p95);
+      if (positionals.length !== 0 || values.dir !== undefined || values.p95 === "") {
+        throw new Error(usage);
+      }
+      if (!Number.isFinite(p95Ms) || p95Ms < 0) throw new Error(usage);
+      return { p95Ms, slowMs };
     }
+    const dir = values.dir ?? "e2e";
+    if (positionals.length !== 1 || dir === "") throw new Error(usage);
     return { dir, report: positionals[0], slowMs };
   } catch {
     console.error(usage);
@@ -263,7 +301,13 @@ function readArguments(): { report: string; slowMs: number; dir: string } {
 }
 
 if (import.meta.main) {
-  const { dir, report, slowMs } = readArguments();
+  const command = readArguments();
+  if ("p95Ms" in command) {
+    const { over, text } = p95AgainstBar(command.p95Ms, command.slowMs);
+    console.log(text);
+    process.exit(over ? 1 : 0);
+  }
+  const { dir, report, slowMs } = command;
   const rows = reportRows(JSON.parse(readFileSync(report, "utf8")));
   const markers = readdirSync(dir)
     .filter((name) => name.endsWith(".e2e.ts"))

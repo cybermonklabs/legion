@@ -20,8 +20,8 @@ test("an issue owner opens the issue's hover card, carries no title, and cuts on
   );
   try {
     const link = view.getByRole("link");
-    expect(link.getAttribute("data-dispatch-ref")).toContain("CORE-12");
-    expect(link.hasAttribute("title")).toBe(false);
+    expect(link).toHaveAttribute("data-dispatch-ref", expect.stringContaining("CORE-12"));
+    expect(link).not.toHaveAttribute("title");
     expect(link.querySelector("[title]")).toBeNull();
     expect(link.querySelector<HTMLElement>(".truncate")?.textContent).toBe(LONG_TITLE);
     // The key is its own element, never the one that shortens.
@@ -42,8 +42,8 @@ test("a document owner opens the document's hover card and carries no title", ()
   );
   try {
     const link = view.getByRole("link");
-    expect(link.getAttribute("data-dispatch-ref")).toContain("runbook");
-    expect(link.hasAttribute("title")).toBe(false);
+    expect(link).toHaveAttribute("data-dispatch-ref", expect.stringContaining("runbook"));
+    expect(link).not.toHaveAttribute("title");
     expect(link.querySelector("[title]")).toBeNull();
     expect(link.querySelector<HTMLElement>("span.truncate")?.textContent).toBe(`CORE · ${name}`);
   } finally {
@@ -63,7 +63,7 @@ test("an Agent row's owner opens no hover card and carries its whole session nam
   );
   try {
     const owner = view.getByText(sessionName);
-    expect(owner.getAttribute("title")).toBe(sessionName);
+    expect(owner).toHaveAttribute("title", sessionName);
     expect(owner.closest("[data-dispatch-ref]")).toBeNull();
   } finally {
     view.unmount();

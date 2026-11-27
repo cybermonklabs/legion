@@ -9,7 +9,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 import { BOX_PICKER_LINES, CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
+import { agentMention, type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import {
   createAsk,
   createComment,
@@ -19,11 +19,16 @@ import {
   createProject,
   getComment,
   putArchitectureSource,
+  type RowKey,
+  sessionCookie,
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { asSession } from "./inbox-threads";
 import { openRefPicker, pickerRows, refPicker } from "./ref-picker";
-import { sessionIds } from "./session-ids";
+import { keyedSearchWord } from "./search";
+import { rowKey, rowPerson, rowSessionId } from "./test";
+import type { RowLogin } from "./users";
 
 /**
  * The one world every writing box is driven over, and the checks each box is held to
@@ -41,22 +46,42 @@ import { sessionIds } from "./session-ids";
  * takes one frame for that party, carrying the body the box held, once the box's own send control
  * is pressed (`expectDeliveryClaim`). The driver of each box hands that control in.
  *
- * The rows the picker finds are the world's own, and the query that finds them (`QUERY`) is a
- * word no party, person or component holds: so every box lists the same three rows whatever it
- * knows about an issue, a project or the kinds it offers, and the one thing a box's own
- * knowledge decides - whether the people it lists are the issue's - is read on its own query
+ * The three picker matches are the world's own. The issue, its document and the session hold
+ * the same word (`query`), which includes the row's project key because search reads every
+ * project. Whether a box lists only its issue's people is read on a separate query
  * (`expectIssueRows`).
  */
 
+function boxProject(): RowKey {
+  return rowKey("CORE");
+}
+
 /** The word the world's three findable nodes hold, and nothing else does. */
-export const QUERY = "zephyr";
+export function query(): string {
+  return keyedSearchWord("zephyr", boxProject());
+}
+
+function titleWord(): string {
+  return keyedSearchWord("Zephyr", boxProject());
+}
+
+export function targetTitle(): string {
+  return `${titleWord()} rollout`;
+}
 
 /** A query nothing answers, which is how each box says it has no rows. */
-export const NO_MATCH = "zzqqxx";
+const NO_MATCH = "zzqqxx";
 
-/** The person who has signed in and is on no issue: the picker lists them in a box that writes
- *  on no issue, and nowhere else. `bob` is one of the two logins the database reset re-creates. */
-export const OFF_ISSUE_PERSON = "bob";
+/** A no-hit picker query scoped to the row's own project key. */
+export function noMatch(): string {
+  return keyedSearchWord(NO_MATCH, boxProject());
+}
+
+/** The row's other signed-in person, who writes on no issue. Only a box that lists everyone
+ *  who has signed in offers this login. */
+export function offIssuePerson(): RowLogin {
+  return rowPerson("bob");
+}
 
 /** The paragraph the margin's boxes are anchored to, and the line a document pick is typed on. */
 export const ANCHOR = "The anchor paragraph sits here.";
@@ -69,26 +94,23 @@ export const SESSION: FakeSession = {
   dir: "/srv/zephyr",
   machine_id: "box-zephyr",
   roles: [],
-  session_id: sessionIds.planner,
-  title: "Zephyr bot",
+  get session_id() {
+    return rowSessionId("zephyr");
+  },
+  get title() {
+    return `${titleWord()} bot`;
+  },
 };
 
-/** What a pick of `SESSION` writes into a box: the link that names the session. */
-export const SESSION_MENTION = `[@${SESSION.title}](dispatch://agent/${SESSION.session_id})`;
-
-/** The agent writes of this world, which are never the reader's own. */
-const AGENT = { actor: { id: SESSION.session_id, kind: "session" as const }, as: "agent" as const };
-
-/** The person the issue's own people hold: they write on the host, which is what puts them
- *  among its people. A stored login is an email (`model.CanonicalLogin`). */
-const ISSUE_PERSON = "dana@example.test";
-
 export interface BoxWorld {
-  /** CORE-1, where every box that writes on an issue writes. */
+  readonly project: RowKey;
+  /** The person whose Inbox and own writes the boxes read. */
+  readonly reader: RowLogin;
+  /** The project's first issue, where every box that writes on an issue writes. */
   readonly host: string;
   /** The host's spec, whose anchor paragraph the margin's boxes hang from. */
   readonly spec: string;
-  /** CORE-2, the issue the picker finds, which owns the document it finds. */
+  /** The second issue, which the picker finds, and which owns the document it finds. */
   readonly target: string;
   /** The reader's own comment thread, which the session has answered: the Inbox's Reply row,
    *  and the card the Conversation draws a reply box under. */
@@ -111,53 +133,58 @@ export interface BoxWorld {
  * message the reply boxes answer.
  */
 export async function seedWritingBoxes(): Promise<BoxWorld> {
-  await createProject({ key: "CORE", name: "Core" });
-  const host = await createIssue({
-    project: "CORE",
-    spec: `${ANCHOR}\n`,
-    title: "Where a person writes",
-  });
-  const target = await createIssue({ project: "CORE", title: "Zephyr rollout" });
+  const project = boxProject();
+  const reader = rowPerson("alice");
+  const by = { login: reader };
+  const agent = asSession(SESSION);
+  await createProject({ key: project, name: "Core" }, by);
+  await sessionCookie(offIssuePerson());
+  const host = await createIssue(
+    { project, spec: `${ANCHOR}\n`, title: "Where a person writes" },
+    by
+  );
+  const target = await createIssue({ project, title: targetTitle() }, by);
   const document = await createIssueArtifact(
     target.key,
-    { content: "# Zephyr\n\nThe zephyr plan.\n", name: "zephyr.md" },
-    AGENT
+    { content: `# ${titleWord()}\n\nThe ${query()} plan.\n`, name: `${query()}.md` },
+    agent
   );
-  expect(document.artifact.slug).toBe("zephyr-md");
+  expect(document.artifact.slug).toBe(`${query()}-md`);
   await setLiveSessions([SESSION]);
   // The session's own post on the host: it puts its Agents row in the open list, and it names
   // nothing the query finds.
-  await createComment(host.key, { body: "Looking at it." }, AGENT);
-  // The person of the host, who is on no other issue.
-  await createComment(host.key, { body: "A person writes here." }, { login: ISSUE_PERSON });
+  await createComment(host.key, { body: "Looking at it." }, agent);
+  // The host's other collaborator writes only on this issue.
+  await createComment(host.key, { body: "A person writes here." }, { login: rowPerson("dana") });
   // The reader's own threads, which the session has answered since: that is what the Inbox
   // lists as a Reply row, and the card the Conversation draws a reply box under.
-  const comment = await createComment(host.key, { body: "A thread to answer." });
-  await createComment(host.key, { body: "The session answers.", reply_to: comment.id }, AGENT);
-  const message = await createMessage(host.key, { body: "A message to answer." });
+  const comment = await createComment(host.key, { body: "A thread to answer." }, by);
+  await createComment(host.key, { body: "The session answers.", reply_to: comment.id }, agent);
+  const message = await createMessage(host.key, { body: "A message to answer." }, by);
   await createMessage(
     host.key,
     { body: "The session answers it.", in_reply_to: message.id },
-    AGENT
+    agent
   );
   // The message addressed to the session, which its Agents row shows and offers a Reply under.
-  const targeted = await createMessage(host.key, {
-    body: "Can this ship?",
-    delivery: "btw",
-    target: `session:${SESSION.session_id}`,
-  });
+  const targeted = await createMessage(
+    host.key,
+    { body: "Can this ship?", delivery: "btw", target: `session:${SESSION.session_id}` },
+    by
+  );
   // The margin's own thread, anchored to the spec's one paragraph and written by the reader,
   // so the card offers them both Reply and Edit.
-  const anchored = await createComment(host.key, {
-    anchor: { artifact: "spec", quote: ANCHOR },
-    body: "A margin thread to answer.",
-  });
+  const anchored = await createComment(
+    host.key,
+    { anchor: { artifact: "spec", quote: ANCHOR }, body: "A margin thread to answer." },
+    by
+  );
   expect(anchored.anchor?.quote).toBe(ANCHOR);
   // The session's open ask: the Inbox draws its card, and the Conversation its thread.
   const ask = await createAsk(
     host.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Which way does it go?" },
-    AGENT
+    agent
   );
   return {
     anchored: anchored.id,
@@ -165,16 +192,18 @@ export async function seedWritingBoxes(): Promise<BoxWorld> {
     comment: comment.id,
     host: host.key,
     message: message.id,
+    project,
+    reader,
     spec: host.primary_artifact_id,
     target: target.key,
     targeted: targeted.id,
   };
 }
 
-/** CORE's architecture, which the Not architectural box's own page needs: the fake GitHub
- *  serves the model and the source sync reads it in, as `e2e/architecture.e2e.ts` makes one.
- *  Its one component holds no word the picker's query finds. */
-export async function seedArchitecture(): Promise<void> {
+/** The project's architecture, which the Not architectural box's own page needs: the fake
+ *  GitHub serves the model and the source sync reads it in, as `e2e/architecture.e2e.ts` makes
+ *  one. Its one component holds no word the picker's query finds. */
+export async function seedArchitecture(project: RowKey): Promise<void> {
   const repo = "legion/writing-boxes-arch";
   await seedFakeGithub({
     [repo]: {
@@ -183,19 +212,23 @@ export async function seedArchitecture(): Promise<void> {
       installation_id: 101,
     },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo });
-  const source = await syncArchitectureSource("CORE", repo);
+  await putArchitectureSource(project, { branch: "main", repo });
+  const source = await syncArchitectureSource(project, repo);
   expect(source.last_error).toBeNull();
 }
 
-/** The rows every box lists for `QUERY`, in each door's own order: the kinds a door lifts come
- *  first, the rest in the base order (`kindOrder`). No party, person or component holds that
- *  word, so these three are every box's whole list. */
-export const DOOR_ROWS: Record<"[[" | "@" | "#", readonly string[]> = {
-  "[[": ["Documents: zephyr.md", "Issues: Zephyr rollout", `Agents: ${SESSION.title}`],
-  "@": [`Agents: ${SESSION.title}`, "Documents: zephyr.md", "Issues: Zephyr rollout"],
-  "#": ["Issues: Zephyr rollout", "Documents: zephyr.md", `Agents: ${SESSION.title}`],
-};
+/** The three matches for the row's query, in each door's own order: the kinds a door lifts come
+ *  first, the rest in the base order (`kindOrder`). */
+export function doorRows(): Record<"[[" | "@" | "#", readonly string[]> {
+  const agent = `Agents: ${SESSION.title}`;
+  const document = `Documents: ${query()}.md`;
+  const issue = `Issues: ${targetTitle()}`;
+  return {
+    "[[": [document, issue, agent],
+    "@": [agent, document, issue],
+    "#": [issue, document, agent],
+  };
+}
 
 /** The covered rows of one box, in the list's own order. */
 export function rowsOfBox(box: DispatchWritingBox): DispatchWritingBoxRow[] {
@@ -354,15 +387,16 @@ export async function expectHint(
  *  the query answers nothing. */
 async function expectDoors(field: Locator): Promise<void> {
   await keyboardOnly(field);
+  const rows = doorRows();
   for (const door of ["[[", "@", "#"] as const) {
     await field.fill("");
-    const list = await openRefPicker(field, `${door}${QUERY}`);
+    const list = await openRefPicker(field, `${door}${query()}`);
     await expect
       .poll(() => pickerRows(list), { message: `the ${door} door's rows` })
-      .toEqual(DOOR_ROWS[door]);
+      .toEqual(rows[door]);
   }
   await field.fill("");
-  const empty = await openRefPicker(field, `[[${NO_MATCH}`);
+  const empty = await openRefPicker(field, `[[${noMatch()}`);
   const own = await ownWordsOf(field);
   if (own !== undefined) {
     await expect(empty.getByTestId("ref-picker-empty")).toHaveText(own.empty);
@@ -377,8 +411,9 @@ async function expectDoors(field: Locator): Promise<void> {
  *  a person on no issue is listed by the second kind of box alone. */
 export async function expectIssueRows(field: Locator, issueRows: boolean): Promise<void> {
   await field.fill("");
-  const list = await openRefPicker(field, `@${OFF_ISSUE_PERSON}`);
-  const person = list.getByRole("option", { name: new RegExp(`^${OFF_ISSUE_PERSON}$`) });
+  const login = offIssuePerson();
+  const list = await openRefPicker(field, `@${login}`);
+  const person = list.getByRole("option", { exact: true, name: login });
   if (issueRows) {
     const own = await ownWordsOf(field);
     if (own !== undefined) {
@@ -411,9 +446,9 @@ async function expectCaretPick(field: Locator, world: BoxWorld): Promise<void> {
   await keyboardOnly(field);
   await field.fill(" then deploy");
   await field.press("Home");
-  await field.pressSequentially(`Ship after #${QUERY}`);
+  await field.pressSequentially(`Ship after #${query()}`);
   const list = refPicker(field.page());
-  await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["#"]);
+  await expect.poll(() => pickerRows(list)).toEqual(doorRows()["#"]);
   await field.press("Enter");
   await expect(field).toHaveValue(`Ship after dispatch://${world.target} then deploy`);
   await field.fill("");
@@ -541,9 +576,9 @@ export async function expectDeliveryClaim(
   const page = field.page();
   await keyboardOnly(field);
   await field.fill("");
-  await field.pressSequentially(`@${QUERY}`);
+  await field.pressSequentially(`@${query()}`);
   const list = refPicker(page);
-  await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["@"]);
+  await expect.poll(() => pickerRows(list)).toEqual(doorRows()["@"]);
   await field.press("Enter");
   // A box held to words of its own lists who its write is delivered to under its own name for
   // the list, and each party by its name, never its address.
@@ -559,7 +594,7 @@ export async function expectDeliveryClaim(
     await expect(named).toHaveText(SESSION.title);
     await field.press("End");
     await field.pressSequentially(DELIVERED_WORDS);
-    const ownBody = `${SESSION_MENTION}${DELIVERED_WORDS}`;
+    const ownBody = `${agentMention(SESSION)}${DELIVERED_WORDS}`;
     await expect(field).toHaveValue(ownBody);
     await expectSend(box, write, ownBody, sends);
     return;
@@ -574,7 +609,7 @@ export async function expectDeliveryClaim(
   await expect(targets).toHaveText(`session:${SESSION.session_id}`);
   await field.press("End");
   await field.pressSequentially(DELIVERED_WORDS);
-  const body = `${SESSION_MENTION}${DELIVERED_WORDS}`;
+  const body = `${agentMention(SESSION)}${DELIVERED_WORDS}`;
   await expect(field).toHaveValue(body);
   await expectSend(box, write, body, sends);
 }

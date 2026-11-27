@@ -10,10 +10,10 @@
  *  a reporter that drops or doubles a file whichever leg it is placed on; the second is what tells
  *  this split from Playwright's own, whose count split is a partition too.
  *
- *  The listings of a selection run one after the other, and the two selections side by side, so
- *  the file holds at most two at once: a listing of the full config is a `node` of about 300 to
- *  500 MiB, and this file once started ten at once, four of which a Legion pod's memory guard
- *  killed at 6.8 to 7.1 of its 8 GiB.
+ *  The listings of a selection run one after the other, the first two selections side by side and
+ *  the third after the first, so the file holds at most two at once: a listing of the full config
+ *  is a `node` of about 300 to 500 MiB, and this file once started ten at once, four of which a
+ *  Legion pod's memory guard killed at 6.8 to 7.1 of its 8 GiB.
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -126,17 +126,29 @@ test("a project another names as a dependency or teardown is a setup project, an
 const legs = 4;
 const rowKey = (row: ListedRow) => `${row.project} › ${row.file} › ${row.title}`;
 
+/** The quarantine the shard job's browser step asks for (.github/scripts/
+ *  dispatch-browser-shard-suite.sh exports it): `quarantined` in e2e/playwright.config.ts then
+ *  adds each project a `grepInvert` of the quarantined rows, which Playwright applies before the
+ *  reporter reads the selection it places. Each listing below runs under it, so the selection it
+ *  holds to the legs is the one the shard job's legs place. */
+const shardJobEnvironment = { DISPATCH_E2E_QUARANTINE: "exclude" };
+
 /** One selection listed whole and then each of its legs through the reporter, one listing after
  *  another. */
 async function listedLegs(selection: readonly string[]) {
-  const whole = await listing(import.meta.url, "e2e/playwright.config.ts", {}, selection);
+  const whole = await listing(
+    import.meta.url,
+    "e2e/playwright.config.ts",
+    shardJobEnvironment,
+    selection
+  );
   const sharded = [];
   for (let leg = 1; leg <= legs; leg += 1) {
     sharded.push(
       await listing(
         import.meta.url,
         "e2e/playwright.config.ts",
-        {},
+        shardJobEnvironment,
         [...selection, `--shard=${leg}/${legs}`],
         ["./e2e/shard-reporter.ts"]
       )
@@ -145,11 +157,25 @@ async function listedLegs(selection: readonly string[]) {
   return { sharded, whole };
 }
 
-/** Both selections start here, before any test, so the file holds at most two listings at once. */
+/** The default selection, listed first: the third selection below waits for it. */
+const defaultSelection = retained(listedLegs([]));
+
+/** The first two selections start here, before any test, and the third once the first has ended,
+ *  so the file holds at most two listings at once. */
 const selections = {
-  "the default selection": retained(listedLegs([])),
+  "the default selection": defaultSelection,
   "the pull-request lane": retained(
     listedLegs([...projectArguments(pullRequestLaneProjects), "--grep", tagged("pr").source])
+  ),
+  // Under `--repeat-each` Playwright makes each copy of a file a file suite of its own, with the
+  // same project and file. The reporter places the file once, with every copy's rows, where one
+  // that placed each copy alone ran every copy on one leg and left other legs none. This starts
+  // once the default selection's listings have ended, passed or failed, and runs beside the
+  // pull-request lane's.
+  "the stub project under --repeat-each=2": retained(
+    defaultSelection
+      .catch(() => undefined)
+      .then(() => listedLegs([...projectArguments(["stub"]), "--repeat-each=2"]))
   ),
 };
 

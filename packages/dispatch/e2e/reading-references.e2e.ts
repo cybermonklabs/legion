@@ -24,28 +24,28 @@ import {
   expectReadsForms,
   expectReadsReferences,
   formReadings,
-  READING_LEAD,
   type ReadingWorld,
+  readingAuthor,
   readingText,
   seedReadingWorld,
 } from "./reading-rows";
-import { conversationTurn, RENDERED_BODY, referenceAgent } from "./reference-surfaces";
+import { conversationTurn, RENDERED_BODY } from "./reference-surfaces";
 import { expect, type Locator, type Page, test } from "./test";
 
 /** Opens the search palette with Ctrl+K, as a reader does on any route, searches for the word
- *  every reading text opens with, and answers the palette. No title of the world holds that
- *  word, so the hits are the records holding the text and no issue besides. The text is no
- *  more than nine words, and an ask is searched by its question and then its answer, eighteen:
+ *  the running row's reading text opens with, and answers the palette. Only this row writes
+ *  that word. The text is no more than nine words, and an ask is searched by its question
+ *  and then its answer, eighteen:
  *  either is inside the 24 words of the headline's window, so a hit's snippet is its whole text
  *  (`pmdoc.SearchSnippet`) whichever of its words matched. */
-async function searchPalette(page: Page): Promise<Locator> {
+async function searchPalette(page: Page, lead: string): Promise<Locator> {
   await page.goto("/");
   await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Search" });
   await expect(dialog).toBeVisible();
-  await page.getByRole("combobox", { name: "Search" }).fill(READING_LEAD);
+  await page.getByRole("combobox", { name: "Search" }).fill(lead);
   return dialog;
 }
 
@@ -56,7 +56,7 @@ async function hoverCard(page: Page, world: ReadingWorld, reference: string): Pr
   const referring = await createMessage(
     world.host.key,
     { body: `Before the rollout, see ${reference} first.` },
-    referenceAgent
+    readingAuthor
   );
   await page.goto(`/issues/${world.host.key}/conversation`);
   const link = conversationTurn(page, "message", referring.id).locator(
@@ -87,7 +87,7 @@ test("body-reference-cards: a body of nothing but references draws each form as 
       : reading
   );
   const body = forms.map((reading) => reading.written).join(" ");
-  const message = await createMessage(world.host.key, { body }, referenceAgent);
+  const message = await createMessage(world.host.key, { body }, readingAuthor);
 
   await page.goto(`/issues/${world.host.key}/conversation`);
   const turn = conversationTurn(page, "message", message.id);
@@ -113,13 +113,13 @@ test("dispatch-reference-card: a card's two lines draw every form of its target'
   page,
 }) => {
   const world = await seedReadingWorld();
-  const target = await createMessage(world.host.key, { body: readingText(world) }, referenceAgent);
+  const target = await createMessage(world.host.key, { body: readingText(world) }, readingAuthor);
   // A message's card draws the message's whole text under its title (`useReferenceTarget`), and
   // a body that is the reference alone is what draws the card.
   const referring = await createMessage(
     world.host.key,
     { body: `dispatch://${world.host.key}/message/${target.id}` },
-    referenceAgent
+    readingAuthor
   );
 
   await page.goto(`/issues/${world.host.key}/conversation`);
@@ -137,7 +137,7 @@ test("reference-hover-card: the hover card over a reference to a comment draws e
   page,
 }) => {
   const world = await seedReadingWorld();
-  const comment = await createComment(world.host.key, { body: readingText(world) }, referenceAgent);
+  const comment = await createComment(world.host.key, { body: readingText(world) }, readingAuthor);
   const card = await hoverCard(page, world, `dispatch://${world.host.key}/comment/${comment.id}`);
   // The card is one link to the comment, so what it draws of the comment links nothing.
   await expectReadsReferences(card, world, "inert");
@@ -149,7 +149,7 @@ test("reference-hover-card-ask: the hover card over a reference to an ask draws 
   page,
 }) => {
   const world = await seedReadingWorld();
-  const ask = await createAsk(world.host.key, { question: readingText(world) }, referenceAgent);
+  const ask = await createAsk(world.host.key, { question: readingText(world) }, readingAuthor);
   const card = await hoverCard(page, world, `dispatch://${world.host.key}/ask/${ask.id}`);
   // The card heads with the ask's question, inside the one link to the ask.
   await expectReadsReferences(card, world, "inert");
@@ -161,7 +161,7 @@ test("search-ask-status: an ask hit draws every form of its stored question's an
   page,
 }) => {
   const world = await seedReadingWorld();
-  const ask = await createAsk(world.host.key, { question: readingText(world) }, referenceAgent);
+  const ask = await createAsk(world.host.key, { question: readingText(world) }, readingAuthor);
   const answered = await answerAsk(ask.id, {
     expected_edited_at: null,
     selected: [],
@@ -169,7 +169,7 @@ test("search-ask-status: an ask hit draws every form of its stored question's an
   });
   expect(answered.answer).not.toBeNull();
 
-  const dialog = await searchPalette(page);
+  const dialog = await searchPalette(page, world.lead);
   const hit = dialog.locator(`#search-option-ask-${ask.id}`);
   await expect(hit).toContainText("Answered");
   // The hit's two rendered texts: its snippet, which is the question and then the answer the ask
@@ -192,12 +192,12 @@ test("search-ask-chosen-options: an ask hit's chosen option draws every form of 
   // found by it and the one text of the hit's status line that names anything is the label.
   const ask = await createAsk(
     world.host.key,
-    { options: [{ label }, { label: "Later" }], question: `${READING_LEAD} which reading first?` },
-    referenceAgent
+    { options: [{ label }, { label: "Later" }], question: `${world.lead} which reading first?` },
+    readingAuthor
   );
   await answerAsk(ask.id, { expected_edited_at: null, selected: [label] });
 
-  const dialog = await searchPalette(page);
+  const dialog = await searchPalette(page, world.lead);
   const hit = dialog.locator(`#search-option-ask-${ask.id}`);
   await expect(hit).toContainText("Chose");
   // The hit's snippet is a preview, and the answer wrote no text to preview, so the one body the
@@ -212,9 +212,9 @@ test("search-result: a result row's snippet draws every form of a stored referen
   page,
 }) => {
   const world = await seedReadingWorld();
-  const comment = await createComment(world.host.key, { body: readingText(world) }, referenceAgent);
+  const comment = await createComment(world.host.key, { body: readingText(world) }, readingAuthor);
 
-  const dialog = await searchPalette(page);
+  const dialog = await searchPalette(page, world.lead);
   const hit = dialog.locator(`#search-option-comment-${comment.id}`);
   await expect(hit).toBeVisible();
   // The row is one button, a `control` host, so the snippet links nothing.
@@ -229,7 +229,7 @@ test("referenced-by-excerpt: a backlink's excerpt draws every form of a stored r
   const world = await seedReadingWorld();
   // The comment cites the issue its text names by address, so it is one of that issue's
   // backlinks, and the panel lists it by the head of its own body.
-  await createComment(world.host.key, { body: readingText(world) }, referenceAgent);
+  await createComment(world.host.key, { body: readingText(world) }, readingAuthor);
 
   await page.goto(`/issues/${world.addressed.key}`);
   // What references the issue is a row of the header's Details (dispatch://INFRA-5200).

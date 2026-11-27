@@ -1,7 +1,7 @@
 import { type FakeSession, setLiveSessions } from "./agents";
 import { dropAgentStreamViewers, publishAgentStreamFrame } from "./api";
 import { frontLiveView } from "./live-views";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -22,17 +22,12 @@ import { asUser } from "./users";
  * fails there on its own assertion.
  */
 
-/** The sessions these rows read, by id. Each is a UUID, which Dispatch's agent routes require,
- *  and each is this file's own: the relay's replay is process-global, so a session another spec
- *  seeded would carry that spec's frames into these rows. */
-const RING_ID = "01a0e812-0003-7000-8000-000000000001";
-const ZERO_ID = "01a0e812-0003-7000-8000-000000000002";
-const SILENT_ID = "01a0e812-0003-7000-8000-000000000003";
-const PHONE_ID = "01a0e812-0003-7000-8000-000000000004";
-const CLEARED_ID = "01a0e812-0003-7000-8000-000000000005";
-
-/** A live session for a row to open. `last_seen` is taken when the row seeds, never at this
- *  module's scope, which a worker evaluates once and every later spec of that worker ages. */
+/** A live session for a row to open. `sessionID` is the row's own (`rowSessionId`, e2e/test.ts),
+ *  a UUID, which Dispatch's agent routes require: the live view shows the messages Dispatch keeps
+ *  for a session by its id, for every person at once, and the relay's replay is process-global,
+ *  so a session another row seeded would carry that row's messages and frames into this one.
+ *  `last_seen` is taken when the row seeds, never at this module's scope, which a worker
+ *  evaluates once and every later spec of that worker ages. */
 function session(sessionID: string, title: string, dir = "/workspaces/context"): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
@@ -117,16 +112,17 @@ async function edgesOf(locator: Locator): Promise<Edges> {
 test("the context ring draws the session's share, and its panel the tokens and the window", async ({
   browser,
 }) => {
-  await setLiveSessions([session(RING_ID, "Ring")]);
+  const ringId = rowSessionId("ring");
+  await setLiveSessions([session(ringId, "Ring")]);
   await publishAgentStreamFrame(
-    RING_ID,
-    replayOf(RING_ID, [turnFrame(1), contextFrame(2, 68_000, 200_000)]),
+    ringId,
+    replayOf(ringId, [turnFrame(1), contextFrame(2, 68_000, 200_000)]),
     "replay"
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(RING_ID));
+    await page.goto(livePath(ringId));
     const ring = contextRing(page);
     await expect(ring).toBeVisible();
     await expect(ring).toContainText("34%");
@@ -145,11 +141,11 @@ test("the context ring draws the session's share, and its panel the tokens and t
     await expect(panel).toContainText("34%");
 
     // The session fills more of the same window while the reader is looking at it.
-    await publishAgentStreamFrame(RING_ID, contextFrame(3, 120_000, 200_000));
+    await publishAgentStreamFrame(ringId, contextFrame(3, 120_000, 200_000));
     await expect(ring).toContainText("60%");
     await expect(panel).toContainText("120,000 of 200,000 tokens");
     await expect(panel).toContainText("60%");
-    expect(page.url()).toContain(livePath(RING_ID));
+    expect(page.url()).toContain(livePath(ringId));
   } finally {
     await context.close();
   }
@@ -164,19 +160,21 @@ test("the context ring draws the session's share, and its panel the tokens and t
 test("a window of zero and a session that published no context frame draw no ring", async ({
   browser,
 }) => {
-  await setLiveSessions([session(ZERO_ID, "Zero"), session(SILENT_ID, "Silent")]);
+  const zeroId = rowSessionId("zero");
+  const silentId = rowSessionId("silent");
+  await setLiveSessions([session(zeroId, "Zero"), session(silentId, "Silent")]);
   await publishAgentStreamFrame(
-    ZERO_ID,
-    replayOf(ZERO_ID, [turnFrame(1), contextFrame(2, 68_000, 0)]),
+    zeroId,
+    replayOf(zeroId, [turnFrame(1), contextFrame(2, 68_000, 0)]),
     "replay"
   );
-  await publishAgentStreamFrame(SILENT_ID, replayOf(SILENT_ID, [turnFrame(1)]), "replay");
+  await publishAgentStreamFrame(silentId, replayOf(silentId, [turnFrame(1)]), "replay");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
     for (const [sessionID, seq] of [
-      [ZERO_ID, 3],
-      [SILENT_ID, 2],
+      [zeroId, 3],
+      [silentId, 2],
     ] as const) {
       await page.goto(livePath(sessionID));
       const footer = frontLiveView(page).getByTestId("agent-composer-footer");
@@ -204,29 +202,30 @@ test("a window of zero and a session that published no context frame draw no rin
 test("a cleared context window takes the ring away, live and after a rebuild from the replay", async ({
   browser,
 }) => {
-  await setLiveSessions([session(CLEARED_ID, "Cleared")]);
+  const clearedId = rowSessionId("cleared");
+  await setLiveSessions([session(clearedId, "Cleared")]);
   await publishAgentStreamFrame(
-    CLEARED_ID,
-    replayOf(CLEARED_ID, [turnFrame(1), contextFrame(1, 8_192, 32_768)]),
+    clearedId,
+    replayOf(clearedId, [turnFrame(1), contextFrame(1, 8_192, 32_768)]),
     "replay"
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(CLEARED_ID));
+    await page.goto(livePath(clearedId));
     const footer = frontLiveView(page).getByTestId("agent-composer-footer");
     await expect(contextRing(page)).toContainText("25%");
 
     // The session reports that it has no window now, while the reader is looking at it.
-    await publishAgentStreamFrame(CLEARED_ID, clearedFrame(2));
+    await publishAgentStreamFrame(clearedId, clearedFrame(2));
     await expect(contextRing(page)).toHaveCount(0);
     await expect(footer).not.toContainText("%");
 
     // The page loses its subscription and rebuilds the whole transcript from the session's
     // replay, which holds the reading and, after it, the clearing.
     await publishAgentStreamFrame(
-      CLEARED_ID,
-      replayOf(CLEARED_ID, [
+      clearedId,
+      replayOf(clearedId, [
         turnFrame(1),
         contextFrame(1, 8_192, 32_768),
         clearedFrame(2),
@@ -234,7 +233,7 @@ test("a cleared context window takes the ring away, live and after a rebuild fro
       ]),
       "replay"
     );
-    await dropAgentStreamViewers(CLEARED_ID);
+    await dropAgentStreamViewers(clearedId);
     await expect(
       frontLiveView(page).getByText("Switched to a model with no window.", { exact: true })
     ).toBeVisible();
@@ -242,7 +241,7 @@ test("a cleared context window takes the ring away, live and after a rebuild fro
     await expect(footer).not.toContainText("%");
 
     // A window the session really has, on the same page: the ring is drawn again.
-    await publishAgentStreamFrame(CLEARED_ID, contextFrame(3, 68_000, 200_000));
+    await publishAgentStreamFrame(clearedId, contextFrame(3, 68_000, 200_000));
     await expect(contextRing(page)).toContainText("34%");
   } finally {
     await context.close();
@@ -257,18 +256,19 @@ test("a cleared context window takes the ring away, live and after a rebuild fro
 test("at a phone width the ring keeps the right edge of the box while the facts scroll @phone @phone-only", async ({
   browser,
 }) => {
+  const phoneId = rowSessionId("phone");
   await setLiveSessions([
-    session(PHONE_ID, "Phone", "/workspaces/a-directory-long-enough-to-run-off-a-phone-screen"),
+    session(phoneId, "Phone", "/workspaces/a-directory-long-enough-to-run-off-a-phone-screen"),
   ]);
   await publishAgentStreamFrame(
-    PHONE_ID,
-    replayOf(PHONE_ID, [turnFrame(1), contextFrame(2, 68_000, 200_000)]),
+    phoneId,
+    replayOf(phoneId, [turnFrame(1), contextFrame(2, 68_000, 200_000)]),
     "replay"
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(PHONE_ID));
+    await page.goto(livePath(phoneId));
     const ring = contextRing(page);
     await expect(ring).toContainText("34%");
 

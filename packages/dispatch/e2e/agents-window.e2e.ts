@@ -6,7 +6,7 @@ import {
   setLiveSessions,
   shownAgentRows,
 } from "./agents";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -41,8 +41,11 @@ const OVERSCAN = 12;
  *  overscan either side can be counted exactly. */
 const SCROLL_TO = 4_000;
 
+/** The `index`th session's id: the row's own (`rowSessionId`, e2e/test.ts). The page groups and
+ *  orders a session by what Dispatch keeps under its id for every person at once - a pin, an ask,
+ *  its activity - and an opened row reads the session's messages by it. */
 function sessionID(index: number): string {
-  return `01a0e812-0c12-7000-8000-${String(index).padStart(12, "0")}`;
+  return rowSessionId(`worker${index}`);
 }
 
 /** The session's own name, zero-padded so that the page's order - by title, since none of these

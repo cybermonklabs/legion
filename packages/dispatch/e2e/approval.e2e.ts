@@ -26,10 +26,10 @@ import {
   withOpenedAsk,
 } from "./api";
 import { bodyOf } from "./bodies";
-import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
+import { needsYouCards, openSpecAndAwaitHeadingIds, placeCaret } from "./editor";
 import { askControls, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -62,8 +62,9 @@ const session = {
 test("a spec's approval is a human review pinned to its version: requested by the agent, answered in the Inbox, stale after an edit, changes requested from the header @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue({ project: "GATE", spec: "The plan.", title: "Design gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
+  const issue = await createIssue({ project: gate, spec: "The plan.", title: "Design gate" });
   const artifactID = issue.primary_artifact_id;
 
   // The agent asks for approval; the Inbox shows the request and the two reviews it offers.
@@ -158,9 +159,10 @@ test("a spec's approval is a human review pinned to its version: requested by th
 test("a reason longer than the server takes shows the server's own refusal in the Request changes dialog @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "LONGREASON", name: "Long reason" });
+  const longreason = rowKey("LONGREASON");
+  await createProject({ key: longreason, name: "Long reason" });
   const issue = await createIssue({
-    project: "LONGREASON",
+    project: longreason,
     spec: "The plan.",
     title: "Reason past the bound",
   });
@@ -206,9 +208,10 @@ test("a reason longer than the server takes shows the server's own refusal in th
 test("Approve in today's issue header approves the primary document at a phone's width", async ({
   browser,
 }) => {
-  await createProject({ key: "HEADAPPR", name: "Header approve" });
+  const headappr = rowKey("HEADAPPR");
+  await createProject({ key: headappr, name: "Header approve" });
   const issue = await createIssue({
-    project: "HEADAPPR",
+    project: headappr,
     spec: "The plan.",
     title: "Approved from the header",
   });
@@ -251,8 +254,9 @@ async function approveThenChange(
   spec: string,
   blocks: number
 ): Promise<{ key: string; id: string }> {
-  await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue({ project: "GATE", spec, title: "Design gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
+  const issue = await createIssue({ project: gate, spec, title: "Design gate" });
   const id = issue.primary_artifact_id;
   await expect
     .poll(async () => (await listIssueAsks(issue.key)).filter((ask) => ask.block_artifact).length)
@@ -412,9 +416,10 @@ test("an undo that restores the approved text around a decision block the agent 
 test("an approval request stays in one Inbox card while its document version moves", async ({
   browser,
 }) => {
-  await createProject({ key: "FOLLOW", name: "Approval follow" });
+  const follow = rowKey("FOLLOW");
+  await createProject({ key: follow, name: "Approval follow" });
   const issue = await createIssue({
-    project: "FOLLOW",
+    project: follow,
     spec: "The plan.",
     title: "Follow approval",
   });
@@ -481,9 +486,10 @@ test("an approval request stays in one Inbox card while its document version mov
 test("a human comment, revision, and hand-back return an approval card to Waiting on you", async ({
   browser,
 }) => {
-  await createProject({ key: "TURN", name: "Approval turn" });
+  const turnKey = rowKey("TURN");
+  await createProject({ key: turnKey, name: "Approval turn" });
   const issue = await createIssue({
-    project: "TURN",
+    project: turnKey,
     spec: "The plan.",
     title: "Hand-back turn",
   });
@@ -523,12 +529,15 @@ test("a human comment, revision, and hand-back return an approval card to Waitin
 test("an unchanged hand-back after a human comment and a progress note returns the card to Waiting on you", async ({
   browser,
 }) => {
-  await createProject({ key: "SAME", name: "Unchanged hand-back" });
-  const issue = await createIssue({
-    project: "SAME",
-    spec: "The plan.",
-    title: "Unchanged hand-back",
-  });
+  const same = rowKey("SAME");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), so the banner's one item
+  // is this row's question and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: same, name: "Unchanged hand-back" }, { login: me });
+  const issue = await createIssue(
+    { project: same, spec: "The plan.", title: "Unchanged hand-back" },
+    { login: me }
+  );
   const summary = "Names the existing proposal.";
   const requested = withOpenedAsk(
     await requestApproval(issue.primary_artifact_id, { summary }, session)
@@ -536,7 +545,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
   await createComment(
     issue.key,
     { ask_id: requested.ask.id, body: "Please clarify the rollout." },
-    { login: "alice" }
+    { login: me }
   );
   await createComment(
     issue.key,
@@ -544,7 +553,7 @@ test("an unchanged hand-back after a human comment and a progress note returns t
     session
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -581,8 +590,9 @@ test("an unchanged hand-back after a human comment and a progress note returns t
 test("a hand-back is an Activity line, live and after a reload, and leaves one ask card", async ({
   browser,
 }) => {
-  await createProject({ key: "LINE", name: "Hand-back line" });
-  const issue = await createIssue({ project: "LINE", spec: "The plan.", title: "Hand-back line" });
+  const line = rowKey("LINE");
+  await createProject({ key: line, name: "Hand-back line" });
+  const issue = await createIssue({ project: line, spec: "The plan.", title: "Hand-back line" });
   const requested = withOpenedAsk(
     await requestApproval(
       issue.primary_artifact_id,
@@ -640,8 +650,9 @@ test("a hand-back is an Activity line, live and after a reload, and leaves one a
 test("an answer started before a hand-back that rewords nothing is saved, and the card gains no edit history", async ({
   browser,
 }) => {
-  await createProject({ key: "KEEP", name: "Kept answer" });
-  const issue = await createIssue({ project: "KEEP", spec: "The plan.", title: "Kept answer" });
+  const keep = rowKey("KEEP");
+  await createProject({ key: keep, name: "Kept answer" });
+  const issue = await createIssue({ project: keep, spec: "The plan.", title: "Kept answer" });
   const summary = "Names the existing proposal.";
   const requested = withOpenedAsk(
     await requestApproval(issue.primary_artifact_id, { summary }, session)
@@ -704,8 +715,9 @@ test("an answer started before a hand-back that rewords nothing is saved, and th
 test("an approval ask's Inbox card shows a question carrying a long summary whole @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue({ project: "GATE", spec: "The plan.", title: "Design gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
+  const issue = await createIssue({ project: gate, spec: "The plan.", title: "Design gate" });
   // Nearly as long as the ask bound leaves a summary, budgeted as the server budgets it
   // (`approvalQuestion` in `internal/dispatch/api/reviews.go`): the bound on an ask's question
   // and options together, less the question at the longest version a request can reach, less
@@ -777,10 +789,11 @@ const SETTLED_MS = 1_000;
 test("reading an approved spec and moving the caret through its numbered list leaves its approval current", async ({
   browser,
 }) => {
-  await createProject({ key: "GATE", name: "Gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
   // A spec holding a numbered list, which the caret moves through below.
   const issue = await createIssue({
-    project: "GATE",
+    project: gate,
     spec: "## Acceptance\n\n1. The migration ships.\n2. The error rate stays flat.\n",
     title: "Design gate",
   });
@@ -799,9 +812,13 @@ test("reading an approved spec and moving the caret through its numbered list le
       .poll(async () => (await getArtifact(artifactID, { login: "alice" })).approval?.state)
       .toBe("approved");
 
-    // Bob reads the approved spec, and his editor gives its heading an id. Then he clicks into
-    // the list and moves the caret, typing nothing: the first such move has his editor label
-    // each numbered item, which changes the token again and none of the text.
+    // Bob reads the approved spec, and his editor gives its heading an id. Then he puts the caret
+    // in the list and moves it, typing nothing: the first caret move his editor reads has it label
+    // each numbered item, which changes the token again and none of the text. The caret goes in
+    // as `placeCaret` puts it, which the editor reads before the next key: a click is read as a
+    // pointer's move, which labels nothing (`syncListOrderPlugin` skips a transaction with meta),
+    // and on a busy page ProseMirror's focus handler wrote the click's caret back over every key's
+    // move before it read one (run 45974152779).
     const reader = await bob.newPage();
     const opened = await openSpecAndAwaitHeadingIds(
       reader,
@@ -809,7 +826,7 @@ test("reading an approved spec and moving the caret through its numbered list le
       artifactID,
       "The error rate stays flat."
     );
-    await documentEditor(reader).getByText("The migration ships.").click();
+    await placeCaret(reader, "after", "The migration ships.");
     for (const key of ["ArrowDown", "ArrowUp", "End", "Home"]) {
       await reader.keyboard.press(key);
     }
@@ -830,9 +847,10 @@ test("reading an approved spec and moving the caret through its numbered list le
 test("an agent's comment on part of an identifier in an approved spec leaves its approval current", async ({
   browser,
 }) => {
-  await createProject({ key: "GATE", name: "Gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
   const issue = await createIssue({
-    project: "GATE",
+    project: gate,
     spec: "## Plan\n\nRename the user_id column.\n",
     title: "Design gate",
   });
@@ -871,9 +889,10 @@ test("an agent's comment on part of an identifier in an approved spec leaves its
 test("rejecting a suggestion on part of an identifier in an approved spec leaves its approval current", async ({
   browser,
 }) => {
-  await createProject({ key: "GATE", name: "Gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
   const issue = await createIssue({
-    project: "GATE",
+    project: gate,
     spec: "## Plan\n\nMigrate snake_case_name first.\n",
     title: "Design gate",
   });
@@ -920,10 +939,11 @@ test("rejecting a suggestion on part of an identifier in an approved spec leaves
 test("an approval request for an unassigned issue's non-primary document remains actionable while the primary is draft", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "GATE", name: "Gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
   // A create always lands on a person, so the issue nobody holds is created and then cleared.
   const created = await createIssue(
-    { project: "GATE", spec: "Primary review target.", title: "Two approval targets" },
+    { project: gate, spec: "Primary review target.", title: "Two approval targets" },
     session
   );
   const issue = await patchIssue(created.key, { assignee: null }, session);
@@ -990,10 +1010,11 @@ test("an approval request for an unassigned issue's non-primary document remains
 test("an approval ask's Inbox row, drawer link and bare ask route land on the spec with the approve control in view, while an anchored ask and an unanchored question still land where they do today", async ({
   browser,
 }) => {
-  await createProject({ key: "GATE", name: "Gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
   // Alice's own issue, so the request is in her Inbox and her drawer, which both open on the
   // reader's own work; the agent still requests the approval.
-  const issue = await createIssue({ project: "GATE", spec: "The plan.", title: "Design gate" });
+  const issue = await createIssue({ project: gate, spec: "The plan.", title: "Design gate" });
   const requested = withOpenedAsk(await requestApproval(issue.primary_artifact_id, {}, session));
   const specPath = `/issues/${issue.key}/spec?ask=${requested.ask.id}`;
 
@@ -1063,20 +1084,21 @@ test("an approval ask's Inbox row, drawer link and bare ask route land on the sp
 test("an open approval ask's document link reaches the issue's Conversation, and a project document's own approval link reaches its document, while the margin omits the link on both", async ({
   browser,
 }) => {
-  await createProject({ key: "GATE", name: "Gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
   const issue = await createIssue(
-    { project: "GATE", spec: "The plan.", title: "Design gate" },
+    { project: gate, spec: "The plan.", title: "Design gate" },
     session
   );
   const requested = withOpenedAsk(await requestApproval(issue.primary_artifact_id, {}, session));
 
   const doc = await createProjectDocument(
-    "GATE",
+    gate,
     { content: "# Runbook\n", name: "runbook.md" },
     session
   );
   const docApproval = withOpenedAsk(await requestApproval(doc.artifact.id, {}, session));
-  const docPath = `/projects/GATE/documents/${doc.artifact.slug}?ask=${docApproval.ask.id}`;
+  const docPath = `/projects/${gate}/documents/${doc.artifact.slug}?ask=${docApproval.ask.id}`;
 
   const alice = await asUser(browser, "alice");
   try {
@@ -1107,7 +1129,7 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     const inboxLink = inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]");
     await expect(inboxLink).toHaveAttribute("href", docPath);
 
-    await page.goto(`/projects/GATE/documents/${doc.artifact.slug}`);
+    await page.goto(`/projects/${gate}/documents/${doc.artifact.slug}`);
     const docMarginCard = needsYouCards(page).getByTestId(`ask-${docApproval.ask.id}`);
     await expect(docMarginCard).toBeVisible();
     await expect(docMarginCard.getByRole("link", { name: /runbook\.md, version/ })).toHaveCount(0);
@@ -1119,9 +1141,10 @@ test("an open approval ask's document link reaches the issue's Conversation, and
 test("an approval ask keeps its document link and the version it asked about once it is answered, even after the document moves further", async ({
   browser,
 }) => {
-  await createProject({ key: "GATE", name: "Gate" });
+  const gate = rowKey("GATE");
+  await createProject({ key: gate, name: "Gate" });
   const issue = await createIssue(
-    { project: "GATE", spec: "The plan.", title: "Design gate" },
+    { project: gate, spec: "The plan.", title: "Design gate" },
     session
   );
   const requested = withOpenedAsk(await requestApproval(issue.primary_artifact_id, {}, session));

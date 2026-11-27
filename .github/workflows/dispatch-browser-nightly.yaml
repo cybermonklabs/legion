@@ -1,7 +1,8 @@
 name: Dispatch browser nightly
 
-# Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
-# recordings. ci.yaml calls the same workflow twice: its dispatch-browser-pr job runs the
+# Three jobs on a schedule: the full browser lane, the re-record of the stubbed layer's
+# recordings, and the quarantine check, which runs on the 02:17 cron and on a workflow_dispatch
+# alone. ci.yaml calls the same workflow twice: its dispatch-browser-pr job runs the
 # pull-request lane on a pull request, the rows a pull request is held to, and its
 # dispatch-browser job runs the full lane - all eight parallel projects, the three `-alone` ones,
 # the two stub ones and the two-process job - in the merge queue, so the merge group runs it on
@@ -17,7 +18,20 @@ name: Dispatch browser nightly
 # `ci-ok-changes`, so the merge job's report step does not run and the run posts no check, files
 # no issue and sends no message. dispatch://INFRA-1066's R22 owns a reader for nightly results,
 # and this workflow deliberately builds no second one: a reader written here is the thing R22
-# would then have to replace.
+# would then have to replace. The quarantine check below is not that reader: it reads the one
+# thing R4 of dispatch://INFRA-983 decides the quarantine from, the merge jobs' flaky-row
+# notices, and it posts nothing either - it fails the run, and its summary says why.
+#
+# The quarantine (packages/dispatch/e2e/quarantine.ts) has two parts here. The `dispatch-browser`
+# job's call passes `quarantine: true`, so dispatch-browser.yaml runs the quarantined rows in a
+# leg of their own, which reports how each ended and fails nothing, while its shard legs leave
+# them out as on every other call. And the `quarantine-check` job does the checks that depend on
+# the date, which no pull request does: it fails the run on a row flaky in two runs of 14 days
+# that is not quarantined, and on an entry held longer than 14 days. A row of the embedder job or
+# of the two-process job cannot be quarantined, since those jobs read no quarantine and the
+# quarantine leg runs none of their rows, so for such a row it names a fix entry's lines instead;
+# and a flaky row it cannot match to a row of the checkout, though its file is there, fails the
+# run as a failed read.
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states
@@ -47,8 +61,9 @@ concurrency:
   group: dispatch-browser-nightly
   cancel-in-progress: false
 
-# The default for a job of this workflow that declares none. The one job below declares its own,
-# which is what reaches the workflow it calls.
+# The default for a job of this workflow that declares none, which is the re-record job. The
+# `dispatch-browser` and `quarantine-check` jobs below both declare their own: the first's is what
+# reaches the workflow it calls, and the second's adds `checks: read`.
 permissions:
   contents: read
   actions: read
@@ -58,7 +73,7 @@ jobs:
   # GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
   # "Supported keywords for jobs that call a reusable workflow"), so what dispatch-browser.yaml's
   # jobs need is declared here. `contents: read` is the `actions/checkout` step every one of its
-  # five jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
+  # nine jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
   # merge job's "Reading one, the rows" step, which reads this run's own attempt's jobs by running
   # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
   # same file). No `checks: write`, which the ci-ok report would need: this call passes no
@@ -68,6 +83,10 @@ jobs:
   # named `dispatch-browser / <job>` and its artifacts carry the names that caller's do:
   # packages/dispatch/e2e/tools/shard-weights.ts reads the merged report of both, by the artifact
   # name `dispatch-browser-report-1`.
+  #
+  # `quarantine: true` is this call's alone: the quarantined rows run in the
+  # `.github/workflows/dispatch-browser.yaml#quarantine` job, which gates nothing, so their owner
+  # sees on main's tip whether a fix worked.
   dispatch-browser:
     permissions:
       contents: read
@@ -76,6 +95,41 @@ jobs:
     with:
       lane: full
       job: dispatch-browser
+      quarantine: true
+  # why: .github/ci-notes/dispatch-browser-nightly.md#the-quarantine-check-what-it-reads-and-when-it-runs
+  quarantine-check:
+    if: github.event_name != 'schedule' || github.event.schedule == '17 2 * * *'
+    # why: .github/ci-notes/dispatch-browser-nightly.md#why-the-quarantine-check-holds-those-three-scopes-and-what-it-reads-of-the-checkout
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    runs-on: ubuntu-24.04-arm
+    # why: .github/ci-notes/dispatch-browser-nightly.md#the-quarantine-checks-measured-steps-and-its-budget
+    # 300 + 33 = 333 s -> 6 min.
+    timeout-minutes: 6
+    env:
+      JOB_TIMEOUT_MINUTES: 6 # this job's timeout-minutes, for quarantine-check.ts's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      # why: .github/ci-notes/dispatch-browser-nightly.md#why-the-quarantine-check-builds-contracts
+      - name: Build contracts for dispatch e2e
+        run: bun run build:dispatch
+        working-directory: packages/contracts
+      - name: Check the quarantine against 14 days of flaky rows
+        # 104 x 1.15 = 120 s of work, the longest check of 2026-11-21 and 22 (job 137021330193
+        # of run 44961580846), and 180 s for GitHub's rate limit -> 5 min. The tool's wait for
+        # that limit ends at least 30 s before this one; the job's `# why:` section says why.
+        timeout-minutes: 5
+        run: bun e2e/tools/quarantine-check.ts
+        working-directory: packages/dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STEP_TIMEOUT_MINUTES: 5 # this step's timeout-minutes, which quarantine-check.ts's wait stays within as it does the job's
   # The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3). A recording is a
   # snapshot of a server that keeps moving: this re-records every stubbed row against the real
   # harness and fails when a route no longer answers as its recording holds.
@@ -97,11 +151,11 @@ jobs:
   # This file already stands on main with both triggers, so `gh workflow run
   # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.
   #
-  # Both crons start both jobs, since a schedule starts a workflow and not a job, so the 13:41
-  # run also runs the full lane. That is a second full lane a day on a repository whose nightly
-  # is one, which is the price of keeping this job dispatchable before its own merge; it is the
-  # same eight runners for the same ten minutes, and `concurrency` keeps it from overlapping the
-  # 02:17 run.
+  # Both crons start this job and the `dispatch-browser` one, since a schedule starts a workflow
+  # and not a job, so the 13:41 run also runs the full lane; the quarantine check's `if:` keeps it
+  # to the 02:17 one. That is a second full lane a day on a repository whose nightly is one, which
+  # is the price of keeping this job dispatchable before its own merge. `concurrency` keeps the
+  # two full-lane runs from overlapping.
   #
   # The budget, by the rule .github/ci-notes/dispatch-browser.md states for every job: a step's
   # measured maximum plus 15 per cent, rounded up to the next whole minute, floor two minutes,

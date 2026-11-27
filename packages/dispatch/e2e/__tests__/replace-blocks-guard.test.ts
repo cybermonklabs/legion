@@ -20,21 +20,24 @@
  *
  *  Every row that runs the driver skips where psql is not on PATH: the driver requires it before
  *  its guard and the guard asks each server through it. The rows that need a server also skip
- *  where LEGION_TEST_PG_DSN names none, as in CI's `dispatch-ui` job; the two of them the guard
+ *  where LEGION_TEST_PG_DSN names none, as in CI's `dispatch-ui` job; the three of them the guard
  *  lets through run on a scratch database they make and drop on that server, as
- *  psql-session.test.ts does. The refusal rows that need none hold strings psql gets no answer
- *  through: a database named `mine`, which the pod's server does not hold, a port nothing listens
- *  on, or a string libpq refuses outright. One more row reads two source files and runs nothing.
- *  Four rows put a stand-in psql first on PATH instead and need neither: it records what each read
- *  handed it, so they hold how a string reaches psql. A postgres:// URL reaches it without its
- *  password, which psql gets in PGPASSWORD alone; a key=value string with a password key is
- *  refused before psql runs, naming its variable; one with none reaches psql as it is.
+ *  psql-session.test.ts does. One of those three runs a copy of the driver whose proc_group reads
+ *  its instance's group as 0, and holds that the stop refuses that group, naming it, and signals
+ *  nothing of the group the driver runs in. The refusal rows that need none hold strings psql
+ *  gets no answer through: a database named `mine`, which the pod's server does not hold, a port
+ *  nothing listens on, or a string libpq refuses outright. One more row reads two source files
+ *  and runs nothing. Four rows put a stand-in psql first on PATH instead and need neither: it
+ *  records what each read handed it, so they hold how a string reaches psql. A postgres:// URL
+ *  reaches it without its password, which psql gets in PGPASSWORD alone; a key=value string with
+ *  a password key is refused before psql runs, naming its variable; one with none reaches psql as
+ *  it is.
  */
 
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -130,18 +133,19 @@ const fakeBunDirectories = temporaryDirectories("replace-blocks-fake-bun");
 /** A directory for the fixture log the failed-start row hands `tail`, one per row. */
 const logDirectories = temporaryDirectories("replace-blocks-log");
 
-/** The driver run from the package root with `databaseUrl`, LEGION_TEST_PG_DSN as this run has it
- *  where it has one, `label` as DISPATCH_E2E_CASE, and no other Dispatch, Envoy or libpq variable,
- *  so what it does is the guard's own. The driver never reads DISPATCH_E2E_CASE, and its scrub
- *  unsets it with every other DISPATCH_ variable: the runs differ only in DATABASE_URL, which the
- *  cost line names without its value, so `label`, one per case, is what tells their cost lines
- *  apart. A `bun` of the row's own stands first on PATH: it leaves a marker file, prints `log` as
- *  the instance's output, and exits 1, so a string the guard lets through starts nothing.
- *  `started` is whether that `bun` ran. */
+/** The driver run from `packageDirectory`, the package root by default, with `databaseUrl`,
+ *  LEGION_TEST_PG_DSN as this run has it where it has one, `label` as DISPATCH_E2E_CASE, and no
+ *  other Dispatch, Envoy or libpq variable, so what it does is the guard's own. The driver never
+ *  reads DISPATCH_E2E_CASE, and its scrub unsets it with every other DISPATCH_ variable: the runs
+ *  differ only in DATABASE_URL, which the cost line names without its value, so `label`, one per
+ *  case, is what tells their cost lines apart. A `bun` of the row's own stands first on PATH: it
+ *  leaves a marker file, prints `log` as the instance's output, and exits 1, so a string the guard
+ *  lets through starts nothing. `started` is whether that `bun` ran. */
 async function drive(
   label: string,
   databaseUrl: string,
-  log = ""
+  log = "",
+  packageDirectory = dispatchPackage
 ): Promise<{ code: number; stdout: string; stderr: string; started: boolean }> {
   const bin = fakeBunDirectories();
   const marker = join(bin, "bun-ran");
@@ -157,7 +161,7 @@ async function drive(
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", "e2e/acceptance/replace-blocks.sh"],
     bound: "short",
-    cwd: dispatchPackage,
+    cwd: packageDirectory,
     env: {
       DATABASE_URL: databaseUrl,
       DISPATCH_E2E_CASE: label,
@@ -583,4 +587,111 @@ test.skipIf(!live)(
   // bound. The scratch database's create and drop go through `sqlAt`, the psql edge no bound
   // reaches, inside the 30 000 ms the limit adds for the row's own work.
   rowLimit("short", "short")
+);
+
+/** The repository's root, which holds every file the driver reads. */
+const repositoryRoot = join(dispatchPackage, "../..");
+
+/** The files the driver reads, by their paths under the repository's root: the driver, the lib
+ *  beside it, and the two libs it sources from that root (`repo_root` in
+ *  e2e/acceptance/replace-blocks.sh). */
+const driverFiles = [
+  "packages/dispatch/e2e/acceptance/replace-blocks.sh",
+  "packages/dispatch/e2e/acceptance/lib.sh",
+  "scripts/e2e/lib/process-tree.sh",
+  "packages/envoy/scripts/lib/pg-url.sh",
+] as const;
+
+/** A proc_group, written after lib/process-tree.sh's own in a copy of it, that reads the group of
+ *  every process but the shell's own as 0, as gVisor's stat of an instance that had just exited
+ *  once read (proc_stat_fields in lib/process-tree.sh). The shell's own group reads as it is: the
+ *  driver reads it to tell its instance's group from its own. */
+const groupZero = `
+proc_group() { if [ "$1" = "$$" ]; then proc_stat_field "$1" 5 pgid; else echo 0; fi; }
+`;
+
+const layoutDirectories = temporaryDirectories("replace-blocks-layout");
+
+/** A copy of the driver and the files it reads, laid out under a directory of its own as the
+ *  repository lays them out, whose lib/process-tree.sh ends in `groupZero`. Answers the copy's
+ *  packages/dispatch, the directory `drive` runs it from. */
+function driverWithGroupZero(): string {
+  const root = layoutDirectories();
+  for (const path of driverFiles) {
+    const text = readFileSync(join(repositoryRoot, path), "utf8");
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(
+      join(root, path),
+      path === "scripts/e2e/lib/process-tree.sh" ? text + groupZero : text
+    );
+  }
+  return join(root, "packages/dispatch");
+}
+
+/** `step`'s answer, and how many SIGTERMs this process got while it ran. The listener this adds
+ *  keeps a SIGTERM from ending this process: bounded-subprocess.ts's own listener kills the
+ *  bounded children and raises the signal again only where no other listener is left. So a
+ *  SIGTERM sent to this process's group is counted here, and the row that reads the count names
+ *  it, where the run would otherwise end without naming a row. */
+async function countingSigterms<T>(
+  step: () => Promise<T>
+): Promise<{ answer: T; sigterms: number }> {
+  let sigterms = 0;
+  const count = (): void => {
+    sigterms += 1;
+  };
+  process.on("SIGTERM", count);
+  try {
+    const answer = await step();
+    return { answer, sigterms };
+  } finally {
+    process.off("SIGTERM", count);
+  }
+}
+
+// On gVisor the group of an instance that had just exited once read as 0. The start's wait then
+// polled `kill -0 -0`, which names the driver's own group and always succeeds, to its 900 s
+// deadline, and the stop would have sent `kill -TERM -0` and then `kill -KILL -0` to that group,
+// which under `runBounded` holds this test's process too. Here the copy's proc_group reads the
+// instance's group as 0 (`driverWithGroupZero`), and the start fails as the row above fails it.
+// The driver must refuse group 0 in its start's wait and in its stop, naming it each time, signal
+// the instance's own pid in its place, and exit 1 with the failed start's message. That message
+// is printed (`fail`) before the driver's EXIT trap runs the stop, so a refusal after it is the
+// stop's own. A `kill -TERM -0` would reach this process, and `countingSigterms` counts it; it
+// would reach the driver too, whose TERM trap would then exit 143.
+test.skipIf(!live)(
+  "a stop handed group 0 refuses it, naming it, and signals nothing of the group it runs in",
+  async () => {
+    await withScratchDatabase(async (scratch) => {
+      const { log } = stoppedInstanceLog(scratch.url);
+      const packageCopy = driverWithGroupZero();
+      const { answer: run, sigterms } = await countingSigterms(() =>
+        drive("stop-group-0", scratch.url, log, packageCopy)
+      );
+      const { code, stderr, started } = run;
+      const failed = stderr.indexOf("it stopped while it started");
+      expect(
+        {
+          code,
+          started,
+          stopped: failed !== -1,
+          refusedByStop:
+            failed !== -1 &&
+            stderr
+              .slice(failed)
+              .includes(
+                "refusing to signal process group '0': kill reads group 0 as the group it is called from"
+              ),
+          sigterms,
+        },
+        "The driver, handed a group of 0 for its instance, did not refuse it in its stop, or " +
+          "signalled the group it runs in, which holds this process." +
+          driverSaid(run)
+      ).toEqual({ code: 1, started: true, stopped: true, refusedByStop: true, sigterms: 0 });
+    });
+  },
+  // The driver, a bounded child under the short bound. The scratch database's create and drop go
+  // through `sqlAt`, the psql edge no bound reaches, inside the 30 000 ms the limit adds for the
+  // row's own work.
+  rowLimit("short")
 );

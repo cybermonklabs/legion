@@ -1,6 +1,7 @@
 /** The one `playwright test --list` subprocess the bun tests of this directory read a listing
- *  from, and the helper that keeps a listing started ahead of its test from being reported as an
- *  unhandled rejection.
+ *  from, the helper that keeps a listing started ahead of its test from being reported as an
+ *  unhandled rejection, the command `bun run e2e:embedder` runs, which two of them list, and the
+ *  listings that give the files whose rows the quarantine cannot take.
  *
  * It lives here rather than in `e2e/configurations.ts` because that module's header promises it
  * imports no Playwright and spawns nothing, and the contract this file holds is one subprocess's
@@ -14,9 +15,11 @@
  * holds.
  */
 
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import type { Listing } from "../configurations";
+import { type Listing, rowsOfListing } from "../configurations";
+import { twoProcessRuns, type UnquarantinableFiles } from "../quarantine";
 import { runBounded } from "./bounded-subprocess";
 
 /** The working directory every listing runs in, and what a config path is read against. */
@@ -86,4 +89,67 @@ export function projectArguments(projects: readonly string[]): string[] {
 export function retained<T>(promise: Promise<T>): Promise<T> {
   promise.catch(() => {});
   return promise;
+}
+
+/** The `playwright test` command `bun run e2e:embedder` ends in, read from this package's
+ *  `package.json` rather than written again, so a listing of it holds exactly the rows the
+ *  embedder job runs: the variables set before `playwright`, and the arguments after the config.
+ *  `e2e/__tests__/pull-request-lane.test.ts` counts those rows into the lane's budget, and
+ *  `listUnquarantinableFiles` below reads their files, which the quarantine cannot take. A
+ *  script of any other shape is refused by name rather than read as a listing of nothing. */
+export function embedderCommand(): { environment: Record<string, string>; extra: string[] } {
+  // Read as `e2e/__tests__/row-configurations.test.ts` reads `e2e:clock`.
+  const manifest = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8")
+  ) as { scripts: Record<string, string> };
+  const script = manifest.scripts["e2e:embedder"] ?? "";
+  const words = (script.split("&&").at(-1) ?? "").trim().split(/\s+/);
+  const start = words.indexOf("playwright");
+  const variables = words.slice(0, Math.max(start, 0));
+  if (
+    start === -1 ||
+    words.slice(start, start + 4).join(" ") !==
+      "playwright test --config e2e/playwright.config.ts" ||
+    variables.some((word) => !word.includes("="))
+  ) {
+    throw new Error(
+      `package.json's e2e:embedder script no longer ends in \`[NAME=value ...] playwright test ` +
+        `--config e2e/playwright.config.ts ...\`: ${JSON.stringify(script)}. Read its rows here ` +
+        "the way the embedder job now runs them."
+    );
+  }
+  return {
+    environment: Object.fromEntries(
+      variables.map((word) => [word.slice(0, word.indexOf("=")), word.slice(word.indexOf("=") + 1)])
+    ),
+    extra: words.slice(start + 4),
+  };
+}
+
+/** The files whose rows the quarantine cannot take (`UnquarantinableFiles` of
+ *  `e2e/quarantine.ts`), read from listings of this checkout, and the two-process listings they
+ *  are read from (`twoProcess`). The embedder job's files are those of a listing of
+ *  `embedderCommand`, and the two-process job's those of a listing under each of
+ *  `twoProcessRuns`. `e2e/__tests__/quarantine.test.ts` and `e2e/tools/quarantine-check.ts` both
+ *  read the files through this, so the two read the same files; the tool reads the two-process
+ *  job's rows from `twoProcess` too. `from` is the caller's `import.meta.url`, as `listing`
+ *  takes it. The three listings run at once. */
+export async function listUnquarantinableFiles(
+  from: string
+): Promise<{ files: UnquarantinableFiles; twoProcess: Listing[] }> {
+  const config = "e2e/playwright.config.ts";
+  const embedder = embedderCommand();
+  const [embedderRows, ...twoProcess] = await Promise.all([
+    listing(from, config, embedder.environment, embedder.extra),
+    ...twoProcessRuns.map((environment) => listing(from, config, environment)),
+  ]);
+  return {
+    files: {
+      embedder: [...new Set(rowsOfListing(embedderRows).map((row) => row.file))],
+      twoProcess: [
+        ...new Set(twoProcess.flatMap((listed) => rowsOfListing(listed).map((row) => row.file))),
+      ],
+    },
+    twoProcess,
+  };
 }

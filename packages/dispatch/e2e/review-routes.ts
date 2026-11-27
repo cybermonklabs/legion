@@ -83,6 +83,14 @@ export type ReviewRoute =
        *  `waitForRouteSettled` is what both layers wait on, never one of these alone. */
       readonly ready: (page: Page) => readonly Locator[];
       readonly layers: readonly ReviewLayer[];
+      /** Why the accessibility scan reads this page on the real stack, set where a part of the
+       *  page is drawn from something a recording does not replay: the live document's Yjs
+       *  socket (`/ws/doc`), a `/ws/live` frame the stubbed layer's contract fixtures do not
+       *  carry, or a request the recording cannot answer. Against a recording such a page would
+       *  be scanned without that part, which is a narrower claim than the scan makes, so its row
+       *  runs in `e2e/accessibility.e2e.ts`, on the full lane; every other scanned page is read
+       *  against a recording, on every pull request (`e2e/accessibility.stub.e2e.ts`). */
+      readonly realStackScan?: string;
     }
   | {
       readonly kind: "excluded";
@@ -106,6 +114,11 @@ function wideLayout(page: Page): boolean {
   return (page.viewportSize()?.width ?? 0) >= WIDE_LAYOUT_MIN_PX;
 }
 
+/** The `realStackScan` of the three pages whose `ready` waits on the document's connection dot. */
+const CONNECTION_DOT =
+  'the page is settled only once the connection dot of the document reads "connected", which the ' +
+  "live document's Yjs socket (`/ws/doc`) alone gives";
+
 export const reviewRoutes: readonly ReviewRoute[] = [
   {
     kind: "reviewed",
@@ -128,6 +141,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
         ? [heading, page.getByRole("button", { name: "Skip to the answer" })]
         : [heading];
     },
+    realStackScan:
+      "at the wide layout the reading pane draws the selected ask's document in its live room " +
+      "(`PaneDocument.tsx`'s `ProofDocument`), whose blocks arrive over `/ws/doc`",
   },
   {
     kind: "reviewed",
@@ -204,6 +220,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
           ]
         : [connected];
     },
+    realStackScan: CONNECTION_DOT,
   },
   {
     kind: "reviewed",
@@ -221,6 +238,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/issues/${seed.issue}/conversation`,
     pattern: "/issues/:key/*",
     ready: (page) => [page.getByRole("list", { name: "Conversation turns" })],
+    realStackScan:
+      "its last turn arrives after the first read, on a refetch an event of the live socket " +
+      "starts (this entry's comment above), and the stubbed layer's `/ws/live` sends no event",
   },
   {
     kind: "reviewed",
@@ -264,6 +284,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     ready: (page) => [
       page.getByTestId("plan-task-needs").getByRole("link", { name: "Write the route table." }),
     ],
+    realStackScan:
+      "the tab draws the plan document above its tasks (`RoleDocumentPanel`'s " +
+      "`ArtifactDocument`, `web/src/features/issue/IssuePage.tsx`) from its live room over " +
+      "`/ws/doc`",
   },
   {
     kind: "reviewed",
@@ -278,6 +302,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // own test id is drawn with the empty document, so the probe read the bare key in one run
     // and the title in the other; this waits for the document and that answer together.
     ready: (page) => [page.getByTestId("verification-tab").locator("a.dispatch-reference")],
+    realStackScan:
+      "the tab draws the verification document above its checks (`RoleDocumentPanel`'s " +
+      "`ArtifactDocument`) from its live room over `/ws/doc`, and the reference `ready` waits " +
+      "for is drawn inside that document",
   },
   {
     kind: "reviewed",
@@ -323,6 +351,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
       page.getByRole("status", { name: "connected" }),
       page.locator('[data-testid="artifact-header"]:not([data-highlighted])'),
     ],
+    realStackScan: CONNECTION_DOT,
   },
   // `/priorities` draws one table at a time, on one of three tabs the address names (`?tab=`,
   // `web/src/features/priorities/PrioritiesPage.tsx`), so each tab is an entry of its own. The
@@ -422,6 +451,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // which says its socket was up both times, not that it must be - the race is the one the
     // other two rows lost, so the row is held to the same proof rather than to its luck.
     ready: (page) => [page.getByRole("status", { name: "connected" })],
+    realStackScan: CONNECTION_DOT,
   },
   {
     kind: "reviewed",
@@ -451,6 +481,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // probe found missing in one run: the measure cards, the facets and the chart all wait on
     // the same answer.
     ready: (page) => [page.getByTestId("delivery-chart").locator("canvas").first()],
+    realStackScan:
+      "the timeline is the live socket's `snapshot` for the page's view " +
+      "(`deliveryTimelineQuery`), and the stubbed layer answers that subscription with the " +
+      "contract fixture's snapshot rather than the seeded corpus's",
   },
   {
     kind: "reviewed",
@@ -459,6 +493,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/pipeline?at=${seed.pipelineAt}`,
     pattern: "/pipeline",
     ready: (page) => [page.getByRole("heading", { level: 1, name: "Pipeline" })],
+    realStackScan:
+      "the page is the live socket's answer to a `pipeline` subscription " +
+      "(`deliveryPipelineQuery`), which the stubbed layer's `/ws/live` does not answer at all",
   },
   {
     kind: "reviewed",
@@ -578,6 +615,18 @@ const reviewed: readonly ReviewedRoute[] = reviewRoutes.filter(
 
 export const scannedRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
   route.layers.includes("scan")
+);
+
+/** The scanned pages a recording can draw whole, which `e2e/accessibility.stub.e2e.ts` scans on
+ *  every pull request: every one that carries no `realStackScan`. */
+export const stubScannedRoutes: readonly ReviewedRoute[] = scannedRoutes.filter(
+  (route) => route.realStackScan === undefined
+);
+
+/** The scanned pages a part of which no recording replays, each saying which in its
+ *  `realStackScan`, so `e2e/accessibility.e2e.ts` scans them on the real stack. */
+export const realStackScannedRoutes: readonly ReviewedRoute[] = scannedRoutes.filter(
+  (route) => route.realStackScan !== undefined
 );
 
 export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>

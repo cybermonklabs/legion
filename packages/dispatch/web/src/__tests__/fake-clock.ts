@@ -73,6 +73,9 @@ export async function onRealTurns(done: () => boolean, turns = 1_000): Promise<v
   for (let turn = 0; turn < turns && !done(); turn += 1) {
     await act(() => {
       const { promise, resolve } = Promise.withResolvers<void>();
+      // This one stays on the real clock (INFRA-983): it is a wait for `done`, the thing itself,
+      // polled once a turn, and what it waits for comes on real turns while the row holds the
+      // fake clock; Bun's fake clock does not hold `setImmediate`, and `waitFor` would move it.
       setImmediate(resolve);
       return promise;
     });
@@ -91,4 +94,21 @@ export async function onFakeClock(body: () => Promise<void>): Promise<void> {
   } finally {
     realClock();
   }
+}
+
+/** Runs `fn` once the fake clock the row holds has moved `ms` on, and answers the timer, which a
+ *  stand-in that unmounts first clears with `clearTimeout`: the timer of an answer a row stands in
+ *  for that takes `ms` to come - a server's, a sign-in check's, a view's read - so that it lands
+ *  inside the `tick` or `jump` that crosses it, and any other timer a row sets of its own on the
+ *  fake clock. It refuses to run on the real clock, where a row waiting for that answer would wait
+ *  `ms` of real time (docs/testing.md, "The clock of a unit test"): `real-clock-waits.test.ts`
+ *  finds every `setTimeout` of a test file or a test helper, and passes this one alone without a
+ *  reason, held to the fake clock here. */
+export function afterOnFakeClock(ms: number, fn: () => void): ReturnType<typeof setTimeout> {
+  if (!jest.isFakeTimers()) {
+    throw new Error(
+      `afterOnFakeClock(${ms}) runs on the fake clock alone: install it first (onFakeClock, or jest.useFakeTimers())`
+    );
+  }
+  return setTimeout(fn, ms);
 }

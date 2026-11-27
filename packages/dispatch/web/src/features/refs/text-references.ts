@@ -1,7 +1,7 @@
-import { isIdPrefix, referenceSpans } from "@legion/contracts";
+import { isIdPrefix, readerStep, referenceSpans } from "@legion/contracts";
 
 import { routeItem } from "./block-reference";
-import { codeRanges, isInCode } from "./code-ranges";
+import { codeCursor, codeRanges } from "./code-ranges";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -270,6 +270,7 @@ function keyEnds(text: string, end: number): boolean {
 function keyAt(text: string, start: number): number | undefined {
   let end = start + 1;
   while (end < text.length && /[A-Z0-9]/.test(text.charAt(end))) {
+    readerStep();
     end += 1;
   }
   const letters = end - start;
@@ -284,6 +285,7 @@ function keyAt(text: string, start: number): number | undefined {
   }
   end += 2;
   while (end < text.length && /[0-9]/.test(text.charAt(end))) {
+    readerStep();
     end += 1;
   }
   return keyEnds(text, end) ? end : undefined;
@@ -303,6 +305,7 @@ interface BareCandidate {
  *  the span after the gap is read whole and then names nothing. */
 function bareCandidates(text: string, from: number, to: number, found: BareCandidate[]): void {
   for (let at = from; at < to; at += 1) {
+    readerStep();
     const character = text.charAt(at);
     const isKeyStart = character >= "A" && character <= "Z";
     if ((character !== "#" && !isKeyStart) || !isMentionStart(text, at)) {
@@ -311,6 +314,7 @@ function bareCandidates(text: string, from: number, to: number, found: BareCandi
     if (character === "#") {
       let end = at + 1;
       while (end < text.length && blockIdCharacter.test(text.charAt(end))) {
+        readerStep();
         end += 1;
       }
       if (end > at + 1) {
@@ -331,10 +335,17 @@ function bareCandidates(text: string, from: number, to: number, found: BareCandi
 /** `written` without the trailing `_` and `-` an emphasis or a sentence leaves on a mention, or
  *  undefined where it has none or is nothing without them. It is the one statement of that
  *  trim: a mention is resolved as written first and this way second, and the characters it
- *  resolved without are the author's own (`TextReference.named`). */
+ *  resolved without are the author's own (`TextReference.named`). It walks back from the end, so
+ *  a long run of them anywhere in `written` costs one pass; the expression it replaces,
+ *  `/[_-]+$/`, read such a run again from every position in it, which took seconds on a
+ *  dashboard address of 32,768 underscores and a letter. */
 function trimmedMention(written: string): string | undefined {
-  const trimmed = written.replace(/[_-]+$/, "");
-  return trimmed === written || trimmed === "" ? undefined : trimmed;
+  let end = written.length;
+  while (end > 0 && (written.charAt(end - 1) === "_" || written.charAt(end - 1) === "-")) {
+    readerStep();
+    end -= 1;
+  }
+  return end === written.length || end === 0 ? undefined : written.slice(0, end);
 }
 
 /** The ask the question map gives `#id`: the id as written, else the id without the trailing `_`
@@ -549,12 +560,16 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   // id and kept for the rest of the text.
   const items = () => (kinds ??= itemKinds(facts.items ?? {}, origin));
   // Where this text writes code, read once for the whole of it: a reference is marked by where
-  // its first character stands, which is how the server marks one.
+  // its first character stands, which is how the server marks one. The spans and the bare
+  // candidates are each read in order, so each list walks the ranges once, with a cursor of its
+  // own (`codeCursor`).
   const code = codeRanges(text);
+  const spanInCode = codeCursor(code);
 
   const spans = referenceSpans(text);
   let from = 0;
   for (const span of spans) {
+    readerStep();
     bareCandidates(text, from, span.start, bare);
     from = span.end;
     const address = readAddress(span.value, origin, items);
@@ -578,7 +593,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     references.push({
       end: span.start + span.value.length,
       form: "address",
-      inCode: isInCode(code, span.start),
+      inCode: spanInCode(span.start),
       named,
       reference: address.reference,
       route: address.route,
@@ -589,7 +604,9 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
   }
   bareCandidates(text, from, text.length, bare);
 
+  const bareInCode = codeCursor(code);
   for (const candidate of bare) {
+    readerStep();
     const written = text.slice(candidate.start, candidate.end);
     if (candidate.key !== undefined) {
       const key = candidate.key;
@@ -601,7 +618,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
       references.push({
         end: candidate.end,
         form: "key",
-        inCode: isInCode(code, candidate.start),
+        inCode: bareInCode(candidate.start),
         reference: exists ? `dispatch://${key}` : undefined,
         route: exists ? { key, kind: "issue" } : undefined,
         start: candidate.start,
@@ -625,7 +642,7 @@ export function readTextReferences(text: string, facts: TextReferenceFacts = {})
     references.push({
       end: candidate.end,
       form: "question",
-      inCode: isInCode(code, candidate.start),
+      inCode: bareInCode(candidate.start),
       named,
       reference,
       route: reference === undefined ? undefined : referenceRouteFromHref(reference, origin),

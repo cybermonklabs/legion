@@ -1,6 +1,6 @@
+import type { Result } from "../web/src/api/paths";
 import { publishAgentStreamFrame } from "./api";
 import {
-  COST_RIG_IDS,
   COST_RIG_TURNS,
   expectConversationInFront,
   frontTurns,
@@ -14,7 +14,7 @@ import {
   readLiveViews,
 } from "./live-views";
 import { openAgentFromRail } from "./rail";
-import { expect, test } from "./test";
+import { expect, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -39,7 +39,9 @@ import { asUser } from "./users";
  * (D14, `e2e/agent-workspace-timing.e2e.ts`).
  *
  * The rig both halves seed from is `e2e/live-view-cost.ts`, and every reading is the page's own
- * report (`e2e/live-views.ts`) rather than anything this suite counts for itself.
+ * report (`e2e/live-views.ts`) rather than anything this suite counts for itself. The rig's
+ * sessions are the row's own (`rowSessionId`), and so is the person who pins them (`rowPerson`,
+ * e2e/test.ts): the rail lists this row's eight and no pin another row made.
  */
 
 // `performance.memory` is a quantised constant in a Chromium launched without this switch: a
@@ -50,7 +52,11 @@ test.use({ launchOptions: { args: ["--enable-precise-memory-info"] } });
 
 /** One turn a session publishes to whoever is subscribed to it now, past the end of the replay
  *  it answers a new viewer with. */
-function publishedTurn(sessionID: string, seq: number, text: string): Promise<{ ok: boolean }> {
+function publishedTurn(
+  sessionID: string,
+  seq: number,
+  text: string
+): Promise<Result<"/api/v1/agents/{session_id}/stream/_test/publish", "post">> {
   return publishAgentStreamFrame(sessionID, {
     kind: "message",
     message: {
@@ -72,8 +78,9 @@ function publishedTurn(sessionID: string, seq: number, text: string): Promise<{ 
 // the stream's limit.
 test("eight agents opened in turn cost the page two live views, not eight", async ({ browser }) => {
   test.setTimeout(180_000);
-  await seedPinnedRigsAtLimit();
-  const context = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const rigs = await seedPinnedRigsAtLimit(me);
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.goto("/");
@@ -84,7 +91,7 @@ test("eight agents opened in turn cost the page two live views, not eight", asyn
 
     const subscriptions: number[] = [];
     const drawn: number[] = [];
-    for (const sessionID of COST_RIG_IDS) {
+    for (const sessionID of rigs) {
       await openAgentFromRail(page, sessionID);
       await expectConversationInFront(page, sessionID);
       subscriptions.push(await openAgentSubscriptions(page));
@@ -121,7 +128,7 @@ test("eight agents opened in turn cost the page two live views, not eight", asyn
     // Eight were opened and none was closed: every one of them still has an entry, and the two
     // the shell mounts are the one in front and the one left last.
     const views = (await readLiveViews(page)).views;
-    expect(Object.keys(views).sort()).toEqual([...COST_RIG_IDS].sort());
+    expect(Object.keys(views).sort()).toEqual([...rigs].sort());
     expect(Object.values(views).filter((view) => view.state !== "asleep")).toHaveLength(2);
   } finally {
     await context.close();
@@ -138,13 +145,14 @@ test("with the sleep rule off, the same eight agents cost the page eight live vi
   browser,
 }) => {
   test.setTimeout(180_000);
-  await seedPinnedRigsAtLimit();
-  const context = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const rigs = await seedPinnedRigsAtLimit(me);
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await keepEveryViewAwake(page);
     await page.goto("/");
-    for (const sessionID of COST_RIG_IDS) {
+    for (const sessionID of rigs) {
       await openAgentFromRail(page, sessionID);
       await expectConversationInFront(page, sessionID);
     }
@@ -152,7 +160,7 @@ test("with the sleep rule off, the same eight agents cost the page eight live vi
     const subscriptions = await openAgentSubscriptions(page);
     // The eight views are waited for, not read once, so the count recorded below is the count
     // the page settled on.
-    await expect(drawnLiveViews(page)).toHaveCount(COST_RIG_IDS.length);
+    await expect(drawnLiveViews(page)).toHaveCount(rigs.length);
     const drawn = await drawnLiveViews(page).count();
     test
       .info()
@@ -160,7 +168,7 @@ test("with the sleep rule off, the same eight agents cost the page eight live vi
         { description: `${subscriptions}`, type: "agent subscriptions with the sleep rule off" },
         { description: `${drawn}`, type: "conversations drawn with the sleep rule off" }
       );
-    expect(subscriptions).toBe(COST_RIG_IDS.length);
+    expect(subscriptions).toBe(rigs.length);
     expect(subscriptions, "a reading k11's first assertion refuses").toBeGreaterThan(2);
     expect(drawn, "a reading k11's second assertion refuses").toBeGreaterThan(2);
   } finally {
@@ -179,35 +187,36 @@ test("with the sleep rule off, the same eight agents cost the page eight live vi
 // the stream's limit.
 test("a sleeping view leaves no session publishing", async ({ browser }) => {
   test.setTimeout(180_000);
-  await seedPinnedRigsAtLimit();
-  const context = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const rigs = await seedPinnedRigsAtLimit(me);
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.goto("/");
-    await openAgentFromRail(page, COST_RIG_IDS[0]);
-    await expectConversationInFront(page, COST_RIG_IDS[0]);
+    await openAgentFromRail(page, rigs[0]);
+    await expectConversationInFront(page, rigs[0]);
 
     // While the viewer is subscribed, the relay carries what the session publishes to it.
-    await publishedTurn(COST_RIG_IDS[0], COST_RIG_TURNS + 1, "Published while a viewer watched.");
+    await publishedTurn(rigs[0], COST_RIG_TURNS + 1, "Published while a viewer watched.");
     await expect(frontTurns(page)).toHaveCount(COST_RIG_TURNS + 1);
     await expect(page.getByText("Published while a viewer watched.")).toBeVisible();
 
     // Two more agents put the first to sleep: nothing of it is mounted, so the socket holds no
     // subscription of its own for it and nothing re-arms the relay's watch.
-    await openAgentFromRail(page, COST_RIG_IDS[1]);
-    await expectConversationInFront(page, COST_RIG_IDS[1]);
-    await openAgentFromRail(page, COST_RIG_IDS[2]);
-    await expectConversationInFront(page, COST_RIG_IDS[2]);
+    await openAgentFromRail(page, rigs[1]);
+    await expectConversationInFront(page, rigs[1]);
+    await openAgentFromRail(page, rigs[2]);
+    await expectConversationInFront(page, rigs[2]);
     const asleep = await readLiveViews(page);
-    expect(asleep.views[COST_RIG_IDS[0]]?.state).toBe("asleep");
+    expect(asleep.views[rigs[0]]?.state).toBe("asleep");
     expect(asleep.agentSubscriptions).toBe(2);
-    await expect(page.locator(`[data-session-id="${COST_RIG_IDS[0]}"]`)).toHaveCount(0);
+    await expect(page.locator(`[data-session-id="${rigs[0]}"]`)).toHaveCount(0);
 
     // Published to a session nobody is watching, this frame reaches nobody and nothing keeps
     // it: the session's replay is unchanged, and that is all a waking view is handed.
-    await publishedTurn(COST_RIG_IDS[0], COST_RIG_TURNS + 2, "Published while nobody watched.");
-    await openAgentFromRail(page, COST_RIG_IDS[0]);
-    await expectConversationInFront(page, COST_RIG_IDS[0]);
+    await publishedTurn(rigs[0], COST_RIG_TURNS + 2, "Published while nobody watched.");
+    await openAgentFromRail(page, rigs[0]);
+    await expectConversationInFront(page, rigs[0]);
     await expect(page.getByText("Published while nobody watched.")).toHaveCount(0);
     await expect(page.getByText("Published while a viewer watched.")).toHaveCount(0);
   } finally {

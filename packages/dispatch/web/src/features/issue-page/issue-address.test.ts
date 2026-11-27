@@ -189,7 +189,7 @@ test("Conversation's address is /conversation from each place that writes it", a
   const view = drawStage("#b-no-such-block", { preset: "conversation" });
   try {
     const back = await waitFor(() => screen.getByRole("link", { name: `Back to ${KEY}` }));
-    expect(back.getAttribute("href")).toBe(conversation);
+    expect(back).toHaveAttribute("href", conversation);
   } finally {
     view.unmount();
     for (const spy of reads) spy.mockRestore();

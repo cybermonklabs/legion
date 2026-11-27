@@ -101,7 +101,8 @@ that took it would publish test notifications where real sessions receive them.
 
 `DATABASE_URL` is a one-stack run's input unless it names a Postgres of its own
 (stacks, below), and must name an isolated
-loopback database: `e2e/seed.ts` empties it before every row and never selects a shared
+loopback database: each worker empties it before its first row (`e2e/test.ts`,
+through `e2e/seed.ts`) and never selects a shared
 default, and the dev sign-in flag refuses a non-loopback host. psql runs without
 `PGHOSTADDR` (`e2e/psql.ts`), which would otherwise send it somewhere the server
 never checked. The harness ports `DISPATCH_E2E_PORT`, `FAKE_ENVOY_PORT`,
@@ -151,7 +152,7 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
   bun run e2e
 ```
 
-One spec is `bun run e2e -- e2e/claim.e2e.ts --project=chromium`, which builds the contracts and
+One spec is `bun run e2e -- e2e/issue.e2e.ts --project=chromium`, which builds the contracts and
 the SPA first, or the Playwright command itself, as in
 `bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts`,
 which builds nothing. Playwright stops the harness
@@ -203,8 +204,11 @@ Playwright's own `--workers <n>` runs the suite in parallel, and the config's
 default is 1. `e2e/global-setup.ts` starts one stack
 per worker before the first row. A stack is a whole harness of its own — a
 Dispatch server, the three fakes, the plain-HTTP proxy, a file-store bucket and
-ports the OS chose — and a Postgres of its own, because `e2e/seed.ts` empties
-its stack's database before every row. A worker finds its stack by
+ports the OS chose — and a Postgres of its own, because each worker empties
+its stack's database before its first row and resets its stack's fakes before
+every row (`e2e/test.ts`). A row makes its data under keys of its own, so it
+needs no emptied database, but two workers on one stack would still empty each
+other's database and fakes mid-row. A worker finds its stack by
 `TEST_PARALLEL_INDEX`, which Playwright gives it and a restarted worker keeps;
 `e2e/harness-ports.ts` resolves it against the `DISPATCH_E2E_STACKS` manifest
 the hook wrote, for the ports and for psql's database alike.
@@ -389,8 +393,10 @@ reaches through it; any value other than `oidc` or unset is refused.
 The rules a row follows:
 
 - A row binds `page`, `browser` or `context`, and a file it writes goes under
-  `testInfo.outputPath()`. A claim that needs no browser goes in `e2e/__tests__/` or a Go test
-  (`e2e/no-browser-rows.ts`).
+  `testInfo.outputPath()`. A claim that needs no browser goes in `e2e/__tests__/`, a Go test, or,
+  for a command, the client package's tests, whose live files run the real command against a real
+  Dispatch (`packages/envoy-client/test/dispatch-stack.ts`); `e2e/no-browser-rows.ts` holds the
+  rule.
 - A row takes under 2 s, or carries `// SLOW(>=2s): <why>` directly above it;
   `bun e2e/tools/check-slow-rows.ts <report.json>` checks a run's report for both.
 - A helper whose next step depends on what the page shows reads it with `settledState`
@@ -448,12 +454,15 @@ unset, the OS chooses each, so two instances never collide; set, the port is use
 an occupied one fails with `address already in use`. psql runs without `PGHOSTADDR`
 (`e2e/psql.ts`), and a Ctrl-C ends a psql in flight too.
 
-A spec runs against the instance with the printed command, which sets
-`DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; each spec empties the
-database and the
-fake Envoy, so restart the command to reseed it. `bun run build:web` while it runs refreshes the
-SPA, which the server reads from `web/dist` on each request. `docker rm -f -v dispatch-pg` removes
-the container, its anonymous data volume and every database in it.
+A spec runs against the instance with the printed command, from this package, which sets
+`DISPATCH_E2E_REUSE_SERVERS=1`, the harness's ports and the same `DATABASE_URL`; the run empties
+the database before its first row and the fakes before every row, so restart the command to
+reseed it. The command starts Playwright itself, so on a fresh checkout run
+`bun run build:contracts` here once before it: Playwright reads `@legion/contracts` from its
+built `dist/`, which `bun install` does not make (the end-to-end section above says why).
+`bun run build:web` while it runs refreshes the SPA, which the server reads from `web/dist` on
+each request. `docker rm -f -v dispatch-pg` removes the container, its anonymous data volume and
+every database in it.
 
 ## Acceptance drivers
 
@@ -1072,8 +1081,9 @@ cd ../envoy/deploy/compose
 docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 ```
 
-`e2e/seed.ts` empties its database before each scenario. Always set
-`PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
+The worker empties its database before its first row and before it seeds the review corpus
+(`reviewCorpus` in `e2e/test.ts`). Some rows also empty it themselves (see `docs/testing.md`).
+Always set `PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
 
 ## The stubbed layer
 

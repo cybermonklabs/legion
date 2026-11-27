@@ -8,6 +8,7 @@ import {
   getIssue,
   patchIssue,
   resolveAsk,
+  userHeaders,
 } from "./api";
 import { documentEditor } from "./editor";
 import { handTo } from "./hand-on";
@@ -20,14 +21,13 @@ import {
   DECISION_BLOCK,
   DECISION_QUESTION,
   expectTwoColumns,
-  INBOX,
-  inboxAt,
   OPEN_BEFORE_HEADING,
-  OPEN_PROJECT,
   OPEN_RUNBOOK_HEADING,
   OPEN_SPEC_HEADING,
   OPEN_TALK_DECISION,
   OPEN_TALK_HEADING,
+  OWN_INBOX,
+  ownInboxAt,
   paneOffsets,
   REMOVED_WORD,
   RETIRED_BLOCK,
@@ -46,7 +46,7 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, rowPerson, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -57,13 +57,17 @@ import { asUser } from "./users";
  * block out of the live document editor. What the column draws over one fixed list - its two
  * shapes of card, its keys and its address, and the widths that take it away - is in
  * `inbox-reading-pane.stub.e2e.ts`; the seed both files read is in `inbox-reading-pane.ts`.
+ *
+ * The reader of every row is a person of the row's own (`rowPerson`, e2e/test.ts), and each row
+ * reads that person's own list (`OWN_INBOX`), which holds this row's questions and no other row's.
  */
 
 test("the Inbox shows a decision block in the reading pane and answers it in two taps", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const seed = await seedInbox(rowKey("PANE"), me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const list = inboxList(page);
@@ -74,7 +78,7 @@ test("the Inbox shows a decision block in the reading pane and answers it in two
     // first row, and place the same section heading at the top of the right column.
     for (const width of [1440, 1280]) {
       await page.setViewportSize({ height: 900, width });
-      await page.goto(INBOX);
+      await page.goto(OWN_INBOX);
       await expectTwoColumns(page);
       await expect(list.locator("[data-inbox-row]").first()).toHaveAttribute(
         "data-inbox-selected",
@@ -131,13 +135,14 @@ test("the Inbox shows a decision block in the reading pane and answers it in two
 test("the reading pane approves a version and marks what changed since the last approval", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const seed = await seedInbox(rowKey("PANE"), me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     const pane = inboxPane(page);
-    await page.goto(inboxAt(seed.approvalAskId));
+    await page.goto(ownInboxAt(seed.approvalAskId));
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.approvalAskId);
 
     // The column shows the version Approve approves, with Approve at its head. The request is a
@@ -188,7 +193,7 @@ test("the reading pane approves a version and marks what changed since the last 
     // A first request has no approval to compare against, so the column marks nothing.
     // The reader moves to it in the list, as a tap does: this row proves what the column marks,
     // not what a cold load of its address draws.
-    await navigateInApp(page, inboxAt(seed.firstApprovalAskId));
+    await navigateInApp(page, ownInboxAt(seed.firstApprovalAskId));
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.firstApprovalAskId);
     await expect(pane.getByRole("region", { name: "Document version 1" })).toBeVisible();
     for (const mark of CHANGE_CLASSES) {
@@ -218,14 +223,15 @@ function paneHoldsText(page: Page, text: string): Promise<boolean> {
 test("a question the server withdraws leaves the list at once and the next row is selected", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const seed = await seedInbox(rowKey("PANE"), me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     const list = inboxList(page);
     const pane = inboxPane(page);
-    await page.goto(INBOX);
+    await page.goto(OWN_INBOX);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.decisionAskId);
 
     // The server takes the selected question away. The reader has typed nothing into it: the
@@ -241,7 +247,7 @@ test("a question the server withdraws leaves the list at once and the next row i
     // selected, as after an answer in the column, and the address follows it.
     await expect(list.locator(`[data-inbox-row="${seed.decisionAskId}"]`)).toHaveCount(0);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.approvalAskId);
-    await expect(page).toHaveURL(inboxAt(seed.approvalAskId));
+    await expect(page).toHaveURL(ownInboxAt(seed.approvalAskId));
     await expect(
       pane.locator("header").getByRole("button", { exact: true, name: "Approve" })
     ).toBeVisible();
@@ -254,14 +260,15 @@ test("a question the server withdraws leaves the list at once and the next row i
 test("a withdrawn question the reader was answering keeps its text in the column, closed", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const seed = await seedInbox(rowKey("PANE"), me);
+  const alice = await asUser(browser, me);
   const typed = "Only on a cold start, and only back to the last lease.";
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     const pane = inboxPane(page);
-    await page.goto(inboxAt(seed.anchoredAskId));
+    await page.goto(ownInboxAt(seed.anchoredAskId));
     const card = pane.getByTestId(`ask-${seed.anchoredAskId}`);
     await expect(card).toContainText(ANCHORED_QUESTION);
 
@@ -297,14 +304,15 @@ test("a withdrawn question the reader was answering keeps its text in the column
 test("an options-only answer the server refuses keeps its question in the column, with a Retry @pr", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const seed = await seedInbox(rowKey("PANE"), me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     const list = inboxList(page);
     const pane = inboxPane(page);
-    await page.goto(INBOX);
+    await page.goto(OWN_INBOX);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.decisionAskId);
 
     // The server refuses this one answer, in the words of its own route, and refuses it for a
@@ -335,7 +343,7 @@ test("an options-only answer the server refuses keeps its question in the column
     await expect(card.getByRole("alert")).toContainText("Could not save your answer.");
     await expect(card.getByRole("alert").getByRole("button", { name: "Retry" })).toBeVisible();
     await expect(block).toContainText(DECISION_QUESTION);
-    await expect(page).toHaveURL(inboxAt(seed.decisionAskId));
+    await expect(page).toHaveURL(ownInboxAt(seed.decisionAskId));
     await expect(list.locator(`[data-inbox-row="${seed.decisionAskId}"]`)).toHaveCount(1);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.decisionAskId);
     await expect
@@ -347,13 +355,14 @@ test("an options-only answer the server refuses keeps its question in the column
 });
 
 test("Enter puts the focus in the selected decision block's answer field", async ({ browser }) => {
-  const seed = await seedInbox();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const seed = await seedInbox(rowKey("PANE"), me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
     const pane = inboxPane(page);
-    await page.goto(INBOX);
+    await page.goto(OWN_INBOX);
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.decisionAskId);
     const card = pane
       .locator(`[data-dispatch-ask-block="${DECISION_BLOCK}"]`)
@@ -389,8 +398,13 @@ test("Enter puts the focus in the selected decision block's answer field", async
 test("picker keeps a pick on screen: the priority on an Inbox row, over a read that answers while its save is out", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Priority under a held save" },
+    { login: me }
+  );
   await patchIssue(issue.key, { priority: 3 });
   const ask = await createAsk(
     issue.key,
@@ -398,14 +412,14 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     session
   );
   const renamed = "Priority under a held save, renamed while it is out";
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 800, width: 1100 });
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, inboxRead);
-    await page.goto(INBOX);
+    await page.goto(OWN_INBOX);
     await selectRow(page, ask.id);
     const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
     await expect(picker).toHaveValue("3");
@@ -451,12 +465,14 @@ test("Open page opens the document of the question, at its section, for each kin
   // waits out the whole expect timeout (15 s, `e2e/expect-timeout.ts`) and the row still reaches
   // item 8: six of them outlast a row's default limit.
   test.setTimeout(180_000);
-  const seed = await seedOpenPage();
+  const project = rowKey("OPEN");
+  const me = rowPerson("alice");
+  const seed = await seedOpenPage(project, me);
 
   // 1. What decides the row's scope, before the Inbox opens. Question 1 has the shape the server
   // sends for a decision block in an issue's second document, and its Inbox row names no project
-  // document; items 1 to 7 each wait on alice, question 6 because it was handed to her. The seed
-  // waits until item 8 is her Reply thread.
+  // document; items 1 to 7 each wait on the reader, question 6 because it was handed to them. The
+  // seed waits until item 8 is their Reply thread.
   const first = (await getAsk(seed.talkDecision)).ask;
   expect(
     {
@@ -486,7 +502,7 @@ test("Open page opens the document of the question, at its section, for each kin
     seed.runbookDecision,
     seed.beforeHeading,
   ];
-  const inbox = await getInbox();
+  const inbox = await getInbox({ login: me }, { assignee: "me" });
   expect(
     inbox.find((row) => row.id === seed.talkDecision),
     "question 1's Inbox row names no project document"
@@ -496,13 +512,14 @@ test("Open page opens the document of the question, at its section, for each kin
       const row = inbox.find((listed) => listed.id === id);
       return { id, waiting_on: row?.waiting_on, waiting_on_person: row?.waiting_on_person };
     }),
-    "items 1 to 7 each wait on alice"
-  ).toEqual(questions.map((id) => ({ id, waiting_on: "human", waiting_on_person: "alice" })));
-  expect((await getAsk(seed.runbookDecision)).ask.asked_of, "question 6 is handed to alice").toBe(
-    "alice"
-  );
+    "items 1 to 7 each wait on the reader"
+  ).toEqual(questions.map((id) => ({ id, waiting_on: "human", waiting_on_person: me })));
+  expect(
+    (await getAsk(seed.runbookDecision)).ask.asked_of,
+    "question 6 is handed to the reader"
+  ).toBe(me);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 900, width: 1440 });
@@ -544,7 +561,7 @@ test("Open page opens the document of the question, at its section, for each kin
       },
       {
         fragment: `#b-${seed.headings.runbook}`,
-        path: `/projects/${OPEN_PROJECT}/documents/${seed.runbookSlug}`,
+        path: `/projects/${project}/documents/${seed.runbookSlug}`,
         row: seed.runbookDecision,
         shows: () => expect(pane).toContainText(OPEN_RUNBOOK_HEADING),
       },
@@ -564,9 +581,9 @@ test("Open page opens the document of the question, at its section, for each kin
     // editor has drawn the block and the address moves from the block to its heading.
     for (const [index, item] of items.entries()) {
       if (index === 0) {
-        await page.goto(inboxAt(item.row));
+        await page.goto(ownInboxAt(item.row));
       } else {
-        await navigateInApp(page, inboxAt(item.row));
+        await navigateInApp(page, ownInboxAt(item.row));
       }
       await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", item.row);
       await item.shows();
@@ -584,7 +601,7 @@ test("Open page opens the document of the question, at its section, for each kin
       [thread, OPEN_TALK_HEADING, OPEN_SPEC_HEADING],
     ] as const) {
       const address = `${item.path}${item.fragment}`;
-      await navigateInApp(page, inboxAt(item.row));
+      await navigateInApp(page, ownInboxAt(item.row));
       await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", item.row);
       await expect(openPage).toHaveAttribute("href", address);
       await openPage.click();
@@ -615,13 +632,14 @@ test("Open page opens the document of the question, at its section, for each kin
 test("on a phone the reading view answers a decision block, steps and approves an approval, requests changes on another and hands a question on @phone @phone-only", async ({
   browser,
 }) => {
-  const seed = await seedInbox();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const seed = await seedInbox(rowKey("PANE"), me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const pane = inboxPane(page);
     const head = pane.locator("header").first();
-    await page.goto(INBOX);
+    await page.goto(OWN_INBOX);
     await expect(inboxList(page).locator("[data-inbox-row]")).toHaveCount(6);
     await expect(pane).toHaveCount(0);
     await assertPageFits(page);
@@ -637,7 +655,11 @@ test("on a phone the reading view answers a decision block, steps and approves a
     await card.getByRole("radio", { exact: true, name: "Ledger first" }).click();
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
-      .poll(async () => (await getInbox()).some((row) => row.id === seed.decisionAskId))
+      .poll(async () =>
+        (await getInbox({ login: me }, { assignee: "me" })).some(
+          (row) => row.id === seed.decisionAskId
+        )
+      )
       .toBe(false);
 
     // The view reads the next row, the request to approve version 4: Next change steps to its
@@ -650,7 +672,7 @@ test("on a phone the reading view answers a decision block, steps and approves a
     await assertPageFits(page);
     await head.getByRole("button", { exact: true, name: "Approve" }).click();
     await expect
-      .poll(async () => (await getArtifact(seed.approvalArtifactId, { login: "alice" })).approval)
+      .poll(async () => (await getArtifact(seed.approvalArtifactId, { login: me })).approval)
       .toMatchObject({ state: "approved", version: 4 });
 
     // Request changes on the first request asks for a reason, and sends it.
@@ -662,17 +684,19 @@ test("on a phone the reading view answers a decision block, steps and approves a
     await expect(reason).toHaveCount(0);
     await expect
       .poll(
-        async () =>
-          (await getArtifact(seed.firstApprovalArtifactId, { login: "alice" })).approval?.state
+        async () => (await getArtifact(seed.firstApprovalArtifactId, { login: me })).approval?.state
       )
       .toBe("changes_requested");
 
-    // A question's card in the view hands it on, as the card in its row did.
+    // A question's card in the view hands it on, as the card in its row did, to a second person
+    // of the row's own, who signs in once so the control offers them.
+    const bob = rowPerson("bob");
+    await userHeaders(bob);
     await selectRow(page, seed.plainAskId);
-    await handTo(pane.locator(`select[data-ask-hand-on="${seed.plainAskId}"]`), "bob");
+    await handTo(pane.locator(`select[data-ask-hand-on="${seed.plainAskId}"]`), bob);
     await expect
-      .poll(async () => (await getAsk(seed.plainAskId, { login: "alice" })).ask.waiting_on_person)
-      .toBe("bob");
+      .poll(async () => (await getAsk(seed.plainAskId, { login: me })).ask.waiting_on_person)
+      .toBe(bob);
     await assertPageFits(page);
   } finally {
     await alice.close();

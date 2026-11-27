@@ -3,6 +3,7 @@ import type { Locator, Page } from "@playwright/test";
 import { createIssue, createIssueArtifact, createProject } from "./api";
 import { specBlockRef } from "./issue-layout-seed-text";
 import { issuePage } from "./issue-page";
+import { rowKey } from "./test";
 
 /**
  * What the Plan view's rows read of the view, and the one plan they seed themselves: the chart,
@@ -236,7 +237,9 @@ export function chromeTexts(page: Page): Promise<string[]> {
   );
 }
 
-/** The project `seedPlanMarks` makes. */
+/** The logical key of the project `seedPlanMarks` makes, which it makes under the running row's
+ *  own key for it (`rowKey`, e2e/test.ts), since the database is emptied before the worker's
+ *  first row and before the review corpus's seed, not before each row. */
 const MARKS_PROJECT = "MARKS";
 
 /** The words `seedPlanMarks` gives its two tasks and its two statements: each starts bold and
@@ -260,10 +263,11 @@ export interface PlanMarksSeed {
  *  of their own. Every write goes through `e2e/api.ts`, and the second task names the first in
  *  the same write that makes it, which the server reads from that write's own blocks. */
 export async function seedPlanMarks(): Promise<PlanMarksSeed> {
-  await createProject({ key: MARKS_PROJECT, name: "Plan marks" });
+  const project = rowKey(MARKS_PROJECT);
+  await createProject({ key: project, name: "Plan marks" });
   const issue = await createIssue({
     force: true,
-    project: MARKS_PROJECT,
+    project,
     spec:
       `:::requirement{#r1}\n${PLAN_MARKS_WORDS.firstStatement}\n:::\n\n` +
       `:::requirement{#r2}\n${PLAN_MARKS_WORDS.secondStatement}\n:::\n`,

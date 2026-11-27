@@ -1,4 +1,4 @@
-import { onTestFinished } from "bun:test";
+import { jest, onTestFinished } from "bun:test";
 
 import { createHeadlessProof, type HeadlessProofEditor } from "@legion/proof-editor/headless";
 
@@ -52,9 +52,27 @@ let headless: Promise<HeadlessProofEditor> | undefined;
  *  module loaded and registers nothing of it again. */
 const unfinished = new Set<{ giveUp: () => void }>();
 
+/**
+ * A task on. The stand-in answers and crashes a task after a row asks it to, as a worker's
+ * message comes on a task of its own, and `flushTasks` steps a row over the tasks the stand-in
+ * and the engine queue, as `waitForRequests` does once the engine has loaded for a first body: the
+ * stand-in's `ready`, set at zero delay as the worker is made, and the body the engine posts once
+ * it comes. Under a fake clock nothing else moves that clock, so the task is run here, as Testing
+ * Library's own waits run theirs: `markdown-engine.test.ts`'s threshold row and
+ * `PriorityDescription.test.tsx`'s rows of a description the server cannot read as markdown run
+ * that way.
+ *
+ * This one stays on the real clock (INFRA-1505) for the rows that drive the stand-in there:
+ * `flushTasks`'s callers in `MarkdownBody.test.tsx`, and that file's other worker rows read
+ * what one slice of a paint leaves, whose budget is read from `performance.now()`, which
+ * `jest.useFakeTimers()` freezes (that file's `nextTask`); `MarkdownPreview.test.tsx`'s long-body
+ * row waits on it only for the stand-in's own answer.
+ */
 function tick(): Promise<void> {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, 0);
+    // Bun's fake clock marks the `setTimeout` it holds with its `clock`.
+    if (Object.hasOwn(setTimeout, "clock")) jest.advanceTimersByTime(0);
   });
 }
 
@@ -70,6 +88,11 @@ export class FakeParseWorker {
 
   constructor(took: (request: ParseRequest, worker: FakeParseWorker) => void) {
     this.took = took;
+    // The stand-in's `ready`, on a task of its own as a worker's first message comes. This one
+    // stays on the real clock (INFRA-1505) for the rows `tick` above stays there for: they read
+    // what one slice of a paint leaves, whose budget is read from `performance.now()`, which
+    // `jest.useFakeTimers()` freezes, and they step over this task with `flushTasks`. A row on the
+    // fake clock runs it with that clock, as any timer.
     setTimeout(() => {
       this.emit("message", { data: { ready: true } });
     }, 0);
@@ -297,7 +320,10 @@ export function restoreParseWorker(): void {
  *  resolve, and only once the engine has loaded: a loaded engine sends a body in the call that asks
  *  for it, or on the one zero-delay task a new worker's ready handshake takes (`FakeParseWorker`),
  *  and zero-delay tasks run in the order they were queued, so the five here run after it however
- *  slow the machine. It counts tasks and races no load; a wait for a body is `waitForRequests`. */
+ *  slow the machine. It counts tasks and races no load; a wait for a body is `waitForRequests`.
+ *  Its callers are `MarkdownBody.test.tsx`'s worker rows, on the real clock,
+ *  `PriorityDescription.test.tsx`'s rows of a description the server cannot read as markdown, on
+ *  the fake one (`tick`), and `waitForRequests`'s wait for a first body. */
 export async function flushTasks(): Promise<void> {
   for (let tries = 0; tries < 5; tries += 1) {
     await tick();

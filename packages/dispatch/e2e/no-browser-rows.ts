@@ -110,17 +110,11 @@ export type StaleExemption = {
  * the suite no longer holds, or one naming a row that now drives a browser — so this list cannot
  * quietly grow stale.
  *
- * It holds one entry: `artifact-dry-run.e2e.ts`'s table, whose claim needs the real command as its
- * own process and a real Dispatch together.
+ * It holds none. A bun test can run a command as its own process against a real Dispatch: the
+ * client package's live tests start one (`packages/envoy-client/test/dispatch-stack.ts`), and so
+ * does this harness outside Playwright (`startStacks`, e2e/harness-pool.ts).
  */
-export const exemptions: readonly Exemption[] = [
-  {
-    file: "artifact-dry-run.e2e.ts",
-    title: "combination",
-    reason:
-      "`dispatch artifact --dry-run` is held to the call, each run of the real command its own process against a real Dispatch, over every row of api/testdata/text-refusals.json: a bun test has only a fake Dispatch and a Go test has no command, so no other layer holds both halves of the claim",
-  },
-];
+export const exemptions: readonly Exemption[] = [];
 
 /** The fixtures that are a browser. Playwright's `request` is not one of them: it is
  *  Playwright's HTTP client, which opens no page. */

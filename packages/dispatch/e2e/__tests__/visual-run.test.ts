@@ -329,10 +329,17 @@ test(
 // e2e/signal-ignores.ts). Either way the script's trap stops it; this row holds that trap.) The run goes
 // in a session of its own (`setsid`), so the signal reaches the run's group, read from the
 // container's pid, and not this test's; it waits for the container to start. The group is
-// signalled with `/usr/bin/kill -s INT -- -PGID`. The second run names an `--output` that starts
-// with a dash, and that is a directory there, in a copy of the script under a tree of its own: a
-// command of the script that took that name as an option would fail, and under `set -e` end the
-// script with its own status in place of 130.
+// signalled with the shell's own `kill -s INT -- -PGID`, never `/usr/bin/kill`: procps-ng 4.0.4's
+// kill reads `-1` to `-93` as a signal even after `--` and prints its usage, and gVisor hands out
+// pids that low, so the run went unsignalled, held its 30 s and exited 0 (10 of 7,800 runs, four
+// or five loops of this row at once in the issue pod). A PGID that kill would read as no group of
+// the run's is refused and named, as lib/process-tree.sh's group_signalable refuses it: an empty
+// one, read once the container had gone, would make the argument `-`; kill reads group 0 as the
+// group it is called from, which holds this test's runner too, and group 1 as every process it
+// may signal. The second run names an `--output` that starts with a dash, and that is a directory
+// there, in a copy of the script under a tree of its own: a command of the script that took that
+// name as an option would fail, and under `set -e` end the script with its own status in place of
+// 130.
 test(
   "a Ctrl-C to a running run stops its stack and exits 130, with an --output that starts with a dash too",
   async () => {
@@ -350,7 +357,13 @@ test(
           "sh",
           "-c",
           '(until [ -s "$STUB_DOCKER_STARTED" ]; do sleep 0.05; done; ' +
-            '/usr/bin/kill -s INT -- "-$(ps -o pgid= -p "$(cat "$STUB_DOCKER_STARTED")" | tr -d " ")") & ' +
+            'group=$(ps -o pgid= -p "$(cat "$STUB_DOCKER_STARTED")" | tr -d " "); ' +
+            'case $group in "") why="it is empty" ;; *[!0-9]*) why="it is not a number" ;; ' +
+            '0) why="kill reads group 0 as the group it is called from" ;; ' +
+            '1) why="kill reads group 1 as -1, every process it may signal" ;; ' +
+            '0*) why="no group is written with a leading zero" ;; *) why= ;; esac; ' +
+            'if [ -n "$why" ]; then echo "refusing to signal process group \'$group\': $why" >&2; ' +
+            'else kill -s INT -- "-$group"; fi) & ' +
             `setsid --wait sh e2e/visual-run.sh "$@"; status=$?; ${stackAfter}; exit "$status"`,
           "visual-run",
           ...args,

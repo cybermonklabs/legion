@@ -1,6 +1,6 @@
 import { getArtifactText, getIssue } from "./api";
 import { documentEditor, openWithCaret, paste } from "./editor";
-import { type Browser, expect, test } from "./test";
+import { type Browser, expect, rowKey, test } from "./test";
 
 // INFRA-565: a typed block whose content breaks its type's content rule, pasted as plain text into
 // a live document, keeps every word. Milkdown dropped such a block and all its text silently, with
@@ -11,7 +11,14 @@ import { type Browser, expect, test } from "./test";
 /** Opens a document holding "Intro text." as alice with the caret on an empty line of its own
  * after it, collecting the page's console messages from then on. */
 async function openOnEmptyLine(browser: Browser) {
-  const opened = await openWithCaret(browser, "Broken ask paste", "Intro text.", "text.", "end");
+  const opened = await openWithCaret(
+    browser,
+    "Broken ask paste",
+    "Intro text.",
+    "text.",
+    "end",
+    rowKey("CORE")
+  );
   const messages: string[] = [];
   opened.page.on("console", (message) => messages.push(message.text()));
   await opened.page.keyboard.press("Enter");

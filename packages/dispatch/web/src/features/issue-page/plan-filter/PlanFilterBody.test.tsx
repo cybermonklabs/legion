@@ -6,7 +6,9 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { tick } from "../../../__tests__/fake-clock";
 import { nextFrame } from "../../../__tests__/frames";
+import { userOnFakeClock } from "../../../__tests__/user";
 import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
@@ -27,6 +29,7 @@ import { firstLineOf } from "../first-line";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { IssueTreeReads, NodeChip, ParentLine, TreeNode } from "../issue-tree";
 import { FirstLine } from "../node-line";
+import { zeroDelaysOnFakeClock } from "../outline-fixtures";
 import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
@@ -423,10 +426,12 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   let start: string | null = null;
   try {
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(1);
-    expect(view.getByRole("button", { name: PLAN_WORDS.chart }).getAttribute("aria-pressed")).toBe(
+    expect(view.getByRole("button", { name: PLAN_WORDS.chart })).toHaveAttribute(
+      "aria-pressed",
       "true"
     );
-    expect(view.getByRole("button", { name: PLAN_WORDS.steps }).getAttribute("aria-pressed")).toBe(
+    expect(view.getByRole("button", { name: PLAN_WORDS.steps })).toHaveAttribute(
+      "aria-pressed",
       "false"
     );
     expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]);
@@ -485,8 +490,11 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   try {
     expect(rowIds(filtered.container)).toEqual([D("t2")]);
     const last = rowOf(filtered, "t2");
-    expect(last.getAttribute("data-plan-start")).toBe(start);
-    expect(last.querySelector("[data-plan-bar]")?.getAttribute("style")).toContain("left: 66.6");
+    expect(last).toHaveAttribute("data-plan-start", start);
+    expect(last.querySelector("[data-plan-bar]")).toHaveAttribute(
+      "style",
+      expect.stringContaining("left: 66.6")
+    );
     expect(
       [...last.querySelectorAll("[data-plan-need]")].map((one) => [
         one.getAttribute("data-plan-need"),
@@ -671,10 +679,10 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
   try {
     const place = view.container.querySelector("[data-place]");
     act(() => rowOf(view, "t1").focus());
-    expect(place?.getAttribute("data-focused")).toBe(D("t1"));
+    expect(place).toHaveAttribute("data-focused", D("t1"));
     await user.keyboard("{ArrowDown}");
     expect(focusedRow()).toBe(D("t2"));
-    expect(place?.getAttribute("data-focused")).toBe(D("t2"));
+    expect(place).toHaveAttribute("data-focused", D("t2"));
     await user.keyboard("j");
     expect(focusedRow()).toBe(D("t3"));
     await user.keyboard("j");
@@ -693,31 +701,31 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
     ).toEqual([D("t3")]);
     // `f` reaches the statement a step serves, which is in no tab order of its own.
     await user.keyboard("{Home}f");
-    expect(document.activeElement?.getAttribute("href")).toBe(`/issues/${KEY}/spec#b-r1`);
+    expect(document.activeElement).toHaveAttribute("href", `/issues/${KEY}/spec#b-r1`);
     // Escape gives the row back from its link, and leaves the chart from the row, as the
     // outline's Escape does.
     await user.keyboard("{Escape}");
     expect(focusedRow()).toBe(D("t1"));
     await user.keyboard("{Escape}");
-    expect(document.activeElement).toBe(document.body);
+    expect(document.body).toHaveFocus();
     // Tab from the page itself enters the chart at its one tab stop, the row the reader last
     // stood on, as Tab enters the outline (`useTreeKeymap.ts`'s `tree-enter`): after Escape the
     // same Tab goes back to the row under either drawing.
     await user.keyboard("{Tab}");
     expect(focusedRow()).toBe(D("t1"));
     await user.keyboard("{End}{Escape}");
-    expect(document.activeElement).toBe(document.body);
+    expect(document.body).toHaveFocus();
     await user.keyboard("{Tab}");
     expect(focusedRow()).toBe(D("t3"));
     // A focus inside a row takes that row, as a pointer going down on a statement's link does
     // while another row holds the focus: Details and the one tab stop go with it.
     act(() => rowOf(view, "t2").focus());
-    expect(place?.getAttribute("data-focused")).toBe(D("t2"));
+    expect(place).toHaveAttribute("data-focused", D("t2"));
     const link = rowOf(view, "t1").querySelector<HTMLElement>("a[href]");
-    expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/spec#b-r1`);
+    expect(link).toHaveAttribute("href", `/issues/${KEY}/spec#b-r1`);
     act(() => link?.focus());
-    expect(document.activeElement).toBe(link);
-    expect(place?.getAttribute("data-focused")).toBe(D("t1"));
+    expect(link).toHaveFocus();
+    expect(place).toHaveAttribute("data-focused", D("t1"));
     expect(
       [...view.container.querySelectorAll('[role="treeitem"][tabindex="0"]')].map((row) =>
         row.getAttribute("data-node-id")
@@ -726,7 +734,7 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
     // Enter on a step goes to it in the conversation, where it is edited.
     act(() => rowOf(view, "t2").focus());
     await user.keyboard("{Enter}");
-    expect(place?.getAttribute("data-path")).toBe(`/issues/${KEY}/conversation#b-t2`);
+    expect(place).toHaveAttribute("data-path", `/issues/${KEY}/conversation#b-t2`);
   } finally {
     view.unmount();
   }
@@ -758,11 +766,12 @@ test("an address opened before the reads answer lands on its step once they answ
   try {
     opened.redraw(root, ANSWERED);
     await settled();
-    await aFrame();
-    expect(
-      focusedRow(),
-      "an address opened before the reads answer lands on the first bar once they answer"
-    ).toBe(D("t2"));
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        "an address opened before the reads answer lands on the first bar once they answer"
+      ).toBe(D("t2"))
+    );
   } finally {
     opened.unmount();
   }
@@ -770,17 +779,18 @@ test("an address opened before the reads answer lands on its step once they answ
   const refused = renderBody(root, { reads: failed(asked, "plan"), reveal: [root, named] });
   try {
     await settled();
-    expect(document.activeElement).toBe(retryOf(refused, "plan"));
+    expect(retryOf(refused, "plan")).toHaveFocus();
     await userEvent.keyboard("{Enter}");
     expect(asked).toEqual(["plan"]);
     refused.redraw(root, failedAs([], [{ failure: 1, read: "plan", retrying: true }], true));
     refused.redraw(root, ANSWERED);
     await settled();
-    await aFrame();
-    expect(
-      focusedRow(),
-      "an address under a refused read lands on the first bar once a Retry has it answer"
-    ).toBe(D("t2"));
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        "an address under a refused read lands on the first bar once a Retry has it answer"
+      ).toBe(D("t2"))
+    );
   } finally {
     refused.unmount();
   }
@@ -802,22 +812,23 @@ test("the control switches to the ordered steps, which are the outline's own row
     // address's step again.
     await waitFor(() => expect(focusedRow()).toBe(D("t1")));
     await showSteps(view);
-    expect(document.activeElement).toBe(view.getByRole("button", { name: PLAN_WORDS.steps }));
+    expect(view.getByRole("button", { name: PLAN_WORDS.steps })).toHaveFocus();
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(0);
-    expect(view.getByRole("button", { name: PLAN_WORDS.steps }).getAttribute("aria-pressed")).toBe(
+    expect(view.getByRole("button", { name: PLAN_WORDS.steps })).toHaveAttribute(
+      "aria-pressed",
       "true"
     );
     expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]);
     const step = rowOf(view, "t3");
     expect(step.textContent).toContain("Task t1");
     const line = step.querySelector("[data-node-parent-line]");
-    expect(line?.getAttribute("data-parent-id")).toBe(blockNodeId(SPEC, "r2"));
+    expect(line).toHaveAttribute("data-parent-id", blockNodeId(SPEC, "r2"));
     expect(line?.textContent).toContain("The outline draws one body");
     expect(view.container.querySelectorAll('[role="tree"]')).toHaveLength(1);
     // And back to the chart.
     await userEvent.click(view.getByRole("button", { name: PLAN_WORDS.chart }));
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(1);
-    expect(document.activeElement).toBe(view.getByRole("button", { name: PLAN_WORDS.chart }));
+    expect(view.getByRole("button", { name: PLAN_WORDS.chart })).toHaveFocus();
   } finally {
     view.unmount();
   }
@@ -1094,9 +1105,9 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
     );
     await waitFor(() => expect(blocks).toHaveBeenCalledWith(VERIFICATION_ARTIFACT));
     expect(
-      steps().getAttribute("aria-pressed"),
+      steps(),
       "the body drawn again over the same tasks is back on the chart"
-    ).toBe("true");
+    ).toHaveAttribute("aria-pressed", "true");
     expect(focusedRow()).toBe(D("t2"));
     expect(card()).toContain(pageFocusedRow);
   } finally {
@@ -1164,18 +1175,15 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
     await settled();
     expect(line(), "the statements line leaves while its read runs again").not.toBeNull();
     const retry = retryOf(view, "statements");
-    expect(retry.getAttribute("aria-busy"), "the Retry of a read running again is not busy").toBe(
+    expect(retry, "the Retry of a read running again is not busy").toHaveAttribute(
+      "aria-busy",
       "true"
     );
     expect(
-      view.container
-        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
-        ?.getAttribute("aria-busy"),
+      view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`),
       "the view's empty tree is not busy while its refused read runs again"
-    ).toBe("true");
-    expect(document.activeElement, "the focus leaves the Retry while its read runs again").toBe(
-      retry
-    );
+    ).toHaveAttribute("aria-busy", "true");
+    expect(retry, "the focus leaves the Retry while its read runs again").toHaveFocus();
     await userEvent.click(retry);
     await settled();
     expect(specReads, "a second press of a busy Retry asks the spec's blocks again").toBe(2);
@@ -1237,11 +1245,9 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
       "the statements line drops its Retry while its Retry waits for the network"
     ).toBe(CONTROL_LABELS.retry);
     expect(
-      view.container
-        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
-        ?.getAttribute("aria-busy"),
+      view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`),
       "the view's empty tree reads busy while its refused read waits for the network"
-    ).toBe("false");
+    ).toHaveAttribute("aria-busy", "false");
   } finally {
     view.unmount();
     // Back online once the view is gone: its query client no longer listens for the network
@@ -1287,7 +1293,9 @@ async function settled(): Promise<void> {
   });
 }
 
-/** Lets one frame pass, in which the address's landing focuses its row (`landOnRow`). */
+/** Lets one frame pass, after which a reader's move is no longer the chord's: the stage counts a
+ *  focus moved onto the tree in the frame it gave the Retry the focus as the chord's
+ *  (`slots/stage.tsx`'s `placed`). */
 async function aFrame(): Promise<void> {
   await act(async () => {
     await nextFrame();
@@ -1332,7 +1340,7 @@ test("while a read is out the view draws nothing, and a read that failed says so
     ]);
     const retry = lines()[0]?.querySelector("button");
     if (retry == null) throw new Error("the plan's line draws no Retry");
-    expect(document.activeElement, "the first line's Retry does not take the focus").toBe(retry);
+    expect(retry, "the first line's Retry does not take the focus").toHaveFocus();
     await userEvent.keyboard("{Enter}");
     expect(asked).toEqual(["plan"]);
 
@@ -1369,7 +1377,7 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
     const view = renderBody(root, { reads: failed(asked, ...reads) });
     try {
       act(() => retryOf(view, on).focus());
-      expect(document.activeElement).toBe(retryOf(view, on));
+      expect(retryOf(view, on)).toHaveFocus();
       await steps(view, asked);
     } finally {
       view.unmount();
@@ -1377,6 +1385,7 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
   };
   /** Fails the case where the focus is on the page's body, or anywhere outside the view. */
   const inTheView = (view: RenderResult, step: string): void => {
+    // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the step.
     expect(document.activeElement, `${step}: the focus fell to the page's body`).not.toBe(
       document.body
     );
@@ -1389,9 +1398,11 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
    *  read busy, or the focus is off that Retry. */
   const runningAgain = (view: RenderResult, read: PlanRead): void => {
     const retry = retryOf(view, read);
+    // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the read.
     expect(retry.getAttribute("aria-busy"), `the ${read} read's Retry does not read busy`).toBe(
       "true"
     );
+    // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the read.
     expect(document.activeElement, `the ${read} read running again moved the focus`).toBe(retry);
   };
 
@@ -1419,9 +1430,10 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
     runningAgain(view, "plan");
     view.redraw(root, failedAs([], [{ failure: 2, read: "plan", retrying: false }], false));
     inTheView(view, "the read Retry asked again is refused again");
-    expect(document.activeElement, "the read refused again leaves the focus off its Retry").toBe(
-      retryOf(view, "plan")
-    );
+    expect(
+      retryOf(view, "plan"),
+      "the read refused again leaves the focus off its Retry"
+    ).toHaveFocus();
   });
   // Failed, then running again once its Retry is pressed, then answered with no task: the view
   // draws the issue's empty line, and the focus goes to its tree, which is all the view holds.
@@ -1434,9 +1446,9 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
     await settled();
     inTheView(view, "the read Retry asked again has answered with no task");
     expect(
-      document.activeElement,
+      view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`),
       "the read Retry asked again answered with no task leaves the focus off the view's tree"
-    ).toBe(view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`));
+    ).toHaveFocus();
     expect(view.container.textContent).toContain(EMPTY_STATE_LINES.plan);
     // The tree the focus rests on is described by the empty line, so a screen reader says it.
     const tree = document.activeElement;
@@ -1445,7 +1457,8 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
       described === "" ? undefined : document.getElementById(described)?.textContent,
       "the view's tree is not described by the empty line"
     ).toBe(EMPTY_STATE_LINES.plan);
-    expect(tree?.getAttribute("aria-busy"), "the tree of a view whose reads answered is busy").toBe(
+    expect(tree, "the tree of a view whose reads answered is busy").toHaveAttribute(
+      "aria-busy",
       "false"
     );
   });
@@ -1470,9 +1483,9 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
     view.redraw(root, failed([], "plan"));
     await settled();
     expect(
-      document.activeElement,
+      retryOf(view, "plan"),
       "the statements line's Retry pressed leaves the focus off the plan's Retry"
-    ).toBe(retryOf(view, "plan"));
+    ).toHaveFocus();
   });
   // Asked again with no press, with the focus on its Retry - on the window's focus, or on an
   // event - and answered.
@@ -1537,14 +1550,15 @@ test("the view's tree focused with a read refused hands the focus to its Retry",
   const view = renderBody(issue([task("t1")]), { reads: failed([], "plan") });
   try {
     act(() => control.focus());
-    expect(document.activeElement).toBe(control);
+    expect(control).toHaveFocus();
     const tree = view.container.querySelector<HTMLElement>(
       `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`
     );
     act(() => tree?.focus({ preventScroll: true }));
-    expect(document.activeElement, "the tree focused with a read refused keeps the focus").toBe(
-      retryOf(view, "plan")
-    );
+    expect(
+      retryOf(view, "plan"),
+      "the tree focused with a read refused keeps the focus"
+    ).toHaveFocus();
   } finally {
     view.unmount();
     control.remove();
@@ -1567,18 +1581,18 @@ test("a focus moved onto the view's tree from its Retry stays on the tree", asyn
     // moves a frame later at the soonest.
     await aFrame();
     act(() => retryOf(view, "plan").focus());
-    expect(document.activeElement).toBe(retryOf(view, "plan"));
+    expect(retryOf(view, "plan")).toHaveFocus();
     act(() => tree.focus({ preventScroll: true }));
     expect(
-      document.activeElement,
+      tree,
       "a focus moved from the Retry onto the tree is sent back to the Retry"
-    ).toBe(tree);
+    ).toHaveFocus();
     // The tree holds nothing while its reads have not answered, and reads busy only while a read
     // is out: a refused read that is not running again leaves it not busy.
-    expect(
-      tree.getAttribute("aria-busy"),
-      "the tree of a view whose refused read is not running reads busy"
-    ).toBe("false");
+    expect(tree, "the tree of a view whose refused read is not running reads busy").toHaveAttribute(
+      "aria-busy",
+      "false"
+    );
   } finally {
     view.unmount();
   }
@@ -1644,13 +1658,13 @@ test("the view's tree leaving the page with the focus on it gives the focus to t
     await aFrame();
     act(() => retryOf(view, "plan").focus());
     act(() => tree.focus({ preventScroll: true }));
-    expect(document.activeElement).toBe(tree);
+    expect(tree).toHaveFocus();
     view.redraw(root, ANSWERED);
     await settled();
     expect(
-      document.activeElement,
+      document.body,
       "the view's tree leaving the page with the focus on it drops the focus to the page's body"
-    ).not.toBe(document.body);
+    ).not.toHaveFocus();
     expect(
       focusedRow(),
       "the view's tree leaving the page with the focus on it leaves the focus off the first row"
@@ -1672,13 +1686,13 @@ test("a Retry drawn while the element around the view holds the focus takes it",
   const view = renderBody(root, { container: main, reads: { state: "waiting" } });
   try {
     act(() => main.focus());
-    expect(document.activeElement).toBe(main);
+    expect(main).toHaveFocus();
     view.redraw(root, failed([], "plan"));
     await settled();
     expect(
-      document.activeElement,
+      retryOf(view, "plan"),
       "a read refused while the element around the view holds the focus leaves the focus off its Retry"
-    ).toBe(retryOf(view, "plan"));
+    ).toHaveFocus();
   } finally {
     view.unmount();
     main.remove();
@@ -1708,16 +1722,16 @@ test("a row lets go of its mark when the focus leaves the chart for another cont
     act(() => chart.focus());
     expect([marked(), curve(), place?.getAttribute("data-focused")]).toEqual([false, "1.4", ""]);
 
-    const user = userEvent.setup();
     act(() => rowOf(view, "t2").focus());
-    await user.pointer({ keys: "[MouseLeft>]", target: chart });
-    expect(document.activeElement).toBe(chart);
-    expect([marked(), curve()]).toEqual([true, "2"]);
-    await user.pointer({ keys: "[/MouseLeft]", target: chart });
-    await act(async () => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, 0);
-      await promise;
+    // The press is over a task after its release (`press-focus.ts`'s `trackPress`), and the row
+    // lets go of its mark then: the press runs on the fake clock, and `tick(0)` runs that task.
+    await zeroDelaysOnFakeClock(async () => {
+      const user = userOnFakeClock();
+      await user.pointer({ keys: "[MouseLeft>]", target: chart });
+      expect(chart).toHaveFocus();
+      expect([marked(), curve()]).toEqual([true, "2"]);
+      await user.pointer({ keys: "[/MouseLeft]", target: chart });
+      await tick(0);
     });
     expect([marked(), curve(), place?.getAttribute("data-focused")]).toEqual([false, "1.4", ""]);
   } finally {
@@ -1748,7 +1762,7 @@ test("tasks that need each other are one line at their place, and rows at that p
       ),
     ].map((row) => row.getAttribute("data-node-id") ?? "cycle");
     expect(drawn).toEqual([D("t1"), "cycle", D("t6")]);
-    expect(rowOf(view, "t6").getAttribute("data-plan-start")).toBe("2");
+    expect(rowOf(view, "t6")).toHaveAttribute("data-plan-start", "2");
     expect(rowOf(view, "t6").querySelector("[data-plan-need]")?.textContent).toBe("Task t5");
     const lines = [...view.container.querySelectorAll("[data-plan-cycle]")];
     expect(lines).toHaveLength(1);
@@ -1766,12 +1780,10 @@ test("tasks that need each other are one line at their place, and rows at that p
     // The address puts the focus on the cycle's row, which stands for the task it names in
     // Details, and the arrows go from it to the steps on either side of it, as they pass over it.
     const cycle = view.container.querySelector<HTMLElement>("[data-plan-cycle-row]");
-    await waitFor(() => expect(document.activeElement).toBe(cycle));
-    expect(cycle?.getAttribute("data-plan-cycle-row")).toBe(`${D("t4")} ${D("t5")}`);
+    await waitFor(() => expect(cycle).toHaveFocus());
+    expect(cycle).toHaveAttribute("data-plan-cycle-row", `${D("t4")} ${D("t5")}`);
     expect(focusedRow()).toBe(D("t5"));
-    expect(view.container.querySelector("[data-place]")?.getAttribute("data-focused")).toBe(
-      D("t5")
-    );
+    expect(view.container.querySelector("[data-place]")).toHaveAttribute("data-focused", D("t5"));
     await user.keyboard("j");
     expect(focusedRow()).toBe(D("t6"));
     act(() => cycle?.focus());
@@ -1782,17 +1794,17 @@ test("tasks that need each other are one line at their place, and rows at that p
     // Details draws the task the row stands for, the one the address names, not the link's
     // (`CycleRow`).
     const place = view.container.querySelector("[data-place]");
-    expect(place?.getAttribute("data-focused")).toBe(D("t1"));
+    expect(place).toHaveAttribute("data-focused", D("t1"));
     const link = cycle?.querySelector<HTMLElement>("a[href]") ?? null;
-    expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/artifacts/${PLAN}#b-t4`);
+    expect(link).toHaveAttribute("href", `/issues/${KEY}/artifacts/${PLAN}#b-t4`);
     act(() => link?.focus());
-    expect(document.activeElement).toBe(link);
+    expect(link).toHaveFocus();
     expect(
       [...view.container.querySelectorAll('[role="treeitem"][tabindex="0"]')].map((row) =>
         row.getAttribute("data-plan-cycle-row")
       )
     ).toEqual([`${D("t4")} ${D("t5")}`]);
-    expect(place?.getAttribute("data-focused")).toBe(D("t5"));
+    expect(place).toHaveAttribute("data-focused", D("t5"));
 
     // The steps: the same line, and the cycle's tasks as rows where the order puts the cycle.
     await showSteps(view);
@@ -1907,16 +1919,15 @@ test("the written order reads the cached blocks and sends no blocks read of its 
   try {
     expect(read, "the body sends a read of the plan's blocks of its own").not.toHaveBeenCalled();
     expect(rowIds(view.container)).toEqual([D("t2"), D("t1"), D("t3")]);
-    await act(async () => {
+    act(() => {
       client.setQueryData(
         ["artifact", PLAN_ARTIFACT, "blocks"],
         ["t3", "t1", "t2"].map((id) => ({ id }))
       );
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, 0);
-      await promise;
     });
-    expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]);
+    // React Query hands the blocks to what observes them a task after they land, so the row
+    // waits for the order they give.
+    await waitFor(() => expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]));
     expect(read, "the body sends a read of the plan's blocks of its own").not.toHaveBeenCalled();
   } finally {
     view.unmount();

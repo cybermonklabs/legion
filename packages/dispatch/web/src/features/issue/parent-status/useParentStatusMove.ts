@@ -1,3 +1,4 @@
+import { PARENT_STATUS_CONFLICT } from "@legion/contracts";
 import type { ISSUE_STATUS_OPTIONS } from "@legion/contracts/dispatch-tools";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -24,12 +25,9 @@ import { SendStoppedError, stoppedWriteNote } from "../../writes/keyed-write";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { signedInLogin, useWrites } from "../../writes/write-store";
 
-/** The code of Dispatch's refusal of a write that would put a parent's status out of line with
- *  its children's (R24): a parent is done only when each child is done, and while a child is in
- *  work its parent is in work. */
-const PARENT_STATUS_CONFLICT = "PARENT_STATUS_CONFLICT";
-
-/** Whether `error` is that refusal, which names the issues that hold the write (`issues`). */
+/** Whether `error` is Dispatch's refusal of a write that would put a parent's status out of line
+ *  with its children's (R24): a parent is done only when each child is done, and while a child is
+ *  in work its parent is in work. The refusal names the issues that hold the write (`issues`). */
 export function isParentStatusConflict(error: unknown): error is ApiError {
   return error instanceof ApiError && error.status === 409 && error.code === PARENT_STATUS_CONFLICT;
 }

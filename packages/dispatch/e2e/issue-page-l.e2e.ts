@@ -25,6 +25,7 @@ import {
 import { updateBanner } from "./foot-floats";
 import { nextFrames } from "./frames";
 import { seedReplyNesting } from "./issue-layout-seed";
+import { layoutProject } from "./issue-layout-seed-support";
 import { closeDetails, gotoIssue, openDetails, phase } from "./issue-page";
 import {
   blockNode,
@@ -83,7 +84,8 @@ import {
 import { withIssuePage } from "./issue-page-option";
 import { runClockUntil, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
-import { expect, test } from "./test";
+import { keyedSearchWord } from "./search";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -99,10 +101,11 @@ import { asUser } from "./users";
  * rows, skipped with an annotation naming that part and tagged `@owed`: four of c-replies, one of
  * c-box, one of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
  *
- * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
- * the new page turned on with `withIssuePage`): every row but (11), which writes nothing, writes
- * from the box and then reads its own write, as Dispatch stored it and as the outline draws it
- * from the server's reads. Rows (1) to (5) are the checkpoint's
+ * The rows are on the real stack, each through `phase` (a seed under the row's own keys beside
+ * what the rows before it wrote, alice signed in, the new page turned on with `withIssuePage`):
+ * every row but (11), which writes nothing, writes from the box and then reads its own write, as
+ * Dispatch stored it and as the outline draws it from the server's reads. Rows (1) to (5) are the
+ * checkpoint's
  * (`git show 29111db16c41:packages/dispatch/e2e/issue-layout.e2e.ts`), where the issue itself is
  * no row of the outline now (ruling 5), so a node with no parent is read at the outline's top
  * level.
@@ -1397,8 +1400,11 @@ test("the box's picker keeps the page one screen wide when a row's detail is lon
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     const name =
       "the-tester-notes-on-a-document-address-that-runs-past-the-width-of-a-phone-screen";
+    // Search reads every project of the stack, so the word the picker finds holds the row's own
+    // project key (`keyedSearchWord`): no other row's document answers it.
+    const word = keyedSearchWord("zebrafish", layoutProject());
     await createIssueArtifact(seeded.key, {
-      content: "# Notes\n\nA zebrafish paragraph the picker's search finds.\n",
+      content: `# Notes\n\nA ${word} paragraph the picker's search finds.\n`,
       name: `${name}.md`,
     });
     // The row's detail: the document's address in its short form, as today's composers give it
@@ -1408,7 +1414,7 @@ test("the box's picker keeps the page one screen wide when a row's detail is lon
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await composerField(page).click();
-    await page.keyboard.type("#zebrafish");
+    await page.keyboard.type(`#${word}`);
     const list = composer(page).getByRole("listbox", { name: "References" });
     const row = list.getByRole("option", { name: new RegExp(name) }).first();
     await expect(row, "the picker lists no row for the long document").toBeVisible();
@@ -1928,11 +1934,13 @@ test("today's docked composer lifts nothing at the foot of a short wide window",
   browser,
 }) => {
   test.setTimeout(120_000);
-  // An issue of a project of the row's own: the database is empty at each row's start.
-  await createProject({ key: "DOCK", name: "Today's docked composer" });
+  // An issue of a project of the row's own (`rowKey`, e2e/test.ts), beside what the rows before
+  // it wrote.
+  const project = rowKey("DOCK");
+  await createProject({ key: project, name: "Today's docked composer" });
   const { key } = await createIssue({
     force: true,
-    project: "DOCK",
+    project,
     title: "Today's page in a window whose foot meets its composer",
   });
   // Today's page: the reader has not turned the new page on.

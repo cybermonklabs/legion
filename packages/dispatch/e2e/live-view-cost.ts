@@ -13,25 +13,18 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { type FakeSession, setLiveSessions } from "./agents";
 import { putAgentState, seedAgentStreamConversations } from "./api";
 import { frontLiveView } from "./live-views";
+import { rowSessionId } from "./test";
+import type { SignInLogin } from "./users";
 
-/** The eight sessions k11 pins, by id. Each is a UUID: Dispatch's agent routes refuse anything
- *  else, so a session named otherwise would list and have no live view at all. */
-export const COST_RIG_IDS = [
-  "01a0e812-c057-7000-8000-000000000001",
-  "01a0e812-c057-7000-8000-000000000002",
-  "01a0e812-c057-7000-8000-000000000003",
-  "01a0e812-c057-7000-8000-000000000004",
-  "01a0e812-c057-7000-8000-000000000005",
-  "01a0e812-c057-7000-8000-000000000006",
-  "01a0e812-c057-7000-8000-000000000007",
-  "01a0e812-c057-7000-8000-000000000008",
-];
+/** How many sessions k11 pins. */
+const COST_RIGS = 8;
 
 /** How many turns each rig's replay carries: the publisher's own cap, so a view that drew them
  *  all drew the most a session can ever answer with. */
 export const COST_RIG_TURNS = AGENT_STREAM_LIMITS.historyMessages;
 
-/** A live session for the rail to pin. `last_seen` is taken when the row seeds, never at this
+/** The `index`th live session for the rail to pin, under the running row's own id for it
+ *  (`rowSessionId`, e2e/test.ts). `last_seen` is taken when the row seeds, never at this
  *  module's scope, which a worker evaluates once and every later spec of that worker ages. */
 function costRig(index: number): FakeSession {
   return {
@@ -40,22 +33,32 @@ function costRig(index: number): FakeSession {
     last_seen: Date.now() - 5_000,
     machine_id: "cost-host",
     roles: [],
-    session_id: COST_RIG_IDS[index],
+    session_id: rowSessionId(`cost${index + 1}`),
     title: `Cost ${index + 1}`,
   };
 }
 
 /**
- * Eight live sessions, each pinned and each answering the next viewer's replay request with a
- * conversation at the stream's limit. The pins go one at a time, since the rail's order is the
- * order they were made in, and every view a row opens is handed the same weight of transcript.
+ * Eight live sessions, each pinned by `login` and each answering the next viewer's replay request
+ * with a conversation at the stream's limit, and answers their ids in the order they were pinned.
+ * The pins go one at a time, since the rail's order is the order they were made in, and every
+ * view a row opens is handed the same weight of transcript.
+ *
+ * Each id is the running row's own (`rowSessionId`, e2e/test.ts), a UUID, since Dispatch's agent
+ * routes refuse anything else: the live view shows the messages Dispatch keeps for a session,
+ * by its id for every person at once, beside the turns its replay holds. `login` is the row's own
+ * person (`rowPerson`) for the same reason on the person's side: the rail lists every pin they
+ * hold.
  */
-export async function seedPinnedRigsAtLimit(): Promise<void> {
-  await setLiveSessions(COST_RIG_IDS.map((_, index) => costRig(index)));
-  await seedAgentStreamConversations(COST_RIG_IDS);
-  for (const sessionID of COST_RIG_IDS) {
-    await putAgentState(sessionID, { pinned: true });
+export async function seedPinnedRigsAtLimit(login: SignInLogin): Promise<string[]> {
+  const sessions = Array.from({ length: COST_RIGS }, (_, index) => costRig(index));
+  const ids = sessions.map((session) => session.session_id);
+  await setLiveSessions(sessions);
+  await seedAgentStreamConversations(ids);
+  for (const sessionID of ids) {
+    await putAgentState(sessionID, { pinned: true }, { login });
   }
+  return ids;
 }
 
 /** The turns the view in front has drawn. Every rig answers with the same prose, so a row reads

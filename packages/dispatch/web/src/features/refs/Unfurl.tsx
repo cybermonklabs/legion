@@ -1,4 +1,9 @@
-import { type DispatchReadingSurface, referenceSpans, trimReference } from "@legion/contracts";
+import {
+  type DispatchReadingSurface,
+  readerStep,
+  referenceSpans,
+  trimReference,
+} from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
@@ -126,6 +131,9 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
   );
 }
 
+/** The path of a GitHub issue or pull request: its owner, its repository and its number. */
+export const githubIssuePath = /^\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)$/;
+
 /** The one reader this change does not fold: a GitHub issue or pull-request URL, matched here
  *  and read from GitHub's own API. Why it is drawn this way is the reading list's
  *  `github-reference-card` (`DISPATCH_READING_SURFACES`). */
@@ -135,7 +143,7 @@ function githubReference(value: string): string | undefined {
     if (url.hostname !== "github.com") {
       return undefined;
     }
-    const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)$/);
+    const match = url.pathname.match(githubIssuePath);
     return match === null ? undefined : `/repos/${match[1]}/${match[2]}/issues/${match[3]}`;
   } catch {
     return undefined;
@@ -182,12 +190,12 @@ interface ReferenceWord {
   readonly github?: GitHubReference;
 }
 
-const whitespaceOnly = /^\s*$/;
+export const whitespaceOnly = /^\s*$/;
 
 /** The run of non-whitespace right after a reference: what the word holding it ends with. It
  *  is read where the reference ends (sticky), so a body of many references costs one pass and
  *  not a copy of the rest of it per reference. */
-const trailingRun = /\S*/y;
+export const trailingRun = /\S*/y;
 
 /**
  * Every reference-shaped word of `body`, in the order it holds them: the references one reading
@@ -198,12 +206,12 @@ const trailingRun = /\S*/y;
  * punctuation and emphasis the reader trims off a reference stays outside it.
  */
 function referenceWords(body: string, references: readonly TextReference[]): ReferenceWord[] {
-  const words: ReferenceWord[] = references.map((reference) => ({
-    end: reference.end,
-    reference,
-    start: reference.start,
-  }));
+  const words: ReferenceWord[] = references.map((reference) => {
+    readerStep();
+    return { end: reference.end, reference, start: reference.start };
+  });
   for (const span of referenceSpans(body, "https://github.com/")) {
+    readerStep();
     const path = githubReference(span.value);
     if (path !== undefined) {
       words.push({
@@ -253,6 +261,7 @@ function trimmedTail(body: string, word: ReferenceWord): string | undefined {
 function referencesOnly(body: string, words: readonly ReferenceWord[]): boolean {
   let covered = 0;
   for (const word of words) {
+    readerStep();
     if (word.start < covered || !whitespaceOnly.test(body.slice(covered, word.start))) {
       return false;
     }
@@ -287,6 +296,7 @@ function referenceCards(
   const github: GitHubReference[] = [];
   const seen = new Set<string>();
   for (const word of words) {
+    readerStep();
     if (word.github !== undefined) {
       if (!seen.has(word.github.href)) {
         seen.add(word.github.href);

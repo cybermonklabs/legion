@@ -257,9 +257,10 @@ export function harnessPorts(
 /** Why a run of more than one stack refuses a variable the caller set. Each of them names a
  *  thing ONE stack owns, so a run that honoured it would hand every stack the one database, the
  *  one set of servers or the one port - and the failure would read as the product's rather than
- *  the run's, because `e2e/test.ts` empties that database before every row, so the rows would
- *  delete each other's fixtures and fail on what was no longer there. The port variables are
- *  refused for the last of those reasons, so they share it in the refusal below. */
+ *  the run's, because each worker empties that database before its first row and resets the
+ *  stack's fakes before every row (`e2e/test.ts`), so the workers would delete each other's
+ *  fixtures and fail on what was no longer there. The port variables are refused for the last of
+ *  those reasons, so they share it in the refusal below. */
 const stackConflictReasons: Record<string, string> = {
   DATABASE_URL:
     "each stack runs its own Postgres, whose URL the harness hands its servers and its psql",

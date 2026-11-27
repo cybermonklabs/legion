@@ -34,6 +34,20 @@ function withoutFragment(url: string): string {
  * (`history.pushState`, a fragment) sends no navigation request, and a navigation request that
  * ends without a commit (it fails, or is answered 204 or 205) stops being its frame's, so such a
  * change of URL ends no count.
+ *
+ * The same commit ends the reads a page being left sends as it goes. The row
+ * `issue-page-i.e2e.ts [iphone] the children are one group of rows of the outline @phone` failed
+ * its first attempt in merge-queue runs 45607339493 and 45852270285 with "the page never went
+ * quiet". In both traces, the page being left sent a read within 1 ms of the navigation's document
+ * request. The trace holds no response and no failure for those reads, and then nothing was in
+ * flight for 7 s and more. So Playwright sent neither `requestfinished` nor `requestfailed` for
+ * them, and they counted until the wait ran out. The new document's own requests all started
+ * after its document request was answered, so the commit that ends the old document's reads ends
+ * none of the new document's.
+ *
+ * `request.frame()` throws for a service worker's request, which no frame sent. Playwright emits a
+ * page's `request` only for a request one of the page's frames sent (its dispatcher names the
+ * page by `request.frame()`), so each request read here has its frame.
  */
 function watchInFlight(page: Page): (ms: number) => boolean {
   /** Each request in flight, by the frame whose next commit of a new document ends its count.

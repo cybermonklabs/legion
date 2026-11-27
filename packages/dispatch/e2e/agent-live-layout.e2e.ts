@@ -1,7 +1,7 @@
 import { type FakeSession, setLiveSessions } from "./agents";
 import { getAgentStates, publishAgentStreamFrame } from "./api";
 import { frontLiveView } from "./live-views";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowSessionId, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -23,15 +23,6 @@ import { asUser } from "./users";
  * there on its own assertion.
  */
 
-/** The sessions these rows read, by id. Each is a UUID, which Dispatch's agent routes require,
- *  and each is this file's own: the relay's replay is process-global, so a session another spec
- *  seeded would carry that spec's frames into these rows. */
-const HEADER_ID = "01a0e812-0a06-7000-8000-000000000001";
-const ROW_ID = "01a0e812-0a06-7000-8000-000000000002";
-const HINT_ID = "01a0e812-0a06-7000-8000-000000000003";
-const HELP_ID = "01a0e812-0a06-7000-8000-000000000004";
-const PHONE_ID = "01a0e812-0a06-7000-8000-000000000005";
-
 const MACHINE = "layout-host";
 
 /** A directory no row of this page can show whole: it is what the row shortens, and what the
@@ -39,8 +30,12 @@ const MACHINE = "layout-host";
 const LONG_DIR =
   "/workspaces/legion/packages/dispatch/web/src/features/agent-view/under-the-message-box/the-long-way-round";
 
-/** A live session for a row to open. `last_seen` is taken when the row seeds, never at this
- *  module's scope, which a worker evaluates once and every later spec of that worker ages. */
+/** A live session for a row to open. `sessionID` is the row's own (`rowSessionId`, e2e/test.ts),
+ *  a UUID, which Dispatch's agent routes require: the live view shows the messages Dispatch keeps
+ *  for a session by its id, for every person at once, and the relay's replay is process-global,
+ *  so a session another row seeded would carry that row's messages and frames into this one.
+ *  `last_seen` is taken when the row seeds, never at this module's scope, which a worker
+ *  evaluates once and every later spec of that worker ages. */
 function session(sessionID: string, title: string): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
@@ -150,12 +145,13 @@ function clipped(locator: Locator): Promise<boolean> {
 test("the live view's header holds the back link, the name, the live state and a pin, and nothing else", async ({
   browser,
 }) => {
-  await setLiveSessions([session(HEADER_ID, "Planner")]);
-  await publishAgentStreamFrame(HEADER_ID, replayOf(HEADER_ID), "replay");
+  const headerId = rowSessionId("header");
+  await setLiveSessions([session(headerId, "Planner")]);
+  await publishAgentStreamFrame(headerId, replayOf(headerId), "replay");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(HEADER_ID));
+    await page.goto(livePath(headerId));
     const head = frontLiveView(page).getByTestId("agent-view-header");
     await expect(head).toBeVisible();
 
@@ -188,14 +184,14 @@ test("the live view's header holds the back link, the name, the live state and a
     const unpin = head.getByRole("button", { exact: true, name: "Unpin Planner" });
     await expect(unpin).toHaveAttribute("aria-pressed", "true");
     await expect
-      .poll(async () => (await getAgentStates())[HEADER_ID]?.pinned_at !== undefined)
+      .poll(async () => (await getAgentStates())[headerId]?.pinned_at !== undefined)
       .toBe(true);
     await unpin.click();
     await expect(head.getByRole("button", { exact: true, name: "Pin Planner" })).toHaveAttribute(
       "aria-pressed",
       "false"
     );
-    await expect.poll(async () => (await getAgentStates())[HEADER_ID]?.pinned_at).toBeUndefined();
+    await expect.poll(async () => (await getAgentStates())[headerId]?.pinned_at).toBeUndefined();
   } finally {
     await context.close();
   }
@@ -210,13 +206,14 @@ test("the live view's header holds the back link, the name, the live state and a
 test("the row under the message box holds the facts and the controls on one line at 1440, shortening the directory first", async ({
   browser,
 }) => {
-  await setLiveSessions([session(ROW_ID, "Builder")]);
-  await publishAgentStreamFrame(ROW_ID, replayOf(ROW_ID), "replay");
+  const rowId = rowSessionId("row");
+  await setLiveSessions([session(rowId, "Builder")]);
+  await publishAgentStreamFrame(rowId, replayOf(rowId), "replay");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
     await page.setViewportSize({ height: 900, width: 1440 });
-    await page.goto(livePath(ROW_ID));
+    await page.goto(livePath(rowId));
     const row = footer(page);
     await expect(row).toBeVisible();
 
@@ -267,12 +264,13 @@ test("the row under the message box holds the facts and the controls on one line
 test("the line under the box reads nothing at rest and carries a refused press's reason", async ({
   browser,
 }) => {
-  await setLiveSessions([session(HINT_ID, "Scribe")]);
-  await publishAgentStreamFrame(HINT_ID, replayOf(HINT_ID), "replay");
+  const hintId = rowSessionId("hint");
+  await setLiveSessions([session(hintId, "Scribe")]);
+  await publishAgentStreamFrame(hintId, replayOf(hintId), "replay");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(HINT_ID));
+    await page.goto(livePath(hintId));
     const composer = frontLiveView(page).getByTestId("agent-composer");
     const hint = composer.getByTestId("agent-composer-hint");
     const send = composer.getByRole("button", { exact: true, name: "Send" });
@@ -303,12 +301,13 @@ test("the line under the box reads nothing at rest and carries a refused press's
 test("the question mark opens a panel naming what ! does, where a command runs and what is kept", async ({
   browser,
 }) => {
-  await setLiveSessions([session(HELP_ID, "Helper")]);
-  await publishAgentStreamFrame(HELP_ID, replayOf(HELP_ID), "replay");
+  const helpId = rowSessionId("help");
+  await setLiveSessions([session(helpId, "Helper")]);
+  await publishAgentStreamFrame(helpId, replayOf(helpId), "replay");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(HELP_ID));
+    await page.goto(livePath(helpId));
     const question = footer(page).getByTestId("agent-help");
     const panel = footer(page).getByTestId("agent-help-popover");
     await expect(question).toHaveAttribute("aria-expanded", "false");
@@ -346,12 +345,13 @@ test("the question mark opens a panel naming what ! does, where a command runs a
 test("at a phone width the row scrolls sideways under a ring and a question mark that keep the right edge @phone @phone-only", async ({
   browser,
 }) => {
-  await setLiveSessions([session(PHONE_ID, "Pocket")]);
-  await publishAgentStreamFrame(PHONE_ID, replayOf(PHONE_ID), "replay");
+  const phoneId = rowSessionId("phone");
+  await setLiveSessions([session(phoneId, "Pocket")]);
+  await publishAgentStreamFrame(phoneId, replayOf(phoneId), "replay");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    await page.goto(livePath(PHONE_ID));
+    await page.goto(livePath(phoneId));
     const row = footer(page);
     await expect(row).toBeVisible();
     const scroller = facts(page);

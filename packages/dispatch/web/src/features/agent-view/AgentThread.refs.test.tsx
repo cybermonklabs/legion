@@ -11,6 +11,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { onFakeClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
@@ -189,11 +190,15 @@ async function type(user: UserEvent, input: HTMLTextAreaElement, value: string):
   await user.paste(value);
 }
 
-/** Lets the search debounce's length pass inside act after a key that should do nothing: long
- *  enough for any read the key started to answer and its rows to draw, so a check made after it
- *  would see them, where a check made at once would find nothing whether the key acted or not. */
-async function afterTheKey(): Promise<void> {
-  await settleRefPickerSearch();
+/** Runs `press` and crosses the search debounce on the fake clock inside act: long enough for any
+ *  read or debounced search the key started to answer and its rows to draw, so a check made after
+ *  it would see them, where a check made at once would find nothing whether the key acted or
+ *  not. */
+async function afterTheKey(press: () => void): Promise<void> {
+  await onFakeClock(async () => {
+    press();
+    await settleRefPickerSearch();
+  });
 }
 
 /** The picker's rows in the order they are drawn, each as `<heading>: <words>`: a row's
@@ -346,9 +351,10 @@ test("ArrowRight in the middle of a composition opens no parts", async () => {
       "I told the relay to retry"
     )
   );
-  // user-event has no form for this: it cannot mark a key as an IME composition.
-  fireEvent.keyDown(input, { isComposing: true, key: "ArrowRight" });
-  await afterTheKey();
+  await afterTheKey(() => {
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(input, { isComposing: true, key: "ArrowRight" });
+  });
   expect(drawnRows().filter((row) => row.startsWith("Message blocks:"))).toEqual([]);
   expect(pane?.getReferences).not.toHaveBeenCalled();
 });
@@ -366,9 +372,10 @@ test("Safari's Enter that confirms a composition takes no row, where a plain Ent
       "Messages: I told the relay to retry",
     ])
   );
-  // user-event has no form for this: it cannot mark a key as an IME composition.
-  fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 });
-  await afterTheKey();
+  await afterTheKey(() => {
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 });
+  });
   expect(input.value).toBe("#relay");
   expect(pane?.sent).toEqual([]);
 
@@ -411,7 +418,7 @@ test("a session's row has its full id as its title and description, and a role's
   expect(session.title).toBe("planner-session");
   const role = within(list).getByRole("option", { name: /^planner/ });
   expect(role).not.toHaveAccessibleDescription();
-  expect(role.hasAttribute("title")).toBe(false);
+  expect(role).not.toHaveAttribute("title");
 });
 
 // ArrowLeft closes what ArrowRight opened, as it does in every other box: the key is the list's

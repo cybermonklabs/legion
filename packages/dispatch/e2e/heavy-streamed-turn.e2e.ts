@@ -19,7 +19,7 @@ import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worke
 import { type FakeSession, setLiveSessions } from "./agents";
 import { publishAgentStreamFrame } from "./api";
 import { expectSettled, looseTextLength, markdownBody } from "./heavy-bodies-page";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 declare global {
@@ -88,13 +88,18 @@ const wholeTurnParagraphs = streamedParagraphs + streamedFrames + 1;
 const looseTextIsAFrame = 100;
 
 /** The session the turn streams from. Seeded with no `last_seen`, so the fake Envoy answers
- *  every read of it with the current time and the row never meets an aged-out session. */
+ *  every read of it with the current time and the row never meets an aged-out session. Its id is
+ *  the running row's own (`rowSessionId`, e2e/test.ts), read from a getter when a row names it,
+ *  as `agentSessions` (e2e/agents.ts) does: the relay's replay is process-global and kept by the
+ *  session's id, so under a fixed id a row would carry the frames an earlier row streamed. */
 const streamingSession: FakeSession = {
   capabilities: ["steer"],
   dir: "/workspaces/streaming",
   machine_id: "streaming-host",
   roles: [],
-  session_id: "019a1c07-6d4b-7e80-bf39-4a1b5c8d9e07",
+  get session_id() {
+    return rowSessionId("streaming");
+  },
   title: "A session mid-turn",
 };
 

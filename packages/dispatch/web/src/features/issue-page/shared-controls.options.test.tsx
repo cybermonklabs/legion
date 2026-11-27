@@ -98,6 +98,7 @@ import {
   draw,
   FOCUS_VARIANTS,
   GONE_SESSION,
+  heldRead,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
@@ -406,15 +407,18 @@ test("an approval entry links its document at the version the request asks about
   );
   try {
     const scope = within(details.container);
-    expect(scope.getByRole("link", { name: "spec.md, version 1" }).getAttribute("href")).toBe(
+    expect(scope.getByRole("link", { name: "spec.md, version 1" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/artifacts/spec-md?v=1"
     );
-    expect(scope.getByRole("link", { name: "decisions.md, version 2" }).getAttribute("href")).toBe(
+    expect(scope.getByRole("link", { name: "decisions.md, version 2" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/artifacts/decisions-md?v=2"
     );
-    expect(
-      scope.getByRole("link", { name: "verification.md, version 4" }).getAttribute("href")
-    ).toBe("/issues/CORE-1/artifacts/verification-md?v=4");
+    expect(scope.getByRole("link", { name: "verification.md, version 4" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/artifacts/verification-md?v=4"
+    );
     // Each default: the list's test id is `main`'s, the primary document carries both actions,
     // and the step sent back says why under the list.
     expect(scope.getByRole("list", { name: "Approvals" }).dataset.testid).toBe(
@@ -678,7 +682,7 @@ test("the header variant draws the person and the priority bars over the same se
         expect(wrapper.querySelector("[data-initial]")).toBeNull();
       } else {
         expect(shown?.textContent).toBe(assignee);
-        expect(wrapper.querySelector("[data-initial]")?.getAttribute("data-initial")).toBe("A");
+        expect(wrapper.querySelector("[data-initial]")).toHaveAttribute("data-initial", "A");
       }
       expectHeaderWrapper(wrapper);
     } finally {
@@ -708,7 +712,8 @@ test("the compact size draws the chip and both actions at the header's size, wit
       expect(approve).toContain("min-h-6");
       expect(approve).toContain("bg-page-ink");
       expect(approve).not.toContain("bg-sky-700");
-      expect(scope.getByRole("button", { name: "Request changes" }).getAttribute("class")).toBe(
+      expect(scope.getByRole("button", { name: "Request changes" })).toHaveAttribute(
+        "class",
         pageHeaderControl
       );
       const chip = classOf(scope.getByRole("button", { name: "Awaiting approval" }));
@@ -789,10 +794,11 @@ test("ApprovalSteps at its default layout draws main's list", async () => {
   try {
     const list = within(view.container).getByRole("list", { name: "Approvals" });
     expect(list.dataset.testid).toBe("issue-approval-steps");
-    expect(list.getAttribute("class")).toBe(
+    expect(list).toHaveAttribute(
+      "class",
       "flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2"
     );
-    expect(parentOf(list).getAttribute("class")).toBe("flex w-full min-w-0 flex-col gap-2");
+    expect(parentOf(list)).toHaveAttribute("class", "flex w-full min-w-0 flex-col gap-2");
     const entries = within(list).getAllByRole("listitem");
     expect(entries.map((entry) => entry.getAttribute("class"))).toEqual([
       "flex min-w-0 flex-wrap items-center gap-2",
@@ -802,7 +808,7 @@ test("ApprovalSteps at its default layout draws main's list", async () => {
     const [spec] = entries;
     if (spec === undefined) throw new Error("no entry for the spec");
     const chipBox = parentOf(within(spec).getByRole("button", { name: "Awaiting approval" }));
-    expect(chipBox.getAttribute("class")).toBe("contents");
+    expect(chipBox).toHaveAttribute("class", "contents");
     expect(parentOf(chipBox)).toBe(spec);
     expect(parentOf(within(spec).getByRole("button", { name: "Approve" }))).toBe(chipBox);
     expect(parentOf(within(spec).getByRole("button", { name: "Request changes" }))).toBe(chipBox);
@@ -1034,7 +1040,7 @@ test("inRow draws no label and the words of Details", async () => {
     const comesFree = within(caseOf(view, "waiting")).getByTestId("issue-claim-takeable");
     expect(comesFree.textContent?.startsWith(`, ${CONTROL_LABELS.takeable} `)).toBe(true);
     const instant = comesFree.querySelector("time");
-    expect(instant?.getAttribute("dateTime")).toBe(takeableAt);
+    expect(instant).toHaveAttribute("dateTime", takeableAt);
     expect(instant?.textContent).toContain(
       new Date(takeableAt).toLocaleDateString(undefined, { dateStyle: "short" })
     );
@@ -1054,7 +1060,7 @@ test("inRow draws no label and the words of Details", async () => {
       name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
     });
     expect(none.textContent).toBe(CONTROL_LABELS.none);
-    expect(none.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+    expect(none).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
     expect(classOf(none)).toEqual(expect.arrayContaining(tokens(pageQuietText)));
     expect(noRepository.queryByRole("combobox")).toBeNull();
     const repository = within(caseOf(view, "repository"));
@@ -1441,7 +1447,8 @@ test("the priorities' trigger has the height of its siblings in Details", async 
         // Outside, the trigger is a hit area that draws nothing, 44 px tall and 32 px from `md`
         // as the P0-P3 tag's beside it is, around the bordered square it draws, whose hover and
         // dimming it keys (`group`); on a phone, after a chip, its square stands 8 px after it.
-        expect(trigger.getAttribute("class")).toBe(
+        expect(trigger).toHaveAttribute(
+          "class",
           "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:-ml-3 max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:justify-start max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
         );
       }
@@ -1482,7 +1489,8 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
       expect(classOf(rail)).not.toContain("flex-nowrap");
       for (const label of ["api", "frontend"]) {
         const chip = within(rail).getByText(label);
-        expect(chip.getAttribute("class")).toBe(
+        expect(chip).toHaveAttribute(
+          "class",
           surface === "outside"
             ? `inline-flex shrink-0 items-center whitespace-nowrap ${given}`
             : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${given}`
@@ -1496,9 +1504,9 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
   const plain = draw(labels(undefined), "outside");
   try {
     const rail = within(plain.container).getByTestId("issue-labels");
-    expect(rail.getAttribute("class")).toBe(mainRail);
+    expect(rail).toHaveAttribute("class", mainRail);
     for (const label of ["api", "frontend"]) {
-      expect(within(rail).getByText(label).getAttribute("class")).toBe(mainChip);
+      expect(within(rail).getByText(label)).toHaveAttribute("class", mainChip);
     }
   } finally {
     undraw(plain);
@@ -3274,6 +3282,7 @@ test("the default shapes keep main's class strings", async () => {
     );
     classAt("AskCard approval requested", card.getByText("Approval requested"));
     classAt("AskCard approval document", card.getByRole("link", { name: /spec\.md/ }).closest("p"));
+    // "Request changes" is a Markdown label (`MarkdownBody`), unnamed until the engine loads.
     await user.click(await card.findByRole("radio", { name: /Request changes/ }));
     classAt("AskCard reason label", await card.findByText("Reason (required)"));
     classAt("AskCard submit hint", card.getByText(/^Add a reason to send/));
@@ -3329,6 +3338,7 @@ test("the default shapes keep main's class strings", async () => {
         .closest("p")
     );
     const changed = within(caseOf(otherCards, "edited"));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
     await user.click(await changed.findByRole("radio", { name: "Ship" }));
     await user.click(changed.getByRole("button", { name: "Answer" }));
     classAt(
@@ -3383,7 +3393,7 @@ test("outside NoTooltips a labelled CopyButton's words and a route marker's rout
   try {
     const words = within(caseOf(view, "copy")).getByText("session-1");
     expect(words.tagName).toBe("SPAN");
-    expect(words.getAttribute("class")).toBeNull();
+    expect(words).not.toHaveAttribute("class");
     const routes = [...caseOf(view, "route").querySelectorAll("span")].filter((span) =>
       /^role:(reviewer|architect):$/.test(span.textContent ?? "")
     );
@@ -3466,6 +3476,14 @@ function pickerOf(view: RenderResult): Promise<HTMLElement> {
   });
 }
 
+/** The picker's search box as the page stands now, refused if the picker is not open at this
+ *  moment: its popover is portalled under `document.body`, as `pickerOf` reads it. */
+function pickerNow(view: RenderResult): HTMLElement {
+  return within(view.baseElement).getByRole("combobox", {
+    name: CONTROL_LABELS.priority_to_advance,
+  });
+}
+
 function pickerShown(view: RenderResult): boolean {
   return (
     within(view.baseElement).queryByRole("combobox", {
@@ -3485,7 +3503,7 @@ test("the priorities' trigger puts the focus in its picker", async () => {
       // A keyboard reaches the trigger and presses Enter on it.
       triggerOf(view, surface).focus();
       await user.keyboard("{Enter}");
-      expect(document.activeElement).toBe(await pickerOf(view));
+      expect(pickerNow(view)).toHaveFocus();
     } finally {
       undraw(view);
     }
@@ -3516,14 +3534,14 @@ test("Escape in the priorities' picker closes the picker alone and returns the f
     );
     try {
       // The sheet's first focus lands on its one control before the case presses anything.
-      await waitFor(() => expect(document.activeElement).toBe(triggerOf(view, surface)));
+      await waitFor(() => expect(triggerOf(view, surface)).toHaveFocus());
       await user.click(triggerOf(view, surface));
-      expect(document.activeElement).toBe(await pickerOf(view));
+      expect(pickerNow(view)).toHaveFocus();
 
       await user.keyboard("{Escape}");
       expect(pickerShown(view)).toBe(false);
       const trigger = triggerOf(view, surface);
-      expect(document.activeElement).toBe(trigger);
+      expect(trigger).toHaveFocus();
       expect(reached).toEqual([]);
       expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
 
@@ -3567,46 +3585,46 @@ test("inside NoTooltips the repository row with no repository reads None and ope
         expect(scope.queryByText(CONTROL_LABELS.none)).toBeNull();
         expect(scope.queryByText("Repository:")).toBeNull();
         expect(box()).toHaveAccessibleDescription("No repository");
-        expect(box().getAttribute("placeholder")).toBe("owner/name");
+        expect(box()).toHaveAttribute("placeholder", "owner/name");
         continue;
       }
 
       // "None" is a button that says the word it is named by first, and carries no title.
       expect(none().textContent).toBe(CONTROL_LABELS.none);
-      expect(none().getAttribute("title")).toBeNull();
+      expect(none()).not.toHaveAttribute("title");
       expect(scope.queryByRole("combobox")).toBeNull();
 
       // A click draws the box, with its description and its placeholder, the focus in it.
       await user.click(none());
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       expect(box()).toHaveAccessibleDescription(CONTROL_LABELS.no_repository);
-      expect(box().getAttribute("placeholder")).toBe("owner/name");
+      expect(box()).toHaveAttribute("placeholder", "owner/name");
       expect(scope.queryByRole("button", { name: noneName })).toBeNull();
 
       // Escape draws "None" again, with the focus on it.
       await user.keyboard("{Escape}");
       expect(scope.queryByRole("combobox")).toBeNull();
-      expect(document.activeElement).toBe(none());
+      expect(none()).toHaveFocus();
 
       // Enter on "None" draws the box; leaving it with nothing typed draws "None" again, and the
       // focus stays where the reader put it.
       await user.keyboard("{Enter}");
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       await user.click(scope.getByRole("button", { name: "Elsewhere" }));
       expect(scope.queryByRole("combobox")).toBeNull();
-      expect(document.activeElement).toBe(scope.getByRole("button", { name: "Elsewhere" }));
+      expect(scope.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
 
       // Space on "None" draws the box too. A refused draft keeps it, and Escape gives it up.
       await user.tab({ shift: true });
-      expect(document.activeElement).toBe(none());
+      expect(none()).toHaveFocus();
       await user.keyboard(" ");
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       await user.keyboard("nope{Enter}");
       expect(scope.getByRole("alert").textContent).toBe("Write the repository as owner/name.");
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       await user.keyboard("{Escape}");
       expect(scope.queryByRole("alert")).toBeNull();
-      expect(document.activeElement).toBe(none());
+      expect(none()).toHaveFocus();
 
       // A repository typed and written with Enter is written once; the box stays while the write
       // is out, and once it lands with the issue still resolving to no repository the row reads
@@ -3616,11 +3634,14 @@ test("inside NoTooltips the repository row with no repository reads None and ope
       await waitFor(() =>
         expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/api" }, keyedAttempt)
       );
-      expect(document.activeElement).toBe(box());
-      written.resolve({} as Issue);
+      expect(box()).toHaveFocus();
+      // The write lands a few microtasks after its answer is given, and the row's render with it.
+      await act(async () => {
+        written.resolve({} as Issue);
+      });
       await settleReads();
       expect(scope.queryByRole("combobox")).toBeNull();
-      expect(document.activeElement).toBe(none());
+      expect(none()).toHaveFocus();
       expect(patchIssue).toHaveBeenCalledTimes(1);
     } finally {
       written.resolve({} as Issue);
@@ -3703,8 +3724,8 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       // The text is the whole repository, in the ink with the author's mark and no title, and
       // the box's one description describes it. No box is drawn.
       expect(text().textContent).toBe(LONG_REPOSITORY);
-      expect(text().getAttribute("title")).toBeNull();
-      expect(text().hasAttribute(AUTHOR_TEXT_ATTRIBUTE)).toBe(true);
+      expect(text()).not.toHaveAttribute("title");
+      expect(text()).toHaveAttribute(AUTHOR_TEXT_ATTRIBUTE);
       expect(classOf(text())).toEqual(expect.arrayContaining(tokens(pageInkText)));
       expect(text()).toHaveAccessibleDescription(LONG_REPOSITORY);
       const described = text().getAttribute("aria-describedby");
@@ -3726,10 +3747,12 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       // A click draws the box in its place at the row's full width, with the focus in it and the
       // same one description.
       await user.click(text());
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       expect(box().value).toBe(LONG_REPOSITORY);
       expect(classOf(parentOf(box()))).toContain("w-full");
       expect(classOf(parentOf(box()))).not.toContain("w-[200px]");
+      // `described` is the text's own read, and the box's read is compared with it as it stands.
+      // jest-dom: `described` is a `string | null`, and `toHaveAttribute` given null passes for no element.
       expect(box().getAttribute("aria-describedby")).toBe(described);
       expect(document.querySelectorAll(`[id="${described}"]`)).toHaveLength(1);
       expect(scope.queryByRole("button", { name: textName })).toBeNull();
@@ -3737,36 +3760,38 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       // Escape draws the text again, with the focus on it.
       await user.keyboard("{Escape}");
       expect(scope.queryByRole("combobox")).toBeNull();
-      expect(document.activeElement).toBe(text());
+      expect(text()).toHaveFocus();
 
       // Enter on the text draws the box; leaving it with nothing typed draws the text again, and
       // the focus stays where the reader put it.
       await user.keyboard("{Enter}");
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       await user.click(scope.getByRole("button", { name: "Elsewhere" }));
       expect(scope.queryByRole("combobox")).toBeNull();
-      expect(document.activeElement).toBe(scope.getByRole("button", { name: "Elsewhere" }));
+      expect(scope.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
 
       // Space on the text draws the box too. A repository typed in it and written with Enter is
       // written once; the box stays while the write is out, and once it lands the row draws the
       // new repository as text, which takes the focus the box held.
       await user.tab({ shift: true });
-      expect(document.activeElement).toBe(text());
+      expect(text()).toHaveFocus();
       await user.keyboard(" ");
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       await user.clear(box());
       await user.keyboard("acme/api{Enter}");
       await waitFor(() =>
         expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/api" }, keyedAttempt)
       );
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       stored.repo = "acme/api";
-      written.resolve({} as Issue);
+      await act(async () => {
+        written.resolve({} as Issue);
+      });
       await settleReads();
       expect(scope.queryByRole("combobox")).toBeNull();
       const landed = scope.getByRole("button", { name: "acme/api, Repository of CORE-1" });
       expect(landed.textContent).toBe("acme/api");
-      expect(document.activeElement).toBe(landed);
+      expect(landed).toHaveFocus();
       expect(patchIssue).toHaveBeenCalledTimes(1);
     } finally {
       written.resolve({} as Issue);
@@ -3791,8 +3816,8 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
       `acme/web, ${CONTROL_LABELS.repository_inherited}`
     );
     const words = scope.getByText(CONTROL_LABELS.repository_inherited);
-    expect(words.getAttribute("aria-hidden")).toBe("true");
-    expect(words.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+    expect(words).toHaveAttribute("aria-hidden", "true");
+    expect(words).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
     expect(parentOf(words).contains(text)).toBe(true);
     expect(scope.queryByRole("combobox")).toBeNull();
   } finally {
@@ -3845,7 +3870,7 @@ test("inside NoTooltips the repository box fills its row's value and keeps no ro
       await user.click(
         scope.getByRole("button", { name: "cybermonklabs/legion, Repository of CORE-1" })
       );
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       expect(classOf(line)).toContain("w-full");
       const narrower: string[] = [];
       const held: string[] = [];
@@ -3912,27 +3937,27 @@ test("inside NoTooltips Escape in the repository box closes the box and not the 
           scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
         if (surface === "outside") {
           // The sheet's first focus lands in `main`'s box, which is drawn from the start.
-          await waitFor(() => expect(document.activeElement).toBe(box()));
+          await waitFor(() => expect(box()).toHaveFocus());
           await settleReads();
           await user.keyboard("x");
           expect(box().value).not.toBe(repo ?? "");
 
           await user.keyboard("{Escape}");
           expect(box().value).toBe(repo ?? "");
-          expect(document.activeElement).toBe(box());
+          expect(box()).toHaveFocus();
           expect(closed).toEqual(["sheet"]);
           continue;
         }
         const text = () => scope.getByRole("button", { name });
         // The sheet's first focus lands on the row's text before the case presses anything.
-        await waitFor(() => expect(document.activeElement).toBe(text()));
+        await waitFor(() => expect(text()).toHaveFocus());
         await settleReads();
         await user.keyboard("{Enter}");
-        expect(document.activeElement).toBe(box());
+        expect(box()).toHaveFocus();
 
         await user.keyboard("{Escape}");
         expect(scope.queryByRole("combobox")).toBeNull();
-        expect(document.activeElement).toBe(text());
+        expect(text()).toHaveFocus();
         expect(closed).toEqual([]);
         expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
 
@@ -3983,12 +4008,12 @@ test("inside NoTooltips Escape on the repository box's clear control closes the 
         await act(async () => box().focus());
         await settleReads();
         await user.tab();
-        expect(document.activeElement).toBe(clear());
+        expect(clear()).toHaveFocus();
 
         await user.keyboard("{Escape}");
         expect(closed).toEqual(["sheet"]);
         expect(box()).toBeInTheDocument();
-        expect(document.activeElement).toBe(clear());
+        expect(clear()).toHaveFocus();
         expect(patchIssue).not.toHaveBeenCalled();
         continue;
       }
@@ -3998,16 +4023,16 @@ test("inside NoTooltips Escape on the repository box's clear control closes the 
       await settleReads();
       await act(async () => text().focus());
       await user.keyboard("{Enter}");
-      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveFocus();
       await user.tab();
-      expect(document.activeElement).toBe(clear());
+      expect(clear()).toHaveFocus();
 
       await user.keyboard("{Escape}");
       expect(closed).toEqual([]);
       expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
       expect(scope.queryByRole("combobox")).toBeNull();
       expect(scope.queryByRole("button", { name: clearName })).toBeNull();
-      expect(document.activeElement).toBe(text());
+      expect(text()).toHaveFocus();
       expect(patchIssue).not.toHaveBeenCalled();
 
       await user.keyboard("{Escape}");
@@ -4058,22 +4083,22 @@ test("inside NoTooltips the repository box's clear control is reached by Tab in 
 
     // Tab from the box opened from the text puts the focus on the clear control, and both stay.
     await user.click(text());
-    expect(document.activeElement).toBe(box());
+    expect(box()).toHaveFocus();
     await user.tab();
-    expect(document.activeElement).toBe(clear());
+    expect(clear()).toHaveFocus();
     expect(box()).toBeInTheDocument();
     expect(patchIssue).not.toHaveBeenCalled();
 
     // Shift+Tab takes the focus back to the box, and both stay.
     await user.tab({ shift: true });
-    expect(document.activeElement).toBe(box());
+    expect(box()).toHaveFocus();
     expect(clear()).toBeInTheDocument();
 
     // Tab from the control on past the row draws the text again, the focus where Tab put it.
     await user.tab();
-    expect(document.activeElement).toBe(clear());
+    expect(clear()).toHaveFocus();
     await user.tab();
-    expect(document.activeElement).toBe(after);
+    expect(after).toHaveFocus();
     expect(scope.queryByRole("combobox")).toBeNull();
     expect(text()).toBeInTheDocument();
     expect(patchIssue).not.toHaveBeenCalled();
@@ -4082,24 +4107,24 @@ test("inside NoTooltips the repository box's clear control is reached by Tab in 
     // the page and the focus is in the box. Once it lands the row reads the repository the issue
     // then inherits, and its text takes the focus the box held.
     await user.click(text());
-    expect(document.activeElement).toBe(box());
+    expect(box()).toHaveFocus();
     await user.tab();
-    expect(document.activeElement).toBe(clear());
+    expect(clear()).toHaveFocus();
     await user.keyboard("{Enter}");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
     );
     expect(scope.queryByRole("button", { name: "Clear the repository of CORE-1" })).toBeNull();
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(box());
+    expect(document.body).not.toHaveFocus();
+    expect(box()).toHaveFocus();
     stored.repo = null;
     stored.resolved_repo = "acme/web";
     written.resolve({} as Issue);
     await settleReads();
     expect(scope.queryByRole("combobox")).toBeNull();
     const landed = scope.getByRole("button", { name: "acme/web, Repository of CORE-1" });
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(landed);
+    expect(document.body).not.toHaveFocus();
+    expect(landed).toHaveFocus();
     expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     written.resolve({} as Issue);
@@ -4132,7 +4157,7 @@ test("inside NoTooltips a focus moved elsewhere as a repository row opens its bo
         elsewhere.focus();
       });
       expect(scope.getByRole("combobox", { name: "Repository of CORE-1" })).toBeInTheDocument();
-      expect(document.activeElement).toBe(elsewhere);
+      expect(elsewhere).toHaveFocus();
     } finally {
       undraw(view);
     }
@@ -4157,7 +4182,7 @@ test("inside NoTooltips a repository row keeps the box and its refused draft whe
       const scope = within(view.container);
       await user.click(scope.getByRole("button", { name }));
       const box = scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
-      expect(document.activeElement).toBe(box);
+      expect(box).toHaveFocus();
       await user.clear(box);
       await user.keyboard("nope");
       await user.click(scope.getByRole("button", { name: "Elsewhere" }));
@@ -4166,7 +4191,7 @@ test("inside NoTooltips a repository row keeps the box and its refused draft whe
       expect(box.value).toBe("nope");
       expect(scope.getByRole("alert").textContent).toBe("Write the repository as owner/name.");
       expect(scope.queryByRole("button", { name })).toBeNull();
-      expect(document.activeElement).toBe(scope.getByRole("button", { name: "Elsewhere" }));
+      expect(scope.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
     } finally {
       undraw(view);
     }
@@ -4202,22 +4227,22 @@ test("inside NoTooltips a repository box keeps itself and its focus when the win
       const scope = within(view.container);
       await user.click(scope.getByRole("button", { name }));
       const box = scope.getByRole("combobox", { name: "Repository of CORE-1" });
-      expect(document.activeElement).toBe(box);
+      expect(box).toHaveFocus();
 
       await blurWithTheWindow(box);
       expect(scope.queryByRole("combobox", { name: "Repository of CORE-1" })).toBe(box);
       expect(scope.queryByRole("button", { name })).toBeNull();
-      expect(document.activeElement).toBe(box);
+      expect(box).toHaveFocus();
       if (repo === null) continue;
 
       await user.tab();
       const clear = scope.getByRole("button", { name: clearName });
-      expect(document.activeElement).toBe(clear);
+      expect(clear).toHaveFocus();
       await blurWithTheWindow(clear);
       expect(scope.queryByRole("combobox", { name: "Repository of CORE-1" })).toBe(box);
       expect(scope.queryByRole("button", { name: clearName })).toBe(clear);
       expect(scope.queryByRole("button", { name })).toBeNull();
-      expect(document.activeElement).toBe(clear);
+      expect(clear).toHaveFocus();
     } finally {
       undraw(view);
     }
@@ -4292,8 +4317,8 @@ test("inside NoTooltips a close of the priorities' picker keeps the focus on its
             expectRefusedHoldingFocus(trigger);
           } else if (surface === "outside") {
             // The write stopped pending as it landed, before its read.
-            expect(trigger.hasAttribute("aria-disabled")).toBe(false);
-            expect(document.activeElement).toBe(reader === "waits" ? trigger : elsewhere);
+            expect(trigger).not.toHaveAttribute("aria-disabled");
+            expect(reader === "waits" ? trigger : elsewhere).toHaveFocus();
           }
 
           answerReread(reads.answer());
@@ -4304,9 +4329,9 @@ test("inside NoTooltips a close of the priorities' picker keeps the focus on its
           }
           await settleReads();
           expect(trigger.isConnected).toBe(true);
-          expect(trigger.hasAttribute("aria-disabled")).toBe(false);
-          expect(trigger.hasAttribute("disabled")).toBe(false);
-          expect(document.activeElement).toBe(reader === "waits" ? trigger : elsewhere);
+          expect(trigger).not.toHaveAttribute("aria-disabled");
+          expect(trigger).not.toHaveAttribute("disabled");
+          expect(reader === "waits" ? trigger : elsewhere).toHaveFocus();
           expect(patchIssue).toHaveBeenCalledTimes(1);
         } finally {
           written.resolve({} as Issue);
@@ -4336,7 +4361,7 @@ test("inside NoTooltips the trigger of a disabled priority line is disabled and 
     try {
       const trigger = triggerOf(view, surface);
       expect(trigger).toBeDisabled();
-      expect(trigger.hasAttribute("aria-disabled")).toBe(false);
+      expect(trigger).not.toHaveAttribute("aria-disabled");
       await user.click(trigger);
       await settleReads();
       expect(pickerShown(view)).toBe(false);
@@ -4390,7 +4415,7 @@ async function landHeld<Answer>(
 ): Promise<(answer: Answer) => void> {
   const made = read.mock.calls.length;
   const reread = Promise.withResolvers<Answer>();
-  read.mockImplementation(() => reread.promise);
+  read.mockImplementation(() => heldRead(reread.promise));
   land();
   await waitFor(() => expect(read).toHaveBeenCalledTimes(made + 1));
   await settleReads();
@@ -4401,15 +4426,15 @@ async function landHeld<Answer>(
  *  `disabled`. The focus is read first: with `emulateChromiumFocusFixup` installed, a `disabled`
  *  control has dropped it to the body, which is what a reader in Chromium loses. */
 function expectRefusedHoldingFocus(control: HTMLElement): void {
-  expect(document.activeElement).toBe(control);
-  expect(control.getAttribute("aria-disabled")).toBe("true");
-  expect(control.hasAttribute("disabled")).toBe(false);
+  expect(control).toHaveFocus();
+  expect(control).toHaveAttribute("aria-disabled", "true");
+  expect(control).not.toHaveAttribute("disabled");
 }
 
 /** Outside `NoTooltips`, `control` refuses with `disabled` alone, as on `main`. */
 function expectDisabledAsOnMain(control: HTMLElement): void {
-  expect(control.hasAttribute("disabled")).toBe(true);
-  expect(control.hasAttribute("aria-disabled")).toBe(false);
+  expect(control).toHaveAttribute("disabled");
+  expect(control).not.toHaveAttribute("aria-disabled");
 }
 
 // Approve is refused while its write is out, and inside `NoTooltips` until the read after it is
@@ -4445,7 +4470,7 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
         expect(createArtifactReview).toHaveBeenCalledTimes(1);
       } else {
         expectDisabledAsOnMain(approve);
-        expect(document.activeElement).toBe(document.body);
+        expect(document.body).toHaveFocus();
       }
 
       // The approval lands, and the read after it is held.
@@ -4461,15 +4486,15 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
         expectRefusedHoldingFocus(approve);
       } else {
         // The write stopped pending as it landed, before its read.
-        expect(approve.hasAttribute("disabled")).toBe(false);
-        expect(document.activeElement).toBe(document.body);
+        expect(approve).not.toHaveAttribute("disabled");
+        expect(document.body).toHaveFocus();
       }
 
       answerReread(approved);
       const chip = await scope.findByRole("button", { name: "Approved v2" });
       await settleReads();
       expect(approve.isConnected).toBe(false);
-      expect(document.activeElement).toBe(surface === "inside" ? chip : document.body);
+      expect(surface === "inside" ? chip : document.body).toHaveFocus();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
       written.reject(new Error("the connection dropped"));
@@ -4507,12 +4532,12 @@ test("inside NoTooltips Approve keeps the focus when its write fails and takes t
 
       written.reject(new Error("the connection dropped"));
       const refusal = surface === "inside" ? "aria-disabled" : "disabled";
-      await waitFor(() => expect(approve.hasAttribute(refusal)).toBe(false));
+      await waitFor(() => expect(approve).not.toHaveAttribute(refusal));
       await settleReads();
       expect(approve.isConnected).toBe(true);
-      expect(approve.hasAttribute("aria-disabled")).toBe(false);
-      expect(approve.hasAttribute("disabled")).toBe(false);
-      expect(document.activeElement).toBe(surface === "inside" ? approve : document.body);
+      expect(approve).not.toHaveAttribute("aria-disabled");
+      expect(approve).not.toHaveAttribute("disabled");
+      expect(surface === "inside" ? approve : document.body).toHaveFocus();
 
       if (surface === "outside") approve.focus();
       await user.keyboard("{Enter}");
@@ -4557,12 +4582,12 @@ test("inside NoTooltips Approve leaves a focus the reader moved elsewhere where 
       const answerReread = await landHeld(stubs.getArtifact, () =>
         written.resolve(specReview("approved"))
       );
-      expect(document.activeElement).toBe(elsewhere);
+      expect(elsewhere).toHaveFocus();
       answerReread(approved);
       await scope.findByRole("button", { name: "Approved v2" });
       await settleReads();
       expect(approve.isConnected).toBe(false);
-      expect(document.activeElement).toBe(elsewhere);
+      expect(elsewhere).toHaveFocus();
     } finally {
       written.reject(new Error("the connection dropped"));
       createArtifactReview.mockRestore();
@@ -4626,27 +4651,27 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
         for (const control of [box, submit, cancel, requestChanges]) {
           expectDisabledAsOnMain(control);
         }
-        expect(box.hasAttribute("readonly")).toBe(false);
+        expect(box).not.toHaveAttribute("readonly");
         await user.keyboard("{Escape}");
         await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
         continue;
       }
 
-      expect(box.hasAttribute("disabled")).toBe(false);
-      expect(box.hasAttribute("readonly")).toBe(true);
+      expect(box).not.toHaveAttribute("disabled");
+      expect(box).toHaveAttribute("readonly");
       expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
       const close = dialog.getByRole("button", { name: "Close" });
       expect(close).toBe(cancel);
-      expect(close.hasAttribute("aria-disabled")).toBe(false);
-      expect(close.hasAttribute("disabled")).toBe(false);
-      expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
-      expect(requestChanges.hasAttribute("disabled")).toBe(false);
+      expect(close).not.toHaveAttribute("aria-disabled");
+      expect(close).not.toHaveAttribute("disabled");
+      expect(requestChanges).toHaveAttribute("aria-disabled", "true");
+      expect(requestChanges).not.toHaveAttribute("disabled");
       expectRefusedHoldingFocus(submit);
       await user.keyboard("{Enter}");
       await settleReads();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
       expectRefusedHoldingFocus(submit);
-      expect(requestChanges.getAttribute("aria-disabled")).toBe("true");
+      expect(requestChanges).toHaveAttribute("aria-disabled", "true");
       expect(scope.queryByRole("dialog")).not.toBeNull();
 
       // The change request lands, and the read after it is held.
@@ -4667,8 +4692,8 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
       await scope.findByRole("button", { name: "Changes requested" });
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
       await settleReads();
-      expect(document.activeElement).toBe(requestChanges);
-      expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
+      expect(requestChanges).toHaveFocus();
+      expect(requestChanges).not.toHaveAttribute("aria-disabled");
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
       written.reject(new Error("the connection dropped"));
@@ -4757,8 +4782,8 @@ test("inside NoTooltips Escape closes the Request changes dialog while its chang
 
       if (surface === "outside") {
         for (const control of [approve, requestChanges]) {
-          expect(control.hasAttribute("disabled")).toBe(false);
-          expect(control.hasAttribute("aria-disabled")).toBe(false);
+          expect(control).not.toHaveAttribute("disabled");
+          expect(control).not.toHaveAttribute("aria-disabled");
         }
         continue;
       }
@@ -4784,14 +4809,14 @@ test("inside NoTooltips Escape closes the Request changes dialog while its chang
       await settleReads();
       expect(scope.queryByRole("dialog")).toBeNull();
       expectRefusedHoldingFocus(requestChanges);
-      expect(approve.getAttribute("aria-disabled")).toBe("true");
+      expect(approve).toHaveAttribute("aria-disabled", "true");
 
       answerReread(changesRequested);
       await scope.findByRole("button", { name: "Changes requested" });
-      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await waitFor(() => expect(requestChanges).not.toHaveAttribute("aria-disabled"));
       await settleReads();
-      expect(document.activeElement).toBe(requestChanges);
-      expect(approve.hasAttribute("aria-disabled")).toBe(false);
+      expect(requestChanges).toHaveFocus();
+      expect(approve).not.toHaveAttribute("aria-disabled");
       expect(scope.queryByRole("dialog")).toBeNull();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
@@ -4850,8 +4875,8 @@ test("inside NoTooltips the Request changes dialog's Close closes it while its c
 
       expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
       const close = dialog.getByRole("button", { name: "Close" });
-      expect(close.hasAttribute("aria-disabled")).toBe(false);
-      expect(close.hasAttribute("disabled")).toBe(false);
+      expect(close).not.toHaveAttribute("aria-disabled");
+      expect(close).not.toHaveAttribute("disabled");
       if (press === "Enter") {
         close.focus();
         await user.keyboard("{Enter}");
@@ -4883,14 +4908,14 @@ test("inside NoTooltips the Request changes dialog's Close closes it while its c
       await settleReads();
       expect(scope.queryByRole("dialog")).toBeNull();
       expectRefusedHoldingFocus(requestChanges);
-      expect(approve.getAttribute("aria-disabled")).toBe("true");
+      expect(approve).toHaveAttribute("aria-disabled", "true");
 
       answerReread(changesRequested);
       await scope.findByRole("button", { name: "Changes requested" });
-      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await waitFor(() => expect(requestChanges).not.toHaveAttribute("aria-disabled"));
       await settleReads();
-      expect(document.activeElement).toBe(requestChanges);
-      expect(approve.hasAttribute("aria-disabled")).toBe(false);
+      expect(requestChanges).toHaveFocus();
+      expect(approve).not.toHaveAttribute("aria-disabled");
       expect(scope.queryByRole("dialog")).toBeNull();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
 
@@ -4898,9 +4923,7 @@ test("inside NoTooltips the Request changes dialog's Close closes it while its c
       await user.keyboard("{Enter}");
       const next = within(await scope.findByRole("dialog", { name: "Request changes" }));
       await settleReads();
-      expect(next.getByRole("button", { name: "Cancel" }).hasAttribute("aria-disabled")).toBe(
-        false
-      );
+      expect(next.getByRole("button", { name: "Cancel" })).not.toHaveAttribute("aria-disabled");
       expect(next.queryByRole("button", { name: "Close" })).toBeNull();
     } finally {
       written.reject(new Error("the connection dropped"));
@@ -4956,17 +4979,17 @@ test("inside NoTooltips a refused change request keeps its dialog, its error and
         expect(alert.textContent).toBe("Could not request changes. Try again.");
         expect(scope.getByRole("dialog", { name: "Request changes" })).toBe(box);
         expect(dialog.getByRole("textbox", { name: "Reason" })).toHaveValue(reason);
-        expect(submit.hasAttribute("disabled")).toBe(false);
-        expect(submit.hasAttribute("aria-disabled")).toBe(false);
-        expect(document.activeElement).toBe(surface === "inside" ? submit : document.body);
+        expect(submit).not.toHaveAttribute("disabled");
+        expect(submit).not.toHaveAttribute("aria-disabled");
+        expect(surface === "inside" ? submit : document.body).toHaveFocus();
       }
 
       await user.keyboard("{Escape}");
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
       await settleReads();
-      expect(document.activeElement).toBe(requestChanges);
-      expect(requestChanges.hasAttribute("disabled")).toBe(false);
-      expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
+      expect(requestChanges).toHaveFocus();
+      expect(requestChanges).not.toHaveAttribute("disabled");
+      expect(requestChanges).not.toHaveAttribute("aria-disabled");
       expect(createArtifactReview).toHaveBeenCalledTimes(2);
     } finally {
       createArtifactReview.mockRestore();
@@ -5008,12 +5031,12 @@ test("inside NoTooltips a change request refused after its dialog closed lets th
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
       await settleReads();
       written.reject(reviewVersionMoved());
-      await waitFor(() => expect(requestChanges.hasAttribute("aria-disabled")).toBe(false));
+      await waitFor(() => expect(requestChanges).not.toHaveAttribute("aria-disabled"));
       await settleReads();
-      expect(document.activeElement).toBe(requestChanges);
+      expect(requestChanges).toHaveFocus();
       for (const control of [approve, requestChanges]) {
-        expect(control?.hasAttribute("disabled")).toBe(false);
-        expect(control?.hasAttribute("aria-disabled")).toBe(false);
+        expect(control).not.toHaveAttribute("disabled");
+        expect(control).not.toHaveAttribute("aria-disabled");
       }
 
       await user.keyboard("{Enter}");
@@ -5026,7 +5049,7 @@ test("inside NoTooltips a change request refused after its dialog closed lets th
       await user.keyboard("{Escape}");
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
       await settleReads();
-      expect(document.activeElement).toBe(requestChanges);
+      expect(requestChanges).toHaveFocus();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
       createArtifactReview.mockRestore();
@@ -5076,7 +5099,7 @@ test("inside NoTooltips Request changes opens no dialog while Approve's write is
       const answerReread = await landHeld(stubs.getArtifact, () =>
         written.resolve(specReview("approved"))
       );
-      expect(document.activeElement).toBe(requestChanges);
+      expect(requestChanges).toHaveFocus();
       await user.keyboard("{Enter}");
       await settleReads();
       expect(scope.queryByRole("dialog")).toBeNull();
@@ -5085,8 +5108,8 @@ test("inside NoTooltips Request changes opens no dialog while Approve's write is
       answerReread(approved);
       await scope.findByRole("button", { name: "Approved v2" });
       await settleReads();
-      expect(requestChanges.hasAttribute("aria-disabled")).toBe(false);
-      expect(document.activeElement).toBe(requestChanges);
+      expect(requestChanges).not.toHaveAttribute("aria-disabled");
+      expect(requestChanges).toHaveFocus();
       expect(scope.queryByRole("dialog")).toBeNull();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
@@ -5146,7 +5169,7 @@ test("inside NoTooltips a change request whose read removes Request changes hand
       await settleReads();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
       expect(scope.queryByRole("button", { name: "Request changes" })).toBeNull();
-      expect(document.activeElement).toBe(surface === "inside" ? chip : document.body);
+      expect(surface === "inside" ? chip : document.body).toHaveFocus();
     } finally {
       createArtifactReview.mockRestore();
       undraw(view);
@@ -5185,7 +5208,7 @@ test("inside NoTooltips a change request whose dialog was closed hands the focus
       await user.keyboard("{Escape}");
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
       await settleReads();
-      expect(document.activeElement).toBe(requestChanges);
+      expect(requestChanges).toHaveFocus();
 
       const answerReread = await landHeld(stubs.getArtifact, () =>
         written.resolve(specReview("changes_requested", reason))
@@ -5194,7 +5217,7 @@ test("inside NoTooltips a change request whose dialog was closed hands the focus
       const chip = await scope.findByRole("button", { name: "Changes requested" });
       await waitFor(() => expect(requestChanges.isConnected).toBe(false));
       await settleReads();
-      expect(document.activeElement).toBe(surface === "inside" ? chip : document.body);
+      expect(surface === "inside" ? chip : document.body).toHaveFocus();
       expect(createArtifactReview).toHaveBeenCalledTimes(1);
     } finally {
       written.reject(new Error("the connection dropped"));
@@ -5319,14 +5342,14 @@ test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where i
         await settleReads();
         // The copy is out: the clipboard has not answered, and the fallback has not run.
         expect(copied).toEqual([]);
-        expect(document.activeElement).toBe(button);
+        expect(button).toHaveFocus();
 
         elsewhere.focus();
         refused.reject(new Error("denied"));
         await scope.findByText("Copied");
         await settleReads();
         expect(copied).toEqual(["copy"]);
-        expect(document.activeElement).toBe(surface === "inside" ? elsewhere : document.body);
+        expect(surface === "inside" ? elsewhere : document.body).toHaveFocus();
       } finally {
         undraw(view);
       }
@@ -5366,20 +5389,20 @@ test("inside NoTooltips a copy pressed again by Enter while its write is out mak
         expect(writes).toHaveLength(surface === "inside" ? 1 : 2);
         if (surface === "inside") {
           expect(scope.queryByText("Copied")).toBeNull();
-          expect(document.activeElement).toBe(button);
-          expect(button.getAttribute("aria-disabled")).toBe("true");
+          expect(button).toHaveFocus();
+          expect(button).toHaveAttribute("aria-disabled", "true");
         } else {
-          expect(button.hasAttribute("aria-disabled")).toBe(false);
+          expect(button).not.toHaveAttribute("aria-disabled");
         }
         for (const write of writes) write.resolve();
         await scope.findByText("Copied");
         // The mark goes in the render after the one that draws Copied, so the case waits for it.
-        await waitFor(() => expect(button.hasAttribute("aria-disabled")).toBe(false));
+        await waitFor(() => expect(button).not.toHaveAttribute("aria-disabled"));
         if (surface === "inside") {
           await user.keyboard("{Enter}");
           await waitFor(() => expect(writes).toHaveLength(2));
-          expect(document.activeElement).toBe(button);
-          expect(button.getAttribute("aria-disabled")).toBe("true");
+          expect(button).toHaveFocus();
+          expect(button).toHaveAttribute("aria-disabled", "true");
         }
       } finally {
         for (const write of writes) write.resolve();
@@ -5488,7 +5511,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
             expectRefusedHoldingFocus(rebuild);
           } else {
             expectDisabledAsOnMain(rebuild);
-            expect(document.activeElement).toBe(document.body);
+            expect(document.body).toHaveFocus();
           }
           expect(confirm).toHaveBeenCalledTimes(1);
           expect(rebuildArtifact).toHaveBeenCalledTimes(1);
@@ -5513,7 +5536,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
             expect(rebuild.textContent).toBe("Rebuilding…");
           } else {
             // The rebuild stopped pending as it landed, before its read.
-            expect(rebuild.hasAttribute("disabled")).toBe(false);
+            expect(rebuild).not.toHaveAttribute("disabled");
             expect(rebuild.textContent).toBe("Rebuild from the latest version");
           }
 
@@ -5524,7 +5547,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
           });
           await waitFor(() => expect(rebuild.isConnected).toBe(false));
           await settleReads();
-          expect(document.activeElement).toBe(reader === "waits" ? document.body : elsewhere);
+          expect(reader === "waits" ? document.body : elsewhere).toHaveFocus();
           expect(confirm).toHaveBeenCalledTimes(1);
           expect(rebuildArtifact).toHaveBeenCalledTimes(1);
         } finally {
@@ -5595,7 +5618,7 @@ async function escapeInFieldBox(field: IssueField, label: string): Promise<void>
   );
   try {
     const box = within(view.container).getByRole("textbox", { name: label });
-    await waitFor(() => expect(document.activeElement).toBe(box));
+    await waitFor(() => expect(box).toHaveFocus());
 
     await user.keyboard("{Escape}");
     expect(within(view.container).queryByRole("textbox", { name: label })).toBeNull();
@@ -5696,7 +5719,7 @@ test("inside NoTooltips an editor's Save and Cancel keep the focus while its sav
     await user.keyboard("{Enter}");
     await settleReads();
     expect(submits).toBe(1);
-    expect(document.activeElement).toBe(box);
+    expect(box).toHaveFocus();
 
     cancel.focus();
     expectRefusedHoldingFocus(cancel);
@@ -5706,8 +5729,8 @@ test("inside NoTooltips an editor's Save and Cancel keep the focus while its sav
     expectRefusedHoldingFocus(cancel);
 
     saved.resolve();
-    await waitFor(() => expect(cancel.hasAttribute("aria-disabled")).toBe(false));
-    expect(save.hasAttribute("aria-disabled")).toBe(false);
+    await waitFor(() => expect(cancel).not.toHaveAttribute("aria-disabled"));
+    expect(save).not.toHaveAttribute("aria-disabled");
     await user.keyboard("{Enter}");
     expect(cancels).toBe(1);
   } finally {
@@ -5748,10 +5771,10 @@ test("inside NoTooltips Escape on an editor's Save or Cancel closes the editor a
       try {
         const scope = within(view.container);
         const box = scope.getByRole("textbox", { name: label });
-        await waitFor(() => expect(document.activeElement).toBe(box));
+        await waitFor(() => expect(box).toHaveFocus());
         const button = scope.getByRole("button", { name: pressed });
         await act(async () => button.focus());
-        expect(document.activeElement).toBe(button);
+        expect(button).toHaveFocus();
 
         await user.keyboard("{Escape}");
         expect(closed).toEqual(["editor"]);
@@ -5798,7 +5821,7 @@ const DRAFT_CONTROLS: readonly DraftControl[] = [
         const box = within(view.container).getByRole("textbox", {
           name: label,
         }) as HTMLInputElement;
-        await waitFor(() => expect(document.activeElement).toBe(box));
+        await waitFor(() => expect(box).toHaveFocus());
         await user.clear(box);
         await user.keyboard(draft);
         return box;
@@ -5817,7 +5840,7 @@ const DRAFT_CONTROLS: readonly DraftControl[] = [
         name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
       });
       // The sheet's first focus lands on the row's text before the case presses anything.
-      await waitFor(() => expect(document.activeElement).toBe(none));
+      await waitFor(() => expect(none).toHaveFocus());
       await settleReads();
       await user.keyboard("{Enter}");
       const box = scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
@@ -5855,14 +5878,14 @@ test("an Escape that ends an IME composition leaves each open control and its dr
     try {
       const field = await control.open(view, user, control.draft);
       expect(field.value).toBe(control.draft);
-      expect(document.activeElement).toBe(field);
+      expect(field).toHaveFocus();
 
       // user-event has no form for this: it cannot mark a key as an IME composition.
       fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
       await settleReads();
       expect(control.fieldOf(view)).toBe(field);
       expect(field.value).toBe(control.draft);
-      expect(document.activeElement).toBe(field);
+      expect(field).toHaveFocus();
       expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([false]);
       expect(reached).toHaveLength(1);
       expect(closed).toEqual([]);
@@ -5904,7 +5927,7 @@ test("the route and parent editors draw the page's field, with a border and a fo
     try {
       const scope = within(view.container);
       const box = scope.getByRole("textbox", { name: label });
-      await waitFor(() => expect(document.activeElement).toBe(box));
+      await waitFor(() => expect(box).toHaveFocus());
       expect(classOf(box)).toEqual(
         expect.arrayContaining([
           "border",
@@ -5977,7 +6000,7 @@ test("the route and parent editors name their box without drawing the row's labe
     const view = draw(<OpenFieldForm field={field} onClose={() => undefined} />, "inside");
     try {
       const box = within(view.container).getByRole("textbox", { name: label });
-      await waitFor(() => expect(document.activeElement).toBe(box));
+      await waitFor(() => expect(box).toHaveFocus());
       const labels = [...view.container.querySelectorAll(`label[for="${box.id}"]`)];
       expect(labels.map((element) => element.textContent)).toEqual([label]);
       expect(labels.map((element) => classOf(element).includes("sr-only"))).toEqual([true]);
@@ -6037,6 +6060,8 @@ function answerBoxOf(scope: CardScope): HTMLTextAreaElement {
   return scope.getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement;
 }
 
+/** The option `name`, once drawn: its label is Markdown (`MarkdownBody`), unnamed until the lazy
+ *  Markdown engine loads. */
 async function radioOf(scope: CardScope, name: string): Promise<HTMLInputElement> {
   return (await scope.findByRole("radio", { name })) as HTMLInputElement;
 }
@@ -6051,7 +6076,7 @@ async function offerToAskBack(
   await user.keyboard("{Control>}{Enter}{/Control}");
   const instead = await scope.findByRole("button", { name: "Ask back instead" });
   // Ask back instead takes the focus as it is drawn, on both sides of `NoTooltips`.
-  expect(document.activeElement).toBe(instead);
+  expect(instead).toHaveFocus();
   return { anyway: scope.getByRole("button", { name: "Answer with it anyway" }), instead };
 }
 
@@ -6081,7 +6106,7 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
       await user.keyboard("more");
       expect(answerBoxOf(scope).value).toBe("Ship it after the freeze");
       await user.keyboard("{Control>}{Enter}{/Control}");
-      expect(document.activeElement).toBe(control);
+      expect(control).toHaveFocus();
     },
     ask: { options: [] },
     name: "answer box",
@@ -6203,15 +6228,15 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
  *  other control by its own. */
 function expectAskControlRefusedHoldingFocus(control: HTMLElement): void {
   if (control instanceof HTMLTextAreaElement) {
-    expect(document.activeElement).toBe(control);
-    expect(control.hasAttribute("readonly")).toBe(true);
-    expect(control.hasAttribute("disabled")).toBe(false);
+    expect(control).toHaveFocus();
+    expect(control).toHaveAttribute("readonly");
+    expect(control).not.toHaveAttribute("disabled");
     return;
   }
   if (control instanceof HTMLInputElement) {
-    expect(document.activeElement).toBe(control);
-    expect(control.closest("fieldset")?.getAttribute("aria-disabled")).toBe("true");
-    expect(control.hasAttribute("disabled")).toBe(false);
+    expect(control).toHaveFocus();
+    expect(control.closest("fieldset")).toHaveAttribute("aria-disabled", "true");
+    expect(control).not.toHaveAttribute("disabled");
     return;
   }
   expectRefusedHoldingFocus(control);
@@ -6220,16 +6245,18 @@ function expectAskControlRefusedHoldingFocus(control: HTMLElement): void {
 /** Outside `NoTooltips`, the AskCard control is `disabled` alone, as on `main`. */
 function expectAskControlDisabledAsOnMain(control: HTMLElement): void {
   expectDisabledAsOnMain(control);
-  expect(control.hasAttribute("readonly")).toBe(false);
+  expect(control).not.toHaveAttribute("readonly");
+  // jest-dom: a control outside any fieldset passes here, and the matcher fails on no element.
   expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
 }
 
 /** Once its write has failed, the AskCard control is still drawn and takes a press again. */
 function expectAskControlFree(control: HTMLElement): void {
   expect(control.isConnected).toBe(true);
-  expect(control.hasAttribute("disabled")).toBe(false);
-  expect(control.hasAttribute("aria-disabled")).toBe(false);
-  expect(control.hasAttribute("readonly")).toBe(false);
+  expect(control).not.toHaveAttribute("disabled");
+  expect(control).not.toHaveAttribute("aria-disabled");
+  expect(control).not.toHaveAttribute("readonly");
+  // jest-dom: a control outside any fieldset passes here, and the matcher fails on no element.
   expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
 }
 
@@ -6296,7 +6323,7 @@ for (const control of ASK_CARD_CONTROLS) {
             expectAskControlRefusedHoldingFocus(pressed);
           } else {
             expectAskControlDisabledAsOnMain(pressed);
-            expect(document.activeElement).toBe(row);
+            expect(row).toHaveFocus();
           }
 
           if (write === "fails") {
@@ -6306,7 +6333,7 @@ for (const control of ASK_CARD_CONTROLS) {
             await scope.findByRole("alert");
             await settleReads();
             expectAskControlFree(pressed);
-            if (surface === "inside") expect(document.activeElement).toBe(pressed);
+            if (surface === "inside") expect(pressed).toHaveFocus();
             continue;
           }
           if (control.write === "answer") {
@@ -6319,7 +6346,7 @@ for (const control of ASK_CARD_CONTROLS) {
             await waitFor(() => expect(answerBoxOf(scope).value).toBe(""));
           }
           await settleReads();
-          expect(document.activeElement).toBe(row);
+          expect(row).toHaveFocus();
           expect(sent).toHaveBeenCalledTimes(1);
         } finally {
           answerAsk.mockRestore();
@@ -6364,7 +6391,7 @@ test("inside NoTooltips AskCard's Answer leaves a focus the reader moved elsewhe
       await waitFor(() => expect(view.container.querySelector("[data-ask-answer]")).toBeNull());
       await settleReads();
       expect(answer.isConnected).toBe(false);
-      expect(document.activeElement).toBe(elsewhere);
+      expect(elsewhere).toHaveFocus();
       expect(answerAsk).toHaveBeenCalledTimes(1);
     } finally {
       answerAsk.mockRestore();
@@ -6406,7 +6433,7 @@ function recordFocusMoves(): FocusMoves {
 /** Once the ask is read again, the focus moved once, to `row`, inside `NoTooltips`, and not at
  *  all outside it, where it was on the row already. */
 function expectOneMoveToRow(focus: FocusMoves, row: HTMLElement, surface: Surface): void {
-  expect(document.activeElement).toBe(row);
+  expect(row).toHaveFocus();
   expect(focus.moved).toHaveLength(surface === "inside" ? 1 : 0);
   if (surface === "inside") expect(focus.moved[0]).toBe(row);
 }
@@ -6415,8 +6442,8 @@ function expectOneMoveToRow(focus: FocusMoves, row: HTMLElement, surface: Surfac
  *  which would drop the focus in a browser. */
 function expectAnswerBoxReadOnly(scope: CardScope): void {
   const box = answerBoxOf(scope);
-  expect(box.hasAttribute("readonly")).toBe(true);
-  expect(box.hasAttribute("disabled")).toBe(false);
+  expect(box).toHaveAttribute("readonly");
+  expect(box).not.toHaveAttribute("disabled");
 }
 
 // An answer Dispatch made and lost its answer to (`409 KEY_COMMITTED`) lands with no body: the
@@ -6451,7 +6478,7 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
         expectRefusedHoldingFocus(answer);
       } else {
         expectAskControlDisabledAsOnMain(answer);
-        expect(document.activeElement).toBe(row);
+        expect(row).toHaveFocus();
       }
 
       // The answer lands with no body, and the read of the ask after it is held.
@@ -6471,9 +6498,9 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
         expectAnswerBoxReadOnly(scope);
       } else {
         // The write stopped pending as it landed, before its read.
-        expect(answer.hasAttribute("disabled")).toBe(false);
-        expect(answer.hasAttribute("aria-disabled")).toBe(false);
-        expect(document.activeElement).toBe(row);
+        expect(answer).not.toHaveAttribute("disabled");
+        expect(answer).not.toHaveAttribute("aria-disabled");
+        expect(row).toHaveFocus();
       }
       expect(focus.moved).toHaveLength(0);
 
@@ -6525,7 +6552,7 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
         expectRefusedHoldingFocus(askBack);
       } else {
         expectAskControlDisabledAsOnMain(askBack);
-        expect(document.activeElement).toBe(row);
+        expect(row).toHaveFocus();
       }
 
       // The clarification lands and empties the box, and the read of the ask after it is held.
@@ -6541,14 +6568,14 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
         expectAnswerBoxReadOnly(scope);
       } else {
         expectAskControlDisabledAsOnMain(askBack);
-        expect(document.activeElement).toBe(row);
+        expect(row).toHaveFocus();
       }
       expect(focus.moved).toHaveLength(0);
 
       answerReread(threadOf(ask));
-      await waitFor(() => expect(askBack.hasAttribute("disabled")).toBe(true));
+      await waitFor(() => expect(askBack).toHaveAttribute("disabled"));
       await settleReads();
-      expect(askBack.hasAttribute("aria-disabled")).toBe(false);
+      expect(askBack).not.toHaveAttribute("aria-disabled");
       expectOneMoveToRow(focus, row, surface);
       expect(createComment).toHaveBeenCalledTimes(1);
     } finally {
@@ -6589,7 +6616,7 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
         expectRefusedHoldingFocus(instead);
       } else {
         expectAskControlDisabledAsOnMain(instead);
-        expect(document.activeElement).toBe(row);
+        expect(row).toHaveFocus();
       }
 
       // The clarification lands and closes the choice, and the read of the ask after it is held.
@@ -6598,8 +6625,8 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
       expect(answerBoxOf(scope).value).toBe("");
       if (surface === "inside") {
         expect(anyway.isConnected).toBe(true);
-        expect(anyway.getAttribute("aria-disabled")).toBe("true");
-        expect(anyway.hasAttribute("disabled")).toBe(false);
+        expect(anyway).toHaveAttribute("aria-disabled", "true");
+        expect(anyway).not.toHaveAttribute("disabled");
         expectRefusedHoldingFocus(instead);
         await user.keyboard("{Enter}");
         await settleReads();
@@ -6608,7 +6635,7 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
         expectAnswerBoxReadOnly(scope);
       } else {
         expect(instead.isConnected).toBe(false);
-        expect(document.activeElement).toBe(row);
+        expect(row).toHaveFocus();
       }
       expect(focus.moved).toHaveLength(0);
 
@@ -6662,17 +6689,17 @@ test("outside NoTooltips AskCard sends an answer pressed while the ask is read a
         await user.click(answer);
         await settleReads();
         expect(answerAsk).not.toHaveBeenCalled();
-        expect(answer.getAttribute("aria-disabled")).toBe("true");
+        expect(answer).toHaveAttribute("aria-disabled", "true");
         answerReread(threadOf(ask));
-        await waitFor(() => expect(answer.hasAttribute("aria-disabled")).toBe(false));
+        await waitFor(() => expect(answer).not.toHaveAttribute("aria-disabled"));
         await settleReads();
         await user.click(answer);
         await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
       } else {
         // Nothing refuses while the read is out, and a press sends the answer then.
-        expect(answer.hasAttribute("disabled")).toBe(false);
-        expect(answer.hasAttribute("aria-disabled")).toBe(false);
-        expect(answerBoxOf(scope).hasAttribute("readonly")).toBe(false);
+        expect(answer).not.toHaveAttribute("disabled");
+        expect(answer).not.toHaveAttribute("aria-disabled");
+        expect(answerBoxOf(scope)).not.toHaveAttribute("readonly");
         await user.click(answer);
         await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
         answerReread(threadOf(ask));

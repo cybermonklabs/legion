@@ -112,7 +112,7 @@ test("the issue's tablist wraps its tabs rather than scrolling them, and the key
   try {
     const tablist = screen.getByRole("tablist", { name: "Issue detail" });
     expect(tablist).toHaveClass("flex-wrap");
-    expect(tablist.className).not.toMatch(/overflow-x-(auto|scroll)/);
+    expect(tablist).not.toHaveClass(/overflow-x-(auto|scroll)/);
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "Spec",
       "Verification",

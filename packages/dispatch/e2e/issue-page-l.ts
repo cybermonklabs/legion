@@ -8,11 +8,13 @@ import {
   createMessage,
   createProject,
   getArtifact,
+  type RowKey,
   recordCheckResult,
 } from "./api";
 import { marginShell } from "./issue-page";
 import { focusRow, READER, recorderActor, rowAct } from "./issue-page-g";
 import { onScreen } from "./issue-page-i";
+import { rowKey } from "./test";
 
 /**
  * What the browser rows of the page's writing (the spec file
@@ -221,8 +223,12 @@ export function panelEntry(page: Page, words: string): Locator {
 // The seeds.
 // ---------------------------------------------------------------------------------------------
 
-/** The project every seed of this file writes its issues in. */
-const PROJECT = "BOX";
+/** The project every seed of this file writes its issues in: the row's own (`rowKey`,
+ *  e2e/test.ts), beside what the rows before it wrote. Within a phase of a row every call
+ *  answers the same key, so `seedUnreadIssue` writes in the project `seedFortyComments` made. */
+function boxProject(): RowKey {
+  return rowKey("BOX");
+}
 
 /** The second login every write of the read mark's seeds is made as, so each is unread for the
  *  reader the rows sign in as (alice). */
@@ -267,9 +273,10 @@ export interface FortyCommentsSeed {
  * for `a`.
  */
 export async function seedFortyComments(): Promise<FortyCommentsSeed> {
-  await createProject({ key: PROJECT, name: "The box at the foot" });
+  const project = boxProject();
+  await createProject({ key: project, name: "The box at the foot" });
   const issue = await createIssue(
-    { force: true, project: PROJECT, title: "Forty comments run past the screen" },
+    { force: true, project, title: "Forty comments run past the screen" },
     { login: WRITER }
   );
   const question = await createAsk(
@@ -289,7 +296,7 @@ export async function seedFortyComments(): Promise<FortyCommentsSeed> {
  *  shorter than the screen. */
 export async function seedUnreadIssue(title: string, spec?: string): Promise<string> {
   const issue = await createIssue(
-    { force: true, project: PROJECT, title, ...(spec === undefined ? {} : { spec }) },
+    { force: true, project: boxProject(), title, ...(spec === undefined ? {} : { spec }) },
     { login: WRITER }
   );
   await createComment(
@@ -349,10 +356,11 @@ export interface StatementsSeed {
  * server refuses it.
  */
 export async function seedStatements(): Promise<StatementsSeed> {
-  await createProject({ key: PROJECT, name: "The box at the foot" });
+  const project = boxProject();
+  await createProject({ key: project, name: "The box at the foot" });
   const cited = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: CITED_TITLE,
   });
   const spec = [
@@ -375,7 +383,7 @@ export async function seedStatements(): Promise<StatementsSeed> {
   ].join("\n");
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec,
     title: "A comment on a statement goes beside it",
   });
@@ -402,9 +410,10 @@ export interface PastFiftySeed {
  *  `PAST_FIFTY` one-line comments, all written by `WRITER`, so the issue is unread for the
  *  reader, and no question, so the newest comment is the conversation's current point. */
 export async function seedPastFifty(): Promise<PastFiftySeed> {
-  await createProject({ key: PROJECT, name: "The box at the foot" });
+  const project = boxProject();
+  await createProject({ key: project, name: "The box at the foot" });
   const issue = await createIssue(
-    { force: true, project: PROJECT, title: "More comments than the outline draws at once" },
+    { force: true, project, title: "More comments than the outline draws at once" },
     { login: WRITER }
   );
   const comments = await writeComments(issue.key, PAST_FIFTY, `${PAST_FIFTY}`);
@@ -420,11 +429,12 @@ export interface ResultAfterActSeed {
 /** One issue whose newest act is a comment by `WRITER`, with a result of its one check recorded
  *  after that comment: a check's result is no act of the conversation. */
 export async function seedResultAfterAct(): Promise<ResultAfterActSeed> {
-  await createProject({ key: PROJECT, name: "The box at the foot" });
+  const project = boxProject();
+  await createProject({ key: project, name: "The box at the foot" });
   const issue = await createIssue(
     {
       force: true,
-      project: PROJECT,
+      project,
       spec: ":::requirement{#r-one}\nThe box stays at the foot of the screen.\n:::\n",
       title: "A result recorded after the newest act",
     },
@@ -483,10 +493,11 @@ export interface HistoryTurnsSeed {
 /** One issue holding the entries the panel's Reply and Edit act on: the daemon's message, an
  *  agent's comment no person wrote in, and a comment of the reader's own. */
 export async function seedHistoryTurns(): Promise<HistoryTurnsSeed> {
-  await createProject({ key: PROJECT, name: "The box at the foot" });
+  const project = boxProject();
+  await createProject({ key: project, name: "The box at the foot" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: "The panel's history holds turns a reply can answer",
   });
   const daemonWords = "The planner's session was replaced; its claim moves to the new one.";

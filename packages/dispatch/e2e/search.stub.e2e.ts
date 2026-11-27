@@ -10,15 +10,18 @@
  */
 import { expect } from "@playwright/test";
 
-import { answerAsk, createAsk, createIssue, createProject } from "./api";
+import { answerAsk, createAsk, createIssue, createProject, fixedKey } from "./api";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
 import { stubbed } from "./stub/stub-test";
+
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
 
 /** The file's own three issues - a document, a comment and a message - with the three hits the
  *  term finds among them - the issue whose spec holds the term, that document, and the comment
  *  - and a word that is in none of them. */
 const test = stubbed(async () => ({
-  ...(await seedSearchFixture()),
+  ...(await seedSearchFixture(CORE)),
   hits: 3,
   missing: "zzqqxx",
 }));
@@ -26,7 +29,7 @@ const test = stubbed(async () => ({
 /** The same, with an answered ask whose answer runs past its three-line clamp, so the overflow
  *  check covers the ask hit's status line and answer text as well. */
 const phoneTest = stubbed(async () => {
-  const fixture = await seedSearchFixture();
+  const fixture = await seedSearchFixture(CORE);
   const ask = await createAsk(
     fixture.firstIssueKey,
     {
@@ -45,7 +48,7 @@ const phoneTest = stubbed(async () => {
 
 /** One issue, whose row names the group its hits sit in. */
 const groupTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Conversation view" });
   return { issue: issue.key };
 });

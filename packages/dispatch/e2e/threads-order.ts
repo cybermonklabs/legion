@@ -9,7 +9,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import type { InboxRow } from "../web/src/api/types";
 
-import { setLiveSessions } from "./agents";
+import { type FakeSession, setLiveSessions } from "./agents";
 import {
   answerAsk,
   createAsk,
@@ -19,9 +19,10 @@ import {
   getInbox,
   listComments,
   markThreadRead,
+  type RowKey,
 } from "./api";
 import { inboxPane } from "./inbox-pane";
-import { asSession, THREAD_SESSION } from "./inbox-threads";
+import { asSession } from "./inbox-threads";
 import { settledState } from "./settled";
 export const ROOT = "How far back does a replay go?";
 /** The six replies, oldest first; the newest two are the ones a collapsing surface keeps. */
@@ -63,13 +64,22 @@ export interface Seeded {
  * Three threads of a root and six replies: a comment thread the reader wrote in, an answered
  * ask's thread, and the thread of an answered decision block in an issue's spec. Each comment
  * thread is read through its fourth reply, so replies 5 and 6 are the unread ones.
+ *
+ * `project` is the key of the project the issues are made in, and `session` the session that
+ * writes the asks and the replies: `threads-order.e2e.ts` passes its row's own (`rowKey` and
+ * `rowSessionId` through `rowThreadSession`, e2e/test.ts and e2e/inbox-threads.ts), and the
+ * stubbed rows replay a recording made under `CORE` and the fixed `THREAD_SESSION`.
  */
-export async function seedThreads(replies: readonly string[] = REPLIES): Promise<Seeded> {
-  await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+export async function seedThreads(
+  project: RowKey,
+  session: FakeSession,
+  replies: readonly string[] = REPLIES
+): Promise<Seeded> {
+  await setLiveSessions([session]);
+  await createProject({ key: project, name: "Core" });
 
   const commentIssue = await createIssue({
-    project: "CORE",
+    project,
     spec: "# Replay budget\n\nThe mirror replays the ledger on a cold start.\n",
     title: "Replay budget",
   });
@@ -79,18 +89,18 @@ export async function seedThreads(replies: readonly string[] = REPLIES): Promise
     body: ROOT,
   });
   for (const body of replies) {
-    await createComment(commentIssue.key, { body, reply_to: comment.id }, asSession());
+    await createComment(commentIssue.key, { body, reply_to: comment.id }, asSession(session));
   }
 
-  const askIssue = await createIssue({ project: "CORE", title: "Lease handover" });
+  const askIssue = await createIssue({ project, title: "Lease handover" });
   const ask = await createAsk(
     askIssue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the lease handover?" },
-    asSession()
+    asSession(session)
   );
   await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
   for (const body of replies) {
-    await createComment(askIssue.key, { ask_id: ask.id, body }, asSession());
+    await createComment(askIssue.key, { ask_id: ask.id, body }, asSession(session));
   }
 
   // force, because this fixture files a near copy on purpose: "Replay window" shares its only
@@ -100,14 +110,21 @@ export async function seedThreads(replies: readonly string[] = REPLIES): Promise
   // create goes in forced rather than the two texts being pulled apart.
   const blockIssue = await createIssue({
     force: true,
-    project: "CORE",
+    project,
     spec: decisionSpec,
     title: "Replay window",
   });
-  const block = await indexedRow((row) => row.block_id === DECISION_BLOCK);
+  // The Inbox read is every open question of the stack, and a block id is no key of its own
+  // there: it lists every open `replay-window` block an earlier row of the worker seeded
+  // (inbox-pane-scroll.ts's documents hold one, as does any earlier run of this seed that stopped
+  // before answering its own), and a comment naming another owner's ask is refused. So the row
+  // is found by this issue's key as well as by its block.
+  const block = await indexedRow(
+    (row) => row.block_id === DECISION_BLOCK && row.issue_key === blockIssue.key
+  );
   await answerAsk(block.id, { expected_edited_at: null, selected: ["The last hour"] });
   for (const body of replies) {
-    await createComment(blockIssue.key, { ask_id: block.id, body }, asSession());
+    await createComment(blockIssue.key, { ask_id: block.id, body }, asSession(session));
   }
 
   return {

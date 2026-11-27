@@ -130,9 +130,10 @@ test("a claimed issue names its holder and releases the claim from Details", asy
       "/agents/session-one/live"
     );
     await waitFor(() =>
-      expect(
-        chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
-      ).toBe("running")
+      expect(chip.querySelector('[data-agent-name="session-one"]')).toHaveAttribute(
+        "data-agent-state",
+        "running"
+      )
     );
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     await view.user.click(screen.getByRole("button", { name: "Release the claim on CORE-1" }));
@@ -158,9 +159,10 @@ test("a holder the registry no longer lists reads as not running", async () => {
     // "not running" is drawn, not hovered: the chip carries no tooltip.
     expect(screen.queryByTitle(/no longer running/)).toBeNull();
     const chip = screen.getByTestId("issue-claim");
-    expect(
-      chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
-    ).toBe("not-running");
+    expect(chip.querySelector('[data-agent-name="session-one"]')).toHaveAttribute(
+      "data-agent-state",
+      "not-running"
+    );
     expect(within(chip).getByRole("img", { name: "Not running" })).toBeDefined();
   } finally {
     view.unmount();
@@ -327,7 +329,7 @@ test("Release keeps the focus while its release is out, refuses a press, and a s
         ANSWER_LINES.saving_release
       )
     );
-    expect(document.activeElement, "Release lost the focus while its release is out").toBe(button);
+    expect(button, "Release lost the focus while its release is out").toHaveFocus();
     expect(button, "Release does not refuse a press while its release is out").toHaveAttribute(
       "aria-disabled",
       "true"
@@ -384,10 +386,7 @@ test("the failed release's Retry keeps the focus while the release is out and fa
       retryOfRelease(),
       "the line and its Retry went while the release they sent again is out"
     ).toBe(retry);
-    expect(
-      document.activeElement,
-      "Retry lost the focus while the release it sent again is out"
-    ).toBe(retry);
+    expect(retry, "Retry lost the focus while the release it sent again is out").toHaveFocus();
     expect(
       retry,
       "Retry does not refuse a press while the release it sent again is out"
@@ -406,9 +405,7 @@ test("the failed release's Retry keeps the focus while the release is out and fa
       "the second failure was not drawn afresh, so a screen reader would not say it"
     ).not.toBe(failed);
     expect(retryOfRelease(), "the line came back with another Retry").toBe(retry);
-    expect(document.activeElement, "Retry lost the focus when the release failed again").toBe(
-      retry
-    );
+    expect(retry, "Retry lost the focus when the release failed again").toHaveFocus();
     expect(retry, "Retry still refuses a press after the release failed again").not.toHaveAttribute(
       "aria-disabled",
       "true"
@@ -421,9 +418,9 @@ test("the failed release's Retry keeps the focus while the release is out and fa
     await act(async () => landed.resolve({ ...base, claim: null }));
     const none = await screen.findByText(CONTROL_LABELS.none);
     expect(
-      document.activeElement,
+      none,
       "the release landed, and the focus fell to the page rather than to the row's None"
-    ).toBe(none);
+    ).toHaveFocus();
   } finally {
     stopBlurring();
     view.unmount();
@@ -463,16 +460,16 @@ test("a release that lands with no answer hands Retry's focus to Release, and Re
       ).toBeNull()
     );
     expect(
-      document.activeElement,
+      control,
       "the release landed with no answer, and the focus fell to the page rather than to Release"
-    ).toBe(control);
+    ).toHaveFocus();
 
     view.drawClaim(null);
     const none = await screen.findByText(CONTROL_LABELS.none);
     expect(
-      document.activeElement,
+      none,
       "the claim was read gone, and the focus fell to the page rather than to the row's None"
-    ).toBe(none);
+    ).toHaveFocus();
   } finally {
     stopBlurring();
     view.unmount();
@@ -631,16 +628,17 @@ test("a claim made elsewhere while the focus is on the row's None leaves the foc
     await view.user.keyboard("{Enter}");
     const none = await screen.findByText(CONTROL_LABELS.none);
     await waitFor(() =>
-      expect(document.activeElement, "the release landed, and the focus is not on None").toBe(none)
+      expect(none, "the release landed, and the focus is not on None").toHaveFocus()
     );
 
-    view.drawClaim(reviewerClaim);
-    const releaseNew = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
-    await settleFocus();
+    const releaseNew = await settleFocus(async () => {
+      view.drawClaim(reviewerClaim);
+      return screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    });
     expect(
-      document.activeElement,
+      document.body,
       "another session claimed the issue while the focus was on the row's None, and the focus did not stay on the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(releaseNew, "the new claim's Release took the focus").not.toHaveFocus();
   } finally {
     stopBlurring();
@@ -658,13 +656,14 @@ test("a release made elsewhere while the focus is on Release leaves the focus on
     const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
     act(() => control.focus());
 
-    view.drawClaim(null);
-    const none = await screen.findByText(CONTROL_LABELS.none);
-    await settleFocus();
+    const none = await settleFocus(async () => {
+      view.drawClaim(null);
+      return screen.findByText(CONTROL_LABELS.none);
+    });
     expect(
-      document.activeElement,
+      document.body,
       "another session released the claim while the focus was on Release, and the focus did not stay on the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(none, "the row's None took the focus").not.toHaveFocus();
   } finally {
     stopBlurring();
@@ -684,15 +683,16 @@ test("a release of the reader's that failed hands nothing on once the claim is r
     await view.user.keyboard("{Enter}");
     await screen.findByRole("alert");
     await waitFor(() => expect(control).toHaveTextContent(CONTROL_LABELS.release_claim));
-    expect(document.activeElement, "Release lost the focus as its release failed").toBe(control);
+    expect(control, "Release lost the focus as its release failed").toHaveFocus();
 
-    view.drawClaim(null);
-    const none = await screen.findByText(CONTROL_LABELS.none);
-    await settleFocus();
+    const none = await settleFocus(async () => {
+      view.drawClaim(null);
+      return screen.findByText(CONTROL_LABELS.none);
+    });
     expect(
-      document.activeElement,
+      document.body,
       "another session released the claim after the reader's release failed, and the focus did not stay on the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(none, "the row's None took the focus").not.toHaveFocus();
   } finally {
     stopBlurring();
@@ -722,13 +722,14 @@ test("a release whose claim went without the focus answers no later release made
     view.drawClaim(claim);
     const again = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
     act(() => again.focus());
-    view.drawClaim(null);
-    const none = await screen.findByText(CONTROL_LABELS.none);
-    await settleFocus();
+    const none = await settleFocus(async () => {
+      view.drawClaim(null);
+      return screen.findByText(CONTROL_LABELS.none);
+    });
     expect(
-      document.activeElement,
+      document.body,
       "another session released the claim drawn again, and the focus did not stay on the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(none, "the row's None took the focus").not.toHaveFocus();
   } finally {
     stopBlurring();
@@ -757,26 +758,28 @@ test("the failed release's Retry, the claim taken again elsewhere while its rele
     await view.user.keyboard("{Enter}");
     await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
 
-    view.drawClaim(reviewerClaim);
-    await waitFor(() =>
-      expect(retry.isConnected, "Retry is still drawn beside the new claim").toBe(false)
-    );
-    const releaseNew = screen.getByRole("button", { name: "Release the claim on CORE-1" });
-    await settleFocus();
+    const releaseNew = await settleFocus(async () => {
+      view.drawClaim(reviewerClaim);
+      await waitFor(() =>
+        expect(retry.isConnected, "Retry is still drawn beside the new claim").toBe(false)
+      );
+      return screen.getByRole("button", { name: "Release the claim on CORE-1" });
+    });
     expect(
-      document.activeElement,
+      document.body,
       "another session claimed the issue again while the focus was on Retry, and the focus did not stay on the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(releaseNew, "the new claim's Release took the focus").not.toHaveFocus();
 
     act(() => releaseNew.focus());
-    await act(async () => out.resolve({ ...base, claim: null }));
-    const none = await screen.findByText(CONTROL_LABELS.none);
-    await settleFocus();
+    const none = await settleFocus(async () => {
+      await act(async () => out.resolve({ ...base, claim: null }));
+      return screen.findByText(CONTROL_LABELS.none);
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the Retry's release took the new claim away, and the focus did not stay on the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(none, "the row's None took the focus").not.toHaveFocus();
   } finally {
     stopBlurring();
@@ -803,17 +806,16 @@ test("a release whose claim was taken again elsewhere before it landed moves no 
 
     view.drawClaim(reviewerClaim);
     await waitFor(() => expect(screen.getByTestId("issue-claim")).toHaveTextContent("Reviewer"));
-    expect(document.activeElement, "Release lost the focus as the new claim was drawn").toBe(
-      control
-    );
+    expect(control, "Release lost the focus as the new claim was drawn").toHaveFocus();
 
-    await act(async () => out.resolve({ ...base, claim: null }));
-    const none = await screen.findByText(CONTROL_LABELS.none);
-    await settleFocus();
+    const none = await settleFocus(async () => {
+      await act(async () => out.resolve({ ...base, claim: null }));
+      return screen.findByText(CONTROL_LABELS.none);
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the reader's release took away the claim made after they pressed it, and the focus did not stay on the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(none, "the row's None took the focus").not.toHaveFocus();
   } finally {
     stopBlurring();
@@ -841,9 +843,9 @@ test("a claim read gone while the reader's release is out hands Release's focus 
     const none = await screen.findByText(CONTROL_LABELS.none);
     await waitFor(() =>
       expect(
-        document.activeElement,
+        none,
         "the claim was read gone while the reader's release was out, and the focus did not go to the row's None"
-      ).toBe(none)
+      ).toHaveFocus()
     );
   } finally {
     stopBlurring();
@@ -910,11 +912,8 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
       `${CONTROL_LABELS.unresponsive} ${CONTROL_LABELS.unresponsive_since}`
     );
     expect(
-      within(stalled)
-        .getByTestId("issue-claim-unresponsive-since")
-        .querySelector("time")
-        ?.getAttribute("datetime")
-    ).toBe(new Date(lastSeen).toISOString());
+      within(stalled).getByTestId("issue-claim-unresponsive-since").querySelector("time")
+    ).toHaveAttribute("datetime", new Date(lastSeen).toISOString());
     // The wait the chip names is the sum the server refuses by, not a guess of its own, and the
     // issue is not free until then.
     const takeableAt = lastSeen + ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS;
@@ -925,13 +924,15 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
         timeStyle: "short",
       })}`
     );
-    expect(free.querySelector("time")?.getAttribute("datetime")).toBe(
+    expect(free.querySelector("time")).toHaveAttribute(
+      "datetime",
       new Date(takeableAt).toISOString()
     );
     const chip = screen.getByTestId("issue-claim");
-    expect(
-      chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
-    ).toBe("unresponsive");
+    expect(chip.querySelector('[data-agent-name="session-one"]')).toHaveAttribute(
+      "data-agent-state",
+      "unresponsive"
+    );
     // That the holder missed its heartbeats without ending, which a tooltip held, is the name of
     // the holder's dot.
     expect(
@@ -939,7 +940,7 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
         name: /^Unresponsive · .*missed its heartbeats without ending/u,
       })
     ).toBeDefined();
-    expect(chip.getAttribute("title"), "the chip in Details carries a tooltip").toBeNull();
+    expect(chip, "the chip in Details carries a tooltip").not.toHaveAttribute("title");
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -973,10 +974,11 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     const chip = screen.getByTestId("issue-claim");
-    expect(chip.getAttribute("title")).toBeNull();
-    expect(
-      chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
-    ).toBe("unresponsive");
+    expect(chip).not.toHaveAttribute("title");
+    expect(chip.querySelector('[data-agent-name="session-one"]')).toHaveAttribute(
+      "data-agent-state",
+      "unresponsive"
+    );
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -1012,7 +1014,8 @@ test("the moment the issue comes free is drawn as a date and a time, so the chip
         timeStyle: "short",
       })}`
     );
-    expect(free.querySelector("time")?.getAttribute("datetime")).toBe(
+    expect(free.querySelector("time")).toHaveAttribute(
+      "datetime",
       new Date(takeableAt).toISOString()
     );
   } finally {
@@ -1043,13 +1046,10 @@ test("the issue read's own holder_state outranks an agent list that does not nam
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     // Both moments on the chip are the read's own, not the registry's.
     expect(
-      within(stalled)
-        .getByTestId("issue-claim-unresponsive-since")
-        .querySelector("time")
-        ?.getAttribute("datetime")
-    ).toBe(lastSeen);
+      within(stalled).getByTestId("issue-claim-unresponsive-since").querySelector("time")
+    ).toHaveAttribute("datetime", lastSeen);
     const free = within(stalled).getByTestId("issue-claim-takeable");
-    expect(free.querySelector("time")?.getAttribute("datetime")).toBe(takeableAt);
+    expect(free.querySelector("time")).toHaveAttribute("datetime", takeableAt);
     expect(free.textContent).toBe(
       `, ${CONTROL_LABELS.takeable} ${new Date(takeableAt).toLocaleString(undefined, {
         dateStyle: "short",
@@ -1057,9 +1057,9 @@ test("the issue read's own holder_state outranks an agent list that does not nam
       })}`
     );
     expect(
-      screen.getByTestId("issue-claim").getAttribute("title"),
+      screen.getByTestId("issue-claim"),
       "the chip in Details carries a tooltip"
-    ).toBeNull();
+    ).not.toHaveAttribute("title");
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -1080,7 +1080,7 @@ test("a claim whose registry could not be read says the running state is unknown
     expect(screen.queryByTestId("issue-claim-lapsed")).toBeNull();
     expect(screen.queryByText("not running")).toBeNull();
     // Drawn, not hovered: this surface raises no tooltip at all.
-    expect(screen.getByTestId("issue-claim").getAttribute("title")).toBeNull();
+    expect(screen.getByTestId("issue-claim")).not.toHaveAttribute("title");
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -1097,8 +1097,9 @@ test("a host that raises a tooltip keeps the unread registry in the title and dr
   const view = claimRow({ ...base, claim }, {}, { tooltips: true });
   try {
     await waitFor(() =>
-      expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
-        "Couldn't check whether that session is still running"
+      expect(screen.getByTestId("issue-claim")).toHaveAttribute(
+        "title",
+        expect.stringContaining("Couldn't check whether that session is still running")
       )
     );
     expect(screen.queryByTestId("issue-claim-unchecked")).toBeNull();

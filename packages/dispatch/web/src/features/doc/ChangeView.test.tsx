@@ -33,7 +33,7 @@ test("a word change inside a paragraph marks the words alone", () => {
   );
   try {
     const changed = within(view.container).getByTestId("change-view").firstElementChild;
-    expect(changed?.getAttribute("data-change")).toBe("changed");
+    expect(changed).toHaveAttribute("data-change", "changed");
     expect(marks(changed)).toEqual(["flag", "canary"]);
     expect(changed?.textContent).toBe("The plan ships behind a flagcanary today.");
   } finally {
@@ -90,7 +90,7 @@ test("a list item moved inside its list marks the item alone", () => {
   );
   try {
     const list = view.container.querySelector("[data-change]");
-    expect(list?.getAttribute("data-change")).toBe("changed");
+    expect(list).toHaveAttribute("data-change", "changed");
     expect(blocks(view.container).length).toBe(1);
     expect(marks(list)).toEqual(["Alpha\n- ", "\n- Alpha"]);
     expect(list?.textContent).toContain("Beta\n- Gamma\n- Delta");
@@ -106,7 +106,7 @@ test("a changed table row marks the cell that changed, the table staying one blo
   );
   try {
     const table = view.container.querySelector("[data-change]");
-    expect(table?.getAttribute("data-change")).toBe("changed");
+    expect(table).toHaveAttribute("data-change", "changed");
     expect(blocks(view.container).length).toBe(1);
     expect(marks(table)).toEqual(["1", "2"]);
     expect(table?.textContent).toContain("| Region | Wave |");

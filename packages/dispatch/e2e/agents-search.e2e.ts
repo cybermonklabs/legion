@@ -10,17 +10,21 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import { createAsk, createComment, createIssue, createProject } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 // Three sessions with no field in common, so a match on one field never comes from another: the
-// title, directory and machine each carry a word the other two sessions lack.
+// title, directory and machine each carry a word the other two sessions lack. Each id is the
+// row's own (`rowSessionId`, e2e/test.ts), read when a row names it: Dispatch keeps what a session
+// writes by its id for every person at once, and the page groups and orders a session by that.
 const scrum: FakeSession = {
   capabilities: ["aside"],
   dir: "/workspaces/scrum-bot",
   machine_id: "build-host",
   roles: ["planner"],
-  session_id: "019a1c11-6d4b-7e8a-bf39-4a1b5c8d9e11",
+  get session_id() {
+    return rowSessionId("scrum");
+  },
   title: "Scrum planning",
 };
 const release: FakeSession = {
@@ -28,7 +32,9 @@ const release: FakeSession = {
   dir: "/workspaces/release-writer",
   machine_id: "release-host",
   roles: ["writer"],
-  session_id: "019a1c12-7e5c-7f9b-8a4a-5b2c6d9e0f12",
+  get session_id() {
+    return rowSessionId("release");
+  },
   title: "Release notes",
 };
 const archivist: FakeSession = {
@@ -36,7 +42,9 @@ const archivist: FakeSession = {
   dir: "/workspaces/archive",
   machine_id: "archive-host",
   roles: [],
-  session_id: "019a1c13-8f6d-7a0c-9b5b-6c3d7e0f1a13",
+  get session_id() {
+    return rowSessionId("archivist");
+  },
   title: "Archivist",
 };
 
@@ -46,9 +54,10 @@ const archivist: FakeSession = {
  *  `Active`. Returns the issue key the Scrum session's ask names - the only issue key any
  *  session's ask names. */
 async function seed(): Promise<string> {
+  const core = rowKey("CORE");
   await setLiveSessions([scrum, release, archivist]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Sprint planning" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Sprint planning" });
   await createAsk(
     issue.key,
     { question: "Which sprint?" },
@@ -162,16 +171,20 @@ const stale: FakeSession = {
   last_seen: Date.now() - 45 * 60_000,
   machine_id: "ledger-host",
   roles: [],
-  session_id: "ledger-session",
+  get session_id() {
+    return rowSessionId("ledger");
+  },
   title: "Ledger reconciler",
 };
-// Live but never heard from in Dispatch, so it sits under `Idle`.
+// Live but never heard from in Dispatch under its id, the row's own, so it sits under `Idle`.
 const silent: FakeSession = {
   capabilities: ["aside"],
   dir: "/workspaces/quiet",
   machine_id: "quiet-host",
   roles: [],
-  session_id: "quiet-session",
+  get session_id() {
+    return rowSessionId("quiet");
+  },
   title: "Quiet watcher",
 };
 

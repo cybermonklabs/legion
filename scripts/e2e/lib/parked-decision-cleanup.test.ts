@@ -8,7 +8,8 @@ import { scriptFunctions } from "./script-functions";
 // end (parked-decision-devbox.sh). Each case takes the function from the script by name and runs it
 // under the script's own `set` line, with stubs for the helpers it calls: run_processes, which
 // counts its calls in a file, and note, fail and since. proc_describe, which names each survivor
-// in the failure, is lib/process-tree.sh's own, which the script sources through lib/rig.sh.
+// in the failure, is lib/process-tree.sh's own, which the script sources through lib/rig.sh, and so
+// are the two reads of a process's stat it calls, proc_stat_fields and proc_stat_text.
 const scriptPath = join(import.meta.dir, "..", "parked-decision-devbox.sh");
 const fn = scriptFunctions(scriptPath);
 const tree = scriptFunctions(join(import.meta.dir, "process-tree.sh"));
@@ -32,6 +33,8 @@ run_processes() {
   call=$(wc -l <"$CALLS")
   ${runProcesses}
 }
+${tree("proc_stat_text")}
+${tree("proc_stat_fields")}
 ${tree("proc_describe")}
 ${fn("wait_for_run_processes")}
 wait_for_run_processes ${args}`;

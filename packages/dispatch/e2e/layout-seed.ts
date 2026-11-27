@@ -48,6 +48,7 @@ import {
   createPriority,
   createProject,
   editArtifact,
+  fixedKey,
   getIssue,
   listIssueArtifacts,
   patchIssue,
@@ -448,7 +449,7 @@ export async function seedLayoutStress({
   // The Settings page: a project whose name is 80 characters, the server's cap and production's
   // longest.
   await createProject({
-    key: "STRESS",
+    key: fixedKey("STRESS", "e2e/layout-rule.stub.e2e.ts replays a recording made under it"),
     name: prose(
       "Layout stress project whose name is as long as the longest name a deployment holds",
       80

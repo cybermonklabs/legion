@@ -4,9 +4,10 @@ import {
   dispatchWritingBox,
 } from "@legion/contracts";
 
+import type { Body } from "../web/src/api/paths";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { agentRow } from "./agents";
+import { agentMention, agentRow } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
@@ -35,7 +36,7 @@ import {
   ANCHOR,
   type BoxWorld,
   coveredBoxes,
-  DOOR_ROWS,
+  doorRows,
   expectDeliveryClaim,
   expectHint,
   expectIssueRows,
@@ -43,16 +44,16 @@ import {
   heldRow,
   heldRows,
   keyboardOnly,
-  NO_MATCH,
-  OFF_ISSUE_PERSON,
-  QUERY,
+  noMatch,
+  offIssuePerson,
+  query,
   rowsOfBox,
   SESSION,
-  SESSION_MENTION,
   type SendBox,
   seedArchitecture,
   seedWritingBoxes,
   startHolding,
+  targetTitle,
   walkBox,
 } from "./writing-boxes";
 
@@ -168,24 +169,19 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await field.fill("");
     },
     seed: async () => {
-      await publishAgentStreamFrame(
-        SESSION.session_id,
-        {
-          frames: [
-            {
-              commands: [
-                { description: "Compact the context", name: "compact", source: "builtin" },
-              ],
-              kind: "commands",
-              seq: 1,
-              v: 1,
-            },
-          ],
-          session_id: SESSION.session_id,
-          v: 1,
-        },
-        "replay"
-      );
+      const replay = {
+        frames: [
+          {
+            commands: [{ description: "Compact the context", name: "compact", source: "builtin" }],
+            kind: "commands",
+            seq: 1,
+            v: 1,
+          },
+        ],
+        session_id: SESSION.session_id,
+        v: 1,
+      } satisfies Body<"/api/v1/agents/{session_id}/stream/_test/publish", "post">;
+      await publishAgentStreamFrame(SESSION.session_id, replay, "replay");
     },
   },
   "agents-row-composer": {
@@ -207,7 +203,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // The send has landed once the box holds the issue's own mention of the session again: the
       // composer clears its draft to that seed as it calls `onSent`, which ends any reply. Reply
       // is pressed only then, so the landing cannot take back the reply it starts.
-      await expect(field).toHaveValue(`${SESSION_MENTION} `);
+      await expect(field).toHaveValue(`${agentMention(SESSION)} `);
       // The reply under the message the row shows goes to that thread's target.
       await row.getByRole("button", { exact: true, name: "Reply" }).first().click();
       await expectRow(page, field, "agents-row-composer", "message-reply");
@@ -233,7 +229,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   },
   "architecture-reason": {
     drive: async (page, world) => {
-      await page.goto("/projects/CORE/architecture");
+      await page.goto(`/projects/${world.project}/architecture`);
       await page
         .getByRole("button", { name: /unassigned$/ })
         .first()
@@ -245,8 +241,8 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await walkBox(field, world);
       await expectRow(page, field, "architecture-reason", "architecture-reason");
     },
-    seed: async () => {
-      await seedArchitecture();
+    seed: async (world) => {
+      await seedArchitecture(world.project);
     },
   },
   "ask-answer": {
@@ -269,11 +265,11 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // question back with a party picked in it is a comment on the ask, so the party is told,
       // and the fake listener takes one frame for it carrying the body the reader wrote.
       await keyboardOnly(field);
-      await pickReference(field, `@${QUERY}`, new RegExp(`^${SESSION.title}`));
+      await pickReference(field, `@${query()}`, new RegExp(`^${SESSION.title}`));
       await field.press("End");
       const back = " which window does it replay?";
       await field.pressSequentially(back);
-      const body = `${SESSION_MENTION}${back}`;
+      const body = `${agentMention(SESSION)}${back}`;
       await expect(field).toHaveValue(body);
       await expectSend("ask-answer", "ask-back", body, () =>
         card.getByRole("button", { exact: true, name: "Ask back" }).click()
@@ -327,7 +323,11 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       );
     },
     seed: async (world) => {
-      await answerAsk(world.ask, { expected_edited_at: null, selected: ["Ship"] });
+      await answerAsk(
+        world.ask,
+        { expected_edited_at: null, selected: ["Ship"] },
+        { login: world.reader }
+      );
     },
   },
   broadcast: {
@@ -364,7 +364,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   },
   "create-issue-spec": {
     drive: async (page, world) => {
-      await page.goto("/projects/CORE");
+      await page.goto(`/projects/${world.project}`);
       await page
         .getByRole("complementary", { name: "Navigation" })
         .getByRole("button", { name: "New issue" })
@@ -424,11 +424,12 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await keyboardOnly(editor);
       await page.keyboard.press("Control+End");
       await page.keyboard.press("Enter");
+      const rows = doorRows();
       for (const door of ["[[", "@", "#"] as const) {
-        await page.keyboard.type(`${door}${QUERY}`);
+        await page.keyboard.type(`${door}${query()}`);
         await expect
           .poll(() => pickerRows(list), { message: `the ${door} door's rows` })
-          .toEqual(DOOR_ROWS[door]);
+          .toEqual(rows[door]);
         await clearLine();
       }
       // The editor stores what is typed in it, and the search reads the stored text, so a query
@@ -437,14 +438,12 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // run 44453148990 drew this document's row for `[[zzqqxx`), so the box holds no such probe,
       // and its people rule is held on the rows the picker draws after the search has answered.
       // The document belongs to an issue, so the picker offers that issue's people alone.
+      const login = offIssuePerson();
       const searched = page.waitForResponse((response) => {
         const url = new URL(response.url());
-        return (
-          url.pathname === "/api/v1/search/results" &&
-          url.searchParams.get("q") === OFF_ISSUE_PERSON
-        );
+        return url.pathname === "/api/v1/search/results" && url.searchParams.get("q") === login;
       });
-      await page.keyboard.type(`@${OFF_ISSUE_PERSON}`);
+      await page.keyboard.type(`@${login}`);
       await searched;
       // The rule is read from a list that is open: with no list there are no rows to read.
       await expect(list).toBeVisible();
@@ -455,27 +454,29 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // The pick lands at the caret, written through the editor's own transaction.
       await page.keyboard.type(" then deploy");
       await page.keyboard.press("Home");
-      await page.keyboard.type(`Ship after #${QUERY}`);
-      await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["#"]);
+      await page.keyboard.type(`Ship after #${query()}`);
+      await expect.poll(() => pickerRows(list)).toEqual(rows["#"]);
       await page.keyboard.press("Enter");
       const written = `Ship after dispatch://${world.target} then deploy`;
       await expect
         .poll(async () => (await getArtifactText(world.spec)).markdown, { timeout: 30_000 })
         .toContain(written);
       // The other reader has it, drawn by the name of what it names.
-      await expect(documentEditor(other)).toContainText(`Ship after ${world.target} Zephyr`);
+      await expect(documentEditor(other)).toContainText(
+        `Ship after ${world.target} ${targetTitle()}`
+      );
 
       // A party picked with `@` is stored as the link that names it, not as the characters of
       // one: a document is read far outside this dashboard - `dispatch read`, an export, the Go
       // renderer - and only the link carries the party's name there (R4). The earlier shape
-      // wrote the markdown as text, so the stored document held `\[Zephyr bot]\(dispatch://…)`
-      // and every reader saw the brackets.
+      // wrote the markdown as text, so the stored document held literal escapes before the
+      // brackets and parentheses, and every reader saw the brackets.
       await page.keyboard.press("Control+End");
       await page.keyboard.press("Enter");
-      await page.keyboard.type(`Ask @${QUERY}`);
-      await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["@"]);
+      await page.keyboard.type(`Ask @${query()}`);
+      await expect.poll(() => pickerRows(list)).toEqual(rows["@"]);
       await page.keyboard.press("Enter");
-      const mention = `Ask [@${SESSION.title}](dispatch://agent/${SESSION.session_id})`;
+      const mention = `Ask ${agentMention(SESSION)}`;
       await expect
         .poll(async () => (await getArtifactText(world.spec)).markdown, { timeout: 30_000 })
         .toContain(mention);
@@ -515,7 +516,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   // `comment-edit` uncovered until such an Edit is under the box.
   "issue-page-composer": {
     drive: async (page, world) => {
-      await withIssuePage(page.context(), "alice");
+      await withIssuePage(page.context(), world.reader);
       await page.goto(`/issues/${world.host}/conversation`);
       await expectIssuePageDrawn(page);
       const box = page.getByTestId("issue-composer");
@@ -626,7 +627,11 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   // description. An unwritten description reads as the prompt above the empty editor.
   "priority-description": {
     drive: async (page, world) => {
-      const priority = await createPriority({ owner: "alice", title: "Keep one build" });
+      // The server derives the priority's id from its title.
+      const priority = await createPriority(
+        { owner: world.reader, title: `Keep one build (${world.project})` },
+        { login: world.reader }
+      );
       await page.goto(`/priorities/${priority.id}`);
       await expect(page.getByText("No description is written. Write one below.")).toBeVisible();
       const editor = page.getByRole("textbox", { exact: true, name: "Description" });
@@ -641,22 +646,24 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       };
       await editor.click();
       await keyboardOnly(editor);
+      const rows = doorRows();
       for (const door of ["[[", "@", "#"] as const) {
-        await page.keyboard.type(`${door}${QUERY}`);
+        await page.keyboard.type(`${door}${query()}`);
         await expect
           .poll(() => pickerRows(list), { message: `the ${door} door's rows` })
-          .toEqual(DOOR_ROWS[door]);
+          .toEqual(rows[door]);
         await clearLine();
       }
       // A priority's description is indexed by nothing, so a query nothing answers stays one
       // while the typing in it is stored.
-      await page.keyboard.type(`[[${NO_MATCH}`);
+      await page.keyboard.type(`[[${noMatch()}`);
       await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
       await clearLine();
       // The box writes on no issue, so the picker lists everyone who has signed in.
-      await page.keyboard.type(`@${OFF_ISSUE_PERSON}`);
+      const login = offIssuePerson();
+      await page.keyboard.type(`@${login}`);
       await expect(
-        list.getByRole("option", { name: new RegExp(`^${OFF_ISSUE_PERSON}$`) }),
+        list.getByRole("option", { exact: true, name: login }),
         "a box that writes on no issue lists everyone signed in"
       ).toBeVisible();
       await clearLine();
@@ -665,8 +672,8 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // written as the priority's description.
       await page.keyboard.type(" then deploy");
       await page.keyboard.press("Home");
-      await page.keyboard.type(`Ship after #${QUERY}`);
-      await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["#"]);
+      await page.keyboard.type(`Ship after #${query()}`);
+      await expect.poll(() => pickerRows(list)).toEqual(rows["#"]);
       await page.keyboard.press("Enter");
       const written = `Ship after dispatch://${world.target} then deploy`;
       await expect
@@ -713,13 +720,13 @@ for (const box of coveredBoxes()) {
 
     const world = await seedWritingBoxes();
     await driver.seed?.(world);
-    const alice = await asUser(browser, "alice");
+    const reader = await asUser(browser, world.reader);
     startHolding();
     try {
-      const page = await alice.newPage();
+      const page = await reader.newPage();
       await driver.drive(page, world);
     } finally {
-      await alice.close();
+      await reader.close();
     }
     // Every covered row of the box, a delivering one included, is one its driver held.
     expect(heldRows(), `${box}: the rows its driver held`).toEqual(

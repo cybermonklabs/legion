@@ -10,12 +10,17 @@ import {
   getIssueEvents,
   listAskFollowers,
 } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // Two sessions write to one ask over the API with the agent bearer token: the asker and a
 // replier. Both follow the ask (its answer and replies reach them directly) until a human
 // removes one from the card.
+//
+// Each row reads the card from the reader's Inbox, which from 1280 px draws a card for the
+// selected row alone, its first: this row's question only in a list that holds no other row's.
+// So the reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose project and issue
+// the question waits on, and whose Inbox holds this row's question and no other.
 const asker = { kind: "session" as const, id: "e2e-follow-asker" };
 const replier = { kind: "session" as const, id: "e2e-follow-replier" };
 
@@ -23,8 +28,10 @@ const replier = { kind: "session" as const, id: "e2e-follow-replier" };
 test("the ask card lists every session that wrote to the ask and a human can unfollow one @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Who hears the answer" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Who hears the answer" }, { login: me });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -44,7 +51,7 @@ test("the ask card lists every session that wrote to the ask and a human can unf
     replier.id,
   ]);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   try {
     // The re-follow at the end of the row arrives over the event feed, whose refetch the page
@@ -89,7 +96,7 @@ test("the ask card lists every session that wrote to the ask and a human can unf
       (event) => event.type === "ask.follower_removed"
     );
     expect(removed).toMatchObject({
-      actor: { id: "alice", kind: "user" },
+      actor: { id: me, kind: "user" },
       payload: { ask_id: ask.id, session_id: replier.id },
     });
 
@@ -109,9 +116,14 @@ test("the ask card lists every session that wrote to the ask and a human can unf
 test("the ask card lists the issue's subscribers and removing one cuts the issue subscription", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
   const watcher = "e2e-issue-watcher";
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Who else hears the answer" });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue(
+    { project: core, title: "Who else hears the answer" },
+    { login: me }
+  );
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
@@ -128,7 +140,7 @@ test("the ask card lists the issue's subscribers and removing one cuts the issue
     asker.id,
   ]);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   const page = await alice.newPage();
   try {
     await page.goto("/");

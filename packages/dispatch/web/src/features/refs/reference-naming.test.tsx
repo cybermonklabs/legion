@@ -915,9 +915,7 @@ test("a #id in an Inbox thread subject projects as its question where the row na
   );
   try {
     await waitFor(() =>
-      expect(view.getByRole("button").getAttribute("aria-label")).toBe(
-        "Dismiss: Decide Ship it? now"
-      )
+      expect(view.getByRole("button")).toHaveAttribute("aria-label", "Dismiss: Decide Ship it? now")
     );
     expect(view.getByTestId("line").textContent).toBe("Decide #q2 now");
   } finally {

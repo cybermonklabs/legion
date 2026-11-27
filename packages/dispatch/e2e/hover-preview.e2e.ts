@@ -1,5 +1,5 @@
 import { seedReference } from "./hover-preview";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -11,7 +11,7 @@ import { asUser } from "./users";
 test("on a phone, tapping a reference follows it and never shows a card @phone @phone-only", async ({
   browser,
 }) => {
-  const { source, target } = await seedReference();
+  const { source, target } = await seedReference(rowKey("CORE"));
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();

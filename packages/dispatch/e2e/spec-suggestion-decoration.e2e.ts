@@ -1,6 +1,6 @@
 import { createComment, createIssue, createProject } from "./api";
 import { documentEditor, markSpan } from "./editor";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const original = "the quick brown fox";
@@ -10,9 +10,10 @@ const replacement = "a slow red hound";
 test("an open Spec suggestion decoration shows its replacement without object-valued DOM attributes @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "SUGG", name: "Suggestion decoration" });
+  const sugg = rowKey("SUGG");
+  await createProject({ key: sugg, name: "Suggestion decoration" });
   const issue = await createIssue({
-    project: "SUGG",
+    project: sugg,
     spec: original,
     title: "Render an open suggestion",
   });

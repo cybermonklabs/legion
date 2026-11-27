@@ -405,7 +405,7 @@ test("a made broadcast's row draws its answer's tree, and a refused one draws it
       const preview = madeView.container.querySelector("[data-markdown-preview]");
       await waitFor(() => expect(preview?.textContent).toBe("Made one, as stored."));
       expect(preview?.querySelector("strong")?.textContent).toBe("one");
-      await waitFor(() => expect(preview?.getAttribute("title")).toBe("Made one, as stored."));
+      await waitFor(() => expect(preview).toHaveAttribute("title", "Made one, as stored."));
       expect(parses.count()).toBe(0);
     } finally {
       madeView.unmount();

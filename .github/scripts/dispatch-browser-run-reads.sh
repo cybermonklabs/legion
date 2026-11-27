@@ -3,18 +3,18 @@
 # makes, in one file, so that a test can drive them under a stand-in `gh` rather than on a
 # runner against GitHub.
 #
-# Two modes, after dispatch-browser-samples.sh's two:
+# Two modes:
 #
 #   .github/scripts/dispatch-browser-run-reads.sh jobs <out-file> <job>
 #   .github/scripts/dispatch-browser-run-reads.sh blobs-refused
 #
 # `jobs` reads this run's own attempt's jobs and writes <out-file>: the array of
-# {id, name, conclusion, leg} that the merge job's two readings consume - reading one for the
-# legs that owed a blob report, reading three for the legs that did not succeed. <job> is the id
-# of the job that calls dispatch-browser.yaml, the merge job's `${{ inputs.job }}`: GitHub names
-# each job of a called workflow `<caller> / <job>`, and one run of a pull request can run several
-# of ci.yaml's three callers of this workflow, so only the jobs named under this caller are this
-# lane's.
+# {id, name, conclusion, legs} that the merge job's two readings consume - reading one for the
+# legs that owed a blob report, reading three for the jobs that did not succeed and their legs.
+# <job> is the id of the job that calls dispatch-browser.yaml, the merge job's
+# `${{ inputs.job }}`: GitHub names each job of a called workflow `<caller> / <job>`, and one run
+# of a pull request can run several of ci.yaml's three callers of this workflow, so only the jobs
+# named under this caller are this lane's.
 #
 # `blobs-refused` writes no file and makes no request. It prints the one `::error::` line for a
 # blob download `actions/download-artifact` could not complete and exits 0: that step has
@@ -52,9 +52,9 @@
 # what this endpoint answers today, not a promise: a bigger matrix pages again, and `--paginate`
 # is what keeps that a longer array rather than a short list nothing reports.
 #
-# The read goes through gh-read.sh's ladder, which the inline read had none of, and each attempt
-# is bounded by `timeout 30`, which the ladder does not bound: a host that accepts the
-# connection and then sends nothing would otherwise hang the step for as long as the job has.
+# The read goes through gh-read.sh's ladder, whose gh_wait_reset waits out GitHub's rate limit
+# within the job's and the step's limits, and each attempt is bounded by `timeout 30`, which the
+# ladder does not bound: a host that accepts the connection and sends nothing would hang the step.
 # A read refused after the ladder names the endpoint, which attempt decided the failure - the
 # last one the ladder made - and what that attempt did, what each earlier attempt did where it
 # did something else, how many attempts that was and the run attempt, and says in those words
@@ -67,8 +67,8 @@
 #
 # Everything it reads comes from the process environment - GH_TOKEN, GITHUB_REPOSITORY,
 # GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the step "Reading one, the
-# rows" sets GH_TOKEN in its `env:`, a key ci_filter_coverage.py's ENV_ALLOWED holds - and never
-# from an argument, which every process of the runner can read on the command line.
+# rows" sets GH_TOKEN in its `env:`, a key ci_filter_coverage.py's ENV_ALLOWED holds, and the
+# job's and the step's limits for gh-read.sh's wait - never an argument, which any process reads.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file> <job>, or
 # .github/scripts/dispatch-browser-run-reads.sh blobs-refused
@@ -181,8 +181,8 @@ case "$mode" in
 
     pages=$(mktemp)
     # One stderr file and one exit status per attempt, and a count of the attempts the ladder
-    # made. gh_read runs its attempts itself and sends every attempt's stderr straight
-    # to this script's, with nothing between them, so one capture file cannot be taken apart
+    # made. gh_read runs its attempts itself and sends every attempt's stderr on to this
+    # script's, with nothing between them, so one capture file cannot be taken apart
     # again afterwards: this wrapper is what keeps the attempts apart. It counts the attempt,
     # gives gh that attempt's own stderr file, writes that attempt's exit status beside it and
     # then puts the stderr file back on stderr, so the job log still holds every attempt's
@@ -191,6 +191,22 @@ case "$mode" in
     # bound firing leaves no word of its own in gh's stderr - the attempt exits 124 - and the
     # refusal line below has no other way to tell that case from a refusal gh printed no
     # status for.
+    #
+    # gh_read takes each attempt through gh-read.sh's gh_wait_reset, which waits out a spent API
+    # budget or a secondary rate limit only when GitHub will answer again at least GH_WAIT_MARGIN
+    # (30 s) before the earlier of the job's limit and the step's, and fails the read by name at
+    # once otherwise; gh-read.sh's head says how it reads both. In "Reading one, the rows" of
+    # dispatch-browser.yaml's merge job the step's limit binds, `timeout-minutes: 3` from the
+    # step's start, so a wait ends no later than 150 s after it, which leaves 30 s for the
+    # attempt after the wait and the step's own work, 5.75 s at most
+    # (.github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget): an
+    # attempt that ran to its `timeout 30` bound there would meet the step's limit, which names
+    # the step. The attempt after a wait is a second run of the wrapper below, so the count of
+    # attempts holds it.
+    # Before the wait, a rate limit failed the step after its three attempts and 30 s of waits:
+    # job 136922567868 of run 44926842882 at 17:22Z on 2026-11-21, and job 137064876909 of run
+    # 44974625499 at 02:21Z on 2026-11-22, each refused `API rate limit exceeded for
+    # installation` three times.
     work=$(mktemp -d)
     trap 'rm -rf "$pages" "$work"' EXIT
     printf '0' > "$work/attempts"
@@ -265,8 +281,10 @@ case "$mode" in
       exit 1
     fi
 
-    # Each job's leg name is derived here, once, beside the fields it travels with, so the two
-    # readings take it rather than each parsing the job name again.
+    # Each job's legs are derived here, once, beside the fields they travel with, so the two
+    # readings take them rather than each parsing the job name again. A leg is one Playwright
+    # run that uploads a blob report under its name (`<caller>-blob-<leg>-<attempt>`,
+    # holding blob-report/report-<leg>.zip and rows/<leg>.txt), and a job runs none, one or two.
     #
     # Only the jobs named `<caller> / <job>` are this lane's: the jobs API lists every job of the
     # run, ci.yaml's own and, on a pull request labelled full-ci, those of ci.yaml's other caller
@@ -274,21 +292,26 @@ case "$mode" in
     # (`dispatch-browser / shard (1)` and `dispatch-browser-pr / shard (1)`). Read without the
     # prefix, the pull-request lane's merge job would name the full lane's red legs as its own,
     # and reading one would count rows no blob of this lane holds. After the prefix, the name
-    # must be one of this workflow's seven jobs, with a matrix leg in brackets after it.
+    # must be one of seven of this workflow's nine jobs, with a matrix leg in brackets after it.
+    # The other two, `quarantine-rows` and `quarantine`, are outside the filter on purpose: they
+    # run on the nightly's call alone, write no blob report and gate nothing, so the merge job
+    # needs neither, and a red one kept here would reach reading three as a leg that did not
+    # succeed (.github/ci-notes/dispatch-browser.md#the-quarantine-job-where-the-quarantined-rows-gate-nothing).
     #
-    # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`.
-    # `binaries`, `merge`, `multiprocess`, `embedder` and `visual` are this workflow's other
-    # five jobs: they pass the name filter and get a null leg, so reading one passes them over
-    # and reading three names them as holding no row. `binaries` is in that filter because a
-    # build that failed leaves the shard and alone jobs skipped and no blob report anywhere, so a
-    # run read without it is reported as legs that uploaded nothing rather than as the build that
-    # handed them nothing. `visual` is in it because a run whose only red job is that one must
-    # not read "every leg of this workflow concluded success": the verdict step fails ci-ok
-    # either way, so the gate held, but the summary a person reads was wrong. `embedder` is there
-    # for the same reason. ci.yaml's own jobs do not get a null leg - the prefix drops them
-    # first, which is what keeps them out of reading three, since that reading selects on
-    # conclusion alone: `dispatch-multiprocess` and `broker-multiprocess` are named under no
-    # caller.
+    # `shard (3)` becomes `[shard-3]` and `alone (webkit-alone)` becomes `[alone-webkit-alone]`.
+    # `embedder` runs one leg, `[embedder]`, and `multiprocess` two,
+    # `[multiprocess-dashboard, multiprocess-signin]`, the names their steps hand
+    # .github/scripts/dispatch-browser-host-suite.sh. `binaries`, `merge` and `visual` are the
+    # filter's other three jobs: they pass the name filter and get no leg, so reading one
+    # passes them over and reading three names them as holding no row. `binaries` is in that
+    # filter because a build that failed leaves the shard and alone jobs skipped and no blob
+    # report anywhere, so a run read without it is reported as legs that uploaded nothing rather
+    # than as the build that handed them nothing. `visual` is in it because a run whose only red
+    # job is that one must not read "every leg of this workflow concluded success": the verdict
+    # step fails ci-ok either way, so the gate held, but the summary a person reads was wrong.
+    # ci.yaml's own jobs get no entry at all - the prefix drops them first, which is what keeps
+    # them out of reading three, since that reading selects on conclusion alone:
+    # `dispatch-multiprocess` and `broker-multiprocess` are named under no caller.
     #
     # The project part takes any name that holds no `)`, and the readings take one leg per
     # line, so a project named with a space, a digit or a capital is one leg here rather than
@@ -296,9 +319,12 @@ case "$mode" in
     jq --arg prefix "$caller / " '[.[].jobs[] | select(.name | startswith($prefix)
           and (ltrimstr($prefix) | test("^(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)")))]
       | map({id, name, conclusion,
-          leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
-            // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
-            // null)})' "$pages" > "$out_file"
+          legs: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | ["shard-\(.n)"])
+            // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | ["alone-\(.p)"])
+            // (if (.name | test("(^| )embedder$")) then ["embedder"]
+                elif (.name | test("(^| )multiprocess$"))
+                then ["multiprocess-dashboard", "multiprocess-signin"]
+                else [] end))})' "$pages" > "$out_file"
     ;;
   blobs-refused)
     [ "$#" -eq 1 ] || usage "$@"

@@ -31,7 +31,7 @@ import { connect, watchLiveSockets } from "./live-socket-watch";
 import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
 import { selectMention } from "./mention";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -39,6 +39,11 @@ import { asUser } from "./users";
  * here come from the test hook rather than from a session; what the test proves is everything on
  * this side of the relay — replay, live snapshots applied last-writer-wins, a tool call finding
  * its result, and a human's message going out through the existing delivery.
+ *
+ * Every session a row opens here is the row's own (`rowSessionId`, e2e/test.ts): the live view
+ * shows the messages Dispatch keeps for a session, and their replies, which Dispatch keeps by the
+ * session's id for every person at once, so under an id another row used a row reads that row's
+ * messages beside its own.
  */
 
 const planner: FakeSession = {
@@ -47,7 +52,12 @@ const planner: FakeSession = {
   last_seen: Date.now() - 5_000,
   machine_id: "planner-host",
   roles: [],
-  session_id: "01a0e090-4848-7473-acc5-fc96e6a646d3",
+  // The row's own (`rowSessionId`, e2e/test.ts), read when a row names it: Dispatch keeps the
+  // messages a person sends a session, and its replies, by its id, for every person at once, and
+  // the live view shows them.
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Planner",
 };
 
@@ -101,7 +111,10 @@ const replay = {
       v: 1,
     },
   ],
-  session_id: planner.session_id,
+  // The planner's, read when a row publishes the replay.
+  get session_id() {
+    return planner.session_id;
+  },
   v: 1,
 };
 
@@ -654,17 +667,22 @@ test("mid-turn, an empty box refuses Send, says why on screen once it is pressed
 test("a session's replies to a direct message are unread until the live view shows them", async ({
   browser,
 }) => {
-  const asked = await createAgentMessage(planner.session_id, {
-    body: "Where is the dashboard?",
-    delivery: "aside",
-  });
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): the navigation's "New
+  // replies" counts one person's unread replies to their direct messages over every session, so
+  // under alice a row reads every earlier row's unread replies beside its own.
+  const me = rowPerson("alice");
+  const asked = await createAgentMessage(
+    planner.session_id,
+    { body: "Where is the dashboard?", delivery: "aside" },
+    { login: me }
+  );
   const session = { id: planner.session_id, kind: "session" as const };
   await replyToMessageDelivery(asked.id, { attempt: 1, body: "Switching to it now." }, session);
   // A follow-up, as `dispatch message` sends it.
   await replyToMessageDelivery(asked.id, { attempt: 1, body: "Done: it is at /dash." }, session, {
     followUp: true,
   });
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   try {
     await page.goto("/agents");
@@ -692,11 +710,14 @@ test("a session's replies to a direct message are unread until the live view sho
 test("the live view shows an unread reply from outside the fifty most active conversations", async ({
   browser,
 }) => {
+  // A person of the row's own, for the reason the row above gives.
+  const me = rowPerson("alice");
   const session = { id: planner.session_id, kind: "session" as const };
-  const asked = await createAgentMessage(planner.session_id, {
-    body: "Did the migration land?",
-    delivery: "aside",
-  });
+  const asked = await createAgentMessage(
+    planner.session_id,
+    { body: "Did the migration land?", delivery: "aside" },
+    { login: me }
+  );
   await replyToMessageDelivery(
     asked.id,
     { attempt: 1, body: "No - it rolled back, here is why." },
@@ -708,10 +729,11 @@ test("the live view shows an unread reply from outside the fifty most active con
     await Promise.all(
       Array.from({ length: 10 }, async (_, offset) => {
         const index = batch + offset;
-        const busier = await createAgentMessage(planner.session_id, {
-          body: `Busier question ${index}`,
-          delivery: "aside",
-        });
+        const busier = await createAgentMessage(
+          planner.session_id,
+          { body: `Busier question ${index}`, delivery: "aside" },
+          { login: me }
+        );
         await replyToMessageDelivery(
           busier.id,
           { attempt: 1, body: `Busier answer ${index}` },
@@ -720,7 +742,7 @@ test("the live view shows an unread reply from outside the fifty most active con
       })
     );
   }
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   try {
     await page.goto("/agents");
@@ -745,7 +767,7 @@ test("the composer completes the session's slash commands and sends a picked one
   // other rows read.
   const commander: FakeSession = {
     ...planner,
-    session_id: "01a0e0c1-0000-7000-8000-0000000c0de5",
+    session_id: rowSessionId("commander"),
     title: "Commander",
   };
   await setLiveSessions([planner, commander]);
@@ -817,7 +839,7 @@ test("a session that has published nothing renders as empty, not as a conversati
   // A session of its own: the relay's frames are process-global, so a session another test
   // seeded would carry that test's replay into this one. It answers the relay with no history,
   // which is what a live session that has not spoken yet is.
-  const sessionID = "01a0e0c1-0000-7000-8000-00000000beef";
+  const sessionID = rowSessionId("unspoken");
   await setAgentStreamResponder(sessionID, true);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -846,7 +868,7 @@ test("a session nobody answers for is told so, and recovers when a responder app
 }) => {
   // Nobody on the session's control subject: a plugin that predates the live view, or a session
   // that is no longer running. The relay cannot tell those apart and does not claim to.
-  const sessionID = "01a0e0c1-0000-7000-8000-00000000cafe";
+  const sessionID = rowSessionId("unanswered");
   await setAgentStreamResponder(sessionID, false);
 
   const context = await asUser(browser, "alice");
@@ -943,7 +965,7 @@ test("a session that answers nothing is told what is true of the session, and th
   const silent: FakeSession = {
     ...planner,
     capabilities: [],
-    session_id: "01a0e0c1-0000-7000-8000-000000001026",
+    session_id: rowSessionId("silent"),
     title: "Quiet",
   };
   await setLiveSessions([planner, silent]);
@@ -1047,9 +1069,9 @@ test("a silent session says so in the header and in a line above its messages, i
   // Eight changes of the registry, each given `REGISTRY_POLL_TIMEOUT` and the refilling one
   // `REGISTRY_REFILLING_TIMEOUT` at most, beside three page loads and a reconnect.
   test.setTimeout(180_000);
-  const stored = listedSession("01a0e0c1-0000-7000-8000-0000000043a1", "Stored");
-  const empty = listedSession("01a0e0c1-0000-7000-8000-0000000043a2", "Empty");
-  const answering = listedSession("01a0e0c1-0000-7000-8000-0000000043a3", "Answering");
+  const stored = listedSession(rowSessionId("stored"), "Stored");
+  const empty = listedSession(rowSessionId("empty"), "Empty");
+  const answering = listedSession(rowSessionId("answering"), "Answering");
   await setLiveSessions([planner, stored, empty, answering]);
   // A message Dispatch keeps for the first, which the session answered through Dispatch: its view
   // holds turns while the session streams none.
@@ -1271,13 +1293,12 @@ async function attemptOf(
 test("a session whose capabilities hold no delivery mode is warned of in its live view, the Inbox, the Agents page and a mention, and a send to it fails", async ({
   browser,
 }) => {
-  const unknown = listedSession("01a0e0c1-0000-7000-8000-0000000043b1", "Newer plugin", [
-    "future-capability",
-  ]);
-  const none = listedSession("01a0e0c1-0000-7000-8000-0000000043b2", "Unreachable", []);
-  const taking = listedSession("01a0e0c1-0000-7000-8000-0000000043b3", "Fluent");
+  const core = rowKey("CORE");
+  const unknown = listedSession(rowSessionId("unknown"), "Newer plugin", ["future-capability"]);
+  const none = listedSession(rowSessionId("none"), "Unreachable", []);
+  const taking = listedSession(rowSessionId("taking"), "Fluent");
   await setLiveSessions([planner, unknown, none, taking]);
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: core, name: "Core" });
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -1295,7 +1316,7 @@ test("a session whose capabilities hold no delivery mode is warned of in its liv
         replies: [`${session.title}: all green.`],
         session,
       });
-      const issue = await createIssue({ project: "CORE", title: `Mentions of ${session.title}` });
+      const issue = await createIssue({ project: core, title: `Mentions of ${session.title}` });
 
       // Its live view warns, and a message sent from it records a failed attempt.
       await page.goto(`/agents/${session.session_id}/live`);
@@ -1357,7 +1378,7 @@ test("a turn whose thinking Claude Code hid reads as the turn's thinking, beside
 }) => {
   const thinker: FakeSession = {
     ...planner,
-    session_id: "01a0e0c1-0000-7000-8000-000000001027",
+    session_id: rowSessionId("thinker"),
     title: "Thinker",
   };
   await setLiveSessions([planner, thinker]);
@@ -1402,10 +1423,14 @@ test("a turn whose thinking Claude Code hid reads as the turn's thinking, beside
 test("on a phone the live view never scrolls the page, keeps its header and composer on screen, and follows the keyboard @phone @phone-only", async ({
   browser,
 }) => {
-  const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-0000000390a4" };
+  const phone: FakeSession = { ...planner, session_id: rowSessionId("phone") };
   await setLiveSessions([planner, phone]);
   await publishAgentStreamFrame(phone.session_id, longReplay(phone.session_id), "replay");
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts, and alice's, which every row before on the worker
+  // raises, take a second line: the line comes out of the height the live view, its header and
+  // its composer are measured in.
+  const context = await asUser(browser, rowPerson("alice"));
   const page = await context.newPage();
   try {
     await page.setViewportSize({ height: 844, width: 390 });
@@ -1516,7 +1541,7 @@ test("on a phone the live view keeps a reasoning link's padded box off the line 
 }) => {
   const reasoning: FakeSession = {
     ...planner,
-    session_id: "01a0e0c1-0000-7000-8000-0000000304a1",
+    session_id: rowSessionId("reasoning"),
   };
   await setLiveSessions([planner, reasoning]);
   await publishAgentStreamFrame(
@@ -1567,7 +1592,7 @@ test("on a phone the live view keeps a reasoning link's padded box off the line 
 test("at desktop width the live view fills the main column beside the navigation and the thread is its scroller", async ({
   browser,
 }) => {
-  const desktop: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-000000001280" };
+  const desktop: FakeSession = { ...planner, session_id: rowSessionId("desktop") };
   await setLiveSessions([planner, desktop]);
   await publishAgentStreamFrame(desktop.session_id, longReplay(desktop.session_id), "replay");
   const context = await asUser(browser, "alice");
@@ -1592,9 +1617,10 @@ test("at desktop width the live view fills the main column beside the navigation
 test("a document-scrolling route is never capped for the keyboard, at mount or after focus and resize @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: "Scrolls the document.",
     title: "Doc route",
   });
@@ -1639,14 +1665,17 @@ test("a document-scrolling route is never capped for the keyboard, at mount or a
 test("a reader scrolled back into a live session's transcript keeps their place, and Jump to latest carries what arrived @phone", async ({
   browser,
 }) => {
-  const reading: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a001" };
+  const reading: FakeSession = { ...planner, session_id: rowSessionId("reading") };
   await setLiveSessions([planner, reading]);
   await publishAgentStreamFrame(
     reading.session_id,
     rebuiltReplay(reading.session_id, 0, FOLD_FRAMES),
     "replay"
   );
-  const context = await asUser(browser, "alice");
+  // The reader is a person of the row's own, for the reason the phone row above gives: the
+  // header's line comes out of the thread whose place and Jump to latest the row reads.
+  const me = rowPerson("alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   const jump = page.getByTestId("jump-to-latest");
   try {
@@ -1678,10 +1707,14 @@ test("a reader scrolled back into a live session's transcript keeps their place,
     // What the count is of is the transcript, not the stream: a message somebody else sends the
     // session through Dispatch is one more thing the reader has not seen, and it moves them no
     // more than the session's own turn does.
-    await createAgentMessage(reading.session_id, {
-      body: "Someone else asks about the notes",
-      delivery: "aside",
-    });
+    await createAgentMessage(
+      reading.session_id,
+      {
+        body: "Someone else asks about the notes",
+        delivery: "aside",
+      },
+      { login: me }
+    );
     await expect(jump).toHaveText("Jump to latest · 3 new");
     expect((await liveViewLayout(page)).threadScrollTop).toBe(1_200);
 
@@ -1754,7 +1787,7 @@ test("a reader scrolled back into a live session's transcript keeps their place,
 test("sending a message from the live view while scrolled back takes the reader to the live end, and a refused send leaves them where they are", async ({
   browser,
 }) => {
-  const sender: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a002" };
+  const sender: FakeSession = { ...planner, session_id: rowSessionId("sender") };
   await setLiveSessions([planner, sender]);
   await publishAgentStreamFrame(sender.session_id, longReplay(sender.session_id), "replay");
   const context = await asUser(browser, "alice");
@@ -1808,12 +1841,12 @@ test("opening a session, switching to another, and reloading each land the reade
 }) => {
   const first: FakeSession = {
     ...planner,
-    session_id: "01a0e0c1-0000-7000-8000-00000000a003",
+    session_id: rowSessionId("first"),
     title: "First",
   };
   const second: FakeSession = {
     ...planner,
-    session_id: "01a0e0c1-0000-7000-8000-00000000a004",
+    session_id: rowSessionId("second"),
     title: "Second",
   };
   await setLiveSessions([planner, first, second]);
@@ -1865,7 +1898,7 @@ test("opening a session, switching to another, and reloading each land the reade
 test("on a phone the live view's Jump to latest covers none of the composer and changes how far the transcript scrolls not at all", async ({
   browser,
 }) => {
-  const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a005" };
+  const phone: FakeSession = { ...planner, session_id: rowSessionId("phone") };
   await setLiveSessions([planner, phone]);
   await publishAgentStreamFrame(phone.session_id, longReplay(phone.session_id), "replay");
   const context = await asUser(browser, "alice");
@@ -1903,7 +1936,7 @@ test("a transcript shorter than the viewport shows no Jump to latest, and the co
 }) => {
   const commander: FakeSession = {
     ...planner,
-    session_id: "01a0e0c1-0000-7000-8000-00000000a006",
+    session_id: rowSessionId("commander"),
     title: "Commander",
   };
   await setLiveSessions([planner, commander]);
@@ -1957,7 +1990,7 @@ test("a transcript shorter than the viewport shows no Jump to latest, and the co
 test("a rebuilt transcript keeps a scrolled-back reader on the turn they were reading", async ({
   browser,
 }) => {
-  const kept: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a007" };
+  const kept: FakeSession = { ...planner, session_id: rowSessionId("kept") };
   await setLiveSessions([planner, kept]);
   await publishAgentStreamFrame(kept.session_id, longReplay(kept.session_id), "replay");
   const context = await asUser(browser, "alice");
@@ -2011,7 +2044,7 @@ test("a rebuilt transcript keeps a scrolled-back reader on the turn they were re
 test("a rebuilt transcript that dropped the reader's turn lands them at the newest text", async ({
   browser,
 }) => {
-  const dropped: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a008" };
+  const dropped: FakeSession = { ...planner, session_id: rowSessionId("dropped") };
   await setLiveSessions([planner, dropped]);
   await publishAgentStreamFrame(dropped.session_id, longReplay(dropped.session_id), "replay");
   const context = await asUser(browser, "alice");
@@ -2044,7 +2077,7 @@ test("a rebuilt transcript that dropped the reader's turn lands them at the newe
 test("a rebuilt transcript leaves a reader who was at the live end at the live end, and still sees their next scroll back", async ({
   browser,
 }) => {
-  const held: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a009" };
+  const held: FakeSession = { ...planner, session_id: rowSessionId("held") };
   await setLiveSessions([planner, held]);
   await publishAgentStreamFrame(held.session_id, longReplay(held.session_id), "replay");
   const context = await asUser(browser, "alice");

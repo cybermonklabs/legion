@@ -70,11 +70,12 @@ caller=dispatch-browser
 # bin/leg-rows.status (0 when there is none), printing an error line when that is not 0. The
 # stand-in run-reads takes only the `jobs` mode with its out-file and caller, appends its
 # arguments to run-reads.calls, and writes the jobs in `jobs.<caller>.json` to the out-file, in
-# the shape the real read writes: an array of {id, name, conclusion, leg}. A caller the case
-# holds no jobs for fails it. The fixture holds dispatch-browser's: the four shards ran and the
-# alone leg was skipped, so it owes no blob. It carries a leg name, so only the script's filter on
-# the conclusion keeps it out of the legs that owe one. Echoes the root. A repeated name is
-# refused here rather than surfacing as one case reading another's files.
+# the shape the real read writes: an array of {id, name, conclusion, legs}, `legs` every
+# Playwright run of the job that uploads a blob report. A caller the case holds no jobs for
+# fails it. The fixture holds dispatch-browser's: the four shards ran and the alone leg was
+# skipped, so it owes no blob. It carries its leg, so only the script's filter on the conclusion
+# keeps it out of the legs that owe one. Echoes the root. A repeated name is refused here rather
+# than surfacing as one case reading another's files.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -106,13 +107,13 @@ STANDIN
   chmod +x "$root/bin/bun"
   cat > "$root/.github/scripts/jobs.dispatch-browser.json" <<'JOBS'
 [
-  {"id": 10, "name": "dispatch-browser / binaries", "conclusion": "success", "leg": null},
-  {"id": 11, "name": "dispatch-browser / shard (1)", "conclusion": "success", "leg": "shard-1"},
-  {"id": 12, "name": "dispatch-browser / shard (2)", "conclusion": "success", "leg": "shard-2"},
-  {"id": 13, "name": "dispatch-browser / shard (3)", "conclusion": "success", "leg": "shard-3"},
-  {"id": 14, "name": "dispatch-browser / shard (4)", "conclusion": "success", "leg": "shard-4"},
-  {"id": 15, "name": "dispatch-browser / alone (webkit-alone)", "conclusion": "skipped", "leg": "alone-webkit-alone"},
-  {"id": 16, "name": "dispatch-browser / merge", "conclusion": null, "leg": null}
+  {"id": 10, "name": "dispatch-browser / binaries", "conclusion": "success", "legs": []},
+  {"id": 11, "name": "dispatch-browser / shard (1)", "conclusion": "success", "legs": ["shard-1"]},
+  {"id": 12, "name": "dispatch-browser / shard (2)", "conclusion": "success", "legs": ["shard-2"]},
+  {"id": 13, "name": "dispatch-browser / shard (3)", "conclusion": "success", "legs": ["shard-3"]},
+  {"id": 14, "name": "dispatch-browser / shard (4)", "conclusion": "success", "legs": ["shard-4"]},
+  {"id": 15, "name": "dispatch-browser / alone (webkit-alone)", "conclusion": "skipped", "legs": ["alone-webkit-alone"]},
+  {"id": 16, "name": "dispatch-browser / merge", "conclusion": null, "legs": []}
 ]
 JOBS
   echo "$root"
@@ -152,7 +153,7 @@ two_callers() {
   local scripts="$1/.github/scripts"
   jq 'map(.name |= sub("^dispatch-browser / "; "dispatch-browser-pr / "))' \
     "$scripts/jobs.dispatch-browser.json" > "$scripts/jobs.dispatch-browser-pr.json"
-  jq 'map(if .leg == "alone-webkit-alone" then .conclusion = "success" else . end)' \
+  jq 'map(if .legs == ["alone-webkit-alone"] then .conclusion = "success" else . end)' \
     "$scripts/jobs.dispatch-browser.json" > "$scripts/jobs.full-lane.json"
   mv "$scripts/jobs.full-lane.json" "$scripts/jobs.dispatch-browser.json"
 }

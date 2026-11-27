@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `DispatchServiceError` reads a refusal's `candidates` and `mismatches` through the generated
+  refusal types of `@legion/contracts`, and reads a list that Dispatch sends as `null` as absent.
+  Its `issues` holds a `409 PARENT_STATUS_CONFLICT`'s issues alone, and is absent for every other
+  refusal.

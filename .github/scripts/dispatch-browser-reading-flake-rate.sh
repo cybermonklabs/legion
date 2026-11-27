@@ -4,8 +4,10 @@
 # of the log.
 #
 # Who runs it: the step "Reading two, the flake rate" of
-# .github/workflows/dispatch-browser.yaml's merge job, whose comment says why a flake can be read
-# from the merged report alone. It takes no argument: it reads $RUNNER_TEMP/report.json, the
+# .github/workflows/dispatch-browser.yaml's merge job;
+# .github/ci-notes/dispatch-browser.md#what-reading-two-reads-and-how-it-names-a-flaky-row says
+# why a flake can be read from the merged report alone and how a row is named. It takes no
+# argument: it reads $RUNNER_TEMP/report.json, the
 # report the merge step wrote, and writes to $GITHUB_STEP_SUMMARY. A run with no merged report is
 # a warning and exit 0 here, reading one having already said why there is none.
 # The runner sets $RUNNER_TEMP and $GITHUB_STEP_SUMMARY for every step.
@@ -23,9 +25,11 @@ fi
 total=$(jq '.stats.expected + .stats.unexpected + .stats.flaky + .stats.skipped' "$report")
 flaky=$(jq '.stats.flaky' "$report")
 rate=$(awk -v f="$flaky" -v t="$total" 'BEGIN { printf "%.2f", t ? 100 * f / t : 0 }')
-rows=$(jq -r '[.. | objects | select(has("specs")) | .specs[] as $spec | $spec.tests[]
-  | select(.status == "flaky")
-  | "\($spec.file):\($spec.line) [\(.projectName)] \($spec.title)"] | sort | .[]' "$report")
+rows=$(jq -r 'def rows($path):
+    (.specs[]? as $spec | $spec.tests[] | select(.status == "flaky")
+      | "\($spec.file):\($spec.line) [\(.projectName)] \(($path + [$spec.title]) | join(" › "))"),
+    (.suites[]? | rows($path + [.title]));
+  [.suites[]? | rows([])] | sort | .[]' "$report")
 {
   echo "### The flake rate"
   echo
@@ -38,8 +42,12 @@ rows=$(jq -r '[.. | objects | select(has("specs")) | .specs[] as $spec | $spec.t
   fi
 } >> "$GITHUB_STEP_SUMMARY"
 echo "::notice title=dispatch-browser flake rate::$flaky flaky rows of $total, $rate per cent"
-# One line per flaky row, so a log reader gets what the summary got. A row's trace is in
-# its leg's dispatch-browser-test-results artifact, which is uploaded on a green run too.
+# One line per flaky row, so a log reader gets what the summary got. A row's trace is in its
+# job's test-results artifact, uploaded on a green run too, whose name begins with the caller's
+# job id (`inputs.job`: dispatch-browser on the full lane, dispatch-browser-pr on the pull-request
+# lane). Both lanes upload <job>-test-results-shard-<shard>-<attempt> and
+# <job>-embedder-test-results-<attempt>. Only the full lane uploads
+# <job>-test-results-alone-<project>-<attempt> and <job>-multiprocess-test-results-<attempt>.
 [ -z "$rows" ] || echo "$rows" | while IFS= read -r row; do
   echo "::notice title=dispatch-browser flaky row::$row"
 done

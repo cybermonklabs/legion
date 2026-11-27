@@ -234,6 +234,14 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
   expect(earlier.textContent).toBe(drawn);
 });
 
+/** A part of a text that no earlier run or row can have read: `rowReferences` keeps each text's
+ *  reading in module-level maps that outlive a run of this file, so a row that counts reads finds a
+ *  text another run read already (`--rerun-each`) unless its texts hold this. Lower-case letters
+ *  and digits, written as a word of its own, read as neither a bare key nor an address. */
+function unreadPart(): string {
+  return Math.random().toString(36).slice(2);
+}
+
 // R2 of dispatch://INFRA-1523: a row names a post its author edited by its words then
 // ` · edited`, as a link to it reads (`useReferenceLabel`). The page publishes the words alone and
 // the edited references beside them, and a row cuts the words to its 60 characters before it
@@ -273,7 +281,7 @@ test("an edited post whose words are longer than the cut keeps ` · edited` afte
 test("a text is read once however often a row draws it, and again for another text or other keys", () => {
   const reads = spyOn(textReferences, "readTextReferences");
   try {
-    const text = "Kept reading: see dispatch://CORE-206/spec#b-r1 and CORE-207.";
+    const text = `Kept reading ${unreadPart()}: see dispatch://CORE-206/spec#b-r1 and CORE-207.`;
     const issues = ["CORE-207"];
     const first = rowReferences(text, issues);
     expect(rowReferences(text, issues), "a second draw read other references").toEqual(first);
@@ -329,7 +337,7 @@ test("a text's citations are read once however often they are asked", () => {
 test("a text's fifth list of keys evicts the slot asked longest ago, and keeps one just asked again", () => {
   const reads = spyOn(textReferences, "readTextReferences");
   try {
-    const text = "Slots kept: see CORE-301, CORE-302, CORE-303, CORE-304 and CORE-305.";
+    const text = `Slots kept ${unreadPart()}: see CORE-301, CORE-302, CORE-303, CORE-304 and CORE-305.`;
     const first = ["CORE-301"];
     const second = ["CORE-302"];
     for (const issues of [first, second, ["CORE-303"], ["CORE-304"]]) {

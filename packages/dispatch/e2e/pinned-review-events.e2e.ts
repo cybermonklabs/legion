@@ -1,5 +1,5 @@
 import { createIssue, createNamedVersion, createProject, reviewArtifact } from "./api";
-import { expect, test } from "./test";
+import { expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 // The review margin's Pinned tab draws a pinned event by its own line (`event-description.ts`,
@@ -8,8 +8,8 @@ import { asUser } from "./users";
 // version 1 and a changes request on its version 2, and reads each line whole: the document and
 // the version.
 //
-// The title carries no `@pr` tag: the pull-request lane's real-stack share is at its cap
-// (`realStackBudget`, e2e/__tests__/pull-request-lane.test.ts), so the full lane runs it.
+// The title carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), so the full lane runs it.
 //
 // SLOW(>=2s): 3.5 s - a project, an issue with its spec, an approval, a named version and a
 // changes request written first; then one load of the Activity tab, two pin writes and the
@@ -17,8 +17,9 @@ import { asUser } from "./users";
 test("the Pinned tab names the document and the version of each review event", async ({
   browser,
 }) => {
-  await createProject({ key: "REVIEW", name: "Review" });
-  const issue = await createIssue({ project: "REVIEW", spec: "The plan.", title: "Pin reviews" });
+  const review = rowKey("REVIEW");
+  await createProject({ key: review, name: "Review" });
+  const issue = await createIssue({ project: review, spec: "The plan.", title: "Pin reviews" });
   const id = issue.primary_artifact_id;
   expect((await reviewArtifact(id, { state: "approved" }, { login: "alice" })).version).toBe(1);
   expect((await createNamedVersion(id, "Second draft", { login: "alice" })).number).toBe(2);

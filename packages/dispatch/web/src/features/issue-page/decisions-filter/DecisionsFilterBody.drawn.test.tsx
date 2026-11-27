@@ -449,20 +449,20 @@ async function retryRefusedAgain(
 ): Promise<void> {
   const retry = retryOf(drawn, read);
   expect(retry).not.toBeNull();
-  expect(document.activeElement).toBe(retry);
+  expect(retry).toHaveFocus();
   const run = Promise.withResolvers<never>();
   hold(run.promise);
   await user.keyboard("{Enter}");
-  await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
+  await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
   expect(retryOf(drawn, read)).toBe(retry);
-  expect(document.activeElement).toBe(retry);
+  expect(retry).toHaveFocus();
   await act(async () => {
     run.reject(new Error("refused"));
     await run.promise.catch(() => undefined);
   });
-  await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBeNull());
+  await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
   expect(retryOf(drawn, read)).toBe(retry);
-  expect(document.activeElement).toBe(retry);
+  expect(retry).toHaveFocus();
 }
 
 function rowOf(view: RenderResult, id: string): HTMLElement {
@@ -632,19 +632,19 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   const folded = mark();
   expect(folded).not.toBe("no mark");
   expect(foot.textContent).not.toMatch(/[▾▸]/u);
-  expect(foot.getAttribute("aria-expanded")).toBe("false");
-  expect(foot.hasAttribute("tabindex")).toBe(false);
-  expect(tree.hasAttribute("aria-owns")).toBe(false);
+  expect(foot).toHaveAttribute("aria-expanded", "false");
+  expect(foot).not.toHaveAttribute("tabindex");
+  expect(tree).not.toHaveAttribute("aria-owns");
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
-  expect(foot.getAttribute("aria-expanded")).toBe("true");
+  expect(foot).toHaveAttribute("aria-expanded", "true");
   expect(words(foot)).toBe(`2 ${DECISIONS_WORDS.agents_many}`);
   expect(mark()).not.toBe("no mark");
   expect(mark()).not.toBe(folded);
   expect(foot.textContent).not.toMatch(/[▾▸]/u);
   const footRows = view.container.querySelector('[data-decisions-part="agents"] [role="group"]');
-  expect(tree.getAttribute("aria-owns")).toBe(footRows?.id ?? "no group");
-  expect(footRows?.getAttribute("aria-labelledby")).toBe(foot.id);
+  expect(tree).toHaveAttribute("aria-owns", footRows?.id ?? "no group");
+  expect(footRows).toHaveAttribute("aria-labelledby", foot.id);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([]);
   expect(mark()).toBe(folded);
@@ -656,7 +656,7 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   expect(first.querySelector("[data-node-body]")).not.toBeNull();
   expect(first.querySelector("[data-node-card]")).toHaveClass(pageFocusedRow);
   await user.tab();
-  expect(document.activeElement).toBe(foot);
+  expect(foot).toHaveFocus();
   expect(first.querySelector("[data-node-body]")).toBeNull();
   expect(first.querySelector("[data-node-card]")).not.toHaveClass(pageFocusedRow);
 });
@@ -738,7 +738,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     const tree = failed.getByRole("tree", { name: CONTROL_LABELS.tree });
     expect(tree.contains(retryOf(failed, "decisions"))).toBe(false);
     await act(async () => chordFocus(tree));
-    expect(document.activeElement).toBe(retryOf(failed, "decisions"));
+    expect(retryOf(failed, "decisions")).toHaveFocus();
 
     await retryRefusedAgain(failed, "decisions", (run) => refused.mockReturnValue(run), user);
     refused.mockResolvedValue(decisionsRead(made));
@@ -748,7 +748,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     expect(refused).toHaveBeenCalledTimes(3);
     // The line is gone and the tree the page builds from that read does not hold its decision
     // yet: the tree holds the focus, in the list.
-    await waitFor(() => expect(document.activeElement).toBe(tree));
+    await waitFor(() => expect(tree).toHaveFocus());
     failed.again({ children: [statement("s1"), decisionNode("first")] });
     await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
     failed.unmount();
@@ -768,7 +768,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     expect(failed.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
     expect(failed.queryByText(EMPTY_LINE)).toBeNull();
     await act(async () => chordFocus(failed.getByRole("tree", { name: CONTROL_LABELS.tree })));
-    expect(document.activeElement).toBe(retryOf(failed, "asks"));
+    expect(retryOf(failed, "asks")).toHaveFocus();
     failed.unmount();
 
     // With the decisions read drawn, its rows take the focus and the Retry does not: a focus on
@@ -791,7 +791,7 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     expect(row.querySelector("[data-node-body]")).not.toBeNull();
     expect(row.querySelector("[data-node-card]")).toHaveClass(pageFocusedRow);
     await user.tab({ shift: true });
-    expect(document.activeElement).toBe(retryOf(partial, "asks"));
+    expect(retryOf(partial, "asks")).toHaveFocus();
     expect(row.querySelector("[data-node-body]")).toBeNull();
     expect(row.querySelector("[data-node-card]")).not.toHaveClass(pageFocusedRow);
     expect(focusedRow(partial)).toBeUndefined();
@@ -819,17 +819,17 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     expect(footControlOf(early)).not.toBeNull();
     const tree = early.getByRole("tree", { name: CONTROL_LABELS.tree });
     await act(async () => chordFocus(tree));
-    expect(document.activeElement).toBe(tree);
+    expect(tree).toHaveFocus();
     await act(async () => {
       asksOut.reject(new Error("refused"));
       await asksOut.promise.catch(() => undefined);
     });
-    await waitFor(() => expect(document.activeElement).toBe(retryOf(early, "asks")));
+    await waitFor(() => expect(retryOf(early, "asks")).toHaveFocus());
     early.unmount();
 
     asksRead.mockRejectedValue(new Error("refused"));
     const opened = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
-    await waitFor(() => expect(document.activeElement).toBe(retryOf(opened, "asks")));
+    await waitFor(() => expect(retryOf(opened, "asks")).toHaveFocus());
     await retryRefusedAgain(opened, "asks", (run) => asksRead.mockReturnValue(run), user);
 
     asksRead.mockResolvedValue([]);
@@ -837,19 +837,19 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await waitFor(() =>
       expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([])
     );
-    await waitFor(() => expect(document.activeElement).toBe(footControlOf(opened)));
+    await waitFor(() => expect(footControlOf(opened)).toHaveFocus());
     opened.again({ children: [openAsk("q-open"), decisionNode("minor")] });
     await waitFor(() => expect(focusedRow(opened)).toBe("q-open"));
     opened.unmount();
 
     asksRead.mockRejectedValue(new Error("refused"));
     const answered = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
-    await waitFor(() => expect(document.activeElement).toBe(retryOf(answered, "asks")));
+    await waitFor(() => expect(retryOf(answered, "asks")).toHaveFocus());
     const answer = Promise.withResolvers<never[]>();
     asksRead.mockReturnValue(answer.promise);
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(retryOf(answered, "asks")?.getAttribute("aria-busy")).toBe("true"));
-    expect(document.activeElement).toBe(retryOf(answered, "asks"));
+    await waitFor(() => expect(retryOf(answered, "asks")).toHaveAttribute("aria-busy", "true"));
+    expect(retryOf(answered, "asks")).toHaveFocus();
     // The question's row is the one element that takes the focus while the tree grows and the
     // read answers, so the foot's control never takes it on the way.
     const tookFocus: (EventTarget | null)[] = [];
@@ -902,25 +902,25 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await waitFor(() => expect(retryOf(both, "asks")).not.toBeNull());
     const retry = retryOf(both, "decisions");
     await act(async () => retry?.focus());
-    expect(document.activeElement).toBe(retry);
+    expect(retry).toHaveFocus();
     const decisionsAnswer = Promise.withResolvers<IssueDecisions>();
     decisionsRefused.mockReturnValue(decisionsAnswer.promise);
     await act(async () => {
       void both.client.refetchQueries({ queryKey: ["decisions", KEY] });
     });
-    await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
     expect(retryOf(both, "decisions")).toBe(retry);
-    expect(document.activeElement).toBe(retry);
+    expect(retry).toHaveFocus();
     await act(async () => decisionsAnswer.resolve(decisionsRead([])));
     await waitFor(() => expect(failedLine(both, "decisions")).toBeNull());
-    await waitFor(() => expect(document.activeElement).toBe(retryOf(both, "asks")));
+    await waitFor(() => expect(retryOf(both, "asks")).toHaveFocus());
     asksRefused.mockResolvedValue([]);
     await act(async () => {
       void both.client.refetchQueries({ queryKey: ["asks", KEY] });
     });
     await waitFor(() => expect(failedLine(both, "asks")).toBeNull());
     await waitFor(() =>
-      expect(document.activeElement).toBe(both.getByRole("tree", { name: CONTROL_LABELS.tree }))
+      expect(both.getByRole("tree", { name: CONTROL_LABELS.tree })).toHaveFocus()
     );
     both.unmount();
   } finally {
@@ -947,7 +947,7 @@ test("a read refused after the tree took the focus gives that focus to its Retry
           : renderBody({ asks: null, children: [statement("s1")] }, {}, { stage: true });
       const tree = view.getByRole("tree", { name: CONTROL_LABELS.tree });
       await act(async () => tree.focus());
-      expect(document.activeElement).toBe(tree);
+      expect(tree).toHaveFocus();
       await act(async () => {
         answer.reject(
           new ApiError(503, { code: "UNAVAILABLE", error: "the store is not reachable" })
@@ -993,7 +993,7 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
       await waitFor(() => expect(retryOf(view, read)).not.toBeNull());
       const retry = retryOf(view, read);
       await act(async () => retry?.focus());
-      expect(document.activeElement).toBe(retry);
+      expect(retry).toHaveFocus();
       const alert = alertOf(view, read);
       expect(alert).not.toBeNull();
 
@@ -1001,15 +1001,15 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
       // page reads the read by.
       spy.mockReturnValue(Promise.withResolvers<never>().promise);
       await user.keyboard("{Enter}");
-      await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
+      await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
       await act(async () => view.client.cancelQueries({ queryKey: [read, KEY] }));
-      await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBeNull());
+      await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
       expect(retryOf(view, read), "the cancelled run drew a new Retry").toBe(retry);
       expect(
         alertOf(view, read),
         "the cancelled run said the read's failure again, though nothing new failed"
       ).toBe(alert);
-      expect(document.activeElement, "the cancelled run took the focus off the Retry").toBe(retry);
+      expect(retry, "the cancelled run took the focus off the Retry").toHaveFocus();
 
       await retryRefusedAgain(view, read, (run) => spy.mockReturnValue(run), user);
       const again = alertOf(view, read);
@@ -1179,7 +1179,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   );
   await waitFor(() => expect(rowsOfPart(changed, "review")).toEqual([D("first")]));
   expect(rowsOfPart(changed, "yours")[0]).toBe(D("second"));
-  expect(rowOf(changed, D("second")).getAttribute("data-node-state")).toBe("change_requested");
+  expect(rowOf(changed, D("second"))).toHaveAttribute("data-node-state", "change_requested");
   expect(focusedRow(changed)).toBe(D("second"));
   changed.unmount();
 
@@ -1223,7 +1223,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   );
   await waitFor(() => expect(rowsOfPart(replaced, "review")).toEqual([D("first")]));
   await waitFor(() => expect(rowsOfPart(replaced, "agents")).toContain(D("second")));
-  expect(rowOf(replaced, D("second")).getAttribute("data-node-state")).toBe("replaced");
+  expect(rowOf(replaced, D("second"))).toHaveAttribute("data-node-state", "replaced");
   await waitFor(() => expect(focusedRow(replaced)).toBe(D("second")));
   replaced.unmount();
 
@@ -1434,7 +1434,7 @@ test("a focused entry that another person deletes gives the focus to its neighbo
   await act(async () => rowOf(alone, D("first")).focus());
   await deleted(alone, lone, "first");
   expect(alone.container.querySelector("[data-node-row]")).toBeNull();
-  await waitFor(() => expect(document.activeElement).toBe(alone.getByRole("tree")));
+  await waitFor(() => expect(alone.getByRole("tree")).toHaveFocus());
   // The focus is off every row, so what the deleted row's focus opened is let go: the same
   // decision read back draws as a row the reader is not on.
   await act(async () => {
@@ -1508,14 +1508,15 @@ test("a declined ask says who declined it and draws no answer", () => {
   const view = renderBody(wholeIssue());
   const row = rowOf(view, "a-declined");
 
-  expect(row.getAttribute("data-node-state")).toBe("declined");
+  expect(row).toHaveAttribute("data-node-state", "declined");
   expect(words(row.querySelector("[data-node-margin] [data-node-state]"))).toBe(
     NODE_STATE_WORDS.ask.declined
   );
   expect(words(row.querySelector("[data-ask-declined] p"))).toBe(
     `alice ${DECISIONS_WORDS.declined}`
   );
-  expect(row.querySelector("[data-declined-by] svg")?.getAttribute("data-glyph")).toBe(
+  expect(row.querySelector("[data-declined-by] svg")).toHaveAttribute(
+    "data-glyph",
     GLYPH_TOKENS.authors.person
   );
   expect(row.querySelector("[data-declined-note]")?.textContent).toBe(
@@ -1633,7 +1634,7 @@ test("a decision reaches each statement it shaped, and every entry links to its 
     made: [decision("wordless", { links: [shaped(specRef("s1"))] })],
   });
   const parent = rowOf(wordless, D("wordless")).querySelector("[data-node-parent-line]");
-  expect(parent?.getAttribute("data-parent-id")).toBe("q2");
+  expect(parent).toHaveAttribute("data-parent-id", "q2");
   expect(words(parent)).toBe(NODE_TYPE_NAMES.ask);
 });
 
@@ -1830,7 +1831,7 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     await act(async () => rowOf(view, D("minor")).focus());
     await user.keyboard("z");
     expect(rowsOfPart(view, "agents")).toEqual([]);
-    expect(document.activeElement).toBe(footControlOf(view));
+    expect(footControlOf(view)).toHaveFocus();
 
     // Let close on a row pinned open, pressed while another row has the focus, leaves the focus
     // where it is: the press moves none, so the body it closes takes none to the page.
@@ -1839,7 +1840,7 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     await act(async () => rowOf(view, "q-open").focus());
     expect(rowOf(view, D("kept")).querySelector("[data-node-body][data-pinned]")).not.toBeNull();
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.let_close }));
-    expect(document.activeElement).toBe(rowOf(view, "q-open"));
+    expect(rowOf(view, "q-open")).toHaveFocus();
     expect(rowOf(view, "q-open").querySelector("[data-node-body]")).not.toBeNull();
     expect(rowOf(view, D("kept")).querySelector("[data-node-body]")).toBeNull();
     view.unmount();
@@ -1910,26 +1911,26 @@ test("an address that names a comment draws its row first and focuses it", async
   const first = view
     .getByRole("tree", { name: CONTROL_LABELS.tree })
     .querySelector<HTMLElement>("[data-node-row]");
-  expect(first?.getAttribute("data-node-id")).toBe(said.id);
+  expect(first).toHaveAttribute("data-node-id", said.id);
   expect(first?.closest("[data-decisions-part]") ?? null).toBeNull();
-  expect(first?.getAttribute("aria-level")).toBe("1");
+  expect(first).toHaveAttribute("aria-level", "1");
   await waitFor(() => expect(focusedRow(view)).toBe(said.id));
 
   const row = rowOf(view, said.id);
   // A row drawn for its context, as the outline marks one: no tag, since a comment is no typed
   // kind, its author out of the reader's ink, its words, and no state.
-  expect(row.getAttribute("data-node-context")).toBe("");
+  expect(row).toHaveAttribute("data-node-context", "");
   expect(row.querySelector("[data-node-tag]")).toBeNull();
   const author = row.querySelector("[data-node-margin] [data-node-author] [data-author-text]");
   expect(words(author)).toBe("alice");
   // Out of the reader's ink: no class of the page's ink is on it.
   expect(pageInkText.split(" ").filter((name) => author?.classList.contains(name))).toEqual([]);
   expect(words(row.querySelector("[data-node-words]"))).toBe("The rail stays where it is.");
-  expect(row.hasAttribute("data-node-state")).toBe(false);
+  expect(row).not.toHaveAttribute("data-node-state");
   expect(row.querySelector("[data-node-margin] [data-node-state]")).toBeNull();
   const link = row.querySelector("a[data-entry-link]");
   expect(words(link)).toBe(IN_CONVERSATION);
-  expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/${said.id}`);
+  expect(link).toHaveAttribute("href", `/issues/${KEY}/comments/${said.id}`);
   expect(row.querySelectorAll("button[data-row-action]").length).toBe(0);
   // No heading and no count stand over it, and the issue says it holds no decision.
   expect(view.container.querySelectorAll("[data-decisions-heading]").length).toBe(0);
@@ -1981,7 +1982,7 @@ test("a deleted comment an address named draws its deleted line, never the model
   const row = rowOf(view, gone.id);
   const deletedLine = row.querySelector("[data-node-words] [data-post-deleted]");
   expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
-  expect(deletedLine?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(deletedLine).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
   expect(row.textContent).not.toContain(actorLabelText(UNTITLED));
   expect(row.textContent).not.toContain(DELETED_AT);
 });
@@ -2028,7 +2029,7 @@ test("an entry whose parent is a deleted comment draws the parent line as the de
     made: [decision("under", { links: [shaped(specRef("s1"))] })],
   });
   const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
-  expect(line?.getAttribute("data-parent-id")).toBe("c-gone");
+  expect(line).toHaveAttribute("data-parent-id", "c-gone");
   const deletedLine = line?.querySelector("a [data-post-deleted]");
   expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
   expect(line?.textContent).not.toContain(actorLabelText(UNTITLED));
@@ -2074,7 +2075,7 @@ test("an entry whose parent is an edited comment draws · edited after the paren
   expect(link?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)?.textContent).toBe(
     ` · ${CONTROL_LABELS.post_edited}`
   );
-  expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/c-edited`);
+  expect(link).toHaveAttribute("href", `/issues/${KEY}/comments/c-edited`);
   expect(words(rowOf(view, D("bare")).querySelector("[data-node-parent-line]"))).toBe(
     `${NODE_TYPE_NAMES.comment} · ${CONTROL_LABELS.post_edited}`
   );
@@ -2096,7 +2097,7 @@ test("a body drawn again does not act on a request the page already took", async
   view.again({ request });
   expect(rowOf(view, D("first"))).toBeTruthy();
   await act(async () => {});
-  expect(document.activeElement).toBe(elsewhere);
+  expect(elsewhere).toHaveFocus();
 });
 
 // R4, R6: a list that holds only the foot draws no row, so it has no tab stop to take the
@@ -2106,21 +2107,21 @@ test("a body drawn again does not act on a request the page already took", async
 // foot. The foot leaving the page with the focus on its control leaves that focus in the list.
 test("a list that holds only the foot gives the focus to the foot's control", async () => {
   const user = userEvent.setup();
-  expect(document.activeElement).toBe(document.body);
+  expect(document.body).toHaveFocus();
   const view = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(footControlOf(view)));
+  await waitFor(() => expect(footControlOf(view)).toHaveFocus());
 
   (document.activeElement as HTMLElement).blur();
   expect(footControlOf(view)).not.toHaveFocus();
   await act(async () => view.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
-  expect(document.activeElement).toBe(footControlOf(view));
+  expect(footControlOf(view)).toHaveFocus();
   view.unmount();
 
   // The tree is built read by read (`useIssueTree.ts`): a list that holds only the foot until
   // the asks read answers gives the focus to the foot's control, and once the question's row
   // is drawn the focus goes to it, where the stage would have put it.
   const early = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(footControlOf(early)));
+  await waitFor(() => expect(footControlOf(early)).toHaveFocus());
   early.again({ children: [openAsk("q-open"), decisionNode("minor")] });
   await waitFor(() => expect(focusedRow(early)).toBe("q-open"));
   early.unmount();
@@ -2133,11 +2134,11 @@ test("a list that holds only the foot gives the focus to the foot's control", as
   const tied = decisionsRead([decision("minor", { links: [shaped(specRef("s1"))] })]);
   for (const placed of ["the reader", "the body"] as const) {
     const left = renderBody(tieable);
-    await waitFor(() => expect(document.activeElement).toBe(footControlOf(left)));
+    await waitFor(() => expect(footControlOf(left)).toHaveFocus());
     if (placed === "the reader") {
       await act(async () => (document.activeElement as HTMLElement).blur());
       await user.tab();
-      expect(document.activeElement).toBe(footControlOf(left));
+      expect(footControlOf(left)).toHaveFocus();
     }
     await act(async () => left.client.setQueryData(["decisions", KEY], tied));
     await waitFor(() => expect(rowsOfPart(left, "review")).toEqual([D("minor")]));
@@ -2151,10 +2152,10 @@ test("a list that holds only the foot gives the focus to the foot's control", as
   // A reader who presses the control keeps the focus on it, though the foot's rows it unfolds
   // are drawn.
   const pressed = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(footControlOf(pressed)));
+  await waitFor(() => expect(footControlOf(pressed)).toHaveFocus());
   await user.click(footControlOf(pressed) as HTMLElement);
   expect(rowsOfPart(pressed, "agents")).toEqual([D("minor")]);
-  expect(document.activeElement).toBe(footControlOf(pressed));
+  expect(footControlOf(pressed)).toHaveFocus();
 });
 
 // The app focuses its main element at each page change but the first (`app.tsx`), so a page
@@ -2171,13 +2172,13 @@ test("a list that holds only the foot, opened by a link inside the app, gives it
     // control takes no focus.
     await act(() => Promise.resolve());
     expect(footControlOf(view)).not.toBeNull();
-    expect(document.activeElement).toBe(view.getByRole("main"));
+    expect(view.getByRole("main")).toHaveFocus();
     await act(async () => answer.resolve(decisionsRead(FOOT_ONLY.made)));
     await waitFor(() =>
       expect(
-        document.activeElement,
+        footControlOf(view),
         "the reads answered after the page mounted, and the focus stayed on the app's main element"
-      ).toBe(footControlOf(view))
+      ).toHaveFocus()
     );
     view.unmount();
   } finally {
@@ -2192,14 +2193,14 @@ test("a list that holds only the foot, opened by a link inside the app with its 
   (document.activeElement as HTMLElement | null)?.blur();
   const view = renderBody(FOOT_ONLY, {}, { main: true, stage: true });
   expect(
-    document.activeElement,
+    view.getByRole("main"),
     "the app's main element did not take the focus after the body placed it"
-  ).toBe(view.getByRole("main"));
+  ).toHaveFocus();
   await act(() => nextFrame());
   expect(
-    document.activeElement,
+    footControlOf(view),
     "the reads were cached, and the focus stayed on the app's main element"
-  ).toBe(footControlOf(view));
+  ).toHaveFocus();
   view.unmount();
 });
 
@@ -2296,7 +2297,7 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     expect(list).toHaveBeenCalled();
     expect(rowsOfPart(view, "yours")[0]).toBe(D("second"));
     const row = rowOf(view, D("second"));
-    expect(row.getAttribute("data-node-state")).toBe("change_requested");
+    expect(row).toHaveAttribute("data-node-state", "change_requested");
     expect(words(row.querySelector("[data-node-margin] [data-node-state]"))).toBe(
       NODE_STATE_WORDS.decision.change_requested
     );
@@ -2304,7 +2305,7 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     expect(row.querySelector("[data-change-words]")?.textContent).toBe("Name the read, please.");
     const link = row.querySelector("a[data-change-link]");
     expect(words(link)).toBe(DECISIONS_WORDS.change);
-    expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/change-second`);
+    expect(link).toHaveAttribute("href", `/issues/${KEY}/comments/change-second`);
     expect(words(row.querySelector("[data-change-by]"))).toBe("alice");
     // The count of the review list's heading moved with it.
     expect(
@@ -2360,7 +2361,7 @@ test("a Change its author edited draws its words, then · edited, and one nobody
   );
   const mark = changeWords("second")?.lastElementChild;
   expect(mark?.textContent).toBe(" · edited");
-  expect(mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(mark).toHaveAttribute(PAGE_CHROME_ATTRIBUTE);
   expect(changeWords("first")?.textContent).toBe("Keep it shorter.");
   expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
@@ -2434,7 +2435,7 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
   await user.keyboard("w");
   expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
   await user.pointer({ keys: "[MouseLeft>]", target: elsewhere });
-  expect(document.activeElement).toBe(elsewhere);
+  expect(elsewhere).toHaveFocus();
   expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
   await user.pointer({ keys: "[/MouseLeft]", target: elsewhere });
   await waitFor(() => expect(view.container.querySelector("[data-row-report]")).toBeNull());
@@ -2449,7 +2450,7 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
   const control = footControlOf(noQuestion);
   await act(async () => control?.focus());
   await user.keyboard("q");
-  expect(document.activeElement).toBe(control);
+  expect(control).toHaveFocus();
   expect(words(rowOf(noQuestion, D("second")).querySelector("[data-row-report]"))).toBe(
     KEY_REPORTS.no_next_question
   );

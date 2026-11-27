@@ -2,10 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { fixture, type PmdocFixture } from "../../__tests__/pmdoc-fixtures";
 import { type MarkdownRendering, renderWithEngine, warmMarkdownRenderer } from "./markdown-engine";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
-import { flushTasks, installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
+import { installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
 
 /** Renders `markdown` through the shared engine as a surface would, and answers the parsed
  *  document, or `undefined` where the engine answered nothing for it. */
@@ -119,46 +120,50 @@ describe("the parse worker's threshold", () => {
     const atThreshold = "x".repeat(markdownWorkerThreshold);
     const overThreshold = "x".repeat(markdownWorkerThreshold + 1);
 
-    const onThePage: MarkdownRendering[] = [];
-    const cancelOnThePage = renderWithEngine(atThreshold, undefined, "space", (rendering) => {
-      onThePage.push(rendering);
-    });
-    try {
-      // The engine is loaded, so this body is answered in the caller's own commit, parsed, the
-      // way every body was before the worker: nothing about it is pending.
-      expect(onThePage).toHaveLength(1);
-      expect(onThePage[0].pending).toBe(false);
-      expect(onThePage[0].engine).toBeDefined();
-      expect(onThePage[0].parsed?.textContent).toBe(atThreshold);
-      await flushTasks();
-      expect(worker.created).toBe(0);
-      expect(worker.requests).toHaveLength(0);
-    } finally {
-      cancelOnThePage();
-    }
+    // On the fake clock, so the stand-in's own zero-delay timers, and any the engine sets, wait
+    // for `tick(0)`, and a worker started or a body sent a task late shows by the reads below.
+    await onFakeClock(async () => {
+      const onThePage: MarkdownRendering[] = [];
+      const cancelOnThePage = renderWithEngine(atThreshold, undefined, "space", (rendering) => {
+        onThePage.push(rendering);
+      });
+      try {
+        // The engine is loaded, so this body is answered in the caller's own commit, parsed, the
+        // way every body was before the worker: nothing about it is pending.
+        expect(onThePage).toHaveLength(1);
+        expect(onThePage[0].pending).toBe(false);
+        expect(onThePage[0].engine).toBeDefined();
+        expect(onThePage[0].parsed?.textContent).toBe(atThreshold);
+        await tick(0);
+        expect(worker.created).toBe(0);
+        expect(worker.requests).toHaveLength(0);
+      } finally {
+        cancelOnThePage();
+      }
 
-    const inTheWorker: MarkdownRendering[] = [];
-    const cancelInTheWorker = renderWithEngine(overThreshold, undefined, "space", (rendering) => {
-      inTheWorker.push(rendering);
+      const inTheWorker: MarkdownRendering[] = [];
+      const cancelInTheWorker = renderWithEngine(overThreshold, undefined, "space", (rendering) => {
+        inTheWorker.push(rendering);
+      });
+      try {
+        // One character more, and the body is answered at once as pending, with no document:
+        // the literal text is what a surface paints until the worker answers.
+        expect(inTheWorker).toHaveLength(1);
+        expect(inTheWorker[0].pending).toBe(true);
+        expect(inTheWorker[0].parsed).toBeUndefined();
+        expect(inTheWorker[0].engine).toBeDefined();
+        await worker.answer(0);
+        await tick(0);
+        expect(worker.created).toBe(1);
+        expect(worker.requests).toHaveLength(1);
+        expect(worker.requests[0].markdown).toBe(overThreshold);
+        const answered = inTheWorker.at(-1) as MarkdownRendering;
+        expect(inTheWorker.length).toBeGreaterThan(1);
+        expect(answered.pending).toBe(false);
+        expect(answered.parsed?.textContent).toBe(overThreshold);
+      } finally {
+        cancelInTheWorker();
+      }
     });
-    try {
-      // One character more, and the body is answered at once as pending, with no document: the
-      // literal text is what a surface paints until the worker answers.
-      expect(inTheWorker).toHaveLength(1);
-      expect(inTheWorker[0].pending).toBe(true);
-      expect(inTheWorker[0].parsed).toBeUndefined();
-      expect(inTheWorker[0].engine).toBeDefined();
-      await worker.answer(0);
-      await flushTasks();
-      expect(worker.created).toBe(1);
-      expect(worker.requests).toHaveLength(1);
-      expect(worker.requests[0].markdown).toBe(overThreshold);
-      const answered = inTheWorker.at(-1) as MarkdownRendering;
-      expect(inTheWorker.length).toBeGreaterThan(1);
-      expect(answered.pending).toBe(false);
-      expect(answered.parsed?.textContent).toBe(overThreshold);
-    } finally {
-      cancelInTheWorker();
-    }
   });
 });

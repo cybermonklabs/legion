@@ -497,7 +497,8 @@ test("each fault table asks the issue listing for its statuses, and the backlog-
   // has stood as it is (R6), and shows none of the backlog-or-icebox list's columns.
   const inFlight = await cellsOf(faults, "OPS-12 Work OPS-12");
   expect(inFlight("Project").textContent).toBe("OPS");
-  expect(within(inFlight("Updated")).getByRole("time").getAttribute("datetime")).toBe(
+  expect(within(inFlight("Updated")).getByRole("time")).toHaveAttribute(
+    "datetime",
     "2026-11-01T00:00:00Z"
   );
   const faultHeaders = within(faults)
@@ -565,11 +566,10 @@ test("each fault table asks the issue listing for its statuses, and the backlog-
       .some((header) => header.textContent?.startsWith("Updated"))
   ).toBe(false);
   expect(
-    within(moved("Advances"))
-      .getByRole("link", { name: "#2 Linkage closure eval" })
-      .getAttribute("href")
-  ).toBe("/priorities/linkage-closure");
-  expect(within(moved("Moved there")).getByRole("time").getAttribute("datetime")).toBe(
+    within(moved("Advances")).getByRole("link", { name: "#2 Linkage closure eval" })
+  ).toHaveAttribute("href", "/priorities/linkage-closure");
+  expect(within(moved("Moved there")).getByRole("time")).toHaveAttribute(
+    "datetime",
     "2026-11-09T12:00:00Z"
   );
   expect(moved("Moved there").textContent).toContain("bob");
@@ -713,7 +713,7 @@ test("a row counts the work in flight, waiting and in backlog or icebox, shows i
     "Newest event",
   ]);
   expect(texts(row).slice(3, 6)).toEqual(["7", "12", "0"]);
-  expect(within(row).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
+  expect(within(row).getByRole("time")).toHaveAttribute("datetime", "2026-11-11T10:00:00Z");
   // Each count's column is as narrow as its numbers, 76 px; its numbers stand at its right edge,
   // under its header's words, which stand there too and wrap rather than be cut. The newest
   // event's words wrap beside its filter, in a column as narrow as its time.
@@ -807,7 +807,7 @@ test("on a phone the table draws the place and one cell, which names the owner, 
   expect(phoneLine(title)?.textContent).toStartWith(
     "INFRA controller · Active 7 · Triage, Todo 12 · Backlog, icebox 0 · "
   );
-  expect(within(title).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
+  expect(within(title).getByRole("time")).toHaveAttribute("datetime", "2026-11-11T10:00:00Z");
   const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
   expect(phoneLine(within(second).getAllByRole("cell")[1])?.textContent).toBe(
     "BET controller · Active 1 · Triage, Todo 0 · Backlog, icebox 3 · Never"
@@ -954,9 +954,10 @@ test("opening a row shows its description and no work: the work is on the priori
   ]);
   expect(screen.queryByRole("region", { name: /^Work advancing/ })).toBeNull();
   expect(listing).not.toHaveBeenCalledWith({ advances: ["legion-first"], open: true });
-  expect(
-    within(row).getByRole("link", { name: "Legion works reliably first" }).getAttribute("href")
-  ).toBe("/priorities/legion-first");
+  expect(within(row).getByRole("link", { name: "Legion works reliably first" })).toHaveAttribute(
+    "href",
+    "/priorities/legion-first"
+  );
 });
 
 test("a person who may write adds a priority", async () => {
@@ -995,7 +996,8 @@ test("the New priority title holds no more than an issue title may, so no longer
 test("a title is a link to the priority's own page, where it is renamed, and no field", async () => {
   page(FIFTEEN);
   const row = await screen.findByRole("row", { name: "#2 Linkage closure eval" });
-  expect(within(row).getByRole("link", { name: "Linkage closure eval" }).getAttribute("href")).toBe(
+  expect(within(row).getByRole("link", { name: "Linkage closure eval" })).toHaveAttribute(
+    "href",
     "/priorities/linkage-closure"
   );
   expect(within(row).queryByRole("textbox")).toBeNull();

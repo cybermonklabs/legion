@@ -29,7 +29,7 @@ import {
   typeAtEnd,
 } from "./editor";
 import { engineParagraphs } from "./read-back";
-import { type BrowserContext, expect, test } from "./test";
+import { type BrowserContext, expect, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -42,9 +42,10 @@ const initialMarkdown = `## Database\n\nUse SQLite\n\n| col | value |\n|---|---|
 test("the spec opens as a formatted, editable document with no source pane", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "READ", name: "Readable" });
+  const readKey = rowKey("READ");
+  await createProject({ key: readKey, name: "Readable" });
   const issue = await createIssue({
-    project: "READ",
+    project: readKey,
     spec: initialMarkdown,
     title: "Rendering check",
   });
@@ -116,9 +117,10 @@ test("the spec opens as a formatted, editable document with no source pane", asy
 test("a spec whose table holds an unbreakable token keeps the page within the screen @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "READ", name: "Readable" });
+  const readKey = rowKey("READ");
+  await createProject({ key: readKey, name: "Readable" });
   const issue = await createIssue({
-    project: "READ",
+    project: readKey,
     spec: initialMarkdown,
     title: "Rendering width",
   });
@@ -143,12 +145,13 @@ test("a spec whose table holds an unbreakable token keeps the page within the sc
 test("reading a document gives its headings ids without versioning it or crediting the reader, however the headings got there", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // An agent writes the spec, as an architect does, so every heading in it reaches the reader
   // without the id the editor derives.
   const issue = await createIssue(
     {
-      project: "CORE",
+      project: core,
       spec: "## Plan\n\nShip it.\n\n## Plan\n\nShip it again.\n",
       title: "Headed spec",
     },
@@ -196,9 +199,10 @@ test("reading a document gives its headings ids without versioning it or crediti
 test("two users edit the same spec, see each other's text and cursor, and settle one version attributed to both @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: initialMarkdown,
     title: "Database decision",
   });
@@ -261,9 +265,10 @@ test("two users edit the same spec, see each other's text and cursor, and settle
 test("named versions, the version picker, and the diff stay current across users", async ({
   browser,
 }) => {
-  await createProject({ key: "VERS", name: "Versions" });
+  const vers = rowKey("VERS");
+  await createProject({ key: vers, name: "Versions" });
   const issue = await createIssue({
-    project: "VERS",
+    project: vers,
     spec: initialMarkdown,
     title: "Version naming",
   });
@@ -330,9 +335,10 @@ test("named versions, the version picker, and the diff stay current across users
 
 // @pr: The live document: an agent's edit has to land in every open editor.
 test("an agent edit lands live in every open editor @pr", async ({ browser }) => {
-  await createProject({ key: "LIVE", name: "Live updates" });
+  const live = rowKey("LIVE");
+  await createProject({ key: live, name: "Live updates" });
   const issue = await createIssue({
-    project: "LIVE",
+    project: live,
     spec: initialMarkdown,
     title: "Agent edit",
   });
@@ -365,9 +371,10 @@ test("an agent edit lands live in every open editor @pr", async ({ browser }) =>
 });
 
 test("reloading mid-edit reopens the same content", async ({ browser }) => {
-  await createProject({ key: "LOAD", name: "Reloads" });
+  const load = rowKey("LOAD");
+  await createProject({ key: load, name: "Reloads" });
   const issue = await createIssue({
-    project: "LOAD",
+    project: load,
     spec: initialMarkdown,
     title: "Reload the document",
   });
@@ -406,9 +413,10 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
 test("tab round-trips keep one document connection, the typed text, and the Conversation scroll position", async ({
   browser,
 }) => {
-  await createProject({ key: "TABS", name: "Tabs" });
+  const tabs = rowKey("TABS");
+  await createProject({ key: tabs, name: "Tabs" });
   const issue = await createIssue({
-    project: "TABS",
+    project: tabs,
     spec: "# Keep this document",
     title: "Mounted panels",
   });
@@ -458,14 +466,18 @@ test("tab round-trips keep one document connection, the typed text, and the Conv
 test("moving between issue documents leaves one open document connection, not one per visit", async ({
   browser,
 }) => {
-  await createProject({ key: "NAVDOC", name: "Navigation" });
+  const navdoc = rowKey("NAVDOC");
+  // Named for no label of the shell: every project of the stack is a link in the navigation,
+  // named by its key and its name, and `Navigation` is the name of the navigation itself, which
+  // rows read it by.
+  await createProject({ key: navdoc, name: "Document visits" });
   const first = await createIssue({
-    project: "NAVDOC",
+    project: navdoc,
     spec: "# First document\n\nFirst body.\n",
     title: "First document",
   });
   const second = await createIssue({
-    project: "NAVDOC",
+    project: navdoc,
     spec: "# Second document\n\nSecond body.\n",
     title: "Second document",
   });
@@ -474,7 +486,7 @@ test("moving between issue documents leaves one open document connection, not on
   try {
     const page = await alice.newPage();
     const open = openDocumentSockets(page);
-    await page.goto(`/projects/NAVDOC/issues`);
+    await page.goto(`/projects/${navdoc}/issues`);
     const table = page.getByRole("table", { name: "Project issues table" });
     await table.getByRole("link", { name: first.key, exact: true }).click();
     await expect(documentEditor(page)).toContainText("First body.");
@@ -511,9 +523,10 @@ test("moving between issue documents leaves one open document connection, not on
 test("a dropped document transport reconnects the mounted editor and leaves one connection @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "BLIP", name: "Blip" });
+  const blip = rowKey("BLIP");
+  await createProject({ key: blip, name: "Blip" });
   const issue = await createIssue({
-    project: "BLIP",
+    project: blip,
     spec: "# Transport blip\n\nOriginal body.\n",
     title: "Transport blip",
   });
@@ -577,9 +590,10 @@ for (const row of [
   test(`an idle document provider stays on one connection past its receive timeout, as ${row.reader}`, async ({
     browser,
   }) => {
-    await createProject({ key: row.key, name: "Idle document" });
+    const project = rowKey(row.key);
+    await createProject({ key: project, name: "Idle document" });
     const issue = await createIssue({
-      project: row.key,
+      project,
       spec: "# Quiet document\n\nIt stays connected.\n",
       title: "Idle document connection",
     });
@@ -632,9 +646,10 @@ for (const row of [
 test("document marks and table alignment use classes rather than inline styles", async ({
   browser,
 }) => {
-  await createProject({ key: "MARKS", name: "Marks" });
+  const marks = rowKey("MARKS");
+  await createProject({ key: marks, name: "Marks" });
   const issue = await createIssue({
-    project: "MARKS",
+    project: marks,
     spec: "A marked phrase.\n\n| One | Two |\n| :--- | ---: |\n| Left | Right |\n",
     title: "Document decoration style",
   });
@@ -691,9 +706,10 @@ const editorTransportMarkers = [/[^.\w$]getXmlFragment\(/u, /permissionDeniedHan
 test("the Conversation tab downloads no editor transport; the Spec tab loads it on demand", async ({
   browser,
 }) => {
-  await createProject({ key: "LAZY", name: "Lazy" });
+  const lazy = rowKey("LAZY");
+  await createProject({ key: lazy, name: "Lazy" });
   const issue = await createIssue({
-    project: "LAZY",
+    project: lazy,
     spec: "# Lazy\n\nUse SQLite\n",
     title: "Transport on demand",
   });
@@ -739,9 +755,10 @@ test("the Conversation tab downloads no editor transport; the Spec tab loads it 
 test("a version deep link renders the comment's original quote highlighted in a read-only editor", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "LINK", name: "Linked documents" });
+  const linkKey = rowKey("LINK");
+  await createProject({ key: linkKey, name: "Linked documents" });
   const issue = await createIssue({
-    project: "LINK",
+    project: linkKey,
     spec: "SQLite is local",
     title: "Deep link highlight",
   });
@@ -778,13 +795,16 @@ test("a version deep link renders the comment's original quote highlighted in a 
 test("clicking a Markdown dispatch:// link in the live editor navigates in-app without a reload", async ({
   browser,
 }) => {
-  await createProject({ key: "NAV", name: "Navigation" });
+  const nav = rowKey("NAV");
+  // Named for no label of the shell: `Navigation` is the name of the navigation, which lists
+  // every project of the stack as a link and which rows read by that name.
+  await createProject({ key: nav, name: "Link clicks" });
   const target = await createIssue({
-    project: "NAV",
+    project: nav,
     title: "Navigation target",
   });
   const source = await createIssue({
-    project: "NAV",
+    project: nav,
     spec: `See [the other issue](dispatch://${target.key}) for context.`,
     title: "Navigation source",
   });
@@ -826,11 +846,12 @@ test("clicking a Markdown dispatch:// link in the live editor navigates in-app w
 test("a backslash before a character reference reads as its text in a document, a comment and the command line", async ({
   browser,
 }, testInfo) => {
+  const ref = rowKey("REF");
   const written = "Plain \\&amp; end.";
   const text = "Plain &amp; end.";
-  await createProject({ key: "REF", name: "References" });
+  await createProject({ key: ref, name: "References" });
   const issue = await createIssue(
-    { project: "REF", spec: `${written}\n`, title: "Escaped reference" },
+    { project: ref, spec: `${written}\n`, title: "Escaped reference" },
     session
   );
   const alice = await asUser(browser, "alice");

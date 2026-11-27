@@ -11,7 +11,7 @@ import {
   recordCheckResult,
 } from "./api";
 import type { WholeIssueSeed } from "./issue-layout-seed";
-import { HEAD_SHA, PROJECT, pause, recorderActor } from "./issue-layout-seed-support";
+import { HEAD_SHA, layoutProject, pause, recorderActor } from "./issue-layout-seed-support";
 import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
 import { issuePage } from "./issue-page";
 import { longWords } from "./issue-page-g";
@@ -723,19 +723,21 @@ export interface LinkedChecksSeed {
 }
 
 /**
- * The issue row 3 of `e2e/issue-page-v.e2e.ts` reads: a spec of statements A (200 words), B and
- * C; a Verification document with one check that serves A and B, whose words hold a markdown
- * link to the runbook and the `dispatch://` address of B, with one result an agent's session
- * recorded; and a child whose Verification document holds one check that serves C. A `serves`
- * is written as `verificationDocument` writes one, `dispatch://<key>/spec#b-<id>`. The seed
- * waits until the coverage read counts one check for each statement, the child's included, so
- * the row reads the view and not the indexing.
+ * The issue row 3 of `e2e/issue-page-v.e2e.ts` reads, in a project of the row's own
+ * (`layoutProject`), which the seed makes: a spec of statements A (200 words), B and C; a
+ * Verification document with one check that serves A and B, whose words hold a markdown link to
+ * the runbook and the `dispatch://` address of B, with one result an agent's session recorded;
+ * and a child whose Verification document holds one check that serves C. A `serves` is written as
+ * `verificationDocument` writes one, `dispatch://<key>/spec#b-<id>`. The seed waits until the
+ * coverage read counts one check for each statement, the child's included, so the row reads the
+ * view and not the indexing.
  */
 export async function seedLinkedChecks(): Promise<LinkedChecksSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
+  const project = layoutProject();
+  await createProject({ key: project, name: "Issue layout" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: `${[
       [LINKED_BLOCKS.a, STATEMENT_A_WORDS],
       [LINKED_BLOCKS.b, STATEMENT_B_WORDS],
@@ -758,7 +760,7 @@ export async function seedLinkedChecks(): Promise<LinkedChecksSeed> {
   const child = await createIssue({
     force: true,
     parent: key,
-    project: PROJECT,
+    project,
     title: "Serve the last statement from the issue under it",
   });
   await createIssueArtifact(child.key, {

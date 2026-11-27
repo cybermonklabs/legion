@@ -1030,6 +1030,7 @@ async function expectEscapeLeavesEditor(
         screen.queryByLabelText(box),
         `Escape on the editor's ${button} left the editor open`
       ).not.toBeInTheDocument();
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the button.
       expect(
         document.activeElement,
         `Escape on the editor's ${button} did not give the focus back to the row's control`
@@ -1111,9 +1112,9 @@ test("leaving the blocked-by editor gives the focus back to its Add or Edit", as
     );
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.cancel }));
     expect(
-      document.activeElement,
+      screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }),
       "Cancel in the blocked-by editor left the focus on the page"
-    ).toBe(screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }));
+    ).toHaveFocus();
 
     await user.click(screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }));
     await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
@@ -1121,9 +1122,9 @@ test("leaving the blocked-by editor gives the focus back to its Add or Edit", as
     await user.keyboard("{Enter}");
     await waitFor(() =>
       expect(
-        document.activeElement,
+        screen.queryByRole("button", { name: blockedByControlName("CORE-1", 1) }),
         "a save of the blocked-by list that landed left the focus on the page"
-      ).toBe(screen.queryByRole("button", { name: blockedByControlName("CORE-1", 1) }))
+      ).toHaveFocus()
     );
   } finally {
     unmount();
@@ -1148,9 +1149,9 @@ test("on a closed issue, leaving the blocked-by editor hands the focus to the fi
     drawIssue(getIssue, queryClient, closedIssue);
     await user.keyboard("{Escape}");
     expect(
-      document.activeElement,
+      screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }),
       "Escape in the blocked-by editor of a closed issue that waits on none did not give the focus to Development's heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
+    ).toHaveFocus();
 
     drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
     await user.click(
@@ -1160,9 +1161,9 @@ test("on a closed issue, leaving the blocked-by editor hands the focus to the fi
     drawIssue(getIssue, queryClient, { ...closedIssue, blocked_by: ["CORE-3"] });
     await user.keyboard("{Escape}");
     expect(
-      document.activeElement,
+      within(detailsRow(PROPERTY_LABELS.blocked_by)).getByRole("link", { name: "CORE-3" }),
       "Escape in the blocked-by editor of a closed issue did not give the focus to the first issue it waits on"
-    ).toBe(within(detailsRow(PROPERTY_LABELS.blocked_by)).getByRole("link", { name: "CORE-3" }));
+    ).toHaveFocus();
   } finally {
     unmount();
     restore();
@@ -1421,9 +1422,7 @@ test("Details' Blocks keeps the titles it drew while the names read of a changed
       retry,
       "the line and its Retry went while the read Retry sent is out"
     ).toBeInTheDocument();
-    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
-      retry
-    );
+    expect(retry, "Retry lost the focus while the read it sent is out").toHaveFocus();
     expect(
       detailsRow(PROPERTY_LABELS.blocks),
       "Blocks drew the titles of the set before while the read Retry sent is out"
@@ -1645,7 +1644,7 @@ test("a read that fails again in the same words is said again, while Retry keeps
       blockedBy().getByRole("button", { name: CONTROL_LABELS.retry }),
       "the line came back with another Retry"
     ).toBe(retry);
-    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+    expect(retry, "Retry lost the focus when the read failed again").toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -1697,9 +1696,9 @@ test("a read that failed on its first load keeps its Retry, with the focus, whil
       ).toHaveAttribute("aria-busy", "true");
     });
     expect(
-      document.activeElement,
+      titlesRetry,
       "Retry lost the focus while the titles it read again are out"
-    ).toBe(titlesRetry);
+    ).toHaveFocus();
     await act(async () => titlesHeld.resolve({ targets: [] }));
     await waitFor(() =>
       expect(
@@ -1708,9 +1707,9 @@ test("a read that failed on its first load keeps its Retry, with the focus, whil
       ).toBeNull()
     );
     expect(
-      document.activeElement,
+      blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }),
       "the titles answered, and the focus fell to the page rather than to the row's control"
-    ).toBe(blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+    ).toHaveFocus();
 
     const blocksRetry = await blocksRow().findByRole("button", { name: CONTROL_LABELS.retry });
     const blocksHeld = Promise.withResolvers<GraphReferences>();
@@ -1728,9 +1727,7 @@ test("a read that failed on its first load keeps its Retry, with the focus, whil
         "Retry does not read busy while the read it sent again is out"
       ).toHaveAttribute("aria-busy", "true");
     });
-    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
-      blocksRetry
-    );
+    expect(blocksRetry, "Retry lost the focus while the read it sent again is out").toHaveFocus();
     await act(async () =>
       blocksHeld.resolve({
         edges: [waitingEdge("CORE-5", "Ship the release")],
@@ -1739,9 +1736,9 @@ test("a read that failed on its first load keeps its Retry, with the focus, whil
     );
     const waiting = await blocksRow().findByRole("link", { name: "CORE-5" });
     expect(
-      document.activeElement,
+      waiting,
       "Blocks answered, and the focus fell to the page rather than to the first issue it drew"
-    ).toBe(waiting);
+    ).toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -1774,9 +1771,9 @@ test("Blocks hands the focus of its Retry to its None when the read answers with
     await user.keyboard("{Enter}");
     const none = await blocksRow().findByText(CONTROL_LABELS.none);
     expect(
-      document.activeElement,
+      none,
       "Blocks answered with none, and the focus fell to the page rather than to its None"
-    ).toBe(none);
+    ).toHaveFocus();
   } finally {
     unmount();
     getReferences.mockRestore();
@@ -1830,9 +1827,9 @@ test("Blocks says the titles it could not read, and its Retry draws them and han
     );
     expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release");
     expect(
-      document.activeElement,
+      blocksRow().getByRole("link", { name: "CORE-5" }),
       "the titles answered, and the focus fell to the page rather than to the first issue Blocks draws"
-    ).toBe(blocksRow().getByRole("link", { name: "CORE-5" }));
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -1889,7 +1886,7 @@ test("Blocks says a read that fails again in the same words again, while its Ret
       blocksRow().getByRole("button", { name: CONTROL_LABELS.retry }),
       "the line came back with another Retry"
     ).toBe(retry);
-    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+    expect(retry, "Retry lost the focus when the read failed again").toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -1919,16 +1916,17 @@ test("Blocks read again on an event, not by its Retry, leaves the focus its Retr
       blocksRow().getByRole("button", { name: CONTROL_LABELS.retry })
     );
     act(() => retry.focus());
-    await act(() =>
-      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
-    );
-    await blocksRow().findByRole("link", { name: "CORE-5" });
-    expect(retry, "Blocks answered, but its Retry is still drawn").not.toBeInTheDocument();
-    await settleFocus();
+    await settleFocus(async () => {
+      await act(() =>
+        queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
+      );
+      await blocksRow().findByRole("link", { name: "CORE-5" });
+      expect(retry, "Blocks answered, but its Retry is still drawn").not.toBeInTheDocument();
+    });
     expect(
-      document.activeElement,
+      document.body,
       "Blocks answered on an event, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     getReferences.mockRestore();
@@ -1960,32 +1958,33 @@ test("a failed refresh of what waits on the issue keeps Blocks' list, and the ti
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    await readWhatWaits(queryClient, getReferences, readFailure());
-    expect(
-      queryClient.getQueryState(["references", "to", reference, "blocked_by"])?.status,
-      "what waits on the issue was not read again with a failure"
-    ).toBe("error");
-    expect(
-      blocksRow().queryByText("Could not read what this issue blocks."),
-      "Blocks says a failure over the list it holds"
-    ).toBeNull();
-    expect(
-      blocksRow().queryByRole("link", { name: "CORE-5" }),
-      "Blocks took away the list a failed refresh left it"
-    ).not.toBeNull();
+    await settleFocus(async () => {
+      await readWhatWaits(queryClient, getReferences, readFailure());
+      expect(
+        queryClient.getQueryState(["references", "to", reference, "blocked_by"])?.status,
+        "what waits on the issue was not read again with a failure"
+      ).toBe("error");
+      expect(
+        blocksRow().queryByText("Could not read what this issue blocks."),
+        "Blocks says a failure over the list it holds"
+      ).toBeNull();
+      expect(
+        blocksRow().queryByRole("link", { name: "CORE-5" }),
+        "Blocks took away the list a failed refresh left it"
+      ).not.toBeNull();
+      expect(
+        retry,
+        "the titles' Retry went with a refresh that failed over Blocks' list"
+      ).toBeInTheDocument();
+      expect(
+        retry,
+        "the titles' Retry stopped reading busy as a refresh failed over Blocks' list, though its own read is still out"
+      ).toHaveAttribute("aria-busy", "true");
+    });
     expect(
       retry,
-      "the titles' Retry went with a refresh that failed over Blocks' list"
-    ).toBeInTheDocument();
-    expect(
-      retry,
-      "the titles' Retry stopped reading busy as a refresh failed over Blocks' list, though its own read is still out"
-    ).toHaveAttribute("aria-busy", "true");
-    await settleFocus();
-    expect(
-      document.activeElement,
       "the titles' Retry lost the focus as what waits on the issue failed again"
-    ).toBe(retry);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2032,9 +2031,9 @@ test("while the Blocked by editor is open, the titles' Retry hands its focus to 
       ).toBeNull()
     );
     expect(
-      document.activeElement,
+      blockedBy().getByRole("link", { name: "CORE-3" }),
       "the titles answered with the editor open, and the focus went elsewhere than the first issue the row waits on"
-    ).toBe(blockedBy().getByRole("link", { name: "CORE-3" }));
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2082,9 +2081,9 @@ test("on a closed issue, the titles' Retry hands its focus to the first issue th
       ).toBeNull()
     );
     expect(
-      document.activeElement,
+      blockedBy().getByRole("link", { name: "CORE-3" }),
       "the titles answered on a closed issue, and the focus fell to the page rather than to the first issue the row waits on"
-    ).toBe(blockedBy().getByRole("link", { name: "CORE-3" }));
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2142,9 +2141,9 @@ test("the titles' Retry whose answer reaches the page with a refresh that failed
     ).toBeNull();
     expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build");
     expect(
-      document.activeElement,
+      blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }),
       "the titles answered the press, and the focus fell to the page rather than to the row's control"
-    ).toBe(blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2182,18 +2181,21 @@ test("while the Blocked by editor is open, a write elsewhere that leaves the iss
 
     const read = queryClient.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey);
     if (read === undefined) throw new Error("Details reads no cached issue");
-    act(() => queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...read, blocked_by: [] }));
-    await waitFor(() =>
-      expect(
-        blockedBy().queryByRole("alert"),
-        "the issue waits on nothing, but Blocked by still says its titles failed"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      act(() =>
+        queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...read, blocked_by: [] })
+      );
+      await waitFor(() =>
+        expect(
+          blockedBy().queryByRole("alert"),
+          "the issue waits on nothing, but Blocked by still says its titles failed"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the issue waits on nothing with the editor open, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2235,20 +2237,21 @@ test("the titles' Retry whose read failed again leaves its focus on the page's b
         "the titles failed again, said in the same line"
       ).not.toBe(failed)
     );
-    expect(document.activeElement, "Retry lost the focus when its read failed again").toBe(retry);
+    expect(retry, "Retry lost the focus when its read failed again").toHaveFocus();
 
-    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
-    await waitFor(() =>
-      expect(
-        blockedBy().queryByRole("alert"),
-        "the titles answered, but Blocked by still says they failed"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+      await waitFor(() =>
+        expect(
+          blockedBy().queryByRole("alert"),
+          "the titles answered, but Blocked by still says they failed"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the titles answered on an event after Retry's read failed, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2279,19 +2282,20 @@ test("the titles' Retry taken away by blockers changed elsewhere while its read 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-4"] });
-    await blockedBy().findByRole("link", { name: "CORE-4" });
-    await waitFor(() =>
-      expect(
-        blockedBy().queryByRole("alert"),
-        "the issue waits on another set, but Blocked by still says the titles of the old one failed"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-4"] });
+      await blockedBy().findByRole("link", { name: "CORE-4" });
+      await waitFor(() =>
+        expect(
+          blockedBy().queryByRole("alert"),
+          "the issue waits on another set, but Blocked by still says the titles of the old one failed"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the blockers changed elsewhere while the titles' read was out, and the focus left the page's body though that read had not answered"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2328,19 +2332,20 @@ test("the titles' Retry taken away by blockers changed back elsewhere to a set a
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
-    await waitFor(() =>
-      expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
-    );
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
+      await waitFor(() =>
+        expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
+      );
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the issue waits on the set read before, but Blocked by still says the titles of the other failed"
+      ).toBeNull();
+    });
     expect(
-      blockedBy().queryByRole("alert"),
-      "the issue waits on the set read before, but Blocked by still says the titles of the other failed"
-    ).toBeNull();
-    await settleFocus();
-    expect(
-      document.activeElement,
+      document.body,
       "the blockers changed back elsewhere while the titles' read was out, and the focus left the page's body though that read had not answered"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2382,19 +2387,20 @@ test("the titles' Retry taken away by blockers changed back elsewhere to a set w
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
-    await waitFor(() =>
-      expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
-    );
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
+      await waitFor(() =>
+        expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
+      );
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the issue waits on the set read before, but Blocked by still says the titles of the other failed"
+      ).toBeNull();
+    });
     expect(
-      blockedBy().queryByRole("alert"),
-      "the issue waits on the set read before, but Blocked by still says the titles of the other failed"
-    ).toBeNull();
-    await settleFocus();
-    expect(
-      document.activeElement,
+      document.body,
       "the blockers changed back elsewhere to a set whose read failed and then answered before the press, and the focus left the page's body though the read the press was for had not answered"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2422,9 +2428,7 @@ test("the titles' Retry whose read failed while its blockers changed elsewhere, 
       retry,
       "the issue waits on a set whose titles failed too, but the titles' Retry went"
     ).toBeInTheDocument();
-    expect(document.activeElement, "the titles' Retry lost the focus as the set changed").toBe(
-      retry
-    );
+    expect(retry, "the titles' Retry lost the focus as the set changed").toHaveFocus();
 
     await act(async () => details.failPress());
     await waitFor(() =>
@@ -2433,19 +2437,20 @@ test("the titles' Retry whose read failed while its blockers changed elsewhere, 
         "the read the press sent did not end"
       ).toBe("idle")
     );
-    act(() => details.queryClient.removeQueries({ exact: true, queryKey: details.pressedFor }));
-    details.drawBlockers(["CORE-3"]);
-    await waitFor(() =>
-      expect(
-        retry,
-        "the set pressed for came back unread, but the titles' Retry is still drawn"
-      ).not.toBeInTheDocument()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      act(() => details.queryClient.removeQueries({ exact: true, queryKey: details.pressedFor }));
+      details.drawBlockers(["CORE-3"]);
+      await waitFor(() =>
+        expect(
+          retry,
+          "the set pressed for came back unread, but the titles' Retry is still drawn"
+        ).not.toBeInTheDocument()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the set pressed for came back after its read failed under another, and the focus left the page's body though no read answered the press"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     details.restore();
   }
@@ -2470,10 +2475,7 @@ test("the titles' Retry whose blockers changed elsewhere and back while its read
       retry,
       "the issue waits again on the set pressed for, whose read is still out, but the titles' Retry went"
     ).toBeInTheDocument();
-    expect(
-      document.activeElement,
-      "the titles' Retry lost the focus as the set changed and back"
-    ).toBe(retry);
+    expect(retry, "the titles' Retry lost the focus as the set changed and back").toHaveFocus();
 
     await act(async () => details.answerPress());
     await waitFor(() =>
@@ -2481,9 +2483,9 @@ test("the titles' Retry whose blockers changed elsewhere and back while its read
     );
     expect(retry, "the titles answered, but their Retry is still drawn").not.toBeInTheDocument();
     expect(
-      document.activeElement,
+      details.blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }),
       "the read the press sent answered after the set changed elsewhere and back, and the focus fell to the page rather than to the row's control"
-    ).toBe(details.blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+    ).toHaveFocus();
   } finally {
     details.restore();
   }
@@ -2515,10 +2517,7 @@ test("the titles' Retry whose blockers changed elsewhere to a set whose read fai
       retry,
       "the issue waits again on the set pressed for, whose read is still out, but the titles' Retry went"
     ).toBeInTheDocument();
-    expect(
-      document.activeElement,
-      "the titles' Retry lost the focus as the set changed and back"
-    ).toBe(retry);
+    expect(retry, "the titles' Retry lost the focus as the set changed and back").toHaveFocus();
 
     await act(async () => details.answerPress());
     await waitFor(() =>
@@ -2526,9 +2525,9 @@ test("the titles' Retry whose blockers changed elsewhere to a set whose read fai
     );
     expect(retry, "the titles answered, but their Retry is still drawn").not.toBeInTheDocument();
     expect(
-      document.activeElement,
+      details.blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }),
       "the read the press sent answered after the set changed to one whose read failed again and back, and the focus fell to the page rather than to the row's control"
-    ).toBe(details.blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+    ).toHaveFocus();
   } finally {
     details.restore();
   }
@@ -2552,9 +2551,7 @@ test("the titles' Retry pressed again under another set hands its focus to the r
     details.drawBlockers(["CORE-4"]);
     await details.blockedBy().findByRole("link", { name: "CORE-4" });
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
-    expect(document.activeElement, "the titles' Retry lost the focus as the set changed").toBe(
-      retry
-    );
+    expect(retry, "the titles' Retry lost the focus as the set changed").toHaveFocus();
     await details.user.keyboard("{Enter}");
 
     details.drawBlockers(["CORE-3"]);
@@ -2572,10 +2569,7 @@ test("the titles' Retry pressed again under another set hands its focus to the r
       retry,
       "the issue waits again on the set of the second press, whose read is still out, but the titles' Retry went"
     ).toBeInTheDocument();
-    expect(
-      document.activeElement,
-      "the titles' Retry lost the focus as the set changed and back"
-    ).toBe(retry);
+    expect(retry, "the titles' Retry lost the focus as the set changed and back").toHaveFocus();
 
     await act(async () =>
       otherRead.resolve(issueNames([details.otherBlocker], { "CORE-4": "Ship the release" }))
@@ -2585,9 +2579,9 @@ test("the titles' Retry pressed again under another set hands its focus to the r
     );
     expect(retry, "the titles answered, but their Retry is still drawn").not.toBeInTheDocument();
     expect(
-      document.activeElement,
+      details.blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }),
       "the read the second press joined answered after the first press's read failed, and the focus fell to the page rather than to the row's control"
-    ).toBe(details.blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+    ).toHaveFocus();
   } finally {
     details.restore();
   }
@@ -2614,19 +2608,20 @@ test("Blocks' titles Retry taken away by what waits on the issue changed elsewhe
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    await readWhatWaits(queryClient, getReferences, OTHER_WAITER_REFERENCES);
-    await blocksRow().findByRole("link", { name: "CORE-6" });
-    await waitFor(() =>
-      expect(
-        blocksRow().queryByRole("alert"),
-        "other issues wait on this one, but Blocks still says the titles of the old ones failed"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      await readWhatWaits(queryClient, getReferences, OTHER_WAITER_REFERENCES);
+      await blocksRow().findByRole("link", { name: "CORE-6" });
+      await waitFor(() =>
+        expect(
+          blocksRow().queryByRole("alert"),
+          "other issues wait on this one, but Blocks still says the titles of the old ones failed"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "what waits on the issue changed elsewhere while the titles' read was out, and the focus left the page's body though that read had not answered"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2662,19 +2657,20 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    await readWhatWaits(queryClient, getReferences, WAITER_REFERENCES);
-    await waitFor(() =>
-      expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
-    );
+    await settleFocus(async () => {
+      await readWhatWaits(queryClient, getReferences, WAITER_REFERENCES);
+      await waitFor(() =>
+        expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
+      );
+      expect(
+        blocksRow().queryByRole("alert"),
+        "the set read before waits on the issue again, but Blocks still says the titles of the other failed"
+      ).toBeNull();
+    });
     expect(
-      blocksRow().queryByRole("alert"),
-      "the set read before waits on the issue again, but Blocks still says the titles of the other failed"
-    ).toBeNull();
-    await settleFocus();
-    expect(
-      document.activeElement,
+      document.body,
       "what waits on the issue changed back elsewhere while the titles' read was out, and the focus left the page's body though that read had not answered"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2715,19 +2711,20 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    await readWhatWaits(queryClient, getReferences, WAITER_REFERENCES);
-    await waitFor(() =>
-      expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
-    );
+    await settleFocus(async () => {
+      await readWhatWaits(queryClient, getReferences, WAITER_REFERENCES);
+      await waitFor(() =>
+        expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
+      );
+      expect(
+        blocksRow().queryByRole("alert"),
+        "the set read before waits on the issue again, but Blocks still says the titles of the other failed"
+      ).toBeNull();
+    });
     expect(
-      blocksRow().queryByRole("alert"),
-      "the set read before waits on the issue again, but Blocks still says the titles of the other failed"
-    ).toBeNull();
-    await settleFocus();
-    expect(
-      document.activeElement,
+      document.body,
       "what waits on the issue changed back elsewhere to a set whose read failed and then answered before the press, and the focus left the page's body though the read the press was for had not answered"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     titles.mockRestore();
@@ -2759,9 +2756,9 @@ test("Show all gives the focus to the first entry it opens", async () => {
     act(() => showFiles.focus());
     await user.keyboard("{Enter}");
     expect(
-      document.activeElement,
+      within(screen.getByTestId("issue-files")).getByRole("link", { name: /notes-10\.md/ }),
       "Show all of Files and documents left the focus off the first entry it opened"
-    ).toBe(within(screen.getByTestId("issue-files")).getByRole("link", { name: /notes-10\.md/ }));
+    ).toHaveFocus();
 
     const blocks = detailsRow(PROPERTY_LABELS.blocks);
     const showBlocks = await within(blocks).findByRole("button", {
@@ -2770,9 +2767,9 @@ test("Show all gives the focus to the first entry it opens", async () => {
     act(() => showBlocks.focus());
     await user.keyboard("{Enter}");
     expect(
-      document.activeElement,
+      within(blocks).getByRole("link", { name: "CORE-12" }),
       "Show all of Blocks left the focus off the first entry it opened"
-    ).toBe(within(blocks).getByRole("link", { name: "CORE-12" }));
+    ).toHaveFocus();
   } finally {
     unmount();
     getReferences.mockRestore();
@@ -2856,12 +2853,10 @@ test("in Details, Referenced by's Retry keeps the focus while the read it sent i
       ).toHaveAttribute("aria-disabled", "true")
     );
     expect(retry, "Retry turned disabled while the read it sent is out").toBeEnabled();
-    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
-      retry
-    );
+    expect(retry, "Retry lost the focus while the read it sent is out").toHaveFocus();
     await user.keyboard("{Enter}");
     expect(listReads(), "a press of Retry while its read is out sent another").toBe(reads + 1);
-    expect(document.activeElement, "Retry lost the focus at a second press").toBe(retry);
+    expect(retry, "Retry lost the focus at a second press").toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -2915,17 +2910,16 @@ test("in Details, Referenced by's Retry, pressed after the list's first read fai
     act(() => retry.focus());
     await details.user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
-    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
-      retry
-    );
-    await act(async () => answer.resolve(NOTHING_REFERENCES));
-    await within(list).findByText("Nothing references this yet.");
-    expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument();
-    await settleFocus();
+    expect(retry, "Retry lost the focus while the read it sent is out").toHaveFocus();
+    await settleFocus(async () => {
+      await act(async () => answer.resolve(NOTHING_REFERENCES));
+      await within(list).findByText("Nothing references this yet.");
+      expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument();
+    });
     expect(
-      document.activeElement,
+      control,
       "the read Retry sent answered with nothing to list, and the focus fell to the page's body rather than to Referenced by's control"
-    ).toBe(control);
+    ).toHaveFocus();
   } finally {
     details.restore();
   }
@@ -3050,19 +3044,18 @@ test("in Details, Referenced by's Retry hands its focus to the list's first link
     act(() => retry.focus());
     await details.user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
-    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
-      retry
-    );
+    expect(retry, "Retry lost the focus while the read it sent is out").toHaveFocus();
 
-    await act(async () => answer.resolve(WAITER_REFERENCES));
-    await waitFor(() =>
-      expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      await act(async () => answer.resolve(WAITER_REFERENCES));
+      await waitFor(() =>
+        expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
+      );
+    });
     expect(
-      document.activeElement,
+      within(list).getAllByRole("link")[0],
       "the read Retry sent answered, and the focus fell to the page's body rather than to the list's first link"
-    ).toBe(within(list).getAllByRole("link")[0]);
+    ).toHaveFocus();
   } finally {
     details.restore();
   }
@@ -3077,15 +3070,16 @@ test("in Details, Referenced by's line, gone as an event's read of the list answ
     const { list, retry } = await details.open();
     details.answerList(() => Promise.resolve(WAITER_REFERENCES));
     act(() => retry.focus());
-    await details.readListAgain();
-    await waitFor(() =>
-      expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      await details.readListAgain();
+      await waitFor(() =>
+        expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "an event's read of the list answered, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(
       within(list).getAllByRole("link")[0],
       "the list's first link took the focus"
@@ -3114,20 +3108,19 @@ test("in Details, Referenced by's Retry whose read failed again hands nothing on
         "aria-disabled"
       )
     );
-    expect(document.activeElement, "Retry lost the focus as the read it sent failed again").toBe(
-      retry
-    );
+    expect(retry, "Retry lost the focus as the read it sent failed again").toHaveFocus();
 
     details.answerList(() => Promise.resolve(WAITER_REFERENCES));
-    await details.readListAgain();
-    await waitFor(() =>
-      expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      await details.readListAgain();
+      await waitFor(() =>
+        expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "an event's read of the list answered after Retry's read failed, and the focus left the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
     expect(
       within(list).getAllByRole("link")[0],
       "the list's first link took the focus"
@@ -3200,14 +3193,15 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
 
     getReferences.mockResolvedValue(NOTHING_REFERENCES);
     act(() => retry.focus());
-    await user.keyboard("{Enter}");
-    await within(list).findByText("Nothing references this yet.");
-    expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument();
-    await settleFocus();
+    await settleFocus(async () => {
+      await userOnFakeClock().keyboard("{Enter}");
+      await within(list).findByText("Nothing references this yet.");
+      expect(retry, "the list answered, but its Retry is still drawn").not.toBeInTheDocument();
+    });
     expect(
-      document.activeElement,
+      screen.getByRole("button", { name: MARGIN_SECTION_NAMES.references }),
       "Retry's read answered at a count of 0, and the focus fell to the page's body rather than to References' heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.references }));
+    ).toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -3418,17 +3412,15 @@ test("the add menu opened by the keyboard takes the focus, walks by the arrows a
     const entries = await screen.findAllByRole("menuitem");
     expect(entries.length, "the add menu lists fewer than two entries to walk").toBeGreaterThan(1);
     await waitFor(() =>
-      expect(document.activeElement, "the add menu opened with the focus left on Add").toBe(
-        entries[0]
-      )
+      expect(entries[0], "the add menu opened with the focus left on Add").toHaveFocus()
     );
     await user.keyboard("{ArrowDown}");
-    expect(document.activeElement, "ArrowDown did not move to the next entry").toBe(entries[1]);
+    expect(entries[1], "ArrowDown did not move to the next entry").toHaveFocus();
     await user.keyboard("{ArrowUp}");
-    expect(document.activeElement, "ArrowUp did not move back to the first entry").toBe(entries[0]);
+    expect(entries[0], "ArrowUp did not move back to the first entry").toHaveFocus();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu"), "Escape left the add menu open").not.toBeInTheDocument();
-    expect(document.activeElement, "Escape did not give the focus back to Add").toBe(add);
+    expect(add, "Escape did not give the focus back to Add").toHaveFocus();
     expect(
       escapes.taken,
       "Escape in the add menu went on to the page's keys, which close Details on a phone"
@@ -3436,7 +3428,7 @@ test("the add menu opened by the keyboard takes the focus, walks by the arrows a
 
     // An entry chosen by the keyboard opens its control, as one chosen by the pointer does.
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(document.activeElement).toBe(screen.getAllByRole("menuitem")[0]));
+    await waitFor(() => expect(screen.getAllByRole("menuitem")[0]).toHaveFocus());
     await user.keyboard("{Enter}");
     await waitFor(() =>
       expect(
@@ -4072,9 +4064,9 @@ test.each(FIRST_ADDED)(
       await toggleEvals(user, control);
       await waitFor(() =>
         expect(
-          document.activeElement,
+          screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }),
           "the add landed, and the line gave the focus back to no add control beside Add"
-        ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
+        ).toHaveFocus()
       );
       await act(async () => reread.resolve(readBack));
       const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
@@ -4084,6 +4076,7 @@ test.each(FIRST_ADDED)(
           ? "the Advances row's picker trigger is not disabled on a closed issue"
           : "the Advances row's picker trigger is disabled on an open issue"
       ).toHaveProperty("disabled", disabled);
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
       expect(
         document.activeElement,
         `the line moved into the Advances row, and the focus fell to the page rather than to ${name}`
@@ -4149,9 +4142,7 @@ test.each(LAST_REMOVED)(
         trigger,
         "the trigger took a press again before the new read was drawn"
       ).toHaveAttribute("aria-disabled", "true");
-      expect(document.activeElement, "the trigger lost the focus before the line moved").toBe(
-        trigger
-      );
+      expect(trigger, "the trigger lost the focus before the line moved").toHaveFocus();
       await act(async () => reread.resolve(readBack));
       await waitFor(() =>
         expect(
@@ -4168,6 +4159,7 @@ test.each(LAST_REMOVED)(
           ? "the add control beside Add is not disabled on a closed issue"
           : "the add control beside Add is disabled on an open issue"
       ).toHaveProperty("disabled", disabled);
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
       expect(
         document.activeElement,
         `the line moved back beside Add, and the focus fell to the page rather than to ${name}`
@@ -4217,23 +4209,24 @@ test("the last priority removed hands the focus from its picker's trigger to the
         "the trigger still refuses a press after its write settled"
       ).not.toHaveAttribute("aria-disabled")
     );
-    expect(document.activeElement, "the trigger lost the focus before the row left").toBe(trigger);
+    expect(trigger, "the trigger lost the focus before the row left").toHaveFocus();
 
-    drawIssue(getIssue, queryClient, removed);
-    await waitFor(() =>
-      expect(
-        screen.queryByText(PROPERTY_LABELS.advances, {
-          exact: true,
-          selector: "[data-page-chrome]",
-        }),
-        "the issue advances nothing, and Details still draws the Advances row"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, removed);
+      await waitFor(() =>
+        expect(
+          screen.queryByText(PROPERTY_LABELS.advances, {
+            exact: true,
+            selector: "[data-page-chrome]",
+          }),
+          "the issue advances nothing, and Details still draws the Advances row"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      screen.getByRole("button", { name: addPriorityControlName("CORE-1") }),
       "the reader's own removal moved the line after its write settled, and the focus fell to the page rather than to the add control beside Add"
-    ).toBe(screen.getByRole("button", { name: addPriorityControlName("CORE-1") }));
+    ).toHaveFocus();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4269,23 +4262,24 @@ test("the last priority removed with no answer hands the focus from its picker's
     const write = queryClient.getMutationCache().getAll().at(-1)?.state;
     expect(write?.status, "the removal answered KEY_COMMITTED did not land").toBe("success");
     expect(write?.data, "the removal answered KEY_COMMITTED landed with an answer").toBeNull();
-    expect(document.activeElement, "the trigger lost the focus before the row left").toBe(trigger);
+    expect(trigger, "the trigger lost the focus before the row left").toHaveFocus();
 
-    drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 5 });
-    await waitFor(() =>
-      expect(
-        screen.queryByText(PROPERTY_LABELS.advances, {
-          exact: true,
-          selector: "[data-page-chrome]",
-        }),
-        "the issue advances nothing, and Details still draws the Advances row"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 5 });
+      await waitFor(() =>
+        expect(
+          screen.queryByText(PROPERTY_LABELS.advances, {
+            exact: true,
+            selector: "[data-page-chrome]",
+          }),
+          "the issue advances nothing, and Details still draws the Advances row"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      screen.getByRole("button", { name: addPriorityControlName("CORE-1") }),
       "the reader's own removal, landed with no answer, moved the line after its write settled, and the focus fell to the page rather than to the add control beside Add"
-    ).toBe(screen.getByRole("button", { name: addPriorityControlName("CORE-1") }));
+    ).toHaveFocus();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4311,29 +4305,30 @@ test("the last priority taken away elsewhere after the reader's own removal land
     await toggleEvals(user, trigger);
     await waitFor(() =>
       expect(
-        document.activeElement,
+        screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }),
         "the reader's own removal moved the line, and the focus did not go to the add control beside Add"
-      ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
+      ).toHaveFocus()
     );
 
-    drawIssue(getIssue, queryClient, advancingEvals(6));
-    const again = await waitFor(advancesRowTrigger);
-    act(() => again.focus());
-    drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 7 });
-    await waitFor(() =>
-      expect(
-        screen.queryByText(PROPERTY_LABELS.advances, {
-          exact: true,
-          selector: "[data-page-chrome]",
-        }),
-        "the issue advances nothing, and Details still draws the Advances row"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, advancingEvals(6));
+      const again = await waitFor(advancesRowTrigger);
+      act(() => again.focus());
+      drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 7 });
+      await waitFor(() =>
+        expect(
+          screen.queryByText(PROPERTY_LABELS.advances, {
+            exact: true,
+            selector: "[data-page-chrome]",
+          }),
+          "the issue advances nothing, and Details still draws the Advances row"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "another session took the last priority away after the reader's removal landed, and the focus left the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4361,9 +4356,9 @@ test("the line moved into the Advances row by a priority an issue above gains af
     const control = await waitFor(() => {
       const beside = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
       expect(
-        document.activeElement,
+        beside,
         "the reader's own removal moved the line, and the focus did not go to the add control beside Add"
-      ).toBe(beside);
+      ).toHaveFocus();
       return beside;
     });
     await waitFor(() =>
@@ -4373,16 +4368,17 @@ test("the line moved into the Advances row by a priority an issue above gains af
       ).not.toHaveAttribute("aria-disabled")
     );
 
-    drawIssue(getIssue, queryClient, {
-      ...removed,
-      advances: [{ id: "evals-now", inherited: true }],
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, {
+        ...removed,
+        advances: [{ id: "evals-now", inherited: true }],
+      });
+      await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
     });
-    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    await settleFocus();
     expect(
-      document.activeElement,
+      document.body,
       "an issue above gained a priority after the reader's removal landed, and the focus left the page's body though no press of theirs moved the line"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4434,13 +4430,14 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
     unmount = renderDetails(undefined, undefined, queryClient).unmount;
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     act(() => control.focus());
-    drawIssue(getIssue, queryClient, advancingEvals(5));
-    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    await settleFocus();
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, advancingEvals(5));
+      await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    });
     expect(
-      document.activeElement,
+      document.body,
       "another session moved the line after the reader's add to another issue landed, and the focus left the page's body though no write to this issue moved it"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4479,19 +4476,20 @@ test("a refused first priority whose read draws another session's priority leave
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(
-        document.activeElement,
+        screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }),
         "the line gave the focus back to no add control beside Add"
-      ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
+      ).toHaveFocus()
     );
-    await act(async () =>
-      reread.resolve({ ...advancesOnly, advances: [{ id: "PRI-9", inherited: false }] })
-    );
-    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    await settleFocus();
+    await settleFocus(async () => {
+      await act(async () =>
+        reread.resolve({ ...advancesOnly, advances: [{ id: "PRI-9", inherited: false }] })
+      );
+      await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the refused write's read moved the line, and the focus left the page's body though the reader's write saved nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     view.unmount();
     priorities.mockRestore();
@@ -4515,21 +4513,22 @@ test("an event's read of another session's first priority while the reader's is 
     await addFirstPriority(user);
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
-    await waitFor(() => expect(document.activeElement).toBe(control));
+    await waitFor(() => expect(control).toHaveFocus());
     expect(
       control,
       "the add control does not refuse a press while the write is out"
     ).toHaveAttribute("aria-disabled", "true");
-    drawIssue(getIssue, queryClient, {
-      ...advancesOnly,
-      advances: [{ id: "PRI-9", inherited: false }],
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, {
+        ...advancesOnly,
+        advances: [{ id: "PRI-9", inherited: false }],
+      });
+      await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
     });
-    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    await settleFocus();
     expect(
-      document.activeElement,
+      document.body,
       "an event's read moved the line while the reader's write was out, and the focus left the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4560,20 +4559,21 @@ test("a refused first priority whose set an event's read draws after the write e
       ).not.toHaveAttribute("aria-disabled")
     );
     expect(
-      document.activeElement,
+      control,
       "the add control beside Add lost the focus as the write was refused"
-    ).toBe(control);
+    ).toHaveFocus();
 
-    drawIssue(getIssue, queryClient, {
-      ...advancesOnly,
-      advances: [{ id: "evals-now", inherited: false }],
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, {
+        ...advancesOnly,
+        advances: [{ id: "evals-now", inherited: false }],
+      });
+      await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
     });
-    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    await settleFocus();
     expect(
-      document.activeElement,
+      document.body,
       "an event's read drew the set of the reader's refused write after it ended, and the focus left the page's body though that write saved nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4600,21 +4600,24 @@ test("on a closed issue, the last priority taken away elsewhere leaves the focus
       within(detailsRow(PROPERTY_LABELS.advances)).getByRole("link")
     );
     act(() => link.focus());
-    act(() => queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...closed, advances: [] }));
-    await waitFor(() =>
-      expect(
-        screen.queryByText(PROPERTY_LABELS.advances, {
-          exact: true,
-          selector: "[data-page-chrome]",
-        }),
-        "the issue advances nothing, and Details still draws the Advances row"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      act(() =>
+        queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...closed, advances: [] })
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByText(PROPERTY_LABELS.advances, {
+            exact: true,
+            selector: "[data-page-chrome]",
+          }),
+          "the issue advances nothing, and Details still draws the Advances row"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the Advances row went on a closed issue, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4641,18 +4644,19 @@ test("the line moved by a write elsewhere into an Advances row at the cap leaves
       id: `priority-${index + 1}`,
       inherited: false,
     }));
-    act(() =>
-      queryClient.setQueryData(issueQuery("CORE-1").queryKey, {
-        ...advancesOnly,
-        advances: atCap,
-      })
-    );
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    await settleFocus();
+    const row = await settleFocus(async () => {
+      act(() =>
+        queryClient.setQueryData(issueQuery("CORE-1").queryKey, {
+          ...advancesOnly,
+          advances: atCap,
+        })
+      );
+      return waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the line moved into the Advances row at the cap, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
 
     await user.click(
       within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) })
@@ -5142,15 +5146,16 @@ test("a close made elsewhere that takes the refused repository's Retry leaves it
     const retry = within(row).getByRole("button", { name: CONTROL_LABELS.retry });
     act(() => retry.focus());
 
-    drawIssue(getIssue, queryClient, closedIssue);
-    await waitFor(() =>
-      expect(retry, "the close left the refused write's Retry").not.toBeInTheDocument()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, closedIssue);
+      await waitFor(() =>
+        expect(retry, "the close left the refused write's Retry").not.toBeInTheDocument()
+      );
+    });
     expect(
-      document.activeElement,
+      document.body,
       "a close elsewhere took the refused write's Retry, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -5196,9 +5201,9 @@ test("a refused repository's Retry hands the focus to the row's box as its line 
       ).not.toBeInTheDocument()
     );
     expect(
-      document.activeElement,
+      within(row).getByRole("combobox", { name: repoControlName("CORE-1") }),
       "the refusal's line went, and the focus fell to the page rather than to the row's box"
-    ).toBe(within(row).getByRole("combobox", { name: repoControlName("CORE-1") }));
+    ).toHaveFocus();
 
     // Dispatch answers the write, and every read of the issue after it, with the issue's own
     // repository as the one it resolves to.
@@ -5212,16 +5217,14 @@ test("a refused repository's Retry hands the focus to the row's box as its line 
       ).not.toBeInTheDocument()
     );
     expect(
-      document.activeElement,
-      "the repository landed, and the focus fell to the page rather than to the row's control"
-    ).toBe(
       within(row).getByRole("button", {
         name: repoTextControlName("CORE-1", {
           resolvedRepo: "acme/web",
           words: CONTROL_NAME_WORDS,
         }),
-      })
-    );
+      }),
+      "the repository landed, and the focus fell to the page rather than to the row's control"
+    ).toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -5922,14 +5925,15 @@ test("a sources read that takes the open components picker away leaves its focus
     expect(screen.getByRole("combobox", { name: "Search components" })).toHaveFocus();
 
     sources.mockResolvedValue([]);
-    await act(() => queryClient.refetchQueries({ queryKey: ["architecture-sources"] }));
-    expect(picker, "the sources read left the picker on the page").not.toBeInTheDocument();
-    expect(screen.queryByRole("listbox"), "the picker left its popover open").toBeNull();
-    await settleFocus();
+    await settleFocus(async () => {
+      await act(() => queryClient.refetchQueries({ queryKey: ["architecture-sources"] }));
+      expect(picker, "the sources read left the picker on the page").not.toBeInTheDocument();
+      expect(screen.queryByRole("listbox"), "the picker left its popover open").toBeNull();
+    });
     expect(
-      document.activeElement,
+      document.body,
       "the popover went with its trigger, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     tree.mockRestore();
@@ -6084,12 +6088,13 @@ test("a press at the Parent or route row with its editor shut opens the editor, 
       try {
         await screen.findByRole("button", { name: opener });
         await press(user);
-        await waitFor(() =>
+        await waitFor(() => {
+          // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the row.
           expect(
             document.activeElement,
             `the press at ${row} (parent ${details.parent}) put no focus in a new editor's box`
-          ).toBe(screen.queryByLabelText(PROPERTY_LABELS[row]))
-        );
+          ).toBe(screen.queryByLabelText(PROPERTY_LABELS[row]));
+        });
         stayed();
       } finally {
         unmount();
@@ -6427,17 +6432,14 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
       retryOfRoute(),
       "the line and its Retry went while the route they sent again is out"
     ).toBe(retry);
-    expect(
-      document.activeElement,
-      "Retry lost the focus while the route it sent again is out"
-    ).toBe(retry);
+    expect(retry, "Retry lost the focus while the route it sent again is out").toHaveFocus();
     await waitFor(() =>
       expect(
         retry,
         "Retry does not refuse a press while the route it sent again is out"
       ).toHaveAttribute("aria-disabled", "true")
     );
-    expect(document.activeElement, "Retry lost the focus once it refused a press").toBe(retry);
+    expect(retry, "Retry lost the focus once it refused a press").toHaveFocus();
     await user.keyboard("{Enter}");
     expect(patchIssue, "a press of Retry while its save is out sent another").toHaveBeenCalledTimes(
       2
@@ -6458,10 +6460,7 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
       "the second refusal was not drawn afresh, so a screen reader would not say it"
     ).not.toBe(refused);
     expect(retryOfRoute(), "the line came back with another Retry").toBe(retry);
-    expect(
-      document.activeElement,
-      "Retry lost the focus when Dispatch refused the route again"
-    ).toBe(retry);
+    expect(retry, "Retry lost the focus when Dispatch refused the route again").toHaveFocus();
     expect(
       retry,
       "Retry still refuses a press after Dispatch refused the route again"
@@ -6476,9 +6475,9 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
       ).not.toBeInTheDocument()
     );
     expect(
-      document.activeElement,
+      within(rowAt("route")).getByRole("button", { name: `Messages default to ${route}` }),
       "the route landed, and the focus fell to the page rather than to the row's control"
-    ).toBe(within(rowAt("route")).getByRole("button", { name: `Messages default to ${route}` }));
+    ).toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -6516,19 +6515,20 @@ test("a close made elsewhere that takes the refused route's Retry while its rout
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
 
-    drawIssue(getIssue, queryClient, closedIssue);
-    await waitFor(() =>
-      expect(retry, "the close left the route's Retry on the page").not.toBeInTheDocument()
-    );
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, closedIssue);
+      await waitFor(() =>
+        expect(retry, "the close left the route's Retry on the page").not.toBeInTheDocument()
+      );
+      expect(
+        within(rowAt("route")).queryByRole("alert"),
+        "the line went with its Retry while the route it sent is out"
+      ).not.toBeNull();
+    });
     expect(
-      within(rowAt("route")).queryByRole("alert"),
-      "the line went with its Retry while the route it sent is out"
-    ).not.toBeNull();
-    await settleFocus();
-    expect(
-      document.activeElement,
+      document.body,
       "a close elsewhere took the Retry while its route was out, and the focus left the page's body"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -6566,18 +6566,19 @@ test("the refused route's line taken away by the route set elsewhere while its R
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
 
-    drawIssue(getIssue, queryClient, { ...issue, route });
-    await waitFor(() =>
-      expect(
-        within(rowAt("route")).queryByRole("alert"),
-        "the issue holds the route, but the row still says it was refused"
-      ).toBeNull()
-    );
-    await settleFocus();
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, { ...issue, route });
+      await waitFor(() =>
+        expect(
+          within(rowAt("route")).queryByRole("alert"),
+          "the issue holds the route, but the row still says it was refused"
+        ).toBeNull()
+      );
+    });
     expect(
-      document.activeElement,
+      within(rowAt("route")).getByRole("button", { name: `Messages default to ${route}` }),
       "the route set elsewhere took the line while its Retry's route was out, and the focus fell to the page rather than to the row's control"
-    ).toBe(within(rowAt("route")).getByRole("button", { name: `Messages default to ${route}` }));
+    ).toHaveFocus();
   } finally {
     unmount();
     restore();
@@ -6661,11 +6662,9 @@ test("a route refused because the issue closed is said without Retry, and the ro
       "the refusal of a route on a closed issue offers a Retry that sends nothing"
     ).not.toBeInTheDocument();
     expect(
-      within(rowAt("route"))
-        .getByRole("button", { name: /^Messages default to / })
-        .getAttribute("aria-label"),
+      within(rowAt("route")).getByRole("button", { name: /^Messages default to / }),
       "the route's control does not name the route the closed issue holds"
-    ).toBe(`Messages default to ${saved}`);
+    ).toHaveAttribute("aria-label", `Messages default to ${saved}`);
   } finally {
     unmount();
     restore();
@@ -6686,24 +6685,24 @@ test("leaving the parent's or the route's editor gives the focus back to its row
     await user.paste("CORE-9");
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(document.activeElement, "Save parent by Enter left the focus on the page").toBe(
-        control("parent")
-      )
+      expect(control("parent"), "Save parent by Enter left the focus on the page").toHaveFocus()
     );
 
     await within(rowAt("parent")).findByRole("link", { name: "CORE-9" });
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.edit_parent }));
     await user.click(within(rowAt("parent")).getByRole("button", { name: CONTROL_LABELS.cancel }));
-    expect(document.activeElement, "Cancel of the parent's editor left the focus on the page").toBe(
-      control("parent")
-    );
+    expect(
+      control("parent"),
+      "Cancel of the parent's editor left the focus on the page"
+    ).toHaveFocus();
     expect(control("parent")).toHaveTextContent(CONTROL_LABELS.edit_parent);
 
     await user.click(screen.getByRole("button", { name: "Messages default to no route" }));
     await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.cancel }));
-    expect(document.activeElement, "Cancel of the route's editor left the focus on the page").toBe(
-      control("route")
-    );
+    expect(
+      control("route"),
+      "Cancel of the route's editor left the focus on the page"
+    ).toHaveFocus();
   } finally {
     unmount();
     restore();
@@ -6726,9 +6725,9 @@ test("on a closed issue, leaving the parent's or the route's editor hands the fo
     drawIssue(getIssue, queryClient, closedIssue);
     await user.click(within(rowAt("parent")).getByRole("button", { name: CONTROL_LABELS.cancel }));
     expect(
-      document.activeElement,
+      heading(),
       "Cancel of the parent's editor on a closed issue did not give the focus to Development's heading"
-    ).toBe(heading());
+    ).toHaveFocus();
 
     drawIssue(getIssue, queryClient, issue);
     await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
@@ -6736,9 +6735,9 @@ test("on a closed issue, leaving the parent's or the route's editor hands the fo
     drawIssue(getIssue, queryClient, closedIssue);
     await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.cancel }));
     expect(
-      document.activeElement,
+      heading(),
       "Cancel of the route's editor on a closed issue did not give the focus to Development's heading"
-    ).toBe(heading());
+    ).toHaveFocus();
   } finally {
     unmount();
     restore();
@@ -6787,9 +6786,9 @@ test("the refused route's Retry hands its focus to the editor's box while it is 
       ).not.toBeInTheDocument()
     );
     expect(
-      document.activeElement,
+      box,
       "the route landed with its editor open, and the focus did not go to the editor's box"
-    ).toBe(box);
+    ).toHaveFocus();
 
     await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.cancel }));
     refuse();
@@ -6798,16 +6797,17 @@ test("the refused route's Retry hands its focus to the editor's box while it is 
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
     await refused();
     act(() => retryOfRoute().focus());
-    drawIssue(getIssue, queryClient, { ...closedIssue, route });
+    await settleFocus(async () => {
+      drawIssue(getIssue, queryClient, { ...closedIssue, route });
+      expect(
+        within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry }),
+        "the refusal of a route on a closed issue offers a Retry that sends nothing"
+      ).toBeNull();
+    });
     expect(
-      within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry }),
-      "the refusal of a route on a closed issue offers a Retry that sends nothing"
-    ).toBeNull();
-    await settleFocus();
-    expect(
-      document.activeElement,
+      document.body,
       "the Retry went as the issue closed elsewhere, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
+    ).toHaveFocus();
   } finally {
     unmount();
     restore();
@@ -6832,7 +6832,7 @@ test("a close made elsewhere leaves the focus on the parent's link, which still 
         "the close left Edit parent issue on the page"
       ).toBeNull()
     );
-    expect(document.activeElement, "the close moved the focus off the parent's link").toBe(link);
+    expect(link, "the close moved the focus off the parent's link").toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -6865,7 +6865,7 @@ test("a close made elsewhere leaves the focus on the blocked-by editor's Save wh
         "true"
       )
     );
-    expect(document.activeElement, "the save moved the focus off Save").toBe(save);
+    expect(save, "the save moved the focus off Save").toHaveFocus();
     drawIssue(getIssue, queryClient, closedIssue);
     await waitFor(() =>
       expect(
@@ -6873,7 +6873,7 @@ test("a close made elsewhere leaves the focus on the blocked-by editor's Save wh
         "the close left the route's control enabled"
       ).toBeDisabled()
     );
-    expect(document.activeElement, "the close moved the focus off the busy Save").toBe(save);
+    expect(save, "the close moved the focus off the busy Save").toHaveFocus();
   } finally {
     stopBlurring();
     unmount();
@@ -7410,23 +7410,24 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
 
     await unpin(second);
     await waitFor(() => expect(within(pins).getAllByRole("link")).toHaveLength(2));
-    expect(document.activeElement, "Unpin did not give the focus to the next pin").toBe(
-      within(pins).getByRole("link", { name: "Third pin." })
-    );
+    expect(
+      within(pins).getByRole("link", { name: "Third pin." }),
+      "Unpin did not give the focus to the next pin"
+    ).toHaveFocus();
 
     await unpin(third);
     await waitFor(() => expect(within(pins).getAllByRole("link")).toHaveLength(1));
     expect(
-      document.activeElement,
+      within(pins).getByRole("link", { name: "First pin." }),
       "Unpin of the last pin did not give the focus to the one before it"
-    ).toBe(within(pins).getByRole("link", { name: "First pin." }));
+    ).toHaveFocus();
 
     await unpin(first);
     await waitFor(() => expect(pins).toHaveTextContent(CONTROL_LABELS.none));
     expect(
-      document.activeElement,
+      within(pins).getByRole("heading", { name: CONTROL_LABELS.pinned }),
       "Unpin of the only pin did not give the focus to the Pinned heading"
-    ).toBe(within(pins).getByRole("heading", { name: CONTROL_LABELS.pinned }));
+    ).toHaveFocus();
   } finally {
     unmount();
     putIssueState.mockRestore();
@@ -7942,24 +7943,28 @@ test.each(TAKEN_AWAY)(
     try {
       const lost = await focused(user);
       act(() => lost.focus());
-      expect(document.activeElement, "the case's element did not take the focus").toBe(lost);
+      expect(lost, "the case's element did not take the focus").toHaveFocus();
 
-      hold({ ...before, ...after }, queryClient);
-      await waitFor(() =>
+      await settleFocus(async () => {
+        // The reads the change sets off answer inside this `act`, whose end turns the event loop:
+        // on the fake clock `waitFor` ends without a turn of it, and one landing after it would
+        // update Details outside `act`.
+        await act(async () => hold({ ...before, ...after }, queryClient));
+        await waitFor(() =>
+          expect(
+            lost.isConnected && !lost.matches(":disabled"),
+            "the change left the focused element on the page, taking a press"
+          ).toBe(false)
+        );
         expect(
-          lost.isConnected && !lost.matches(":disabled"),
-          "the change left the focused element on the page, taking a press"
-        ).toBe(false)
-      );
+          document.body,
+          "the element went, and the focus is not on the page's body"
+        ).toHaveFocus();
+      });
       expect(
-        document.activeElement,
-        "the element went, and the focus is not on the page's body"
-      ).toBe(document.body);
-      await settleFocus();
-      expect(
-        document.activeElement,
+        document.body,
         "the focus left the page's body after the element went, though the reader pressed nothing"
-      ).toBe(document.body);
+      ).toHaveFocus();
       expect(
         detailsPanel().contains(document.activeElement),
         "an element of Details took the focus"

@@ -8,8 +8,6 @@
  * is the control: the same pages, served with every tree stripped from their answers, draw the
  * same texts by parsing the markdown themselves, and the counter sees those parses.
  */
-import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { plannerSession, reviewerSession, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -36,23 +34,28 @@ import {
   rewrittenParseCallSites,
 } from "./parse-counting";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
 import { serveWithoutDisplayTrees } from "./strip-trees";
+import {
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  rowKey,
+  rowPerson,
+  rowSessionId,
+  test,
+} from "./test";
 import { asUser } from "./users";
-
-const session = {
-  actor: { id: plannerSession.session_id, kind: "session" as const },
-  as: "agent" as const,
-};
 
 /** The architecture model the fake GitHub serves: one component, whose prose is markdown. */
 const architecture = {
   "web.md": "---\ntitle: Web\npaths: [packages/web]\n---\nThe **SPA** every reader opens.\n",
 };
 
-/** A word no seeded text holds but the document's and the chosen option of one answered ask, so
- *  the palette's hits are theirs: the document's own, and the ask's, whose status line says
- *  what was chosen. */
+/** A word no seeded text holds but the document's and the chosen option of one answered ask. The
+ *  palette searches it beside the row's own key (`rowKey`, e2e/test.ts), which the document and
+ *  that option name too, so the palette's hits are the row's own: the document's, and the ask's,
+ *  whose status line says what was chosen. Search reads every project of the stack. */
 const searchTerm = "astrolabe";
 
 /** The paragraph a block reference cites. Its markdown is the stored text `GET /api/v1/references`
@@ -92,33 +95,47 @@ const gateReason = "Name the **rollback** path before this gate opens.";
  *  reference as the body wrote it. */
 const untitledReference = "dispatch://role/surveyor";
 
+/** Seeds every stored text the walk reads. The reader is a person of the row's own
+ *  (`rowPerson`, e2e/test.ts), whose Inbox, Answers page and Replies page hold this row's rows
+ *  alone, and the planner and the reviewer are sessions of its own (`rowSessionId`), whose
+ *  conversation on the Agents page holds no other row's messages. */
 async function seedStoredTexts(): Promise<Seeded> {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  const me = rowPerson("alice");
+  const planner = { ...plannerSession, session_id: rowSessionId("planner") };
+  const reviewer = { ...reviewerSession, session_id: rowSessionId("reviewer") };
+  const session = {
+    actor: { id: planner.session_id, kind: "session" as const },
+    as: "agent" as const,
+  };
+  await createProject({ key: core, name: "Core" }, { login: me });
   await seedFakeGithub({
     "legion/arch": { contents: "read", files: architecture, installation_id: 101 },
   });
-  await putArchitectureSource("CORE", { branch: "main", repo: "legion/arch" });
-  const source = await syncArchitectureSource("CORE", "legion/arch");
+  await putArchitectureSource(core, { branch: "main", repo: "legion/arch" });
+  const source = await syncArchitectureSource(core, "legion/arch");
   expect(source.last_error).toBeNull();
 
-  const target = await createIssue({
-    project: "CORE",
-    spec: "The **target** issue, which a reference previews.\n",
-    title: "Reference target",
-  });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: "# Plan\n\nThe **spec** of the issue page.\n",
-    title: "Stored texts",
-  });
+  const target = await createIssue(
+    {
+      project: core,
+      spec: "The **target** issue, which a reference previews.\n",
+      title: "Reference target",
+    },
+    { login: me }
+  );
+  const issue = await createIssue(
+    { project: core, spec: "# Plan\n\nThe **spec** of the issue page.\n", title: "Stored texts" },
+    { login: me }
+  );
   // The issue is its tree's root and its project's deployment gates the spec, so its header
   // draws the design gate's step, and the spec's reviewer asked for changes: the line under the
   // step draws the reason, a stored text the issue read carries the tree of.
-  await setGatedSteps("CORE", ["spec"]);
+  await setGatedSteps(core, ["spec"]);
   await reviewArtifact(
     issue.primary_artifact_id,
     { reason: gateReason, state: "changes_requested" },
-    { login: "alice" }
+    { login: me }
   );
   const beside = await createComment(
     issue.key,
@@ -144,11 +161,11 @@ async function seedStoredTexts(): Promise<Seeded> {
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "An **ask** question?" },
     session
   );
-  await answerAsk(ask.id, {
-    expected_edited_at: null,
-    selected: ["Ship"],
-    text: "An **answer** of mine.",
-  });
+  await answerAsk(
+    ask.id,
+    { expected_edited_at: null, selected: ["Ship"], text: "An **answer** of mine." },
+    { login: me }
+  );
   // An ask answered twice, whose options' labels hold markup and a reference, and whose second
   // answer chose the option holding the palette's word. The Answers page lists both answers with
   // the labels they chose; the palette's hit for that word says what was chosen; and the ask's
@@ -156,7 +173,7 @@ async function seedStoredTexts(): Promise<Seeded> {
   // the option it chose from the tree of that label, which the answer carries. The labels name
   // the issue the ask is on, so no link to the reference preview's target is added to its page.
   const sextant = `The **sextant**, per dispatch://${issue.key}`;
-  const astrolabe = `The **${searchTerm}**, as ${issue.key} keeps it`;
+  const astrolabe = `The **${searchTerm}**, as the ${core} issue ${issue.key} keeps it`;
   const instrument = await createAsk(
     issue.key,
     {
@@ -165,26 +182,40 @@ async function seedStoredTexts(): Promise<Seeded> {
     },
     session
   );
-  const firstAnswer = await answerAsk(instrument.id, {
-    expected_edited_at: null,
-    selected: [sextant],
-    text: "Whichever is **nearest**, for now.",
-  });
-  await answerAsk(instrument.id, {
-    expected_answer_at: firstAnswer.answer?.at ?? null,
-    expected_edited_at: null,
-    selected: [astrolabe],
-    text: "The **brass** one after all.",
-  });
-  // A reply alice made to that ask: the Activity tab's line for it quotes the question it
-  // replies to (`replied to “…”`), and the Answers page lists it among her replies.
-  await createComment(issue.key, {
-    ask_id: instrument.id,
-    body: "Which **mount** does it take?",
-  });
-  // A thread alice wrote in that a session replied to: the Replies page draws both bodies, and
-  // the card under the second reply, which is nothing but a reference to a role with no title.
-  const thread = await createComment(issue.key, { body: "A **thread** alice opened." });
+  const firstAnswer = await answerAsk(
+    instrument.id,
+    {
+      expected_edited_at: null,
+      selected: [sextant],
+      text: "Whichever is **nearest**, for now.",
+    },
+    { login: me }
+  );
+  await answerAsk(
+    instrument.id,
+    {
+      expected_answer_at: firstAnswer.answer?.at ?? null,
+      expected_edited_at: null,
+      selected: [astrolabe],
+      text: "The **brass** one after all.",
+    },
+    { login: me }
+  );
+  // A reply the reader made to that ask: the Activity tab's line for it quotes the question it
+  // replies to (`replied to “…”`), and the Answers page lists it among the reader's replies.
+  await createComment(
+    issue.key,
+    { ask_id: instrument.id, body: "Which **mount** does it take?" },
+    { login: me }
+  );
+  // A thread the reader wrote in that a session replied to: the Replies page draws both bodies,
+  // and the card under the second reply, which is nothing but a reference to a role with no
+  // title.
+  const thread = await createComment(
+    issue.key,
+    { body: "A **thread** alice opened." },
+    { login: me }
+  );
   await createComment(
     issue.key,
     { body: "A **reply** of the planner's.", reply_to: thread.id },
@@ -205,20 +236,20 @@ async function seedStoredTexts(): Promise<Seeded> {
     session
   );
   // A message to an agent, which the Agents page draws, and a broadcast for the Broadcasts page.
-  await setLiveSessions([plannerSession, reviewerSession]);
-  await createAgentMessage(plannerSession.session_id, {
-    body: "A **direct** message.",
-    delivery: "aside",
-  });
-  await createBroadcast({
-    body: "A **broadcast** body.",
-    delivery: "aside",
-    session_ids: [plannerSession.session_id],
-  });
+  await setLiveSessions([planner, reviewer]);
+  await createAgentMessage(
+    planner.session_id,
+    { body: "A **direct** message.", delivery: "aside" },
+    { login: me }
+  );
+  await createBroadcast(
+    { body: "A **broadcast** body.", delivery: "aside", session_ids: [planner.session_id] },
+    { login: me }
+  );
 
   // Two versions of a document, so version 1 is a past one, and the word the palette searches.
-  const document = await createProjectDocument("CORE", {
-    content: `# Instruments\n\nThe ${searchTerm} measures altitude.\n`,
+  const document = await createProjectDocument(core, {
+    content: `# Instruments\n\nThe ${searchTerm} of ${core} measures altitude.\n`,
     name: "instruments.md",
   });
   await editArtifact(
@@ -230,9 +261,9 @@ async function seedStoredTexts(): Promise<Seeded> {
   // by panel: a comment, listed by the head of its body, and a block of another document, listed
   // by the block that holds the mention. Each excerpt is the head the server cut, drawn from the
   // tree the server read of it.
-  const cited = `dispatch://CORE/artifact/${document.artifact.slug}`;
+  const cited = `dispatch://${core}/artifact/${document.artifact.slug}`;
   await createComment(issue.key, { body: `The **readings** are in ${cited}.` }, session);
-  await createProjectDocument("CORE", {
+  await createProjectDocument(core, {
     content: `# Logbook\n\nEach **entry** cites ${cited}.\n`,
     name: "logbook.md",
   });
@@ -249,21 +280,28 @@ async function seedStoredTexts(): Promise<Seeded> {
   // dialog offers for a title typed with the question's rare words: the panel draws that
   // answer, and the issue around the ask shares no word with the draft, so the item the check
   // offers is the ask itself.
-  const mast = await createIssue({
-    project: "CORE",
-    spec: "The mast is repainted each spring, before the sailing season.\n",
-    title: "Mooring mast paint rota",
-  });
+  const mast = await createIssue(
+    {
+      project: core,
+      spec: "The mast is repainted each spring, before the sailing season.\n",
+      title: "Mooring mast paint rota",
+    },
+    { login: me }
+  );
   const hangarAsk = await createAsk(
     mast.key,
     { options: [{ label: "North" }, { label: "South" }], question: hangarQuestion },
     session
   );
-  await answerAsk(hangarAsk.id, {
-    expected_edited_at: null,
-    selected: ["North"],
-    text: "The **northern** one, which holds them all winter.",
-  });
+  await answerAsk(
+    hangarAsk.id,
+    {
+      expected_edited_at: null,
+      selected: ["North"],
+      text: "The **northern** one, which holds them all winter.",
+    },
+    { login: me }
+  );
 
   return {
     commentID: beside.id,
@@ -300,6 +338,7 @@ function earlierAnswer(page: Page): Locator {
 }
 
 function surfaces(seeded: Seeded): Surface[] {
+  const core = rowKey("CORE");
   return [
     {
       name: "the issue page",
@@ -353,7 +392,7 @@ function surfaces(seeded: Seeded): Surface[] {
     {
       name: "a past version",
       show: async (page) => {
-        await page.goto(`/projects/CORE/documents/${seeded.documentSlug}?version=1`);
+        await page.goto(`/projects/${core}/documents/${seeded.documentSlug}?version=1`);
         // The version's own section, not the document around it: the view that draws a past
         // version is what this row counts.
         await expect(
@@ -373,7 +412,7 @@ function surfaces(seeded: Seeded): Surface[] {
         await page.locator("body").focus();
         await page.keyboard.press("Control+k");
         const search = page.getByRole("combobox", { name: "Search" });
-        await search.fill(searchTerm);
+        await search.fill(`${searchTerm} ${core}`);
         await expect(
           page.getByRole("dialog", { name: "Search" }).getByRole("option").first()
         ).toBeVisible();
@@ -457,14 +496,14 @@ function surfaces(seeded: Seeded): Surface[] {
     {
       name: "a component's page",
       show: async (page) => {
-        await page.goto("/projects/CORE/architecture?component=web");
+        await page.goto(`/projects/${core}/architecture?component=web`);
         await expect(bold(page, "SPA")).toBeVisible();
       },
     },
     {
       name: "the architecture page, into a component",
       show: async (page) => {
-        await page.goto("/projects/CORE/architecture");
+        await page.goto(`/projects/${core}/architecture`);
         // The tree read carries every component's `prose_tree`, and `ComponentDetails` is its
         // one reader, so the row walks the tree into a component the way a person does: the
         // rows themselves draw titles and bars, and the page's stored text is the prose below
@@ -495,6 +534,9 @@ function surfaces(seeded: Seeded): Surface[] {
         await page.keyboard.press("c");
         const dialog = page.getByRole("dialog", { name: "Create issue" });
         await expect(dialog).toBeVisible();
+        // The check searches the project the dialog names, and with no project in the route the
+        // dialog preselects the first project of the stack, which can be another row's.
+        await dialog.getByRole("combobox", { name: "Project" }).selectOption(core);
         await dialog.getByRole("textbox", { name: "Title" }).fill(relatedDraft);
         await expect(bold(page, "northern")).toBeVisible();
       },
@@ -537,19 +579,14 @@ async function parsesOf(context: BrowserContext, surface: Surface): Promise<Surf
   }
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 test("no page that draws stored text parses markdown in either browser engine", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one engine proves what the pages parse");
+}) => {
   // Fifteen pages, each loaded in a page of its own, on a two-core box: the default deadline
   // is one page's.
   test.setTimeout(310_000);
   const seeded = await seedStoredTexts();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   await countParses(alice);
   try {
     const pages = surfaces(seeded);
@@ -572,15 +609,12 @@ test("no page that draws stored text parses markdown in either browser engine", 
   }
 });
 
-test("the counter sees the parse a text served with no reading costs", async ({
-  browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the control runs where the rows run");
+test("the counter sees the parse a text served with no reading costs", async ({ browser }) => {
   // The same fifteen pages as the row above, each in a page of its own: the deadline is that
   // walk's, not one page's.
   test.setTimeout(310_000);
   const seeded = await seedStoredTexts();
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, rowPerson("alice"));
   await countParses(alice);
   // Every tree out of the answer, as a server that sends none would: the page then has the
   // markdown alone, which it parses itself.

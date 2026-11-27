@@ -20,7 +20,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { commentWithBody } from "./margin-helpers";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
 
 const initialMarkdown = "The quick brown fox";
@@ -35,8 +35,9 @@ const initialMarkdown = "The quick brown fox";
 test("two readers' comments can cover the same text, and neither cuts the other's anchor @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: initialMarkdown, title: "Overlap" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: initialMarkdown, title: "Overlap" });
   const artifactId = issue.primary_artifact_id;
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -158,9 +159,10 @@ test("two readers' comments can cover the same text, and neither cuts the other'
 // both browsers keep Bob's anchor whole, show Alice's inside it, and send both quotes to the server.
 // SLOW(>=2s): two browser contexts and two suggestion sends, each read back from the server.
 test("two readers' suggestions keep both action-bar anchors", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: initialMarkdown,
     title: "Suggestion overlap",
   });
@@ -313,9 +315,10 @@ for (const { kind, noun } of overlapKinds) {
     test(`a click on text a wider and a narrower ${noun} both cover opens the narrower one, ${order.name}`, async ({
       browser,
     }) => {
-      await createProject({ key: "CORE", name: "Core" });
+      const core = rowKey("CORE");
+      await createProject({ key: core, name: "Core" });
       const issue = await createIssue({
-        project: "CORE",
+        project: core,
         spec: initialMarkdown,
         title: "Overlap click",
       });

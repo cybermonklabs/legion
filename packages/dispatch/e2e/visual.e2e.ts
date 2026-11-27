@@ -1,6 +1,6 @@
 /** The visual review: one row per page of `e2e/review-routes.ts`'s shot set, each compared
  *  against a committed baseline in light and in dark. The accessibility layer
- *  (`e2e/accessibility.e2e.ts`) reads the same corpus and the same readiness locators, so a
+ *  (`e2e/accessibility-scan.ts`) reads the same corpus and the same readiness locators, so a
  *  finding of one layer is a finding about the page the other shot.
  *
  *  TWO PROJECTS, ONE FILE. The desktop rows run in the `visual` project at 1280x800; the pages a
@@ -36,10 +36,11 @@
  *
  *  - The clock. `/` and `/agents` draw relative times ("2 minutes ago") that move with the gap
  *    between the seed and the shot, and `<EarlierApproval>` draws the seeded day's own date.
- *    Nothing else in this suite freezes a clock for a whole page; `page.clock.install()` is used
- *    by rows that drive time themselves. Here each row installs it a minute after the moment
- *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
- *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
+ *    Besides this file, only `e2e/accessibility.stub.e2e.ts` and `e2e/claim.stub.e2e.ts` pin a
+ *    clock for a whole page; elsewhere `page.clock.install()` is used by rows that drive time
+ *    themselves. Here each row installs it a minute after the moment `e2e/visual-seed.ts` wrote
+ *    the corpus (`seededAt`), so every relative label reads the same gap on every run - a fixed
+ *    literal would drift against a corpus written at wall-clock time.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
  *    Inbox.tsx`, `web/src/features/ask-body/EarlierApproval.tsx`) are painted over as well, by the
  *    page itself (`e2e/visual-time.css`; the mask list below says why that is not a mask). The
@@ -98,7 +99,7 @@ import {
 } from "./visual-guard";
 import { reviewSessions } from "./workspace";
 
-/** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
+/** Both schemes in one row, as `e2e/accessibility-scan.ts` reads them: a sign-in and a navigation
  *  paid once rather than twice, and each shot names its scheme. */
 const SCHEMES = ["light", "dark"] as const;
 

@@ -350,13 +350,6 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"dispatch_browser_reading_rows_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/dispatch-browser-reading-rows.test.sh .github/scripts/dispatch-browser-reading-rows.test.sh
 
-      # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
-      # sample files: its two readings are pure functions of those files, so the numbers and the
-      # notice titles are held here, where no browser and no runner are needed.
-      - name: Test the browser lane's memory and CPU sampler
-        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"dispatch_browser_samples_test"')
-        run: .github/scripts/harness-pool.sh start .github/scripts/dispatch-browser-samples.test.sh .github/scripts/dispatch-browser-samples.test.sh
-
       - name: Test the race memory sampler
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"race_memory_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/race_memory.test.sh .github/scripts/race_memory.test.sh

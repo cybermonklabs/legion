@@ -714,7 +714,7 @@ func TestTheChangeSetRefusesFromNotBelowTo(t *testing.T) {
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("?%s: status=%d body=%s, want 400", query, response.Code, response.Body.String())
 		}
-		if refusal := decodeBody[refusedAnswer](t, response); refusal.Code != "INVALID_VERSION" || refusal.Error == "" {
+		if refusal := decodeBody[errorBody](t, response); refusal.Code != "INVALID_VERSION" || refusal.Error == "" {
 			t.Fatalf("?%s: refusal = %+v, want INVALID_VERSION with a message", query, refusal)
 		}
 	}
@@ -732,15 +732,15 @@ func TestTheChangeSetAnswersAMissingVersionNotFound(t *testing.T) {
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("version 3 of a document of two: status=%d body=%s, want 404", missing.Code, missing.Body.String())
 	}
-	if refusal := decodeBody[refusedAnswer](t, missing); refusal.Code != "NOT_FOUND" || refusal.Error != "the document has no version 3" {
+	if refusal := decodeBody[errorBody](t, missing); refusal.Code != "NOT_FOUND" || refusal.Error != "the document has no version 3" {
 		t.Fatalf("version 3 of a document of two: refusal = %+v, want NOT_FOUND naming version 3", refusal)
 	}
-	if direct := dispatchRequest(t, handler, http.MethodGet, fmt.Sprintf("/api/v1/artifacts/%s/versions/3", artifactID), nil, "alice"); direct.Code != http.StatusNotFound || decodeBody[refusedAnswer](t, direct).Code != "NOT_FOUND" {
+	if direct := dispatchRequest(t, handler, http.MethodGet, fmt.Sprintf("/api/v1/artifacts/%s/versions/3", artifactID), nil, "alice"); direct.Code != http.StatusNotFound || decodeBody[errorBody](t, direct).Code != "NOT_FOUND" {
 		t.Fatalf("the version route on version 3: status=%d body=%s, want the same 404 NOT_FOUND", direct.Code, direct.Body.String())
 	}
 
 	unknown := dispatchRequest(t, handler, http.MethodGet, changesPath("00000000-0000-0000-0000-00000000c0de", 1, 2), nil, "alice")
-	if unknown.Code != http.StatusNotFound || decodeBody[refusedAnswer](t, unknown).Code != "ARTIFACT_NOT_FOUND" {
+	if unknown.Code != http.StatusNotFound || decodeBody[errorBody](t, unknown).Code != "ARTIFACT_NOT_FOUND" {
 		t.Fatalf("an id that names no artifact: status=%d body=%s, want 404 ARTIFACT_NOT_FOUND", unknown.Code, unknown.Body.String())
 	}
 }

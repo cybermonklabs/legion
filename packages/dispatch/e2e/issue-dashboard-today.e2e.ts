@@ -71,7 +71,7 @@ import {
   type DashboardSeed,
   EVERY_CLAIM_STATE,
   type LegionStateSeed,
-  READER,
+  reader,
   SEEDED_LEGION,
   seedDashboard,
   seedPhaseIssue,
@@ -105,8 +105,11 @@ import { focusThePage } from "./issue-page-g";
 import { openPreset } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
 import { verificationCard } from "./issue-page-v";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, own, type Page, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
+
+// The default context is the row's own person, the reader every seed writes as (`reader`).
+test.use({ signedIn: own("alice") });
 
 /** Today's ten tabs, by the names and in the order `features/issue/issue-tab-list.ts` gives them
  *  at the merge-base `ac1c9a33`; Artifacts carries its count where the issue holds one. */
@@ -318,9 +321,10 @@ test("an issue Legion does not run draws no track, no agents and the nothing-wai
   page,
 }) => {
   const key = await seedQuietIssue();
-  expect((await getIssueLegion(key)).configured, "the quiet issue's project names a daemon").toBe(
-    false
-  );
+  expect(
+    (await getIssueLegion(key, { login: reader() })).configured,
+    "the quiet issue's project names a daemon"
+  ).toBe(false);
   const panel = await openDashboard(page, key);
   const waiting = waitingOf(panel);
   await expect(waiting, "Dashboard draws no list of what waits").toBeVisible();
@@ -351,18 +355,19 @@ test("what waits on the person lists each item once, newest first, five at a tim
   // daemon's thread beside the other two and leaves out the open ask the questions part holds;
   // the spec's approval waits on a request, and the Verification document's is stale, by the
   // reader.
-  const unread = ((await listMyReplies({ issue: seed.key, state: "unread" })).rows ?? []).map(
-    (row) => row.thread_id
-  );
+  const me = reader();
+  const unread = (
+    (await listMyReplies({ issue: seed.key, state: "unread" }, { login: me })).rows ?? []
+  ).map((row) => row.thread_id);
   expect(unread).toEqual(
     expect.arrayContaining([seed.threads.daemon, seed.threads.comment, seed.threads.message])
   );
   expect(unread).not.toContain(seed.asks.replied);
-  const documents = (await getIssue(seed.key)).artifacts ?? [];
+  const documents = (await getIssue(seed.key, { login: me })).artifacts ?? [];
   const approvalOf = (id: string) => documents.find((document) => document.id === id)?.approval;
   expect(approvalOf(seed.specArtifactId)?.state).toBe("awaiting");
   expect(approvalOf(seed.verificationArtifactId)).toMatchObject({
-    by: { id: READER },
+    by: { id: me },
     state: "stale",
   });
 
@@ -432,7 +437,7 @@ test("each item is acted on in place and leaves the list and the count", async (
   await itemOf(waiting, request).getByRole("button", { exact: true, name: "Answer" }).click();
   await gone(request);
   await expect
-    .poll(async () => (await getArtifact(seed.specArtifactId)).approval?.state)
+    .poll(async () => (await getArtifact(seed.specArtifactId, { login: reader() })).approval?.state)
     .toBe("approved");
 
   // The stale Verification approval, approved again at the newest version.
@@ -443,7 +448,8 @@ test("each item is acted on in place and leaves the list and the count", async (
   await gone(stale);
   await expect
     .poll(async () => {
-      const approval = (await getArtifact(seed.verificationArtifactId)).approval;
+      const approval = (await getArtifact(seed.verificationArtifactId, { login: reader() }))
+        .approval;
       return [approval?.state, approval?.version === approval?.latest_version];
     })
     .toEqual(["approved", true]);
@@ -457,11 +463,11 @@ test("each item is acted on in place and leaves the list and the count", async (
   await gone(changed);
   await expect
     .poll(async () =>
-      (await listComments(seed.key, seed.decisionsDocumentId))
+      (await listComments(seed.key, seed.decisionsDocumentId, { login: reader() }))
         .filter((comment) => comment.body === "Count the threads apart.")
         .map((comment) => [comment.author.id, comment.anchor?.quote ?? ""])
     )
-    .toEqual([[READER, expect.stringContaining(seed.decisions.second.words)]]);
+    .toEqual([[reader(), expect.stringContaining(seed.decisions.second.words)]]);
 
   // Keep on the first decision.
   const kept: WaitingItem = { id: seed.decisions.first.id, kind: "decision" };
@@ -473,12 +479,12 @@ test("each item is acted on in place and leaves the list and the count", async (
   if (!thisMain().decisionsAreNodes) {
     await expect
       .poll(async () => {
-        const decision = ((await getIssueDecisions(seed.key)).decisions ?? []).find(
-          (one) => one.block_id === seed.decisions.first.id
-        );
+        const decision = (
+          (await getIssueDecisions(seed.key, { login: reader() })).decisions ?? []
+        ).find((one) => one.block_id === seed.decisions.first.id);
         return [decision?.kept?.kept_by, decision?.waiting_review];
       })
-      .toEqual([READER, false]);
+      .toEqual([reader(), false]);
   }
 
   // A question answered by one of its options.
@@ -488,7 +494,7 @@ test("each item is acted on in place and leaves the list and the count", async (
   await gone(byOption);
   await expect
     .poll(async () => {
-      const { ask } = await getAsk(seed.asks.byOption.id);
+      const { ask } = await getAsk(seed.asks.byOption.id, { login: reader() });
       return [ask.state, ask.answer?.selected];
     })
     .toEqual(["answered", [seed.asks.byOption.option]]);
@@ -500,7 +506,7 @@ test("each item is acted on in place and leaves the list and the count", async (
   await gone(inWords);
   await expect
     .poll(async () => {
-      const { ask } = await getAsk(seed.asks.inWords);
+      const { ask } = await getAsk(seed.asks.inWords, { login: reader() });
       return [ask.state, ask.answer?.text];
     })
     .toEqual(["answered", "Nothing waits on you."]);
@@ -512,10 +518,12 @@ test("each item is acted on in place and leaves the list and the count", async (
   await gone(thread);
   await expect
     .poll(async () => {
-      const replies = (await getComment(seed.threads.comment)).replies ?? [];
-      const unread = (await listMyReplies({ issue: seed.key, state: "unread" })).rows ?? [];
+      const me = reader();
+      const replies = (await getComment(seed.threads.comment, { login: me })).replies ?? [];
+      const unread =
+        (await listMyReplies({ issue: seed.key, state: "unread" }, { login: me })).rows ?? [];
       return [
-        replies.some((reply) => reply.body === "Thank you." && reply.author.id === READER),
+        replies.some((reply) => reply.body === "Thank you." && reply.author.id === me),
         unread.some((row) => row.thread_id === seed.threads.comment),
       ];
     })
@@ -532,11 +540,12 @@ test("each item is acted on in place and leaves the list and the count", async (
  *  their `serves`) passed at it; the children done of the issue read; and the open questions
  *  whose turn is not the reader's. */
 async function countedTiles(key: string): Promise<Record<keyof typeof TILES, TileCount>> {
+  const me = reader();
   const [coverage, results, issue, asks] = await Promise.all([
-    getIssueCoverage(key),
-    getIssueResults(key),
-    getIssue(key),
-    listIssueAsks(key),
+    getIssueCoverage(key, { login: me }),
+    getIssueResults(key, { login: me }),
+    getIssue(key, { login: me }),
+    listIssueAsks(key, { login: me }),
   ]);
   const statements = (coverage.requirements ?? []).map((requirement) => requirement.block_id);
   const checks = results.checks ?? [];
@@ -569,7 +578,7 @@ async function countedTiles(key: string): Promise<Record<keyof typeof TILES, Til
     passed: { ids: passed.map((check) => check.block_id), whole: checks.length },
     questions: {
       ids: open
-        .filter((ask) => !(ask.waiting_on === "human" && ask.waiting_on_person === READER))
+        .filter((ask) => !(ask.waiting_on === "human" && ask.waiting_on_person === me))
         .map((ask) => ask.id),
       whole: open.length,
     },
@@ -620,7 +629,7 @@ test("the four tiles count what the reads hold and open their lists", async ({ p
   // on its own row, and Out of date at the commit the page names, the newer check's: the statement
   // counts in no Met tile, and that check in no passed tile.
   const { newer, older, statement } = seed.twoCommits;
-  const olderCheck = ((await getIssueResults(seed.key)).checks ?? []).find(
+  const olderCheck = ((await getIssueResults(seed.key, { login: reader() })).checks ?? []).find(
     (check) => check.block_id === older
   );
   expect(
@@ -636,10 +645,11 @@ test("the four tiles count what the reads hold and open their lists", async ({ p
   // The new page's Verification view reads each statement by the same rule: that statement
   // Unknown while both its checks read Passed on their rows, and Met exactly the statements the
   // Met tile counts.
-  await withIssuePage(page.context(), READER);
+  await withIssuePage(page.context(), reader());
   await openPreset(page, seed.key, "verification");
-  const specSlug = (await getArtifact(seed.specArtifactId)).slug;
-  const verificationSlug = (await getArtifact(seed.verificationArtifactId)).slug;
+  const specSlug = (await getArtifact(seed.specArtifactId, { login: reader() })).slug;
+  const verificationSlug = (await getArtifact(seed.verificationArtifactId, { login: reader() }))
+    .slug;
   const card = verificationCard(page, blockNodeId(specSlug, statement));
   for (const id of [older, newer]) {
     await expect(
@@ -656,7 +666,7 @@ test("the four tiles count what the reads hold and open their lists", async ({ p
   await expect(card.locator("span[data-statement-state]")).toHaveText(
     VERIFICATION_WORDS.states.unknown
   );
-  for (const id of ((await getIssueCoverage(seed.key)).requirements ?? []).map(
+  for (const id of ((await getIssueCoverage(seed.key, { login: reader() })).requirements ?? []).map(
     (requirement) => requirement.block_id
   )) {
     await expect(
@@ -676,7 +686,7 @@ test("the agents at work are the roles that hold a claim, in the role words", as
     roles: EVERY_CLAIM_STATE,
   });
   // The roles in the order the issue's Legion state gives them, a retired claim among them.
-  const roles = (await getIssueLegion(key)).state?.roles ?? [];
+  const roles = (await getIssueLegion(key, { login: reader() })).state?.roles ?? [];
   expect(roles.map((role) => role.state).sort()).toEqual(
     EVERY_CLAIM_STATE.map((role) => role.state).sort()
   );
@@ -759,17 +769,20 @@ test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
 /** Every string the reads of `seed`'s issue hold, its whitespace folded: the records whose text
  *  Dashboard may draw. */
 async function recordTexts(seed: DashboardSeed): Promise<readonly string[]> {
-  const asks = seed.items.filter((item) => item.kind === "question").map((item) => getAsk(item.id));
+  const login = { login: reader() };
+  const asks = seed.items
+    .filter((item) => item.kind === "question")
+    .map((item) => getAsk(item.id, login));
   const reads: unknown[] = await Promise.all([
-    getIssue(seed.key),
-    listIssueAsks(seed.key),
-    getIssueDecisions(seed.key),
-    getIssueResults(seed.key),
-    getIssueCoverage(seed.key),
-    listMyReplies({ issue: seed.key, state: "unread" }),
-    getComment(seed.threads.comment),
-    getMessage(seed.key, seed.threads.message),
-    getIssueLegion(seed.key),
+    getIssue(seed.key, login),
+    listIssueAsks(seed.key, login),
+    getIssueDecisions(seed.key, login),
+    getIssueResults(seed.key, login),
+    getIssueCoverage(seed.key, login),
+    listMyReplies({ issue: seed.key, state: "unread" }, login),
+    getComment(seed.threads.comment, login),
+    getMessage(seed.key, seed.threads.message, login),
+    getIssueLegion(seed.key, login),
     ...asks,
   ]);
   const strings: string[] = [];

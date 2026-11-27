@@ -9,9 +9,13 @@
 import { expect } from "@playwright/test";
 
 import { openAgents } from "./agents";
+import { fixedKey } from "./api";
 import { recordClipboard } from "./clipboard";
 import { openBoard, openInbox, seedBoard, seedInbox } from "./keyboard";
 import { stubbed } from "./stub/stub-test";
+
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
 
 /** Nothing seeded: the two chord rows need a page with the keymap bound, which the Agents page
  *  is with no session listed, and the addresses the chords move between. */
@@ -21,7 +25,7 @@ const chordTest = stubbed(async () => ({ agents: "/agents", inbox: "/" }));
 const inboxTest = stubbed(seedInbox);
 
 /** Six cards across three statuses. */
-const boardTest = stubbed(seedBoard);
+const boardTest = stubbed(() => seedBoard(CORE));
 
 chordTest(
   "g then i goes to the Inbox, showing the pending chord until it completes @pr",

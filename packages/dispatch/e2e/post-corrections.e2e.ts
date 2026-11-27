@@ -16,13 +16,14 @@ import {
 import { marginCard, openSpec } from "./editor";
 import { inboxPane, selectRow } from "./inbox-pane";
 import {
+  asSession,
   holdReadMarks,
   replyRowId,
   seedCommentThread,
   seedMessageThread,
-  THREAD_SESSION,
 } from "./inbox-threads";
-import { expect, type Locator, test } from "./test";
+import { keyedSearchWord } from "./search";
+import { expect, type Locator, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -36,8 +37,8 @@ import { asUser } from "./users";
  * thread of a reply to such a comment; and a session's own conversation page. Each of those
  * seeds through the API and then reads the page, because the mark is the server's record drawn
  * by the component rather than anything the browser can make on its own, and each pays a Go
- * server, a Postgres, a sign-in and a database reset for that, which is why the two pages that
- * read one comment are read by one row. That row also reads the two posts' rows on the
+ * server, a Postgres and a sign-in for that, which is why the two pages that read one comment
+ * are read by one row. That row also reads the two posts' rows on the
  * References list of a second issue's Artifacts tab, from a message of that issue that links to
  * both. Two more hold a page open while the post's author edits it and then deletes it through
  * the API - the Inbox's thread rows and the answers page - and read the marks without a reload:
@@ -61,19 +62,18 @@ import { asUser } from "./users";
 
 const spec = "The quick brown fox jumps over the lazy dog.";
 
-/** The session whose messages the Conversation rows write, and which answers the margin's
- *  thread: live, so a send to it has a listener. */
+/** The session whose messages the Conversation rows write, which answers the margin's thread and
+ *  the Inbox's threads, and which asks the answers page's question: live, so a send to it has a
+ *  listener. */
 const planner: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   roles: [],
-  session_id: "e2e-corrections-planner",
+  // The row's own (`rowSessionId`, e2e/test.ts), read when a row names it: Dispatch keeps a
+  // session's messages, comments and asks by its id, for every person at once.
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Release bot",
-};
-
-/** The options a write made as that session carries. */
-const asPlanner = {
-  actor: { id: planner.session_id, kind: "session" as const },
-  as: "agent" as const,
 };
 
 /** The deleted line a post leaves behind, wherever the page draws it. */
@@ -86,15 +86,20 @@ function deletedLine(within: Locator): Locator {
 test("the issue page and the document margin mark an edited message and a deleted comment", async ({
   browser,
 }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec, title: "The export window" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec, title: "The export window" });
   const message = await createMessage(
     issue.key,
     { body: "The export runs at 02:00 local." },
-    asPlanner
+    asSession(planner)
   );
-  await editMessage(message.id, { body: "Corrected: the export runs at 02:00 UTC." }, asPlanner);
+  await editMessage(
+    message.id,
+    { body: "Corrected: the export runs at 02:00 UTC." },
+    asSession(planner)
+  );
   const comment = await createComment(issue.key, {
     anchor: { artifact: "spec", quote: "brown" },
     body: "The ledger replays twice at 02:00.",
@@ -102,7 +107,7 @@ test("the issue page and the document margin mark an edited message and a delete
   await createComment(
     issue.key,
     { body: "I will read the replay window.", reply_to: comment.id },
-    asPlanner
+    asSession(planner)
   );
   await deleteComment(comment.id);
   // A post that cites the two corrected posts, in words, so each reads as an inline link.
@@ -111,7 +116,7 @@ test("the issue page and the document margin mark an edited message and a delete
     {
       body: `The replay was dispatch://${issue.key}/comment/${comment.id} and the window is dispatch://${issue.key}/message/${message.id} now.`,
     },
-    asPlanner
+    asSession(planner)
   );
 
   // The record behind the two marks: the message's earlier body is kept, and the deleted
@@ -167,13 +172,13 @@ test("the issue page and the document margin mark an edited message and a delete
     // (`refs/closure.go`), so a message of a second issue links to both: the deleted comment's
     // row is the deleted line, with none of its words, and the edited message's carries
     // ` · edited` after its words. Each stays a link to its post.
-    const linking = await createIssue({ project: "CORE", title: "The replay audit" });
+    const linking = await createIssue({ project: core, title: "The replay audit" });
     await createMessage(
       linking.key,
       {
         body: `The audit reads dispatch://${issue.key}/comment/${comment.id} and dispatch://${issue.key}/message/${message.id} again.`,
       },
-      asPlanner
+      asSession(planner)
     );
     await page.goto(`/issues/${linking.key}/artifacts`);
     await page.getByText("References (2)", { exact: true }).click();
@@ -195,17 +200,23 @@ test("the issue page and the document margin mark an edited message and a delete
 test("the Inbox thread of a reply to a deleted comment reads that comment as deleted", async ({
   browser,
 }) => {
-  await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The replay window" });
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox holds this
+  // row's thread and no other row's.
+  const me = rowPerson("alice");
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "The replay window" }, { login: me });
   const root = await seedCommentThread(
     issue.key,
     "How far back does the replay go?",
-    "Seven days, and the eighth is dropped."
+    "Seven days, and the eighth is dropped.",
+    planner,
+    me
   );
-  await deleteComment(root);
+  await deleteComment(root, { login: me });
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
@@ -218,7 +229,7 @@ test("the Inbox thread of a reply to a deleted comment reads that comment as del
     await expect(body).toBeVisible();
 
     const rootTurn = body.locator(`[data-inbox-thread-turn="${root}"]`);
-    await expect(deletedLine(rootTurn)).toHaveText(/^Deleted by alice · /);
+    await expect(deletedLine(rootTurn)).toHaveText(new RegExp(`^Deleted by ${me} · `));
     await expect(body.getByText("Seven days, and the eighth is dropped.")).toBeVisible();
     await expect(page.getByText("How far back does the replay go?")).toHaveCount(0);
   } finally {
@@ -238,21 +249,29 @@ test("the Inbox thread of a reply to a deleted comment reads that comment as del
 test("an open Inbox marks a thread's root edited and then deleted without a reload", async ({
   browser,
 }) => {
-  await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The replay window" });
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox holds this
+  // row's two threads and no other row's.
+  const me = rowPerson("alice");
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "The replay window" }, { login: me });
   const comment = await seedCommentThread(
     issue.key,
     "How far back does the replay go?",
-    "Seven days, and the eighth is dropped."
+    "Seven days, and the eighth is dropped.",
+    planner,
+    me
   );
   const message = await seedMessageThread(
     issue.key,
     "Is the mirror caught up?",
-    "Two hours behind, replaying."
+    "Two hours behind, replaying.",
+    planner,
+    me
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await holdReadMarks(page);
@@ -263,15 +282,15 @@ test("an open Inbox marks a thread's root edited and then deleted without a relo
     await expect(messageRow).toContainText("Is the mirror caught up?");
     await expect(commentRow).not.toContainText("edited");
 
-    await editComment(comment, { body: "How far back does the nightly replay go?" });
-    await editMessage(message, { body: "Is the mirror caught up yet?" });
+    await editComment(comment, { body: "How far back does the nightly replay go?" }, { login: me });
+    await editMessage(message, { body: "Is the mirror caught up yet?" }, { login: me });
     await expect(commentRow).toContainText("How far back does the nightly replay go? · edited");
     await expect(messageRow).toContainText("Is the mirror caught up yet? · edited");
 
-    await deleteComment(comment);
-    await deleteMessage(message);
-    await expect(deletedLine(commentRow)).toHaveText("Deleted by alice");
-    await expect(deletedLine(messageRow)).toHaveText("Deleted by alice");
+    await deleteComment(comment, { login: me });
+    await deleteMessage(message, { login: me });
+    await expect(deletedLine(commentRow)).toHaveText(`Deleted by ${me}`);
+    await expect(deletedLine(messageRow)).toHaveText(`Deleted by ${me}`);
     await expect(commentRow).not.toContainText("replay go");
     await expect(messageRow).not.toContainText("caught up");
     await expect(page.getByText(/replay go\?|caught up/)).toHaveCount(0);
@@ -289,27 +308,35 @@ test("an open Inbox marks a thread's root edited and then deleted without a relo
 test("an open answers page marks a reply edited and then deleted without a reload", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Build question" });
+  const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose answers page holds
+  // this row's reply and no other row's.
+  const me = rowPerson("alice");
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Build question" }, { login: me });
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Nightly" }, { label: "Release" }], question: "Which build ships?" },
-    asPlanner
+    asSession(planner)
   );
-  const reply = await createComment(issue.key, { ask_id: ask.id, body: "Does nightly count?" });
+  const reply = await createComment(
+    issue.key,
+    { ask_id: ask.id, body: "Does nightly count?" },
+    { login: me }
+  );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/answers");
     const row = page.locator(`[data-answer-row="${ask.id}"]`);
     await expect(row).toContainText("Replied: Does nightly count?");
 
-    await editComment(reply.id, { body: "Does the nightly build count?" });
+    await editComment(reply.id, { body: "Does the nightly build count?" }, { login: me });
     await expect(row).toContainText("Replied · edited: Does the nightly build count?");
 
-    await deleteComment(reply.id);
-    await expect(deletedLine(row)).toHaveText(/^Deleted by alice · /);
+    await deleteComment(reply.id, { login: me });
+    await expect(deletedLine(row)).toHaveText(new RegExp(`^Deleted by ${me} · `));
     await expect(row).not.toContainText("count?");
     await expect(row).not.toContainText("edited");
   } finally {
@@ -320,9 +347,10 @@ test("an open answers page marks a reply edited and then deleted without a reloa
 // The session's own page reads its stored messages through a transcript of its live
 // conversation, which carries the two marks as metadata rather than as fields of the row.
 test("the agent conversation page marks an edited issue message", async ({ browser }) => {
+  const core = rowKey("CORE");
   await setLiveSessions([planner]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The nightly export" });
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "The nightly export" });
   const message = await createMessage(
     issue.key,
     {
@@ -359,13 +387,17 @@ test("the agent conversation page marks an edited issue message", async ({ brows
 // SLOW(>=2s): a comment written and found by the API search before the palette opens, then
 // deleted through the API and waited for on the open page.
 test("an open search palette prints none of a comment its author deletes", async ({ browser }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "The palette window" });
+  const core = rowKey("CORE");
+  // The word searched for holds the row's own key (`keyedSearchWord`, e2e/search.ts): search
+  // reads every project of the stack, and only this row's comment holds it.
+  const word = keyedSearchWord("zarquonpalette", core);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "The palette window" });
   const comment = await createComment(issue.key, {
-    body: "The zarquonpalette window closes at noon.",
+    body: `The ${word} window closes at noon.`,
   });
   await expect
-    .poll(async () => JSON.stringify(await search("zarquonpalette")), { timeout: 60_000 })
+    .poll(async () => JSON.stringify(await search(word)), { timeout: 60_000 })
     .toContain(comment.id);
 
   const alice = await asUser(browser, "alice");
@@ -383,10 +415,10 @@ test("an open search palette prints none of a comment its author deletes", async
     const paused = page.waitForResponse(
       (response) =>
         /\/api\/v1\/search(\/results)?\?/.test(response.url()) &&
-        response.url().includes("zarquonpalette") &&
+        response.url().includes(word) &&
         !response.url().includes("keywords_only")
     );
-    await box.pressSequentially("zarquonpalette", { delay: 25 });
+    await box.pressSequentially(word, { delay: 25 });
     await paused;
     await expect(dialog).toContainText("window closes at noon");
 
@@ -396,10 +428,10 @@ test("an open search palette prints none of a comment its author deletes", async
     await page.keyboard.press("Escape");
     await page.keyboard.press("Control+k");
     await expect(box).toBeFocused();
-    await box.fill("zarquonpalette");
+    await box.fill(word);
     // The reopened palette has answered before the absence is read: its "No results" line is
     // drawn from the answer it holds for these words (SearchPalette.tsx).
-    await expect(dialog).toContainText('No results for "zarquonpalette"');
+    await expect(dialog).toContainText(`No results for "${word}"`);
     await expect(dialog).not.toContainText("window closes at noon");
   } finally {
     await alice.close();

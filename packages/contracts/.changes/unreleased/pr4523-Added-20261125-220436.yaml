@@ -1,0 +1,5 @@
+kind: Added
+body: '`readerStep` and `countReaderSteps` (`reader-steps.ts`) count the turns of the reference readers'' loops (`referenceSpans`, `trimReference`), so a test holds a reader to one pass over its text by a count and not by a clock; outside a count a step does nothing. `referencePattern` is exported for the same tests.'
+time: 2026-11-25T22:04:36.000000000Z
+custom:
+    Issue: pr4523

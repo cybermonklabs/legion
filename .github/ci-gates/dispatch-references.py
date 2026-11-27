@@ -1,11 +1,12 @@
 # The dispatch_references filter, kept by hand: gates ci.yaml's dispatch-references job, a
 # pull-request preview of the reference rows that is outside ci-ok (CI_OK_EXEMPT) and so gates no
-# merge; its filter names the eleven spec files and what they test, less than the job reads on
+# merge, and that a pull request runs only under `full-ci` or `lane:dispatch_references`, as a slow
+# suite; its filter names the eleven spec files and what they test, less than the job reads on
 # purpose, and the dispatch_browser gate, whose full lane the merge queue runs, holds every read of
 # those rows. Rule 24 of .github/scripts/check-ci-filters.sh holds it to the spec files the
 # references lane runs.
 # why: .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
-EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references job, a pull-request preview of the reference rows that is outside ci-ok (CI_OK_EXEMPT) and so gates no merge; its filter names the eleven spec files and what they test, less than the job reads on purpose, and the dispatch_browser gate, whose full lane the merge queue runs, holds every read of those rows", [
+EXCLUDED = excluded('dispatch_references', "gates ci.yaml's dispatch-references job, a pull-request preview of the reference rows that is outside ci-ok (CI_OK_EXEMPT) and so gates no merge, and that a pull request runs only under full-ci or lane:dispatch_references, as a slow suite; its filter names the eleven spec files and what they test, less than the job reads on purpose, and the dispatch_browser gate, whose full lane the merge queue runs, holds every read of those rows", [
     # why: .github/ci-notes/ci.md#dispatch_references-the-workflow-that-holds-the-lanes-jobs-and-the-script-that-holds-its-spec-files
     '.github/workflows/dispatch-browser.yaml',
     '.github/scripts/dispatch-browser-shard-suite.sh',

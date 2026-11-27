@@ -15,29 +15,30 @@ import {
 } from "./editor";
 import { askCard as inboxAskCard, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, type Page, rowKey, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
 // SLOW(>=2s): two browser contexts, two mounted editors on one live document, the reload the
 // row proves the text and the version picker survive, and a full-page screenshot.
 test("documentCollaborationLive", async ({ browser }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
 
   try {
     const alicePage = await alice.newPage();
     const aliceSockets = countDocumentSockets(alicePage);
-    await alicePage.goto("/projects/CORE/documents");
+    await alicePage.goto(`/projects/${core}/documents`);
     await alicePage.getByRole("button", { name: "New document" }).click();
     await alicePage.getByRole("textbox", { name: "Title" }).fill("Design notes");
     await alicePage.getByRole("button", { name: "Create" }).click();
-    await expect(alicePage).toHaveURL("/projects/CORE/documents/design-notes");
+    await expect(alicePage).toHaveURL(`/projects/${core}/documents/design-notes`);
 
-    const artifact = await getProjectArtifact("CORE", "design-notes");
+    const artifact = await getProjectArtifact(core, "design-notes");
     const bobPage = await bob.newPage();
-    await bobPage.goto("/projects/CORE/documents/design-notes");
+    await bobPage.goto(`/projects/${core}/documents/design-notes`);
     // The create sends the title alone, so the document opens empty under the title Alice typed:
     // the heading the list used to write into it is gone. The title is the page's, not the text's.
     await expect(alicePage.getByRole("heading", { name: "Design notes" })).toBeVisible();
@@ -93,7 +94,8 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
 test("picking a file on the Documents tab uploads it at once and lists it @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -102,12 +104,12 @@ test("picking a file on the Documents tab uploads it at once and lists it @pr", 
     page.on("request", (request) => {
       if (
         request.method() === "POST" &&
-        request.url().endsWith("/api/v1/projects/CORE/artifacts")
+        request.url().endsWith(`/api/v1/projects/${core}/artifacts`)
       ) {
         uploads += 1;
       }
     });
-    await page.goto("/projects/CORE/documents");
+    await page.goto(`/projects/${core}/documents`);
     await expect(page.getByRole("button", { name: "New document" })).toBeVisible();
 
     await page.getByLabel("Upload artifact").setInputFiles({
@@ -129,16 +131,17 @@ test("picking a file on the Documents tab uploads it at once and lists it @pr", 
 test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox @pr", async ({
   browser,
 }, testInfo) => {
+  const core = rowKey("CORE");
   // CORE names bob: a document has no assignee, so its question reaches the project's default
   // assignee, and bob is the reader who answers it from his own Inbox below.
-  await createProject({ key: "CORE", name: "Core" }, { login: "bob" });
-  const created = await createProjectDocument("CORE", {
+  await createProject({ key: core, name: "Core" }, { login: "bob" });
+  const created = await createProjectDocument(core, {
     content: "# Design notes\n\nComment target.\n\nSuggestion target.\n\nAsk target.\n",
     name: "Design notes",
   });
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
-  const path = "/projects/CORE/documents/design-notes";
+  const path = `/projects/${core}/documents/design-notes`;
 
   try {
     const alicePage = await alice.newPage();
@@ -210,7 +213,9 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     // the page.
     await navigateInApp(bobPage, "/");
     const inboxDocumentRow = inboxRow(bobPage, askId);
-    await expect(inboxDocumentRow.getByRole("link", { name: /CORE.*Design notes/ })).toBeVisible();
+    await expect(
+      inboxDocumentRow.getByRole("link", { name: new RegExp(`${core}.*Design notes`) })
+    ).toBeVisible();
     const inboxAsk = await inboxAskCard(bobPage, askId);
     await inboxAsk.getByLabel("Your answer").fill("Yes, publish it.");
     await inboxAsk.getByRole("button", { exact: true, name: "Answer" }).click();
@@ -263,8 +268,9 @@ async function expectDotBeside(page: Page, neighbour: string): Promise<void> {
 test("a document's connection dot stays on the line with its version actions", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, {
     content: "# Ask blocks design\n\nThe ask is a node.\n",
     name: "ask-blocks-design.md",
   });
@@ -272,7 +278,7 @@ test("a document's connection dot stays on the line with its version actions", a
   const page = await context.newPage();
   try {
     await page.setViewportSize({ height: 900, width: 1280 });
-    await page.goto("/projects/CORE/documents/ask-blocks-design-md");
+    await page.goto(`/projects/${core}/documents/ask-blocks-design-md`);
     await expectDotBeside(page, "Name version");
   } finally {
     await context.close();
@@ -285,14 +291,15 @@ test("a document's connection dot stays on the line with its version actions", a
 test("a document's connection dot stays beside its version actions on a narrow screen @phone @phone-only", async ({
   browser,
 }) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", {
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  await createProjectDocument(core, {
     content: "# Ask blocks design\n\nThe ask is a node.\n",
     name: "ask-blocks-design.md",
   });
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  const path = "/projects/CORE/documents/ask-blocks-design-md";
+  const path = `/projects/${core}/documents/ask-blocks-design-md`;
   try {
     await page.goto(path);
     await expectDotBeside(page, "Name version");
@@ -308,11 +315,12 @@ test("a document's connection dot stays beside its version actions on a narrow s
 test("a document's whole title wraps at every width, whether prose or one unbroken word @phone", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   // Five repeats of a 48-character sentence, cut to exactly 200: the length the spec names. It
   // ends mid-sentence on a letter, so the server trims nothing and the page shows all 200.
   const title200 = "Dispatch cuts off titles that are far too long. ".repeat(5).slice(0, 200);
-  const prose = await createProjectDocument("CORE", { content: "# Body\n", name: title200 });
+  const prose = await createProjectDocument(core, { content: "# Body\n", name: title200 });
   expect(prose.artifact.name).toHaveLength(200);
   // A single unbroken 100-character string: no space for the browser to break on, so wrapping
   // depends on `break-words` rather than the ordinary word-wrap every other title gets for
@@ -323,13 +331,13 @@ test("a document's whole title wraps at every width, whether prose or one unbrok
   const title100 = "supercalifragilisticexpialidocious".repeat(3).slice(0, 100);
   expect(title100).toHaveLength(100);
   expect(title100).not.toContain(" ");
-  const oneWord = await createProjectDocument("CORE", { content: "# Body\n", name: title100 });
+  const oneWord = await createProjectDocument(core, { content: "# Body\n", name: title100 });
 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     for (const doc of [prose, oneWord]) {
-      await page.goto(`/projects/CORE/documents/${doc.artifact.slug}`);
+      await page.goto(`/projects/${core}/documents/${doc.artifact.slug}`);
       const heading = page.getByTestId("artifact-header").getByRole("heading", { level: 2 });
       await expect(heading).toHaveText(doc.artifact.name);
       // Whole means nothing between the title and the document clips it: no clamp, ellipsis, or

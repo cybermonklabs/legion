@@ -15,12 +15,14 @@ import {
   type RequestBody,
   type Result,
   repoParams,
+  routePath,
   routeUrl,
 } from "../web/src/api/paths";
-import type { Actor, GatedStep } from "../web/src/api/types";
+import type { Actor } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import type { SignInLogin } from "./users";
 
 /** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
  *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
@@ -51,7 +53,10 @@ interface ApiOptions {
   /** The `Idempotency-Key` header the write carries, naming one intent: a repeat under it is
    *  answered what the first was answered. None when absent, which Dispatch handles unkeyed. */
   idempotencyKey?: string;
-  login?: string;
+  /** The person a `user` call signs in as: alice, bob or a `RowLogin` (`SignInLogin`,
+   *  e2e/users.ts), as a browser sign-in takes, since this sign-in records the person too; alice
+   *  when absent. */
+  login?: SignInLogin;
   /** The bearer an `as: "agent"` call sends; the shared `e2eAgentToken` when absent. */
   token?: string;
   /** In two-process mode, the process the round-robin proxy sends the call to; absent, whichever
@@ -64,7 +69,7 @@ export const sessionCookieName = "dsession";
 
 /** The server's dev sign-in route for `login`, relative to the dashboard origin; it answers a
  *  sign-in with a 302 that sets the session cookie. */
-export function devSignInPath(login: string): string {
+export function devSignInPath(login: SignInLogin): string {
   return `/auth/_dev/signin?login=${encodeURIComponent(login)}`;
 }
 
@@ -132,8 +137,17 @@ export function devSignInError(login: string, status: number, responseText: stri
 }
 
 /** The people the reset re-creates, each with a `user_sessions` row at generation 0
- *  (`resetDatabaseOnce`, e2e/seed.ts): the only logins whose session cookie outlives a reset. */
-export const resetLogins: readonly string[] = ["alice", "bob"];
+ *  (`resetDatabaseOnce`, e2e/seed.ts): the only logins whose session cookie outlives a reset, and
+ *  the only literal logins a sign-in takes (`SignInLogin`, e2e/users.ts). */
+export const resetLogins = ["alice", "bob"] as const;
+
+/** A login of `resetLogins`: alice or bob. */
+export type ResetLogin = (typeof resetLogins)[number];
+
+/** Whether `login` is one of `resetLogins`. */
+function isResetLogin(login: string): login is ResetLogin {
+  return resetLogins.some((reset) => reset === login);
+}
 
 /** One cached session cookie, of one login signed in at one process. */
 interface CachedSession {
@@ -150,14 +164,16 @@ interface CachedSession {
 
 const sessionCookies = new Map<string, CachedSession>();
 
-/** The session cookie the server issues `login` at its dev sign-in route, minted once per
- *  spelling of a login and process asked, and kept until something revokes it: the generation
- *  the cookie names lives in `user_sessions`, which `resetDatabase` empties and refills for
- *  `resetLogins` alone (it calls `forgetSessions`), and a browser context's Sign out as the same
- *  login advances it. With `target` set the sign-in is pinned to that process, so every request
- *  a pinned call makes, its sign-in included, is served by the process it names. A sign-in that
- *  fails, by its answer or by the request itself, is not kept, so the next call asks again. */
-export function sessionCookie(login: string, target?: DispatchProcess): Promise<Cookie> {
+/** The dev sign-in cookie for `login`, minted once per spelling of a login and process asked.
+ *  The cookie names a generation in `user_sessions`. `resetDatabase` clears the table, refills
+ *  it for `resetLogins` alone and calls `forgetSessions`. The worker resets before its first row
+ *  and before it seeds the review corpus (`e2e/test.ts`). Some rows also reset the database
+ *  themselves. Signing out advances the login's generation, so a row signs out only a person of
+ *  its own (`rowPerson`, e2e/test.ts).
+ *
+ *  When `target` is set, that process serves every request of the pinned call, including the
+ *  sign-in. The cache discards a failed sign-in so the next call can try again. */
+export function sessionCookie(login: SignInLogin, target?: DispatchProcess): Promise<Cookie> {
   const key = `${target ?? ""} ${login}`;
   const cached = sessionCookies.get(key);
   if (cached !== undefined) {
@@ -202,28 +218,33 @@ const reusedSignIns = new Set<string>();
  *  cookie outlives it. Only the first sign-in of that login since the reset reuses: a row that
  *  signs the same login in twice has almost always signed it out in between, which advances the
  *  login's generation, and the cached cookie, which names the generation before it, would then be
- *  refused. */
-export function reusableSessionCookie(login: string): Promise<Cookie> | undefined {
-  if (!resetLogins.includes(login) || reusedSignIns.has(login)) {
+ *  refused. The worker resets before its first row and before it seeds the review corpus
+ *  (`e2e/test.ts`). Some rows also reset the database themselves. After the first sign-in for
+ *  that login, every later one mints a cookie until the next reset. */
+export function reusableSessionCookie(login: SignInLogin): Promise<Cookie> | undefined {
+  if (!isResetLogin(login) || reusedSignIns.has(login)) {
     return undefined;
   }
   reusedSignIns.add(login);
   return sessionCookie(login);
 }
 
-/** Forgets the cached session cookies the reset leaves unusable, and the sign-ins it undoes;
- *  `resetDatabase` calls it after emptying the tables.
+/** Forgets the cached session cookies the reset leaves unusable and the sign-ins it undoes.
+ *  `resetDatabase` calls it after emptying the tables (e2e/seed.ts). The worker resets before
+ *  its first row and before it seeds the review corpus (`e2e/test.ts`). Some rows also reset
+ *  the database themselves.
  *
  *  The cookies of `resetLogins`, alice and bob, are kept: the reset re-inserts their people rows
  *  and their `user_sessions` rows at generation 0 (e2e/seed.ts), the generation a cookie minted
- *  after the previous reset names, so those two cookies authenticate again and the next row pays
- *  no sign-in for them. Every other login's cookie is forgotten, since the reset re-creates no
- *  other person, and so is a kept login's cookie minted at a later generation, which a sign-out
- *  in the row just ended leaves behind. A kept cookie carries no state of its row into the next
- *  one: it names a login and a generation, both of which the emptied database holds again. */
+ *  after the previous reset names, so those two cookies authenticate again and the rows after
+ *  the reset pay no sign-in for them. Every other login's cookie is forgotten, since the reset
+ *  re-creates no other person, and so is a kept login's cookie minted at a later generation,
+ *  which a sign-out before the reset leaves behind. A kept cookie carries no state from before
+ *  the reset into the rows after it: it names a login and a generation, both of which the emptied
+ *  database holds again. */
 export function forgetSessions(): void {
   for (const [key, session] of sessionCookies) {
-    if (!resetLogins.includes(session.login) || !session.atGenerationZero) {
+    if (!isResetLogin(session.login) || !session.atGenerationZero) {
       sessionCookies.delete(key);
     }
   }
@@ -234,7 +255,7 @@ export function forgetSessions(): void {
  *  is given), and the dashboard origin the server requires on every cookie-authenticated write
  *  (enforceCookieOrigin admits a write whose `Origin` is the dashboard's). */
 export async function userHeaders(
-  login = "alice",
+  login: SignInLogin = "alice",
   target?: DispatchProcess
 ): Promise<Record<string, string>> {
   const cookie = await sessionCookie(login, target);
@@ -364,8 +385,41 @@ function del<P extends PathsOf<"delete">>(
   return send(pattern, "DELETE", args, options);
 }
 
-export function createProject(input: Body<"/api/v1/projects", "post">, options: ApiOptions = {}) {
+/** A project key `createProject` takes: the running row's own, `rowKey(...)` (e2e/test.ts), or a
+ *  key fixed on purpose, `fixedKey(...)`, which names why. A real-stack row that wrote a literal
+ *  key would make a project another row of its worker makes too, since the database is emptied
+ *  before the worker's first row and before the review corpus's seed, not before each row
+ *  (e2e/test.ts), so the brand turns that row into a type error on its own pull request rather
+ *  than a collision in a later run. */
+export type RowKey = string & { readonly rowKey: unique symbol };
+
+/** `key` as a key `createProject` takes, for a caller that makes its project under a fixed key on
+ *  purpose: a stubbed row's seed, whose key the committed recording holds; the review corpus,
+ *  seeded once into each database a worker holds; the docs pictures, which show the key; the
+ *  local instance; a live proof whose project another service names (e2e/read-token-live.ts); a
+ *  row that measures layout over text of a fixed width, since a generated key changes the width
+ *  being measured, and which empties the database before it seeds (`resetDatabase`,
+ *  e2e/seed.ts), so its key and its issue numbers are the same on every run. `why` names that
+ *  reason where the key is written, and a call without one throws. Any other real-stack row's key
+ *  is `rowKey(...)`, never this. */
+export function fixedKey(key: string, why: string): RowKey {
+  if (why.trim() === "") {
+    throw new Error(`fixedKey: the fixed key ${JSON.stringify(key)} must name why it is fixed`);
+  }
+  return key as RowKey;
+}
+
+export function createProject(
+  input: Omit<Body<"/api/v1/projects", "post">, "key"> & { key: RowKey },
+  options: ApiOptions = {}
+) {
   return post("/api/v1/projects", { body: input }, options);
+}
+
+/** `GET /api/v1/projects`: every project of the stack, as the SPA's own `["projects"]` query
+ *  reads them - the read the search bar lists its Projects rows from. */
+export function listProjects(options: ApiOptions = {}) {
+  return get("/api/v1/projects", {}, options);
 }
 
 /** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
@@ -375,13 +429,12 @@ export function createProject(input: Body<"/api/v1/projects", "post">, options: 
  *  deployment that gates nothing. */
 export function setGatedSteps(
   project: string,
-  steps: GatedStep[],
+  steps: Body<"/api/v1/projects/{key}/gated-steps", "put">["steps"],
   options: ApiOptions = { as: "agent" }
-): Promise<{ project: string; steps: GatedStep[] }> {
-  return request<{ project: string; steps: GatedStep[] }>(
-    `/api/v1/projects/${encodeURIComponent(project)}/gated-steps`,
-    "PUT",
-    { steps },
+) {
+  return put(
+    "/api/v1/projects/{key}/gated-steps",
+    { body: { steps }, params: { key: project } },
     options
   );
 }
@@ -403,7 +456,7 @@ export function putProjectDefaultRepository(
 }
 
 /** Mints a personal agent token for `login`; the returned bearer acts for that human. */
-export async function mintAgentToken(name: string, login: string): Promise<string> {
+export async function mintAgentToken(name: string, login: SignInLogin): Promise<string> {
   const minted = await post("/api/v1/me/agent-tokens", { body: { name } }, { login });
   return minted.token;
 }
@@ -496,15 +549,10 @@ export function getIssueResults(issue: string, options: ApiOptions = {}) {
  *  DISPATCH_TEST_HOOKS=1, see run-server.sh); the server starts with both unset, and no
  *  deployment setting can change while it runs. */
 export function setNewIssueSettings(
-  input: { label: string; session: string },
+  input: Body<"/api/v1/settings/new-issue/_test", "post">,
   options: ApiOptions = {}
-): Promise<{ label: string; session: string }> {
-  return request<{ label: string; session: string }>(
-    "/api/v1/settings/new-issue/_test",
-    "POST",
-    input,
-    options
-  );
+) {
+  return post("/api/v1/settings/new-issue/_test", { body: input }, options);
 }
 
 /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */
@@ -518,6 +566,18 @@ export function getIssueCoverage(issue: string, options: ApiOptions = {}) {
  *  the whole list otherwise; this read asks for neither. */
 export async function listIssues(project: string, options: ApiOptions = {}) {
   const answered = await get("/api/v1/issues", { query: { project } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
+  }
+  return answered;
+}
+
+/** Every open issue of the stack, in the server's order (lifecycle status, rank, creation time,
+ *  key): the read the Agents page's issue picker makes, `api.listIssues({ open: true })`
+ *  (`web/src/features/agents/AgentMessageComposer.tsx`), so a row reads here the list its picker
+ *  offers. Like `listIssues`, it asks for the whole list rather than a page. */
+export async function listOpenIssues(options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues", { query: { open: true } }, options);
   if (!Array.isArray(answered)) {
     throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
   }
@@ -570,9 +630,11 @@ export function getPriorityHistory(id: string, options: ApiOptions = {}) {
   return get("/api/v1/priorities/{id}/history", { params: { id } }, options);
 }
 
-/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them. */
-export function getInbox(options: ApiOptions = {}) {
-  return get("/api/v1/inbox", {}, options);
+/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them: every open question
+ *  of the stack, unless `query` narrows them (`assignee: "me"` is the viewer's own list, the one
+ *  the page opens on). */
+export function getInbox(options: ApiOptions = {}, query: Query<"/api/v1/inbox", "get"> = {}) {
+  return get("/api/v1/inbox", { query }, options);
 }
 
 /** `GET /api/v1/search`: the palette's own read, so a row's `href` here is the path a reader
@@ -710,9 +772,9 @@ async function postFile<P extends PathsOf<"post">>(
   pattern: P,
   params: PathParams<Op<P, "post">> & object,
   input: FileUpload,
-  login: string
+  login: SignInLogin
 ): Promise<Result<P, "post">> {
-  const address = routeUrl(pattern, params);
+  const address = routePath("post", pattern, params);
   const form = new FormData();
   form.append("name", input.name);
   form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
@@ -730,13 +792,17 @@ async function postFile<P extends PathsOf<"post">>(
 
 /** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
  *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way. */
-export function uploadIssueFile(issue: string, input: FileUpload, login = "alice") {
+export function uploadIssueFile(issue: string, input: FileUpload, login: SignInLogin = "alice") {
   return postFile("/api/v1/issues/{key}/artifacts", { key: issue }, input, login);
 }
 
 /** Uploads bytes to an agent session's conversation through the multipart form a paste on the
  *  Agents page posts; answers the server's upload answer. */
-export function uploadAgentFile(sessionID: string, input: FileUpload, login = "alice") {
+export function uploadAgentFile(
+  sessionID: string,
+  input: FileUpload,
+  login: SignInLogin = "alice"
+) {
   return postFile("/api/v1/agents/{session_id}/artifacts", { session_id: sessionID }, input, login);
 }
 
@@ -805,12 +871,16 @@ export function answerAsk(
   return post("/api/v1/asks/{id}/answer", { body: input, params: { id } }, options);
 }
 
-/** `PUT /api/v1/asks/{id}/asked-of`: hands the open ask `id` to `login`, as alice does from its
- *  card. */
-export async function handAskOn(id: string, login: string): Promise<void> {
+/** `PUT /api/v1/asks/{id}/asked-of`: hands the open ask `id` to `login`, as a person does from
+ *  its card; `options` names that person, alice when absent. */
+export async function handAskOn(
+  id: string,
+  login: SignInLogin,
+  options: ApiOptions = {}
+): Promise<void> {
   // The person it is handed to has signed in, which the route requires of them.
   await userHeaders(login);
-  await put("/api/v1/asks/{id}/asked-of", { body: { asked_of: login }, params: { id } });
+  await put("/api/v1/asks/{id}/asked-of", { body: { asked_of: login }, params: { id } }, options);
 }
 
 export function resolveAsk(
@@ -959,16 +1029,6 @@ export async function documentBase(
     throw new Error(`document ${id} answers no document token`);
   }
   return { document: token };
-}
-
-/** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for `input.markdown`,
- *  asked as an agent asks it, the most permissive replacement's answer unless `new_document` asks
- *  for a new document's refusals. It writes nothing. */
-export function markdownRoundTrip(
-  input: Body<"/api/v1/markdown/round-trip", "post">,
-  options: ApiOptions = { as: "agent" }
-) {
-  return post("/api/v1/markdown/round-trip", { body: input }, options);
 }
 
 /** The blocks of the document's current version, each with the span of markdown it covers. */
@@ -1302,7 +1362,7 @@ export function putIssueState(
 
 /** `login`'s own state on every issue, `GET /api/v1/me/state`: each issue's pin and its pinned
  *  items (`dismissed`), as the page reads them. */
-export function getMyState(login = "alice") {
+export function getMyState(login: SignInLogin = "alice") {
   return get("/api/v1/me/state", {}, { login });
 }
 
@@ -1379,6 +1439,16 @@ export function putArchitectureSource(
   return put(
     "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
     { body: { branch: input.branch }, params: { key: project, ...repoParams(input.repo) } },
+    options
+  );
+}
+
+/** `DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`: removes one of
+ *  `project`'s architecture sources and the components it projected. */
+export function deleteArchitectureSource(project: string, repo: string, options: ApiOptions = {}) {
+  return del(
+    "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+    { params: { key: project, ...repoParams(repo) } },
     options
   );
 }

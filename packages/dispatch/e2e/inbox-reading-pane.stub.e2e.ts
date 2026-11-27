@@ -10,6 +10,7 @@
  */
 import { expect, type Page } from "@playwright/test";
 
+import { fixedKey } from "./api";
 import { peekTrigger } from "./inbox-drawer";
 import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
 import {
@@ -30,7 +31,10 @@ import {
 import { navigateInApp } from "./sends";
 import { stubbed } from "./stub/stub-test";
 
-const test = stubbed(seedInbox);
+/** The key this file's recordings were made under. */
+const PANE = fixedKey("PANE", "this file's recordings were made under it");
+
+const test = stubbed(() => seedInbox(PANE));
 
 test("the reading pane shows an anchored question and a question in no document as cards @pr", async ({
   page,

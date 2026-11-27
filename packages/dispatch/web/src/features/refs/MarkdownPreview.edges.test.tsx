@@ -159,7 +159,7 @@ test("right-to-left text keeps its characters in order, its marks on the words m
       expect(element.querySelector("strong")?.textContent).toBe("עולם");
       expect(element.querySelector("em")?.textContent).toBe("بالعالم");
       expect(element.querySelector("code")?.textContent).toBe("kubectl get pods");
-      expect(element.getAttribute("data-markdown-fallback")).toBeNull();
+      expect(element).not.toHaveAttribute("data-markdown-fallback");
     }
   } finally {
     view.unmount();
@@ -201,8 +201,8 @@ test("a preview inside a link holds no link of its own, and a click on its refer
     expect(element.querySelector("a")).toBeNull();
     expect(within(view.container).getAllByRole("link")).toHaveLength(1);
     const reference = element.querySelector<HTMLElement>("[data-dispatch-ref]");
-    expect(reference?.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1");
-    expect(reference?.hasAttribute("href")).toBe(false);
+    expect(reference).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1");
+    expect(reference).not.toHaveAttribute("href");
     expect(reference?.textContent).toBe("CORE-1 Design decision");
     const docs = Array.from(element.querySelectorAll("[data-markdown-link]")).find(
       (link) => link.textContent === "the docs"
@@ -244,7 +244,7 @@ test("search hits mark the runs the server matched, and a reference it matched i
     const marked = element
       .querySelector("[data-dispatch-ref] mark")
       ?.closest("[data-dispatch-ref]");
-    expect(marked?.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1");
+    expect(marked).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1");
     expect(element.textContent).not.toContain("dispatch://");
   } finally {
     view.unmount();
@@ -276,11 +276,11 @@ test("a headline writes a reference it has not read as written, keeps one in cod
     expect(reference?.textContent).toBe(
       "Blocked on dispatch://CORE-2/ask/a1, see dispatch://CORE-3"
     );
-    expect(reference?.getAttribute("data-cut")).toBe("false");
+    expect(reference).toHaveAttribute("data-cut", "false");
     const cut = emoji?.textContent ?? "";
     expect(cut).toBe(`a${"😀".repeat(59)}…`);
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(cut)).toBe(false);
-    expect(emoji?.getAttribute("data-cut")).toBe("true");
+    expect(emoji).toHaveAttribute("data-cut", "true");
     // A tag-shaped run reads as the literal characters a rendered body shows for it.
     expect(html?.textContent).toBe("Use Array<string> here");
   } finally {

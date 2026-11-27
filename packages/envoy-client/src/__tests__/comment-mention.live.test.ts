@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import type { CommentRead } from "@legion/contracts";
 import { dispatchCliLive, useDispatchCliDirectories } from "../../test/dispatch-cli-live";
 import {
@@ -14,13 +13,6 @@ import {
 // flag, and the server's own Go rows prove what Dispatch does with a mention it is handed; neither
 // proves that the field the command fills is the field the server records an attempt for, which
 // is what the row below posts a real comment to find out.
-
-// Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
-// `process.env.X`.
-const { PATH: SHELL_PATH } = process.env;
-
-/** The CLI entry the row runs, as an agent's shell reaches it: this checkout's own `dispatch`. */
-const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 
 /** The person who owns the project and the issue, as the server's header identity names them. */
 const PERSON = "alice";
@@ -40,7 +32,7 @@ describe.skipIf(!dispatchStackEnabled)(
   () => {
     let stack: DispatchStack | undefined;
 
-    const { asPerson, createIssue } = dispatchCliLive({
+    const { asPerson, createIssue, runDispatch } = dispatchCliLive({
       stack: () => stack,
       session: SESSION,
       person: PERSON,
@@ -51,26 +43,10 @@ describe.skipIf(!dispatchStackEnabled)(
     /** The real CLI's `dispatch comment` on the issue, run as an agent's shell runs it, and the
      *  id of the comment it posted. A refusal, or anything on standard error, fails the row. */
     async function comment(issue: string, body: string, mention: string): Promise<string> {
-      if (stack === undefined) throw new Error("the Dispatch stack did not start");
-      const argv = ["comment", "--issue", issue, "--body", body, "--mention", mention];
-      const child = Bun.spawn([process.execPath, ENTRY, ...argv], {
-        env: {
-          PATH: SHELL_PATH,
-          HOME: directories.state,
-          DISPATCH_STATE_DIR: directories.state,
-          DISPATCH_HOST: "omp",
-          DISPATCH_SESSION_ID: SESSION,
-          DISPATCH_URL: stack.url,
-          DISPATCH_TOKEN: stack.token,
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
+      const { code, stdout, stderr } = await runDispatch(
+        ["comment", "--issue", issue, "--body", body, "--mention", mention],
+        directories.state
+      );
       if (code !== 0 || stderr !== "") {
         throw new Error(`dispatch comment on ${issue} exited ${code}: ${stderr}${stdout}`);
       }

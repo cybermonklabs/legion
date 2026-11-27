@@ -1,7 +1,8 @@
-import { getSentMessages, plannerMention, plannerSession, setLiveSessions } from "./agents";
+import { agentMention, agentSessions, getSentMessages, setLiveSessions } from "./agents";
 import { createComment, createIssue, createProject, listComments } from "./api";
 import { commentField, pickReference } from "./ref-picker";
-import { expect, type Locator, type Page, test } from "./test";
+import { personReference } from "./reference-surfaces";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -40,9 +41,12 @@ async function send(page: Page, issueKey: string) {
 test("a picked party is the text's own reference: no mentions array, and the comment it stores names, delivers to and shows that party", async ({
   browser,
 }) => {
-  await setLiveSessions([plannerSession]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A mention is a reference" });
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  const mention = agentMention(planner);
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "A mention is a reference" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -50,7 +54,7 @@ test("a picked party is the text's own reference: no mentions array, and the com
     await page.goto(`/issues/${issue.key}/conversation`);
     const field = commentField(page);
     await pickReference(field, "@Planner", /^Planner\b/);
-    await expect(field).toHaveValue(plannerMention);
+    await expect(field).toHaveValue(mention);
     await field.press("End");
     await field.pressSequentially(" please look.");
 
@@ -59,7 +63,7 @@ test("a picked party is the text's own reference: no mentions array, and the com
     // mentions array goes with it - the party is in the text.
     expect(answer.status()).toBe(201);
     expect(answer.request().postDataJSON()).toEqual({
-      body: `${plannerMention} please look.`,
+      body: `${mention} please look.`,
       delivery: "aside",
     });
 
@@ -68,13 +72,13 @@ test("a picked party is the text's own reference: no mentions array, and the com
       .poll(() => listComments(issue.key))
       .toMatchObject([
         {
-          body: `${plannerMention} please look.`,
-          mentions: [{ target: `session:${plannerSession.session_id}` }],
+          body: `${mention} please look.`,
+          mentions: [{ target: `session:${planner.session_id}` }],
         },
       ]);
     await expect
       .poll(() => getSentMessages())
-      .toMatchObject([{ target_session: plannerSession.session_id }]);
+      .toMatchObject([{ target_session: planner.session_id }]);
 
     // And every reader sees the party named in the text itself, as `@` and its current name, a
     // link into its own live conversation. Taken from the turn's body: the card also lists the
@@ -85,11 +89,11 @@ test("a picked party is the text's own reference: no mentions array, and the com
       .filter({ hasText: "please look." });
     const named = turn
       .locator("[data-markdown-preview], [data-markdown-body]")
-      .getByRole("link", { exact: true, name: `@${plannerSession.title}` });
-    await expect(named).toHaveAttribute("href", `/agents/${plannerSession.session_id}/live`);
+      .getByRole("link", { exact: true, name: `@${planner.title}` });
+    await expect(named).toHaveAttribute("href", `/agents/${planner.session_id}/live`);
     await expect(named).toHaveAttribute(
       "data-dispatch-ref",
-      `dispatch://agent/${plannerSession.session_id}`
+      `dispatch://agent/${planner.session_id}`
     );
   } finally {
     await alice.close();
@@ -110,9 +114,12 @@ async function expandedComment(page: Page, id: string): Promise<Locator> {
 test("an edit adds and removes a party in its text and sends no frame for either", async ({
   browser,
 }) => {
-  await setLiveSessions([plannerSession]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Edited mentions" });
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  const mention = agentMention(planner);
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Edited mentions" });
   const comment = await createComment(issue.key, { body: "Nobody is named here." });
   const alice = await asUser(browser, "alice");
 
@@ -120,7 +127,7 @@ test("an edit adds and removes a party in its text and sends no frame for either
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const card = await expandedComment(page, comment.id);
-    const named = card.getByRole("link", { exact: true, name: `@${plannerSession.title}` });
+    const named = card.getByRole("link", { exact: true, name: `@${planner.title}` });
 
     const edit = async (body: string) => {
       await card.getByRole("button", { exact: true, name: "Edit" }).click();
@@ -134,11 +141,11 @@ test("an edit adds and removes a party in its text and sends no frame for either
     // reader of the record sees it named, and nothing is sent. The stored `mentions` stay
     // empty because they are the delivery ledger and an edit delivers nothing
     // (`comment_body_mentions_test.go`'s TestCommentEditChangesWhoItNamesAndSendsNothing).
-    await edit(`${plannerMention} is named now.`);
+    await edit(`${mention} is named now.`);
     await expect
       .poll(() => listComments(issue.key))
-      .toMatchObject([{ body: `${plannerMention} is named now.`, deliveries: [], mentions: [] }]);
-    await expect(named).toHaveAttribute("href", `/agents/${plannerSession.session_id}/live`);
+      .toMatchObject([{ body: `${mention} is named now.`, deliveries: [], mentions: [] }]);
+    await expect(named).toHaveAttribute("href", `/agents/${planner.session_id}/live`);
     expect(await getSentMessages()).toEqual([]);
 
     // And an edit that takes it out again: the text names nobody, the record shows nobody, and
@@ -158,9 +165,13 @@ test("an edit adds and removes a party in its text and sends no frame for either
 test("one party named twice delivers once, eleven are refused, and a person alone is written and delivered to nobody", async ({
   browser,
 }) => {
-  await setLiveSessions([plannerSession]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "What a party set earns" });
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  const mention = agentMention(planner);
+  const dana = personReference();
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "What a party set earns" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -169,11 +180,11 @@ test("one party named twice delivers once, eleven are refused, and a person alon
     const field = commentField(page);
 
     // Named twice is one party: the comment is taken and the session hears it once.
-    await field.fill(`${plannerMention} and ${plannerMention} again.`);
+    await field.fill(`${mention} and ${mention} again.`);
     expect((await send(page, issue.key)).status()).toBe(201);
     await expect
       .poll(() => getSentMessages())
-      .toMatchObject([{ target_session: plannerSession.session_id }]);
+      .toMatchObject([{ target_session: planner.session_id }]);
 
     // Eleven delivering parties is one over the cap, refused with the code and the reason the
     // mentions array has always been refused with.
@@ -192,15 +203,15 @@ test("one party named twice delivers once, eleven are refused, and a person alon
 
     // A person is a party nothing is delivered to, so a body naming one and a mode typed in
     // front of it is written and reaches nobody - never refused for naming no recipient.
-    await field.fill("/btw [Dana](dispatch://person/dana@example.test) take a look.");
+    await field.fill(`/btw [Dana](${dana}) take a look.`);
     const person = await send(page, issue.key);
     expect(person.status()).toBe(201);
     expect(person.request().postDataJSON()).toEqual({
-      body: "[Dana](dispatch://person/dana@example.test) take a look.",
+      body: `[Dana](${dana}) take a look.`,
       delivery: "btw",
     });
     expect(
-      (await getSentMessages()).filter((sent) => sent.target_session !== plannerSession.session_id)
+      (await getSentMessages()).filter((sent) => sent.target_session !== planner.session_id)
     ).toEqual([]);
   } finally {
     await alice.close();
@@ -211,9 +222,12 @@ test("one party named twice delivers once, eleven are refused, and a person alon
 test("a party reference inside a fenced code block names nobody and sends nothing", async ({
   browser,
 }) => {
-  await setLiveSessions([plannerSession]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A fenced address names nobody" });
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  const mention = agentMention(planner);
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "A fenced address names nobody" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -225,9 +239,7 @@ test("a party reference inside a fenced code block names nobody and sends nothin
     // code block rather than a party, and so the comment names nobody, records no delivery and
     // sends no frame - `c-mention-is-a-reference`'s own negative control.
     const fence = "```";
-    await commentField(page).fill(
-      `How a mention is written:\n\n${fence}\n${plannerMention}\n${fence}`
-    );
+    await commentField(page).fill(`How a mention is written:\n\n${fence}\n${mention}\n${fence}`);
     const answer = await send(page, issue.key);
     expect(answer.status()).toBe(201);
     expect(await answer.json()).toMatchObject({ mentions: [] });
@@ -240,9 +252,12 @@ test("a party reference inside a fenced code block names nobody and sends nothin
 
 // SLOW(>=2s): a send, the record read back, and the listener watched after it.
 test("a party reference inside a code span names nobody and sends nothing", async ({ browser }) => {
-  await setLiveSessions([plannerSession]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "A span address names nobody" });
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  const mention = agentMention(planner);
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "A span address names nobody" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -252,7 +267,7 @@ test("a party reference inside a code span names nobody and sends nothing", asyn
     // A code span is the fence's inline twin: the address is shown as characters inside one
     // sentence. The browser reads the draft as the server reads the body, so the box lists no
     // party before the send and the record holds none after it.
-    await commentField(page).fill(`Write \`${plannerMention}\` to reach them.`);
+    await commentField(page).fill(`Write \`${mention}\` to reach them.`);
     await expect(page.getByRole("list", { name: "Mention targets" })).toHaveCount(0);
 
     const answer = await send(page, issue.key);
@@ -269,9 +284,12 @@ test("a party reference inside a code span names nobody and sends nothing", asyn
 test("a party reference inside an indented code block names nobody and sends nothing", async ({
   browser,
 }) => {
-  await setLiveSessions([plannerSession]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "An indented address names nobody" });
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  const mention = agentMention(planner);
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "An indented address names nobody" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -281,7 +299,7 @@ test("a party reference inside an indented code block names nobody and sends not
     // The third code context: four spaces after a blank line, which is a code block as much as
     // a fence is and is drawn as one. The four spaces an ordinary nested bullet carries are no
     // such block, which `packages/contracts`'s shared table holds both readers to.
-    await commentField(page).fill(`How a mention is written:\n\n    ${plannerMention}\n`);
+    await commentField(page).fill(`How a mention is written:\n\n    ${mention}\n`);
     await expect(page.getByRole("list", { name: "Mention targets" })).toHaveCount(0);
 
     const answer = await send(page, issue.key);
@@ -298,9 +316,12 @@ test("a party reference inside an indented code block names nobody and sends not
 test("a party a draft names outside code is delivered to once, whatever the same draft writes in code", async ({
   browser,
 }) => {
-  await setLiveSessions([plannerSession]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Code beside a mention" });
+  const core = rowKey("CORE");
+  const { planner } = agentSessions(rowSessionId);
+  const mention = agentMention(planner);
+  await setLiveSessions([planner]);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Code beside a mention" });
   const alice = await asUser(browser, "alice");
 
   try {
@@ -311,21 +332,19 @@ test("a party a draft names outside code is delivered to once, whatever the same
     // a mention and once as the characters of a fenced block. Code hides the party written in
     // it and nothing else, so the party is listed once, delivered to once, and sent one frame.
     const fence = "```";
-    await commentField(page).fill(
-      `${plannerMention} please look.\n\n${fence}\n${plannerMention}\n${fence}`
-    );
+    await commentField(page).fill(`${mention} please look.\n\n${fence}\n${mention}\n${fence}`);
     await expect(page.getByRole("list", { name: "Mention targets" })).toHaveText(
-      `session:${plannerSession.session_id}`
+      `session:${planner.session_id}`
     );
 
     const answer = await send(page, issue.key);
     expect(answer.status()).toBe(201);
     await expect
       .poll(() => listComments(issue.key))
-      .toMatchObject([{ mentions: [{ target: `session:${plannerSession.session_id}` }] }]);
+      .toMatchObject([{ mentions: [{ target: `session:${planner.session_id}` }] }]);
     await expect
       .poll(() => getSentMessages())
-      .toMatchObject([{ target_session: plannerSession.session_id }]);
+      .toMatchObject([{ target_session: planner.session_id }]);
     expect(await getSentMessages()).toHaveLength(1);
   } finally {
     await alice.close();

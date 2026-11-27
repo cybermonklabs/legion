@@ -2,9 +2,10 @@
  *  Pending changes, which a refused change leaves open, and the update banner, which shows once
  *  every live process serves a build the page does not run. The rows of
  *  `e2e/issues-table.e2e.ts` and `e2e/foot-sweep.e2e.ts` that read the foot show them this way. */
+import { issueProject } from "../web/src/lib/issue-key";
 import { createIssue, createProject, patchIssue } from "./api";
 import { pendingWrites } from "./keyed-writes";
-import { expect, type Locator, type Page } from "./test";
+import { expect, type Locator, type Page, rowKey } from "./test";
 
 /** The update banner (`DeploymentResilience`), gone while no update shows. */
 export function updateBanner(page: Page): Locator {
@@ -34,10 +35,12 @@ export async function routeFloats(page: Page, refusedKey: string): Promise<void>
 }
 
 /** Opens `path` on `page`, routed by `routeFloats`, with both floats shown: a change to
- *  `refusedKey` refused on the issues table, which Pending changes keeps across the load, and
- *  the banner, which the page shows from the builds the route answers. */
+ *  `refusedKey` refused on the issues table of that issue's own project, which Pending changes
+ *  keeps across the load, and the banner, which the page shows from the builds the route
+ *  answers. The project is read off the key, so a row's own (`seedRefusedMove`) and the review
+ *  corpus's fixed `CORE` (e2e/review-seed.ts) each open where their issue is. */
 export async function openWithFloats(page: Page, refusedKey: string, path: string): Promise<void> {
-  await page.goto("/projects/CORE/issues");
+  await page.goto(`/projects/${issueProject(refusedKey)}/issues`);
   await page.getByRole("checkbox", { name: `Select ${refusedKey}`, exact: true }).check();
   await page
     .getByRole("toolbar")
@@ -75,21 +78,24 @@ export async function discardPending(page: Page): Promise<void> {
   await expect(pending).toHaveCount(0);
 }
 
-/** The project CORE with an epic and an issue in it, whose move out of the epic `routeFloats`
- *  refuses. Answers that issue. */
+/** The row's own project CORE (`rowKey`, e2e/test.ts) with an epic and an issue in it, whose
+ *  move out of the epic `routeFloats` refuses. Answers that issue. */
 export async function seedRefusedMove() {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const epic = await createIssue({ project: core, title: "Parser rollout" });
   await patchIssue(epic.key, { labels: ["epic"] });
-  return createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
+  return createIssue({ project: core, parent: epic.key, title: "Refused move" });
 }
 
 /** Issues enough to run the issues table's box, and the Board's Triage column, past the window
- *  at every size. Nothing reads their order among themselves, so they go out side by side. */
+ *  at every size, in the row's own project CORE. Nothing reads their order among themselves, so
+ *  they go out side by side. */
 export async function seedFillers(): Promise<void> {
+  const core = rowKey("CORE");
   await Promise.all(
     Array.from({ length: 40 }, (_, index) =>
-      createIssue({ project: "CORE", title: `Filler issue number ${index}` })
+      createIssue({ project: core, title: `Filler issue number ${index}` })
     )
   );
 }

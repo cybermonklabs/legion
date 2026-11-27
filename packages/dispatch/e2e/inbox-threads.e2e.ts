@@ -1,9 +1,14 @@
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject } from "./api";
 import { inboxPane, inboxRow, selectRow } from "./inbox-pane";
-import { replyRowId, seedCommentThread, seedTwelve, THREAD_SESSION } from "./inbox-threads";
-import { expect, type Locator, test } from "./test";
+import { replyRowId, rowThreadSession, seedCommentThread, seedTwelve } from "./inbox-threads";
+import { expect, type Locator, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
+
+/** The session that answers the seeded threads, under the running row's own id
+ *  (`rowThreadSession`, e2e/inbox-threads.ts): Dispatch keeps what is sent to it and its replies
+ *  by its id, for every person at once. */
+const threadSession = rowThreadSession(rowSessionId);
 
 /**
  * The two rows of the Inbox's thread family that need the real stack, each with the reason it
@@ -21,8 +26,11 @@ import { asUser } from "./users";
 test("the drawer's own bar filters the drawer alone, and the Inbox page keeps its list", async ({
   browser,
 }) => {
-  await seedTwelve();
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox holds the
+  // twelve rows this seed makes and no other row's.
+  const me = rowPerson("alice");
+  await seedTwelve(rowKey("CORE"), threadSession, me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     // The Inbox page, narrowed to its Reply rows: the list the drawer must not touch.
@@ -110,10 +118,16 @@ async function clampedParts(turn: Locator): Promise<string[]> {
 
 // It is no stubbed row either: it carries `@phone`, and the `iphone` project runs none.
 test("a long reply shows whole in the reading pane and on a card @phone", async ({ browser }) => {
-  await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Replay budget" });
-  const thread = await seedCommentThread(issue.key, "How far does the replay go?", LONG_REPLY);
+  const core = rowKey("CORE");
+  await setLiveSessions([threadSession]);
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Replay budget" });
+  const thread = await seedCommentThread(
+    issue.key,
+    "How far does the replay go?",
+    LONG_REPLY,
+    threadSession
+  );
 
   const alice = await asUser(browser, "alice");
   try {

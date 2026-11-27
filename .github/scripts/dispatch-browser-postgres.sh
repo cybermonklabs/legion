@@ -2,7 +2,7 @@
 # What the Dispatch browser suite's stacks get from the image they run in, read once per job
 # before the suite starts, and what the provider that makes those stacks costs.
 #
-# Who runs it, and why it is a script: the "Read the lanes' PostgreSQL and time its provider"
+# Who runs it, and why it is a script: the "Read the stacks' PostgreSQL and time its provider"
 # step of .github/workflows/dispatch-browser.yaml's shard job and the step of that name in its
 # alone job. The two jobs repeat their step lists for the reason
 # .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows

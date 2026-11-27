@@ -184,7 +184,7 @@ test("leaving a held field with nothing typed writes nothing, and shows what was
   await user.click(field);
   // Another person's rename lands while the reader holds the field.
   act(() => land.write?.("Written elsewhere"));
-  expect(document.activeElement).toBe(field);
+  expect(field).toHaveFocus();
   await user.tab();
   // The reader typed nothing, so leaving writes nothing. A write of "Old name" here takes the
   // other person's rename back, which nobody asked for, and the field goes on showing it.
@@ -377,10 +377,10 @@ test.each([
       // user-event has no form for this: it cannot mark a key as an IME composition.
       fireEvent.keyDown(field, composing);
       expect(writes).toEqual([]);
-      expect(document.activeElement).toBe(field);
+      expect(field).toHaveFocus();
       await user.keyboard("{Enter}");
       expect(writes).toEqual(["Old name, mine"]);
-      expect(document.activeElement).not.toBe(field);
+      expect(field).not.toHaveFocus();
     });
     view.unmount();
     expect(writes).toEqual(["Old name, mine"]);
@@ -579,12 +579,12 @@ test("a field given a place for its notice draws it there, and names it as what 
   expect(within(notice).getByText("Old name, mine")).toBeDefined();
   expect(notice.parentElement).toBe(place);
   expect(notice.id).not.toBe("");
-  expect(field.getAttribute("aria-describedby")).toBe(notice.id);
+  expect(field).toHaveAttribute("aria-describedby", notice.id);
   // Let go, the notice leaves its place empty, which a page may hide while it is, and the field
   // names nothing.
   await user.click(within(notice).getByRole("button", { name: "Keep their text" }));
   expect(place.childNodes).toHaveLength(0);
-  expect(field.getAttribute("aria-describedby")).toBeNull();
+  expect(field).not.toHaveAttribute("aria-describedby");
   view.unmount();
 });
 
@@ -593,7 +593,7 @@ test("a field given no place for its notice draws it beside itself, and names it
   expect(within(notice).getByText("Old name, mine")).toBeDefined();
   expect(notice.parentElement).toBe(field.parentElement);
   expect(notice.id).not.toBe("");
-  expect(field.getAttribute("aria-describedby")).toBe(notice.id);
+  expect(field).toHaveAttribute("aria-describedby", notice.id);
   view.unmount();
 });
 

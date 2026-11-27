@@ -19,12 +19,13 @@
  * Every broadcast goes to the session the text names as its party, the one session the world
  * lists: it is the recipient alice selects and the session whose reply the broadcast's page shows.
  */
-import { BROADCAST_REFUSED, refuseBroadcasts } from "./agents";
+import { agentRow, BROADCAST_REFUSED, refuseBroadcasts } from "./agents";
 import { createBroadcast, replyToMessageDelivery } from "./api";
 import {
+  asReadingSession,
   expectReadsReferences,
-  READING_SESSION_ID,
   READING_SESSION_TITLE,
+  readingSessionId,
   readingText,
   seedReadingWorld,
 } from "./reading-rows";
@@ -36,7 +37,7 @@ async function broadcastToReadingSession(body: string) {
   const sent = await createBroadcast({
     body,
     delivery: "steer",
-    session_ids: [READING_SESSION_ID],
+    session_ids: [readingSessionId()],
   });
   expect(sent.excluded).toEqual([]);
   return sent;
@@ -56,7 +57,7 @@ test("broadcast-recipient-reply: a recipient's reply on the broadcast's page dra
   await replyToMessageDelivery(
     recipient.message.id,
     { attempt: 1, body: readingText(world) },
-    { id: READING_SESSION_ID, kind: "session" }
+    asReadingSession.actor
   );
 
   await page.goto(`/agents/broadcasts/${sent.id}`);
@@ -89,7 +90,7 @@ test("broadcast-send-row: a send's row on the Agents page draws every form but a
   // send that succeeds opens its broadcast and takes the row with the page.
   await refuseBroadcasts(page);
   await page.goto("/agents");
-  await page
+  await agentRow(page, readingSessionId())
     .getByRole("checkbox", { name: `Select ${READING_SESSION_TITLE} for broadcast` })
     .check();
   const composer = page.getByRole("region", { name: "Broadcast" });
@@ -107,9 +108,11 @@ test("broadcasts-list-body: a Broadcasts row's one-line body draws every form bu
   page,
 }) => {
   const world = await seedReadingWorld();
-  await broadcastToReadingSession(readingText(world));
+  const sent = await broadcastToReadingSession(readingText(world));
 
   await page.goto("/agents/broadcasts");
-  const row = page.getByRole("region", { name: "Broadcasts" }).getByRole("listitem");
-  await expectReadsReferences(row.locator("[data-markdown-preview]"), world, "inert");
+  const link = page
+    .getByRole("region", { name: "Broadcasts" })
+    .locator(`a[href="/agents/broadcasts/${sent.id}"]`);
+  await expectReadsReferences(link.locator("[data-markdown-preview]"), world, "inert");
 });

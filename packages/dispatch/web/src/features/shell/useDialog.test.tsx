@@ -127,7 +127,7 @@ test("a key typed in a dialog's first frame presses nothing behind the dialog", 
     const dialog = view.getByRole("dialog", { name: "Request changes" });
     await user.keyboard(" a{Enter}");
     expect(pressed, "a key typed in the dialog's first frame pressed the control under it").toBe(0);
-    expect(document.activeElement, "the dialog left the focus behind it").toBe(dialog);
+    expect(dialog, "the dialog left the focus behind it").toHaveFocus();
   } finally {
     frames.mockRestore();
     view.unmount();
@@ -151,7 +151,7 @@ test("a Shift+Tab and a key in a dialog's first frame stay inside the dialog", a
     act(() => view.getByRole("button", { name: "Approve" }).focus());
     await user.keyboard("R");
     const dialog = view.getByRole("dialog", { name: "Request changes" });
-    expect(document.activeElement, "the dialog left the focus behind it as it opened").toBe(dialog);
+    expect(dialog, "the dialog left the focus behind it as it opened").toHaveFocus();
     await user.tab({ shift: true });
     await user.keyboard(" ");
     expect(
@@ -159,9 +159,9 @@ test("a Shift+Tab and a key in a dialog's first frame stay inside the dialog", a
       "a Shift+Tab and a Space in the dialog's first frame pressed the control under it"
     ).toBe(0);
     expect(
-      document.activeElement,
+      view.getByRole("textbox", { name: "Reason" }),
       "a Shift+Tab in the dialog's first frame went to no last control of it"
-    ).toBe(view.getByRole("textbox", { name: "Reason" }));
+    ).toHaveFocus();
   } finally {
     frames.mockRestore();
     view.unmount();
@@ -210,13 +210,12 @@ test("the frame after it opens, a dialog gives the focus to its first control an
     act(() => view.getByRole("button", { name: "Approve" }).focus());
     await user.keyboard("R");
     frames.run();
-    expect(document.activeElement, "the frame gave the focus to no control of the dialog").toBe(
-      view.getByRole("button", { name: "First control of Request changes" })
-    );
+    expect(
+      view.getByRole("button", { name: "First control of Request changes" }),
+      "the frame gave the focus to no control of the dialog"
+    ).toHaveFocus();
     await user.click(view.getByText("Words of the dialog"));
-    expect(document.activeElement, "a press on the dialog's text focused the dialog").toBe(
-      document.body
-    );
+    expect(document.body, "a press on the dialog's text focused the dialog").toHaveFocus();
   } finally {
     frames.restore();
     view.unmount();
@@ -300,14 +299,16 @@ for (const staysMounted of [false, true]) {
         view.queryByRole("dialog", { name: "Sheet" }),
         "Search left the sheet open"
       ).toBeNull();
-      expect(document.activeElement, "the closing sheet took the focus from Search's dialog").toBe(
-        view.getByRole("dialog", { name: "Search" })
-      );
+      expect(
+        view.getByRole("dialog", { name: "Search" }),
+        "the closing sheet took the focus from Search's dialog"
+      ).toHaveFocus();
       await user.keyboard(" ");
       expect(menus, "a Space in the Search dialog's first frame pressed Menu behind it").toBe(1);
       frames.run();
       await user.keyboard("{Escape}");
       expect(view.queryByRole("dialog", { name: "Search" }), "Escape left Search open").toBeNull();
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case staysMounted picks.
       expect(
         document.activeElement,
         staysMounted
@@ -337,20 +338,22 @@ test("a nested pair opened as another closes gives the focus back in turn, then 
     await user.click(view.getByRole("button", { name: "Menu" }));
     frames.run();
     await user.click(view.getByRole("button", { name: "Search" }));
-    expect(document.activeElement, "the inner dialog took no focus as it opened").toBe(
-      view.getByRole("dialog", { name: "Inner" })
-    );
+    expect(
+      view.getByRole("dialog", { name: "Inner" }),
+      "the inner dialog took no focus as it opened"
+    ).toHaveFocus();
     frames.run();
     await user.keyboard("{Escape}");
     expect(
-      document.activeElement,
+      view.getByRole("button", { name: "First control of Search" }),
       "the inner dialog gave the focus to no control of Search's dialog"
-    ).toBe(view.getByRole("button", { name: "First control of Search" }));
+    ).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(view.queryByRole("dialog", { name: "Search" }), "Escape left Search open").toBeNull();
-    expect(document.activeElement, "the outer of the pair gave the focus back to no opener").toBe(
-      view.getByRole("button", { name: "Menu" })
-    );
+    expect(
+      view.getByRole("button", { name: "Menu" }),
+      "the outer of the pair gave the focus back to no opener"
+    ).toHaveFocus();
   } finally {
     frames.restore();
     view.unmount();
@@ -399,9 +402,10 @@ test("two nested dialogs of a parent and a child opened in one commit give the f
   const frames = holdFrames();
   try {
     await user.click(view.getByRole("button", { name: "Opener" }));
-    expect(document.activeElement, "the inner dialog took no focus as it opened").toBe(
-      view.getByRole("dialog", { name: "Inner" })
-    );
+    expect(
+      view.getByRole("dialog", { name: "Inner" }),
+      "the inner dialog took no focus as it opened"
+    ).toHaveFocus();
     frames.run();
     await user.keyboard("{Escape}");
     expect(
@@ -409,21 +413,20 @@ test("two nested dialogs of a parent and a child opened in one commit give the f
       "Escape left the inner dialog open"
     ).toBeNull();
     expect(
-      document.activeElement,
+      view.getByRole("button", { name: "First control of Outer" }),
       "the inner dialog gave the focus to no control of the outer"
-    ).toBe(view.getByRole("button", { name: "First control of Outer" }));
+    ).toHaveFocus();
     await user.click(view.getByText("Words of Outer"));
-    expect(document.activeElement, "a press on the outer dialog's text focused the dialog").toBe(
-      document.body
-    );
+    expect(document.body, "a press on the outer dialog's text focused the dialog").toHaveFocus();
     await user.keyboard("{Escape}");
     expect(
       view.queryByRole("dialog", { name: "Outer" }),
       "Escape left the outer dialog open"
     ).toBeNull();
-    expect(document.activeElement, "the outer dialog gave the focus back to no opener").toBe(
-      view.getByRole("button", { name: "Opener" })
-    );
+    expect(
+      view.getByRole("button", { name: "Opener" }),
+      "the outer dialog gave the focus back to no opener"
+    ).toHaveFocus();
   } finally {
     frames.restore();
     view.unmount();
@@ -446,21 +449,20 @@ test("a dialog inside another that closes before the outer's frame gives the foc
     await user.click(view.getByRole("button", { name: "Opener" }));
     const outer = view.getByRole("dialog", { name: "Outer" });
     expect(
-      outer.getAttribute("tabindex"),
+      outer,
       "the outer dialog could take no focus back from the inner one before its frame"
-    ).toBe("-1");
+    ).toHaveAttribute("tabindex", "-1");
     await user.keyboard("{Escape}");
     expect(
       view.queryByRole("dialog", { name: "Inner" }),
       "Escape left the inner dialog open"
     ).toBeNull();
-    expect(document.activeElement, "the inner dialog gave the focus to no part of the outer").toBe(
-      outer
-    );
+    expect(outer, "the inner dialog gave the focus to no part of the outer").toHaveFocus();
     frames.run();
-    expect(document.activeElement, "the outer's frame gave the focus to no control of it").toBe(
-      view.getByRole("button", { name: "First control of Outer" })
-    );
+    expect(
+      view.getByRole("button", { name: "First control of Outer" }),
+      "the outer's frame gave the focus to no control of it"
+    ).toHaveFocus();
   } finally {
     frames.restore();
     view.unmount();
@@ -483,22 +485,23 @@ test("a dialog whose only controls are inside a dialog inside it gets the focus 
     await user.click(view.getByRole("button", { name: "Opener" }));
     frames.run();
     expect(
-      view.getByRole("dialog", { name: "Outer" }).getAttribute("tabindex"),
+      view.getByRole("dialog", { name: "Outer" }),
       "the outer dialog, with no field of its own, stopped being focusable at its frame"
-    ).toBe("-1");
+    ).toHaveAttribute("tabindex", "-1");
     await user.keyboard("{Escape}");
     expect(
       view.queryByRole("dialog", { name: "Inner" }),
       "Escape left the inner dialog open"
     ).toBeNull();
     expect(
-      document.activeElement,
+      view.getByRole("dialog", { name: "Outer" }),
       "the inner dialog gave the focus to the body, not to the outer"
-    ).toBe(view.getByRole("dialog", { name: "Outer" }));
+    ).toHaveFocus();
     await user.keyboard("{Escape}");
-    expect(document.activeElement, "the outer dialog gave the focus back to no opener").toBe(
-      view.getByRole("button", { name: "Opener" })
-    );
+    expect(
+      view.getByRole("button", { name: "Opener" }),
+      "the outer dialog gave the focus back to no opener"
+    ).toHaveFocus();
   } finally {
     frames.restore();
     view.unmount();
@@ -567,19 +570,22 @@ test("a pair of one component opened as another closes gives the focus back in t
     await user.click(view.getByRole("button", { name: "Menu" }));
     frames.run();
     await user.click(view.getByRole("button", { name: "Open the pair" }));
-    expect(document.activeElement, "the thread took no focus as it opened").toBe(
-      view.getByRole("dialog", { name: "Thread" })
-    );
+    expect(
+      view.getByRole("dialog", { name: "Thread" }),
+      "the thread took no focus as it opened"
+    ).toHaveFocus();
     frames.run();
     await user.keyboard("{Escape}");
-    expect(document.activeElement, "the thread gave the focus to no control of the pair").toBe(
-      view.getByRole("button", { name: "First control of Pair" })
-    );
+    expect(
+      view.getByRole("button", { name: "First control of Pair" }),
+      "the thread gave the focus to no control of the pair"
+    ).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(view.queryByRole("dialog", { name: "Pair" }), "Escape left the pair open").toBeNull();
-    expect(document.activeElement, "the pair gave the focus back to no opener").toBe(
-      view.getByRole("button", { name: "Menu" })
-    );
+    expect(
+      view.getByRole("button", { name: "Menu" }),
+      "the pair gave the focus back to no opener"
+    ).toHaveFocus();
   } finally {
     frames.restore();
     view.unmount();
@@ -633,18 +639,20 @@ test("a dialog opened inside another in one commit gives the focus back into the
   const frames = holdFrames();
   try {
     await user.click(view.getByRole("button", { name: "Mark" }));
-    expect(document.activeElement, "the thread took no focus as it opened").toBe(
-      view.getByRole("dialog", { name: "Thread" })
-    );
+    expect(
+      view.getByRole("dialog", { name: "Thread" }),
+      "the thread took no focus as it opened"
+    ).toHaveFocus();
     frames.run();
     await user.keyboard("{Escape}");
     expect(
       view.queryByRole("dialog", { name: "Thread" }),
       "Escape left the thread open"
     ).toBeNull();
-    expect(document.activeElement, "the thread gave the focus to no control of the sheet").toBe(
-      view.getByRole("button", { name: "First control of the sheet" })
-    );
+    expect(
+      view.getByRole("button", { name: "First control of the sheet" }),
+      "the thread gave the focus to no control of the sheet"
+    ).toHaveFocus();
   } finally {
     frames.restore();
     view.unmount();

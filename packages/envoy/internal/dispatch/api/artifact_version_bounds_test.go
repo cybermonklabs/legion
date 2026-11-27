@@ -27,7 +27,7 @@ func TestAVersionNumberAboveTheColumnsRangeIsRefusedNotAFault(t *testing.T) {
 		fmt.Sprintf("/api/v1/artifacts/%s/versions/2147483647", artifactID),
 	} {
 		response := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
-		refusal := decodeBody[refusedAnswer](t, response)
+		refusal := decodeBody[errorBody](t, response)
 		switch {
 		case response.Code == http.StatusBadRequest && refusal.Code == "INVALID_VERSION":
 		case response.Code == http.StatusNotFound && refusal.Code == "NOT_FOUND":

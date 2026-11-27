@@ -64,12 +64,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { baseUrl, createProject } from "./api";
+import { baseUrl, createProject, fixedKey } from "./api";
 import { dispatchEntry } from "./dispatch-cli";
 import { harnessPorts } from "./harness-ports";
 
 /** The project the job pod entry and the example entry name (dev-broker.sh's EXCHANGE_PROJECT). */
-const project = "EXAMPLE";
+const project = fixedKey(
+  "EXAMPLE",
+  "dev-broker.sh's job pod entry and example entry name this project"
+);
 /** A project dispatch:local seeds that neither the job pod's entry nor the example entry names. */
 const otherProject = "OPS";
 /** The job pod entry (dev-broker.sh's JOB_ACCOUNT and JOB_SESSION). */

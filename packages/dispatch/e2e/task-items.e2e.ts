@@ -1,6 +1,6 @@
 import { answerAsk, createComment, createIssue, createProject } from "./api";
 import { documentEditor, indexedBlockAsk } from "./editor";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowKey, test } from "./test";
 import { centerOf } from "./touch";
 import { withAlice } from "./users";
 
@@ -84,39 +84,62 @@ const STEADY_SHOT_ATTEMPTS = 10;
 
 type Rect = { height: number; width: number; x: number; y: number };
 
+/** One shot of a box: the clip shot, the box's rect and the image. */
+type BoxShot = { clip: Rect; rect: Rect; shot: Buffer };
+
 /** A shot of `box` padded by `BOX_SHOT_PADDING` on every side, with the box's rect and the clip
  *  shot, both in CSS pixels of the viewport. The clip is widened to whole CSS pixels, so its shot
  *  maps back to it exactly at any whole device pixel ratio. The shot is taken once two in a row
  *  match with the box in the same place: the page can shift for a frame between reading the box's
- *  rect and the shot, which would then show whatever passed under the box. */
-async function steadyShotOf(box: Locator): Promise<{ clip: Rect; rect: Rect; shot: Buffer }> {
-  let previous: { rect: Rect; shot: Buffer } | undefined;
-  for (let attempt = 0; attempt < STEADY_SHOT_ATTEMPTS; attempt++) {
-    await box.scrollIntoViewIfNeeded();
-    // The scroll above waited for the box to be visible and still, so its rect is there.
-    const rect = await box.boundingBox();
-    if (rect === null) throw new Error("the checkbox is not on the page");
-    const x = Math.floor(rect.x - BOX_SHOT_PADDING);
-    const y = Math.floor(rect.y - BOX_SHOT_PADDING);
-    const clip = {
-      height: Math.ceil(rect.y + rect.height + BOX_SHOT_PADDING) - y,
-      width: Math.ceil(rect.x + rect.width + BOX_SHOT_PADDING) - x,
-      x,
-      y,
-    };
-    const shot = await box.page().screenshot({ animations: "disabled", clip });
-    if (
-      previous?.shot.equals(shot) &&
-      previous.rect.x === rect.x &&
-      previous.rect.y === rect.y &&
-      previous.rect.width === rect.width &&
-      previous.rect.height === rect.height
-    ) {
-      return { clip, rect, shot };
-    }
-    previous = { rect, shot };
-  }
-  throw new Error(`the checkbox never held still for two shots in ${STEADY_SHOT_ATTEMPTS}`);
+ *  rect and the shot, which would then show whatever passed under the box.
+ *
+ *  `expect.poll` takes the shots back to back, one more each time the last two differ, and the
+ *  bound is the shot count, `STEADY_SHOT_ATTEMPTS`, as it was before the poll: the tenth shot
+ *  that does not match the one before it throws, and a throw from the callback ends the poll at
+ *  once (`invokePollMatcher` awaits the callback outside its retry, Playwright 1.64.1's
+ *  `playwright/lib/matchers/expect.js`). So the poll names no timeout of its own (`timeout: 0`),
+ *  and only the row's own deadline stands above the count. */
+async function steadyShotOf(box: Locator): Promise<BoxShot> {
+  let previous: BoxShot | undefined;
+  let steady: BoxShot | undefined;
+  let shots = 0;
+  await expect
+    .poll(
+      async () => {
+        await box.scrollIntoViewIfNeeded();
+        // The scroll above waited for the box to be stable and laid out, so its rect is there.
+        const rect = await box.boundingBox();
+        if (rect === null) throw new Error("the checkbox is not on the page");
+        const x = Math.floor(rect.x - BOX_SHOT_PADDING);
+        const y = Math.floor(rect.y - BOX_SHOT_PADDING);
+        const clip = {
+          height: Math.ceil(rect.y + rect.height + BOX_SHOT_PADDING) - y,
+          width: Math.ceil(rect.x + rect.width + BOX_SHOT_PADDING) - x,
+          x,
+          y,
+        };
+        const shot = await box.page().screenshot({ animations: "disabled", clip });
+        shots += 1;
+        if (
+          previous?.shot.equals(shot) &&
+          previous.rect.x === rect.x &&
+          previous.rect.y === rect.y &&
+          previous.rect.width === rect.width &&
+          previous.rect.height === rect.height
+        ) {
+          steady = { clip, rect, shot };
+        } else if (shots === STEADY_SHOT_ATTEMPTS) {
+          throw new Error(`the checkbox never held still for two shots in ${STEADY_SHOT_ATTEMPTS}`);
+        }
+        previous = { clip, rect, shot };
+        return steady !== undefined;
+      },
+      { intervals: [0], timeout: 0 }
+    )
+    .toBe(true);
+  // The poll above passed only once it had kept a steady shot, so this only narrows the type.
+  if (steady === undefined) throw new Error("the checkbox never held still for two shots");
+  return steady;
 }
 
 /** The share of the middle of `box` (its rect inset by a quarter on every side) that is ink: pixels
@@ -193,8 +216,9 @@ async function expectTickedFilledUntickedEmpty(
 
 /** Seeds an issue with an agent comment holding a ticked and an unticked task item. */
 async function seedChecklist(): Promise<{ commentId: string; issueKey: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Release checklist" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, title: "Release checklist" });
   const comment = await createComment(
     issue.key,
     { body: "Release checklist:\n\n- [x] Tag the build\n- [ ] Publish the notes\n" },
@@ -275,9 +299,10 @@ for (const colorScheme of ["light", "dark"] as const) {
 test("a reply under a decision inside a document shows the checkboxes with no bullet @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
   const issue = await createIssue({
-    project: "CORE",
+    project: core,
     spec: 'Intro.\n\n:::ask{#naming urgency="med" multiple="false"}\nWhich alias?\n\n- short\n- long\n:::\n\nAfter.\n',
     title: "Alias decision",
   });

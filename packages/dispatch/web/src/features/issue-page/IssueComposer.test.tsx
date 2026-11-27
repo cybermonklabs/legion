@@ -157,16 +157,13 @@ function renderPage(
  *  those held so far and the ones they ask for, so a frame a call schedules can run inside `act`
  *  once React has drawn what the call changed. `release` gives the page its own frames back. */
 function holdFrames(): { readonly release: () => void; readonly run: () => void } {
-  const real = window.requestAnimationFrame;
   let held: FrameRequestCallback[] = [];
-  window.requestAnimationFrame = (callback) => {
+  const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
     held.push(callback);
     return held.length;
-  };
+  });
   return {
-    release: () => {
-      window.requestAnimationFrame = real;
-    },
+    release: () => frame.mockRestore(),
     run: () => {
       for (let round = 0; round < 30 && held.length > 0; round += 1) {
         const now = held;
@@ -384,13 +381,12 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await waitFor(() => expect(api.createComment).toHaveBeenCalledTimes(1));
   page.redraw({ viewOn: true });
   expect(composerBox()).not.toHaveAttribute("hidden");
-  // The send lands a task after its answer (TanStack Query notifies on a zero-delay timer), and
-  // the box then hides and gives the focus back: both inside `act`.
-  await act(async () => {
-    out.resolve(commentRecord("comment-9", ALICE, "Sent at rest"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-  await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
+  // The send lands a task after its answer, and the box then hides and gives the focus back. The
+  // real turns that bring it each run inside `act` (`onRealTurns`), from the one the answer is
+  // given before, so the row waits for the box to hide rather than for a turn of the loop.
+  out.resolve(commentRecord("comment-9", ALICE, "Sent at rest"));
+  await onRealTurns(() => composerBox().hasAttribute("hidden"));
+  expect(composerBox()).toHaveAttribute("hidden");
 });
 
 // The kept lines name the way back by a control's words: the box's control that writes on the
@@ -1215,6 +1211,7 @@ test("the writer's answer, its change and an option's press open nothing in the 
       await act(async () => press());
       act(() => frames.run());
       expect(page.writer().answer, name).toBeDefined();
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
       expect(document.activeElement, name).toBe(rowOf("comment-1"));
       expect(composerBox().contains(document.activeElement), name).toBe(false);
       expect(composerBox(), name).not.toHaveAttribute("hidden");
@@ -2378,7 +2375,7 @@ test("a new act landing moves the current point to it, and the mark takes no foc
 
   page.redrawOutline(timedOutline(madeAt(commentNode("comment-3", BOB, "Newer words"), hour(3))));
   await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-3")));
-  expect(document.activeElement).toBe(focused);
+  expect(focused).toHaveFocus();
   expect(rowOf("comment-3")).toHaveAttribute("tabindex", "-1");
 });
 

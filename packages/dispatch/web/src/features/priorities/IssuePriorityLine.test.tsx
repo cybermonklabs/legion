@@ -153,7 +153,7 @@ test("on a phone the trigger follows the chips' group, whose last entry is a chi
       expect(trigger).toHaveClass(name);
     }
     const group = trigger.previousElementSibling;
-    expect(group?.getAttribute("data-layout-group")).toBe("advances");
+    expect(group).toHaveAttribute("data-layout-group", "advances");
     expect(group?.lastElementChild?.tagName).toBe("A");
   } finally {
     one.unmountAll();

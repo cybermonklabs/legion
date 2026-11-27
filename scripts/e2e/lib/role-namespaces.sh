@@ -80,7 +80,12 @@ exec nsenter -t "$init" -U -m -p -i --preserve-credentials -- sh -c '"'$role_shi
 # in a process group of its own (Setpgid, internal/launcher/roleinit_linux.go runRoleShim), and Oh
 # My Pi, the shim's child, is in that group. The container's user owns the role's user namespaces,
 # so it may signal them. No shim, two of them, or a shim that is not the leader of its own group
-# is refused rather than signalled, since that group would be someone else's.
+# is refused rather than signalled, since that group would be someone else's. The leader check
+# lets through a shim whose pid kill reads as no group of the shim's, and that group is refused and
+# named too: a shim of pid 1, which INIT 0 finds, since pid 1's parent is 0, leads group 1, which
+# kill reads as -1, every process the container's user may signal; and the `[0-9]*` of the walk
+# takes any name that opens with a digit, 0 among them, which kill reads as the group it is called
+# from. The script sources nothing, so lib/process-tree.sh's group_signalable is written here.
 # shellcheck disable=SC2016  # expanded by the pod's shell
 role_kill_sh='
 init=$1 shim= proc=${proc_root:-/proc}
@@ -93,4 +98,13 @@ done
 [ -n "$shim" ] || { echo "role-init $init runs no worker-shim" >&2; exit 1; }
 group=$(sed "s/.*) //" "$proc/$shim/stat" | cut -d" " -f3)
 [ "$group" = "$shim" ] || { echo "the shim $shim of role-init $init is in process group $group, not its own" >&2; exit 1; }
+case $group in
+  "") why="it is empty" ;;
+  *[!0-9]*) why="it is not a number" ;;
+  0) why="kill reads group 0 as the group it is called from" ;;
+  1) why="kill reads group 1 as -1, every process it may signal" ;;
+  0*) why="no group is written with a leading zero" ;;
+  *) why= ;;
+esac
+[ -z "$why" ] || { printf "refusing to signal process group \047%s\047: %s\n" "$group" "$why" >&2; exit 1; }
 kill -s KILL -- "-$group"'

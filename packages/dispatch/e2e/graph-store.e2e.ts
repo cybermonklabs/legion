@@ -6,9 +6,7 @@
  * through the real API wherever this harness can reach it, and in SQL exactly where it cannot -
  * each such place is named where it is written, with what writes it in a deployment.
  */
-import { setTimeout as sleep } from "node:timers/promises";
-
-import { expect, type Page, test } from "@playwright/test";
+import { type Body, routePath } from "../web/src/api/paths";
 import { setLiveSessions } from "./agents";
 import {
   createComment,
@@ -35,20 +33,18 @@ import {
 } from "./block-schema";
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
-import { asUser } from "./users";
-
-/** The session the fake Envoy holds live, which a mention is delivered to. */
-const SESSION = "019a1c09-7f0e-7000-8000-0000000000e1";
+import { expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
+import { asUser, type SignInLogin } from "./users";
 
 /** The writer the store's own delivery writer carries (`outbox.graphWriter`). */
 const OUTBOX_WRITER = `'{"kind": "system", "id": "dispatch-outbox"}'::jsonb`;
 
+// The database's reset, before the worker's first row and before the review corpus's seed, and
+// the fakes' before every row are the `test` this file imports (e2e/test.ts); the store's block
+// schema is neither - the reset keeps the schema's own nodes (`e2e/seed.ts`) - so a row that
+// moved them puts them back here as well as at its end: a row that failed before its own restore
+// must not leave the next one on another schema.
 test.beforeEach(async () => {
-  await resetDatabase();
-  // The reset keeps the schema's own nodes (`e2e/seed.ts`), so a row that moved them puts them
-  // back here as well as at its end: a row that failed before its own restore must not leave the
-  // next one on another schema.
   await restoreStoreSchema();
 });
 
@@ -61,8 +57,9 @@ test.afterEach(async () => {
 
 /** The document this run types in: an issue's spec, opened at `/issues/<key>/spec`. */
 async function issueWithASpec(title: string): Promise<{ artifact: string; key: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", spec: "The first line.", title });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" });
+  const issue = await createIssue({ project: core, spec: "The first line.", title });
   const spec = issue.primary_artifact_id;
   if (spec === undefined || spec === null) {
     throw new Error(`the issue ${issue.key} has no spec document`);
@@ -79,16 +76,18 @@ function writeThroughTheTab(
   name: string,
   markdown: string
 ): Promise<{ body: string; status: number }> {
+  const route = routePath("post", "/api/v1/issues/{key}/artifacts", { key: issueKey });
+  const upload: Body<"/api/v1/issues/{key}/artifacts", "post"> = { content: markdown, name };
   return page.evaluate(
-    async ([key, documentName, content]) => {
-      const response = await fetch(`/api/v1/issues/${key}/artifacts`, {
-        body: JSON.stringify({ content, name: documentName }),
+    async ([url, body]) => {
+      const response = await fetch(url, {
+        body: JSON.stringify(body),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
       return { body: await response.text(), status: response.status };
     },
-    [issueKey, name, markdown] as const
+    [route, upload] as const
   );
 }
 
@@ -288,8 +287,14 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
 });
 
 /**
- * The seed of the person page: four comments on one issue, and a fifth no reader but its author
+ * The seed of `person`'s page: four comments on one issue, and a fifth no reader but its author
  * may see.
+ *
+ * Every name it writes under is the row's own - the project (`rowKey`), `person` and bob
+ * (`rowPerson`), and the session (`rowSessionId`, e2e/test.ts) - since the worker empties its
+ * database before its first row and before the review corpus's seed, not before this one: a page
+ * of the stack's alice would also list what the rows before this one wrote as her, and a session
+ * another row named would carry its deliveries here.
  *
  * Two of the store's facts a browser run does not reach by itself, and each is written here as
  * the writer that owns it writes it in a deployment:
@@ -297,10 +302,10 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
  *   - the `delivered_to` tuple of a delivery. Its one writer is the events publisher
  *     (`outbox.recordBatch`), which publishes through NATS, and a browser run has none unless
  *     its caller named one in `DISPATCH_E2E_NATS_URLS`, which `e2e/run-server.sh` hands the
- *     server as its `NATS_URLS`. So the publisher is given its chance first and the tuple is
- *     written here only where it wrote none. The attempt itself is the server's own either way:
- *     the mention is delivered through the fake Envoy and its row reads `sent`, which is the
- *     attempt a delivery records.
+ *     server as its `NATS_URLS`. So a run with a bus waits for the publisher's tuple, and a run
+ *     with none, where nobody writes it, has it written here. The attempt itself is the server's
+ *     own either way: the mention is delivered through the fake Envoy and its row reads `sent`,
+ *     which is the attempt a delivery records.
  *   - the `alias_of` tuple that makes a session a person's. One credential leaves it - a token
  *     the secrets broker scoped to a person, which proves the session and the person together
  *     and presents a DPoP proof on every request - and no browser can present one, which is why
@@ -310,48 +315,51 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
  * so the node is stored as such a write would store it, and it is delivered to the same session,
  * so only the predicate keeps it off the page.
  */
-async function seedThePersonPage(): Promise<{
+async function seedThePersonPage(person: SignInLogin): Promise<{
   authored: string;
   issue: string;
   received: string;
 }> {
+  // The session the fake Envoy holds live, which a mention is delivered to.
+  const session = rowSessionId("agent");
+  const bob = rowPerson("bob");
   await setLiveSessions([
-    { capabilities: ["steer"], machine_id: "e2e", roles: [], session_id: SESSION, title: "Agent" },
+    { capabilities: ["steer"], machine_id: "e2e", roles: [], session_id: session, title: "Agent" },
   ]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: "A page of a person.",
-    title: "Person page",
-  });
+  const core = rowKey("CORE");
+  await createProject({ key: core, name: "Core" }, { login: person });
+  const issue = await createIssue(
+    { project: core, spec: "A page of a person.", title: "Person page" },
+    { login: person }
+  );
 
   const authored = await createComment(
     issue.key,
     { body: "Alice wrote the first." },
-    { login: "alice" }
+    { login: person }
   );
   await createComment(
     issue.key,
     { body: "The session wrote the second." },
-    { actor: { id: SESSION, kind: "session" }, as: "agent" }
+    { actor: { id: session, kind: "session" }, as: "agent" }
   );
   const received = await createComment(
     issue.key,
-    { body: "Bob wrote the third, for the session.", mentions: [{ target: `session:${SESSION}` }] },
-    { login: "bob" }
+    { body: "Bob wrote the third, for the session.", mentions: [{ target: `session:${session}` }] },
+    { login: bob }
   );
   await createComment(
     issue.key,
     { body: "Bob wrote the fourth, which reaches neither." },
-    { login: "bob" }
+    { login: bob }
   );
   const unseen = await createComment(
     issue.key,
     {
       body: "Bob wrote the fifth, for his own eyes.",
-      mentions: [{ target: `session:${SESSION}` }],
+      mentions: [{ target: `session:${session}` }],
     },
-    { login: "bob" }
+    { login: bob }
   );
   // The server's own delivery: both mentions reach the live session and their attempts settle
   // `sent`, which is the attempt a delivery's tuple records.
@@ -364,40 +372,38 @@ async function seedThePersonPage(): Promise<{
     )
     .toBe("2");
 
-  // The publisher's own window: where this run has NATS it has written the delivery's tuples
-  // itself by now, and where it has not, nothing else will, so they are written here.
+  // The publisher's own write, where this run has one. A run whose caller named a bus
+  // (`DISPATCH_E2E_NATS_URLS`, which e2e/run-server.sh hands the server and e2e/fake-envoy.ts
+  // reads too) writes these two `delivered_to` tuples on the NATS consumer, after the request
+  // that sent the mentions had answered, so the row waits for them to be there; a run with none
+  // has nobody to write them, so they are written here at once. Which of the two this run is, is
+  // read from that variable rather than from a window: two seconds of reads, every 200 ms, was a
+  // clock a loaded publisher could outrun, which left the row to write the tuples beside the
+  // publisher's own write.
   const deliveredTuples = `select count(*) from graph_tuples
-     where kind = 'delivered_to' and to_kind = 'session' and to_id = '${SESSION}'
+     where kind = 'delivered_to' and to_kind = 'session' and to_id = '${session}'
        and from_id in ('${received.id}', '${unseen.id}')`;
-  for (let waited = 0; waited < 2_000 && (await sql(deliveredTuples)) !== "2"; waited += 200) {
-    // What this spends time on is the delivery publisher's own write of these two
-    // `delivered_to` tuples: it runs on the NATS consumer, after the request that sent the
-    // mentions had answered, so the read in the loop's own condition can be taken before it.
-    // Two seconds is the whole window and it is read every 200 ms, because a run that has NATS
-    // writes the tuples in milliseconds and leaves at the first read, while a run without one
-    // has nobody to write them at all - which is why the window ends in the insert below
-    // rather than in a failure, and why this is no `expect.poll`: a window that expires is the
-    // expected half of the branch, not this row's defeat.
-    await sleep(200);
-  }
-  if ((await sql(deliveredTuples)) !== "2") {
+  if ((process.env.DISPATCH_E2E_NATS_URLS ?? "").trim() !== "") {
+    await expect.poll(() => sql(deliveredTuples)).toBe("2");
+  } else {
     await sql(
       `insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-       select kind, id, 'delivered_to', 'session', '${SESSION}', now(), ${OUTBOX_WRITER}, 0, null, true
+       select kind, id, 'delivered_to', 'session', '${session}', now(), ${OUTBOX_WRITER}, 0, null, true
        from graph_nodes
        where kind = 'comment' and id in ('${received.id}', '${unseen.id}')
          and not exists (
            select 1 from graph_tuples held
            where held.from_kind = 'comment' and held.from_id = graph_nodes.id
-             and held.kind = 'delivered_to' and held.to_id = '${SESSION}')`
+             and held.kind = 'delivered_to' and held.to_id = '${session}')`
     );
   }
   await sql(
-    // The session the server proved alice's. No browser credential proves that: it would have to
-    // be one the secrets broker scoped to a person, presenting a DPoP proof on every request.
+    // The session the server proved the person's. No browser credential proves that: it would
+    // have to be one the secrets broker scoped to a person, presenting a DPoP proof on every
+    // request.
     `insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-     values ('session', '${SESSION}', 'alias_of', 'person', 'alice', now(),
-       '{"kind": "session", "id": "${SESSION}"}'::jsonb, 0, null, true)`,
+     values ('session', '${session}', 'alias_of', 'person', '${person}', now(),
+       '{"kind": "session", "id": "${session}"}'::jsonb, 0, null, true)`,
     // The fifth comment as an author-private write stores it: the node reserved for its author,
     // and the base attribute that node row projects.
     `update graph_nodes set visibility = 'author' where kind = 'comment' and id = '${unseen.id}'`,
@@ -417,19 +423,22 @@ async function seedThePersonPage(): Promise<{
 test("a person page lists what they authored and what reached them", async ({
   browser,
 }, testInfo) => {
-  const seeded = await seedThePersonPage();
-  const alice = await asUser(browser, "alice");
+  // The page's person is one of the row's own (`rowPerson`, e2e/test.ts), and so is everything
+  // the seed writes: her page lists this row's comments and none another row left.
+  const me = rowPerson("alice");
+  const seeded = await seedThePersonPage(me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/");
     // From the signed-in login in the navigation rail, which is the one way in to this page.
     await page
       .getByRole("complementary", { name: "Navigation" })
-      .getByRole("link", { name: "alice", exact: true })
+      .getByRole("link", { name: me, exact: true })
       .click();
-    await expect(page).toHaveURL("/people/alice");
+    await expect(page).toHaveURL(`/people/${me}`);
     // The page is headed by that login.
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("alice");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(me);
 
     // What the store ties to nobody of hers is on no row: the comment that reached neither, the
     // one her session wrote, and the author-private one another person wrote - that one
@@ -471,7 +480,7 @@ test("a person page lists what they authored and what reached them", async ({
        where from_kind = 'comment' and from_id = '${seeded.received}'
          and kind = 'delivered_to' and asserted`
     );
-    await page.goto("/people/alice");
+    await page.goto(`/people/${me}`);
     await expect(
       page.getByRole("list", { name: "Person nodes" }).getByRole("listitem")
     ).toHaveCount(1);
@@ -494,14 +503,14 @@ test("a person page lists what they authored and what reached them", async ({
            select from_kind, from_id, kind, to_kind, to_id, now(), who, 0, null, false
            from graph_tuples
            where from_kind = 'comment' and from_id = '${seeded.authored}'
-             and kind = 'authored_by' and to_kind = 'person' and to_id = 'alice' and asserted
+             and kind = 'authored_by' and to_kind = 'person' and to_id = '${me}' and asserted
            returning 1)
          select count(*) from retracted`
       ),
       "one authored_by tuple of alice's first comment is retracted"
     ).toBe("1");
-    await page.goto("/people/alice");
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText("alice");
+    await page.goto(`/people/${me}`);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(me);
     await expect(
       page.getByRole("list", { name: "Person nodes" }).getByRole("listitem"),
       "with its authored_by tuple retracted, alice's authored comment is on no row of her page"

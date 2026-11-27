@@ -63,6 +63,14 @@ export function highlightedRow(list: Locator): Locator {
   return list.locator('[role="option"][aria-selected="true"]');
 }
 
+/** `row`, narrowed to the picker row of the node under `owner`, an issue's key or a project's.
+ *  The search the picker reads is the whole stack's, so a node of another row's world can carry
+ *  the same words; the line under a row's words is part of its accessible name and holds its
+ *  owner's key (`shortForm`, `features/refs/routes.ts`), which no other row's world holds. */
+export function within(row: RegExp, owner: string): RegExp {
+  return new RegExp(`${row.source}.*${owner}`);
+}
+
 /** Opens a door in `field` by writing `text` into it, and waits for the list. The whole value is
  *  written, so a caller that needs the box's own text kept types it itself. */
 export async function openRefPicker(field: Locator, text: string): Promise<Locator> {

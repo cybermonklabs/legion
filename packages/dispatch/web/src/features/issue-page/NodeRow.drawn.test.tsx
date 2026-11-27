@@ -1348,7 +1348,8 @@ test("an answered ask draws the answer in its own row, word for word", () => {
     const line = view.container.querySelector("[data-node-answer]");
     expect(line?.querySelector("[data-page-chrome]")?.textContent).toBe("Answer");
     expect(line?.querySelector("[data-answer-author]")?.textContent).toBe("alice");
-    expect(line?.querySelector("[data-answer-author] svg")?.getAttribute("data-glyph")).toBe(
+    expect(line?.querySelector("[data-answer-author] svg")).toHaveAttribute(
+      "data-glyph",
       "author-person"
     );
     const words = line?.querySelector("[data-answer-text]");
@@ -1654,7 +1655,7 @@ test("a node whose read sends no reading of its text draws a worded link as its 
       expect(found?.textContent).toBe("my words");
       return found;
     });
-    expect(link?.getAttribute("href")).toBe("/agents?role=reviewer");
+    expect(link).toHaveAttribute("href", "/agents?role=reviewer");
     expect(words?.textContent).toBe("my words");
   } finally {
     view.unmount();
@@ -1849,10 +1850,10 @@ test("a chip names its target by its first words and never by an address", async
     expect(row).not.toMatch(/CORE-1 (spec|plan-md)/u);
     // The chips stand inside the words' own box, after the words, and on no line of their own.
     const trail = view.container.querySelector("[data-node-trail]");
-    expect(trail?.parentElement?.hasAttribute("data-node-words")).toBe(true);
+    expect(trail?.parentElement).toHaveAttribute("data-node-words");
     expect(trail?.previousElementSibling?.textContent).toBe("Keep one reading.");
     // The named chip is the link a reader follows to its target.
-    expect(drawn()[0]?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-1/spec#b-r2");
+    expect(drawn()[0]?.querySelector("a")).toHaveAttribute("href", "/issues/CORE-1/spec#b-r2");
   } finally {
     view.unmount();
   }
@@ -2016,7 +2017,7 @@ test("a chip naming a person draws its words with no link, beside an agent's chi
     expect(person?.textContent).toBe("alice@example.com");
     expect(person?.querySelector("a"), "a person's chip links to a page no one shows").toBeNull();
     expect(agent?.textContent).toBe("Planner");
-    expect(agent?.querySelector("a")?.getAttribute("href")).toBe(`/agents/${AGENT_SESSION}/live`);
+    expect(agent?.querySelector("a")).toHaveAttribute("href", `/agents/${AGENT_SESSION}/live`);
   } finally {
     view.unmount();
   }
@@ -2047,9 +2048,9 @@ test("a parent line naming a person draws its words with no link, beside an agen
     expect(parent?.querySelector("a"), "a person's parent line is a link").toBeNull();
     await waitFor(() =>
       expect(
-        view.container.querySelector("[data-node-chip] a")?.getAttribute("href"),
+        view.container.querySelector("[data-node-chip] a"),
         "the agent's chip on the same row is no link to its live view"
-      ).toBe(`/agents/${AGENT_SESSION}/live`)
+      ).toHaveAttribute("href", `/agents/${AGENT_SESSION}/live`)
     );
   } finally {
     view.unmount();
@@ -2415,7 +2416,7 @@ test("a role in words whose read sent no reading reads as its token and links to
       expect(found?.textContent, "the role is not drawn by its token").toBe("reviewer");
       return found;
     });
-    expect(link?.getAttribute("href")).toBe("/agents?role=reviewer");
+    expect(link).toHaveAttribute("href", "/agents?role=reviewer");
     expect(drawn.view.container.textContent).not.toContain("dispatch://");
   } finally {
     drawn.view.unmount();
@@ -2793,12 +2794,13 @@ test("a reference in an option draws no link inside its press, and elsewhere a l
         expect(found?.textContent).toBe("CORE-7 Draw the header");
         return found;
       });
-      await waitFor(() =>
+      await waitFor(() => {
+        // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the case.
         expect(
           link?.getAttribute("tabindex"),
           tabStops ? "the link left the tab order" : "the link kept its tab stop"
-        ).toBe(tabStops ? null : "-1")
-      );
+        ).toBe(tabStops ? null : "-1");
+      });
     } finally {
       view.unmount();
     }
@@ -2872,9 +2874,10 @@ test("a press on an option of a closed row picks it and opens the row in one", a
     if (option === null) throw new Error("the closed row draws no option to press");
     await user.click(option);
     await waitFor(() => {
-      expect(
-        view.container.querySelector('[data-pick-option="1024 px"]')?.getAttribute("aria-pressed")
-      ).toBe("true");
+      expect(view.container.querySelector('[data-pick-option="1024 px"]')).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
       expect(
         view.container.querySelector("[data-node-body]"),
         "the press picked the option and left the row closed"
@@ -2908,7 +2911,7 @@ test("a child issue's row draws its title, its facts and its key as the tag", ()
     expect(view.container.querySelector("[data-child-facts]")?.textContent).toContain("CORE-3");
     const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
     expect(tag?.textContent).toBe("CORE-2");
-    expect(tag?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-2");
+    expect(tag?.querySelector("a")).toHaveAttribute("href", "/issues/CORE-2");
     expect(view.container.querySelector("[data-node-author]")).toBeNull();
     expect(view.container.querySelector("[data-node-time]")).toBeNull();
   } finally {
@@ -3222,10 +3225,11 @@ test("a press on Keep open or Let close leaves the focus where it is", async () 
         name: pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open,
       });
       await user.pointer({ keys: "[MouseLeft>]", target: control });
+      // jest-dom: Bun 1.4.4 prints no message of a jest-dom matcher, and this names the button.
       expect(document.activeElement, `a press on ${control.textContent} took the focus`).toBe(held);
       await user.pointer({ keys: "[/MouseLeft]", target: control });
       expect(pressed, `the press on ${control.textContent} did nothing`).toEqual([true]);
-      expect(document.activeElement).toBe(held);
+      expect(held).toHaveFocus();
     } finally {
       view.unmount();
     }

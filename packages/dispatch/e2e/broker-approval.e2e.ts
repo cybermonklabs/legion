@@ -156,8 +156,10 @@ test("from the Inbox, a live broker session lands on the record's page with no s
   }
 });
 
-// @pr: Sign-in and tokens: a lapsed session signs in once and comes back to the same record's page.
-test("from the Inbox, a lapsed broker session signs in once and returns to the same record's page @pr", async ({
+// This row carries no `@pr` tag: the pull-request lane is at its row budget (`laneBudget`,
+// e2e/__tests__/pull-request-lane.test.ts), and the three other rows of this file keep the
+// broker's approval page on the lane. The full lane runs this one.
+test("from the Inbox, a lapsed broker session signs in once and returns to the same record's page", async ({
   browser,
 }, testInfo) => {
   requireRealBroker();

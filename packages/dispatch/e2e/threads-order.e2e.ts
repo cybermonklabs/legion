@@ -1,4 +1,5 @@
-import { expect, test } from "./test";
+import { rowThreadSession } from "./inbox-threads";
+import { expect, rowKey, rowSessionId, test } from "./test";
 import {
   DECISION_BLOCK,
   expand,
@@ -12,6 +13,11 @@ import {
   verticalOrder,
 } from "./threads-order";
 import { asUser } from "./users";
+
+/** The session that writes the seeded asks and replies, under the running row's own id
+ *  (`rowThreadSession`, e2e/inbox-threads.ts): Dispatch keeps what it writes and its read marks
+ *  by its id, for every person at once. */
+const threadSession = rowThreadSession(rowSessionId);
 
 /**
  * One thread order everywhere (INFRA-450), in the two surfaces that sit on the live document: a
@@ -29,7 +35,7 @@ test("a document block's thread folds and places its box by the chosen order", a
 }) => {
   // Two live documents, each opened with its own room and editor.
   test.slow();
-  const seeded = await seedThreads();
+  const seeded = await seedThreads(rowKey("CORE"), threadSession);
   // The block's card marks the thread read as the reader looks at it, so it folds by the
   // reader's unread set rather than by count alone: read through reply 4, leaving 5 and 6.
   await readAskThrough(seeded.blockIssue, seeded.blockAsk, 4);
@@ -62,7 +68,7 @@ test("a margin thread and the Conversation show every reply in the chosen order"
   browser,
 }) => {
   test.slow();
-  const seeded = await seedThreads();
+  const seeded = await seedThreads(rowKey("CORE"), threadSession);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();

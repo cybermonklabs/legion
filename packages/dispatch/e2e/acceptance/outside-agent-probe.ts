@@ -17,6 +17,12 @@
  *  exits 2 when it read none: no token, a listener or Dispatch that did not answer, a socket that
  *  never opened. It prints no token, no proof and no secret value.
  *
+ *  A Dispatch call takes its URL from Dispatch's generated contract (`routePath` in
+ *  web/src/api/paths.ts), sends its request body as that contract types the route's body
+ *  (`Body`), and reads its answer's fields as it types the route's answer (`Result`) and its
+ *  refusal (`Refusal`), so a route or a field the contract renames is a type error here; a body
+ *  of another shape is read field by field all the same.
+ *
  *  Commands:
  *    whoami                  GET /api/v1/whoami at Dispatch, with its kind, owner, project and
  *                            scopes.
@@ -41,7 +47,10 @@
  *                            it reports without waiting.
  *    send <session> <text>   POST /v1/messages/send to <session>.
  *    agent-token             POST /api/v1/me/agent-tokens; a token it was given is revoked again
- *                            at once, and its plaintext is never printed.
+ *                            at once, and its plaintext is never printed. `revoked` is true only
+ *                            when Dispatch answered the revoke 2xx; it is false, with a `detail`
+ *                            saying why, when the mint named no token id, or when the revoke was
+ *                            refused or gave no answer.
  *    approve                 POST /api/v1/credential-requests/<a fresh id>/approve.
  *    trade                   one fresh trade: {traded: true, expires_at}, or {traded: false,
  *                            status, detail} when the broker refused it (row T5).
@@ -77,6 +86,7 @@
 import { randomUUID } from "node:crypto";
 import { type Envelope, EnvelopeSchema } from "@legion/contracts";
 import { brokerTokenFor, type TradedToken } from "@legion/envoy-client/broker-credential";
+import { type Body, type Refusal, type Result, routePath } from "../../web/src/api/paths";
 
 // Bun's WebSocket client accepts request headers and a subprotocol; the repository's DOM
 // WebSocket type does not.
@@ -147,6 +157,20 @@ interface Answer {
   readonly body: unknown;
 }
 
+/** `T`'s fields, `T` a body Dispatch's generated contract types (`Result`, `Refusal`), each
+ *  undefined where the body lacks it. Over a union it is each member's, so a field reads only
+ *  where every member holds it: a field the contract renames, in any member, is a type error
+ *  where it is read. */
+type Fields<T> = { readonly [K in keyof T]: T[K] | undefined };
+
+/** `body` read as `T` (`Fields`): the body itself where it is a JSON object or array, and no field
+ *  where it is not (a text, or a JSON scalar). A body of another shape is read field by field all
+ *  the same, so a field's value is tested before it is used as more than words to print. */
+function fieldsOf<T extends object>(body: unknown): Fields<T> {
+  const fields: object = typeof body === "object" && body !== null ? body : {};
+  return fields as Fields<T>;
+}
+
 /** One call with the session's credential, or `traded`'s: its status and its body, as JSON where
  *  it is JSON. */
 async function call(
@@ -179,15 +203,27 @@ async function call(
   return { status: response.status, body: parsed };
 }
 
+/** A refusal as Dispatch spells it (`ErrorBody`): a `code` beside an `error` text. */
+interface Spelling {
+  readonly code: unknown;
+  readonly error: unknown;
+}
+
 /** An answer as the leg reads it: its status, the refusal's code where the body names one, and
  *  the body's words, cut short. Dispatch and the listener spell a refusal differently: a `code`
  *  beside an `error` text, an `error` object holding both, an `error` text alone, or, for an
- *  edge listener's refusal (listenerwire.EdgeRefusal), a `reason` beside the `error` text. */
-function flat(answer: Answer): { status: number; code: string | null; detail: string | null } {
+ *  edge listener's refusal (listenerwire.EdgeRefusal), a `reason` beside the `error` text.
+ *  `refusal` is a Dispatch answer's body read as its route's refusal (`Refusal`), so a field the
+ *  route renames is a type error where it is passed; a listener's answer is read by name. */
+function flat(
+  answer: Answer,
+  refusal?: Spelling
+): { status: number; code: string | null; detail: string | null } {
   const at = (value: unknown, name: string): unknown =>
     typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
-  const error = at(answer.body, "error");
-  const code = at(answer.body, "code") ?? at(error, "code") ?? at(answer.body, "reason");
+  const spelled = refusal ?? { code: at(answer.body, "code"), error: at(answer.body, "error") };
+  const error = spelled.error;
+  const code = spelled.code ?? at(error, "code") ?? at(answer.body, "reason");
   const words = at(error, "message") ?? error ?? at(answer.body, "message") ?? answer.body;
   return {
     status: answer.status,
@@ -583,31 +619,40 @@ async function scriptedModel(): Promise<never> {
   return Promise.withResolvers<never>().promise;
 }
 
+/** GET /api/v1/issues's answer to `issue`'s list, which names a limit and an offset: one page
+ *  (IssueSummaryPage), where a list that names neither answers the bare array. */
+type IssuePage = Extract<Result<"/api/v1/issues", "get">, { issues: unknown }>;
+type ListedIssue = NonNullable<IssuePage["issues"]>[number];
+
+/** One comment of an issue's comments as Dispatch answers them: the bare list, which the route
+ *  answers to a read with no `order=activity`, where that one answers a page of threads. */
+type ListedComment = Extract<Result<"/api/v1/issues/{key}/comments", "get">, unknown[]>[number];
+
 /** What `comment-find` reads of the first comment of `comments` (an issue's comments as Dispatch
  *  answers them) whose body holds `wanted`: its id, and its author as Dispatch records a write
  *  made with a broker-issued token (api/broker_token.go): kind `session`, the session as `id`,
  *  `proven` true, the person as `owner`, and `project` only for a token mapped to one project.
- *  Each field absent reads null. Exported for the Codex leg's tests, which give it Dispatch's
- *  shape. */
+ *  Each field absent reads null. A comment and its author are read as the route's answer types
+ *  them (`ListedComment`), so a field the contract renames is a type error here. Exported for
+ *  the Codex leg's tests, which give it Dispatch's shape. */
 export function commentAuthor(
   comments: unknown,
   wanted: string
 ): Record<string, string | boolean | null> {
-  const read = (value: unknown, name: string): unknown =>
-    typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
   const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
-  const found = (Array.isArray(comments) ? comments : []).find((each) =>
-    String(read(each, "body") ?? "").includes(wanted)
+  const match: unknown = (Array.isArray(comments) ? comments : []).find((each: unknown) =>
+    String(fieldsOf<ListedComment>(each).body ?? "").includes(wanted)
   );
-  const author = read(found, "author");
+  const found = match === undefined ? undefined : fieldsOf<ListedComment>(match);
+  const author = fieldsOf<ListedComment["author"]>(found?.author);
   return {
     found: found !== undefined,
-    id: text(read(found, "id")),
-    author_kind: text(read(author, "kind")),
-    author_id: text(read(author, "id")),
-    proven: read(author, "proven") === true,
-    owner: text(read(author, "owner")),
-    project: text(read(author, "project")),
+    id: text(found?.id),
+    author_kind: text(author.kind),
+    author_id: text(author.id),
+    proven: author.proven === true,
+    owner: text(author.owner),
+    project: text(author.project),
   };
 }
 
@@ -615,17 +660,18 @@ async function main(): Promise<void> {
   const [command, ...args] = Bun.argv.slice(2);
   switch (command) {
     case "whoami": {
-      const answer = await call("GET", dispatch("/api/v1/whoami"));
-      const read = (name: string): unknown =>
-        typeof answer.body === "object" && answer.body !== null
-          ? Reflect.get(answer.body, name)
-          : undefined;
+      const answer = await call("GET", dispatch(routePath("get", "/api/v1/whoami", {})));
+      // Every answer holds kind and scopes; only an agent's (kind agent) holds owner and project.
+      const who = fieldsOf<Result<"/api/v1/whoami", "get">>(answer.body);
+      const agent = fieldsOf<Extract<Result<"/api/v1/whoami", "get">, { kind: "agent" }>>(
+        answer.body
+      );
       print({
-        ...flat(answer),
-        kind: read("kind") ?? null,
-        owner: read("owner") ?? null,
-        project: read("project") ?? null,
-        scopes: read("scopes") ?? null,
+        ...flat(answer, fieldsOf<Refusal<"/api/v1/whoami", "get">>(answer.body)),
+        kind: who.kind ?? null,
+        owner: agent.owner ?? null,
+        project: agent.project ?? null,
+        scopes: who.scopes ?? null,
       });
       return;
     }
@@ -792,23 +838,35 @@ async function main(): Promise<void> {
       return;
     }
     case "agent-token": {
-      const answer = await call("POST", dispatch("/api/v1/me/agent-tokens"), {
+      const mint = routePath("post", "/api/v1/me/agent-tokens", {});
+      const asked: Body<"/api/v1/me/agent-tokens", "post"> = {
         name: `outside-e2e-probe-${randomUUID().slice(0, 8)}`,
-      });
-      const made: unknown = answer.body;
-      const id: unknown =
-        typeof made === "object" && made !== null ? Reflect.get(made, "id") : undefined;
-      if (answer.status < 300) {
-        // A token the agent should never have been given is ended at once, and never printed.
-        if (typeof id === "string") {
-          await call("DELETE", dispatch(`/api/v1/me/agent-tokens/${encodeURIComponent(id)}`)).catch(
-            () => undefined
-          );
-        }
-        print({ status: answer.status, code: null, detail: null, revoked: typeof id === "string" });
+      };
+      const answer = await call("POST", dispatch(mint), asked);
+      if (answer.status >= 300) {
+        print(flat(answer, fieldsOf<Refusal<"/api/v1/me/agent-tokens", "post">>(answer.body)));
         return;
       }
-      print(flat(answer));
+      // A token the agent should never have been given is ended at once, and never printed; the
+      // detail names the revoke by its route, never by the token's id. An empty id names no token,
+      // and routePath builds no URL for it.
+      const id: unknown = fieldsOf<Result<"/api/v1/me/agent-tokens", "post">>(answer.body).id;
+      let revoked = false;
+      let detail: string | null = "the mint answered no token id, so nothing was revoked";
+      if (typeof id === "string" && id !== "") {
+        const revoke = routePath("delete", "/api/v1/me/agent-tokens/{id}", { id });
+        const ended = await call("DELETE", dispatch(revoke)).catch(() => undefined);
+        if (ended === undefined) {
+          detail =
+            "the revoke DELETE /api/v1/me/agent-tokens/{id} gave no answer, so the token is not known to be revoked";
+        } else if (ended.status >= 200 && ended.status < 300) {
+          revoked = true;
+          detail = null;
+        } else {
+          detail = `the revoke DELETE /api/v1/me/agent-tokens/{id} answered ${ended.status}, so the token is not revoked`;
+        }
+      }
+      print({ status: answer.status, code: null, detail, revoked });
       return;
     }
     case "trade": {
@@ -849,16 +907,23 @@ async function main(): Promise<void> {
       relay.socket.close(1000, "the probe is done");
       return;
     }
-    case "approve":
+    case "approve": {
+      // A record id is a lowercase hex sha256; this one names no record.
+      const approve = routePath("post", "/api/v1/credential-requests/{id}/approve", {
+        id: "0".repeat(64),
+      });
+      const decision: Body<"/api/v1/credential-requests/{id}/approve", "post"> = {
+        code: "ABCD-EFGH",
+      };
+      const answer = await call("POST", dispatch(approve), decision);
       print(
         flat(
-          // A record id is a lowercase hex sha256; this one names no record.
-          await call("POST", dispatch(`/api/v1/credential-requests/${"0".repeat(64)}/approve`), {
-            code: "ABCD-EFGH",
-          })
+          answer,
+          fieldsOf<Refusal<"/api/v1/credential-requests/{id}/approve", "post">>(answer.body)
         )
       );
       return;
+    }
     case "foreign":
       if ((env.OUTSIDE_FOREIGN_LISTENER_URL ?? "").trim() === "") {
         throw new Unreadable("OUTSIDE_FOREIGN_LISTENER_URL is unset");
@@ -881,19 +946,15 @@ async function main(): Promise<void> {
       const [project = "", ...words] = args;
       const title = words.join(" ");
       if (project === "" || title === "") throw new Unreadable("issue needs a project and a title");
-      const query = new URLSearchParams({ project, limit: "250", offset: "0" });
-      const answer = await call("GET", dispatch(`/api/v1/issues?${query}`));
-      const issues: unknown =
-        typeof answer.body === "object" && answer.body !== null
-          ? Reflect.get(answer.body, "issues")
-          : undefined;
+      const list = routePath("get", "/api/v1/issues", {}, { project, limit: 250, offset: 0 });
+      const answer = await call("GET", dispatch(list));
+      const page = fieldsOf<IssuePage>(answer.body);
       let key: string | null = null;
-      for (const issue of Array.isArray(issues) ? issues : []) {
-        if (typeof issue !== "object" || issue === null) continue;
-        const named: unknown = Reflect.get(issue, "key");
-        if (Reflect.get(issue, "title") === title && typeof named === "string") key = named;
+      for (const listed of Array.isArray(page.issues) ? page.issues : []) {
+        const issue = fieldsOf<ListedIssue>(listed);
+        if (issue.title === title && typeof issue.key === "string") key = issue.key;
       }
-      print({ ...flat(answer), key });
+      print({ ...flat(answer, fieldsOf<Refusal<"/api/v1/issues", "get">>(answer.body)), key });
       return;
     }
     case "comment-find": {
@@ -901,11 +962,12 @@ async function main(): Promise<void> {
       const wanted = words.join(" ");
       if (issue === "" || wanted === "")
         throw new Unreadable("comment-find needs an issue and a text");
-      const answer = await call(
-        "GET",
-        dispatch(`/api/v1/issues/${encodeURIComponent(issue)}/comments`)
-      );
-      print({ ...flat(answer), ...commentAuthor(answer.body, wanted) });
+      const comments = routePath("get", "/api/v1/issues/{key}/comments", { key: issue });
+      const answer = await call("GET", dispatch(comments));
+      print({
+        ...flat(answer, fieldsOf<Refusal<"/api/v1/issues/{key}/comments", "get">>(answer.body)),
+        ...commentAuthor(answer.body, wanted),
+      });
       return;
     }
     case "receive": {

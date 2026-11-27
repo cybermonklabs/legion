@@ -28,7 +28,7 @@ import {
   awaitDecisions,
   type MainHolds,
   mainHolds,
-  READER,
+  reader,
   seedAskToday,
   writeDecision,
 } from "./dashboard-seed";
@@ -49,7 +49,7 @@ import { replyRowId } from "./inbox-threads";
 import { specBlockRef } from "./issue-layout-seed-text";
 import { viewportAt } from "./issue-page";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, own, type Page, rowKey, rowSessionId, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
 const BODY = "[data-ask-body]";
@@ -64,7 +64,8 @@ const recording = process.env.ASK_INVENTORY === "record";
 const inventoryMode = recording || inventoryFile !== undefined;
 
 let holds: MainHolds | undefined;
-test.use({ signedIn: READER });
+// The default context is the row's own person, the reader every seed writes as (`reader`).
+test.use({ signedIn: own("alice") });
 test.beforeAll(async () => {
   holds = await mainHolds();
 });
@@ -449,9 +450,16 @@ async function wordFaults(words: Locator): Promise<{ broken: string[]; overrun: 
   });
 }
 
-/** The agent both whole-words rows write as. */
+/** The agent both whole-words rows write as, under a session of the running row's own
+ *  (`rowSessionId`), read when a write names it. */
 const WHOLE_WORDS_AGENT = {
-  actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
+  actor: {
+    get id() {
+      return rowSessionId("wholewords");
+    },
+    kind: "session",
+    origin: { session_title: "Tester" },
+  },
   as: "agent",
 } as const;
 
@@ -463,12 +471,13 @@ test("in today's comments margin an agent's ask keeps each word of its question 
 }) => {
   test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
   const question = "Should the runbook keep its troubleshooting section?";
-  await createProject({ key: "WHOLE", name: "Whole words" });
-  const issue = await createIssue({
-    project: "WHOLE",
-    spec: "Restart, reseed, reopen the signed-in URL.",
-    title: "Whole words",
-  });
+  const whole = rowKey("WHOLE");
+  const me = reader();
+  await createProject({ key: whole, name: "Whole words" }, { login: me });
+  const issue = await createIssue(
+    { project: whole, spec: "Restart, reseed, reopen the signed-in URL.", title: "Whole words" },
+    { login: me }
+  );
   const asked = await createAsk(
     issue.key,
     { anchor: { artifact: "spec", quote: "reseed" }, question },
@@ -497,12 +506,17 @@ test("in today's comments margin an agent's decision keeps each word of its head
   if (holds === undefined) throw new Error("The server probe did not run");
   const heading = "Keep the internationalization troubleshooting section in the runbook";
   const why = "Chosen so a reader finds each fix where they look for it.";
-  await createProject({ key: "WHOLE", name: "Whole words" });
-  const issue = await createIssue({
-    project: "WHOLE",
-    spec: ":::requirement{#r1}\nThe runbook keeps its troubleshooting section.\n:::\n",
-    title: "Whole words",
-  });
+  const whole = rowKey("WHOLE");
+  const me = reader();
+  await createProject({ key: whole, name: "Whole words" }, { login: me });
+  const issue = await createIssue(
+    {
+      project: whole,
+      spec: ":::requirement{#r1}\nThe runbook keeps its troubleshooting section.\n:::\n",
+      title: "Whole words",
+    },
+    { login: me }
+  );
   const shaped = specBlockRef(issue.key, "r1");
   // The decision written through `writeDecision` in `dashboard-seed.ts`, as the seed writes its own
   // on each main R27 names: a `decision` block of the spec that shapes r1 where decisions are
@@ -690,19 +704,20 @@ test("an answer from today's Conversation is drawn the same in the block and Cha
   await open.getByRole("radio", { name: /^Newest first/ }).check();
   await open.locator(ANSWER).fill(answer);
   await button(open, "Answer").click();
+  const me = reader();
   await expect
-    .poll(async () => (await getAsk(id)).ask)
+    .poll(async () => (await getAsk(id, { login: me })).ask)
     .toMatchObject({
-      answer: { selected: [label], text: answer, user: READER },
+      answer: { selected: [label], text: answer, user: me },
       state: "answered",
     });
-  await expect(open).toContainText(`Answered by ${READER}`);
+  await expect(open).toContainText(`Answered by ${me}`);
   await expect(open.getByText(answer, { exact: true })).toBeVisible();
   await expect(open.locator('[data-selected="true"]')).toContainText(label);
 
   await page.goto(data.blockPath);
   const settled = ask(block(documentEditor(page)), id);
-  await expect(settled).toContainText(`Answered by ${READER}`);
+  await expect(settled).toContainText(`Answered by ${me}`);
   await expect(settled.getByText(answer, { exact: true })).toBeVisible();
   await expect(settled.locator('[data-selected="true"]')).toContainText(label);
   await expect(settled.locator(ANSWER)).toHaveCount(0);
@@ -844,12 +859,13 @@ function changePost(page: Page, key: string) {
 }
 
 async function readKept(seed: AskTodaySeed): Promise<boolean> {
-  const read = await getIssueDecisions(seed.key);
+  const me = reader();
+  const read = await getIssueDecisions(seed.key, { login: me });
   if (!seed.holds.decisionsAreNodes) {
     return (read.decisions ?? []).some(
       (item) =>
         item.block_id === seed.decisions.first.id &&
-        item.kept?.kept_by === READER &&
+        item.kept?.kept_by === me &&
         !item.waiting_review
     );
   }
@@ -857,8 +873,7 @@ async function readKept(seed: AskTodaySeed): Promise<boolean> {
     "entries" in read &&
     Array.isArray(read.entries) &&
     read.entries.some(
-      (entry) =>
-        entry.document?.block_id === seed.decisions.first.id && entry.kept_by?.id === READER
+      (entry) => entry.document?.block_id === seed.decisions.first.id && entry.kept_by?.id === me
     )
   );
 }
@@ -897,11 +912,13 @@ test("Keep and Change in the margin write as DecisionActions writes", async ({ p
   });
   await expect
     .poll(async () =>
-      (await listComments(data.key, data.decisionsDocumentId)).find((row) => row.body === CHANGE)
+      (await listComments(data.key, data.decisionsDocumentId, { login: reader() })).find(
+        (row) => row.body === CHANGE
+      )
     )
     .toMatchObject({
       anchor: { orphaned: false, quote: expect.stringContaining(data.decisions.second.words) },
-      author: { id: READER },
+      author: { id: reader() },
     });
 });
 
@@ -1252,7 +1269,7 @@ async function collectInventory(page: Page, data: AskTodaySeed): Promise<Invento
     replied: data.asks.replied,
   };
   const all = Object.entries(seeded);
-  const inboxIds = new Set((await getInbox()).map((row) => row.id));
+  const inboxIds = new Set((await getInbox({ login: reader() })).map((row) => row.id));
   const open = all.filter(([, id]) => inboxIds.has(id));
   const capture = async (part: string, root: Locator, composer = false) => {
     await root.waitFor({ state: "visible" });
@@ -1335,7 +1352,7 @@ async function collectInventory(page: Page, data: AskTodaySeed): Promise<Invento
   await measure("Conversation");
 
   await page.goto("/answers");
-  const answers = (await listMyAnswers()).rows ?? [];
+  const answers = (await listMyAnswers({}, { login: reader() })).rows ?? [];
   for (const [part, id] of all) {
     const rows = page.locator(`[data-answer-row="${id}"]`);
     const count = answers.filter((answer) => answer.ask_id === id).length;

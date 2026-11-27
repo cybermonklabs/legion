@@ -143,9 +143,9 @@ test("the description is the documents' editor, named for it, drawn as the markd
   const { box } = await editor();
   // The editor Dispatch's documents are written in, not a field of the page's own.
   expect(box.classList.contains("ProseMirror")).toBe(true);
-  expect(box.getAttribute("contenteditable")).toBe("true");
-  expect(box.getAttribute("aria-multiline")).toBe("true");
-  expect(box.getAttribute("aria-readonly")).toBeNull();
+  expect(box).toHaveAttribute("contenteditable", "true");
+  expect(box).toHaveAttribute("aria-multiline", "true");
+  expect(box).not.toHaveAttribute("aria-readonly");
   expect(within(box).getByRole("heading", { name: "Why" })).toBeDefined();
   expect(
     within(box)
@@ -153,7 +153,7 @@ test("the description is the documents' editor, named for it, drawn as the markd
       .map((item) => item.textContent)
   ).toEqual(["Every machine runs the daemon", "Nothing waits on the old build"]);
   const link = within(box).getByRole("link", { name: "the runbook" });
-  expect(link.getAttribute("href")).toBe("https://example.com/rb");
+  expect(link).toHaveAttribute("href", "https://example.com/rb");
 });
 
 test("a selection in it offers no comment, suggestion or ask, and writes no mark", async () => {
@@ -441,15 +441,15 @@ test("the keyboard reaches the editor as it reaches any field", async () => {
   view.container.prepend(before);
   before.focus();
   await userEvent.setup().tab();
-  expect(document.activeElement).toBe(box);
+  expect(box).toHaveFocus();
 });
 
 test("a reader who may not write reads it in the same editor, read-only", async () => {
   const { editor, onSave } = described(OUTLINE, false);
   const { box, handle } = await editor();
   expect(box.classList.contains("ProseMirror")).toBe(true);
-  expect(box.getAttribute("contenteditable")).toBe("false");
-  expect(box.getAttribute("aria-readonly")).toBe("true");
+  expect(box).toHaveAttribute("contenteditable", "false");
+  expect(box).toHaveAttribute("aria-readonly", "true");
   expect(within(box).getByRole("heading", { name: "Why" })).toBeDefined();
   expect(handle.view.editable).toBe(false);
   expect(onSave).not.toHaveBeenCalled();
@@ -539,7 +539,7 @@ const ELSEWHERE = "# Why\n\n- first host\n\nShip one host first.";
 function drawsReading(box: HTMLElement, markdown: string): void {
   expect(box.textContent).toBe(markdown.trimEnd().split(/\n+/).join(""));
   expect(within(box).queryByRole("heading")).toBeNull();
-  expect(box.getAttribute("contenteditable")).toBe("false");
+  expect(box).toHaveAttribute("contenteditable", "false");
   const why = box.getAttribute("aria-describedby");
   expect(why === null ? null : document.getElementById(why)?.textContent).toBe(NOT_MARKDOWN);
 }
@@ -560,22 +560,28 @@ test.each([
         false
       );
       // The editor builds the tree it is given with no parser of its own: its markdown taken in
-      // instead is the editor's parse.
+      // instead is the editor's parse. It is drawn on the real clock, as every other row of this
+      // file draws it: the cold lane holds a lazily loaded module for a second of real time
+      // (`hold-lazy-loads.ts`, a child `sleep`), and a `findBy*` on a fake clock spends its wait on
+      // fake time, so it gives up before the module arrives (seed 1454903779 of the cold lane).
       const { box, handle } = await editor();
-      expect(box.getAttribute("contenteditable")).toBe("false");
-      expect(box.getAttribute("aria-readonly")).toBe("true");
+      expect(box).toHaveAttribute("contenteditable", "false");
+      expect(box).toHaveAttribute("aria-readonly", "true");
       expect(box.textContent).toBe(NESTED);
       expect(box.querySelector("em, strong")).toBeNull();
       const why = scope.getByText(NOT_MARKDOWN);
-      expect(box.getAttribute("aria-describedby")).toBe(why.id);
-      await act(() => flushTasks());
-      expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
-      expect(parses.count()).toBe(0);
-      expect(imports).toEqual([]);
-      // Nothing is written from that reading. A read-only editor takes no focus (ProseMirror
-      // focuses an editable view alone), so no blur reaches it; what can is a change that reaches
-      // its document once the typing rests, the page going, and the editor closing.
+      expect(box).toHaveAttribute("aria-describedby", why.id);
+      // On the fake clock from here, so the stand-in's zero-delay timers, and any the engine sets,
+      // run in `flushTasks` and wait no real time: a body sent a task late still shows in the reads
+      // below.
       await onFakeClock(async () => {
+        await act(() => flushTasks());
+        expect(worker.requests.map((request) => request.markdown.length)).toEqual([]);
+        expect(parses.count()).toBe(0);
+        expect(imports).toEqual([]);
+        // Nothing is written from that reading. A read-only editor takes no focus (ProseMirror
+        // focuses an editable view alone), so no blur reaches it; what can is a change that
+        // reaches its document once the typing rests, the page going, and the editor closing.
         writeAtEnd(handle, " x");
         await jump(SAVE_AFTER_MS);
       });
@@ -599,7 +605,7 @@ test("another person's text the server cannot read as markdown arrives in a writ
     true
   );
   const { box, handle } = await editor();
-  expect(box.getAttribute("contenteditable")).toBe("true");
+  expect(box).toHaveAttribute("contenteditable", "true");
   const parses = countEngineParses();
   try {
     // The writer is in the editor as another person writes the nested text, and the server
@@ -607,8 +613,8 @@ test("another person's text the server cannot read as markdown arrives in a writ
     handle.view.focus();
     rerender(NESTED, true, NESTED_TREE, false);
     await waitFor(() => expect(box.textContent).toBe(NESTED));
-    expect(box.getAttribute("contenteditable")).toBe("false");
-    expect(box.getAttribute("aria-readonly")).toBe("true");
+    expect(box).toHaveAttribute("contenteditable", "false");
+    expect(box).toHaveAttribute("aria-readonly", "true");
     expect(scope.getByText(NOT_MARKDOWN)).toBeDefined();
     expect(box.querySelector("em, strong")).toBeNull();
     expect(parses.count()).toBe(0);
@@ -627,7 +633,7 @@ test("another person's text the server cannot read as markdown arrives in a writ
 test("a writer's editor takes in, as its markdown, a description the server's parser takes whole, and a one-word edit writes its heading, its list and its stars back with nothing escaped", async () => {
   const { editor, imports, onSave, scope } = described(PLAN, true, displayTree(PLAN), true);
   const { box, handle } = await editor();
-  expect(box.getAttribute("contenteditable")).toBe("true");
+  expect(box).toHaveAttribute("contenteditable", "true");
   // The markdown and not the tree: the tree is a thing to draw, which gives every attribute the
   // server owns its default.
   expect(imports).toEqual([PLAN.length]);
@@ -643,7 +649,7 @@ test("an answer that says nothing of its reading, a pod's of the build before th
   // The reading is one that fell back, which such a pod sends with no word on it.
   const writer = described(PLAN, true, PLAN_AS_TEXT);
   const { box, handle } = await writer.editor();
-  expect(box.getAttribute("contenteditable")).toBe("true");
+  expect(box).toHaveAttribute("contenteditable", "true");
   expect(writer.imports).toEqual([PLAN.length]);
   expect(within(box).getByRole("heading", { name: "Why" })).toBeDefined();
   expect(writer.scope.queryByText(NOT_MARKDOWN)).toBeNull();
@@ -655,7 +661,7 @@ test("an answer that says nothing of its reading, a pod's of the build before th
 
   const reader = described(PLAN, false, PLAN_AS_TEXT);
   const { box: read } = await reader.editor();
-  expect(read.getAttribute("contenteditable")).toBe("false");
+  expect(read).toHaveAttribute("contenteditable", "false");
   expect(reader.imports).toEqual([]);
   expect(within(read).queryByRole("heading")).toBeNull();
   expect(read.textContent).toContain("# Why");
@@ -665,12 +671,12 @@ test("an answer that says nothing of its reading, a pod's of the build before th
 test("an editor drawn from the reading of a text the server said it cannot read as markdown takes the text in as markdown once an answer that says nothing of it lets the writer write, so no keystroke writes the reading", async () => {
   const { editor, imports, onSave, rerender, scope } = described(PLAN, true, PLAN_AS_TEXT, false);
   const { box, handle } = await editor();
-  expect(box.getAttribute("contenteditable")).toBe("false");
+  expect(box).toHaveAttribute("contenteditable", "false");
   expect(imports).toEqual([]);
   // A pod of the build before this one answers the same text and reading during a rolling
   // deploy, and says nothing of the reading.
   rerender(PLAN, true, PLAN_AS_TEXT, undefined);
-  await waitFor(() => expect(box.getAttribute("contenteditable")).toBe("true"));
+  await waitFor(() => expect(box).toHaveAttribute("contenteditable", "true"));
   expect(imports).toEqual([PLAN.length]);
   expect(within(box).getByRole("heading", { name: "Why" })).toBeDefined();
   expect(scope.queryByText(NOT_MARKDOWN)).toBeNull();
