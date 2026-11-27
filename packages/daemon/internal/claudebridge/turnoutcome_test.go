@@ -110,15 +110,15 @@ func newReportingRig(t *testing.T, args ...string) *reportingRig {
 	return r
 }
 
-// reported is the next turn the bridge reported, waited for until deadlineMargin before the test
-// binary's deadline (deadlineWait).
+// reported is the next turn the bridge reported, waited for until its share of the test binary's
+// deadline less deadlineMargin (deadlineWait).
 func (r *reportingRig) reported() claim.TurnOutcomeRequest {
 	r.t.Helper()
 	select {
 	case report := <-r.reports:
 		return report
 	case <-time.After(deadlineWait(r.t)):
-		r.t.Fatalf("the bridge reported no turn, %s before the test binary's deadline; the bridge logged:\n%s", deadlineMargin, r.log)
+		r.t.Fatalf("the bridge reported no turn within its share of the test binary's deadline less %s; the bridge logged:\n%s", deadlineMargin, r.log)
 		return claim.TurnOutcomeRequest{}
 	}
 }

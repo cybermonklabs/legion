@@ -423,7 +423,7 @@ func TestANewsTaskWhoseTurnEndsBeforeItsSendIsAcknowledgedIsToldOnce(t *testing.
 			r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 			// The case holds the news task's send at the door while its turn starts and ends, so
 			// the send's own deadline is a hang guard here and no part of what the case reads.
-			r.sup.deps.Timeouts.RPC = testwait.Remaining(t)
+			r.sup.deps.Timeouts.RPC = testwait.WholeRemaining(t)
 			flag := &orderPause{}
 			if tc.pause {
 				st := r.sup.deps.Store.(*store.Store)

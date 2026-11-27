@@ -178,8 +178,9 @@ func settlementEnvelope(t *testing.T, id string, payload map[string]any) []byte 
 // connection. Any fixed window loses that race on a machine slow enough: at consumerSpec's 200 ms
 // a loaded runner's connection outran it, and at one minute a connection made in 61 s did, under
 // a -timeout of 4 minutes, so the read was cut, the delivery naked and the row's verdict was the
-// machine's. The window is what is left of the test binary's deadline less 30 s
-// (testwait.Remaining), so a read however slow is waited out. A window is a span from each read's
+// machine's. The window is the whole of what is left of the test binary's deadline less 30 s
+// (testwait.WholeRemaining, the whole rather than a wait's share, because it must outlast the
+// row's own waits), so a read however slow is waited out. A window is a span from each read's
 // start, though, and a row hands several messages to the consumer one after another: after a read
 // that took most of it, the next read's window would run past the binary's deadline. So the
 // handlings also run under the returned context, whose deadline is that same moment, the
@@ -190,7 +191,7 @@ func settlementEnvelope(t *testing.T, id string, payload map[string]any) []byte 
 func dropConsumer(t *testing.T, logs *lockedBuffer) (context.Context, ConsumerSpec, *issueNames, *droppedSettlements) {
 	t.Helper()
 	spec := consumerSpec(logs)
-	spec.AckWait = testwait.Remaining(t)
+	spec.AckWait = testwait.WholeRemaining(t)
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(spec.AckWait))
 	t.Cleanup(cancel)
 	spec, err := normalizedSpec(spec)

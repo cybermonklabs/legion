@@ -455,9 +455,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// named `help`, which gh would run on `legion gh help`, is refused before gh runs; one whose
 	// config.yml is no regular file is refused without being opened, so a named pipe there stalls
 	// nothing. The pane's own directory is judged before gh reads any help, so each is refused
-	// promptly. Each run's bound is what is left of the test binary's deadline less 30 s, which a
-	// gh stalled on the pipe would meet and fail its row by name, while a run a loaded machine
-	// makes slow is waited for.
+	// promptly. Each run's bound is its share of what is left of the test binary's deadline less
+	// the 30 s margin (testwait.Bounded), which a gh stalled on the pipe would meet and fail its row
+	// by name, while a run a loaded machine makes slow is waited for.
 	acmeConfig := filepath.Join(ghconfig.Dir(root, "acme"), ghconfig.ConfigFile)
 	keptConfig, err := os.ReadFile(acmeConfig)
 	if err != nil {

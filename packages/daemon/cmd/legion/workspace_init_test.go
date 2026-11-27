@@ -883,8 +883,8 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 // bound each command of the provisioning was given (issueVolume.proc's runner): the checkout's is
 // CheckoutTimeout, and every other command's is the runner's budget or, for a step of the shared
 // clone's own clone, what remains of the shared clone's bound (workspace.CloneBound, read through
-// programbound). The budget is what is left of the test binary's deadline less 30 s, so no command
-// a loaded machine makes slow is stopped by it.
+// programbound). The budget is a share of what is left of the test binary's deadline less the
+// 30 s margin (testwait.Bounded), so no command a loaded machine makes slow is stopped by it.
 func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
@@ -1291,8 +1291,8 @@ func (v *issueVolume) holder(t *testing.T) *initProcess {
 }
 
 // fifo opens one end of a fifo — which blocks until the holder opens the other — reads it to EOF
-// when reading, and closes it, bounded by the test binary's deadline less 30 s and by the holder's
-// staying alive and silent.
+// when reading, and closes it, bounded by its share of what is left of the test binary's deadline
+// less the 30 s margin (testwait.Bounded) and by the holder's staying alive and silent.
 func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 	t.Helper()
 	type opened struct {
@@ -1321,7 +1321,7 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 	case line, ok := <-holder.lines:
 		t.Fatalf("the holder printed %q (open: %v) before reaching %s; stderr %q", line, ok, path, holder.stderr.String())
 	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
-		t.Fatalf("nothing opened the other end of %s before the test binary's deadline", path)
+		t.Fatalf("nothing opened the other end of %s within its share of the test binary's deadline", path)
 	}
 	return ""
 }

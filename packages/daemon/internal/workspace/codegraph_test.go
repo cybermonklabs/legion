@@ -1239,7 +1239,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 	// run, at the moment the test sets.
 	t.Run("a build a signal ended before its bound, its pipes held past it: the signal named", func(t *testing.T) {
 		grace := codegraphStopGrace
-		codegraphStopGrace = testwait.Remaining(t)
+		codegraphStopGrace = testwait.WholeRemaining(t)
 		t.Cleanup(func() { codegraphStopGrace = grace })
 		r := newBoundRow(t, fake, "echo 'parsing 512 files' >&2; : > '%[1]s/printed'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/go' ]; do sleep 0.01; done; "+
 			"( while kill -0 $$ 2>/dev/null; do sleep 0.01; done; : > '%[1]s/gone'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/release' ]; do sleep 0.01; done; : > '%[1]s/left' ) & kill -KILL $$")

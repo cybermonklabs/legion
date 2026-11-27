@@ -248,27 +248,29 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 	return g
 }
 
-// beforeDeadline is how long a wait that begins now may last: testwait.Remaining (#4792), until
-// 30 s before the test binary's deadline, which leaves a failing row's cleanups and its failure
-// time to run (cleanupBeforeDeadline gives the cleanups their part of it), and 1<<60 ns, about 36
-// years, under -timeout 0. Each wait for something the sweep or the launcher will do is bounded by
-// it rather than by a fixed span, so a pass or a goroutine that is merely slow on a loaded machine
-// still passes its row, and one that never comes still fails it, naming what it waited for. One
-// that never comes thus costs the rest of the binary's -timeout. With 30 s or less left there is no
-// span a wait could run on, so it fails t there, on one line naming the deadline and the margin,
-// rather than handing back a bound that asks the fact once and blames it. It calls t.Fatalf, so it
-// is called on the goroutine running the test.
+// beforeDeadline is how long a wait that begins now may last: testwait.Remaining (#4792), a share
+// of what is left of the test binary's deadline less 30 s (testwait's Share), which leaves a failing
+// row's cleanups and its failure time to run (cleanupBeforeDeadline gives the cleanups their part of
+// it), and 1<<60 ns, about 36 years, under -timeout 0. Each wait for something the sweep or the
+// launcher will do is bounded by it rather than by a fixed span, so a pass or a goroutine that is
+// merely slow on a loaded machine still passes its row, and one that never comes still fails it,
+// naming what it waited for. One that never comes costs its share of what was left, not the rest
+// of the binary's -timeout, so the tests behind it still report. With 30 s or less left there is
+// no span a wait could run on, so it fails t there, on one line naming the deadline and the
+// margin, rather than handing back a bound that asks the fact once and blames it. It calls
+// t.Fatalf, so it is called on the goroutine running the test.
 //
 // Every wait of the package's tests for a fact whose span is not the claim is bounded by it, or by
 // cleanupBeforeDeadline in a cleanup, in the test process and in every process the test binary
 // re-enters alike (a *Helper test, the role stage, role-init, the session-peer stand-ins, the PID 1
 // helpers). The exceptions are main's own: the sites #4901 wrote bound their waits with
-// testwait.Bounded of three years and a margin of their own, 30 s at reaperBound (the waits on PID
-// 1's reaper), at pidNamespace's probe, at runAsPIDOne's wait for sudo and at the put-back case's
-// checks of the restored workspaces, and 15 s at the put-back helper's wait for a put-back, which
-// must give up after the waits on the reaper. Each is the same bound as beforeDeadline's, or
-// ordered against it, but hands back a bound already spent where beforeDeadline fails t; each site
-// names its margin in its own failure. A re-entered process is given a -test.timeout that ends
+// testwait.Bounded of three years and a margin of their own, 30 s, at reaperBound (the waits on
+// PID 1's reaper) and at pidNamespace's probe, each its share of the deadline less 30 s, the same
+// bound as beforeDeadline's, but handing back a bound already spent where beforeDeadline fails t;
+// and runAsPIDOne's wait for sudo, which takes the whole of what is left (testwait.WholeRemaining)
+// because its helper's own -test.timeout is set from this test's deadline and its alarm must come
+// while this wait still runs. Each site names its bound in its own failure. A re-entered process
+// is given a -test.timeout that ends
 // reentryMargin before its starter's own deadline (reentry), or
 // helperDeadlineGap before it for runAsPIDOne's helpers, so beforeDeadline there ends before the
 // starter's own beforeDeadline. A starter's wait for a child's end ends no sooner than the child's
@@ -296,9 +298,9 @@ func beforeDeadline(t *testing.T) time.Duration {
 	return testwait.Remaining(t)
 }
 
-// cleanupBeforeDeadline is beforeDeadline for a wait in a cleanup: it ends 10 s before the test
-// binary's deadline, so a cleanup that runs after its row gave up at beforeDeadline still has 20 s
-// to see its own wait out before the binary's alarm.
+// cleanupBeforeDeadline is beforeDeadline for a wait in a cleanup: its share of what is left of the
+// test binary's deadline less 10 s (testwait.Bounded), so a cleanup that runs after its row gave up
+// at beforeDeadline still has its own time to see its wait out before the binary's alarm.
 func cleanupBeforeDeadline(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 1<<60, 10*time.Second)
 }
@@ -324,7 +326,7 @@ func (g *gatedProc) through(t *testing.T, which string) {
 				t.Fatal(err)
 			}
 		case <-time.After(bound):
-			t.Fatalf("the sweep's %s holder read never reached %s in %s, to 30 s before the test binary's deadline", which, gate, bound.Round(time.Second))
+			t.Fatalf("the sweep's %s holder read never reached %s in %s, its share of the test binary's deadline", which, gate, bound.Round(time.Second))
 		}
 	}
 }
@@ -388,7 +390,7 @@ func awaitPass(t *testing.T, done <-chan struct{}, log *lockedBuffer) {
 	select {
 	case <-done:
 	case <-time.After(bound):
-		t.Fatalf("the pass did not return in %s, to 30 s before the test binary's deadline; its log:\n%s", bound.Round(time.Second), log.String())
+		t.Fatalf("the pass did not return in %s, its share of the test binary's deadline; its log:\n%s", bound.Round(time.Second), log.String())
 	}
 }
 
@@ -705,7 +707,7 @@ func TestTheFirstPassRunsBeforeTheFirstRoleStarts(t *testing.T) {
 				t.Fatalf("the pass held at the removal of %s, not of %s; the launcher's log:\n%s", path, lock, f.stderr.String())
 			}
 		case <-time.After(beforeDeadline(t)):
-			t.Fatalf("the launcher's pass never reached the removal of %s before 30 s ahead of the test binary's deadline; its log:\n%s", lock, f.stderr.String())
+			t.Fatalf("the launcher's pass never reached the removal of %s within its share of the test binary's deadline; its log:\n%s", lock, f.stderr.String())
 		}
 		answersNothingFor(t, conn, 300*time.Millisecond)
 		if swept(lock) {
@@ -865,7 +867,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(beforeDeadline(t)):
-			t.Fatalf("the sweep's ticker outlived the container's context to 30 s before the test binary's deadline; its log:\n%s", log.String())
+			t.Fatalf("the sweep's ticker outlived the container's context past its share of the test binary's deadline; its log:\n%s", log.String())
 		}
 	})
 
@@ -893,7 +895,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 			// Put it back: newFleet's own cleanup waits for this same send.
 			f.result <- err
 		case <-time.After(beforeDeadline(t)):
-			t.Fatalf("Run did not return after its context ended, to 30 s before the test binary's deadline; the launcher's log:\n%s", f.stderr.String())
+			t.Fatalf("Run did not return after its context ended, within its share of the test binary's deadline; the launcher's log:\n%s", f.stderr.String())
 		}
 		var ticker <-chan struct{}
 		select {
@@ -1198,8 +1200,9 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		// An hour's recheck this pass must never reach: a lock the first read found a holder
 		// for is decided there and never read again. A lock that reached the second read would
 		// hold the pass for that hour, which fails the row at the hang guard awaitPass waits
-		// under only when that guard ends inside the hour: when the binary's -timeout is under
-		// about an hour, as CI's 30 minutes is. Under a longer -timeout, or none, such a pass
+		// under only when that guard, a quarter of what is left of the deadline less 30 s
+		// (beforeDeadline), ends inside the hour: when the binary's -timeout is under about four
+		// hours, as CI's 30 minutes is. Under a longer -timeout, or none, such a pass
 		// returns after the hour with the same keep line, and the row passes it. A row that gave
 		// the sweep its usual millisecond would read the same keep line whichever of the two
 		// reads wrote it, under any -timeout.

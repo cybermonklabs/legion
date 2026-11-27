@@ -724,8 +724,8 @@ func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, me
 }
 
 // idleRigUntil is idleRigEventually at a sender's pace: a second between attempts, so a retry
-// loop that is itself a wake does not send a hundred of them a second. Its one bound is the test
-// binary's deadline, as idleRigEventually's is (idleRigWaiting).
+// loop that is itself a wake does not send a hundred of them a second. Its one bound is its share
+// of the test binary's deadline, as idleRigEventually's is (idleRigWaiting).
 func idleRigUntil(t *testing.T, what string, attempt func() bool) {
 	t.Helper()
 	idleRigWaiting(t, what, time.Second, attempt)
@@ -745,8 +745,8 @@ func (r *idleWakeRig) awaitTask(issue idleRigIssue, want string) {
 // subscribed topic, whose claim is that nothing was woken. The listener decides whether to raise a
 // wake report inside the publish this follows, so what the span covers is the daemon's own pass
 // over the reports it raised — and a publish that raised none leaves nothing positive to wait
-// for. Every other wait of the row is for something that does happen, and gives up only at the
-// test binary's deadline less testwait's margin (idleRigWaiting).
+// for. Every other wait of the row is for something that does happen, and gives up only at its
+// share of what is left of the test binary's deadline less testwait's margin (idleRigWaiting).
 func idleRigSettle(t *testing.T, within time.Duration, check func()) {
 	t.Helper()
 	deadline := time.Now().Add(within)

@@ -35,8 +35,10 @@ import (
 // pipes, and never answers, and the read's context ends once gh has recorded that helper:
 // readGhHelp gives up naming the stop of gh's group, and the helper is gone too. exec runs the one
 // stop procgroup gives the read whichever end of its context comes, the timeout's or this one. Each
-// wait has the test binary's deadline as its only bound, and each stand-in sleeps about a day, so a
-// stop that never comes fails the row by name and no sleep ends by itself before it.
+// wait has no bound but the test binary's deadline: each read's end is waited for until the
+// deadline less the margin (testwait.Receive), and each other wait gives up at its share of what is
+// left of it less testBoundMargin (testwait.Bounded). Each stand-in sleeps about a day, so a stop
+// that never comes fails the row by name and no sleep ends by itself before it.
 func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	// Not parallel: it sets the package variable ghHelpTimeout.
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {

@@ -336,6 +336,8 @@ func TestTheCountAndTheFirstFailureSurviveARestartOfTheConsumers(t *testing.T) {
 		{name: "a delivery the stop takes is never handled", taken: 1},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			// The row's own wait: the requests made under this context hold their polls until it
+			// ends, so it takes the wait's share (testwait.Remaining), not the whole.
 			ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
 			defer cancel()
 			pool := migratedPool(t)

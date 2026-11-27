@@ -901,8 +901,8 @@ func takeDetached(who, token string, hold roleHold) detachedReading {
 // for only once every other process of the namespace is gone (kernel/pid_namespace.c,
 // zap_pid_ns_processes), so there the first reading is the answer. gVisor's init sends each of
 // them SIGKILL and exits without that wait (pkg/sentry/kernel/task_exit.go, exitChildrenLocked),
-// so a process can still be ending: the reading waits for it until deadline, the test binary's
-// own less beforeDeadline's margin, and a process still there then is one the namespace's end
+// so a process can still be ending: the reading waits for it until deadline, the test's
+// beforeDeadline (stagePlan), and a process still there then is one the namespace's end
 // left alive. It reads every generation's at once, after the last generation: a wait spent to
 // the deadline then leaves no generation still to run, so the row fails by name rather than at
 // the binary's own deadline. A scan reads every process of the machine, which on a loaded
@@ -2145,7 +2145,7 @@ type roleDrainPlan struct {
 // before the kill for the case to read anything — a trap 2.25 s late is killed inside
 // roleNamespaceDrain's two seconds — and short enough that the case costs half a minute. The case
 // whose descendant leaves takes a bound no wait of it reaches, since its wait ends when the
-// namespace empties; both are held under the test binary's deadline less a margin.
+// namespace empties; both are held under their share of the test binary's deadline less a margin.
 const roleDrainStaysBound = 30 * time.Second
 
 // A role whose shim exits on its own has its namespace signalled before it is killed: role-init

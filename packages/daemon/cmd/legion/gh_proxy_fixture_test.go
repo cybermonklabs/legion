@@ -141,8 +141,9 @@ func startCaptureProxy(t *testing.T) *captureProxy {
 	}
 
 	inner := &chanListener{conns: make(chan net.Conn), done: make(chan struct{})}
-	// A request's headers have what is left of the test binary's deadline less 30 s to arrive: a gh
-	// or git a loaded machine makes slow to write them is still answered.
+	// A request's headers have, to arrive, a share of what was left of the test binary's deadline
+	// less the 30 s margin when the proxy started (testwait.Bounded): a gh or git a loaded machine
+	// makes slow to write them is still answered.
 	server := &http.Server{Handler: http.HandlerFunc(p.serve), ReadHeaderTimeout: testwait.Bounded(t, 1<<60, 30*time.Second)}
 	go func() { _ = server.Serve(inner) }()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

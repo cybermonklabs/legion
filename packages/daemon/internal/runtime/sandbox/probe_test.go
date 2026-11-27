@@ -258,14 +258,15 @@ func probeOptions(t *testing.T) ImageProbe {
 	}
 }
 
-// probeOptionsToDeadline is probeOptions with an attempt budget of what is left before the
-// test's margin (testwait.Remaining), rather than probeOptions' 10 s budget. newProbeRig's parent
-// context still ends all attempts at that margin; this larger per-attempt budget lets its probe
-// pod finish on the event the rig brings when a loaded machine delays it.
+// probeOptionsToDeadline is probeOptions with an attempt budget of the whole of what is left
+// before the test's margin (testwait.WholeRemaining, rather than the share a wait of the test
+// takes, so the budget outlasts them), rather than probeOptions' 10 s budget. newProbeRig's
+// parent context still ends all attempts at that margin; this larger per-attempt budget lets its
+// probe pod finish on the event the rig brings when a loaded machine delays it.
 func probeOptionsToDeadline(t *testing.T) ImageProbe {
 	t.Helper()
 	p := probeOptions(t)
-	p.Budget = testwait.Remaining(t)
+	p.Budget = testwait.WholeRemaining(t)
 	return p
 }
 

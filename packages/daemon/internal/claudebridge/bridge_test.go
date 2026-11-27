@@ -37,7 +37,8 @@ const fakeClaudeEnv = "LEGION_TEST_FAKE_CLAUDE"
 const fakeClaudeGateEnv = "FAKE_CLAUDE_GATE"
 
 // fakeClaudeGateDeadlineEnv names, in RFC 3339 with nanoseconds, the moment a replay stops waiting
-// for the gate: the moment the rig's own waits give up (deadlineWait).
+// for the gate: the moment a wait begun with the rig gives up, at its share of the test binary's
+// deadline (deadlineWait), which none of the rig's later waits gives up before.
 const fakeClaudeGateDeadlineEnv = "FAKE_CLAUDE_GATE_DEADLINE"
 
 // stopClock is a Config.Clock for a row that reads the bridge's stop against the bounds the bridge
@@ -372,10 +373,10 @@ func replay(record *os.File, file string) {
 }
 
 // waitForGate waits for the test to open the gate, and answers at once when none is set. Its one
-// bound is the moment the rig's own waits give up (fakeClaudeGateDeadlineEnv): a test a loaded
-// machine makes slow to open the gate still opens it first, and one that never does fails by name
-// at its own wait, the held line never written, rather than reading a line the gate let through on
-// its own.
+// bound is the moment a wait begun with the rig gives up (fakeClaudeGateDeadlineEnv), no later
+// than any wait of the rig's own: a test a loaded machine makes slow to open the gate still opens
+// it first, and one that never does fails by name at its own wait, the held line never written,
+// rather than reading a line the gate let through on its own.
 func waitForGate(record *os.File) bool {
 	gate := os.Getenv(fakeClaudeGateEnv)
 	if gate == "" {
@@ -479,7 +480,7 @@ func startRig(t *testing.T, extra []string, clock Clock, args ...string) *rig {
 		select {
 		case <-r.done:
 		case <-time.After(deadlineWait(t)):
-			t.Errorf("the bridge did not end, %s before the test binary's deadline", deadlineMargin)
+			t.Errorf("the bridge did not end within its share of the test binary's deadline less %s", deadlineMargin)
 		}
 	})
 	return r
@@ -497,14 +498,14 @@ func (r *rig) send(frame shimwire.Frame) {
 }
 
 // nextRaw is the next frame the bridge wrote, pane summaries (tool_execution_start) included,
-// waited for until deadlineMargin before the test binary's deadline (deadlineWait).
+// waited for until its share of the test binary's deadline less deadlineMargin (deadlineWait).
 func (r *rig) nextRaw() map[string]any {
 	r.t.Helper()
 	select {
 	case frame := <-r.frames:
 		return frame
 	case <-time.After(deadlineWait(r.t)):
-		r.t.Fatalf("the bridge wrote nothing, %s before the test binary's deadline; the bridge logged:\n%s", deadlineMargin, r.log)
+		r.t.Fatalf("the bridge wrote nothing within its share of the test binary's deadline less %s; the bridge logged:\n%s", deadlineMargin, r.log)
 		return nil
 	}
 }
@@ -583,12 +584,12 @@ func (r *rig) recorded() string {
 	return string(raw)
 }
 
-// waitFor waits for holds until deadlineMargin before the test binary's deadline (deadlineWait),
-// failing with what it waited for.
+// waitFor waits for holds until its share of the test binary's deadline less deadlineMargin
+// (deadlineWait), failing with what it waited for.
 func (r *rig) waitFor(what string, holds func() bool) {
 	r.t.Helper()
 	if !testwait.Holds(deadlineWait(r.t), 5*time.Millisecond, holds) {
-		r.t.Fatalf("waited for %s until %s before the test binary's deadline; the bridge logged:\n%s\nClaude Code recorded:\n%s", what, deadlineMargin, r.log, r.recorded())
+		r.t.Fatalf("waited for %s for its share of the test binary's deadline less %s; the bridge logged:\n%s\nClaude Code recorded:\n%s", what, deadlineMargin, r.log, r.recorded())
 	}
 }
 
@@ -644,8 +645,8 @@ func (c *inboxClient) deliverBlocks(id, content string, blocks []json.RawMessage
 	}
 }
 
-// answer is the inbox's next answer, waited for until deadlineMargin before the test binary's
-// deadline (deadlineWait).
+// answer is the inbox's next answer, waited for until its share of the test binary's deadline
+// less deadlineMargin (deadlineWait).
 func (c *inboxClient) answer() InboxAnswer {
 	c.t.Helper()
 	if err := c.conn.SetReadDeadline(time.Now().Add(deadlineWait(c.t))); err != nil {
@@ -1383,10 +1384,10 @@ func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 		case code := <-r.done:
 			r.done <- code
 		case <-time.After(deadlineWait(t)):
-			t.Fatalf("the bridge held on the wall clock did not end either; waited until %s before the test binary's deadline", deadlineMargin)
+			t.Fatalf("the bridge held on the wall clock did not end either; waited its share of the test binary's deadline less %s", deadlineMargin)
 		}
 	case <-time.After(deadlineWait(t)):
-		t.Fatalf("the bridge told to stop with an inbox client connected did not end within its own bound of %s on its clock; waited until %s before the test binary's deadline", bound, deadlineMargin)
+		t.Fatalf("the bridge told to stop with an inbox client connected did not end within its own bound of %s on its clock; waited its share of the test binary's deadline less %s", bound, deadlineMargin)
 	}
 	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the inbox's directory %s is still there (%v)", filepath.Dir(path), err)
@@ -1433,7 +1434,7 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 			pid, _ := strconv.Atoi(match[1])
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
-		t.Fatalf("the bridge did not end after Claude Code no longer read, %s before the test binary's deadline:\n%s", deadlineMargin, logged)
+		t.Fatalf("the bridge did not end after Claude Code no longer read, within its share of the test binary's deadline less %s:\n%s", deadlineMargin, logged)
 	}
 	overflow := "Claude Code has left " + strconv.Itoa(claudeQueueLength) + " lines unread"
 	if n := strings.Count(logged.String(), overflow); n != 1 {
@@ -1450,15 +1451,15 @@ func TestAClaudeCodeThatStopsReadingEndsTheBridge(t *testing.T) {
 // lockedBuffer is a log the bridge's goroutines write while a test reads it.
 type lockedBuffer = testlog.Buffer
 
-// deadlineMargin is how long before the test binary's deadline a wait of these tests gives up:
-// the time a row whose fact never came has to fail by name, and its cleanups to run, before go
-// test's alarm panics the binary.
+// deadlineMargin is the spare a wait of these tests leaves before the test binary's deadline: the
+// time a row whose fact never came has to fail by name, and its cleanups to run, before go test's
+// alarm panics the binary.
 const deadlineMargin = 30 * time.Second
 
-// deadlineWait is the bound of a wait for something the bridge or the fake Claude Code does: what
-// is left of the test binary's deadline less deadlineMargin. Each of these waits is for a fact, so
-// a step a loaded machine makes slow is waited for, and a fact that never comes fails its row by
-// name before go test's alarm.
+// deadlineWait is the bound of a wait for something the bridge or the fake Claude Code does: a
+// share of what is left of the test binary's deadline less deadlineMargin (testwait.Bounded). Each
+// of these waits is for a fact, so a step a loaded machine makes slow is waited for, and a fact
+// that never comes fails its row by name early enough to leave the tests behind it their own time.
 func deadlineWait(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 1<<60, deadlineMargin)
 }
@@ -1503,7 +1504,7 @@ func TestTheShimClosingInputEndsClaudeCode(t *testing.T) {
 		}
 		r.done <- code
 	case <-time.After(deadlineWait(t)):
-		t.Fatalf("the bridge outlived its input, %s before the test binary's deadline", deadlineMargin)
+		t.Fatalf("the bridge outlived its input, past its share of the test binary's deadline less %s", deadlineMargin)
 	}
 }
 

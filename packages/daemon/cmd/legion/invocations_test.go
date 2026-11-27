@@ -278,10 +278,11 @@ func splitWords(line string) ([]string, error) {
 // exit status, the sha256 of its standard output and its standard error. The checker keeps the
 // image hook's row comparable with the release before: under it the guard refuses a push for
 // want of a check, as every release did, where with no checker it would run its rules alone. A
-// run still going when what is left of the test binary's deadline less testBoundMargin has passed
-// is killed and fails the test by name: a call that waits on something is no call the table can
-// compare, and no row after it has time left to run. A call that a loaded machine makes slow
-// passes; a fixed twenty seconds failed one.
+// run still going when its share of what is left of the test binary's deadline less
+// testBoundMargin has passed (testwait.Bounded) is killed and fails the test by name: a call that
+// waits on something is no call the table can compare, and the share leaves the rows after it
+// their own time to run. A call that a loaded machine makes slow passes; a fixed twenty seconds
+// failed one.
 func runInvocation(t *testing.T, legion string, args []string) (code int, digest, stderr string, err error) {
 	t.Helper()
 	limit := testwait.Bounded(t, 1<<60, testBoundMargin)
@@ -296,7 +297,7 @@ func runInvocation(t *testing.T, legion string, args []string) (code int, digest
 	cmd.Stdout, cmd.Stderr = &stdout, &errb
 	err = cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("legion %q still ran when its limit of %s, %s before the test binary's deadline, passed: %s", args, limit.Round(time.Millisecond), testBoundMargin, errb.String())
+		t.Fatalf("legion %q still ran when its limit of %s, its share of what was left of the test binary's deadline less %s, passed: %s", args, limit.Round(time.Millisecond), testBoundMargin, errb.String())
 	}
 	sum := sha256.Sum256(stdout.Bytes())
 	var exit *exec.ExitError

@@ -27,10 +27,12 @@ var replayNow = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 // replaySpec is consumerSpec at replayNow, for the replay tests that t runs. Its acknowledgement
 // window is a hang guard, not the subject: it bounds each statement a replay makes, which
 // consumerSpec's 200 ms cuts on a loaded runner and any fixed span lets the machine decide, so it
-// is what is left of the test binary's deadline less 30 s (testwait.Remaining, docs/testing.md).
+// is the whole of what is left of the test binary's deadline less 30 s (testwait.WholeRemaining,
+// the whole rather than the share a wait takes, so that the window outlasts the row's own waits;
+// docs/testing.md).
 func replaySpec(t *testing.T, logs *lockedBuffer) ConsumerSpec {
 	spec := consumerSpec(logs)
-	spec.AckWait = testwait.Remaining(t)
+	spec.AckWait = testwait.WholeRemaining(t)
 	spec.Now = func() time.Time { return replayNow }
 	return spec
 }
@@ -178,7 +180,7 @@ func TestAReplayAppliesTheStoredMessageOnceThroughTheLiveHandling(t *testing.T) 
 	pool := store.NewPool(raw)
 	js, stream := testJetStream(t)
 	spec := boundSpec(&lockedBuffer{}, 1, time.Nanosecond)
-	spec.AckWait = testwait.Remaining(t)
+	spec.AckWait = testwait.WholeRemaining(t)
 	var prepared atomic.Int32
 	spec.PrepareRepository = func(_ context.Context, issue DispatchIssue) (DispatchIssue, error) {
 		prepared.Add(1)

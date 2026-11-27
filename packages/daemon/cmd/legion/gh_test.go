@@ -3080,7 +3080,7 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	// A row that fails before it reads `legion gh`'s end ends both processes here, by the order of
 	// their events. gh is released. A `legion gh` whose gh never started has nothing that release
 	// reaches, so it is killed at once; one whose gh runs ends with gh, and is killed only if it
-	// has not ended 10 s before the binary's deadline. Then the cleanup waits for the stand-in
+	// has not ended within its share of the binary's deadline. Then the cleanup waits for the stand-in
 	// itself to be gone, which a killed `legion gh` no longer waits for, so nothing writes into the
 	// row's directories while they are removed.
 	ended := false
@@ -3128,14 +3128,14 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 		t.Fatal(err)
 	}
 	// gh ends within one tick of its release, and `legion gh` with it; the wait has no fixed span,
-	// and a `legion gh` that never ends fails the row 30 s before the binary's deadline, which the
+	// and a `legion gh` that never ends fails the row at its share of the binary's deadline, which the
 	// cleanup's kill then ends.
 	var waited error
 	select {
 	case waited = <-done:
 		ended = true
 	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
-		t.Fatalf("legion gh did not end after gh was released, to 30 s before the test binary's deadline: %s", readRecord(t, printed.Name()))
+		t.Fatalf("legion gh did not end after gh was released, within its share of the test binary's deadline: %s", readRecord(t, printed.Name()))
 	}
 	if waited != nil {
 		t.Fatalf("legion gh = %v, want gh's own 0: %s", waited, readRecord(t, printed.Name()))

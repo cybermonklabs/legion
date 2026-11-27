@@ -199,7 +199,7 @@ func newHeldEditRecovery(t *testing.T, key string) heldEditRecovery {
 func heldUntilLetGo(t *testing.T) func(*workflowRuntime) {
 	t.Helper()
 	calls := productionAppCalls()
-	calls.attempt = testwait.Remaining(t)
+	calls.attempt = testwait.WholeRemaining(t)
 	return func(w *workflowRuntime) { w.appCalls = &calls }
 }
 

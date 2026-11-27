@@ -276,9 +276,10 @@ func (p *claudeBridgeProcess) logged() string {
 	return string(raw)
 }
 
-// await waits until ok holds, failing the test if the bridge exits first. Its one bound is the
-// test binary's deadline less 30 s, so a step a loaded machine makes slow passes and an ok that
-// never holds still fails, naming what it waited for, before go test's -timeout panics.
+// await waits until ok holds, failing the test if the bridge exits first. Its one bound is its
+// share of what is left of the test binary's deadline less the 30 s margin (testwait.Bounded), so
+// a step a loaded machine makes slow passes and an ok that never holds still fails, naming what it
+// waited for, before go test's -timeout panics.
 func (p *claudeBridgeProcess) await(what string, ok func() bool) {
 	p.t.Helper()
 	deadline := time.After(testwait.Bounded(p.t, 1<<60, 30*time.Second))
@@ -287,7 +288,7 @@ func (p *claudeBridgeProcess) await(what string, ok func() bool) {
 		case <-p.exited:
 			p.t.Fatalf("the bridge exited (%v) before %s:\n%s", p.cmd.ProcessState, what, p.logged())
 		case <-deadline:
-			p.t.Fatalf("not %s by 30s before the test binary's deadline:\n%s", what, p.logged())
+			p.t.Fatalf("not %s within its share of the test binary's deadline:\n%s", what, p.logged())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -314,14 +315,15 @@ func (p *claudeBridgeProcess) hangUp() (*os.ProcessState, []string) {
 	return p.exit("SIGHUP")
 }
 
-// exit waits for the bridge to exit after what ended it, with the test binary's deadline less 30 s
-// as its one bound; it answers how the bridge exited and what it left of its inbox in TMPDIR.
+// exit waits for the bridge to exit after what ended it, with its share of what is left of the
+// test binary's deadline less the 30 s margin (testwait.Bounded) as its one bound; it answers how
+// the bridge exited and what it left of its inbox in TMPDIR.
 func (p *claudeBridgeProcess) exit(after string) (*os.ProcessState, []string) {
 	p.t.Helper()
 	select {
 	case <-p.exited:
 	case <-time.After(testwait.Bounded(p.t, 1<<60, 30*time.Second)):
-		p.t.Fatalf("the bridge did not exit after %s by 30s before the test binary's deadline:\n%s", after, p.logged())
+		p.t.Fatalf("the bridge did not exit after %s within its share of the test binary's deadline:\n%s", after, p.logged())
 	}
 	left, _ := filepath.Glob(filepath.Join(p.tmp, "legion-claude-*"))
 	return p.cmd.ProcessState, left

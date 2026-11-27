@@ -550,7 +550,7 @@ func testerRolesDir(t *testing.T) string {
 // test that runs it is not parallel, and runs its own commands through guard or while the reaper
 // is stopped.
 //
-// stop does not wait on the reaper past 30 s before the test binary's deadline (reaperBound): a
+// stop does not wait on the reaper past its share of the test binary's deadline (reaperBound): a
 // pass that never ends fails t by name there rather than hold the test until Go's alarm.
 func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func()) {
 	t.Helper()
@@ -579,7 +579,7 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 		select {
 		case <-ended:
 		case <-time.After(reaperBound(t)):
-			t.Errorf("the reaper's pass never ended after its stop, to 30 s before the test binary's deadline")
+			t.Errorf("the reaper's pass never ended after its stop, within its share of the test binary's deadline")
 			return
 		}
 		if err := orphan.Wait(); !reapedByAnother(err) {
@@ -589,10 +589,10 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 	return stop
 }
 
-// reaperBound is how long a wait on PID 1's reaper that begins now may last: until 30 s before
-// the test binary's deadline, three years at most under -timeout 0, so every such wait in a row
-// gives up at the same moment however many there are, and the failure and the row's cleanups
-// still run before Go's alarm.
+// reaperBound is how long a wait on PID 1's reaper that begins now may last: its share of what is
+// left of the test binary's deadline less 30 s (testwait.Bounded), three years at most under
+// -timeout 0, so a pass that never ends gives up early enough to leave the tests behind it their
+// own time, and the failure and the row's cleanups still run before Go's alarm.
 func reaperBound(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second)
 }

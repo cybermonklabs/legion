@@ -14,9 +14,11 @@ import (
 // the legion binary has no such variable.
 const testDeadlineEnv = "LEGION_CMD_TEST_DEADLINE"
 
-// testBoundMargin is how long before the test binary's deadline a wait of a test here gives up:
+// testBoundMargin is the spare a bound of a test here leaves before the test binary's deadline:
 // the time a row whose fact never came has to fail by name, and its cleanups to run, before go
-// test's alarm panics the binary. It is testwait.Receive's, and programbound's.
+// test's alarm panics the binary. It is testwait.Receive's margin, and programbound's; a wait
+// bounded by testwait.Bounded(t, 1<<60, testBoundMargin) gives up at its share of what is left
+// of the deadline less it (testwait's Share), which is never later.
 const testBoundMargin = 30 * time.Second
 
 // testBinaryDeadline is the deadline go test's -timeout gives this binary, reckoned from now, and

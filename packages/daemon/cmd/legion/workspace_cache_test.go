@@ -196,7 +196,7 @@ func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) 
 			t.Fatalf("cache exited %d, stderr %q; want 1 naming %q", code, stderr.String(), says)
 		}
 	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
-		t.Fatalf("cache did not end after GitHub refused its first clone, before the test binary's deadline: stdout %q, stderr %q", stdout.String(), stderr.String())
+		t.Fatalf("cache did not end after GitHub refused its first clone, within its share of the test binary's deadline: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	if got := fetchAttempts(t, attempts); got != 1 {
 		t.Fatalf("git fetched %d times, want 1", got)
@@ -232,9 +232,10 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 		t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	var health repocache.Health
-	// Each read of /healthz, and the wait for one that says ready, ends when what is left of the
-	// test binary's deadline less 30 s has passed: a /healthz that takes the connection and never
-	// answers fails the row by name, where a request with no bound hung it to go test's alarm.
+	// Each read of /healthz, and the wait for one that says ready, ends when a share of what is
+	// left of the test binary's deadline less the 30 s margin has passed (testwait.Bounded): a
+	// /healthz that takes the connection and never answers fails the row by name, where a request
+	// with no bound hung it to go test's alarm.
 	wait := testwait.Bounded(t, 1<<60, 30*time.Second)
 	readyCtx, readyCancel := context.WithTimeout(context.Background(), wait)
 	defer readyCancel()
@@ -245,7 +246,7 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			t.Fatalf("GET /healthz: %v (each read's bound ends %s before the test binary's deadline); stdout %q, stderr %q", err, 30*time.Second, stdout.String(), stderr.String())
+			t.Fatalf("GET /healthz: %v (each read's bound is its share of what was left of the test binary's deadline less %s); stdout %q, stderr %q", err, 30*time.Second, stdout.String(), stderr.String())
 		}
 		err = json.NewDecoder(response.Body).Decode(&health)
 		response.Body.Close()

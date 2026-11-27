@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // OMP is the pinned Oh My Pi binary LEGION_TEST_OMP names (.github/actions/install-omp).
@@ -32,19 +33,18 @@ func UV(t *testing.T) string {
 
 // RequireJJFilters fails unless the jj under test, reading no configuration of the user's, has
 // working-copy filters: provisioning is proven against the jj the worker image ships. The probe is
-// killed 30 s before the test binary's deadline, and a probe killed so fails the test by name
-// rather than at the binary's alarm.
+// a wait whose answer may never come, so it is bounded by testwait.Remaining, a share of what is
+// left of the test binary's deadline: a probe that hangs fails its test by name and leaves the
+// tests queued behind it their own time to run and report, rather than holding the binary to its
+// alarm.
 func RequireJJFilters(t *testing.T) {
 	t.Helper()
-	ctx := context.Background()
-	if deadline, ok := t.Deadline(); ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-30*time.Second))
-		defer cancel()
-	}
+	bound := testwait.Remaining(t)
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
 	out, _ := probeCommand(ctx, t.TempDir()).Output()
 	if ctx.Err() != nil {
-		t.Fatal("the jj filter probe had not answered 30 s before the test binary's deadline")
+		t.Fatalf("the jj filter probe had not answered within %s, its share of what was left of the test binary's deadline", bound.Round(time.Millisecond))
 	}
 	if len(strings.TrimSpace(string(out))) == 0 {
 		t.Fatal("this jj has no working-copy filters: provisioning is proven against the jj the worker image ships (packages/daemon/docker/worker.Dockerfile, ARG JJ_TOOL), which CI installs")

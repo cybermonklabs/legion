@@ -41,14 +41,16 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 	// the machine decide that: at consumerSpec's 200 ms it could free the backlog's first fact
 	// before the read is made, and at one minute, or at any window, a read the machine delayed
 	// past it was made after the release, once the rest of the backlog had drained, so the row
-	// passed whatever the consumer had fetched. The window is what is left of the test binary's
-	// deadline less 30 s (testwait.Remaining). While the hold lasts nothing else reaches this
+	// passed whatever the consumer had fetched. The window is the whole of what is left of the
+	// test binary's deadline less 30 s (testwait.WholeRemaining, the whole rather than the share
+	// the row's own waits take, so that the window outlasts them). While the hold lasts nothing
+	// else reaches this
 	// consumer, a reconnect excepted (the delivery mechanism: ConsumerSpec.HandlerLimit's comment
 	// in consume.go), and the progress keeper reports the held fact in progress every third of
 	// the window (spec.AckWait/3 in consume.go). The stop deferred further down ends the hold by
 	// cancelling the handling, so the fact's transaction fails on the cancelled context and the
 	// handling naks the message as the consumer stops.
-	spec.AckWait = testwait.Remaining(t)
+	spec.AckWait = testwait.WholeRemaining(t)
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
@@ -74,8 +76,9 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 		t.Fatal("the backlog's first fact never reached the handler")
 	}
 
-	// The read waits for the server until the row's hang guards end (testwait.Remaining), in place
-	// of the five seconds nats.go gives a request whose context has no deadline.
+	// The read waits for the server until its own bound ends, a share of the test binary's
+	// deadline less 30 s (testwait.Remaining), in place of the five seconds nats.go gives a
+	// request whose context has no deadline.
 	read, cancelRead := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancelRead()
 	item, err := stream.Consumer(read, dispatchConsumerName(spec.Project))

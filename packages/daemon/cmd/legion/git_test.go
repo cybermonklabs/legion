@@ -96,7 +96,7 @@ func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, na
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("%s %q still ran when its limit of %s, %s before the test binary's deadline, passed: %s", name, args, limit.Round(time.Millisecond), testBoundMargin, errb.String())
+		t.Fatalf("%s %q still ran when its limit of %s, its share of what was left of the test binary's deadline less %s, passed: %s", name, args, limit.Round(time.Millisecond), testBoundMargin, errb.String())
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
@@ -108,11 +108,12 @@ func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, na
 	return 0, out.String(), errb.String()
 }
 
-// trailerRunLimit is how long trailerRunInput lets a command run before it kills its group: what
-// is left of the test binary's deadline less testBoundMargin, and no limit under -timeout 0. A git
-// that a loaded machine makes slow passes; one that never ends fails its row by name, and the
-// margin holds the kill, WaitDelay and the row's cleanups, before go test's alarm panics the
-// binary. A fixed minute failed a run that a loaded machine made slower than that.
+// trailerRunLimit is how long trailerRunInput lets a command run before it kills its group: a
+// share of what is left of the test binary's deadline less testBoundMargin (testwait.Bounded),
+// and no limit under -timeout 0. A git that a loaded machine makes slow passes; one that never
+// ends fails its row by name, and the margin holds the kill, WaitDelay and the row's cleanups,
+// before go test's alarm panics the binary. A fixed minute failed a run that a loaded machine
+// made slower than that.
 func trailerRunLimit(t *testing.T) time.Duration {
 	return testwait.Bounded(t, 1<<60, testBoundMargin)
 }
@@ -926,8 +927,9 @@ func TestGitWrapperAfterRunsAHostScriptWithNoInterpreterLine(t *testing.T) {
 // answers a signal that came before it put back the signal's own action (endedBySignal), and the
 // row would pass without reading what the signal does to the read: a fixed second and a half
 // before the signal let a loaded machine send it there. A legion git that ends before it reads, or
-// that still runs after the signal, fails the row by name, with the test binary's deadline as the
-// only bound on either wait.
+// that still runs after the signal, fails the row by name, with no bound on either wait but the
+// test binary's deadline: the first gives up at its share of what is left of it less the margin
+// (testwait.Bounded), the second at the deadline less the margin (testwait.Receive).
 func TestGitWrapperEndsOnSIGTERMWhileItReads(t *testing.T) {
 	t.Parallel()
 	git := fixturegit.CompiledGit(t)

@@ -73,9 +73,11 @@ func recordsChild(pidFile, seconds string) string {
 // holds its work (holdsStandIn, under pidFile and seconds) to be running, and sends sig to that
 // group, as a terminal does. It fails the test unless command ends with 128+sig, having printed
 // nothing, and the stand-in is gone after it; what names the held work in a failure. Each of its
-// waits, for the stand-in, the command's end and the stand-in's, has the test binary's deadline
-// less testBoundMargin as its only bound, so a step a loaded machine makes slow passes, and a stop
-// that never comes fails the row by name. The command itself gets a deadline two days off
+// waits, for the stand-in, the command's end and the stand-in's, has no bound but the test
+// binary's deadline: each wait for the stand-in gives up at its share of what is left of it less
+// testBoundMargin (testwait.Bounded), and the wait for the command's end at the deadline less the
+// margin (testwait.Receive), so a step a loaded machine makes slow passes, and a stop that never
+// comes fails the row by name. The command itself gets a deadline two days off
 // (testDeadlineEnv), so the bounds of the work it holds, its help read's and its guard's reads,
 // outlast every wait here: only the signal can end the held work before the row gives up, and a
 // command whose signal path let the held work run on to its own bound fails the row. A stand-in or

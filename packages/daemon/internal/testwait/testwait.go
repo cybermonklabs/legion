@@ -4,28 +4,26 @@
 // binary's own deadline rather than a fixed span: on a loaded machine a step that is merely slow
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
 // Eventually is the wait a test usually wants, and Until is Eventually for a condition that can
-// say what it read; Context gives a call that takes a context the same bound. The three give up
-// 30 s (margin) before the test binary's deadline and at no other moment, with no cap of their
-// own, and under -timeout 0 they have no end. WithinPolling takes a bound and a pace of its own;
-// Holds answers rather than fails, for a caller whose failure text is its own; Bounded is the
-// clamp alone, for a wait that holds the rest itself; and Receive waits for a channel with no
-// bound but the test binary's deadline.
+// say what it read; Context gives a call that takes a context a bound of the deadline less the
+// margin. WithinPolling takes a bound and a pace of its own; Holds answers rather than fails, for
+// a caller whose failure text is its own; Bounded is the clamp alone, for a wait that holds the
+// rest itself; and Receive waits for a channel with no bound but the test binary's deadline.
+//
+// Eventually, Until, Remaining and Bounded's clamp take a SHARE of what is left of that deadline,
+// not all of it (share.go): a quarter of the time to the deadline less the 30 s margin. A wait
+// whose fact never comes therefore gives up early enough to leave the tests queued behind it in
+// the binary their own time to run and report, rather than holding the binary to Go's alarm, which
+// panics it with every test still running. Under -timeout 0 they have no end. A wait that truly
+// needs the whole of what is left names it: WholeRemaining.
 //
 // A wait of Eventually or Until that gives up writes "testwait: <test>: gave up waiting for
-// <what> 30s before the test binary's deadline; last read: <reading>" to stderr at once, then
-// fails the test with the same text; "last read" is there only for Until. The direct write is
-// there because Go's alarm panics without printing a running test's log, so a cleanup that
-// outlasted the margin would otherwise take the message with it. The text is one line: a newline
-// in what or in the reading is written as \n.
-//
-// The cost of no cap: a wait whose fact never comes holds its test binary until 30 s before the
-// deadline (in CI's race step, -timeout 30m, about 29.5 minutes), and every later wait of
-// Eventually or Until in that binary begins with the margin already passed, asks its question
-// once and fails. Such a give-up adds ", a moment that had passed before this wait began: the
-// first give-up line in time order is the cause" before its reading, so the first give-up line in
-// time order names the wait that never held, and the later ones are its side effects. A wait in a
-// cleanup after its test's wait gave up is one of those, so the cleanups keep the margin to run in;
-// under a -timeout of 30 s or less every such wait is.
+// <what> after <waited>, its share (1/4) of what was left of the test binary's deadline less the
+// 30s margin; last read: <reading>" to stderr at once, then fails the test with the same text;
+// "last read" is there only for Until. The direct write is there because Go's alarm panics without
+// printing a running test's log. The text is one line: a newline in what or in the reading is
+// written as \n. A wait that begins with the deadline less the margin already passed asks its
+// question once and fails at once, and its line says so, so the first give-up line in time order
+// names the wait that never held and the later ones are its side effects.
 package testwait
 
 import (
@@ -43,8 +41,10 @@ import (
 // value, so the package's waits and those loops cannot come to ask at two paces.
 const Poll = pace
 
-// margin is how long before the test binary's deadline a wait gives up: the time the failing
-// test's cleanups and the failure itself have to run in before Go's alarm panics the binary.
+// margin is how long before the test binary's deadline the budget a wait may take ends: the time
+// the failing test's cleanups and the failure itself have to run in before Go's alarm panics the
+// binary. A wait of Eventually, Until or Remaining gives up at its share of what is left before
+// that moment (share.go), so earlier; Context and Receive run to it.
 const margin = 30 * time.Second
 
 // pace is how often a condition is asked. It is short enough that a test which passes in
@@ -89,14 +89,16 @@ func Context(t testing.TB) context.Context {
 	return ctx
 }
 
-// Bounded is bound, or what is left of the test binary's own deadline less spare when that is
-// sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
-// A wait with a span or a spare of its own takes those; Eventually and Receive have none. spare is
-// the caller's, not this package's margin.
+// Bounded is bound, or a share of what is left of the test binary's own deadline less spare when
+// that is sooner (share.go), so a -timeout smaller than bound still reports the wait rather than
+// the binary's panic. A short bound is the caller's own and is kept whole; a bound past the share
+// - Bounded(t, 1<<60, spare) and the like, which name no ceiling of their own - gets the share, as
+// every deadline-bound wait here does. A wait that truly needs the whole of what is left calls
+// WholeRemaining. spare is the caller's, not this package's margin.
 func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
-		if left := time.Until(testDeadline) - spare; left < bound {
-			bound = left
+		if share := shareOf(time.Until(testDeadline) - spare); share < bound {
+			bound = share
 		}
 	}
 	return bound
@@ -288,17 +290,21 @@ func RequireGaveUp(t testing.TB, output, what string, timeout time.Duration) {
 	}
 }
 
-// poll asks holds at the package's pace until it reports true. Once the moment giveUpAt names has
+// poll asks holds at the package's pace until it reports true. Once the moment shared names has
 // passed and holds still reports false, gaveUp fails t, with reading's text when the wait has one.
+// That moment is a SHARE of what is left of the deadline (share.go), not all of it, so a wait
+// whose fact never comes leaves the tests behind it in the parallel queue their own time to run
+// and report rather than taking the whole binary into Go's alarm.
 // A wait that begins with that moment already passed (spent) asks once, and its failure says so:
 // the deadline was spent before this wait began, by an earlier wait that never held or by the run
 // itself, so the first give-up line in time order is the cause and this one its side effect.
 func poll(t testing.TB, what string, holds func() bool, reading func() string) {
 	t.Helper()
-	end, bounded := giveUpAt(t)
-	spent := bounded && !waitClock.Now().Before(end)
+	start := waitClock.Now()
+	end, bounded := shared(t)
+	spent := bounded && !start.Before(end)
 	if !asked(end, bounded, holds) {
-		gaveUp(t, what, spent, reading)
+		gaveUp(t, what, spent, waitClock.Now().Sub(start), end.Sub(start), reading)
 	}
 }
 
@@ -362,14 +368,21 @@ func flagDeadline() (time.Time, bool) {
 // oneLine writes a newline or a carriage return as its escape, so a failure text is one line.
 var oneLine = strings.NewReplacer("\n", `\n`, "\r", `\r`)
 
-// announce is the text of a wait the margin ended, in the test named name: it writes the text to
-// stderr at once, in one write, and returns it. spent says the margin had passed before the wait
-// began. reading is the wait's last reading, or nil for a wait that has none.
-func announce(name, what string, spent bool, reading func() string) string {
-	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", name, what, margin)
+// announce is the text of a wait that gave up, in the test named name: it writes the text to
+// stderr at once, in one write, and returns it. It states the moment as it was, with two figures
+// that are read rather than assumed equal: how long the wait ran, and the share of what was left
+// of the deadline less the margin that it was given. A wait whose own question takes longer than
+// that share runs past it - the share bounds when the next question is asked, not how long an
+// answer may take - so the two figures differ, and the text says which is which rather than
+// calling the time it ran its share. A spent wait names no share: the deadline less the margin
+// had passed before it began. reading is the wait's last reading, or nil for a wait that has none.
+func announce(name, what string, spent bool, waited, share time.Duration, reading func() string) string {
+	moment := fmt.Sprintf("after %s; its share (1/%d) of what was left of the test binary's deadline less the %s margin was %s",
+		waited.Round(time.Millisecond), Share, margin, share.Round(time.Millisecond))
 	if spent {
-		text += ", a moment that had passed before this wait began: the first give-up line in time order is the cause"
+		moment = fmt.Sprintf("at once: the test binary's deadline less the %s margin had passed before this wait began, so the first give-up line in time order is the cause", margin)
 	}
+	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s", name, what, moment)
 	if reading != nil {
 		text += "; last read: " + reading()
 	}
@@ -378,9 +391,8 @@ func announce(name, what string, spent bool, reading func() string) string {
 	return text
 }
 
-// gaveUp ends a wait in t that the margin ended: it announces the failure, then fails t with the
-// same text.
-func gaveUp(t testing.TB, what string, spent bool, reading func() string) {
+// gaveUp ends a wait in t that gave up: it announces the failure, then fails t with the same text.
+func gaveUp(t testing.TB, what string, spent bool, waited, share time.Duration, reading func() string) {
 	t.Helper()
-	t.Fatalf("%s", announce(t.Name(), what, spent, reading))
+	t.Fatalf("%s", announce(t.Name(), what, spent, waited, share, reading))
 }

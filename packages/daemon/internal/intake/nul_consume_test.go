@@ -142,11 +142,13 @@ func runNULConsumers(t *testing.T, pool *pgxpool.Pool) (jetstream.JetStream, jet
 	admission := admit.New(records, engine, 10, nulProject, log)
 	// The window bounds the review's store read (whether its pull request is recorded) and is not
 	// the rows' subject: a fixed one let the machine decide whether a slow read was cut and its
-	// message delivered a second time, which these rows count. It is what is left of the test
-	// binary's deadline less 30 s (testwait.Remaining), so a read however slow is waited out.
+	// message delivered a second time, which these rows count. It is the whole of what is left of
+	// the test binary's deadline less 30 s (testwait.WholeRemaining, the whole rather than the
+	// share the rows' own waits take, so that the window outlasts them), so a read however slow
+	// is waited out.
 	consumers, err := intake.OpenConsumers(t.Context(), js, store.NewPool(pool), intake.ConsumerSpec{
 		Project: nulProject, Repositories: []ghrepo.Repository{ghrepo.MustParse(nulRepo)},
-		AckWait: testwait.Remaining(t), NakDelay: time.Second, Logger: log,
+		AckWait: testwait.WholeRemaining(t), NakDelay: time.Second, Logger: log,
 		ReviewPermission: func(context.Context, intake.PullRequestReview) (bool, error) { return true, nil },
 	})
 	if err != nil {
@@ -169,9 +171,9 @@ func runNULConsumers(t *testing.T, pool *pgxpool.Pool) (jetstream.JetStream, jet
 // test unless it delivered that message once and acknowledged it, with what the consumer logged.
 // A fact PostgreSQL refuses is naked and delivered again every NakDelay for as long as the
 // consumer runs, so the second delivery ends the wait with the redelivery counted, and the wait
-// has no bound of its own but what is left of the test binary's deadline less 30 s
+// has no bound of its own but a share of what is left of the test binary's deadline less 30 s
 // (testwait.Remaining): a fixed one let a slow store read fail the row. Its reads of the consumer
-// end there too (requestContext).
+// outlast that share (requestContext).
 func acknowledgedOnce(t *testing.T, stream jetstream.Stream, consumer string, seq uint64, logs *testlog.Buffer) {
 	t.Helper()
 	requests := requestContext(t)
@@ -194,10 +196,14 @@ func acknowledgedOnce(t *testing.T, stream jetstream.Stream, consumer string, se
 	}
 }
 
-// requestContext is the context of a row's own JetStream requests: it ends where the row's hang
-// guards end, the test binary's deadline less 30 s (testwait.Remaining), in place of the five
-// seconds nats.go gives a request whose context has no deadline (its defaultAPITimeout), so a NATS
-// server the machine holds is waited out and one that never answers fails the row by name.
+// requestContext is the context of a row's own JetStream requests, and it is the row's own wait: a
+// request that never answers holds the poll it is made in until this context ends, so the context
+// IS that wait's bound and takes its share (testwait.Remaining), not the whole. With the whole, a
+// NATS server that never answers held the row to the margin before the deadline and the tests
+// behind it lost their verdicts, which a tester measured: 30.01 s under -test.timeout 1m with the
+// sibling's verdict lost, against 7.52 s and the sibling passing with the share. It still replaces
+// the five seconds nats.go gives a request whose context has no deadline (its defaultAPITimeout),
+// so a server the machine holds is waited out and one that never answers fails the row by name.
 func requestContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
