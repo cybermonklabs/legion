@@ -68,6 +68,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		DesignNewsReconcile{},
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks,
+			WakeDetail: "head1 failed build"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100",
@@ -542,6 +544,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "a start naming a wake detail and no wake kind", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
+		{name: "a suspend naming a wake detail", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
 		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
 		{name: "an intake-gave-up notice naming none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1}, reason: "names between 1 and 1 of them, not 0"},
 		{name: "an intake-gave-up notice naming 101", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 150, GiveUps: noticeGiveUps(101)}, reason: "names between 1 and 100 of them, not 101"},
@@ -666,6 +670,36 @@ var phaseMoved = StateFieldChange{Field: StateFieldPhase, Old: json.RawMessage(`
 // stateChange is a state change of LEGION-208 in project, written by run, naming changes.
 func stateChange(project, run string, changes ...StateFieldChange) StateChange {
 	return StateChange{Project: project, Run: run, Issue: "LEGION-208", Changes: changes}
+}
+
+// A wake's start carries the wake's detail beside its kind (SuperviseRequest.WakeDetail), so a
+// cancel or a release's record can render its task again. A start that an earlier daemon queued
+// carries no `wakeDetail` key, and the outbox still decodes it, with the detail empty: the
+// decoder refuses an unknown key (DisallowUnknownFields), never a missing one. Both payloads are
+// spelled as the table holds them.
+func TestAWakeStartDecodesWithItsDetailAndWithout(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		want          SuperviseRequest
+	}{
+		{name: "this daemon's start, with the detail",
+			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","wakeKind":"checks","wakeDetail":"head1 failed build"}`,
+			want: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake",
+				WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build"}},
+		{name: "an earlier daemon's start, with no detail",
+			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","wakeKind":"checks"}`,
+			want:    SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeOutboxPayload(OutboxRow{ID: 7, Kind: OutboxKindSupervise, Issue: "LEGION-208", Payload: []byte(tc.payload)})
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload(%s) = %v, want it decoded", tc.payload, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("DecodeOutboxPayload(%s) = %#v, want %#v", tc.payload, got, tc.want)
+			}
+		})
+	}
 }
 
 // A pause's stop of a claim of another project's issue is keyed by the project, which the outbox

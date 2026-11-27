@@ -240,6 +240,9 @@ func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
 		// so a render with JetStream in an account of its own exports it once per edge machine
 		// until the edge listener moves under the root.
 		{"edge", edge(t, "m", "PRIV"), "", []string{"_INBOX_envoy_edge_m.>"}},
+		// A dotted machine id (R18) is one token of that prefix, spelled as the listener spells it,
+		// so the prefix a render exports for it is the spelled one, outside the root as well.
+		{"edge with a dotted machine id", edge(t, "host.example.internal", "PRIV"), "", []string{"_INBOX_envoy_edge_host%2Eexample%2Einternal.>"}},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -285,10 +288,11 @@ func outsideTheRoot(grant natsgrant.Permissions, transitional []string) []string
 // for entry. It is written by hand and never regenerated, so a change to Edge, or to a name it is
 // built from, fails here until the golden and that copy change with it.
 type edgeGolden struct {
-	MachineID string   `json:"machine_id"`
-	Projects  []string `json:"projects"`
-	Publish   []string `json:"publish"`
-	Subscribe []string `json:"subscribe"`
+	MachineID   string   `json:"machine_id"`
+	Projects    []string `json:"projects"`
+	Publish     []string `json:"publish"`
+	Subscribe   []string `json:"subscribe"`
+	PublishDeny []string `json:"publish_deny"`
 }
 
 // edge is natsgrant.Edge(machineID, projects), which must take the list.
@@ -299,7 +303,9 @@ func edge(t *testing.T, machineID string, projects ...string) natsgrant.Permissi
 	return grant
 }
 
-// The edge listener's grant is the golden, element for element and in order, with no deny list.
+// The edge listener's grant is the golden, element for element and in order. Its publish deny is
+// the listener's, Dispatch's lane and GitHub's lane (check l5 of dispatch://INFRA-3589), and it has
+// no subscribe deny.
 func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 	var golden edgeGolden
 	readJSON(t, "testdata/edge.golden.json", &golden)
@@ -307,7 +313,8 @@ func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 	require.Equal(t, []string{"PRIV"}, golden.Projects)
 	grant := edge(t, golden.MachineID, golden.Projects...)
 	requireSet(t, set{Publish: golden.Publish, Subscribe: golden.Subscribe}, grant, "Edge("+strconv.Quote(golden.MachineID)+", "+strings.Join(golden.Projects, ",")+")")
-	require.Empty(t, grant.PublishDeny)
+	require.Equal(t, []string{"notifications.dispatch.>", "notifications.github.>"}, golden.PublishDeny)
+	require.Equal(t, golden.PublishDeny, grant.PublishDeny)
 	require.Empty(t, grant.SubscribeDeny)
 }
 
@@ -318,8 +325,8 @@ func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 // create or update of the stream or of any bucket's stream, and no direct get of any bucket. In
 // subscribe: its own machine's inbox prefix in place of every
 // reply inbox, every session's relay subject and its own machine's relay receipts, and neither
-// role-lane queue group. So a change to Listener reaches Edge, and the golden above says that it
-// did.
+// role-lane queue group. Its publish deny is Listener's. So a change to Listener reaches Edge, and
+// the golden above says that it did.
 func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 	for _, id := range []string{"m", "example-hub"} {
 		require.Equal(t, "_INBOX_envoy_edge_"+id, natsgrant.EdgeInboxPrefix(id), "EdgeInboxPrefix(%q)", id)
@@ -341,7 +348,27 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 			}
 			require.Equal(t, append(own, kept...), edge.Publish, "Edge(%q, %v) publish", id, projects)
 			require.Equal(t, []string{"_INBOX_envoy_edge_" + id + ".>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply." + id + ".>"}, edge.Subscribe, "Edge(%q, %v) subscribe", id, projects)
+			require.Equal(t, listener.PublishDeny, edge.PublishDeny, "Edge(%q, %v) publish deny", id, projects)
 		}
+	}
+}
+
+// Check l16 of dispatch://INFRA-3589 (R18) for the edge: Edge takes a dotted machine id, such as a
+// fully qualified host name, and spells it in its inbox prefix and its receipt family as the
+// listener spells it in its durable (bus.ListenerSpelling): each dot as %2E, so each name is one
+// subject token. An id that holds none of the characters the spelling escapes keeps its prefix
+// byte for byte, so a deployed edge's prefix does not move.
+func TestADottedEdgeMachineIDIsOneTokenInEachEdgeName(t *testing.T) {
+	const id, spelled = "host.example.internal", "host%2Eexample%2Einternal"
+	require.Equal(t, "_INBOX_envoy_edge_"+spelled, natsgrant.EdgeInboxPrefix(id))
+	require.Equal(t, "notifications.envoy.relayreply."+spelled, natsgrant.EdgeRelayReplyPrefix(id))
+	grant := edge(t, id, "PRIV")
+	require.Equal(t, []string{"_INBOX_envoy_edge_" + spelled + ".>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply." + spelled + ".>"}, grant.Subscribe)
+	require.Contains(t, grant.Publish, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS."+bus.ListenerDurable(id))
+	require.Equal(t, "listener-"+spelled, bus.ListenerDurable(id))
+	for _, plain := range []string{"m", "example-hub", "edge_a-1", "EDGE"} {
+		require.Equal(t, "_INBOX_envoy_edge_"+plain, natsgrant.EdgeInboxPrefix(plain), "EdgeInboxPrefix(%q)", plain)
+		require.Equal(t, "notifications.envoy.relayreply."+plain, natsgrant.EdgeRelayReplyPrefix(plain), "EdgeRelayReplyPrefix(%q)", plain)
 	}
 }
 
@@ -350,10 +377,11 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 // a subject the other names. Each publishes the other's receipt, as the listener serving a
 // session's relay socket answers on the family of the machine holding the session's consumer. A
 // machine whose id begins another's (edge-a, edge-ab) is no exception, since a NATS wildcard
-// matches whole tokens. The other machine's own entries match the same subjects, which shows the
-// matcher finds one.
+// matches whole tokens, and nor is one whose id is another's and a dotted suffix (edge-a,
+// edge-a.internal), since the spelling makes the dotted id one token. The other machine's own
+// entries match the same subjects, which shows the matcher finds one.
 func TestEachEdgeMachineHoldsItsOwnInboxesAndReceipts(t *testing.T) {
-	for _, pair := range [][2]string{{"edge-a", "edge-b"}, {"edge-a", "edge-ab"}} {
+	for _, pair := range [][2]string{{"edge-a", "edge-b"}, {"edge-a", "edge-ab"}, {"edge-a", "edge-a.internal"}, {"edge-a.internal", "edge-a"}} {
 		a, b := edge(t, pair[0], "PRIV"), edge(t, pair[1], "PRIV")
 		inboxOfB := natsgrant.EdgeInboxPrefix(pair[1]) + ".nuid"
 		receiptOfB := natsgrant.EdgeRelayReplyPrefix(pair[1]) + ".nuid"
@@ -368,17 +396,21 @@ func TestEachEdgeMachineHoldsItsOwnInboxesAndReceipts(t *testing.T) {
 	}
 }
 
-// Edge refuses, naming why and building no subject, a machine id that is not one subject token,
-// whose prefixes would cover or share another machine's (a.b's inbox is under a's, and a space is
-// no token), and a project list it cannot name: none, which would render the whole consumer and
-// key-value reach serving no project, or one oauthwire.ValidProjects refuses (a wildcard here;
-// its own tests read every rule).
+// Edge refuses, naming why and building no subject, a machine id whose prefixes would share
+// another machine's: a space, which the spelling writes as a hyphen, and one holding the escape
+// character '%' (a%2Eb would spell as a.b does). It also refuses what a BROKER_NATS_SERVICES entry
+// refuses (natsgrant.MachineIDToken): a wildcard and an empty id. It takes a dotted id, which the
+// spelling makes one token. It refuses a project list it cannot name: none, which would render the
+// whole consumer and key-value reach serving no project, or one oauthwire.ValidProjects refuses (a
+// wildcard here; its own tests read every rule).
 func TestTheEdgeGrantRefusesAMachineOrProjectsItCannotName(t *testing.T) {
-	for _, machineID := range []string{"a.b", "example hub", "*", ">", ""} {
+	for _, machineID := range []string{"example hub", "*", ">", "", "a%2Eb"} {
 		grant, err := natsgrant.Edge(machineID, []string{"PRIV"})
 		require.ErrorContains(t, err, strconv.Quote(machineID), "Edge(%q, [PRIV])", machineID)
 		require.Equal(t, natsgrant.Permissions{}, grant)
 	}
+	_, err := natsgrant.Edge("a.b", []string{"PRIV"})
+	require.NoError(t, err, "Edge(a.b, [PRIV])")
 	for name, projects := range map[string][]string{"no list": nil, "an empty list": {}, "a wildcard": {"*"}} {
 		grant, err := natsgrant.Edge("m", projects)
 		require.Error(t, err, "Edge(m, %s)", name)
@@ -539,8 +571,8 @@ func TestNamesSystemSubject(t *testing.T) {
 
 // grantTable is every grant this package builds, keyed by the call that builds it: the function's
 // name, with its argument in parentheses where it takes one. TestTheGrantTableNamesEveryGrant holds
-// it to natsgrant.go's declarations, so a new grant function fails that test until it is listed
-// here, and every test that walks the table walks the new grant too.
+// it to the declarations of the package's non-test files, so a new grant function fails that test
+// until it is listed here, and every test that walks the table walks the new grant too.
 func grantTable(t *testing.T) map[string]natsgrant.Permissions {
 	t.Helper()
 	session, err := natsgrant.Session("ses_a")
@@ -557,6 +589,8 @@ func grantTable(t *testing.T) map[string]natsgrant.Permissions {
 	}
 	for _, id := range []string{"example-host-a", "example-dispatch", "example-hub"} {
 		grants["Listener("+id+")"] = natsgrant.Listener(id)
+		grants["WebhookListener("+id+")"] = natsgrant.WebhookListener(id)
+		grants["WebhookListenerHost("+id+")"] = natsgrant.WebhookListenerHost(id)
 		grants["ListenerHost("+id+")"] = natsgrant.ListenerHost(id)
 		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id)
 		grants["Host("+id+")"] = natsgrant.Host(id)
@@ -565,31 +599,41 @@ func grantTable(t *testing.T) map[string]natsgrant.Permissions {
 	return grants
 }
 
-// Every exported function natsgrant.go declares that returns Permissions, read from the source by
-// go/ast, has a row in grantTable, and every row names one of them: a grant added to the package
-// is walked by every test that reads the table, or this test names it.
+// Every exported function a non-test .go file of the package declares that returns Permissions,
+// read from the source by go/ast, has a row in grantTable, and every row names one of them: a grant
+// added to the package, in natsgrant.go or in a file beside it such as lanes.go, is walked by every
+// test that reads the table, or this test names it.
 func TestTheGrantTableNamesEveryGrant(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "natsgrant.go", nil, 0)
+	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
-	declared := map[string]bool{}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Results == nil {
+	files := token.NewFileSet()
+	declared := map[string]string{}
+	for _, entry := range entries {
+		path := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		if result, ok := fn.Type.Results.List[0].Type.(*ast.Ident); ok && result.Name == "Permissions" {
-			declared[fn.Name.Name] = true
+		file, err := parser.ParseFile(files, path, nil, 0)
+		require.NoError(t, err)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Results == nil {
+				continue
+			}
+			if result, ok := fn.Type.Results.List[0].Type.(*ast.Ident); ok && result.Name == "Permissions" {
+				declared[fn.Name.Name] = path
+			}
 		}
 	}
-	require.NotEmpty(t, declared, "natsgrant.go declares no grant function: the reading enumerated nothing")
+	require.NotEmpty(t, declared, "the package's files declare no grant function: the reading enumerated nothing")
 	listed := map[string]bool{}
 	for call := range grantTable(t) {
 		name, _, _ := strings.Cut(call, "(")
-		require.True(t, declared[name], "grantTable lists %s, which natsgrant.go does not declare as a grant", call)
+		require.NotEmpty(t, declared[name], "grantTable lists %s, which no file of the package declares as a grant", call)
 		listed[name] = true
 	}
-	for name := range declared {
-		require.True(t, listed[name], "natsgrant.go declares the grant %s, which grantTable does not list", name)
+	for name, path := range declared {
+		require.True(t, listed[name], "%s declares the grant %s, which grantTable does not list", path, name)
 	}
 }
 

@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `BUS_UNANSWERED_PREFIX` holds the words that open the error of every 503 the Envoy listener
+  answers when its message bus did not answer, and `bun run gen:go` writes it into Go as
+  `contracts.BusUnansweredPrefix`, which the listener writes and envoy-client's `isBusUnanswered`
+  reads.
+time: 2026-11-18T01:14:29Z
+custom:
+    Issue: pr4194

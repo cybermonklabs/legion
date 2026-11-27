@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -192,9 +191,6 @@ func (r *legionAgentRegistry) serving(w http.ResponseWriter) (*legionagents.Stor
 	return state.store, true
 }
 
-// legionAgentBodyLimit bounds the body of a Legion agent registry write, one entry or a batch.
-const legionAgentBodyLimit = 1 << 20
-
 // legionAgentBatchFailure is a batch write that failed after some entries may have been written
 // (legionagents.PartialWriteError): written counts those, and every write is idempotent, so the
 // caller sends the batch again once the failure is one to retry.
@@ -268,23 +264,6 @@ func writeLegionAgentError(w http.ResponseWriter, err error) {
 	writeJSONError(w, status, message)
 }
 
-// decodeLegionAgentBody decodes a registry write's body into into, answering a body past
-// legionAgentBodyLimit 413 and one that is not JSON 400. It reports whether the handler goes on.
-func decodeLegionAgentBody(w http.ResponseWriter, r *http.Request, into any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, legionAgentBodyLimit)
-	err := json.NewDecoder(r.Body).Decode(into)
-	var tooLarge *http.MaxBytesError
-	switch {
-	case errors.As(err, &tooLarge):
-		writeJSONError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("the body is past %d bytes", legionAgentBodyLimit))
-		return false
-	case err != nil:
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
-		return false
-	}
-	return true
-}
-
 // legionAgentSessionHandler serves /v1/legion/agents/sessions/<session_id>. GET answers the
 // session's entry, its replacement within its role token and whether it is live, or
 // `404 {"error":"unknown legion agent <id>"}` when the bucket holds no entry for it. PUT records the
@@ -337,7 +316,7 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 				return
 			}
 			var entry legionagents.Entry
-			if !decodeLegionAgentBody(w, r, &entry) {
+			if !decodeAPIBody(w, r, &entry) {
 				return
 			}
 			if entry.SessionID != sessionID {
@@ -395,10 +374,10 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 
 // legionAgentsHandler serves /v1/legion/agents. GET ?issue=<KEY> answers every session of the
 // issue, by role in workflow order, then newest first, `[]` when none. PUT records a batch,
-// `{"entries":[…]}` of at most legionagents.MaxBatch entries in a body of at most
-// legionAgentBodyLimit bytes, all validated and checked before the first write, so one bad entry
-// refuses the batch with nothing written. A batch that fails after that answers how many entries
-// were written (writeLegionAgentError).
+// `{"entries":[…]}` of at most legionagents.MaxBatch entries in a body of at most apiBodyLimit
+// bytes, all validated and checked before the first write, so one bad entry refuses the batch
+// with nothing written. A batch that fails after that answers how many entries were written
+// (writeLegionAgentError).
 func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -433,7 +412,7 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 			var body struct {
 				Entries []legionagents.Entry `json:"entries"`
 			}
-			if !decodeLegionAgentBody(w, r, &body) {
+			if !decodeAPIBody(w, r, &body) {
 				return
 			}
 			if body.Entries == nil {
