@@ -1264,15 +1264,14 @@ the bound of what it lets through - on a page whose own region drew fewer than 1
 the route's own `minElements`), and on an entry whose route, state and width it measured and
 which its reading did not match exactly; and
 `e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route or a state the rows
-never read; the type `LayoutWidth` holds its width to the five the rows read. That list holds the
-breaches main still has, in one array per INFRA-5200 fix pull request (the issue page's, the
-Inbox's and the other pages'); each fix pull request deletes every entry of its own array and
-leaves it empty, so the three merge in any order, and the list and its use go once all three are
-empty.
+never read; the type `LayoutWidth` holds its width to the five the rows read. That list is empty
+since INFRA-5200's three fix pull requests landed, so every breach a reading finds fails its row;
+an entry is the only way to let one through, and a fixed breach leaves the list in the change
+that fixes it.
 
-Point 5 of the rule moves a header's properties into Details; a list row, a card, a table cell, a
-settings row and a status bar keep the marks they show, because a reader chooses an item by them
-(dispatch://INFRA-5200/artifact/decisions-md).
+Point 5 of the layout rule in `web/src/AGENTS.md` moves a header's properties into Details; a list
+row, a card, a table cell, a settings row and a status bar keep the marks they show, because a
+reader chooses an item by them (dispatch://INFRA-5200/artifact/decisions-md).
 
 ## Phone check
 

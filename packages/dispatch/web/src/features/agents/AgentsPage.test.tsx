@@ -1010,9 +1010,9 @@ test("Agents draws four counted groups, the empty ones among them", async () => 
   }
 });
 
-// INFRA-5200's layout rule: a group whose length comes from data shows ten entries, then one
-// "+N" that shows the rest in place, and folds them back. A session's roles and the composer's
-// recipients are two such groups; each keeps every entry one press away.
+// The Layout rule (`web/src/AGENTS.md`), point 3: a group whose length comes from data shows ten
+// entries, then one "+N" that shows the rest in place, and folds them back. A session's roles and
+// the composer's recipients are two such groups; each keeps every entry one press away.
 test("an Agents row shows ten roles and a +N for the rest, and the composer ten recipients", async () => {
   const user = userEvent.setup();
   const roles = Array.from({ length: 14 }, (_, index) => `role-${index + 1}`);
@@ -1050,9 +1050,9 @@ test("an Agents row shows ten roles and a +N for the rest, and the composer ten 
   }
 });
 
-// INFRA-5200's rule, point 6: the recipients the reader opened past their "+N" stay open when an
-// agent list that comes back empty takes the composer away while the selection stands, and the
-// composer comes back with the list.
+// The Layout rule (`web/src/AGENTS.md`), point 6: the recipients the reader opened past their
+// "+N" stay open when an agent list that comes back empty takes the composer away while the
+// selection stands, and the composer comes back with the list.
 test("the composer's opened recipients are still open after an empty agent list takes it away and it comes back", async () => {
   const user = userEvent.setup();
   const crowd: Agent[] = Array.from({ length: 12 }, (_, index) => ({
@@ -5403,9 +5403,9 @@ test("a row the reader opened keeps its draft when the window scrolls past it", 
   }
 });
 
-// INFRA-5200's rule, point 6: a row's roles the reader opened past their "+N" stay open when
-// the window stops drawing the row and draws it again. The row is not opened, so the window
-// unmounts it with the scroll; the page, not the row, holds the roles' state.
+// The Layout rule (`web/src/AGENTS.md`), point 6: a row's roles the reader opened past their
+// "+N" stay open when the window stops drawing the row and draws it again. The row is not opened,
+// so the window unmounts it with the scroll; the page, not the row, holds the roles' state.
 test("a row's opened roles are still open when the window scrolls past the row and back", async () => {
   const user = userEvent.setup();
   const roles = Array.from({ length: 14 }, (_, index) => `role-${index + 1}`);

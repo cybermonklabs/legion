@@ -274,8 +274,8 @@ test("group members link to their live conversations, an untitled one by its sho
   }
 });
 
-// INFRA-5200's rule, point 3: a group's sessions are a list as long as its data, so the group
-// shows ten chips, each with its ✕, and one "+N" that shows the rest in place.
+// The Layout rule (`web/src/AGENTS.md`), point 3: a group's sessions are a list as long as its
+// data, so the group shows ten chips, each with its ✕, and one "+N" that shows the rest in place.
 test("a group shows ten of its sessions and a +N that shows the rest", async () => {
   const user = userEvent.setup();
   const sessions = Array.from({ length: 12 }, (_, index) => `member-${index + 1}`);
@@ -293,8 +293,9 @@ test("a group shows ten of its sessions and a +N that shows the rest", async () 
   }
 });
 
-// INFRA-5200's rule, point 6: a group the reader opened past its "+N" stays open when the group
-// changes: a write moves its `updated_at`, and the editor, not the card, keeps the reader's choice.
+// The Layout rule (`web/src/AGENTS.md`), point 6: a group the reader opened past its "+N" stays
+// open when the group changes: a write moves its `updated_at`, and the editor, not the card,
+// keeps the reader's choice.
 test("a group's opened sessions stay open after a member past the tenth is removed", async () => {
   const user = userEvent.setup();
   const sessions = Array.from({ length: 12 }, (_, index) => `member-${index + 1}`);
@@ -315,9 +316,9 @@ test("a group's opened sessions stay open after a member past the tenth is remov
   }
 });
 
-// INFRA-5200's rule, point 6: a change to the group from elsewhere - a member removed, another
-// tab's rename - redraws its card in place and keeps the reader's rename draft. With no draft,
-// the field shows the group's name as it now stands.
+// The Layout rule (`web/src/AGENTS.md`), point 6: a change to the group from elsewhere - a
+// member removed, another tab's rename - redraws its card in place and keeps the reader's rename
+// draft. With no draft, the field shows the group's name as it now stands.
 test("a group's rename draft survives a change to the group, and with no draft the field follows a rename", async () => {
   const user = userEvent.setup();
   const other: DeliverySessionGroup = { ...crew, id: "2", name: "Night crew", sessions: ["s3"] };

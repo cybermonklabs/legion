@@ -415,8 +415,8 @@ test("board cards carry the unread dot the project list shows", async ({ browser
   }
 });
 
-// INFRA-5200's layout rule, point 2: a card's title with no break in it - a pasted address -
-// wraps inside the card, so neither it nor the card runs past the column.
+// The Layout rule (`web/src/AGENTS.md`), point 2: a card's title with no break in it - a
+// pasted address - wraps inside the card, so neither it nor the card runs past the column.
 test("a board card's title with no break in it wraps inside the card", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const title = `https://example.com/${"platform".repeat(9)}`;

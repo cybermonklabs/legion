@@ -245,8 +245,8 @@ test("opening a Labels facet does not pass its values through another column's f
   expect(screen.getByRole("option", { name: "frontend, 1 issue" })).toBeDefined();
 });
 
-// INFRA-5200's rule, point 2: a label with no break in it shortens inside its own pill, with the
-// whole label as its title, rather than running past the Labels cell.
+// The Layout rule (`web/src/AGENTS.md`), point 2: a label with no break in it shortens inside its
+// own pill, with the whole label as its title, rather than running past the Labels cell.
 test("a long label shortens to an ellipsis inside its pill, with the whole label as its title", async () => {
   const long = "dispatchlayoutruleaverylonglabelnobreak1";
   table([issue("CORE-1", { labels: [long] })]);
@@ -256,9 +256,9 @@ test("a long label shortens to an ellipsis inside its pill, with the whole label
   expect(words.className).toContain("truncate");
 });
 
-// INFRA-5200's rule, point 3: a row's labels are a list as long as the issue's data, so the cell
-// shows ten and one "+N" that shows the rest in place. A row the search hides and shows again is
-// drawn from nothing, and the labels the reader opened are still open.
+// The Layout rule (`web/src/AGENTS.md`), point 3: a row's labels are a list as long as the
+// issue's data, so the cell shows ten and one "+N" that shows the rest in place. A row the search
+// hides and shows again is drawn from nothing, and the labels the reader opened are still open.
 test("a row shows ten of its labels and a +N, and its opened labels stay open when the row is drawn again", async () => {
   const user = userEvent.setup();
   const labels = Array.from({ length: 13 }, (_, index) => `label-${index + 1}`);

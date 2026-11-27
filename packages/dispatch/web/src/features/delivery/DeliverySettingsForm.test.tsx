@@ -313,8 +313,9 @@ test("a refused save shows the server's message as it wrote it, and the draft st
   }
 });
 
-// INFRA-5200's rule, point 6: another writer's save changes the record under the form. The field
-// the reader changed keeps what they typed, and the fields they did not touch take the new record.
+// The Layout rule (`web/src/AGENTS.md`), point 6: another writer's save changes the record under
+// the form. The field the reader changed keeps what they typed, and the fields they did not touch
+// take the new record.
 test("another writer's save keeps the fields the reader changed and refreshes the rest", async () => {
   const user = userEvent.setup();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

@@ -72,11 +72,11 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
  * says how a table action went; an interrupted action's Finish and Dismiss; the warning that an
  * epic's creation got no answer, with Dismiss; and the warning that an epic of that title exists,
  * with Create anyway and Cancel new epic), Table (the rows, in their own box that scrolls
- * sideways with its key columns pinned at the left, the data-table exception of the layout rule,
- * then the pager) and, while rows are ticked, Selection (`IssueTableSelection`, over the page
- * rather than in it). The action dialogs open over it. Each group lays out its own entries; which
- * rows' labels the reader opened is the table's (`OpenedLabelsContext`), since a row the window
- * stops drawing loses its own state.
+ * sideways with its key columns pinned at the left, the data-table exception of the Layout rule
+ * in `web/src/AGENTS.md`, then the pager) and, while rows are ticked, Selection
+ * (`IssueTableSelection`, over the page rather than in it). The action dialogs open over it.
+ * Each group lays out its own entries; which rows' labels the reader opened is the table's
+ * (`OpenedLabelsContext`), since a row the window stops drawing loses its own state.
  */
 export function IssuesTable({
   empty,

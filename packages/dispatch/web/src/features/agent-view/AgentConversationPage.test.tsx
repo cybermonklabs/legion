@@ -3120,9 +3120,10 @@ test("one row under the message box holds the delivery picker, the machine, the 
   ).toEqual(["agent-composer", "agent-composer-footer"]);
 });
 
-// INFRA-5200's rule, point 2: the row's facts give way one whole group at a time. The model and
-// thinking pickers are one group, Session: they sit in one flex item of the facts, so a row too
-// narrow for both moves them to the next line together, never the thinking picker alone.
+// The Layout rule (`web/src/AGENTS.md`), point 2: the row's facts give way one whole group at a
+// time. The model and thinking pickers are one group, Session: they sit in one flex item of the
+// facts, so a row too narrow for both moves them to the next line together, never the thinking
+// picker alone.
 test("the model and thinking pickers are one flex item of the row's facts", async () => {
   await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
 
@@ -3205,10 +3206,10 @@ test("a rebuild from a replay that cleared the window after its reading draws no
   expect(within(screen.getByTestId("agent-thread")).getByText("Before the rotation.")).toBeTruthy();
 });
 
-// INFRA-5200's rule, point 6: a panel the reader opened is the reader's. A clearing frame leaves
-// the ring's open panel open, saying the window is not reported, and the next reading fills it.
-// Closed by the reader, the ring goes with the reading, and a later reading draws it closed: a
-// panel never opens by itself (INFRA-812's R1).
+// The Layout rule (`web/src/AGENTS.md`), point 6: a panel the reader opened is the reader's. A
+// clearing frame leaves the ring's open panel open, saying the window is not reported, and the
+// next reading fills it. Closed by the reader, the ring goes with the reading, and a later
+// reading draws it closed: a panel never opens by itself (INFRA-812's R1).
 test("a clearing frame leaves the ring's open panel open and saying so, the next reading fills it, and a closed ring stays closed", async () => {
   const user = userEvent.setup();
   const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);

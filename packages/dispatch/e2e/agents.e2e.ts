@@ -735,8 +735,9 @@ test("on a phone the top bar keeps its counts on one line, and New replies opens
   }
 });
 
-// INFRA-5200's layout rule, point 2: a role with no break in it shortens to an ellipsis inside
-// its own pill, with the whole role as its title, so it never runs past its row at 360 px.
+// The Layout rule (`web/src/AGENTS.md`), point 2: a role with no break in it shortens to an
+// ellipsis inside its own pill, with the whole role as its title, so it never runs past its row
+// at 360 px.
 test("a role with no break in it ends in an ellipsis inside its pill and stays inside its row at 360 px", async ({
   browser,
 }) => {

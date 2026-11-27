@@ -1157,7 +1157,8 @@ function textNode(words: string): string {
  *  and the header's pill inside it. Inside, each of the page's words is built from its list
  *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string, the holder's name
  *  sits in `TruncatedText` (dispatch://INFRA-5200), whose `title` is the whole name, and the pill
- *  holds two groups, Holder and Since, in the shape that wraps (INFRA-5200's layout rule). */
+ *  holds two groups, Holder and Since, in the shape that wraps (the Layout rule of
+ *  `web/src/AGENTS.md`). */
 const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, readonly string[]>>>> =
   {
     inside: {

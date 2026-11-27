@@ -190,8 +190,8 @@ test("board cards show the unread dot when events are newer than the viewer's la
   }
 });
 
-// INFRA-5200's rule, point 3: a card's labels are a list as long as the issue's data, so the
-// card shows ten and one "+N" that shows the rest in place.
+// The Layout rule (`web/src/AGENTS.md`), point 3: a card's labels are a list as long as the
+// issue's data, so the card shows ten and one "+N" that shows the rest in place.
 test("a board card shows ten of its labels and a +N that shows the rest", async () => {
   const user = userEvent.setup();
   const labels = Array.from({ length: 12 }, (_, index) => `label-${index + 1}`);
@@ -210,9 +210,9 @@ test("a board card shows ten of its labels and a +N that shows the rest", async 
   }
 });
 
-// INFRA-5200's rule, point 6: a card's labels the reader opened stay open when the card moves to
-// another column - another reader's write, which draws the card again in its new column. The
-// board, not the card, keeps the reader's choice, by issue key.
+// The Layout rule (`web/src/AGENTS.md`), point 6: a card's labels the reader opened stay open
+// when the card moves to another column - another reader's write, which draws the card again in
+// its new column. The board, not the card, keeps the reader's choice, by issue key.
 test("a board card's opened labels stay open after the card moves to another column", async () => {
   const user = userEvent.setup();
   const labels = Array.from({ length: 12 }, (_, index) => `label-${index + 1}`);

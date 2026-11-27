@@ -257,9 +257,9 @@ test("any other failure of the source lookup is shown, never silently turned int
   }
 });
 
-// INFRA-5200's rule, point 6: on Issues, the Architecture tab exists only once the source read
-// says there is a source, so Navigation says the read is still out, or that it failed and can be
-// retried, rather than gaining a tab from a read the reader never saw.
+// The Layout rule (`web/src/AGENTS.md`), point 6: on Issues, the Architecture tab exists only
+// once the source read says there is a source, so Navigation says the read is still out, or that
+// it failed and can be retried, rather than gaining a tab from a read the reader never saw.
 test("on Issues, Navigation says the source read is pending, or failed with a Retry that brings the Architecture tab", async () => {
   const user = userEvent.setup();
   const pending = renderPage("/projects/CORE/issues", undefined, "alice", [], "pending");

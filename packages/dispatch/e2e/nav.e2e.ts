@@ -80,8 +80,8 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
   }
 });
 
-// INFRA-5200's layout rule, point 2: a project's name with no break in it wraps inside its rail
-// entry, so the rail never scrolls sideways and the entry's count keeps its place.
+// The Layout rule (`web/src/AGENTS.md`), point 2: a project's name with no break in it wraps
+// inside its rail entry, so the rail never scrolls sideways and the entry's count keeps its place.
 test("a project name with no break in it wraps inside its rail entry", async ({ browser }) => {
   const name = `Platform${"Infrastructure".repeat(5)}`;
   await createProject({ key: "LONG", name });
