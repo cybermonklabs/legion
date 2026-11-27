@@ -14,10 +14,12 @@
 #
 # It fixes the terms of the outputs the sibling children of dispatch://INFRA-3411 add, each with
 # the job it gates (dispatch://INFRA-5794/spec#b-r8): daemon_live and agent_harness held, lifted on
-# a pull request by full-ci or lane:<own name> alone; kind on no pull request whatever the labels,
-# and on a merge group or a dispatch its filter selects, or on every-job. A copy of ci.yaml with the
-# three written so passes, a kind written as a held output and an agent_harness lifted by
-# lane:agent-harness fail, and this ci.yaml is held to the same terms for each of the three it has.
+# a pull request by full-ci or lane:<own name> alone, and named as that label names them, with an
+# underscore; kind on no pull request whatever the labels, and on a merge group or a dispatch its
+# filter selects, or on every-job. A copy of ci.yaml with the three written so passes; a kind
+# written as a held output, an agent_harness lifted by lane:agent-harness, a daemon_live lifted by
+# lane:agent_harness and an agent_harness written agent-harness, as 97c620377c names it, each fail,
+# naming the output; and this ci.yaml is held to the same terms for each of the three it has.
 #
 # It holds a dispatched run's selection and the workflow's cancel key the same way, through the
 # changes job's own steps and the workflow's own `concurrency:`
@@ -209,16 +211,25 @@ PY
 # and `absent: <name>` for each of them the workflow's changes job does not have yet, since each
 # sibling adds its own output with the job it gates. daemon_live and agent_harness are held: on a
 # pull request each is true only where its filter says yes and the pull request carries full-ci or
-# lane:<its own name>. kind runs on no pull request whatever the labels, and in a merge group and a
-# dispatch of a branch where its filter says yes, or on every-job.
+# lane:<its own name>, so the other's label alone leaves it off. That label names each with an
+# underscore, so an output the changes job writes daemon-live or agent-harness, as 97c620377c wrote
+# them, is a fault, not an absent output. kind runs on no pull request whatever the labels, and in
+# a merge group and a dispatch of a branch where its filter says yes, or on every-job.
 sibling_terms() {
-  local workflow=$1 file=$2 name verdicts
+  local workflow=$1 file=$2 name dashed listed other verdicts
   verdict_of() { value "$("$script_dir/ci_router_outputs.py" "$workflow" --filters "$file" "$@" | sort)" "$name"; }
+  # Every output of the changes job, under the name it writes it, in one evaluation; a workflow the
+  # reader refuses is a line naming it, so no case reads a refusal as nothing to report.
+  listed=$("$script_dir/ci_router_outputs.py" "$workflow" --filters "$file" --event pull_request --verdicts false) \
+    || { echo "ci_router_outputs.py refuses $workflow"; return 0; }
   for name in daemon_live agent_harness kind; do
-    if [ -z "$(verdict_of --event pull_request --verdicts false)" ]; then
+    dashed=${name//_/-}
+    if [ "$dashed" != "$name" ] && grep -q "^$dashed=" <<<"$listed"; then
+      echo "$name: the changes job writes it as $dashed, which lane:$name does not name"
+    elif ! grep -q "^$name=" <<<"$listed"; then
       echo "absent: $name"
-      continue
     fi
+    grep -q "^$name=" <<<"$listed" || continue
     verdicts=(--verdicts false --verdict "$name=true")
     [ "$(verdict_of --event merge_group "${verdicts[@]}")" = true ] || echo "$name: a merge group its filter selects leaves it off"
     [ "$(verdict_of --event merge_group --verdicts false)" = false ] || echo "$name: a merge group its filter does not select turns it on"
@@ -242,6 +253,10 @@ sibling_terms() {
       || echo "$name: lane:$name turns it on where its filter says no"
     [ "$(verdict_of --event pull_request "${verdicts[@]}" --label lane:envoy_go)" = false ] \
       || echo "$name: another held output's label, lane:envoy_go, turns it on"
+    other=daemon_live
+    [ "$name" != daemon_live ] || other=agent_harness
+    [ "$(verdict_of --event pull_request "${verdicts[@]}" --label "lane:$other")" = false ] \
+      || echo "$name: the other sibling's label, lane:$other, turns it on"
   done
 }
 
@@ -271,10 +286,22 @@ got=$(sibling_terms "$broken" "$sibling_filters")
 check "full-ci and lane:kind turn it on, and say so" \
   "$(is "$(grep '^kind: ' <<<"$got" | tr '\n' '|')" "kind: a pull request under full-ci its filter selects turns it on|kind: a pull request under lane:kind its filter selects turns it on|")"
 
-echo "case: an agent_harness lifted by lane:agent-harness, as 97c620377c's agent-harness was, fails its lane row"
+echo "case: an agent_harness lifted by lane:agent-harness, a label with a dash, fails its lane row"
 broken=$(copy_with "$work/siblings-dashed" ci.yaml "$ref_line" "$(held_term agent_harness lane:agent-harness)"$'\n'"$ref_line")
 got=$(sibling_terms "$broken" "$sibling_filters")
 check "lane:agent_harness leaves it off, and says so" "$(is "$(grep '^agent_harness: ' <<<"$got")" "agent_harness: lane:agent_harness leaves it off")"
+
+echo "case: a daemon_live lifted by lane:agent_harness, the other sibling's label, fails naming daemon_live"
+broken=$(copy_with "$work/siblings-crossed" ci.yaml "$ref_line" "$(held_term daemon_live lane:agent_harness)"$'\n'"$ref_line")
+got=$(sibling_terms "$broken" "$sibling_filters")
+check "lane:daemon_live leaves it off and lane:agent_harness turns it on, and it says so" \
+  "$(is "$(grep '^daemon_live: ' <<<"$got" | tr '\n' '|')" "daemon_live: lane:daemon_live leaves it off|daemon_live: the other sibling's label, lane:agent_harness, turns it on|")"
+
+echo "case: an agent_harness written agent-harness, as 97c620377c names it, lifted by lane:agent_harness, fails naming both names"
+broken=$(copy_with "$work/siblings-dashed-name" ci.yaml "$ref_line" "$(held_term agent-harness lane:agent_harness)"$'\n'"$ref_line")
+got=$(sibling_terms "$broken" "$sibling_filters")
+check "the label names no output of the changes job, and it says so rather than calling agent_harness absent" \
+  "$(is "$(grep -E '^(agent_harness: |absent: agent_harness$)' <<<"$got")" "agent_harness: the changes job writes it as agent-harness, which lane:agent_harness does not name")"
 
 echo "case: an output whose full-ci literal is broken stays in the set and fails the full-ci case"
 broken=$(copy_with "$work/no-full-ci" ci.yaml \

@@ -2075,7 +2075,6 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     # not on itself: the steps that ready a gated step (a cache restore, a sysctl, a fetch) share
     # its gate and read nothing the gated step's gate does not declare.
     claimed_jobs = {(g.filter, g.job) for g in data.GATES}
-    claimed_steps = {(g.filter, g.job, g.workflow) for g in data.GATES}
     for own, path, job_id, _, job in units:
         for step, condition in conditions(job):
             resolved = resolve_condition(condition, inputs_of.get((path, own), {}))
@@ -2107,7 +2106,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                                                 f"declares a gate of {name} for job {job_id} (the gates of {name} "
                                                 f"name {', '.join(declaring)}), so nothing holds what job {job_id} "
                                                 f"reads; add its gate file with its reads"))
-                elif step is not None and (name, own, path) not in claimed_steps and (name, own) not in claimed_jobs:
+                elif step is not None and (name, own) not in claimed_jobs:
                     refused.add((path, where, name, "claim"))
                     problems.append(error(path, f"{where} is gated on filter {name}, but no file of {GATES_DIR} "
                                                 f"declares a gate of {name} for job {own}'s steps in {path}, so "
