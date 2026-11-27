@@ -167,6 +167,12 @@ func TestASmithyRequestBodyClosedFirstStillFailsWriteTo(t *testing.T) {
 
 // heldWrite is a client connection that holds the write carrying the request body's last byte,
 // after the byte has gone, until letGo, and reports its own Close.
+//
+// It records the hold BEFORE it writes those bytes. Recorded after the write, the record raced
+// the answer: on a loopback connection the server can read the body, answer, and the operation's
+// deserialize step can call letGo, all before this goroutine takes the lock - and letGo, seeing
+// no hold, returned at once and recorded nothing, so the test read "net/http never reported the
+// request written" of a call that was answered (envoy-go leg 5, job 140701813316).
 type heldWrite struct {
 	net.Conn
 	release chan struct{}
@@ -181,15 +187,15 @@ type heldWrite struct {
 }
 
 func (c *heldWrite) Write(p []byte) (int, error) {
-	n, err := c.Conn.Write(p)
 	c.mu.Lock()
-	c.tail = append(c.tail, p[:n]...)
+	c.tail = append(c.tail, p...)
 	if len(c.tail) > len(endMark) {
 		c.tail = c.tail[len(c.tail)-len(endMark):]
 	}
 	hold := !c.held && string(c.tail) == endMark
 	c.held = c.held || hold
 	c.mu.Unlock()
+	n, err := c.Conn.Write(p)
 	if hold {
 		select {
 		case <-c.release:
