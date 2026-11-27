@@ -67,10 +67,12 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
   [--reading-models <file>] [--limits <file>] [--build-summary <file>]... \
-  [--again <case id>]... [--confirm-flagged] \
-  [--allow-runners <digest>[,<digest>...]] [--store-only <file>] [--route-id <arm>=<uuid>]...
+  [--again <case id>]... [--confirm-flagged] [--control-informative] \
+  [--allow-runners <digest>[,<digest>...]] [--store-only <file>] [--merged] \
+  [--route-id <arm>=<uuid>]...
                                  (--again, --confirm-flagged: confirm only; --again not with --case;
-                                  --store-only: report only;
+                                  --control-informative: control only;
+                                  --store-only, --merged: report only;
                                   --route-id: screen, confirm and control only)
 bun scripts/skill-cuts/cli.ts behaviour audit-mixed --config <skill-cuts.json> --out <dir> \
   --old <dir> [--new <dir> | --ours <dir>] --cases <case file> [--cache-dir <dir>] [--scratch <dir>]
@@ -166,8 +168,23 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   screen did not flag. Each confirm it runs records it in the case's results (`confirmFlagged`),
   so `report` needs no option to know it: the report of such a run gives the case results as any
   report does, and as its verdict line
-  `verdict: case result only; no skill verdict stands (--confirm-flagged)`, never a skill verdict.
-  The other commands refuse the option (exit 2).
+  `verdict: case result only; no skill verdict stands (--confirm-flagged)`, never a skill verdict,
+  unless `report` is given `--merged`. The other commands refuse the option (exit 2).
+  `report --merged` says the results directory is a merged set of all the skill's cases (the
+  re-score merges each case's newest run into one set; `report` does not check it). There a
+  confirm made with `--confirm-flagged` is the confirm stage the registered rule counts, so its
+  marker does not hold back the verdict (the runner's architect, 2026-11-26T19:50Z). A
+  merged set whose only case-result-only stages are such confirms is scored by the registered
+  rule, unchanged, as if no confirm carried the marker: at least 6 informative cases, the
+  planted-loss control a loss and the false-loss control no loss, a loss resting on the confirmed
+  losses it names, and "no loss detected" only with every flagged case confirmed. Where that rule
+  reaches a loss or "no loss detected", the verdict line is the rule's own line, with
+  `; 1 confirm made by --confirm-flagged` (`2 confirms`, ...) at its end, after the listing
+  words: the count of every confirm of the set's cases that records `confirmFlagged`, earlier
+  confirms too. Where the rule reaches no skill verdict (fewer than 6 informative cases, a
+  control that failed, a stage not finished, or a refusal), and in a set with a control made by
+  `--control-informative`, the line stays `case result only; no skill verdict stands (...)`.
+  Without `--merged`, the report is as above. The other commands refuse `--merged` (exit 2).
 - `control`: on the skill's control case, 40 runs each of three arms: old; `minus` (old without
   each line of the case's file that is the case's line, trimmed, or without each line that is
   `--planted-line`; a rule written twice is still the rule, so every copy goes; a link in the old
@@ -177,7 +194,22 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   must be a loss, or the test could not see a loss. The false-loss control, old against `twin`,
   must be no loss, or the test calls a loss where the texts are the same. A skill whose planted-loss
   control is no loss, or whose false-loss control is a loss, gets no verdict, and the report says
-  which control failed.
+  which control failed. `control` makes no run where the skill has fewer than 6 informative cases,
+  or no case left to be the control case.
+  `--control-informative` runs the control even where the skill has fewer than 6 informative
+  cases, where `control` without it makes no run, so that the judge's call of a loss in one case
+  has its control (the runner's architect, 2026-11-26T12:51Z). It overrides that reason only: a
+  skill with no case to be the control case (no informative case, or each one dropped) still gets
+  no control run. It runs the same control stage on the same control case (the first informative
+  case of the control rule's order that is not dropped), with the same `minus` line
+  (`--planted-line` or the case's) and the same three arms, and a control made before is skipped
+  as without it. The control stage it runs records it in the case's results
+  (`controlInformative`), so `report` needs no option to know it: the report of such a run gives
+  the control case's line as any report does, and as its verdict line
+  `verdict: case result only; no skill verdict stands (--control-informative)`, never a skill
+  verdict, with or without `report --merged`; a run with a confirm made by `--confirm-flagged`
+  too names both,
+  `(--confirm-flagged, --control-informative)`. The other commands refuse the option (exit 2).
 - In every stage, a case one of whose captures needs a directory no read can give (the commit
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
@@ -241,14 +273,17 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   session case) and the informative cases of each, the control case's passes of old, `minus` and
   `twin` and what each control says, and each dropped case the control case took the place of;
   each model of the cases with its cases, the skill's verdict and its reason (a run with a confirm
-  made by `--confirm-flagged` gets the verdict line under `confirm` above in its place), ending
-  with how many of the skill's screened cases have a listing that could not be measured (no
-  listing measure, or one that says so); the drops per judge control and the drops counted as
-  `model-not-served`, as `unreadable-directory`, as `legion-tool-undefined`, as `listing-misses`,
-  as `listing-adds`, as `injection-unrebuildable`, the last by kind (a case under each kind it
-  holds), as `path-form`, by the arm whose text holds the file, as `reads-past-last-round` and as
-  `provider-refused`; the verdict line also counts the screened cases whose profile took names
-  from their recorded listing (`fromRecorded`, below); an estimate of the procedure's
+  made by `--confirm-flagged` or a control made by `--control-informative` gets the verdict line
+  under `confirm` or `control` above in its place, and with `--merged` a merged set's confirms
+  made by `--confirm-flagged` get the registered rule's verdict where it reaches one, as under
+  `confirm` above), ending with how many of the skill's screened cases have a listing that could
+  not be measured (no listing measure, or one that says so); the drops per judge control and the
+  drops counted as `model-not-served`, as `unreadable-directory`, as `legion-tool-undefined`, as
+  `listing-misses`, as `listing-adds`, as `injection-unrebuildable`, the last by kind (a case
+  under each kind it holds), as `path-form`, by the arm whose text holds the file, as
+  `reads-past-last-round` and as `provider-refused`; the verdict line also counts the screened
+  cases whose profile took names from their recorded listing (`fromRecorded`, below); an estimate
+  of the procedure's
   false-loss chance at the cases run (exact binomial under identical old and compared texts, the
   pass rates taken from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, each screened
@@ -351,7 +386,8 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   ...; none ...` (the stage's arms for the compared arm: screen's old, the compared arm (`new` or
   `ours`) and none, confirm's old and the compared arm, control's old, minus and twin): each arm's runs
   counted once each by the deployment that answered them, as the first 8 hex digits of the
-  gateway's `x-litellm-model-id` (an opaque prefix, never a deployment's name; `unnamed` for a run
+  gateway's `x-litellm-model-id` (an opaque prefix, never a deployment's name; an id that does not
+  begin with 8 hex digits gives the first 8 of its SHA-256 instead; `unnamed` for a run
   whose replies named none, `no reply` for a replay that failed, two ids joined by `+` for a run
   answered by both). Runs saved before runs recorded their deployments print `not recorded` for
   their stage kind, or are counted apart where some runs of it record them; a kind with no runs
@@ -363,6 +399,9 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   A file that is not JSON or not of that shape is refused (exit 2), naming the file.
   `screen`, `confirm` and `control` refuse `--store-only` (exit 2).
   Without `--store-only`, the report says nothing of the transcript store.
+  With `--merged` (the results directory is a merged set of all the skill's cases), a set whose only case-result-only stages are confirms made by `--confirm-flagged` gets the registered rule's verdict line where that rule reaches a loss or "no loss detected", ending, after the listing words, with `; N confirm(s) made by --confirm-flagged` (`1 confirm`, `2 confirms`), N counting every confirm of the set's cases, earlier confirms too, that records `confirmFlagged`; where the rule reaches no skill verdict, and in a set with a control made by `--control-informative`, the line stays `case result only; no skill verdict stands (...)` (under `confirm` above).
+  `screen`, `confirm`, `control`, `audit-mixed` and `continue-mixed` refuse `--merged` (exit 2).
+  Without `--merged`, a set with a confirm made by `--confirm-flagged` always gets the `case result only` line.
 - `audit-mixed` (no model call, no capture, no network, no key): the mixed-reply rule below,
   applied to the judged reply of each saved run of each stage, earlier confirms included (the
   run's `reply` less the first N blocks, where N is the number of answers in `skillReads`).
@@ -425,11 +464,12 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
     extra-run rule does not replace it with a fresh run, and its stage stays running until that
     decision. A reply that acts, has no read the replay answers, or is undecided ends the run as
     the live rules say. Without it a continuation goes as far as the live rule does.
-    A run stopped by `--further-rounds` keeps only its earlier rounds' tool calls, as every saved
-    step does, and not the reply it stopped at, so a later `continue-mixed` cannot resume it:
-    it has no whole reply to send back, and the run takes the next step as a fresh run. The
-    stage's next step is therefore a fresh run of the stage on the same runner (the runner's
-    architect, 2026-11-26T11:15:56Z), and the continued `--out` stays as history.
+    A run stopped by `--further-rounds` has no verdict and carries the `continueMixed` mark, so a
+    later `continue-mixed` keeps it as it is. Its saved step also keeps only its earlier rounds'
+    read calls (a saved step drops earlier rounds' thinking and text), so the request it would
+    send next cannot be rebuilt from the record. The stage's next step is therefore a fresh run of
+    the stage on the same runner (the runner's architect, 2026-11-26T11:15:56Z), and the
+    continued `--out` stays as history.
   - Each case result in `--out` holds every stage its saved result holds. A stage keeps its
     unchanged runs as saved. Each continued run takes its saved run's place and number, and its
     `continueMixed` names the saved run (number, blind id, round, verdict and runner), this
@@ -473,8 +513,9 @@ of the results whose session id no replay call of the log holds (results made wi
 written whole after each round of runs, so a run started again goes on from what was saved and
 skips each complete case. Each run in it keeps its arm, its verdict, the session id it went with
 (`userId`), its routing id (`routingId`, below), the deployment that answered each of its requests
-(`deployments`: the first 8 hex digits of each `x-litellm-model-id`, in order, `""` where the
-answer carried none; empty for a replay that failed) and its place in its round's send order
+(`deployments`: the first 8 hex digits of each `x-litellm-model-id` (the first 8 of its SHA-256 for
+an id that does not begin with 8 hex digits), in order, `""` where the answer carried none; empty
+for a replay that failed) and its place in its round's send order
 (`sendPlace`), so both controls can be recounted from it. A round sends every arm's runs in one
 order, shuffled by the round's recorded seed (`replay.ts`'s `sendOrder`); the first run of each
 arm in that order goes alone among its arm's, so its reply writes the prefix cache the arm's
@@ -1811,9 +1852,10 @@ other skills of the run's profile file from the copies its task's saved capture 
 the runs and the judged runs; the runs that end at an action (`actions`), that it would continue
 now (`continues`), that another skill's answer would send on now (`sentBy`), with no verdict past
 the last round (`pastLastRound`) or for an undecided call (`unresolved`), each with its run number,
-session id and the tools that decided it; and the runs it does not reach (`untouched`), whose last
-reply makes no mix (`ends`) or only reads skill files (`skillRound`). It holds ids, counts and
-tool names, never a reply's text.
+session id and the tools that decided it; the runs it does not reach (`untouched`: a run that
+loaded the skill, a run another skill sent on, a Claude Code run, a run with no reply); and the
+runs it reaches whose last reply makes no mix (`ends`) or only reads skill files (`skillRound`).
+It holds ids, counts and tool names, never a reply's text.
 
 Every load applies the listing rule (the architect, 2026-11-22; on added names too, 2026-11-24;
 narrowed by how the capture shows the listing, 2026-11-25), so no one applies it by hand. Each
@@ -3702,7 +3744,8 @@ id, its request id and the provider's request id, the gateway's headers of it (`
 `x-litellm-attempted-retries` and the provider's request-id headers, each it came with), its
 cache read and write tokens, usage and dollars at list price. It never holds the key or a
 message's text. What a call was for (`kind`) is `judge`, `replay` or `hint` for a stage command,
-`continuation` for a request of `behaviour continue-mixed`, and `probe` for its `--probe`;
+`continuation` for a continuation request of `behaviour continue-mixed` (its judgements and fresh
+runs are `judge` and `replay`), and `probe` for its `--probe`;
 `continue-mixed` reads the `userId` and `gateway` of each line of a saved `--out`'s log to find the
 deployment that answered a run saved before runs recorded one.
 

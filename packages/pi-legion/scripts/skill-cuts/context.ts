@@ -421,8 +421,9 @@ export function skillTextFrontmatter(text: string): { description: string; hidde
   return listingFrontmatter(readFrontmatter(text));
 }
 
-/** `skillTextFrontmatter` of the frontmatter `frontmatter`, read already. */
-function listingFrontmatter(frontmatter: Readonly<Record<string, unknown>>): {
+/** `skillTextFrontmatter` of the frontmatter `frontmatter`, read already (load.ts's
+ *  `resolveTestSetup` reads the name from it too). */
+export function listingFrontmatter(frontmatter: Readonly<Record<string, unknown>>): {
   description: string;
   hidden: boolean;
 } {
@@ -2212,7 +2213,7 @@ type ProfileCopy = { readonly skill: ProfileSkill; readonly listed: string } & (
  * directory (`none`) installs no copy from it: a copy it lists under the case's skill's name is
  * another source's (arms.ts's `Arm.relisted`). It reads the arm alone: no repository, and no
  * cache. `cacheSkills` installs by it, and capture.ts's `restoredCapture` compares a saved
- * capture's record with its repository records.
+ * capture's record with its repository records (`profileRecords`).
  */
 export function profileCopies(
   arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">
@@ -2226,6 +2227,16 @@ export function profileCopies(
     const from = { repo: skill.repo, commit: skill.commit, path: skill.path, key };
     return { skill, listed, record: { name: listed, from } };
   });
+}
+
+/** The records of the repository copies of `arm`'s profile (`profileCopies`), in order: the
+ *  skills its context installs from their repositories, as its ContextRecord's `skills` names
+ *  them. capture.ts's `restoreCopies` compares a saved capture's record with them, and cli.ts
+ *  answers a read of another skill from their cache entries where an arm's capture is not saved. */
+export function profileRecords(
+  arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">
+): CachedSkillRecord[] {
+  return profileCopies(arm).flatMap(({ record }) => (record === undefined ? [] : [record]));
 }
 
 /**

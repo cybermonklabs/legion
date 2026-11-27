@@ -390,6 +390,13 @@ function callWords(call: SortedCall): string {
   return `${call.tool} ${argument.length > 80 ? `${argument.slice(0, 79)}…` : argument}`;
 }
 
+/** What the answered rounds' reads `reads` read, in words: each one's `readWords` (a skill read's
+ *  skill and file, a checkout read's tool and what it named), joined by ", ". The messages of a
+ *  run with no verdict name them so, and cli.ts's continue-mixed reasons too. */
+export function readsWords(reads: readonly RoundRead[]): string {
+  return reads.map(readWords).join(", ");
+}
+
 /** What a replay rejects with when the reply after its last answered round still only reads skill
  *  files, or reads them beside calls that only prepare the act (`beside`, the calls of a mixed
  *  reply `replyBoundary` would continue), or, in a written case's run, still only makes read-only
@@ -402,7 +409,7 @@ export class ReadsPastLastRound extends Error {
     last: readonly RoundRead[],
     beside: readonly SortedCall[] = []
   ) {
-    const reads = last.map(readWords).join(", ");
+    const reads = readsWords(last);
     const others = beside.map(callWords).join(", ");
     super(
       beside.length > 0
@@ -426,7 +433,7 @@ export class UndecidedReply extends Error {
     undecided: readonly SortedCall[],
     text: boolean
   ) {
-    const files = last.map((read) => `${read.skill} ${read.file}`).join(", ");
+    const files = readsWords(last);
     const what = [...undecided.map(callWords), ...(text ? ["its text"] : [])].join(", ");
     super(
       `${MIXED_UNDECIDED}: after ${replayed.rounds} answered rounds of skill reads, the reply reads skill files (${files}) beside what the rule sorts neither as an act nor as preparation (${what}), so it is neither judged nor continued`
@@ -455,7 +462,7 @@ export class FurtherRoundLimit extends Error {
     beside: readonly SortedCall[]
   ) {
     const checkout = last.some((read) => read.from === "checkout");
-    const files = last.map(readWords).join(", ");
+    const files = readsWords(last);
     const others =
       beside.length === 0
         ? ""
@@ -1027,6 +1034,12 @@ export interface SortedCall {
   readonly tool: string;
   readonly argument: string | null;
   readonly part: CallPart;
+}
+
+/** The tools of `others`, a mixed reply's sorted calls, that the rule sorts as `part`, in order:
+ *  what cli.ts's and load.ts's audits and continue-mixed name a run by. */
+export function partTools(others: readonly SortedCall[], part: CallPart): string[] {
+  return others.flatMap((call) => (call.part === part ? [call.tool] : []));
 }
 
 /** What a replay does with a reply (`replyBoundary`): `ends`, the run ends at it (no tool call,

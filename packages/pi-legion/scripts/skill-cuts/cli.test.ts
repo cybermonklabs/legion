@@ -51,7 +51,7 @@ import {
 import { loadConfig } from "./config";
 import { cacheKey, installedCopies, localSource, skillFrontmatter } from "./context";
 import { countSql } from "./countsql";
-import { GATEWAY_TRIES } from "./gateway";
+import { GATEWAY_TRIES, usdOf } from "./gateway";
 import { beforeText, judgeBody, judgeIdentity, NOTHING_REPLY } from "./judge";
 import { ATTACK_PLANTED_LINE, loadPrompt, READER_TRIES } from "./readers";
 import {
@@ -89,7 +89,7 @@ import {
   stageArms,
 } from "./score";
 import { pinBinary, pinNatives } from "./test-natives";
-import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
+import { answeredBy, pinnedTo, truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
@@ -170,14 +170,6 @@ let answer: (body: { model: string; [field: string]: unknown }) => string | Resp
  *  id (`x-litellm-model-id`, `pinnedTo`), as the gateway does; off but in the rows that set it. */
 let pinDeployments = false;
 
-/** One of two made-up deployments, the one the stand-in pins a call that goes with the routing id
- *  `routing` to, as the gateway pins one: by the SHA-256 of the id, modulo the deployments. */
-function pinnedTo(routing: string): string {
-  return (createHash("sha256").update(routing).digest()[0] ?? 0) % 2 === 0
-    ? "0a1b2c3d"
-    : "4e5f6a7b";
-}
-
 /** The stand-in's answer to `request`, as `answer` gives it for its body. */
 function standInReply(request: RecordedRequest): Response {
   const responses = request.path === "/v1/responses";
@@ -219,9 +211,7 @@ beforeAll(() => {
       const reply = standInReply(request);
       const routing = request.headers["x-litellm-session-id"];
       if (!pinDeployments || routing === undefined) return reply;
-      const headers = new Headers(reply.headers);
-      headers.set("x-litellm-model-id", `${pinnedTo(routing)}-stand-in`);
-      return new Response(reply.body, { status: reply.status, headers });
+      return answeredBy(reply, pinnedTo(routing));
     },
   });
 });
@@ -4134,6 +4124,298 @@ describe("behaviour: confirm --confirm-flagged", () => {
   }, 60_000);
 });
 
+// The runner's architect's rule on `report --merged` (2026-11-26T19:50Z): in a merged set of all
+// the skill's cases a confirm made by `--confirm-flagged` is the confirm stage the registered rule
+// counts, so its marker does not hold back a verdict the rule reaches; a set the rule gives no
+// verdict, and one with a control made by `--control-informative`, keep the case-result-only line.
+describe("behaviour report --merged", () => {
+  const FIVE = ["c01", "c02", "c03", "c04", "c05"];
+  /** The screen of a case that is not informative: no skill passes as many runs as the old text. */
+  const NOT_INFORMATIVE = { old: SCREEN_RUNS, new: SCREEN_RUNS, none: SCREEN_RUNS };
+  const CASE_RESULT_ONLY = "verdict: case result only; no skill verdict stands (--confirm-flagged)";
+  const CONTROL_ONLY = "verdict: case result only; no skill verdict stands (--control-informative)";
+  const BOTH =
+    "verdict: case result only; no skill verdict stands (--confirm-flagged, --control-informative)";
+  const CONTROL =
+    "the planted-loss control (case c01) is a loss and its false-loss control is no loss";
+
+  /** A merged set of six cases: c01 to c05 informative and not flagged, c01 the control case
+   *  whose two controls hold, and c06 informative and flagged, its screen returned. */
+  const mergedSet = (name: string) => {
+    const s = scenario(
+      name,
+      LOSS_SKILL(),
+      [...FIVE, "c06"].map((id) => ({ id }))
+    );
+    plantSix(s, FIVE, "c01");
+    return { s, screen: plantedStage(s, "c06", "screen", FLAGGED) };
+  };
+  /** A finished confirm of c06 of `s`, its old and new arms passing `passes`, made by
+   *  `--confirm-flagged`. */
+  const flaggedConfirm = (s: Scenario, passes: Record<string, number>) => ({
+    ...plantedStage(s, "c06", "confirm", passes),
+    confirmFlagged: true,
+  });
+  /** The verdict lines of the report of `s` with `extra`, refused nothing. */
+  const verdicts = async (s: Scenario, ...extra: string[]) => {
+    const ran = await cli([...report(s), ...extra]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    return ran.stdout.split("\n").filter((line) => line.startsWith("verdict: "));
+  };
+
+  // Catches: a merged set whose confirm marker still holds back the registered rule's verdict; a
+  // line that does not say the verdict rests on such confirms, or counts only the latest of them;
+  // and a report without the option that changed.
+  test("a merged set of 6 informative cases with a passing control gets the registered rule's loss, or its no loss detected, naming how many confirms --confirm-flagged made, earlier ones too; without --merged, the case-result-only line", async () => {
+    const { s, screen } = mergedSet("merged-verdict");
+    const loss = flaggedConfirm(s, { old: FRESH_RUNS, new: 0 });
+    plantResult(s, "c06", { stages: { screen, confirm: loss } });
+    expect(await verdicts(s)).toEqual([CASE_RESULT_ONLY]);
+    expect(await verdicts(s, "--merged")).toEqual([
+      `verdict: loss: in c06 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and ${CONTROL}${unmeasured(6, 6)}; 1 confirm made by --confirm-flagged`,
+    ]);
+
+    // Two confirms of c06 that agree it is no loss, each made by --confirm-flagged.
+    const kept = flaggedConfirm(s, { old: FRESH_RUNS, new: FRESH_RUNS });
+    plantResult(s, "c06", { earlierConfirms: [kept], stages: { screen, confirm: kept } });
+    expect(await verdicts(s)).toEqual([CASE_RESULT_ONLY]);
+    expect(await verdicts(s, "--merged")).toEqual([
+      `verdict: no loss detected by the registered rule: no confirmed case is a loss (1 flagged of 6 informative), and ${CONTROL}${unmeasured(6, 6)}; 2 confirms made by --confirm-flagged`,
+    ]);
+  }, 60_000);
+
+  // Catches: --merged giving a skill verdict, or another line, where the registered rule
+  // reaches none.
+  test("a merged set with fewer than 6 informative cases keeps the case-result-only line, with and without --merged", async () => {
+    const { s, screen } = mergedSet("merged-too-few");
+    plantResult(s, "c05", {
+      stages: { screen: plantedStage(s, "c05", "screen", NOT_INFORMATIVE) },
+    });
+    plantResult(s, "c06", {
+      stages: { screen, confirm: flaggedConfirm(s, { old: FRESH_RUNS, new: 0 }) },
+    });
+    expect(await verdicts(s)).toEqual([CASE_RESULT_ONLY]);
+    expect(await verdicts(s, "--merged")).toEqual([CASE_RESULT_ONLY]);
+  }, 60_000);
+
+  // Catches: --merged taking a control made by --control-informative, which ran though the skill
+  // had too few informative cases, as the control the registered rule needs.
+  test("a merged set whose control was made by --control-informative keeps the case-result-only line with --merged", async () => {
+    const { s, screen } = mergedSet("merged-control-informative");
+    const control = plantedStage(s, "c01", "control", {
+      old: FRESH_RUNS,
+      minus: 0,
+      twin: FRESH_RUNS,
+    });
+    plantResult(s, "c01", {
+      stages: {
+        screen: plantedStage(s, "c01", "screen", KEPT),
+        control: { ...control, controlInformative: true },
+      },
+    });
+    plantResult(s, "c06", {
+      stages: { screen, confirm: flaggedConfirm(s, { old: FRESH_RUNS, new: 0 }) },
+    });
+    expect(await verdicts(s, "--merged")).toEqual([BOTH]);
+
+    const plain = plantedStage(s, "c06", "confirm", { old: FRESH_RUNS, new: 0 });
+    plantResult(s, "c06", { stages: { screen, confirm: plain } });
+    expect(await verdicts(s, "--merged")).toEqual([CONTROL_ONLY]);
+  }, 60_000);
+
+  // Catches: an option another command takes and ignores.
+  test("is refused (exit 2) by every command but report, before any model call", async () => {
+    const { s, screen } = mergedSet("merged-refused");
+    plantResult(s, "c06", { stages: { screen } });
+    const from = recorder.requests.length;
+    for (const command of ["screen", "confirm", "control", "audit-mixed", "continue-mixed"]) {
+      const ran = await cli(behaviour(command, s, "--merged"));
+      expect({ command, code: ran.code }).toEqual({ command, code: 2 });
+      expect(ran.stderr).toContain(
+        "--merged goes with behaviour report only: it says how report scores the results it reads."
+      );
+    }
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(result(s.out, "c06").stages.confirm).toBeUndefined();
+  }, 60_000);
+});
+
+// The runner's architect's order on `control --control-informative` (2026-11-26T12:51Z): it runs
+// the planted-loss control of the skill's control case though the skill has fewer than 6
+// informative cases, so the judge's call of a loss in one case has its control; it overrides that
+// reason only, and the control stage is the one `control` runs without it; and the report of a run
+// it made gives case results only, never a skill verdict.
+describe("behaviour: control --control-informative", () => {
+  const SIX = ["c01", "c02", "c03", "c04", "c05", "c06"];
+  /** The screen of a case that is not informative: no skill passes as many runs as the old text. */
+  const NOT_INFORMATIVE = { old: SCREEN_RUNS, new: SCREEN_RUNS, none: SCREEN_RUNS };
+  /** The report's verdict line of a run with a control made by `--control-informative`. */
+  const CONTROL_ONLY = "verdict: case result only; no skill verdict stands (--control-informative)";
+  /** The same, where a confirm of the run was made by `--confirm-flagged` too. */
+  const BOTH =
+    "verdict: case result only; no skill verdict stands (--confirm-flagged, --control-informative)";
+  /** The report's control part of a case line whose two controls hold. */
+  const CONTROLS_HOLD =
+    "control: old 40/40, minus 0/40, twin 40/40: the planted-loss control (old against minus) is a loss, the false-loss control (old against twin) is no loss";
+
+  // Catches: a loss of one case whose control can never run, since its skill has too few
+  // informative cases for a verdict; a control without the option that no longer waits for one;
+  // and an option that takes another case than the control rule's, or leaves an arm out.
+  test("runs the control of a one-informative-case skill's control case, 40 runs each of old, minus and twin, where control without it makes none, records it in the stage, and report gives the case result and no skill verdict", async () => {
+    const s = scenario("control-informative-one", LOSS_SKILL(), [{ id: "c01" }, { id: "c02" }]);
+    recordCaptures(s, ["old", "minus", "twin"]);
+    answer = behaviourStandIn;
+    // c01 comes first in the file and is not informative; c02, informative, is the control rule's
+    // only case.
+    plantResult(s, "c01", {
+      stages: { screen: plantedStage(s, "c01", "screen", NOT_INFORMATIVE) },
+    });
+    plantResult(s, "c02", { stages: { screen: plantedStage(s, "c02", "screen", KEPT) } });
+    const tooFew = `fewer than ${MIN_INFORMATIVE_CASES} informative cases: 1`;
+
+    let from = recorder.requests.length;
+    const without = await cli(behaviour("control", s));
+    expect({ code: without.code, stderr: without.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(without.stdout).toContain(`no control runs: the skill gets no verdict: ${tooFew}`);
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(result(s.out, "c02").stages.control).toBeUndefined();
+
+    from = recorder.requests.length;
+    const ran = await cli(behaviour("control", s, "--control-informative", "--concurrency", "32"));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(ran.stdout).toContain(
+      `--control-informative: the control case's control runs, though the skill gets no verdict (${tooFew}); report gives the case results only, and no skill verdict`
+    );
+    expect(ran.stdout).toContain("the control case is c02; minus leaves out the case's line");
+    // FRESH_RUNS replays of each of old, minus and twin, and a judgement of each.
+    const sent = requestsSince(from);
+    expect(sent).toHaveLength(3 * FRESH_RUNS * 2);
+    const c02 = result(s.out, "c02");
+    expect([c02.stages.control?.state, c02.stages.control?.controlInformative]).toEqual([
+      "counted",
+      true,
+    ]);
+    // Each arm's runs went out, each with a session id of its own among the requests sent.
+    const sessionIds = new Set(sent.map((request) => JSON.parse(request.body).metadata?.user_id));
+    const sentByArm: Record<string, number> = {};
+    for (const run of c02.stages.control?.runs ?? []) {
+      if (run.userId !== null && sessionIds.has(run.userId)) {
+        sentByArm[run.arm] = (sentByArm[run.arm] ?? 0) + 1;
+      }
+    }
+    expect(sentByArm).toEqual({ old: FRESH_RUNS, minus: FRESH_RUNS, twin: FRESH_RUNS });
+    expect(passes(c02, "control")).toEqual({ old: FRESH_RUNS, minus: 0, twin: FRESH_RUNS });
+    expect(result(s.out, "c01").stages.control).toBeUndefined();
+
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    expect(lines).toContain(
+      `case c02: screen: old 10/10, new 10/10, none 0/10: informative, not flagged; ${CONTROLS_HOLD}`
+    );
+    expect(lines.filter((line) => line.startsWith("verdict: "))).toEqual([CONTROL_ONLY]);
+  }, 120_000);
+
+  // Catches: an option that overrides every reason for no control run, and so fails the command
+  // or runs a control where no case can be the control case.
+  test("makes no control run where no case can be the control case: none is informative, or the only informative one is dropped", async () => {
+    const none = scenario("control-informative-none", LOSS_SKILL(), [{ id: "c01" }, { id: "c02" }]);
+    for (const id of ["c01", "c02"]) {
+      plantResult(none, id, {
+        stages: { screen: plantedStage(none, id, "screen", NOT_INFORMATIVE) },
+      });
+    }
+    let from = recorder.requests.length;
+    const ran = await cli(behaviour("control", none, "--control-informative"));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(ran.stdout).toContain(
+      "no control runs: no case is informative, so the skill has no control case"
+    );
+    expect(ran.stdout).not.toContain("--control-informative:");
+    expect(requestsSince(from)).toHaveLength(0);
+    for (const id of ["c01", "c02"]) expect(result(none.out, id).stages.control).toBeUndefined();
+
+    // c01, the only informative case, was dropped at control: no case is left to be the control
+    // case.
+    const dropped = scenario("control-informative-dropped", LOSS_SKILL(), [{ id: "c01" }]);
+    plantResult(dropped, "c01", {
+      dropped: UNREADABLE,
+      droppedAt: "control",
+      stages: { screen: plantedStage(dropped, "c01", "screen", KEPT) },
+    });
+    from = recorder.requests.length;
+    const left = await cli(behaviour("control", dropped, "--control-informative"));
+    expect({ code: left.code, stderr: left.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(left.stdout).toContain(
+      "no control runs: the skill gets no verdict: no informative case is left to be the control case: each is dropped (c01 at control)"
+    );
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(result(dropped.out, "c01").stages.control).toBeUndefined();
+  }, 60_000);
+
+  // Catches: an option another command takes and ignores, so that a screen or confirm run with it
+  // seems to have made a control it did not, and a report that needs it given to know.
+  test("is refused (exit 2) by screen, confirm and report, before any model call", async () => {
+    const s = scenario("control-informative-refused", LOSS_SKILL(), [{ id: "c01" }]);
+    plantResult(s, "c01", { stages: { screen: plantedStage(s, "c01", "screen", FLAGGED) } });
+    const from = recorder.requests.length;
+    for (const args of [behaviour("screen", s), behaviour("confirm", s), report(s)]) {
+      const ran = await cli([...args, "--control-informative"]);
+      expect(ran.code).toBe(2);
+      expect(ran.stderr).toContain(
+        "--control-informative goes with behaviour control only: report reads from the case results whether their controls were made with it."
+      );
+    }
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(result(s.out, "c01").stages.confirm).toBeUndefined();
+  }, 60_000);
+
+  // Catches: a skill verdict over a control the option made, which ran though the skill had too
+  // few informative cases; and a run with a confirm made by --confirm-flagged too whose line
+  // names one option only.
+  test("report of a run with a control made by --control-informative gives the case results and no skill verdict, where the same runs without it give one, and names both options where a confirm was made by --confirm-flagged", async () => {
+    const s = scenario(
+      "control-informative-report",
+      LOSS_SKILL(),
+      [...SIX, "c07"].map((id) => ({ id }))
+    );
+    plantSix(s, SIX, "c01");
+    const screen = plantedStage(s, "c07", "screen", FLAGGED);
+    const confirm = plantedStage(s, "c07", "confirm", { old: FRESH_RUNS, new: 0 });
+    plantResult(s, "c07", { stages: { screen, confirm } });
+    const before = await cli(report(s));
+    expect({ code: before.code, stderr: before.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(before.stdout.split("\n")).toContain(
+      `verdict: loss: in c07 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(7, 7)}`
+    );
+
+    const control = plantedStage(s, "c01", "control", {
+      old: FRESH_RUNS,
+      minus: 0,
+      twin: FRESH_RUNS,
+    });
+    plantResult(s, "c01", {
+      stages: {
+        screen: plantedStage(s, "c01", "screen", KEPT),
+        control: { ...control, controlInformative: true },
+      },
+    });
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      `case c01: screen: old 10/10, new 10/10, none 0/10: informative, not flagged; ${CONTROLS_HOLD}`
+    );
+    expect(lines).toContain("control case: c01");
+    expect(lines.filter((line) => line.startsWith("verdict: "))).toEqual([CONTROL_ONLY]);
+
+    plantResult(s, "c07", { stages: { screen, confirm: { ...confirm, confirmFlagged: true } } });
+    const both = await cli(report(s));
+    expect({ code: both.code, stderr: both.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(both.stdout.split("\n").filter((line) => line.startsWith("verdict: "))).toEqual([BOTH]);
+  }, 60_000);
+});
+
 describe("refusals before any model call", () => {
   test("a --config that is not a configuration is refused (exit 2) by read, control, behaviour and load", async () => {
     const { keyFile } = setup();
@@ -6998,8 +7280,6 @@ describe("behaviour continue-mixed", () => {
   const NONE_ELSE = "confirm old 0, new 0; control old 0, minus 0, twin 0";
   /** Dollars as the report prints them. */
   const dollars = (amount: number) => `$${(Math.abs(amount) < 0.00005 ? 0 : amount).toFixed(4)}`;
-  const usdSum = (spent: readonly { usd: number }[]) =>
-    spent.reduce((all, each) => all + each.usd, 0);
 
   /** A scenario of `cases` whose act is a `bash` call, with the captures of its screen's arms. */
   function savedScenario(name: string, cases: Parameters<typeof scenario>[2]): Scenario {
@@ -7086,9 +7366,7 @@ describe("behaviour continue-mixed", () => {
       }),
       "req_responses_continued"
     );
-    const headers = new Headers(reply.headers);
-    headers.set("x-litellm-model-id", `${RESPONSES_DEPLOYMENT}-stand-in`);
-    return new Response(reply.body, { status: reply.status, headers });
+    return answeredBy(reply, RESPONSES_DEPLOYMENT);
   };
 
   test("continues each saved run the rule continues from its saved reply, a Messages run's thinking and a Responses run's reasoning kept, its first request replayOnce's, on the deployment that answered it (from its record, or the saved request log); runs again fresh a run that lacks a part, one another deployment answers, one the gateway refuses and an unresolved one; leaves the saved --out as it was; and report counts each kind and its spend apart", async () => {
@@ -7356,8 +7634,8 @@ describe("behaviour continue-mixed", () => {
       expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
       const lines = reported.stdout.split("\n");
       const runs = [...(c04?.runs ?? []), ...(c05?.runs ?? [])];
-      const continuations = usdSum(runs.flatMap((run) => run.continueMixed ?? []));
-      const freshUsd = usdSum(fresh.flatMap((run) => [...run.replaySpent, ...run.judgeSpent]));
+      const continuations = usdOf(runs.flatMap((run) => run.continueMixed ?? []));
+      const freshUsd = usdOf(fresh.flatMap((run) => [...run.replaySpent, ...run.judgeSpent]));
       for (const line of [
         `continue-mixed: 2 case stages written from ${path.resolve(s.out)}, every one selected`,
         `continue-mixed continued (a saved run judged at a mixed reply whose other calls only prepare, continued from that reply and judged again), runs by stage and arm: screen old 3, new 0, none 0; ${NONE_ELSE}`,
@@ -8236,9 +8514,6 @@ describe("behaviour: the runner of each run", () => {
 // screen command's line nor its request log): the report says what its sum is made of, part by
 // part, and sets it against the request log.
 describe("behaviour: the report's spend", () => {
-  /** The dollars of each call `spent` records. */
-  const usdSum = (spent: readonly { usd: number }[]) =>
-    spent.reduce((sum, each) => sum + each.usd, 0);
   /** The calls no run records, as the report names them. */
   const UNRECORDED =
     "its captures' hint calls, the rounds a replay that then failed had answered, replies whose judgement the budget refused";
@@ -8331,8 +8606,8 @@ describe("behaviour: the report's spend", () => {
     );
     expect(answered).toHaveLength(1);
     const controls = c.controls?.usd ?? 0;
-    const replays = runs.reduce((sum, run) => sum + usdSum(run.replaySpent), 0);
-    const judgements = runs.reduce((sum, run) => sum + usdSum(run.judgeSpent), 0);
+    const replays = runs.reduce((sum, run) => sum + usdOf(run.replaySpent), 0);
+    const judgements = runs.reduce((sum, run) => sum + usdOf(run.judgeSpent), 0);
     const unrecorded = (c.stages.screen?.usd ?? 0) - replays - judgements;
     expect(unrecorded).toBeCloseTo(answered[0].usd + HINT, 10);
     // Three judge controls; 30 judged runs' replay calls and judgements; the failed run's call and
@@ -8384,9 +8659,9 @@ describe("behaviour: the report's spend", () => {
     const kept = result(s.out, "c04");
     const runsOf = (r: CaseResult) => r.stages.screen?.runs ?? [];
     const judged = (r: CaseResult) =>
-      (r.controls?.usd ?? 0) + runsOf(r).reduce((sum, run) => sum + usdSum(run.judgeSpent), 0);
+      (r.controls?.usd ?? 0) + runsOf(r).reduce((sum, run) => sum + usdOf(run.judgeSpent), 0);
     const replayed = (r: CaseResult) =>
-      runsOf(r).reduce((sum, run) => sum + usdSum(run.replaySpent), 0);
+      runsOf(r).reduce((sum, run) => sum + usdOf(run.replaySpent), 0);
     const total = (r: CaseResult) => (r.controls?.usd ?? 0) + (r.stages.screen?.usd ?? 0);
     expect([total(kept), judged(gone), replayed(gone)].map((usd) => usd.toFixed(4))).toEqual([
       "19.2000",

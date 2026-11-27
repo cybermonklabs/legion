@@ -6019,6 +6019,12 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       trees.set(`${repo}@${sha}`, await github.at(repo, sha, run.config.excludePaths));
     }
   }
+  /** The commit a copy in `repo` is read at as the worker image ships it: the image's commit for
+   *  the image's repository, else undefined (its repository's commit at the session's start). */
+  const imageSha = (repo: string) => (repo === image?.repo ? image.sha : undefined);
+  /** The commit a pool's copy in `repo` is read at, as its offer names it: its host's at the
+   *  subagent's start (`poolAt`), else `imageSha`'s. */
+  const poolCommit = (repo: string) => poolAt.get(repo) ?? imageSha(repo);
   // A package a plugin list pins by an exact npm version ships what that version ships
   // (NPM_PIN_RULE); the dev box's own plugin lists come first.
   const versions = new Map<string, PinnedVersion>();
@@ -6385,7 +6391,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       leftOut: Evidence;
     }[] = [];
     for (const [key, { via, why }] of pools) {
-      const skills = [...new Set(shipsAtStart(via).map((row) => row.skill))];
+      const ships = shipsAtStart(via);
+      const skills = [...new Set(ships.map((row) => row.skill))];
       const named = skills.filter((name) => listing.names.includes(name));
       const unnamed = skills.filter((name) => !named.includes(name));
       const unique = named.filter((name) => !nonPoolNames.has(name));
@@ -6429,17 +6436,13 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         // Its skills that skills.ignoredSkills does not match (IGNORED_RULE), each hidden or not as
         // the profile's `hidden` reads it below: its copy's tree (`treeOf`) at the commit its offer
         // names.
-        const kept = shipsAtStart(via).filter(
-          (row) => !ignores.some(({ matches }) => matches(row.skill))
-        );
+        const kept = ships.filter((row) => !ignores.some(({ matches }) => matches(row.skill)));
         const unlisted = kept.every(
           (row) =>
             treeOf({
               repo: row.copyRepository,
               path: row.copyPath ?? "",
-              commit:
-                poolAt.get(row.copyRepository) ??
-                (row.copyRepository === image?.repo ? image.sha : undefined),
+              commit: poolCommit(row.copyRepository),
             })?.hidden.has(repoPath(row.copyPath ?? "")) === true
         );
         if (kept.length > 0 && unlisted) {
@@ -6556,8 +6559,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     for (const row of members) {
       const commit =
         version?.sha ??
-        (id.startsWith("pool:") ? poolAt.get(row.copyRepository) : undefined) ??
-        (row.copyRepository === image?.repo ? image.sha : undefined);
+        (id.startsWith("pool:") ? poolCommit(row.copyRepository) : imageSha(row.copyRepository));
       const copy = {
         repo: row.copyRepository,
         path: row.copyPath ?? "",
@@ -11277,8 +11279,9 @@ const TasksQuery = z.strictObject({
 });
 type TasksQuery = z.infer<typeof TasksQuery>;
 
-/** What a build-tasks run is made from: the skill's SKILL.md, the stores, the window, and the
- *  model `--model` names, when it names one. */
+/** What a build-tasks run is made from: the skill's SKILL.md, the stores, the window, the model
+ *  `--model` names, when it names one, and the test setup (`--test-setup`) with the session whose
+ *  context it installs into (`--context-session`), when given. */
 const TasksInputs = z.strictObject({
   skill: Digested,
   stores: z.array(z.string()),
@@ -11574,7 +11577,7 @@ async function rebuiltContext(
       setup.commit,
       path.posix.join(setup.path, "SKILL.md")
     );
-    return text === undefined ? undefined : ompText(Buffer.from(text));
+    return text === undefined ? undefined : ompText(text);
   });
   return {
     store,
