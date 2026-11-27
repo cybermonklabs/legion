@@ -374,8 +374,10 @@ func TestProbeImagePassesOnTheOKLineConfirmingTheContract(t *testing.T) {
 func TestProbeImagePassesTheRemainingAttemptBudgetToItsCommand(t *testing.T) {
 	t.Parallel()
 	g := newProbeRig(t, nil)
+	// The rig's own present (Options.Now reads it atomically): the runtime's now function is read
+	// by its informers' goroutines, so a test that replaced it after the rig started raced them.
 	now := time.Date(2026, 10, 28, 13, 30, 0, 0, time.UTC)
-	g.r.now = func() time.Time { return now }
+	g.now.Store(&now)
 	g.succeeds(okLine(3) + "\n")
 	probe := probeOptions(t)
 	probe.Budget = 300 * time.Second
@@ -1195,23 +1197,31 @@ func TestEveryBootProbesTheImage(t *testing.T) {
 
 // A providers Secret the kubelet cannot mount leaves the probe pod Pending, never Failed: a
 // FailedMount event saying the Secret, or one of the keys provider_keys asks of it, is missing is
-// the answer, a refusal naming the Secret, the keys, and the kubelet's message, given once rather
-// than retried to the budget. Any other FailedMount on the volume is one the kubelet retries (its
-// Secret watch not yet synced, kubernetes/kubernetes#99475), and the attempt runs to its budget.
+// the answer, a refusal naming the Secret, the settings whose keys every pod mounts, and the fault
+// in its own words, given once rather than retried to the budget. Any other FailedMount on the
+// volume is one the kubelet retries (its Secret watch not yet synced, kubernetes/kubernetes#99475),
+// and the attempt runs to its budget. The refusal names a key by the setting that names it and
+// quotes no key of the Secret, nor the kubelet's message, which quotes one: a provider_keys value
+// can be a provider's key pasted where its name goes, here a made-up one.
 func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 	t.Parallel()
+	const pasted = "MadeUpProviderKey0123456789abcdefXYZ"
 	mount := `MountVolume.SetUp failed for volume "providers" : `
+	entries := "(provider_keys.ANTHROPIC_API_KEY, runtime.kubernetes.session_dsn_secret)"
 	for _, testCase := range []struct {
-		name, message string
-		refused       bool
+		name, secretKey, message, fault string
+		refused                         bool
 	}{
-		{"the Secret missing", mount + `secret "` + ProvidersSecretName(testProject) + `" not found`, true},
-		{"the Secret missing, as the API server says it", mount + `secrets "` + ProvidersSecretName(testProject) + `" not found`, true},
-		{"a key missing", mount + "references non-existent secret key: ANTHROPIC_API_KEY", true},
-		{"the kubelet's secret cache not synced", mount + "failed to sync secret cache: timed out waiting for the condition", false},
+		{"the Secret missing", "anthropic", mount + `secret "` + ProvidersSecretName(testProject) + `" not found`, "the kubelet reports the Secret is not there", true},
+		{"the Secret missing, as the API server says it", "anthropic", mount + `secrets "` + ProvidersSecretName(testProject) + `" not found`, "the kubelet reports the Secret is not there", true},
+		{"a provider key missing", "anthropic", mount + "references non-existent secret key: anthropic", "the kubelet reports the Secret holds no key for provider_keys.ANTHROPIC_API_KEY", true},
+		{"the session database's key missing", "anthropic", mount + "references non-existent secret key: SESSION_DSN", "the kubelet reports the Secret holds no key for runtime.kubernetes.session_dsn_secret", true},
+		{"a key no setting names missing", "anthropic", mount + "references non-existent secret key: ANTHROPIC_API_KEY", "the kubelet reports the Secret lacks a key the pod mounts, one no setting names", true},
+		{"a provider's key pasted where its Secret key goes, missing", pasted, mount + "references non-existent secret key: " + pasted, "the kubelet reports the Secret holds no key for provider_keys.ANTHROPIC_API_KEY", true},
+		{"the kubelet's secret cache not synced", "anthropic", mount + "failed to sync secret cache: timed out waiting for the condition", "", false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"} }))
+			g := newProbeRig(t, nil, withOptions(func(o *Options) { o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": testCase.secretKey} }))
 			g.waits("ContainerCreating")
 			if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
 				ObjectMeta:     metav1.ObjectMeta{Name: probeSandboxName + ".mount", Namespace: testNamespace},
@@ -1225,7 +1235,10 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 			err := g.probe(p)
 
 			if testCase.refused {
-				wantContains(t, err, "cannot mount the providers Secret "+ProvidersSecretName(testProject), "(SESSION_DSN, anthropic)", testCase.message)
+				wantContains(t, err, "cannot mount the providers Secret "+ProvidersSecretName(testProject), entries, testCase.fault)
+				if err != nil && (strings.Contains(err.Error(), pasted) || strings.Contains(err.Error(), "references non-existent")) {
+					t.Errorf("ProbeImage = %v, quotes a key of the Secret or the kubelet's message", err)
+				}
 				if n := g.creates.Load(); n != 1 {
 					t.Errorf("ran the probe %d times for a Secret the pod cannot mount, want once", n)
 				}
@@ -1239,6 +1252,17 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 				t.Errorf("ran the probe %d times, want the retry's 2", n)
 			}
 		})
+	}
+}
+
+// Two provider_keys variables that read one key of the providers Secret are both named, sorted, so
+// the refusal is the same on every run, whatever order the map yields them in.
+func TestAMissingKeyNamesEveryVariableThatReadsIt(t *testing.T) {
+	r := &Runtime{providerKeys: map[string]string{"OPENAI_API_KEY": "shared", "ANTHROPIC_API_KEY": "shared", "GEMINI_API_KEY": "gemini"}}
+	for range 20 {
+		if got := r.providersMountFault(missingSecretKey + "shared"); got != "the kubelet reports the Secret holds no key for provider_keys.ANTHROPIC_API_KEY and provider_keys.OPENAI_API_KEY" {
+			t.Fatalf("providersMountFault = %q", got)
+		}
 	}
 }
 

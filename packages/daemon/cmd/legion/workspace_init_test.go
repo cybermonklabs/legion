@@ -674,8 +674,10 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			name: "a provisioning token file that is absent",
 			env:  func(t *testing.T, v *issueVolume) { v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token + ".absent" },
 			code: 3,
-			says: func(v *issueVolume) string {
-				return "LEGION_PROVISION_TOKEN_FILE names " + v.token + ".absent, which could not be read"
+			// The refusal names no path: a path can hold a credential, so the rule of
+			// 2026-11-21 (daemon refusals print no credential) leaves it out.
+			says: func(*issueVolume) string {
+				return "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: it does not exist"
 			},
 		},
 		{
@@ -1722,11 +1724,12 @@ func TestWorkspaceInitProvisionSetsTrunkToTheDefaultBranch(t *testing.T) {
 // workspace-init's lines and its failures pass the URL rule. A repository cache that cannot be
 // reached is logged on stdout while `provision` waits for it, and named on stderr in the failure the
 // wait ends in, each time with the error of the ask (workspace's askCache), which quotes
-// LEGION_REPOSITORY_CACHE_URL with its user name and its query: each line keeps the cache's host and
-// path, and neither the user name nor the query reaches the init log. A cache that is never ready
-// is a cause outside the issue's volume, so `provision` exits workspace.InitExitOutsideVolume. The
-// wait reads and sleeps on the clock of the volume's process (issueVolume.proc), whose waits pass
-// at once: on the process's own clock it would last workspace.CacheWaitTimeout.
+// LEGION_REPOSITORY_CACHE_URL with its user name and its query: each line names the cache by its
+// scheme, the mark of a URL with credentials and its path, and neither the user name nor the query
+// reaches the init log. A cache that is never ready is a cause outside the issue's volume, so
+// `provision` exits workspace.InitExitOutsideVolume. The wait reads and sleeps on the clock of the
+// volume's process (issueVolume.proc), whose waits pass at once: on the process's own clock it
+// would last workspace.CacheWaitTimeout.
 func TestWorkspaceInitProvisionWritesNoURLCredentials(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t)
@@ -1738,7 +1741,7 @@ func TestWorkspaceInitProvisionWritesNoURLCredentials(t *testing.T) {
 	clock := v.instantClock()
 
 	code, stdout, stderr := v.answered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
-	shown := "http://" + cache + "/widgets"
+	shown := "http://[a URL with credentials]/widgets"
 	if want := "workspace-init: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}
@@ -1822,10 +1825,10 @@ func TestWorkspaceInitProvisionLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "ghs_test") {
 		t.Fatalf("provision logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
 	}
-	if want := "workspace-init: fetch attempt 1 failed; retrying in 5s: fatal: unable to access 'https://github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
+	if want := "workspace-init: fetch attempt 1 failed; retrying in 5s: fatal: unable to access 'https://[a URL with credentials]/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
 		t.Fatalf("stdout %q, want %q", stdout, want)
 	}
-	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://github.com/acme/widgets/'"} {
+	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://[a URL with credentials]/acme/widgets/'"} {
 		if !strings.Contains(stderr, says) {
 			t.Fatalf("stderr %q, want it to name %q", stderr, says)
 		}

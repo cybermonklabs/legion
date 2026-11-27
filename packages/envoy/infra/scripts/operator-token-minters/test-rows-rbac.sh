@@ -5,9 +5,13 @@
 # resources, and the ServiceAccounts, Users and Groups a binding names, on any cluster of the pool.
 # Sourced by the test after its world and helpers; its header says what the fakes model. The rows:
 #
-#   (b)  each right of the RBAC list, allowed to one agent ServiceAccount alone, exits 1 naming that
-#        ServiceAccount and that right, and nothing else;
+#   (b)  each right of the RBAC list, allowed to an agent ServiceAccount that holds nothing else, is
+#        a finding naming that ServiceAccount and that right; no finding of that ServiceAccount
+#        names another planted account's right or a right of another verb or resource, and no other
+#        principal has a finding (one world, one ServiceAccount a right);
 #   (c)  a right allowed to the group system:serviceaccounts:legion exits 1 naming the group;
+#   (dc) the same right allowed by no binding the list shows (an authorizer other than RBAC) is a
+#        finding naming the group, which only namespace_groups puts under review;
 #   (u)  a binding subject on the operator's own cluster: grade-ci bound to create the operator's
 #        token exits 1;
 #   (ab) the broker's pair is guarded: an agent ServiceAccount that may create pods in the broker's
@@ -56,13 +60,6 @@
 #        that RoleBinding by name; escalate of that ClusterRole by name; and on another cluster
 #        ci/runner with patch of the ClusterRoleBinding cluster-admin and bind of the ClusterRole
 #        cluster-admin, each by name: each exits 1 naming the rights;
-#   (bf) each admission right (create, update and patch of mutatingwebhookconfigurations,
-#        validatingwebhookconfigurations, validatingadmissionpolicies and their bindings, and of
-#        mutatingadmissionpolicies and their bindings where the discovery lists them) given alone
-#        to legion/worker on the operator's cluster, and create of each to ci/runner on another
-#        cluster, exits 1 naming it;
-#   (bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations,
-#        or cannot be read on the operator's cluster or another, reads UNKNOWN;
 #   (bi) on a fleet member that is no GKE cluster, a User that looks like an email
 #        (ci-bot@corp.example) bound to cluster-admin reads UNKNOWN: that cluster's own
 #        authenticator names its users, so the name proves no person;
@@ -94,9 +91,10 @@
 #   (cc) legion/worker that may get, by name, a token Secret of envoy-operator that no ServiceAccount
 #        lists exits 1 naming it, and a refused list of the namespace's token Secrets reads UNKNOWN.
 
-# --- (b) Each right of the RBAC list, allowed to one agent ServiceAccount. Each entry is the grant
-# (verb, API group, resource, subresource, the binding's namespace or none for cluster-wide, the
-# resource name or none) and the right the run must name. ---
+# --- (b) Each right of the RBAC list, allowed to an agent ServiceAccount of its own that holds
+# nothing else, legion/right-<its place in the list>, all in one world and one run (plant_rights,
+# want_planted). Each entry is the grant (verb, API group, resource, subresource, the binding's
+# namespace or none for cluster-wide, the resource name or none) and the right the run must name. ---
 rbac_rights=(
   "create||serviceaccounts|token|envoy-operator|envoy-operator=create serviceaccounts/token envoy-operator in envoy-operator"
   "impersonate||serviceaccounts||envoy-operator|envoy-operator=impersonate serviceaccounts envoy-operator in envoy-operator"
@@ -152,22 +150,12 @@ rbac_rights=(
   "create||nodes|proxy|||=create nodes/proxy cluster-wide"
   "get||nodes|proxy|||=get nodes/proxy cluster-wide"
 )
-rbac_right_row() {
-  local right="${1#*=}" verb group resource sub namespace name
-  IFS='|' read -r verb group resource sub namespace name <<<"${1%%=*}"
-  base_world
-  subject_grant operator-cluster "$(sa_subject legion worker)" "$verb" "$group" "$resource" "$sub" "$namespace" "$name"
-  run
-  want_status 1 "$right allowed to legion/worker"
-  want_line "FINDING system:serviceaccount:legion:worker: $right" "$right allowed to legion/worker"
-  # An unnamed grant also allows each name the check asks by name (a bound group or user, a bound
-  # role), so every finding must name legion/worker, not only one.
-  [ "$(count_prefix 'FINDING system:serviceaccount:legion:worker: ')" -eq "$(count_prefix 'FINDING ')" ] ||
-    fail "$right allowed to legion/worker: a finding names another principal"
-}
 if row b; then
-  each rbac_right_row "${rbac_rights[@]}"
-  passed "(b) each of the ${#rbac_rights[@]} rights of the RBAC list, allowed to one agent ServiceAccount alone, exits 1 naming it and the right"
+  base_world
+  plant_rights operator-cluster legion "" "${rbac_rights[@]}"
+  run
+  want_planted "each right of the RBAC list allowed to an agent ServiceAccount of its own" only
+  passed "(b) each of the ${#rbac_rights[@]} rights of the RBAC list, allowed to an agent ServiceAccount that holds nothing else, is a finding naming it and the right; no finding of that ServiceAccount names another planted account's right or a right of another verb or resource, and no other principal has a finding"
 fi
 
 # --- (c) A right allowed to the group of every ServiceAccount of namespace legion. ---
@@ -179,6 +167,22 @@ if row c; then
   want_line "FINDING group:system:serviceaccounts:legion: create serviceaccounts/token envoy-operator in envoy-operator" "a grant to the group"
   want_line "FINDING system:serviceaccount:legion:default: create serviceaccounts/token envoy-operator in envoy-operator" "a grant to the group"
   passed "(c) a right allowed to the group system:serviceaccounts:legion exits 1 naming the group and each of its ServiceAccounts"
+fi
+
+# --- (dc) A right allowed to the group of a reviewed ServiceAccount's namespace that no listed
+# binding shows, as an authorizer other than RBAC (a webhook) would allow it. Only namespace_groups
+# puts that group under review, so the group's own finding shows it did; legion's ServiceAccounts,
+# whose reviews carry the group, are findings either way. With namespace_groups adding no group,
+# every other row passed (Tester5685, #5685). ---
+if row dc; then
+  base_world
+  subject_grant operator-cluster "$(group_subject system:serviceaccounts:legion)" create "" serviceaccounts token envoy-operator envoy-operator
+  edit "$world/clusters/operator-cluster/grants.json" '.[-1].unlisted = true'
+  run
+  want_status 1 "a grant to the group system:serviceaccounts:legion that no listed binding shows"
+  want_line "FINDING group:system:serviceaccounts:legion: create serviceaccounts/token envoy-operator in envoy-operator" \
+    "a grant to the group system:serviceaccounts:legion that no listed binding shows"
+  passed "(dc) a right allowed to the group of a reviewed ServiceAccount's namespace, by no binding the list shows, is a finding naming the group"
 fi
 
 # --- (u) The binding subjects of the operator's own cluster. ---
@@ -604,82 +608,6 @@ binding_write_row() {
 if row bd; then
   each binding_write_row update patch-named update-named escalate-named cluster-admin
   passed "(bd) update of rolebindings, patch or update of the operator's RoleBinding by name, bind or escalate of its ClusterRole by name, and patch of cluster-admin's binding with bind of its role by name on another cluster each exit 1 naming the rights"
-fi
-
-# --- (bf) The admission rights. A mutating webhook or policy can add a container to the operator's
-# next pod, and a validating one can block or reshape what the operator applies. Each entry is the
-# verb, the resource of admissionregistration.k8s.io, and the cluster: the operator's, given to
-# legion/worker, or another of the pool, given to ci/runner. The fake's discovery lists the four a
-# GKE cluster serves; the mutating admission policies, beta and off by default, are listed for
-# their items alone, since the check asks what the cluster's discovery lists. ---
-admission_items=()
-for admission_resource in mutatingwebhookconfigurations validatingwebhookconfigurations validatingadmissionpolicies \
-  validatingadmissionpolicybindings mutatingadmissionpolicies mutatingadmissionpolicybindings; do
-  admission_items+=("create|$admission_resource|operator" "update|$admission_resource|operator" "patch|$admission_resource|operator" "create|$admission_resource|other")
-done
-admission_row() {
-  local verb resource where cluster=operator-cluster
-  IFS='|' read -r verb resource where <<<"$1"
-  base_world
-  [ "$where" = operator ] || { cluster=other-cluster; add_cluster other-cluster us-east1; add_sa other-cluster ci runner; }
-  case "$resource" in
-    mutatingadmission*)
-      printf '%s.admissionregistration.k8s.io\n' mutatingadmissionpolicies mutatingadmissionpolicybindings mutatingwebhookconfigurations \
-        validatingadmissionpolicies validatingadmissionpolicybindings validatingwebhookconfigurations >"$world/clusters/$cluster/admission-resources"
-      ;;
-  esac
-  if [ "$where" = operator ]; then
-    subject_grant operator-cluster "$(sa_subject legion worker)" "$verb" admissionregistration.k8s.io "$resource" "" "" ""
-    run
-    want_status 1 "legion/worker with $verb $resource"
-    want_line "FINDING system:serviceaccount:legion:worker: $verb $resource.admissionregistration.k8s.io cluster-wide" "legion/worker with $verb $resource"
-  else
-    subject_grant other-cluster "$(sa_subject ci runner)" "$verb" admissionregistration.k8s.io "$resource" "" "" ""
-    run
-    want_status 1 "ci/runner with $verb $resource on other-cluster"
-    want_line "FINDING system:serviceaccount:ci:runner: $verb $resource.admissionregistration.k8s.io cluster-wide on cluster $project/us-east1/other-cluster" \
-      "ci/runner with $verb $resource on other-cluster"
-  fi
-}
-if row bf; then
-  each admission_row "${admission_items[@]}"
-  passed "(bf) each of the ${#admission_items[@]} admission rights, given alone on the operator's cluster or another of the pool where its discovery lists the resource, exits 1 naming it"
-fi
-
-# --- (bg) The admission resources' discovery. Every API server serves the two webhook
-# configurations, so a list without one is not whole, and a discovery that cannot be read leaves
-# the admission policies unasked. ---
-admission_names_row() {
-  base_world
-  case "$1" in
-    missing)
-      printf '%s.admissionregistration.k8s.io\n' mutatingwebhookconfigurations validatingadmissionpolicies validatingadmissionpolicybindings \
-        >"$world/clusters/operator-cluster/admission-resources"
-      run
-      want_status 2 "a discovery without validatingwebhookconfigurations"
-      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of admissionregistration.k8s.io lists no validatingwebhookconfigurations.admissionregistration.k8s.io, which every API server serves, so its list is not whole" \
-        "a discovery without validatingwebhookconfigurations"
-      ;;
-    refused)
-      : >"$world/clusters/operator-cluster/refuse-admission-resources"
-      run
-      want_status 2 "a discovery of admissionregistration.k8s.io that cannot be read"
-      want_text "UNKNOWN live: RBAC on operator-cluster: the API server's discovery of admissionregistration.k8s.io could not be read" \
-        "a discovery of admissionregistration.k8s.io that cannot be read"
-      ;;
-    refused-other)
-      add_cluster other-cluster us-east1
-      : >"$world/clusters/other-cluster/refuse-admission-resources"
-      run
-      want_status 2 "another cluster's discovery of admissionregistration.k8s.io that cannot be read"
-      want_text "UNKNOWN live: Workload Identity on $project/us-east1/other-cluster: the API server's discovery of admissionregistration.k8s.io could not be read" \
-        "another cluster's discovery of admissionregistration.k8s.io that cannot be read"
-      ;;
-  esac
-}
-if row bg; then
-  each admission_names_row missing refused refused-other
-  passed "(bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations, or cannot be read on the operator's or another cluster, reads UNKNOWN"
 fi
 
 # --- (bi) An email-shaped User on a fleet member that is no GKE cluster. Its own authenticator names

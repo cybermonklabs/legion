@@ -2376,3 +2376,47 @@ func TestALaunchThatWaitedOutAPendingPodReportsItsEvents(t *testing.T) {
 		}
 	}
 }
+
+// A pending pod's FailedMount on the providers volume names the setting whose key is missing, not
+// the key: the kubelet's message quotes it, and a provider_keys value can be a provider's key
+// pasted where its name goes, here a made-up one, among three keys. Another volume's message of
+// the same wording, whose key matches a providers key, is printed as written, as is the event's
+// type and reason.
+func TestAPendingPodsEventsNameTheSettingOfAMissingProvidersKey(t *testing.T) {
+	const pasted = "MadeUpProviderKey0123456789abcdefXYZ"
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "ANTHROPIC", "OPENAI_API_KEY": pasted, "GEMINI_API_KEY": "token"}
+	}))
+	loc := g.spawn(workerSpec(t))
+	name := loc.Sandbox.Name
+	pod := g.pod(name)
+	for i, message := range []string{
+		`MountVolume.SetUp failed for volume "providers" : references non-existent secret key: ` + pasted,
+		`MountVolume.SetUp failed for volume "operator-token" : references non-existent secret key: token`,
+	} {
+		if _, err := g.kube.CoreV1().Events(testNamespace).Create(g.ctx, &corev1.Event{
+			ObjectMeta:     metav1.ObjectMeta{Name: fmt.Sprintf("%s.%d", name, i), Namespace: testNamespace},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: name, UID: pod.UID},
+			Type:           "Warning", Reason: "FailedMount", Message: message,
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.update(pod, func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending })
+	g.eventually("the informer to see the pending pod", func() bool {
+		p := g.r.storedPod(name)
+		return p != nil && p.Status.Phase == corev1.PodPending
+	})
+	detail := g.r.waitedOut(g.ctx, g.sandbox(name))
+	if strings.Contains(detail, pasted) {
+		t.Fatalf("waitedOut = %q, prints the made-up key of the providers Secret", detail)
+	}
+	for _, want := range []string{
+		`Warning FailedMount: MountVolume.SetUp failed for volume "providers" : references a key the Secret does not hold: the key of provider_keys.OPENAI_API_KEY`,
+		`Warning FailedMount: MountVolume.SetUp failed for volume "operator-token" : references non-existent secret key: token`,
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("waitedOut = %q, want it to carry %q", detail, want)
+		}
+	}
+}
