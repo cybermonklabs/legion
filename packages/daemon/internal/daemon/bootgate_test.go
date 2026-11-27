@@ -727,7 +727,8 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 		var watch *groupWatch
 		gate.expire, watch = budgetPassedOnceTheProbeIsGone(leader, gate.timeout, until)
 
-		r, err := gate.run(context.Background(), `echo $$ >"$2"; echo answered >&2; setsid sh -c 'echo $$ >"$0"; while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null; do sleep 0.01; done' "$1" "$3" "$4" & while [ ! -s "$1" ]; do sleep 0.01; done; exit 0`, pidFile, leader, release, strconv.Itoa(os.Getpid()))
+		// CONTROL ONLY: the child stays in the probe's group (no setsid), so the group never goes.
+		r, err := gate.run(context.Background(), `echo $$ >"$2"; echo answered >&2; sh -c 'echo $$ >"$0"; while [ ! -e "$1" ] && kill -0 "$2" 2>/dev/null; do sleep 0.01; done' "$1" "$3" "$4" & while [ ! -s "$1" ]; do sleep 0.01; done; exit 0`, pidFile, leader, release, strconv.Itoa(os.Getpid()))
 
 		<-watch.done
 		// The run is over: its child is released, and killed in case the release does not reach it.
