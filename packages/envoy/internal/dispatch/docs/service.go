@@ -798,8 +798,8 @@ func (s *Service) discardSuppressedSlot(room string, slot *suppressSlot) {
 	}
 }
 
-// consumeSuppressedPersistence takes the suppression slot update is the writer's own, and reports
-// whether the room's persistence leaves update to that writer. Slots are queued in the order
+// consumeSuppressedPersistence takes the suppression slot of the writer whose update this is, and
+// reports whether the room's persistence leaves update to that writer. Slots are queued in the order
 // their writers prepare them, and updates reach the room's worker in the order ygo hands them on,
 // and the two need not agree: a published write and a settlement's repair each prepare a slot
 // before their transaction, and the document's lock can take the second one's first. So an update
@@ -815,11 +815,15 @@ func (s *Service) discardSuppressedSlot(room string, slot *suppressSlot) {
 // published write's or a catch-up's lost nothing, its class being stored, but its slot stayed at
 // the head, where a later repair's update met it and lost its class the same way.
 //
-// An update that is no slot's - a browser's - waits on the first slot, so an update ygo hands on
-// after a writer's is stored after it. A browser update whose bytes match a repair's - a deletion
-// leaves an update that carries no struct, only its own deletes, so a browser's deletion of the
-// items a repair deleted leaves the repair's bytes - takes that repair's slot, and is stored all
-// the same, its own class not being stored (StoreUpdateContext).
+// An update that is no writer's - a browser's - waits until the writer of the first slot queued
+// has finished that slot, and then goes by as no slot's. That holds back a browser's update that
+// ygo hands on ahead of the first writer's own update: it is stored only once that writer is done,
+// a repair's writer once its transaction has committed (finishSlots), a published write's once its
+// update is in the room (onLoadDocument), never while the writer is still in its write. A browser
+// update whose bytes match a repair's - a deletion leaves an update that carries no struct, only
+// its own deletes, so a browser's deletion of the items a repair deleted leaves the repair's bytes
+// - takes that repair's slot, and is stored all the same, its own class not being stored
+// (StoreUpdateContext).
 func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool {
 	for {
 		s.suppressMu.Lock()

@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,8 +66,8 @@ func TestEachUpdateTakesItsOwnWritersSuppressionSlot(t *testing.T) {
 // repair's queued class (finishUpdateClass) only once the repair is stored (storeRepair), so the
 // class is still there for it. Taken by the first slot, the update went by at once, and the worker
 // removed the class the repair's writer had yet to read (errUnclassifiedRepair). The test sees the
-// worker's call block before it finishes the repair's slot, so a call that waits for nothing
-// fails it.
+// worker's call parked on a slot before it finishes the repair's slot, so a call that waits for
+// nothing fails it.
 func TestARepairsUpdateWaitsForItsOwnWriterBehindAnotherWritersSlot(t *testing.T) {
 	// Not parallel: it reads every goroutine's stack in the process (goroutinesIn), where another
 	// test's goroutines would count as its own.
@@ -75,17 +76,7 @@ func TestARepairsUpdateWaitsForItsOwnWriterBehindAnotherWritersSlot(t *testing.T
 	ahead, own := service.prepareSuppressedPersistence("room"), service.prepareSuppressedPersistence("room")
 	service.finishSuppressedPersistence(ahead, published)
 	service.recordSuppressedCommit(own, repaired)
-	waiting := goroutinesIn("consumeSuppressedPersistence")
-	consumed := make(chan bool, 1)
-	go func() { consumed <- service.consumeSuppressedPersistence("room", repaired) }()
-	waitFor(t, 10*time.Second, "the repair's update to wait in the room's persistence", func() bool {
-		select {
-		case taken := <-consumed:
-			t.Fatalf("the repair's update went by (took its slot: %t) before the repair's writer had stored it", taken)
-		default:
-		}
-		return goroutinesIn("consumeSuppressedPersistence") > waiting
-	})
+	consumed := startParkedConsume(t, service, repaired, "the repair's update")
 	service.finishSuppressedPersistence(own, repaired)
 	if !testwait.Receive(t, "the repair's update to take its slot once its writer finished it", consumed) {
 		t.Fatal("the repair's update went by as no writer's: it did not take its own writer's slot")
@@ -96,35 +87,55 @@ func TestARepairsUpdateWaitsForItsOwnWriterBehindAnotherWritersSlot(t *testing.T
 	requireSlotsQueued(t, service, "room", 0)
 }
 
-// An update that is no writer's - a browser's - waits on the first slot until that slot's writer
-// has finished, and then goes by as no slot's, so an update ygo hands on after a writer's is stored
-// after it; the slot stays for its own writer's update.
+// An update that is no writer's - a browser's - waits on the first slot queued, not on another,
+// until that slot's writer has finished, and then goes by as no slot's, taking neither slot. Two
+// writers' slots stand queued, neither finished: finishing the second leaves the call waiting, and
+// finishing the first lets it go by with both slots still queued for their own writers' updates.
 func TestABrowsersUpdateWaitsOnTheFirstSlotAndTakesNone(t *testing.T) {
 	// Not parallel: it reads every goroutine's stack in the process (goroutinesIn), where another
 	// test's goroutines would count as its own.
 	service := &Service{}
-	published := []byte("a published write's update")
-	slot := service.prepareSuppressedPersistence("room")
-	waiting := goroutinesIn("consumeSuppressedPersistence")
-	consumed := make(chan bool, 1)
-	go func() { consumed <- service.consumeSuppressedPersistence("room", []byte("a browser's update")) }()
-	waitFor(t, 10*time.Second, "the browser's update to wait on the writer's slot", func() bool {
-		select {
-		case taken := <-consumed:
-			t.Fatalf("the browser's update went by (took a slot: %t) before the writer ahead of it finished", taken)
-		default:
-		}
-		return goroutinesIn("consumeSuppressedPersistence") > waiting
-	})
-	service.finishSuppressedPersistence(slot, published)
-	if testwait.Receive(t, "the browser's update to go by once the writer finished", consumed) {
-		t.Fatal("a browser's update took the published write's slot")
+	firstUpdate, secondUpdate := []byte("the first writer's update"), []byte("the second writer's update")
+	first, second := service.prepareSuppressedPersistence("room"), service.prepareSuppressedPersistence("room")
+	consumed := startParkedConsume(t, service, []byte("a browser's update"), "the browser's update")
+	service.finishSuppressedPersistence(second, secondUpdate)
+	// A call that waited on the second slot, or on any slot, goes by once it is finished; one that
+	// waits on the first does not.
+	if testwait.Holds(200*time.Millisecond, testwait.Poll, func() bool { return len(consumed) > 0 }) {
+		t.Fatalf("the browser's update went by (took a slot: %t) once the second slot was finished, before the first", <-consumed)
 	}
-	requireSlotsQueued(t, service, "room", 1)
-	if !service.consumeSuppressedPersistence("room", published) {
-		t.Fatal("the published write's update went by as no writer's")
+	service.finishSuppressedPersistence(first, firstUpdate)
+	if testwait.Receive(t, "the browser's update to go by once the first writer finished", consumed) {
+		t.Fatal("a browser's update took a writer's slot")
+	}
+	requireSlotsQueued(t, service, "room", 2)
+	for _, update := range [][]byte{firstUpdate, secondUpdate} {
+		if !service.consumeSuppressedPersistence("room", update) {
+			t.Fatalf("%q went by as no writer's", update)
+		}
 	}
 	requireSlotsQueued(t, service, "room", 0)
+}
+
+// startParkedConsume hands update to service's persistence for "room" in a call of its own and
+// returns once that call is parked on a slot's ready channel - a goroutine in
+// consumeSuppressedPersistence whose state is [chan receive] - failing the test if the call returns
+// first. Counting any goroutine in the function would count a call on its way to returning. The
+// call's answer arrives on the channel returned.
+func startParkedConsume(t *testing.T, service *Service, update []byte, what string) <-chan bool {
+	t.Helper()
+	parked := goroutinesIn("consumeSuppressedPersistence", "[chan receive]")
+	consumed := make(chan bool, 1)
+	go func() { consumed <- service.consumeSuppressedPersistence("room", update) }()
+	waitFor(t, 10*time.Second, what+" to park on a slot in the room's persistence", func() bool {
+		select {
+		case taken := <-consumed:
+			t.Fatalf("%s went by (took a slot: %t) before the writer it waits for finished", what, taken)
+		default:
+		}
+		return goroutinesIn("consumeSuppressedPersistence", "[chan receive]") > parked
+	})
+	return consumed
 }
 
 // A settlement's block-id stamp is stored after two writers' updates reached the room in the
@@ -140,6 +151,9 @@ func TestABrowsersUpdateWaitsOnTheFirstSlotAndTakesNone(t *testing.T) {
 // (publishLiveUpdate), with slots queued ahead of their Applies. The store holds neither, and no
 // open live write stands for them: what this test pins is the worker's pairing, which reads
 // neither, their classes being queued stored. It is no test of a published write's durability.
+// The block the settlement stamps is written before them, so it builds only on stored history and
+// a load of the store holds it: the store check reads that block before the settlement, without
+// an id, and after it, with one.
 func TestAStampIsStoredAfterTwoWritersCommittedOutOfTheirSlotsOrder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -147,6 +161,14 @@ func TestAStampIsStoredAfterTwoWritersCommittedOutOfTheirSlotsOrder(t *testing.T
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
+	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "added"))
+	if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs == 0 {
+		t.Fatal("the room has no block to stamp: the settlement would write no stamp")
+	}
+	waitForPersistedProofText(t, service.store, artifactID, "before\n\nadded\n")
+	if repairs := storedBlocksWithoutID(t, service, artifactID); repairs != 1 {
+		t.Fatalf("the store holds %d blocks without an id before the settlement, want the 1 it is to stamp", repairs)
+	}
 	live := service.srv.GetDoc(artifactID)
 	first, second := service.prepareSuppressedPersistence(artifactID), service.prepareSuppressedPersistence(artifactID)
 	publish := func(slot *suppressSlot, markdown string) {
@@ -160,10 +182,6 @@ func TestAStampIsStoredAfterTwoWritersCommittedOutOfTheirSlotsOrder(t *testing.T
 	}
 	publish(second, "The second writer's paragraph.\n")
 	publish(first, "The first writer's paragraph.\n")
-	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "added"))
-	if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs == 0 {
-		t.Fatal("the room has no block to stamp: the settlement would write no stamp")
-	}
 
 	var reached bool
 	service.afterSettleReconcile = func(room string) {
@@ -200,14 +218,25 @@ func TestAStampIsStoredAfterTwoWritersCommittedOutOfTheirSlotsOrder(t *testing.T
 	if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs != 0 {
 		t.Fatalf("the room holds %d blocks without an id: the settlement wrote no stamp", repairs)
 	}
+	if repairs := storedBlocksWithoutID(t, service, artifactID); repairs != 0 {
+		t.Fatalf("the store holds %d blocks without an id: the stamp was not stored", repairs)
+	}
+}
+
+// storedBlocksWithoutID loads artifactID's document from the store and counts the blocks it holds
+// without a block id, once it has found the block "added" there: a load that misses the block
+// would count none, as a store that holds the stamp does.
+func storedBlocksWithoutID(t *testing.T, service *Service, artifactID string) int {
+	t.Helper()
 	stored := loadDocument(t, service.persistence.(*PgVersioned), artifactID)
+	if markdown := docMarkdown(stored.Doc); !strings.Contains(markdown, "added") {
+		t.Fatalf("the stored document renders %q, without the block the settlement stamps", markdown)
+	}
 	tree, err := treeOf(stored.Doc)
 	if err != nil {
 		t.Fatalf("read the stored document: %v", err)
 	}
-	if repairs := pmdoc.BlockIDRepairCount(tree); repairs != 0 {
-		t.Fatalf("the store holds %d blocks without an id: the stamp was not stored", repairs)
-	}
+	return pmdoc.BlockIDRepairCount(tree)
 }
 
 // requireSlotsQueued fails the test unless want suppression slots are queued for room.
