@@ -132,6 +132,7 @@ import {
 import { caseClaim } from "./daemon-standin-world";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { World } from "./heldout-case";
+import { writtenVersion } from "./outcome";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
 import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
@@ -1228,7 +1229,10 @@ async function caseDispatchFaults(world: World): Promise<string[]> {
  * it fails the seed. The id the scratch Dispatch gives the document of each step of the claim
  * tree's design gate (`world.daemon.gate`, the document of the claim's tree root by its file name)
  * goes in dispatch-fixture.json (`gate`, by step), and the prompt names it wherever it names the
- * world's id of that document. */
+ * world's id of that document. dispatch-fixture.json's `ids` holds each id Dispatch gave a record
+ * the world names by an id of its own, under `<kind>/<the world's id>` (`comment/c-1`, `ask/a1`,
+ * `artifact/<a gate's artifactId>`), absent where there is none: the prompt names each one by
+ * Dispatch's id, and outcome.ts writes it back as the world's. */
 export async function seedCaseDispatch(runDir: string): Promise<void> {
   const world = World.parse(
     JSON.parse(readFileSync(path.join(runDir, "launch-world.json"), "utf8"))
@@ -1483,16 +1487,22 @@ export async function seedCaseDispatch(runDir: string): Promise<void> {
     writeFileSync(prompt, text);
   }
   const seeded = await caseEvents(issue.key);
+  // Each id the world names a comment, an ask or a gate's document by, with the id Dispatch gave
+  // it, which outcome.ts writes back as the world's wherever the run's records name it.
+  const given = [...ids, ...[...artifacts].map(([stated, id]) => [`artifact/${stated}`, id])];
   const fixture = {
     issue: issue.key,
     seedThrough: seeded.at(-1)?.seq ?? 0,
     ...(rows.length === 0 ? {} : { gate }),
+    ...(given.length === 0 ? {} : { ids: Object.fromEntries(given) }),
   };
   writeFileSync(path.join(runDir, "dispatch-fixture.json"), `${JSON.stringify(fixture)}\n`);
 }
 
 /** Keep the native API envelopes and original timestamps; outcome.ts selects run writes and
- * reshapes them to the machine-independent schema. Each handoff carries its immutable body. */
+ * reshapes them to the machine-independent schema. Each handoff carries its immutable body, and
+ * each version of a document of the issue that an event after the seed wrote (outcome.ts
+ * writtenVersion) carries its text, read through Dispatch's own version route (`versions`). */
 export async function captureCaseDispatch(runDir: string): Promise<void> {
   const { issue: key, seedThrough } = CaseDispatchFixture.parse(
     JSON.parse(readFileSync(path.join(runDir, "dispatch-fixture.json"), "utf8"))
@@ -1508,15 +1518,30 @@ export async function captureCaseDispatch(runDir: string): Promise<void> {
     }))
   );
   const handoffs = await handoffsOf(key);
+  const comments = await listComments(key, undefined, reader);
+  const asks = await listIssueAsks(key, reader);
+  const results = await getIssueResults(key, reader);
+  const events = await caseEvents(key);
+  const texts = new Set(documents.filter(({ kind }) => kind === "doc").map(({ id }) => id));
+  const versions: { artifact_id: string; number: number; markdown: string }[] = [];
+  for (const event of events) {
+    const written = event.seq > seedThrough ? writtenVersion(event) : undefined;
+    if (written === undefined || !texts.has(written.id)) continue;
+    const { id, version } = written;
+    if (versions.some((each) => each.artifact_id === id && each.number === version)) continue;
+    const { markdown } = await getArtifactVersion(id, version, reader);
+    versions.push({ artifact_id: id, number: version, markdown });
+  }
   const captured = {
     issue,
     seedThrough,
     documents,
+    versions,
     handoffs,
-    comments: await listComments(key, undefined, reader),
-    asks: await listIssueAsks(key, reader),
-    results: await getIssueResults(key, reader),
-    events: await caseEvents(key),
+    comments,
+    asks,
+    results,
+    events,
   };
   writeFileSync(path.join(runDir, "dispatch-readback.json"), `${JSON.stringify(captured)}\n`);
 }

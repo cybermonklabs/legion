@@ -1602,6 +1602,59 @@ describe("case-world Dispatch", () => {
     expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toBe(
       `From the tester: dispatch://${key}/comment/${comment?.id}. See dispatch://${key}/ask/${ask?.id} and dispatch://ACME-1/comment/c-1.\n`
     );
+    // The fixture keeps each id it gave, under the world's, for outcome.ts to write back.
+    expect(
+      JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8")).ids
+    ).toMatchObject({ "comment/c-1": comment?.id, "ask/a1": ask?.id });
+  });
+
+  // Catches: a document the run wrote whose text no readback holds, so the outcome could carry no
+  // body for it. The readback reads the text of each version of a document of the issue that an
+  // event after the seed wrote, through Dispatch's own version route, and of no other.
+  test("the readback holds the text of each document version written after the seed", async () => {
+    const p09 = parseSkillUseFile(example("skilluse")).cases.find(({ id }) => id === "P09");
+    if (!p09) throw new Error("missing P09");
+    const dir = runDir();
+    writeFileSync(path.join(dir, "launch-world.json"), JSON.stringify(p09.world));
+    const at = "2030-01-09T09:15:00Z";
+    dispatch.events.push({ seq: 1, type: "issue.created", created_at: at });
+    await seed.seedCaseDispatch(dir);
+    const seeded = dispatch.artifacts.find(({ name }) => name === "verification.md");
+    if (seeded === undefined) throw new Error("P09's verification.md was not seeded");
+    const version = (number: number, markdown: string) => ({
+      number,
+      created_at: at,
+      authors: [runSession],
+      markdown,
+    });
+    seeded.versions = [version(1, "seeded"), version(2, "the run's second"), version(3, "third")];
+    dispatch.events.push(
+      {
+        seq: 2,
+        type: "artifact.version",
+        created_at: at,
+        ...{ payload: { artifact_id: seeded.id, name: seeded.name, version: { number: 2 } } },
+      },
+      {
+        seq: 3,
+        type: "artifact.version",
+        created_at: at,
+        ...{ payload: { artifact_id: seeded.id, name: seeded.name, version: { number: 3 } } },
+      },
+      { seq: 4, type: "comment.created", created_at: at }
+    );
+    await seed.captureCaseDispatch(dir);
+    const data = JSON.parse(readFileSync(path.join(dir, "dispatch-readback.json"), "utf8"));
+    expect(data.seedThrough).toBe(1);
+    expect(data.versions).toEqual([
+      { artifact_id: seeded.id, number: 2, markdown: "the run's second" },
+      { artifact_id: seeded.id, number: 3, markdown: "third" },
+    ]);
+    expect(
+      dispatch.calls.filter(({ path }) =>
+        path.startsWith(`/api/v1/artifacts/${seeded.id}/versions/`)
+      )
+    ).toHaveLength(2);
   });
 
   /** P05's world with its Dispatch parts: the issue's labels, two other issues (ACME-13 under the
@@ -1773,6 +1826,9 @@ describe("case-world Dispatch", () => {
       spec: given,
     });
     expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toBe(`The spec is ${given}.\n`);
+    expect(JSON.parse(readFileSync(path.join(dir, "dispatch-fixture.json"), "utf8")).ids).toEqual({
+      [`artifact/${stated}`]: given,
+    });
   });
 
   test("a gate step whose document the claim tree's root does not hold fails the seed, naming it", async () => {

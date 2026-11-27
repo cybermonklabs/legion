@@ -773,3 +773,235 @@ test("the workspace is each jj operation by its end, in that order, with the wor
   const { dir: bare } = syntheticRun();
   expect(writeOutcome(bare)).not.toHaveProperty("workspace");
 });
+
+// A probe is the curl stand-in's line of a probe it answered, its revision written as the world's
+// commit; the stand-in writes no line for a call that is no probe, and a curl line that names no
+// probe is a broken record.
+test("a probe the curl stand-in answered is a probe action with the world's revision, and a curl line that names none fails the outcome", () => {
+  const { dir, write, caseHead } = syntheticRun();
+  const head = "a".repeat(40);
+  addCalls(dir, {
+    at: host("300"),
+    as: "curl",
+    argv: ["-s", "https://service.example/version"],
+    exit: 0,
+    target: "https://service.example/version",
+    revision: head,
+  });
+  const probes = writeOutcome(dir).actions.filter((action) => action.kind === "probe");
+  expect(probes).toEqual([
+    {
+      kind: "probe",
+      seq: 1,
+      at: `${caseTime("300").slice(0, -1)}000000Z`,
+      target: "https://service.example/version",
+      revision: caseHead,
+    },
+  ]);
+  write("calls.jsonl", JSON.stringify({ at: host("300"), as: "curl", argv: [], exit: 0 }));
+  expect(() => writeOutcome(dir)).toThrow("records no probe");
+});
+
+// A diff read is diff-recorder.ts's line of a `jj` or `git` diff read that exited 0 in the run's
+// workspace or a scratch copy under its TMPDIR; one that failed, and one of any other checkout, is
+// none, and diff-recorder.ts writes no line for a call that reads no diff.
+test("a diff read that exited 0 in the workspace or a scratch copy is a diff-read, and a failed one or one elsewhere is none", () => {
+  const { dir } = syntheticRun();
+  const read = (fraction: string, command: string, extra: object) => ({
+    at: host(fraction),
+    done: host(fraction),
+    as: command.split(" ")[0],
+    argv: command.split(" ").slice(1),
+    exit: 0,
+    command,
+    source: "$LEGION_WORKSPACE",
+    paths: [],
+    ...extra,
+  });
+  addCalls(
+    dir,
+    read("100", "jj diff", { paths: ["internal/api/doc.go"] }),
+    read("200", "git show", { source: "$TMPDIR/stage-a" }),
+    read("300", "git diff", { exit: 1, source: null, paths: null }),
+    read("400", "jj diff", { source: "/elsewhere/checkout" }),
+    read("500", "git diff", { source: "$HOME/notes" }),
+    read("600", "jj interdiff", { source: "$LEGION_WORKSPACE/vendor/lib" })
+  );
+  const reads = writeOutcome(dir).actions.filter((action) => action.kind === "diff-read");
+  expect(reads.map(({ command, source, paths }) => [command, source, paths])).toEqual([
+    ["jj diff", "$LEGION_WORKSPACE", ["internal/api/doc.go"]],
+    ["git show", "$TMPDIR/stage-a", []],
+    ["jj interdiff", "$LEGION_WORKSPACE/vendor/lib", []],
+  ]);
+});
+
+/** `dir`'s dispatch-readback.json with the issue's documents, each version's text read after the
+ * seed, and `events` added to its event log. */
+function addDocuments(
+  dir: string,
+  documents: object[],
+  versions: object[] | undefined,
+  ...events: object[]
+) {
+  const file = path.join(dir, "dispatch-readback.json");
+  const readback = JSON.parse(readFileSync(file, "utf8"));
+  readback.documents = documents;
+  if (versions !== undefined) readback.versions = versions;
+  readback.events.push(...events);
+  writeFileSync(file, JSON.stringify(readback));
+}
+
+// The documents are those the role's own sessions wrote after the seed, each at the last version
+// it wrote, with that version's text from the readback; another writer's document, a file, and a
+// document the run did not write have no entry.
+test("the outcome carries each document the run wrote at its last version and that version's text, and no other", () => {
+  const { dir } = syntheticRun();
+  const role = { kind: "session", id: "ses-synthetic" };
+  const person = { kind: "user", id: "usr-acme" };
+  const version = (seq: number, id: string, name: string, number: number, actor: object) => ({
+    seq,
+    created_at: `2026-01-07T15:00:02.0000000${seq}Z`,
+    type: "artifact.version",
+    issue_key: "ACME-12",
+    actor,
+    payload: { artifact_id: id, name, version: { number } },
+  });
+  const created = {
+    seq: 12,
+    created_at: "2026-01-07T15:00:02.000000012Z",
+    type: "artifact.created",
+    issue_key: "ACME-12",
+    actor: role,
+    payload: { artifact: { id: "art-notes", name: "notes.md", versions: [{ number: 1 }] } },
+  };
+  addDocuments(
+    dir,
+    [
+      { id: "art-plan", name: "plan.md", kind: "doc" },
+      { id: "art-notes", name: "notes.md", kind: "doc" },
+      { id: "art-spec", name: "spec.md", kind: "doc" },
+      { id: "art-log", name: "build.log", kind: "file" },
+      { id: "art-seeded", name: "verification.md", kind: "doc" },
+    ],
+    [
+      { artifact_id: "art-plan", number: 2, markdown: "Plan two.\n" },
+      { artifact_id: "art-plan", number: 3, markdown: "Plan three.\n" },
+      { artifact_id: "art-notes", number: 1, markdown: "Notes.\n" },
+      { artifact_id: "art-spec", number: 2, markdown: "A person's spec.\n" },
+      { artifact_id: "art-log", number: 2, markdown: "" },
+    ],
+    version(9, "art-plan", "plan.md", 2, role),
+    version(10, "art-plan", "plan.md", 3, role),
+    created,
+    version(13, "art-spec", "spec.md", 2, person),
+    version(14, "art-log", "build.log", 2, role)
+  );
+  // The seed's version of verification.md (seq 8 and below) is no write of the run's.
+  const got = writeOutcome(dir);
+  expect(got.documents).toEqual([
+    { name: "plan.md", version: 3, body: "Plan three.\n" },
+    { name: "notes.md", version: 1, body: "Notes.\n" },
+  ]);
+  expect(parseOutcome(readFileSync(path.join(dir, "outcome.json"), "utf8"))).toEqual(got);
+  // A version the run wrote whose text the readback lacks fails the outcome.
+  const { dir: lacking } = syntheticRun();
+  addDocuments(
+    lacking,
+    [{ id: "art-plan", name: "plan.md", kind: "doc" }],
+    [],
+    version(9, "art-plan", "plan.md", 2, role)
+  );
+  expect(() => writeOutcome(lacking)).toThrow("holds no text of version 2 of plan.md");
+  // A readback taken before the versions' text was read, and a run that wrote no document, have
+  // no documents.
+  const { dir: older } = syntheticRun();
+  addDocuments(
+    older,
+    [{ id: "art-plan", name: "plan.md", kind: "doc" }],
+    undefined,
+    version(9, "art-plan", "plan.md", 2, role)
+  );
+  expect(writeOutcome(older)).not.toHaveProperty("documents");
+  expect(writeOutcome(syntheticRun().dir)).not.toHaveProperty("documents");
+});
+
+// The scratch Dispatch gives a world's comment, ask and gate document ids of its own, and the
+// prompt names them by those; the outcome names each as the world does, in a Dispatch write's fields
+// and in a document's body alike. A run whose fixture names no id is recorded as Dispatch wrote it.
+test("each id the scratch Dispatch gave a record the world names is written as the world's id, and a fixture with no ids changes nothing", () => {
+  const scratchComment = "0b6c2f1e-1d2a-4c3b-8e4f-5a6b7c8d9e01";
+  const scratchDocument = "7d2a9b4c-3e5f-4a6b-9c8d-0e1f2a3b4c02";
+  const body = `Answers dispatch://ACME-12/comment/${scratchComment}; see ${scratchDocument}.`;
+  const runWith = (fixture: object | undefined) => {
+    const { dir, write } = syntheticRun();
+    if (fixture !== undefined) write("dispatch-fixture.json", JSON.stringify(fixture));
+    addDocuments(
+      dir,
+      [{ id: scratchDocument, name: "spec.md", kind: "doc" }],
+      [{ artifact_id: scratchDocument, number: 2, markdown: `${body}\n` }],
+      {
+        seq: 12,
+        created_at: "2026-01-07T15:00:02.000000007Z",
+        type: "comment.created",
+        issue_key: "ACME-12",
+        actor: { kind: "session", id: "ses-synthetic" },
+        payload: { body, reply_to: scratchComment },
+      },
+      {
+        seq: 13,
+        created_at: "2026-01-07T15:00:02.000000008Z",
+        type: "artifact.version",
+        issue_key: "ACME-12",
+        actor: { kind: "session", id: "ses-synthetic" },
+        payload: { artifact_id: scratchDocument, name: "spec.md", version: { number: 2 } },
+      }
+    );
+    const got = writeOutcome(dir);
+    const comment = got.actions.find(
+      (action) => action.kind === "dispatch" && action.command === "comment"
+    );
+    return { fields: comment?.kind === "dispatch" ? comment.fields : {}, got };
+  };
+  const world = "Answers dispatch://ACME-12/comment/c-1; see art-design.";
+  const mapped = runWith({
+    issue: "ACME-12",
+    seedThrough: 8,
+    ids: { "comment/c-1": scratchComment, "artifact/art-design": scratchDocument },
+  });
+  expect(mapped.fields).toEqual({ body: world, reply_to: "c-1" });
+  expect(mapped.got.documents).toEqual([{ name: "spec.md", version: 2, body: `${world}\n` }]);
+  const doc = mapped.got.actions.find(
+    (action) => action.kind === "dispatch" && action.command === "doc-edit"
+  );
+  expect(doc).toMatchObject({ fields: { artifact_id: "art-design" } });
+  for (const fixture of [{ issue: "ACME-12", seedThrough: 8 }, undefined]) {
+    const plain = runWith(fixture);
+    expect(plain.fields).toEqual({ body, reply_to: scratchComment });
+    expect(plain.got.documents).toEqual([{ name: "spec.md", version: 2, body: `${body}\n` }]);
+  }
+});
+
+// A staged Job keeps the bundle and the report path the role gave stage-job, and a Job staged with
+// neither has neither.
+test("a staged Job's bundle and report reach the outcome, and a Job staged with neither has neither", () => {
+  const { dir, write } = syntheticRun();
+  write(
+    "staging.jsonl",
+    `${JSON.stringify({
+      at: host("600"),
+      tree: "b".repeat(40),
+      files: ["app.ts"],
+      job: "build",
+      source: "$TMPDIR/stage-a",
+      bundle: "$TMPDIR/stage-a/bundle.tar",
+      report: "$TMPDIR/reports/build.json",
+    })}\n${JSON.stringify({ at: host("700"), tree: "c".repeat(40), files: ["app.ts"], job: "plain" })}\n`
+  );
+  const staged = writeOutcome(dir).actions.filter((action) => action.kind === "staging");
+  expect(staged).toMatchObject([
+    { bundle: "$TMPDIR/stage-a/bundle.tar", report: "$TMPDIR/reports/build.json" },
+    { job: "plain" },
+  ]);
+  expect(staged[1]).not.toHaveProperty("bundle");
+  expect(staged[1]).not.toHaveProperty("report");
+});

@@ -1990,6 +1990,67 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
         .split("\n")
         .map((line) => JSON.parse(line))
     ).toEqual([before, after]);
+    // The prompt names the form that takes a bundle and a report path, and each is recorded by the
+    // role's own name for the run's directory that holds it, made or not; a Job staged with neither
+    // records neither, and a flag stage-job does not take stages nothing.
+    expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toContain(
+      "stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>]"
+    );
+    const flagged = (...args: string[]) =>
+      childSpawn([path.join(dir, "bin", "stage-job"), ...args]);
+    const both = flagged(
+      "build",
+      a,
+      "--bundle",
+      path.join(a, "bundle.tar"),
+      `--report=${path.join(dir, "tmp", "reports", "build.json")}`
+    );
+    expect(both.exitCode).toBe(0);
+    expect(JSON.parse(both.stdout.toString())).toMatchObject({
+      job: "build",
+      source: "$TMPDIR/stage-a",
+      bundle: "$TMPDIR/stage-a/bundle.tar",
+      report: "$TMPDIR/reports/build.json",
+    });
+    expect(flagged("build", a, "--image", "x").exitCode).not.toBe(0);
+    const lines = readFileSync(path.join(dir, "staging.jsonl"), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(JSON.parse(lines[0] ?? "{}")).not.toHaveProperty("bundle");
+    expect(JSON.parse(lines[0] ?? "{}")).not.toHaveProperty("report");
+  });
+
+  // Catches: a probe the curl stand-in answered and recorded nowhere, which a grade would read as
+  // no probe made. The stand-in records each probe before it answers, and a probe it cannot record
+  // it does not answer; a call that is no probe records nothing. The run's jj and git are the
+  // recorders of its diff reads.
+  test("P10's curl records each probe before it answers it, and no other call; its jj and git are the diff recorders", () => {
+    const dir = freshDir("p10-probe");
+    const run = dryRun(dir, heldoutExample, "heldout", "P10");
+    expect({ code: run.exitCode, error: run.stderr.toString() }).toEqual({ code: 0, error: "" });
+    const production = JSON.parse(readFileSync(path.join(dir, "launch-world.json"), "utf8"))
+      .production as { probe: string; revision: string };
+    const url = /https?:\/\/[^\s"']+/.exec(production.probe)?.[0] ?? "";
+    const curl = (...args: string[]) => {
+      const result = childSpawn([path.join(dir, "bin", "curl"), ...args]);
+      return { code: result.exitCode, stdout: result.stdout.toString() };
+    };
+    expect(curl("-s", url)).toEqual({ code: 0, stdout: `${production.revision}\n` });
+    expect(curl("-s", "https://elsewhere.example/version")).toEqual({ code: 22, stdout: "" });
+    const calls = path.join(dir, "calls.jsonl");
+    const rows = readFileSync(calls, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows).toMatchObject([
+      { as: "curl", argv: ["-s", url], exit: 0, target: url, revision: production.revision },
+    ]);
+    rmSync(calls);
+    mkdirSync(calls);
+    const unrecorded = curl("-s", url);
+    expect(unrecorded.code).not.toBe(0);
+    expect(unrecorded.stdout).toBe("");
+    for (const program of ["jj", "git"])
+      expect(readFileSync(path.join(dir, "bin", program), "utf8")).toContain("diff-recorder.ts");
   });
 
   test("A cases ask the plain host for one named task call", () => {

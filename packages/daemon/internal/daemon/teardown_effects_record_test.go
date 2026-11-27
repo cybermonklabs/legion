@@ -373,23 +373,67 @@ type teardownEffectsRoute struct {
 	}
 }
 
-// teardownEffectsTrace is a case's known-good or known-bad trace: an outcome record.
+// teardownEffectsTrace is a case's known-good or known-bad trace: an outcome record. Documents is
+// each document of the case's issue the trace wrote, with the body its recorded edits leave
+// (heldout-case.ts OutcomeRecord's `documents`), nil where it states none.
 type teardownEffectsTrace struct {
-	ID      string
-	Actions []teardownEffectsTraceAction
+	ID        string
+	Actions   []teardownEffectsTraceAction
+	Documents []teardownEffectsDocument
+}
+
+// teardownEffectsDocument is one entry of a trace's `documents`: a document's file name, the last
+// version the trace wrote and that version's text.
+type teardownEffectsDocument struct {
+	Name    string
+	Version int
+	Body    string
+}
+
+// teardownEffectsWorldIDs is text with each id of the replay's Dispatch that ids names written as
+// the world's id (ids: the replay's id to the world's), the other way round of the mapping the
+// replay names the world's ids by (teardownEffectsRun.artifacts), as outcome.ts writes a run's
+// scratch ids back as the world's (seed.ts's dispatch-fixture.json `ids`).
+func teardownEffectsWorldIDs(text string, ids map[string]string) string {
+	for _, given := range slices.Sorted(maps.Keys(ids)) {
+		text = strings.ReplaceAll(text, given, ids[given])
+	}
+	return text
+}
+
+// teardownEffectsDocumentFaults names each document a trace states that the replay's Dispatch does
+// not hold as stated, after the trace's last write: held is each document of the issue by its file
+// name, with its latest version and that version's text, which is compared with each of the
+// replay's ids written as the world's (teardownEffectsWorldIDs). A document the replay does not
+// hold, another version or another text is a fault.
+func teardownEffectsDocumentFaults(stated []teardownEffectsDocument, held map[string]teardownEffectsDocument, ids map[string]string) []string {
+	var faults []string
+	for _, want := range stated {
+		got, ok := held[want.Name]
+		switch {
+		case !ok:
+			faults = append(faults, fmt.Sprintf("the trace states %s at version %d, and the replay's Dispatch holds no document of that name", want.Name, want.Version))
+		case got.Version != want.Version:
+			faults = append(faults, fmt.Sprintf("the trace states %s at version %d, and the replay's Dispatch holds version %d", want.Name, want.Version, got.Version))
+		case teardownEffectsWorldIDs(got.Body, ids) != want.Body:
+			faults = append(faults, fmt.Sprintf("%s version %d: the trace states the body %q, and the replay's Dispatch holds %q", want.Name, want.Version, want.Body, teardownEffectsWorldIDs(got.Body, ids)))
+		}
+	}
+	return faults
 }
 
 // teardownEffectsTraceAction is one scored action of a trace (heldout-case.ts OutcomeAction).
 type teardownEffectsTraceAction struct {
 	Kind, Op, Command, Method, Path, Target, Ref, Commit string
-	// Tool, Name, Agent and EndedAt are the fields of a carried kind alone
-	// (teardownEffectsCarriedKinds): an Envoy message's tool, a task agent's name, agent and end,
-	// as the case file holds each.
-	Tool, Name, Agent, EndedAt string
-	Seq                        int
-	At                         time.Time
-	Args, Fields               map[string]any
-	Answer                     struct {
+	// Tool, Name, Agent, EndedAt, Revision, Source and Paths are the fields of a carried kind alone
+	// (teardownEffectsCarriedKinds): an Envoy message's tool, a task agent's name, agent and end, a
+	// probe's revision, and a diff read's checkout root and paths, as the case file holds each.
+	Tool, Name, Agent, EndedAt, Revision, Source string
+	Paths                                        []string
+	Seq                                          int
+	At                                           time.Time
+	Args, Fields                                 map[string]any
+	Answer                                       struct {
 		Code *string
 		Body any
 	}
@@ -841,6 +885,17 @@ func teardownEffectsFieldsOf(a teardownEffectsTraceAction) map[string]any {
 		set("agent", a.Agent)
 		set("name", a.Name)
 		set("endedAt", a.EndedAt)
+	case "probe":
+		set("target", a.Target)
+		set("revision", a.Revision)
+	case "diff-read":
+		paths := make([]any, len(a.Paths))
+		for i, p := range a.Paths {
+			paths[i] = p
+		}
+		fields["paths"] = paths
+		set("command", a.Command)
+		set("source", a.Source)
 	}
 	return fields
 }
@@ -2175,9 +2230,10 @@ func TestTeardownEffectsBarePointers(t *testing.T) {
 }
 
 // teardownEffectsCarriedFile is the example with actions of the carried kinds (an Envoy message, a
-// Dispatch read, a task agent's start) among the actions of its traces, in time order, each trace
-// numbered again from 1 (its .command says how it was made). P05's completion is action 9 there, and
-// action 5 in the example; P10's two reports are actions 4 and 6, and 2 and 3.
+// Dispatch read, a task agent's start, a probe of production, a diff read) among the actions of its
+// traces, in time order, each trace numbered again from 1 (its .command says how it was made).
+// P05's completion is action 10 there, and action 5 in the example; P10's two reports are actions 5
+// and 7, and 2 and 3; P10's known-bad comment is action 3, and 1.
 const teardownEffectsCarriedFile = "testdata/teardown-effects/carried-kinds-cases.json"
 
 // The replay makes none of the carried kinds again, a staging action and a GitHub read as well, and
@@ -2192,6 +2248,8 @@ func TestTeardownEffectsMakesNothing(t *testing.T) {
 		{"an Envoy message", teardownEffectsTraceAction{Kind: "envoy", Tool: "publish", Target: "notifications.role.acme.x"}, true},
 		{"a Dispatch read", teardownEffectsTraceAction{Kind: "dispatch-read", Command: "handoff-read", Target: "ACME-12"}, true},
 		{"a task agent's start", teardownEffectsTraceAction{Kind: "agent", Agent: "task", Name: "ReviewDiff"}, true},
+		{"a probe of production", teardownEffectsTraceAction{Kind: "probe", Target: "https://service.example/version", Revision: strings.Repeat("a", 40)}, true},
+		{"a diff read", teardownEffectsTraceAction{Kind: "diff-read", Command: "jj diff", Source: "$LEGION_WORKSPACE"}, true},
 		{"a staging action", teardownEffectsTraceAction{Kind: "staging"}, true},
 		{"a GitHub read", teardownEffectsTraceAction{Kind: "github", Command: "gh pr view"}, true},
 		{"a GitHub change", teardownEffectsTraceAction{Kind: "github", Command: "gh pr create", Fields: map[string]any{"head": "legion/ACME-12", "base": "main"}}, false},
@@ -2220,17 +2278,17 @@ func TestTeardownEffectsCarriedKindsAreNoControl(t *testing.T) {
 	}
 	want := []string{
 		"P05 good trace: replayed",
-		"P05 good trace, action 9: pushed-with-open-pull-request-accepted",
-		"P05 good trace, action 9: the effect of complete",
+		"P05 good trace, action 10: pushed-with-open-pull-request-accepted",
+		"P05 good trace, action 10: the effect of complete",
 		"P05 bad trace: replayed",
-		"P05 good trace, action 9: local-only-implementer-refused",
-		"P05 good trace, action 9: pushed-without-pull-request-refused",
+		"P05 good trace, action 10: local-only-implementer-refused",
+		"P05 good trace, action 10: pushed-without-pull-request-refused",
 		"P10 good trace: replayed",
-		"P10 good trace, action 4: pending-without-wake-refused",
-		"P10 good trace, action 6: valid-pending-names-wake",
-		"P10 good trace, action 6: the effect of report-pending",
+		"P10 good trace, action 5: pending-without-wake-refused",
+		"P10 good trace, action 7: valid-pending-names-wake",
+		"P10 good trace, action 7: the effect of report-pending",
 		"P10 bad trace: replayed",
-		"P10 bad trace, action 2: dispatch-comment-names-no-wake",
+		"P10 bad trace, action 3: dispatch-comment-names-no-wake",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("promised\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -2309,6 +2367,10 @@ func TestTeardownEffectsTakesCarriedKinds(t *testing.T) {
 		{"a task agent of its kind inside the window of its end", teardownEffectsRoute{Kind: "agent", Match: map[string]any{"agent": "task"}, Between: window}, "agent", true},
 		{"a task agent whose end is outside the window", teardownEffectsRoute{Kind: "agent", Match: map[string]any{"name": "ReviewDiff"}, Between: late}, "agent", false},
 		{"a Dispatch write route, for a Dispatch read", teardownEffectsRoute{Kind: "dispatch", Match: map[string]any{"command": "read"}}, "dispatch-read", false},
+		{"a probe of its address and revision", teardownEffectsRoute{Kind: "probe", Match: map[string]any{"target": "https://service.example/version", "revision": "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c"}}, "probe", true},
+		{"a probe that answered another revision", teardownEffectsRoute{Kind: "probe", Match: map[string]any{"revision": strings.Repeat("a", 40)}}, "probe", false},
+		{"a diff read of its command, checkout and paths", teardownEffectsRoute{Kind: "diff-read", Match: map[string]any{"command": "jj diff", "source": "$LEGION_WORKSPACE", "paths": []any{}}}, "diff-read", true},
+		{"a diff read of another path", teardownEffectsRoute{Kind: "diff-read", Match: map[string]any{"paths": []any{"internal/api/doc.go"}}}, "diff-read", false},
 	} {
 		a, ok := byKind[row.on]
 		if !ok {
@@ -2316,6 +2378,50 @@ func TestTeardownEffectsTakesCarriedKinds(t *testing.T) {
 		}
 		if got := teardownEffectsTakes(row.route, a); got != row.want {
 			t.Errorf("%s: takes = %t, want %t (fields %v)", row.name, got, row.want, teardownEffectsFieldsOf(a))
+		}
+	}
+}
+
+// A trace's documents read as the case file holds them, and lane D's control holds each to the
+// document the real Dispatch holds after the trace's last write: its latest version and that
+// version's text, with each id the replay's Dispatch gave a record the world names written as the
+// world's. With no id to map, the text is compared as Dispatch holds it.
+func TestTeardownEffectsDocumentFaults(t *testing.T) {
+	t.Parallel()
+	cases := teardownEffectsCasesAt(t, teardownEffectsCarriedFile, func(cases []map[string]any) []map[string]any {
+		good := teardownEffectsMember(cases[0], "traces", "good").(map[string]any)
+		good["documents"] = []any{map[string]any{"name": "verification.md", "version": 2, "body": "See dispatch://ACME-12/comment/c-1 and art-design.\n"}}
+		return cases
+	})
+	stated := cases[0].Traces.Good.Documents
+	if want := []teardownEffectsDocument{{Name: "verification.md", Version: 2, Body: "See dispatch://ACME-12/comment/c-1 and art-design.\n"}}; !reflect.DeepEqual(stated, want) {
+		t.Fatalf("the trace's documents read as %+v, want %+v", stated, want)
+	}
+	given := "See dispatch://ACME-12/comment/0b6c2f1e-0000-4000-8000-000000000001 and 7d2a9b4c-0000-4000-8000-000000000002.\n"
+	ids := map[string]string{"0b6c2f1e-0000-4000-8000-000000000001": "c-1", "7d2a9b4c-0000-4000-8000-000000000002": "art-design"}
+	held := map[string]teardownEffectsDocument{"verification.md": {Name: "verification.md", Version: 2, Body: given}}
+	if faults := teardownEffectsDocumentFaults(stated, held, ids); len(faults) != 0 {
+		t.Fatalf("the document as stated, with the replay's ids, reads as faults %v", faults)
+	}
+	// With no ids to map, the replay's ids stay in the text, and the stated body is not the one held.
+	if faults := teardownEffectsDocumentFaults(stated, held, map[string]string{}); len(faults) != 1 || !strings.Contains(faults[0], "the trace states the body") {
+		t.Fatalf("with no ids mapped, the faults are %v, want the body named", faults)
+	}
+	plain := []teardownEffectsDocument{{Name: "plan.md", Version: 1, Body: "The plan.\n"}}
+	if faults := teardownEffectsDocumentFaults(plain, map[string]teardownEffectsDocument{"plan.md": plain[0]}, map[string]string{}); len(faults) != 0 {
+		t.Fatalf("a document held as stated, with no ids, reads as faults %v", faults)
+	}
+	for _, row := range []struct {
+		name string
+		held map[string]teardownEffectsDocument
+		want string
+	}{
+		{"another version", map[string]teardownEffectsDocument{"verification.md": {Name: "verification.md", Version: 3, Body: given}}, "holds version 3"},
+		{"another text", map[string]teardownEffectsDocument{"verification.md": {Name: "verification.md", Version: 2, Body: "Other.\n"}}, `holds "Other.\n"`},
+		{"no document of the name", map[string]teardownEffectsDocument{}, "holds no document of that name"},
+	} {
+		if faults := teardownEffectsDocumentFaults(stated, row.held, ids); len(faults) != 1 || !strings.Contains(faults[0], row.want) {
+			t.Errorf("%s: faults %v, want one naming %q", row.name, faults, row.want)
 		}
 	}
 }
