@@ -48,6 +48,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
@@ -81,13 +82,28 @@ const openKey = "this tree's runner (storetest.Open)"
 // t when DISPATCH_TEST_DATABASE_URL is unset.
 func Open(t testing.TB) *store.Store {
 	t.Helper()
-	return OpenFrom(t, openKey, migrateWithThisTree)
+	return OpenFrom(t, openKey, func(databaseURL string) error { return migrateWithThisTree(t, databaseURL) })
+}
+
+// MigrateContext is the context a test's in-process template or self-migrate runs under: the test
+// binary's deadline (testdb.ConnectEnd), where it has one, carrying pgmigrate.DeadlineRetryPolicy,
+// so a runner whose lock is held by a peer migrating its own template under the same parallel suite
+// waits for it rather than failing after the production policy's fixed span (INFRA-3904). The
+// production boot keeps pgmigrate.ProductionRetryPolicy, so a stray holder still fails a deploy and
+// is noticed. Cancel the context when the migrate returns.
+func MigrateContext(t testing.TB) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.Background(), func() {}
+	if end, bounded := testdb.ConnectEnd(t); bounded {
+		ctx, cancel = context.WithDeadline(ctx, end)
+	}
+	return pgmigrate.WithRetryPolicy(ctx, pgmigrate.DeadlineRetryPolicy()), cancel
 }
 
 // migrateWithThisTree migrates the database databaseURL names with this tree's runner: Open's
 // template. It closes its pool before it returns, so the template is left with no connection.
-func migrateWithThisTree(databaseURL string) error {
-	ctx := context.Background()
+func migrateWithThisTree(t testing.TB, databaseURL string) error {
+	ctx, cancel := MigrateContext(t)
+	defer cancel()
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("open the database: %w", err)

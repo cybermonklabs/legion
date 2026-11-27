@@ -119,3 +119,74 @@ func TestMigrateFailsNamingTheWriterOnceEveryAttemptTimesOut(t *testing.T) {
 		t.Errorf("logs lack the last attempt:\n%s", out)
 	}
 }
+
+// Under the deadline retry policy a migration whose lock a writer holds past the production policy's
+// whole span, then releases before the caller's far-off deadline, waits for the writer and applies;
+// under the production policy the same late release comes too late, because the three fixed attempts
+// end first, and the migration fails. The writer's commit, past the point production would have
+// given up, is the one forcing, and the policy on the context is all that differs between the two
+// cases: it is the seam INFRA-3904 adds, by which a loaded suite's template migrate waits for a peer
+// runner that holds the lock a little too long rather than failing after the fixed span, while
+// production's bound does not move.
+func TestMigrateWaitsForALateWriterOnlyUnderTheDeadlinePolicy(t *testing.T) {
+	productionSpan := pgmigrate.LockTimeoutAttempts*pgmigrate.LockTimeout + (pgmigrate.LockTimeoutAttempts-1)*pgmigrate.LockTimeoutRetryPause
+	// Commit the writer past production's last attempt, so only a policy that outlasts the fixed
+	// span can still apply the migration.
+	commitAfter := productionSpan + pgmigrate.LockTimeout + pgmigrate.LockTimeoutRetryPause
+	type result struct {
+		err     error
+		elapsed time.Duration
+	}
+	for name, tc := range map[string]struct {
+		deadlinePolicy bool
+		wantVersion    int
+		wantErr        bool
+	}{
+		"the deadline policy waits for it": {true, 2, false},
+		"the production policy gives up":   {false, 1, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			store, _ := migratedToOne(t)
+			bounded, cancel := context.WithTimeout(context.Background(), commitAfter+10*pgmigrate.LockTimeout)
+			defer cancel()
+			ctx := bounded
+			if tc.deadlinePolicy {
+				ctx = pgmigrate.WithRetryPolicy(bounded, pgmigrate.DeadlineRetryPolicy())
+			}
+			held, _ := holdWrite(t, store)
+			migrated := make(chan result, 1)
+			go func() {
+				started := time.Now()
+				err := store.migrate(ctx, withOwedTrigger())
+				migrated <- result{err, time.Since(started)}
+			}()
+			waitForQueuedLock(t, store, "things", "ShareRowExclusiveLock")
+			time.Sleep(commitAfter)
+			commitErr := held.Commit(context.Background())
+			got := <-migrated
+			if tc.wantErr {
+				var lockTimeout *pgmigrate.LockTimeoutError
+				if !errors.As(got.err, &lockTimeout) {
+					t.Fatalf("migrate under the production policy = %v after %s, want it to have given up with a lock timeout before the writer released", got.err, got.elapsed.Round(time.Millisecond))
+				}
+				if got.elapsed >= commitAfter {
+					t.Errorf("migrate gave up after %s, not before the writer released at %s: the fixed span did not end first", got.elapsed.Round(time.Millisecond), commitAfter)
+				}
+			} else {
+				if commitErr != nil {
+					t.Fatalf("commit the writer: %v", commitErr)
+				}
+				if got.err != nil {
+					t.Fatalf("migrate under the deadline policy = %v after %s, want nil: it should have waited for the writer past the production span %s", got.err, got.elapsed.Round(time.Millisecond), productionSpan)
+				}
+				if got.elapsed <= productionSpan {
+					t.Errorf("migrate applied after %s, not past the production span %s: the test did not exercise waiting beyond the fixed attempts", got.elapsed.Round(time.Millisecond), productionSpan)
+				}
+			}
+			if version := schemaVersion(t, store); version != tc.wantVersion {
+				t.Errorf("schema version = %d, want %d", version, tc.wantVersion)
+			}
+		})
+	}
+}
