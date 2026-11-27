@@ -1373,10 +1373,21 @@ type ConflictRead struct {
 // landed message read. Earlier is every merge forward that landed before this ask in the same
 // stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
 // merge left conflicts in its turn and is merged forward again, Earlier is what still names the
-// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
-// stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
-// jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
-// empty.
+// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts).
+// Withdrawn is whether the implementer was told that the ask is no longer its work (workflow's
+// MergeForwardWithdrawn): the merge of the head is owed to nobody then until a role is asked
+// again. SentLaunch is the latest launch of the asked role's claim (intake.ClaimReady.Launch) a
+// row of the ask was delivered to, 0 while none was; it is recorded only at a delivered end
+// (workflow's MergeForwardAskEnded), and a delivery where the listener names no holder is credited
+// to the launch the row was sent at. The ask is sent again to a later launch of that role while
+// the merge of the head is still owed to it and no row of the ask is queued for it: at that
+// launch's ready (workflow's askAgainAtLaunch), and at the end of a row of the ask that did not
+// reach it (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped
+// or whose agent reported its own exit takes no row of the ask queued after it ended. It is
+// stored as the jsonb of pull_requests.merge_forward (migration
+// 20261119003157), null for nil;
+// the jsonb takes Earlier, Role, Withdrawn and SentLaunch with no migration of their own, and
+// leaves each out while it is empty, and a release before them reads the jsonb without them.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
@@ -1387,6 +1398,8 @@ type MergeForward struct {
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+	Withdrawn   bool                 `json:"withdrawn,omitempty"`
+	SentLaunch  uint64               `json:"sentLaunch,omitempty"`
 }
 
 // Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
@@ -2260,6 +2273,11 @@ type Store interface {
 	// IssuesByKey is the record of each of keys, whatever its project, by key, leaving out a key
 	// with no record; no keys read nothing. It is Issue for many keys in one query.
 	IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]Issue, error)
+	// QueuedMergeForwardAsk says whether the outbox still holds a merge-forward ask of head to role
+	// on issue (MergeForwardMessage, MergeForwardAsk): a row whose end has not landed, which the
+	// ready of a launch leaves the ask to, since that end tells a later launch the row did not
+	// reach (workflow's MergeForwardAskEnded).
+	QueuedMergeForwardAsk(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, head string) (bool, error)
 	// SlottedIssues is the record of each issue of project that holds an admission slot, in slot
 	// order, in one read: another project's slot in the shared table, and every issue holding no
 	// slot, are left out of the read rather than of the caller's loop.

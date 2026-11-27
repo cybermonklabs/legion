@@ -826,27 +826,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Clock = clock
 	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
-	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
+	w.admission = workflowAdmission(w.records, w.engine, cfg, clock, log)
 	// A chain the copy cannot read to its top is read again from Dispatch by a wake of its own
 	// (rereadChains, decision 20 of dispatch://INFRA-4730), as soon as the pass that found it
 	// commits.
 	w.admission.OnUnknownChain(func() { wake(w.chainWake) })
-	// The project's declared experiments decide what each unit admission records is drawn for.
-	// A project whose file writes neither the `memory` block nor an `experiments` key declares
-	// the memory experiment all the same, at mode off, whose draw records each new tree at no
-	// variant (config.Project.ExperimentsDeclared).
-	w.admission.UseExperiments(cfg.ExperimentsDeclared())
-	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
-	// has stopped at: the loader gives six hours to a file that names no key, so the pass
-	// always runs under a number somebody chose.
-	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
-	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
-	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
-	// config.Config.WorkerBackground).
-	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
-	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
-	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
-	w.admission.UseP0Bound(cfg.AdmissionP0Bound)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -1181,6 +1165,34 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		Experiments:  cfg.ExperimentsDeclared(),
 		WorkspaceDir: engineWorkspaceDir(cfg),
 	}
+}
+
+// workflowAdmission is the workflow's admission over records and engine, as openWorkflow builds it
+// from cfg, on the daemon's one clock. The state's architect-stalled arms are this admission's
+// reading (source.architectStalls), so the state fixtures build theirs with it too
+// (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds).
+func workflowAdmission(records record.Store, engine *workflow.Engine, cfg config.Config, clock func() time.Time, log *slog.Logger) *admit.Admission {
+	admission := admit.New(records, engine, cfg.AdmissionCap, cfg.Project, log)
+	// The admission stamps and measures on the same one clock as the engine, so the
+	// architect-stalled arms the state serves are judged at the state's own instant.
+	admission.UseClock(clock)
+	// The project's declared experiments decide what each unit admission records is drawn for.
+	// A project whose file writes neither the `memory` block nor an `experiments` key declares
+	// the memory experiment all the same, at mode off, whose draw records each new tree at no
+	// variant (config.Project.ExperimentsDeclared).
+	admission.UseExperiments(cfg.ExperimentsDeclared())
+	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
+	// has stopped at: the loader gives six hours to a file that names no key, so the pass
+	// always runs under a number somebody chose.
+	admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
+	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
+	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
+	// config.Config.WorkerBackground).
+	admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+	// legion.yaml's P0 bound is the bound every pass admits under while no value set while the
+	// daemon runs stands (admit's UseP0Bound, config.Config.AdmissionP0Bound).
+	admission.UseP0Bound(cfg.AdmissionP0Bound)
+	return admission
 }
 
 // engineWorkspaceDir is the directory the runtime cfg names starts an issue's role processes in,

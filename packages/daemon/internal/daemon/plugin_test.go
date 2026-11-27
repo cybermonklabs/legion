@@ -809,8 +809,9 @@ func TestResolvedPlugins(t *testing.T) {
 }
 
 // logPlugins is the boot's one line: Info naming the pair and its source with a pair, Warn naming
-// the gap without one. A source in URL form is logged as the state shows it: a made-up user name,
-// password and signature in a private tarball URL's userinfo and query are not.
+// the gap without one. A source in URL form is logged as the state shows it (api.PluginSourceOf,
+// read from the rule, never written out here): a made-up user name, password and signature in a
+// private tarball URL's userinfo and query are not.
 func TestLogPlugins(t *testing.T) {
 	t.Parallel()
 	var buf syncBuffer
@@ -821,12 +822,11 @@ func TestLogPlugins(t *testing.T) {
 	}
 	buf.Reset()
 	const credential = "madeUpPluginUser0123:madeUpPluginPassword0123"
-	logPlugins(jsonLogger(&buf), &runtime.PluginInstall{
-		PiLegion: "https://" + credential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123",
-		PiEnvoy:  "9.6.1", Contract: api.DaemonAPIVersion()}, "legion.yaml")
+	privateURL := "https://" + credential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123"
+	logPlugins(jsonLogger(&buf), &runtime.PluginInstall{PiLegion: privateURL, PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}, "legion.yaml")
 	got := buf.String()
-	if !strings.Contains(got, `"piLegion":"https://[a URL with credentials]/pi-legion.tgz"`) {
-		t.Fatalf("logPlugins with a private tarball URL wrote %q, want its piLegion masked as the state shows it", got)
+	if want := `"piLegion":"` + api.PluginSourceOf(privateURL) + `"`; !strings.Contains(got, want) {
+		t.Fatalf("logPlugins with a private tarball URL wrote %q, want %s, its piLegion as the state shows it", got, want)
 	}
 	for _, secret := range []string{credential, "madeUpSignature0123"} {
 		for i := 0; i+10 <= len(secret); i++ {

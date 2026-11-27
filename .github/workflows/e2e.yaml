@@ -162,11 +162,18 @@ jobs:
       - if: matrix.bun
         run: bun install --frozen-lockfile
 
-      # The three proofs that start the Go daemon: it refuses to boot without jj, and names it
+      # Each proof that starts the Go daemon: it refuses to boot without jj, and names it
       # (`missing required daemon tools: jj`), as run 40957651922 showed. This installs the jj the
       # worker image ships, which is the one the daemon is written for.
       - if: matrix.jj
         uses: ./.github/actions/install-jj
+
+      # A proof whose row sets `omp` runs real Oh My Pi panes, each answered by a model stand-in of
+      # its driver's own, so it needs the Oh My Pi .omp-pin names and no model route. This installs
+      # that build, held to its pinned sha256, and exports its path as LEGION_TEST_OMP, which the
+      # run step names to the script as LEGION_OMP_PATH.
+      - if: matrix.omp
+        uses: ./.github/actions/install-omp
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -194,6 +201,9 @@ jobs:
           mkdir -p "$EVIDENCE_DIR"
           if [ -n "$EVIDENCE_VARIABLE" ]; then
             export "$EVIDENCE_VARIABLE=$EVIDENCE_DIR"
+          fi
+          if [ -n "${LEGION_TEST_OMP:-}" ]; then
+            export LEGION_OMP_PATH="$LEGION_TEST_OMP"
           fi
           bash "scripts/e2e/$SCRIPT" 2>&1 | tee "$EVIDENCE_DIR/output.log"
 

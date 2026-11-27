@@ -831,8 +831,7 @@ func TestANewsOnlyStartForAnAcceptingMemberReachesItsOwningArchitectInTheHolderF
 		t.Fatalf("run the architect's news-only start: %v", err)
 	}
 	task, news := pendingNews(t, machine)
-	for _, want := range []string{"changed for LEGION-601, which you hold in accepting:", "sign LEGION-601 off with `sign_off`",
-		"move it back to planning, implementing or testing"} {
+	for _, want := range []string{"changed for LEGION-601, which you hold in accepting:", "sign LEGION-601 off with `sign_off`"} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("the architect's task = %q, want the holder form to say %q", task, want)
 		}

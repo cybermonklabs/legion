@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -638,17 +639,15 @@ func TestPauseRoutes(t *testing.T) {
 
 // A caller from a pod below pauseContract is served the state without `paused` and `lastPause`,
 // which its plugin's reader does not name; a pod at the contract, a pod whose claims record none
-// and a caller in no pod are served the key as the source answered it. populatedState carries
-// `paused`; the last pause is a state of its own.
+// and a caller in no pod are served the key as the source answered it. The paused state carries
+// `paused` (pausedState); the last pause is the state of the record its fixture composes.
 func TestTheStateRouteServesAPodItsPluginContractsPause(t *testing.T) {
-	last := pauseViewOf(goldenPause(true))
-	running := populatedState(t)
-	running.Paused, running.LastPause = nil, &last
+	running := composedFixture(t, apifixture.Path("state-last-pause.json"))
 	for _, state := range []struct {
 		name  string
 		state State
 		key   string
-	}{{"paused", populatedState(t), "paused"}, {"lastPause", running, "lastPause"}} {
+	}{{"paused", pausedState(t), "paused"}, {"lastPause", running, "lastPause"}} {
 		full := stateFrom(t, state.state, "192.0.2.1:41000", podClaims(pauseContract-1))
 		if !strings.Contains(string(full), `"`+state.key+`"`) {
 			t.Fatalf("the fixture's state carries no %s; this test proves nothing: %s", state.key, full)
