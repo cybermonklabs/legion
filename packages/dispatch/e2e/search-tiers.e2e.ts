@@ -1,5 +1,6 @@
 import { createIssue, createProject, search as searchByApi } from "./api";
 import { embeddedQueries, forgetEmbedCalls, setEmbedMarkers } from "./fake-embedder-helpers";
+import { modKey } from "./keyboard-palette";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -52,7 +53,7 @@ async function openBarOnFixture(page: Page, fixture: TiersFixture): Promise<void
   await page.goto("/");
   await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   await expect(page.getByRole("combobox", { name: "Search" })).toBeFocused();
 }
 

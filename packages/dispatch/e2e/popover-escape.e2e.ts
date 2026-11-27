@@ -1,5 +1,6 @@
 import { createAsk, createIssue, createProject } from "./api";
 import { openFilterPanel } from "./filters";
+import { modKey } from "./keyboard-palette";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -22,7 +23,7 @@ test("the command bar over an open popover takes the first Escape, the popover t
     await trigger.click();
     const options = page.getByRole("listbox", { name: "Status" });
     await expect(options).toBeVisible();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const bar = page.getByRole("dialog", { name: "Search" });
     await expect(bar).toBeVisible();
 

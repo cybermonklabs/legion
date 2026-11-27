@@ -9,6 +9,7 @@ import {
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
+import { modKey } from "./keyboard-palette";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -21,7 +22,7 @@ import { asUser } from "./users";
  * `search.stub.e2e.ts`, and the fixture both files read is in `search.ts`.
  */
 
-test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to its highlighted term", async ({
+test("Ctrl+K opens the palette, grouped results navigate a document to its highlighted term", async ({
   browser,
 }) => {
   const fixture = await seedSearchFixture();
@@ -90,7 +91,9 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
       .toBe(true);
     await expect(dialog).toHaveCount(0);
 
-    await page.keyboard.press("Meta+k");
+    // The project's user agent names no Mac, so `$mod` is Control and Cmd+K is no key here (the
+    // Mac user agent rows of `keyboard-palette.e2e.ts` read Cmd+K).
+    await page.keyboard.press("Control+k");
     await expect(dialog).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -619,7 +622,7 @@ test("a project-document hit is grouped under the document and opens it; a messa
     ).toContainText("Sextant calibration done.");
 
     // The palette opens on the page the reader is already on: Ctrl+K, not another load.
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await page.getByRole("combobox", { name: "Search" }).fill("sextant");
     await dialog.getByRole("option", { name: /^doc / }).click();
     await expect(page).toHaveURL(
@@ -650,7 +653,7 @@ test("the palette's keyboard hints show for a pointer and not for a touch reader
     } else {
       await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
       await page.locator("body").focus();
-      await page.keyboard.press("Control+k");
+      await page.keyboard.press(`${await modKey(page)}+k`);
     }
     await page.getByRole("combobox", { name: "Search" }).fill("conversation");
     await expect(page.getByRole("option").first()).toBeVisible();

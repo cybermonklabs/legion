@@ -1,9 +1,11 @@
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor, holdFirstRequest, placeCaret } from "./editor";
+import { modKey } from "./keyboard-palette";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
-// One bar from anywhere, and it says what it will act on. `Control+K` opens it on every page, the
+// One bar from anywhere, and it says what it will act on. `Ctrl+K` (`Cmd+K` under a Mac's user
+// agent, as the iPhone project's is: `modKey`) opens it on every page, the
 // document editor included; `/` and `g p` open the same bar; the chip is seeded from the page and
 // `Tab`/`Backspace` move it; an empty input lists the person's recent items beside the actions of
 // the page.
@@ -69,7 +71,7 @@ async function openDocumentWithCaret(page: Page, slug: string): Promise<void> {
 
 // SLOW(>=2s): four pages, one of them a document whose editor must connect before the caret
 // goes in.
-test("Control+K opens the bar from the issue list, an issue, a document being written in, and the agents page @phone", async ({
+test("Ctrl+K (Cmd+K on a Mac) opens the bar from the issue list, an issue, a document being written in, and the agents page @phone", async ({
   browser,
 }) => {
   const fixture = await seed();
@@ -79,19 +81,19 @@ test("Control+K opens the bar from the issue list, an issue, a document being wr
     const page = await context.newPage();
 
     await openIssueList(page);
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await closeBar(page);
 
     await page.goto(`/issues/${fixture.firstKey}`);
     await expect(page.getByRole("heading", { name: /Openers/ })).toBeVisible();
     await page.locator("body").focus();
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await closeBar(page);
 
     // The writing focus is in the editor: the key belongs to the bar there too, and the
     // keystroke writes no `k` into the document.
     await openDocumentWithCaret(page, fixture.documentSlug);
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect(page.getByRole("combobox", { name: "Search" })).toBeFocused();
     await closeBar(page);
     await expect(documentEditor(page)).toContainText(paragraph);
@@ -99,7 +101,7 @@ test("Control+K opens the bar from the issue list, an issue, a document being wr
     await page.goto("/agents");
     await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
     await page.locator("body").focus();
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await closeBar(page);
   } finally {
     await context.close();
@@ -108,7 +110,7 @@ test("Control+K opens the bar from the issue list, an issue, a document being wr
 
 // SLOW(>=2s): the seed, then three keys, each opening the bar and reading its chip, its actions
 // group and its box.
-test("slash and g p open the same bar as Control+K @phone", async ({ browser }) => {
+test("slash and g p open the same bar as Ctrl+K (Cmd+K on a Mac) @phone", async ({ browser }) => {
   // Every check here carries the suite's own 15 s deadline, and a run where two of the three
   // keys open something else reports each of them, which takes longer than one row's budget.
   test.setTimeout(120_000);
@@ -140,7 +142,7 @@ test("slash and g p open the same bar as Control+K @phone", async ({ browser }) 
     const page = await context.newPage();
     await openIssueList(page);
 
-    for (const keys of [["Control+k"], ["/"], ["g", "p"]]) {
+    for (const keys of [[`${await modKey(page)}+k`], ["/"], ["g", "p"]]) {
       await page.locator("body").focus();
       await openBar(page, keys);
       await expectTheOneBar(page, keys);
@@ -166,17 +168,17 @@ test("the chip names what the bar will act on, and nothing where the page names 
     await page.goto(`/issues/${fixture.firstKey}`);
     await expect(page.getByRole("heading", { name: /Openers/ })).toBeVisible();
     await page.locator("body").focus();
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect.soft(scope(page), "on an issue, that issue").toHaveText(/CORE-1/);
     await closeBar(page);
 
     await openDocumentWithCaret(page, fixture.documentSlug);
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect.soft(scope(page), "on a document, that document").toHaveText(/Design notes/);
     await closeBar(page);
 
     await openIssueList(page);
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect
       .soft(scope(page), "on the issue list with none selected, the project")
       .toHaveText(/Acting on the project CORE/);
@@ -189,7 +191,7 @@ test("the chip names what the bar will act on, and nothing where the page names 
     await page.keyboard.press("x");
     await expect(page.getByRole("checkbox", { name: `Select ${fixture.firstKey}` })).toBeChecked();
     await expect(page.getByRole("checkbox", { name: `Select ${fixture.secondKey}` })).toBeChecked();
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect
       .soft(scope(page), "with two issues selected, those two")
       .toHaveText(new RegExp(`${fixture.firstKey}[\\s\\S]*${fixture.secondKey}`));
@@ -198,7 +200,7 @@ test("the chip names what the bar will act on, and nothing where the page names 
     await page.goto("/agents");
     await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
     await page.locator("body").focus();
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect.soft(scope(page), "elsewhere, nothing").toHaveCount(0);
     await closeBar(page);
   } finally {
@@ -225,7 +227,7 @@ test("the bar acts on the issues the table has selected, and leaving the table c
     await page.keyboard.press("x");
     await expect(page.getByRole("checkbox", { name: `Select ${third.key}` })).toBeChecked();
 
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect(scope(page)).toHaveText(
       new RegExp(`${fixture.firstKey}[\\s\\S]*${fixture.secondKey}[\\s\\S]*${third.key}`)
     );
@@ -235,7 +237,7 @@ test("the bar acts on the issues the table has selected, and leaving the table c
     await page.getByRole("button", { name: "Board", exact: true }).click();
     await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
     await page.locator("body").focus();
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect(scope(page)).toHaveText(/Acting on the project CORE/);
     await closeBar(page);
 
@@ -259,7 +261,7 @@ test("Tab narrows the chip to the block the cursor is in and Backspace widens it
   try {
     const page = await context.newPage();
     await openDocumentWithCaret(page, fixture.documentSlug);
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect(scope(page)).toHaveText(/Design notes/);
 
     // Tab and Backspace move the chip as keys of the box (`useBarScope`'s `handleKey`). The box
@@ -300,7 +302,7 @@ test("an empty input lists the person's recent items and the actions of that pag
     await openIssueList(page);
     // A row in hand, so the list's own action is among the page's.
     await page.keyboard.press("j");
-    await openBar(page, ["Control+k"]);
+    await openBar(page, [`${await modKey(page)}+k`]);
     await expect(page.getByRole("combobox", { name: "Search" })).toHaveValue("");
 
     const recent = bar(page).getByRole("group", { name: "Recent" });

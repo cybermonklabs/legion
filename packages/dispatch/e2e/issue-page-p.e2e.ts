@@ -70,6 +70,7 @@ import {
   waitingPressInHistory,
 } from "./issue-page-p";
 import { onBody } from "./keyboard-issue";
+import { modKey } from "./keyboard-palette";
 import { boxesApart } from "./layout";
 import { answeredPost, holdPosts, navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type Request, test } from "./test";
@@ -1537,7 +1538,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     ).toBe("The header's issue");
 
     // The palette offers Close issue and Set priority P2, and not Reopen issue.
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
@@ -1565,7 +1566,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect.poll(() => holding, { message: "the status's write was not sent" }).toBe(1);
     await expect(priority, "the priority refuses input while the status is saved").toBeEnabled();
     await focusThePage(page);
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(
       actions.getByRole("option", { name: "Set priority P2" }),
       "the palette hides Set priority while the priority takes input"
@@ -1585,14 +1586,14 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     // gives the issue back to the backlog. The rows are taken when the palette opens, so it
     // opens once the page has taken in the close and has no write in flight.
     await focusThePage(page);
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await actions.getByRole("option", { name: "Close issue" }).click();
     await expect(palette, "Close issue did not close the palette").toHaveCount(0);
     await expect.poll(() => getIssue(key).then((read) => read.status)).toBe("done");
     await expect(priority, "the closed issue's priority takes input").toBeDisabled();
     await expect(header.getByRole("status"), "the close is still being saved").toHaveCount(0);
     await focusThePage(page);
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const reopen = actions.getByRole("option", { name: "Reopen issue" });
     await expect(reopen, "the closed issue's palette offers no Reopen issue").toBeVisible();
     await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(0);
@@ -2680,7 +2681,7 @@ test("Details closed after a write removed the labels' count while the palette w
     await page.keyboard.press("Enter");
     await expect(details(page), "Enter on the labels' count opened no Details").toBeVisible();
     await expectFocusInDetails(page);
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const palette = page.getByRole("dialog", { name: "Search" });
     await expect(palette, "Control+k in Details did not open the palette").toBeVisible();
     await expect
@@ -3032,7 +3033,7 @@ test("the key card and the palette offer the approval chip's two keys while the 
     const palette = page.getByRole("dialog", { name: "Search" });
     const actions = palette.getByRole("group", { name: "Actions" });
     await focusThePage(page);
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(palette, "Control+k did not open the palette").toBeVisible();
     for (const [label] of lines) {
       await expect(
@@ -3044,7 +3045,7 @@ test("the key card and the palette offer the approval chip's two keys while the 
     await expect(palette, "Escape did not close the palette").toHaveCount(0);
     await chip.focus();
     await expect(chip).toBeFocused();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     for (const [label] of lines) {
       await expect(
         actions.getByRole("option", { name: label }),
@@ -3107,7 +3108,7 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
       await expectHeaderDrawn(page);
       await control.focus();
       await expect(control).toBeFocused();
-      await page.keyboard.press("Control+k");
+      await page.keyboard.press(`${await modKey(page)}+k`);
       const palette = page.getByRole("dialog", { name: "Search" });
       await expect(palette, "Control+k did not open the palette").toBeVisible();
       await palette

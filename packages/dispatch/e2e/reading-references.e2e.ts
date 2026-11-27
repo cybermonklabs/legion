@@ -20,6 +20,7 @@
  */
 import { answerAsk, createAsk, createComment, createMessage } from "./api";
 import { openIssueDetails } from "./issue-details";
+import { modKey } from "./keyboard-palette";
 import {
   expectReadsForms,
   expectReadsReferences,
@@ -42,7 +43,7 @@ async function searchPalette(page: Page): Promise<Locator> {
   await page.goto("/");
   await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
   await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${await modKey(page)}+k`);
   const dialog = page.getByRole("dialog", { name: "Search" });
   await expect(dialog).toBeVisible();
   await page.getByRole("combobox", { name: "Search" }).fill(READING_LEAD);

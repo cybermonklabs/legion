@@ -3,8 +3,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { issueSearchIn, openAgents, plannerMention, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { listTrigger } from "./filters";
-import { openIssue, searchPath } from "./keyboard-palette";
-import { expect, test } from "./test";
+import { nextFrames } from "./frames";
+import { inboxSearchBox } from "./inbox-filter";
+import { modKey, openIssue, searchPath } from "./keyboard-palette";
+import { devices, expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -26,7 +28,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
   try {
     const page = await context.newPage();
     await openIssue(page, issue.key, "Palette actions");
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
@@ -88,7 +90,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await page.reload();
     await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
     await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(actions.getByRole("option", { name: "Reopen issue" })).toBeVisible();
     await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(0);
     await expect(actions.getByRole("option", { name: "Set priority P2" })).toHaveCount(0);
@@ -105,7 +107,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     // reads `backlog`: so open once the trigger takes a pick again.
     await expect(listTrigger(page, `Priority of ${issue.key}`)).toBeEnabled();
     await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await input.fill("priority p2");
     const setP2 = actions.getByRole("option", { name: "Set priority P2" });
     await expect(actions.getByRole("option")).toHaveCount(1);
@@ -143,7 +145,7 @@ test("stop-word searches show empty results without Retry", async ({ browser }) 
     const input = page.getByRole("combobox", { name: "Search" });
 
     for (const query of ["down", "up", "is", "the"]) {
-      await page.keyboard.press("Control+k");
+      await page.keyboard.press(`${await modKey(page)}+k`);
       await input.fill(query);
       await expect(dialog.getByText(`No results for "${query}"`)).toBeVisible();
       await expect(dialog.getByRole("alert")).toHaveCount(0);
@@ -203,7 +205,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
         statusWrites.push(request.postData() ?? "");
       }
     });
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(input).toHaveValue("");
     await input.fill("issue");
     const options = dialog.getByRole("option");
@@ -263,7 +265,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
       ["status", "Move card to the next status"],
       ["down", "Move card down"],
     ] as const) {
-      await page.keyboard.press("Control+k");
+      await page.keyboard.press(`${await modKey(page)}+k`);
       await input.fill(query);
       await expect(actions.getByRole("option", { name: move })).toHaveCount(1);
       await expect(dialog.getByText("Searching…")).toHaveCount(0);
@@ -284,7 +286,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
       await release.promise;
       await route.continue();
     });
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await input.fill("next");
     const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
     await expect(nextMove).toHaveCount(1);
@@ -337,7 +339,7 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
     await expect(listTrigger(page, `Priority of ${issue.key}`)).toBeDisabled();
 
     await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
@@ -375,7 +377,7 @@ test("a Set priority row the server refuses is reported by the header, in the di
       });
     });
 
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const dialog = page.getByRole("dialog", { name: "Search" });
     await dialog
       .getByRole("group", { name: "Actions" })
@@ -421,7 +423,7 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     await page.keyboard.press("j");
     await expect(row).toBeFocused();
 
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const dialog = page.getByRole("dialog", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
     for (const offered of [
@@ -477,7 +479,7 @@ test("hits that arrive after the reader has arrowed keep the highlight on the ro
       await route.continue();
     });
     await openIssue(page, issue.key, "Go held search");
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     // `go to` starts every `Go to …` label, so those rows lead and can be arrowed among while
@@ -542,7 +544,7 @@ test("an arrow pressed before the search answers reaches no action the query fin
       await route.continue();
     });
     await openIssue(page, issue.key, "Arrow before the issue search");
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     await input.fill("issue");
@@ -600,7 +602,7 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     const hit = dialog.getByRole("option").first();
 
     // The reader searched `issue` once: the answer is cached, with `Close issue` below the hit.
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await input.fill("issue");
     await expect(hit).toHaveAttribute("id", /^search-option-issue-/);
     await page.keyboard.press("Escape");
@@ -616,7 +618,7 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
       await route.continue();
     });
     await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await input.fill("issue");
     await expect.poll(() => held).toBeGreaterThan(0);
     await expect(hit).toHaveAttribute("id", /^search-option-issue-/);
@@ -651,7 +653,7 @@ test("a row whose control has gone since the palette opened does nothing", async
     });
     await openIssue(page, issue.key, "Stale row");
     await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     const dialog = page.getByRole("dialog", { name: "Search" });
     const reopen = dialog
       .getByRole("group", { name: "Actions" })
@@ -676,6 +678,60 @@ test("a row whose control has gone since the palette opened does nothing", async
     await sleep(100);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
     expect(patches).toBe(0);
+  } finally {
+    await context.close();
+  }
+});
+
+// `$mod` is Cmd on a Mac and Control elsewhere (`matchesCombo`, web/src/features/shell/keymap.ts).
+// A Mac's text field keeps Control+K, which deletes to the end of the line, so under a Mac's user
+// agent Control+K in the Inbox's search box opens no bar and the box keeps the focus, and Cmd+K
+// opens the bar. The app reads the Mac from the page's user agent (`IS_MAC`), so this row sets
+// Desktop Safari's on the project's Chromium.
+test("under a Mac's user agent Control+K in the Inbox's search box opens no bar and the box keeps the focus, and Cmd+K opens the bar", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice", {
+    userAgent: devices["Desktop Safari"].userAgent,
+  });
+  try {
+    const page = await context.newPage();
+    await page.goto("/");
+    expect(await modKey(page), "the page's user agent names no Mac").toBe("Meta");
+    const box = inboxSearchBox(page);
+    await box.focus();
+    await expect(box).toBeFocused();
+    const bar = page.getByRole("dialog", { name: "Search" });
+
+    await page.keyboard.press("Control+k");
+    // The registry runs a key in the press's own task, so a bar it opened is drawn by the second
+    // frame after it.
+    await nextFrames(page);
+    await expect(bar, "Control+K opened the bar under a Mac's user agent").toHaveCount(0);
+    await expect(box, "Control+K took the focus from the search box").toBeFocused();
+
+    await page.keyboard.press("Meta+k");
+    await expect(bar, "Cmd+K opened no bar under a Mac's user agent").toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+// The same box under the project's own user agent, which names no Mac: there `$mod` is Control.
+test("under a user agent that names no Mac Control+K in the Inbox's search box opens the bar", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/");
+    expect(await modKey(page), "the project's user agent names a Mac").toBe("Control");
+    const box = inboxSearchBox(page);
+    await box.focus();
+    await expect(box).toBeFocused();
+
+    await page.keyboard.press("Control+k");
+    await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
   } finally {
     await context.close();
   }

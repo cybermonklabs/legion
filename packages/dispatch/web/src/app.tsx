@@ -451,8 +451,10 @@ function NavigationContents({
           </button>
         ) : null}
       </div>
+      {/* `$mod+k` is Cmd+K on a Mac and Ctrl+K elsewhere (`keymap.ts`'s `matchesCombo`), so the
+          button names only the key that opens the palette on this platform. */}
       <RailButton
-        ariaKeyshortcuts="Control+K Meta+K"
+        ariaKeyshortcuts={MOD_KEY_LABEL === "⌘" ? "Meta+K" : "Control+K"}
         className="mt-4"
         label="Search"
         onOpen={() => {

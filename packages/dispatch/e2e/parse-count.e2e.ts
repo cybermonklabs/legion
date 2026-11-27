@@ -29,6 +29,7 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { modKey } from "./keyboard-palette";
 import {
   countParses,
   type ParseCounts,
@@ -374,7 +375,7 @@ function surfaces(seeded: Seeded): Surface[] {
         await page.goto("/");
         await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
         await page.locator("body").focus();
-        await page.keyboard.press("Control+k");
+        await page.keyboard.press(`${await modKey(page)}+k`);
         const search = page.getByRole("combobox", { name: "Search" });
         await search.fill(searchTerm);
         await expect(

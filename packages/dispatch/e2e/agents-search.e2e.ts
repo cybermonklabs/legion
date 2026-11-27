@@ -11,6 +11,7 @@ import {
   toggleAgentGroup,
 } from "./agents";
 import { createAsk, createComment, createIssue, createProject } from "./api";
+import { modKey } from "./keyboard-palette";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -148,7 +149,7 @@ test("the query survives a reload through the page's address, / focuses the box 
     await expect(page.getByRole("searchbox", { name: "Search agents" })).toHaveValue("scrum");
     await expect(page.getByRole("dialog", { name: "Search" })).toHaveCount(0);
     // The page's actions and Dispatch-wide hits stay one key away.
-    await page.keyboard.press("Control+k");
+    await page.keyboard.press(`${await modKey(page)}+k`);
     await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
   } finally {
     await alice.close();
