@@ -62,7 +62,7 @@ func TestAConnectionAWaitMadeKeepsWorkingPastTheGiveUp(t *testing.T) {
 		return
 	}
 	_, uri := Start(t)
-	stdout, stderr, err := testwait.RunChild(t, pastGiveUpGuard, "^"+t.Name()+"$", pastGiveUpChildEnv+"="+uri)
+	stdout, stderr, err := testwait.RunChild(t, os.Args[0], pastGiveUpGuard, "^"+t.Name()+"$", pastGiveUpChildEnv+"="+uri)
 	if output := stdout + stderr; err != nil || !pastGiveUpDone.MatchString(output) {
 		t.Fatalf("the child's connection did not publish and flush past the shared wait's give-up (%v):\n%s", err, output)
 	}

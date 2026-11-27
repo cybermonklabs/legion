@@ -94,7 +94,7 @@ func CreateStreamOn(t testing.TB, conn *natsgo.Conn, config natsgo.StreamConfig)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	err = sendCreate(t, conn, "create stream "+config.Name, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
+	err = sendCreate(t, conn, "create stream "+config.Name, createSendWait, []string{"$JS.API.STREAM.CREATE." + config.Name}, func() error {
 		_, err := js.AddStream(&config)
 		return err
 	})

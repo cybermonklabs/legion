@@ -354,19 +354,18 @@ const (
 // The child sets up the stand-in and the creating client on the wall clock, under the shared
 // wait's own bound, and then takes the give-up as a step of its own (testwait.SetUpDone), so the
 // create's wait asks once and its one send runs on the child's step clock, bounded there as a
-// whole by createSendWait (sendOnTheWaitsClock). The step clock fires that bound's timer once a
-// wait is blocked on it and no earlier timer is armed, and the send's first request reaches the
-// stand-in over a socket, so the bound can pass before the stand-in has read the request: the
+// whole to createSendWait past the give-up (sendWithin). The step clock fires that bound's timer
+// once a wait is blocked on it and no earlier timer is armed, and the send's first request reaches
+// the stand-in over a socket, so the bound can pass before the stand-in has read the request: the
 // send then ends createSendWait into the step with nats.go's timeout, 20 s before the deadline on
 // that clock, and the stand-in's late answer never comes. When the stand-in reads the request
 // first, its answer comes accountInfoDelay into the step, the create of the bucket's stream never,
 // and the send ends at the same moment. Either way nothing answers the create, and the row reads
 // only the give-up's text. A send held past the 30 s margin would end the child at the deadline,
-// as go test's alarm does, and the row fails. The
-// parent starts the server under its own deadline and passes its URL to the child, so a server
-// whose start is slow costs the parent time and not the child. Under a fixed -timeout of 48 s the
-// child's waits gave up 18 s in, and a setup still running then failed the child with a wait of
-// its setup's own rather than the create's.
+// as go test's alarm does, and the row fails. The parent starts the server under its own deadline
+// and passes its URL to the child, so a server whose start is slow costs the parent time and not
+// the child. Under a fixed -timeout of 48 s the child's waits gave up 18 s in, and a setup still
+// running then failed the child with a wait of its setup's own rather than the create's.
 func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *testing.T) {
 	if uri := os.Getenv(unansweredBucketChildEnv); uri != "" {
 		createUnansweredBucket(t, uri)
@@ -374,7 +373,7 @@ func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *test
 	}
 	server := start(t, "", nil)
 	// The child fails by design: its create draws no answer.
-	stdout, stderr, _ := testwait.RunChild(t, unansweredBucketGuard, "^"+t.Name()+"$", unansweredBucketChildEnv+"="+server.URL())
+	stdout, stderr, _ := testwait.RunChild(t, os.Args[0], unansweredBucketGuard, "^"+t.Name()+"$", unansweredBucketChildEnv+"="+server.URL())
 	output := stdout + stderr
 	if strings.Contains(output, "panic: test timed out") ||
 		!strings.Contains(output, "gave up waiting for create KV bucket UNANSWERED: an answer to one of its sends") ||

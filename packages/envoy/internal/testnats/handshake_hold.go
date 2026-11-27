@@ -462,8 +462,10 @@ func Answers(t testing.TB, what string, calls ...func() error) []error {
 	return got
 }
 
-// AnswersWithin is Answers under main's name and signature, for callers outside this package not
-// yet moved onto Answers; it fails the test if any call has not answered within within.
+// AnswersWithin is main's AnswersWithin, kept for callers not yet moved onto Answers. It runs each
+// call at once, each on a goroutine of its own, and returns their answers in order. It fails the
+// test, naming what, when any call has not answered within within of the start: a span on the wall
+// clock, its own timer, where Answers takes no span and waits through testwait.
 func AnswersWithin(t testing.TB, within time.Duration, what string, calls ...func() error) []error {
 	t.Helper()
 	answers := make([]chan error, len(calls))

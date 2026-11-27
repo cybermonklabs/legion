@@ -18,14 +18,16 @@ const childWaitDelay = 10 * time.Second
 // waits of this binary read a clock the child moves (stepClock) that stands at the moment they give
 // up (GiveUpAt): the next wait asks its question once and gives up, and a wait that waits on its
 // timer, such as Receive, takes a value already there and otherwise gives up once it is blocked on
-// that timer. A fixture's own spans pass on that clock too (Within), in their moments' order, and
-// one that would end past the test binary's deadline, the margin past the give-up, ends the binary
-// as go test's alarm would, so what a child holds of the margin it holds in clock time. The setup
-// before the call ran on the wall clock under the shared wait's own bound, however long a loaded
-// machine took over it, so the give-up the child then reports comes at a step of its own, and
-// follows from what its waits did, not from how long the machine took. The child's -timeout is then
-// a hang guard only. A child with no deadline (-timeout 0) has no moment for its waits to give up
-// at, and SetUpDone fails t.
+// that timer. An Eventually, whose end is a second before the test binary's deadline, asks once,
+// waits on the timer of that end, which the clock fires once the wait is blocked on it, asks once
+// more there and gives up. A fixture's own spans pass on that clock too (Within), in their moments'
+// order, and one that would end past the test binary's deadline, the margin past the give-up, ends
+// the binary as go test's alarm would, so what a child holds of the margin it holds in clock time.
+// The setup before the call ran on the wall clock under the shared wait's own bound, however long a
+// loaded machine took over it, so the give-up the child then reports comes at a step of its own,
+// and follows from what its waits did, not from how long the machine took. The child's -timeout is
+// then a hang guard only. A child with no deadline (-timeout 0) has no moment for its waits to give
+// up at, and SetUpDone fails t.
 func SetUpDone(t testing.TB) {
 	t.Helper()
 	end, bounded := GiveUpAt(t)
@@ -35,19 +37,22 @@ func SetUpDone(t testing.TB) {
 	useStepClock(t, end).setDeadline(end.Add(margin))
 }
 
-// RunChild runs this test binary again, once, as a child of t: with env added to the environment it
-// inherits, -test.run run, -test.v, and -test.timeout guard. It returns what the child wrote to
-// stdout and to stderr, and the error the child ended with, for t to judge. A child meant to give
-// up takes its give-up at a step of its own once its setup has reported done (SetUpDone), so guard
-// is a hang guard only: what a child whose wait never gives up runs into, never what decides the
-// verdict. A caller sizes it from the row's measured span, and says so. A guard of 0 runs the child
-// with no deadline, as -timeout 0 does. The child runs on t's Context: a child still running where
-// t's waits give up, such as one stuck after its tests, where its own -timeout no longer watches it,
-// is killed, and RunChild fails t naming it, with what it wrote.
-func RunChild(t testing.TB, guard time.Duration, run string, env ...string) (stdout, stderr string, err error) {
+// RunChild runs binary, the test binary that runs t, again, once, as a child of t: with env added
+// to the environment it inherits, -test.run run, -test.v, and -test.timeout guard. The caller names
+// the binary, os.Args[0], in its own _test.go file: so a test binary that starts itself says so in
+// its own test file, where .github/scripts/testcontainers_links.py reads it, and a test binary that
+// only imports this package does not start itself. RunChild returns what the child wrote to stdout
+// and to stderr, and the error the child ended with, for t to judge. A child meant to give up takes
+// its give-up at a step of its own once its setup has reported done (SetUpDone), so guard is a hang
+// guard only: what a child whose wait never gives up runs into, never what decides the verdict. A
+// caller sizes it from the row's measured span, and says so. A guard of 0 runs the child with no
+// deadline, as -timeout 0 does. The child runs on t's Context: a child still running where t's
+// waits give up, such as one stuck after its tests, where its own -timeout no longer watches it, is
+// killed, and RunChild fails t naming it, with what it wrote.
+func RunChild(t testing.TB, binary string, guard time.Duration, run string, env ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	ctx := Context(t)
-	child := exec.CommandContext(ctx, os.Args[0], "-test.run="+run, "-test.v", "-test.timeout="+guard.String())
+	child := exec.CommandContext(ctx, binary, "-test.run="+run, "-test.v", "-test.timeout="+guard.String())
 	child.Env = append(os.Environ(), env...)
 	child.WaitDelay = childWaitDelay
 	var out, errOut bytes.Buffer

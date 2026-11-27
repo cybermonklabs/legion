@@ -120,7 +120,7 @@ func Main(m *testing.M, options ...MainOption) int {
 // MainRun runs the package's tests through run, then shuts the shared server down and removes its
 // store if a test started it, and returns the exit code. A package whose tests use URL calls it
 // from TestMain, directly or composed with another fixture's Main:
-// os.Exit(storetest.Main(func() int { return testnats.MainRun(m.Run) })).
+// os.Exit(storetest.Run(func() int { return testnats.MainRun(m.Run) })).
 func MainRun(run func() int, options ...MainOption) int {
 	for _, option := range options {
 		option()

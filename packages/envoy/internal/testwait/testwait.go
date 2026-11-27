@@ -11,28 +11,35 @@
 //
 // # The bound
 //
-// Every wait here gives up 30 s (margin) before the test binary's deadline, the one that go test's
-// -timeout sets. No wait takes a bound from its caller, and every wait but Eventually has no cap
-// of its own: any span a caller chose would either be too long to ever end a wait or too short for
-// the day the machine is loaded (the Go project made the same choice in CL 504495), so a step that
-// is merely slow fails no such wait, and a fact that never comes fails it naming what it waited
-// for. Eventually is the one exception: it also gives up a minute after it began, when that comes
-// before the margin, because main's Eventually did and the rows main wrote with it were written
-// under that minute. A step slower than a minute fails it, so a row whose fact can take longer
-// waits with Until. The minute goes in a later change, once no row relies on it. Under -timeout 0
-// there is no deadline: Eventually gives up after its minute, and every other wait has no end.
-// Once the margin has passed, a wait asks its question once and then fails, a wait in a cleanup
-// included, so the cleanups keep the margin to run in. The pace at which a condition is asked is
-// the package's own (10 ms), and no function takes one.
+// Every wait here but Eventually gives up 30 s (margin) before the test binary's deadline, the one
+// that go test's -timeout sets, and at no other moment. None of them takes a bound from its caller
+// or has a cap of its own: any span a caller chose would either be too long to ever end a wait or
+// too short for the day the machine is loaded (the Go project made the same choice in CL 504495),
+// so a step that is merely slow fails no such wait, and a fact that never comes fails it naming
+// what it waited for. Under -timeout 0 there is no deadline, and such a wait has no end. Once the
+// margin has passed, such a wait asks its question once and then fails, a wait in a cleanup
+// included, so the cleanups keep the margin to run in.
+//
+// Eventually keeps the end main's Eventually had, because the rows main wrote with it were written
+// under that end: it gives up a minute after it began, or a second before the test binary's
+// deadline when that is sooner, and a minute after it began under -timeout 0. A step slower than a
+// minute fails it, so a row whose fact can take longer waits with Until. Under a -timeout of 30 s
+// or less it still waits, up to a second before the deadline, where every other wait asks once and
+// fails.
+//
+// The pace at which a condition is asked is the package's own (10 ms), and no wait here takes one.
+// legacy.go is the exception to this and to the bound above: it keeps main's UntilPolling,
+// WithinPolling, Holds and Bounded, which take a pace, a bound or both from their caller, for the
+// callers not yet moved off them.
 //
 // A wait that gives up writes "testwait: <test>: gave up waiting for <what> 30s before the test
 // binary's deadline; last read: <reading>" to stderr at once, then fails the test with the same
 // text (InMain, which has no test to fail, returns it as an error); "last read" is there only for
-// a wait that has a reading. An Eventually its minute ended writes "testwait: <test>: gave up
-// waiting for <what> after Eventually's one minute" the same way. The direct write is there
-// because Go's alarm panics without printing a running test's log, so a cleanup that outlasted the
-// margin would otherwise take the message with it. The text is one line: a newline in what or in
-// the reading is written as \n.
+// a wait that has a reading. An Eventually writes "testwait: <test>: gave up waiting for <what>
+// after Eventually's one minute", or "... 1s before the test binary's deadline" when the deadline
+// came first, the same way. The direct write is there because Go's alarm panics without printing a
+// running test's log, so a cleanup that outlasted the margin would otherwise take the message with
+// it. The text is one line: a newline in what or in the reading is written as \n.
 //
 // # The waits
 //
@@ -46,14 +53,14 @@
 // to return: a call that waits on what the code under test holds, such as a database pool's Close,
 // which returns only once every connection in use has come back. Context gives a call that takes
 // a context the same bound, and GiveUpAt names its moment for a call that takes a deadline or a
-// span instead (a socket's SetDeadline, a client's timeout option). InMain is Eventually, without
-// its minute, for a wait in TestMain, which has no t: it takes its deadline from the -timeout flag
-// and the process's start, and returns an error where the others fail the test. InHelper and
-// ReceiveInHelper are InMain and Receive for a helper whose callers hand it no t, such as
-// clocktest's fake, and name that helper where InMain names TestMain. A wait inside a
-// testing/synctest bubble takes the t Bubble hands its function, since the bubble's own t refuses
-// to name a deadline: Bubble names what was left of the test's deadline as the bubble began, past
-// the bubble's start on its clock.
+// span instead (a socket's SetDeadline, a client's timeout option). InMain waits until a condition
+// holds, as Eventually does, under the bound of every other wait, for a wait in TestMain, which has
+// no t: it takes its deadline from the -timeout flag and the process's start, and returns an error
+// where the others fail the test. InHelper and ReceiveInHelper are InMain and Receive for a helper
+// whose callers hand it no t, such as clocktest's fake, and name that helper where InMain names
+// TestMain. A wait inside a testing/synctest bubble takes the t Bubble hands its function, since
+// the bubble's own t refuses to name a deadline: Bubble names what was left of the test's deadline
+// as the bubble began, past the bubble's start on its clock.
 //
 // A condition runs on the test goroutine, so a condition that reads a report which makes its fact
 // impossible (a process that exited, a daemon whose run returned) calls t.Fatalf itself and ends
@@ -74,12 +81,13 @@
 // # A child that gives up
 //
 // A row that reads how a wait gives up, or what a fixture does once it has, runs the test that
-// does it as a child of the test binary (RunChild), once, under a -timeout that is a hang guard
-// only. The child runs its setup on the wall clock, under the shared wait's own bound, and then
-// takes the give-up as a step of its own (SetUpDone): from then on its waits read a clock that
-// stands where they give up, so what the child reports follows from what its waits did, not from
-// how long a loaded machine took over the setup. This package's own child rows give their waits
-// such a clock from their start and move it themselves.
+// does it as a child of the test binary (RunChild, which runs the binary the row's own test file
+// names), once, under a -timeout that is a hang guard only. The child runs its setup on the wall
+// clock, under the shared wait's own bound, and then takes the give-up as a step of its own
+// (SetUpDone): from then on its waits read a clock that stands where they give up, so what the
+// child reports follows from what its waits did, not from how long a loaded machine took over the
+// setup. This package's own child rows give their waits such a clock from their start, and move it
+// themselves or let the timers their waits arm on it move it.
 //
 // A fixture that keeps a span or a deadline of its own, a hang guard on a request, a stand-in's
 // latency, a socket's deadline at the give-up, reads it on the same clock (Now, Within, Pause,
@@ -113,22 +121,36 @@ const pace = 10 * time.Millisecond
 // read from here is a little early and never late.
 var started = time.Now()
 
-// Eventually waits until holds reports true. It keeps the one-minute end main's rows were written
-// under: it gives up a minute after it began, on the clock the waits read, or where GiveUpAt says
-// when that is sooner, and after the minute under -timeout 0. Its failure at the minute says so
-// ("testwait: <test>: gave up waiting for <what> after Eventually's one minute"). A row whose fact
-// can take longer than a minute calls Until, which has no minute. The minute goes in a later
-// change, once no row relies on it.
+// eventuallySpare is how long before the test binary's deadline Eventually gives up when that comes
+// before its minute: the second main's Eventually left (Bounded(t, time.Minute, time.Second)), so a
+// -timeout shorter than a minute still reports the wait rather than go test's alarm.
+const eventuallySpare = time.Second
+
+// Eventually waits until holds reports true. It gives up where main's Eventually did, on the clock
+// the waits read: a minute after it began, or a second before the test binary's deadline
+// (eventuallySpare) when that is sooner, and a minute after it began under -timeout 0. So it is the
+// one wait here that does not give up at the margin. Its failure names the end that came
+// ("testwait: <test>: gave up waiting for <what> after Eventually's one minute", or "... 1s before
+// the test binary's deadline"). A row whose fact can take longer than a minute calls Until, which
+// has no minute.
 func Eventually(t testing.TB, what string, holds func() bool) {
 	t.Helper()
-	minuteEnd := currentClock().Now().Add(time.Minute)
-	if end, bounded := GiveUpAt(t); bounded && !minuteEnd.Before(end) {
-		poll(t, what, holds, nil)
-		return
+	waits := currentClock()
+	end, when := eventuallyEnd(t, waits.Now())
+	if !askedBy(waits, end, holds) {
+		t.Fatalf("%s", announce(t.Name(), what, when, nil))
 	}
-	if !asked(minuteEnd, true, holds) {
-		t.Fatalf("%s", announce(t.Name(), what, afterTheMinute, nil))
+}
+
+// eventuallyEnd is the moment an Eventually of t that began at now gives up, and how its failure
+// says that moment (afterTheMinute, aSecondBeforeTheDeadline): a minute past now, or the test
+// binary's deadline less eventuallySpare when that is sooner.
+func eventuallyEnd(t testing.TB, now time.Time) (time.Time, string) {
+	end, when := now.Add(time.Minute), afterTheMinute
+	if deadline, bounded := deadlineOf(t); bounded && deadline.Add(-eventuallySpare).Before(end) {
+		end, when = deadline.Add(-eventuallySpare), aSecondBeforeTheDeadline
 	}
+	return end, when
 }
 
 // Until waits until read reports true, and returns what it read then. The failure prints the last
@@ -274,17 +296,23 @@ func Next[T any](t testing.TB, what string, s *Stream[T], match func(T) bool) T 
 	return zero
 }
 
-// GiveUpAt is the moment every wait in t gives up, unless Eventually's minute ended it first: the
-// test binary's deadline less the margin, and false when the binary has no deadline (-timeout 0).
-// It is the one reading of that moment outside this package, for a call that takes a deadline or a
-// span where Context gives a context. A *testing.T, or any testing.TB with a Deadline method, names
-// the binary's deadline; for another (a benchmark) it is the -timeout flag's span from the
-// process's start, which is how testing arms its own alarm.
+// GiveUpAt is the moment every wait in t but Eventually gives up: the test binary's deadline less
+// the margin, and false when the binary has no deadline (-timeout 0). It is the one reading of that
+// moment outside this package, for a call that takes a deadline or a span where Context gives a
+// context.
 func GiveUpAt(t testing.TB) (time.Time, bool) {
+	return lessMargin(deadlineOf(t))
+}
+
+// deadlineOf is the test binary's deadline as t names it, and false when the binary has none
+// (-timeout 0). A *testing.T, or any testing.TB with a Deadline method, names it; for another (a
+// benchmark) it is the -timeout flag's span from the process's start, which is how testing arms its
+// own alarm.
+func deadlineOf(t testing.TB) (time.Time, bool) {
 	if named, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		return lessMargin(named.Deadline())
+		return named.Deadline()
 	}
-	return lessMargin(flagDeadline())
+	return flagDeadline()
 }
 
 // Context gives a context whose deadline is the binary's deadline less the margin (GiveUpAt),
@@ -416,6 +444,53 @@ func asked(end time.Time, bounded bool, holds func() bool) bool {
 	return true
 }
 
+// askedBy asks holds until it reports true, and reports whether it did, for an Eventually that
+// gives up at end on waits, the clock it read as it began. Once end has passed a false answer ends
+// the asking, so the question is asked once after end. Between two questions it waits for the
+// package's pace, or for end when that comes first (nextQuestion); it arms end's timer on waits
+// only once its first question was answered false before end.
+func askedBy(waits waitsClock, end time.Time, holds func() bool) bool {
+	if holds() {
+		return true
+	}
+	if !waits.Now().Before(end) {
+		return false
+	}
+	expired, stop := waits.Timer(end)
+	defer stop()
+	var pacer *time.Timer
+	var paced <-chan time.Time
+	if _, stepped := waits.(*stepClock); !stepped {
+		pacer = time.NewTimer(pace)
+		defer pacer.Stop()
+		paced = pacer.C
+	}
+	for {
+		nextQuestion(paced, expired)
+		if holds() {
+			return true
+		}
+		if !waits.Now().Before(end) {
+			return false
+		}
+		if pacer != nil {
+			pacer.Reset(pace)
+		}
+	}
+}
+
+// nextQuestion waits for an Eventually's next question: the receive of paced, the package's pace
+// after the last question, or of expired, the timer of the wait's end. On a step clock paced is
+// nil, since nothing the machine does moves that clock: the wait then waits for its end's timer
+// alone, which the clock fires once the wait is blocked here (waitFrames), so there an Eventually
+// that never holds asks once, then once more at its end.
+func nextQuestion(paced, expired <-chan time.Time) {
+	select {
+	case <-paced:
+	case <-expired:
+	}
+}
+
 // expiry is a channel that receives once the moment GiveUpAt names for t has passed, nil (which
 // never receives) under -timeout 0, and the function that releases its timer.
 func expiry(t testing.TB) (<-chan time.Time, func() bool) {
@@ -475,9 +550,13 @@ var beforeTheDeadline = fmt.Sprintf("%s before the test binary's deadline", marg
 // afterTheMinute is when an Eventually its minute ended gave up, as its failure says it.
 const afterTheMinute = "after Eventually's one minute"
 
-// announce is the text of a wait that gave up when (beforeTheDeadline, afterTheMinute), in the
-// test named name: it writes the text to stderr at once, in one write, and returns it. reading is
-// the wait's last reading, or nil for a wait that has none.
+// aSecondBeforeTheDeadline is when an Eventually the test binary's deadline ended, before its
+// minute, gave up, as its failure says it.
+var aSecondBeforeTheDeadline = fmt.Sprintf("%s before the test binary's deadline", eventuallySpare)
+
+// announce is the text of a wait that gave up when (beforeTheDeadline, afterTheMinute,
+// aSecondBeforeTheDeadline), in the test named name: it writes the text to stderr at once, in one
+// write, and returns it. reading is the wait's last reading, or nil for a wait that has none.
 func announce(name, what, when string, reading func() string) string {
 	text := fmt.Sprintf("testwait: %s: gave up waiting for %s %s", name, what, when)
 	if reading != nil {

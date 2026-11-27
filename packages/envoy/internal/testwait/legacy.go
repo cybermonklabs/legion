@@ -7,7 +7,7 @@ import (
 )
 
 // This file holds the waits and constants main had before the one wait of testwait.go, with
-// main's bodies, for the tests of the Envoy module that have not moved to that wait yet. Their
+// main's behaviour, for the tests of the Envoy module that have not moved to that wait yet. Their
 // callers are tests of other packages (this package's own tests only hold UntilPolling to its pace
 // and sleep a Poll): the change that moves a package's tests onto the one wait moves its callers
 // off these, and each goes with its last caller.
@@ -16,10 +16,10 @@ import (
 // Callers not yet moved still use this; it goes with its last caller.
 const Poll = pace
 
-// Margin is how long before the test binary's deadline every wait here gives up (margin): the time
-// the failing test's cleanups and the failure itself have to run in before Go's alarm panics the
-// binary. A bound of another package's that must end before that alarm too (testdb's connect
-// timeout) leaves the same.
+// Margin is how long before the test binary's deadline every wait of testwait.go but Eventually
+// gives up (margin): the time the failing test's cleanups and the failure itself have to run in
+// before Go's alarm panics the binary. A bound of another package's that must end before that alarm
+// too (testdb's connect timeout) leaves the same.
 // Callers not yet moved still use this; it goes with its last caller.
 const Margin = margin
 
@@ -53,12 +53,13 @@ func UntilPolling[T any](t testing.TB, poll time.Duration, what string, read fun
 	}
 }
 
-// Bounded is bound, or what is left of the test binary's own deadline less margin when that is
+// Bounded is bound, or what is left of the test binary's own deadline less spare when that is
 // sooner, so a -timeout smaller than bound still reports the wait rather than the binary's panic.
+// spare is the caller's, not this package's margin.
 // Callers not yet moved still use this; it goes with its last caller.
-func Bounded(t *testing.T, bound, margin time.Duration) time.Duration {
+func Bounded(t *testing.T, bound, spare time.Duration) time.Duration {
 	if testDeadline, ok := t.Deadline(); ok {
-		if left := time.Until(testDeadline) - margin; left < bound {
+		if left := time.Until(testDeadline) - spare; left < bound {
 			bound = left
 		}
 	}

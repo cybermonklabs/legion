@@ -457,6 +457,19 @@ const (
 	reloadCount       = 200
 )
 
+// reloadRequestStep bounds how long each request of TestAReloadUnderJetStreamRequestsAnswersEveryOne
+// waits for its answer: a minute, the step main gave it, twice main's connectTimeout of 30 s, which
+// there capped each of the two waits through which one Reload holds a connection's bytes
+// (relay.hold's wait for every connection to stop at a message boundary, and relay.barrier's wait
+// for the server's answers to the relay's PINGs). Here those waits go through the shared wait
+// (relay.await), which has no cap of its own, so the step is a hang guard, not a proof that an
+// answer was lost: the hold also lasts while the server reloads, and a request can wait through
+// more than one reload in a row. Requests the holds only delay are answered far sooner: in
+// INFRA-3904's build Jobs, 32,520 runs of a copy of this row with a 15 s wait per request, plain,
+// under -race and beside up to 16 busy loops, ran out of that wait only in the one run whose
+// answers nats-server had dropped (below).
+const reloadRequestStep = time.Minute
+
 // A reload under clients' JetStream requests answers every request and keeps every connection, and
 // under the race detector it is no data race. nats-server writes each service import's account on
 // an authorization reload and reads it without the lock while it sets up the response to a request
@@ -467,9 +480,16 @@ const (
 // changes the user's grant, so each one runs the server's authorization reload, and the server's
 // log says so.
 //
-// Each request runs under the shared wait's context (testwait.Context), so a request held across a
-// slow reload fails nothing, and one whose answer is lost ends at the shared wait's give-up naming
-// its connection and requester rather than hanging to go test's alarm.
+// Each request waits reloadRequestStep for its answer, cut to what is left before the shared wait
+// gives up (left). A request that draws none in its step fails the test by name at once, and its
+// requester sends another, so the reloads still run under requests; one whose step the give-up cut
+// fails the test naming the give-up. No request and no reload starts past the give-up
+// (testwait.GiveUpAt), and each Reload's hold and barrier wait through the shared wait, which gives
+// up there too. So a lost answer costs this test about one step, where a request with no step of
+// its own waits to the give-up and holds every later test of the package until then, as one that
+// waited to the binary's deadline did before main gave each request a step (dispatch://INFRA-3904:
+// CI run 45724862942 lost two answers, this test ran 1,111 s, and the package's last tests failed
+// for want of time).
 //
 // Before the requesters start, one request is sent until it is answered, each send bounded by
 // readWait and retried through the shared wait. That works around a race in nats-server, not a
@@ -507,11 +527,10 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		}
 		return err, err == nil
 	})
+	giveUp, bounded := testwait.GiveUpAt(t)
+	pastGiveUp := func() bool { return bounded && !time.Now().Before(giveUp) }
+	byGiveUp := giveUp.Format(time.RFC3339Nano)
 	stop := make(chan struct{})
-	// A request held across a reload is answered once the reload lets its bytes through; it is
-	// waited for as every wait of these tests is (testwait.Context), so a slow reload fails no
-	// request.
-	requestWait := testwait.Context(t)
 	var answered atomic.Int64
 	var requesters sync.WaitGroup
 	stopRequesters := sync.OnceFunc(func() { close(stop) })
@@ -524,8 +543,8 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		}
 	}
 	// An early failure (a Reload's t.Fatalf among them) still stops the requesters and joins them
-	// before the test returns, closing the connections first so a request need not wait; each
-	// requester reports through t, which it must not do once the test has returned.
+	// before the test returns, closing the connections first so a request need not spend its step;
+	// each requester reports through t, which it must not do once the test has returned.
 	defer func() {
 		stopRequesters()
 		for _, conn := range conns {
@@ -537,10 +556,20 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		for r := range reloadRequesters {
 			requesters.Go(func() {
 				for !stopped() {
-					_, err := conn.RequestWithContext(requestWait, "$JS.API.INFO", nil)
+					if pastGiveUp() {
+						t.Errorf("connection %d, requester %d: the reloads did not end by %s, where the shared wait gives up", c, r, byGiveUp)
+						return
+					}
+					step := min(reloadRequestStep, left(t))
+					_, err := conn.Request("$JS.API.INFO", nil, step)
 					switch {
 					case err == nil:
 						answered.Add(1)
+					case errors.Is(err, natsgo.ErrTimeout) && step < reloadRequestStep:
+						t.Errorf("connection %d, requester %d: a request across the reloads was not answered by %s, where the shared wait gives up", c, r, byGiveUp)
+						return
+					case errors.Is(err, natsgo.ErrTimeout):
+						t.Errorf("connection %d, requester %d: a request across the reloads drew no answer within %s", c, r, step)
 					case errors.Is(err, natsgo.ErrConnectionClosed) && stopped():
 						return
 					default:
@@ -552,6 +581,9 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 		}
 	}
 	for n := 1; n <= reloadCount; n++ {
+		if pastGiveUp() {
+			t.Fatalf("completed only %d of %d reloads by %s, where the shared wait gives up", n-1, reloadCount, byGiveUp)
+		}
 		if err := server.Reload(t, grant(n)); err != nil {
 			t.Fatalf("reload %d: %v", n, err)
 		}

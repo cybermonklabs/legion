@@ -264,11 +264,11 @@ func useStepClock(t testing.TB, now time.Time) *stepClock {
 }
 
 // waitFrames is how a goroutine's stack names the functions of this package that select on a
-// wait's timer (expiry): received, which Receive, ReceiveInHelper and so Returns wait in, then
-// Next, Span and Quiet, each after this package's path.
+// wait's timer: received, which Receive, ReceiveInHelper and so Returns wait in, then Next, Span,
+// Quiet, and nextQuestion, which Eventually waits in, each after this package's path.
 var waitFrames = func() []string {
 	path := strings.TrimSuffix(runtime.FuncForPC(reflect.ValueOf(GiveUpAt).Pointer()).Name(), "GiveUpAt")
-	return []string{path + "received[", path + "Next[", path + "Span(", path + "Quiet["}
+	return []string{path + "received[", path + "Next[", path + "Span(", path + "Quiet[", path + "nextQuestion("}
 }()
 
 // blockedInAWait reports whether a goroutine of this binary is blocked in a wait's select on its

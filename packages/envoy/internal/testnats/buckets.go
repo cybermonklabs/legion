@@ -51,20 +51,27 @@ const readWait = 10 * time.Second
 // is made, and a stream of more than one copy answers it from its first leader, once its members
 // have elected one: 25 bucket creates on an idle two-CPU machine took from 60 ms to 1.03 s. A send
 // it ends decides nothing: the next send is answered with the stream the first one made. A
-// stream's create is one request (nats.go v1.55.0 jsm.go:924), and a bucket's makes up to four,
-// each bounded by it: nats.go v1.55.0's CreateKeyValue reads the account's JetStream information,
-// then creates the bucket's stream, and on "stream name already in use" reads that stream and may
-// update it (kv.go:432, 525, 535 and 542). nats.go keeps that bound on the wall clock; in a child
-// whose waits read a step clock (testwait.SetUpDone) the fixture keeps a send's bound on that clock
-// instead (sendOnTheWaitsClock).
+// stream's create is one request (nats.go v1.55.0 jsm.go:924), so createSendWait bounds its send as
+// well. nats.go keeps that bound on the wall clock. The fixture waits on the waits' own clock
+// instead (sendWithin) for a send that could end too near the test binary's deadline, and for every
+// send in a child whose waits read a step clock (testwait.SetUpDone).
 const createSendWait = 10 * time.Second
+
+// bucketSendWait bounds one send of a bucket's create, which makes up to four requests, each
+// bounded by createSendWait: nats.go v1.55.0's CreateKeyValue reads the account's JetStream
+// information, then creates the bucket's stream, and on "stream name already in use" reads that
+// stream and may update it (kv.go:432, 525, 535 and 542).
+const bucketSendWait = 4 * createSendWait
 
 // SendCreate sends a test fixture's own create of a stream or a bucket on conn until the cluster
 // answers it, and returns the answer: nil once the stream is made, or the cluster's refusal. send
 // makes one create on conn, publishing to subjects, and reports a create that drew no answer as
-// natsgo.ErrTimeout or context.DeadlineExceeded. sendWait is kept for callers from main and is no
-// longer read by the wait itself, which gives up at the shared wait's own bound (testwait.Until),
-// bounding a send on a child's step clock by createSendWait (sendOnTheWaitsClock).
+// natsgo.ErrTimeout or context.DeadlineExceeded; sendWait is the longest one send can take:
+// createSendWait for a stream's create through a JetStream context, bucketSendWait for a bucket's,
+// and its own request's bound for a create a test sends as a raw request. The sends are the shared
+// wait's (testwait.Until), and each ends inside the margin that wait leaves before the test
+// binary's deadline (sendWithin), so a create never answered fails naming its sends, never in go
+// test's timeout panic.
 //
 // nats-server v2.15.1 leaves a stream create unanswered on several paths, which internal/bus's
 // sentAgain lists with their source lines, and sends no answer later: a fixture that waited two
@@ -83,20 +90,20 @@ const createSendWait = 10 * time.Second
 // reports it on the connection and never in the answer; the refusal conn records during the send
 // (refusalOf) is then the answer, so a refused create is sent once. The sends end otherwise only on
 // an answer, or where the shared wait gives up, whose failure names the sends that drew none.
-func SendCreate(t testing.TB, conn *natsgo.Conn, what string, _ time.Duration, subjects []string, send func() error) error {
+func SendCreate(t testing.TB, conn *natsgo.Conn, what string, sendWait time.Duration, subjects []string, send func() error) error {
 	t.Helper()
-	return sendCreate(t, conn, what, subjects, send)
+	return sendCreate(t, conn, what, sendWait, subjects, send)
 }
 
 // sendCreate is SendCreate's body.
-func sendCreate(t testing.TB, conn *natsgo.Conn, what string, subjects []string, send func() error) error {
+func sendCreate(t testing.TB, conn *natsgo.Conn, what string, sendWait time.Duration, subjects []string, send func() error) error {
 	t.Helper()
 	sends := 0
 	var answer error
 	testwait.Until(t, what+": an answer to one of its sends", func() (string, bool) {
 		sends++
 		before := conn.LastError()
-		err := sendOnTheWaitsClock(send)
+		err := sendWithin(t, sendWait, send)
 		if errors.Is(err, natsgo.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			if refusal := refusalOf(conn, before, subjects); refusal != nil {
 				answer = refusal
@@ -110,27 +117,38 @@ func sendCreate(t testing.TB, conn *natsgo.Conn, what string, subjects []string,
 	return answer
 }
 
-// sendOnTheWaitsClock makes one send of a create and returns its answer. On the wall clock it is
-// send itself, whose requests nats.go bounds by createSendWait (the JetStream context's MaxWait),
-// so no caller that never takes testwait.SetUpDone sends otherwise than it did. On a child's step
-// clock, which nats.go's bound cannot read and which nothing the machine does moves, the send is
-// held on that clock instead: it runs on a goroutine of its own, and one with no answer once
-// createSendWait has passed there ends as nats.go's bound ends it, with nats.go's timeout. A
-// stand-in's late answer (testwait.Pause) passes on the same clock, in its moment's order, so a send
-// under way at the give-up ends at a moment of that clock, and one that would end past the test
-// binary's deadline ends the binary there as go test's alarm would (testwait.Within). Such a send's
-// requests are bounded together on the step clock, not each, since on it only a stand-in's answer
-// comes late; the goroutine of one that drew no answer ends at nats.go's own bound.
-func sendOnTheWaitsClock(send func() error) error {
-	if !testwait.Stepped() {
+// sendWithin makes one send of a create, which takes sendWait at most, and returns its answer. The
+// send ends by the earlier of sendWait after it began and createSendWait past the moment the shared
+// wait gives up (testwait.GiveUpAt): 20 s before the test binary's deadline at the latest, inside
+// the 30 s margin the wait leaves for the failure and the test's cleanups. So the send under way as
+// the wait gives up is its last, and a create never answered fails naming its sends, never in go
+// test's timeout panic. The end is createSendWait past the give-up, and not the give-up itself,
+// because past the give-up the shared wait asks once more (testwait.Until): a send begun there is
+// made and waited for as long as one request of a create is bounded, rather than cut before it
+// could be answered. A send that ends by sendWait anyway is send itself, whose requests nats.go
+// bounds (the JetStream context's MaxWait, a raw request's timeout), so a send begun far enough
+// before the give-up runs as it did. Another runs on a goroutine of its own, where a method of t
+// that ends the test ends that goroutine and not the test, and is waited for on the clock the waits
+// read until its end (testwait.Within); one with no answer by then ends as nats.go's bound ends it,
+// with nats.go's timeout, and its goroutine ends at nats.go's own bound. On a child's step clock
+// (testwait.SetUpDone), which nats.go's bound cannot read and which nothing the machine does moves,
+// every send is waited for so, and a stand-in's late answer (testwait.Pause) passes on the same
+// clock, in its moment's order. Such a send's requests are bounded together on the step clock, not
+// each, since on it only a stand-in's answer comes late.
+func sendWithin(t testing.TB, sendWait time.Duration, send func() error) error {
+	bound := sendWait
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		bound = max(min(bound, end.Add(createSendWait).Sub(testwait.Now())), 0)
+	}
+	if bound == sendWait && !testwait.Stepped() {
 		return send()
 	}
 	answered := make(chan error, 1)
 	go func() { answered <- send() }()
-	if err, ok := testwait.Within(answered, createSendWait); ok {
+	if err, ok := testwait.Within(answered, bound); ok {
 		return err
 	}
-	return fmt.Errorf("%w: no answer %s into the send on the step clock", natsgo.ErrTimeout, createSendWait)
+	return fmt.Errorf("%w: no answer %s into the send, which ends %s past the shared wait's give-up at the latest", natsgo.ErrTimeout, bound, createSendWait)
 }
 
 // refusalOf is the server's refusal of a publish to one of subjects that conn recorded after
@@ -185,7 +203,7 @@ func CreateKeyValueOn(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueCo
 	// use" the update (its read of the stream held ignores a refusal).
 	subjects := []string{"$JS.API.INFO", "$JS.API.STREAM.CREATE." + stream, "$JS.API.STREAM.UPDATE." + stream}
 	var kv natsgo.KeyValue
-	err = sendCreate(t, conn, "create KV bucket "+config.Bucket, subjects, func() error {
+	err = sendCreate(t, conn, "create KV bucket "+config.Bucket, bucketSendWait, subjects, func() error {
 		var err error
 		kv, err = js.CreateKeyValue(config)
 		return err

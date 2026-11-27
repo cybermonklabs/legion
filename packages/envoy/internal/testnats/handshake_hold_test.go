@@ -157,7 +157,7 @@ const holdChildGuard = 2 * time.Minute
 // the child.
 func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 	uri := URL(t)
-	stdout, stderr, err := testwait.RunChild(t, holdChildGuard, "^TestTakeWriteLockOnAHooksGoroutineChild$", holdChildEnv+"="+uri)
+	stdout, stderr, err := testwait.RunChild(t, os.Args[0], holdChildGuard, "^TestTakeWriteLockOnAHooksGoroutineChild$", holdChildEnv+"="+uri)
 	text := stdout + stderr
 	if err == nil {
 		t.Fatalf("the child was meant to fail its row; it passed:\n%s", text)

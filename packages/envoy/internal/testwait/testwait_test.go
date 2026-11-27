@@ -399,15 +399,14 @@ func TestQuietFailsWhenItsChannelYields(t *testing.T) {
 	}
 }
 
-// Every wait gives up the margin before the test binary's deadline, before Go's alarm, and not
-// before the margin unless Eventually's minute ends first (TestEventuallyGivesUpAfterItsMinute):
-// it writes its line to stderr and fails the test with the same text, which carries the wait's
-// last reading where it has one. The child's waits read a clock the child moves (stepClock): its
-// Until's third reading reaches the margin, a nanosecond after its second, so Until gives up at a
-// step of the child, whenever the machine lets the child take it, and an Until that gave up early
-// names its second reading and reads twice, and fails this row by name. Every wait after it begins
-// at the margin, a wait in a cleanup included, asks once and fails; an Eventually among them gives
-// up at the margin, since its minute would end a minute later. A wait in a testing/synctest bubble
+// Every wait but Eventually, whose end has a row of its own (TestEventuallyGivesUpAtItsEnd), gives
+// up the margin before the test binary's deadline, before Go's alarm, and not before the margin: it
+// writes its line to stderr and fails the test with the same text, which carries the wait's last
+// reading where it has one. The child's waits read a clock the child moves (stepClock): its Until's
+// third reading reaches the margin, a nanosecond after its second, so Until gives up at a step of
+// the child, whenever the machine lets the child take it, and an Until that gave up early names its
+// second reading and reads twice, and fails this row by name. Every wait after it begins at the
+// margin, a wait in a cleanup included, asks once and fails. A wait in a testing/synctest bubble
 // (Bubble), whose clock starts in 2000, gives up at what was left of the test's deadline past the
 // bubble's start, less the margin, not at the real clock's deadline, decades past the bubble's
 // clock: the child moves the clock it reads to the bubble's start, then past that moment, in steps
@@ -419,19 +418,19 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	ending := " 30s before the test binary's deadline"
 	requireGaveUp(t, stdout, stderr, []string{
 		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + `; last read: a later\nreading`,
-		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + ending,
+		"testwait: " + name + "until_past_the_margin: gave up waiting for a reading that never holds past the margin" + ending + "; last read: 1",
 		"testwait: " + name + "next_on_an_empty_stream: gave up waiting for an item no one adds" + ending + "; last read: none",
 		"testwait: " + name + "next_past_unmatched_items: gave up waiting for an item that matches" + ending + `; last read: the latest\nitem`,
 		"testwait: " + name + "receive: gave up waiting for a send no one makes" + ending,
 		"testwait: " + name + "returns: gave up waiting for a function that never returns" + ending,
-		"testwait: " + name + "cleanup: gave up waiting for a condition a cleanup waits for" + ending,
+		"testwait: " + name + "cleanup: gave up waiting for a reading a cleanup waits for" + ending + "; last read: the cleanup's reading",
 		"testwait: " + name + "span: gave up waiting for the end of a 1h0m0s span (a span past the margin)" + ending,
 		"testwait: TestMain: gave up waiting for a condition TestMain waits for" + ending,
 		"testwait: a helper: gave up waiting for a send no one makes to a helper" + ending,
 		"testwait: " + name + "until_in_a_bubble: gave up waiting for a reading in a bubble that never holds" + ending + "; last read: the bubble's reading",
 	})
-	if !strings.Contains(stdout, "the condition was asked 1 time(s)") {
-		t.Errorf("a wait that began after the margin did not ask exactly once; the child's output:\n%s", stdout)
+	if !strings.Contains(stdout, "the reading was read 1 time(s)") {
+		t.Errorf("a wait that began after the margin did not read exactly once; the child's output:\n%s", stdout)
 	}
 	for _, row := range []string{"until_read_three_times", "armed_no_timer", "past_the_margin_armed_only_the_margin"} {
 		if !strings.Contains(stdout, "--- PASS: "+name+row+" (") {
@@ -440,19 +439,19 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	}
 }
 
-// Under -timeout 0 there is no deadline: no wait has a timer, no wait but Eventually has a moment
-// to give up at, in a test or in TestMain, and Context has no deadline. Eventually's one end is its
-// minute: the child moves a clock it steps (stepClock) to a minute past an Eventually's start, and
-// that Eventually gives up there with the minute's line. So a wait that is not answered at once
-// keeps asking rather than giving up at a false reading or an empty channel: Until returns the
-// third reading after three asks, Eventually and InMain hold at their third question, two paces
-// in and so inside Eventually's minute, and Receive takes a value sent an hour after it began to
-// wait, on a synctest bubble's clock, so no span of its own shorter than that passes it. The child
-// has no deadline, so a wait of its that never returns, or a Receive that never blocks and so
-// holds the bubble's clock still, would hold it for good: the child runs under this test's
-// Context, which ends the margin before this binary's deadline, and a child still running then is
-// killed and fails the row by name, with the child's output up to the wait it hung in, rather than
-// go test's alarm with none of it.
+// Under -timeout 0 there is no deadline: no wait but Eventually has a timer or a moment to give up
+// at, in a test or in TestMain, and Context has no deadline. Eventually's one end is its minute:
+// the child moves a clock it steps (stepClock) to a minute past an Eventually's start, and that
+// Eventually gives up there with the minute's line. So a wait that is not answered at once keeps
+// asking rather than giving up at a false reading or an empty channel: Until returns the third
+// reading after three asks, Eventually and InMain hold at their third question, two paces in and so
+// inside Eventually's minute, and Receive takes a value sent an hour after it began to wait, on a
+// synctest bubble's clock, so no span of its own shorter than that passes it. The child has no
+// deadline, so a wait of its that never returns, or a Receive that never blocks and so holds the
+// bubble's clock still, would hold it for good: the child runs under this test's Context, which
+// ends the margin before this binary's deadline, and a child still running then is killed and fails
+// the row by name, with the child's output up to the wait it hung in, rather than go test's alarm
+// with none of it.
 func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 	ctx := Context(t)
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
@@ -476,9 +475,9 @@ func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 // last then begins at the margin, a wait in a cleanup included, and asks once, and a row reads that
 // each timer they armed was for the margin or before it (ReceiveInHelper's is TestMain's moment,
 // mainGiveUpAt, which is no later), fired once its wait waited on it, and had its tick taken, so
-// no wait waited for a later moment of its own. The last wait runs in a testing/synctest bubble
-// (Bubble), whose clock the child moves its stepClock to. It runs only when the parent re-executes
-// this binary.
+// no wait waited for a later moment of its own. Eventually, which gives up a second before the
+// deadline, is not among them. The last wait runs in a testing/synctest bubble (Bubble), whose
+// clock the child moves its stepClock to. It runs only when the parent re-executes this binary.
 func TestTheWaitsGiveUpChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure")
@@ -510,10 +509,10 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 			t.Errorf("Until armed timers for %v, want none: it reads the clock", armed)
 		}
 	})
-	t.Run("eventually", func(t *testing.T) {
-		asks := 0
-		t.Cleanup(func() { t.Logf("the condition was asked %d time(s)", asks) })
-		Eventually(t, "a condition that never holds", func() bool { asks++; return false })
+	t.Run("until past the margin", func(t *testing.T) {
+		reads := 0
+		t.Cleanup(func() { t.Logf("the reading was read %d time(s)", reads) })
+		Until(t, "a reading that never holds past the margin", func() (int, bool) { reads++; return reads, false })
 	})
 	t.Run("next on an empty stream", func(t *testing.T) {
 		var stream Stream[string]
@@ -533,7 +532,9 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 		Returns(t, "a function that never returns", func() { <-never })
 	})
 	t.Run("cleanup", func(t *testing.T) {
-		t.Cleanup(func() { Eventually(t, "a condition a cleanup waits for", func() bool { return false }) })
+		t.Cleanup(func() {
+			Until(t, "a reading a cleanup waits for", func() (string, bool) { return "the cleanup's reading", false })
+		})
 	})
 	t.Run("span", func(t *testing.T) {
 		Span(t, time.Hour, "a span past the margin")
@@ -611,19 +612,19 @@ func TestReceiveGivesUpAtTheMargin(t *testing.T) {
 	}
 }
 
-// runChildMeantToFail re-executes this binary to run only the test named child (RunChild), under
-// -timeout childTimeout and with childEnv set, and returns what the child wrote to stdout and to
-// stderr. It fails t unless the child failed before its deadline and with no report of the race
-// detector: a child that passed, one whose waits ran into go test's alarm rather than giving up at
-// the margin, and one the detector failed, fail t at once.
+// runChildMeantToFail re-executes this binary, os.Args[0], to run only the test named child
+// (RunChild), under -timeout childTimeout and with childEnv set, and returns what the child wrote
+// to stdout and to stderr. It fails t unless the child failed before its deadline and with no
+// report of the race detector: a child that passed, one whose waits ran into go test's alarm rather
+// than giving up at their end, and one the detector failed, fail t at once.
 func runChildMeantToFail(t *testing.T, child string) (stdout, stderr string) {
 	t.Helper()
-	stdout, stderr, err := RunChild(t, childTimeout(t), "^"+child+"$", childEnv+"=1")
+	stdout, stderr, err := RunChild(t, os.Args[0], childTimeout(t), "^"+child+"$", childEnv+"=1")
 	if err == nil {
 		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 	if strings.Contains(stdout, "panic: test timed out") || strings.Contains(stderr, "panic: test timed out") {
-		t.Fatalf("the child's waits ran into the binary's deadline rather than giving up at the margin:\n%s\nstderr:\n%s", stdout, stderr)
+		t.Fatalf("the child's waits ran into the binary's deadline rather than giving up at their end:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 	requireNoRace(t, stdout, stderr)
 	return stdout, stderr
@@ -698,102 +699,132 @@ func TestReceiveGivesUpAtTheMarginChild(t *testing.T) {
 	})
 }
 
-// Eventually gives up a minute after it began, the end main's Eventually had, or at the margin when
-// that comes first, and its failure at the minute says so and names what it waited for, on one
-// line, on stderr and as the test's failure. The child's waits read a clock the child moves
-// (stepClock), so no row spends a real minute. In the child's first row the third question moves
-// the clock to the wait's minute and the wait gives up on that answer, with the minute's line: an
-// Eventually with no minute asks a fourth time, which fails the row without the line, and one that
-// gave up before the minute asks fewer times, which fails the count row. In its second row the
-// condition holds at the question after the clock stood a nanosecond before the minute, and the
-// wait passes; one whose minute is shorter gives up first and fails the row. In its third the
-// margin comes half a minute before the minute would, and the wait gives up at the margin with the
-// margin's line, not the minute's: one that waited for its minute asks a fourth time, which fails
-// the row without the line.
-func TestEventuallyGivesUpAfterItsMinute(t *testing.T) {
-	stdout, stderr := runChildMeantToFail(t, "TestEventuallyGivesUpAfterItsMinuteChild")
-	name := "TestEventuallyGivesUpAfterItsMinuteChild/"
+// Eventually gives up where main's Eventually did: a minute after it began, or a second before the
+// test binary's deadline when that is sooner, and its failure names the end that came and what it
+// waited for, on one line, on stderr and as the test's failure. The child's waits read a clock the
+// child moves (stepClock), so no row spends a real minute: there an Eventually arms a timer for its
+// end, which the clock fires once the wait is blocked on it, so it asks as it begins and once more
+// at its end. The child reads the clock at each question and the timers each wait armed, so the
+// verdict follows from the moments the waits chose, not from how fast the machine ran the child.
+// An Eventually that gave up before its end armed its timer for an earlier moment or did not wait
+// on it; one that gave up at the margin, as the other waits do, armed it for the margin and wrote
+// the margin's line; one that waited for its minute past the deadline armed a timer the clock's
+// deadline refuses, which ends the child as go test's alarm would; and one that asked no question
+// at its end fails the row whose condition holds there. The child's last wait begins with a second
+// of the deadline left, at its end, and asks once and fails, as main's did.
+func TestEventuallyGivesUpAtItsEnd(t *testing.T) {
+	stdout, stderr := runChildMeantToFail(t, "TestEventuallyGivesUpAtItsEndChild")
+	name := "TestEventuallyGivesUpAtItsEndChild/"
+	ending := " 1s before the test binary's deadline"
 	requireGaveUp(t, stdout, stderr, []string{
 		"testwait: " + name + `never_holds: gave up waiting for a condition that never\nholds after Eventually's one minute`,
-		"testwait: " + name + "the_margin_first: gave up waiting for a condition the margin ends 30s before the test binary's deadline",
+		"testwait: " + name + "the_deadline_first: gave up waiting for a condition the deadline ends" + ending,
+		"testwait: " + name + "at_its_end: gave up waiting for a condition begun at its end" + ending,
 	})
-	for _, row := range []string{"holds_before_the_minute", "asked_until_each_end"} {
+	for _, row := range []string{"holds_at_its_minute", "asked_and_armed_at_each_end"} {
 		if !strings.Contains(stdout, "--- PASS: "+name+row+" (") {
 			t.Errorf("the child's row %s did not pass; its output:\n%s", row, stdout)
 		}
 	}
 }
 
-// TestEventuallyGivesUpAfterItsMinuteChild is the child of TestEventuallyGivesUpAfterItsMinute. Its
-// waits read a stepClock an hour before the margin, which only its rows move. In "never holds" the
-// condition never holds and is asked three times (stepsTo): at the wait's start, then with the
-// clock moved to a nanosecond before the wait's minute, then to the minute, so Eventually gives up
-// on the third answer, the one given at the minute. In "holds before the minute" the first question
-// moves the clock to a nanosecond before the wait's minute and the second holds. "the margin first"
-// moves the clock to half a minute before the margin, so the margin comes before its wait's minute,
-// and its questions step the clock to the margin as the first row's step it to the minute. A last
-// row reads that each of the two waits that gave up asked three times. It runs only when the parent
-// re-executes this binary.
-func TestEventuallyGivesUpAfterItsMinuteChild(t *testing.T) {
+// TestEventuallyGivesUpAtItsEndChild is the child of TestEventuallyGivesUpAtItsEnd. Its waits read
+// a stepClock an hour before the margin, which holds the test binary's deadline as SetUpDone's
+// does, so a timer due past it ends the child as go test's alarm would. The rows move the clock
+// only between waits; within a wait only the timer of its end moves it. "never holds" waits from
+// the hour before the margin, so its minute comes first. "holds at its minute" is answered true
+// once the clock has reached the wait's minute. "the deadline first" begins 31 s before the
+// deadline, a second before the margin, so its minute would come 29 s past the deadline, and a
+// second before the deadline comes first. "at its end" begins where that wait gave up, a second
+// before the deadline. A last row reads where each of the three that gave up asked and which timers
+// it armed. It runs only when the parent re-executes this binary.
+func TestEventuallyGivesUpAtItsEndChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
-		t.Skip(childEnv + " is not set: this test is the child of TestEventuallyGivesUpAfterItsMinute")
+		t.Skip(childEnv + " is not set: this test is the child of TestEventuallyGivesUpAtItsEnd")
 	}
 	end := childGiveUpAt(t)
-	stepped := useStepClock(t, end.Add(-time.Hour))
-	var minuteAsks, marginAsks int
+	deadline := end.Add(margin)
+	began := end.Add(-time.Hour)
+	stepped := useStepClock(t, began)
+	stepped.setDeadline(deadline)
+	var neverHolds, deadlineFirst, atItsEnd eventuallyRun
 	t.Run("never holds", func(t *testing.T) {
-		Eventually(t, "a condition that never\nholds", stepsTo(t, stepped, Now().Add(time.Minute), &minuteAsks))
+		runEventually(t, stepped, "a condition that never\nholds", &neverHolds)
 	})
-	t.Run("holds before the minute", func(t *testing.T) {
+	t.Run("holds at its minute", func(t *testing.T) {
 		minute := Now().Add(time.Minute)
 		asks := 0
-		Eventually(t, "a condition that holds a nanosecond before the minute", func() bool {
+		Eventually(t, "a condition that holds once the clock has reached the wait's minute", func() bool {
 			asks++
-			if asks == 1 {
-				stepped.set(minute.Add(-time.Nanosecond))
-				return false
+			if asks > 2 {
+				t.Errorf("the wait asked a third time, with the clock at %v: on a step clock it asks once as it begins and once at its end", Now())
+				return true
 			}
-			return true
+			return !Now().Before(minute)
 		})
 		if asks != 2 {
-			t.Errorf("Eventually returned after %d questions, want 2: the second, a nanosecond before its minute, holds", asks)
+			t.Errorf("Eventually returned after %d questions, want 2: one as it began, and one at its minute, which holds", asks)
 		}
 	})
-	t.Run("the margin first", func(t *testing.T) {
-		stepped.set(end.Add(-time.Minute / 2))
-		Eventually(t, "a condition the margin ends", stepsTo(t, stepped, end, &marginAsks))
+	t.Run("the deadline first", func(t *testing.T) {
+		stepped.set(deadline.Add(-margin - time.Second))
+		runEventually(t, stepped, "a condition the deadline ends", &deadlineFirst)
 	})
-	t.Run("asked until each end", func(t *testing.T) {
-		if minuteAsks != 3 {
-			t.Errorf("the Eventually its minute ended asked %d times, want 3: it gives up at its minute, which the third question reaches, and not before", minuteAsks)
-		}
-		if marginAsks != 3 {
-			t.Errorf("the Eventually the margin ended asked %d times, want 3: it gives up at the margin, which the third question reaches, and not before", marginAsks)
+	t.Run("at its end", func(t *testing.T) {
+		runEventually(t, stepped, "a condition begun at its end", &atItsEnd)
+	})
+	t.Run("asked and armed at each end", func(t *testing.T) {
+		aSecondBefore := deadline.Add(-time.Second)
+		for _, want := range []struct {
+			row          string
+			run          *eventuallyRun
+			asked, armed []time.Time
+		}{
+			{"never holds", &neverHolds, []time.Time{began, began.Add(time.Minute)}, []time.Time{began.Add(time.Minute)}},
+			{"the deadline first", &deadlineFirst, []time.Time{deadline.Add(-margin - time.Second), aSecondBefore}, []time.Time{aSecondBefore}},
+			{"at its end", &atItsEnd, []time.Time{aSecondBefore}, nil},
+		} {
+			if !slices.EqualFunc(want.run.asked, want.asked, time.Time.Equal) {
+				t.Errorf("%s: the Eventually asked with the clock at %v, want %v", want.row, want.run.asked, want.asked)
+			}
+			var armed []time.Time
+			for _, timer := range want.run.timers {
+				armed = append(armed, timer.at)
+				if !timer.sent || timer.untaken {
+					t.Errorf("%s: the Eventually gave up without waiting for its timer for %v (fired %t, tick left untaken %t)", want.row, timer.at, timer.sent, timer.untaken)
+				}
+			}
+			if !slices.EqualFunc(armed, want.armed, time.Time.Equal) {
+				t.Errorf("%s: the Eventually armed timers for %v, want %v", want.row, armed, want.armed)
+			}
 		}
 	})
 }
 
-// stepsTo is a condition that never holds, for a wait on stepped that gives up at stop, and counts
-// its questions in asks: the second moves stepped to a nanosecond before stop and the third to
-// stop, so the wait gives up on the third answer, and one that gave up earlier asks fewer times. A
-// fourth question fails t and holds, so a wait that asks past stop ends there and fails its row by
-// name rather than hanging.
-func stepsTo(t *testing.T, stepped *stepClock, stop time.Time, asks *int) func() bool {
-	return func() bool {
-		*asks++
-		switch *asks {
-		case 1:
-			return false
-		case 2:
-			stepped.set(stop.Add(-time.Nanosecond))
-			return false
-		case 3:
-			stepped.set(stop)
-			return false
+// eventuallyRun is what one Eventually did on a step clock: the clock at each of its questions,
+// and the timers it armed there.
+type eventuallyRun struct {
+	asked  []time.Time
+	timers []armedTimer
+}
+
+// runEventually runs, as a wait of t, an Eventually on stepped whose condition never holds, and
+// records in run the clock at each question and the timers the wait armed, also when the wait fails
+// t. A third question fails t and holds, so a wait that asks past its end ends there and fails its
+// row by name rather than hanging: on a step clock an Eventually asks once as it begins and once at
+// its end.
+func runEventually(t testing.TB, stepped *stepClock, what string, run *eventuallyRun) {
+	t.Helper()
+	before := len(stepped.armed())
+	defer func() { run.timers = stepped.armedTimers()[before:] }()
+	Eventually(t, what, func() bool {
+		run.asked = append(run.asked, Now())
+		if len(run.asked) > 2 {
+			t.Errorf("the wait asked a third time, with the clock at %v: on a step clock it asks once as it begins and once at its end", Now())
+			return true
 		}
-		t.Errorf("the wait asked a fourth time, with the clock at %v, where it gives up at %v", Now(), stop)
-		return true
-	}
+		return false
+	})
 }
 
 // TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0. Beside
