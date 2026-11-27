@@ -581,12 +581,19 @@ socket_scope() {
     exec "$bun_bin" "$socket_entry" "$base" "$k1_artifact" "$1" "$work/cookie" 2>"$work/socket"
   )" || fail k1 "open a document socket at schema version $1" "$(<"$work/socket")"
 }
-socket_scope 3
-[[ "$scope" == readonly ]] || fail k1 "the socket on schema version 3 is read-only" "its scope is $scope"
-pass k1 "the socket on schema version 3 is admitted with scope readonly"
-socket_scope 4
-[[ "$scope" == read-write ]] || fail k1 "the socket on schema version 4 writes" "its scope is $scope"
-pass k1 "the socket on schema version 4 is admitted with scope read-write"
+# The rule the two rows prove is about the schema a socket declares against the schema the server
+# serves: one that declares an older version is admitted read-only, and one that declares the
+# server's own writes. They drove 3 and 4 while 4 was the server's; the schema rises as later
+# blocks land, so they drive one below the version read above and that version itself. The
+# version that knows `ci_check`, 4, is held above.
+socket_scope $((schema_version - 1))
+[[ "$scope" == readonly ]] ||
+  fail k1 "the socket on schema version $((schema_version - 1)), one below the server's, is read-only" "its scope is $scope"
+pass k1 "the socket on schema version $((schema_version - 1)), one below the server's, is admitted with scope readonly"
+socket_scope "$schema_version"
+[[ "$scope" == read-write ]] ||
+  fail k1 "the socket on schema version $schema_version, the server's own, writes" "its scope is $scope"
+pass k1 "the socket on schema version $schema_version, the server's own, is admitted with scope read-write"
 
 # --- k2: the derived result, the merge, one read for three checks, the newest head --------------
 
