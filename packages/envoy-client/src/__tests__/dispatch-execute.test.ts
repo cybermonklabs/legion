@@ -6753,6 +6753,32 @@ describe("executeDispatchTool", () => {
         }
       }
     });
+
+    // A comment and a suggestion take `ref` as the owner they write on too, so each would write on
+    // the issue or its spec in the tab's place: each is refused before any request. A comment on
+    // an issue takes the issue alone, so its hint names no document; a suggestion acts on a
+    // document, so its hint names one.
+    test("comment and suggest refuse a view tab of an issue, by its link and by its reference", async () => {
+      for (const tab of ["verification", "plan", "steps", "artifacts", "collaborators"]) {
+        const refused = (tool: string, hint: string) =>
+          `ref dispatch://DSP-42/${tab} names the ${tab} tab on DSP-42; dispatch ${tool} would act on DSP-42 and drop the tab: read it with dispatch read, or name DSP-42 with issue DSP-42${hint}`;
+        for (const ref of [
+          `dispatch://DSP-42/${tab}`,
+          `http://dispatch.test/issues/DSP-42/${tab}`,
+        ]) {
+          expect(await problemsOf("dispatch_comment", { ref, body: "Seen." })).toEqual([
+            refused("comment", ""),
+          ]);
+          expect(
+            await problemsOf("dispatch_suggest", {
+              ref,
+              quote: "old line",
+              replace_with: "new line",
+            })
+          ).toEqual([refused("suggest", " and artifact <the document's slug>")]);
+        }
+      }
+    });
   });
 
   test("an ask on one owner cites another issue's comment or an issue, as a citation only", async () => {
