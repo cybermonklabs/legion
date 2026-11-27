@@ -6,7 +6,7 @@
 #
 # The three reads are GET /api/v1/inbox (listInbox), GET /api/v1/me/replies (listMyReplies) and
 # GET /api/v1/agents/{session_id}/messages (listAgentMessages). They stay served for one release,
-# with their handlers, their declarations in api/route_*.go and their contract response types, and
+# with their handlers, their route files (api/route_<path>+get.go) and their contract response types, and
 # the root deletes them a release later. POST /api/v1/agents/{session_id}/messages, the send on
 # the same path, stays.
 #
@@ -992,8 +992,8 @@ post_stays_section() {
 # --- names: no read of the two is named inbox ----------------------------------------------------
 
 readonly name_files=(
-  "packages/envoy/internal/dispatch/api/route_api_v1_asks_open+get.go"
-  "packages/envoy/internal/dispatch/api/route_api_v1_agents_{session_id}_conversation+get.go"
+  'packages/envoy/internal/dispatch/api/route_api_v1_asks_open+get.go'
+  'packages/envoy/internal/dispatch/api/route_api_v1_agents_{session_id}_conversation+get.go'
   packages/contracts/src/dispatch-api.generated.ts
   packages/dispatch/web/src/api/client.ts
   packages/dispatch/web/src/api/queries.ts
@@ -1001,10 +1001,10 @@ readonly name_files=(
 readonly name_kinds="handler shape operation contract-type client-method query query-key"
 
 # names_of ROOT PATH: every name the read at PATH goes by under ROOT, one `<kind> <name>` each: its
-# path; its handler and its response and parameter shapes, from its GET declaration in the route's
-# own file (api/route_*.go, one declareRoute each); its operation and the contract types its 200
-# answer is, with those types' own, in the generated contract; the web client's method that reads
-# it; and the query that calls that method, with the words of its key.
+# path; its handler and its response and parameter shapes, from the GET route file of package api
+# whose Pattern is PATH (api/route_<path>+get.go, one declaration a route); its operation and the contract types its 200 answer is, with those types'
+# own, in the generated contract; the web client's method that reads it; and the query that calls
+# that method, with the words of its key.
 names_of() {
   local path="$2" api="$1/packages/envoy/internal/dispatch/api" contract operation type method
   local generated="$1/packages/contracts/src/dispatch-api.generated.ts" web="$1/packages/dispatch/web/src/api"
@@ -1016,24 +1016,15 @@ names_of() {
     function opened() {f = 1; match($0, /^ */); indent = RLENGTH}
     function closes() {match($0, /^ */); return RLENGTH == indent && $0 ~ /^ *};?$/}'
   printf 'path %s\n' "$path"
-  # A route's declaration is one declareRoute block, closed by `})` at the line's start; the GET
-  # block whose Pattern is PATH names the handler (a method expression) and the shapes.
-  awk -v p="\"$path\"," '
-      /^var _ = declareRoute\(routeDecl\{/ {get = 0; at = 0; handler = ""; shapes = ""; next}
-      /^[[:space:]]*Method:[[:space:]]*http\.MethodGet,/ {get = 1}
-      /^[[:space:]]*Pattern:/ && index($0, p) {at = 1}
-      /^[[:space:]]*Handler:/ {handler = $0; sub(/.*\(\*server\)\./, "", handler); sub(/,.*/, "", handler)}
-      /^[[:space:]]*Shape:/ {shapes = $0}
-      /^\}\)/ {
-        if (get && at) {
-          if (handler != "") print "handler " handler
-          while (match(shapes, /(Response|Params): *(\[\])?[A-Za-z0-9_]+/)) {
-            shape = substr(shapes, RSTART, RLENGTH); sub(/^[A-Za-z]+: *(\[\])?/, "", shape); print "shape " shape
-            shapes = substr(shapes, RSTART + RLENGTH)
-          }
-        }
-        get = 0; at = 0
-      }' "$api"/route_*.go
+  local route file
+  for file in "$api"/route_*+get.go; do
+    awk -v p="\"$path\"," '$1 == "Pattern:" && $2 == p {found = 1} END {exit !found}' "$file" && route="$file"
+  done
+  if [[ -n "${route:-}" ]]; then
+    sed -nE 's/^[[:space:]]*Handler:[[:space:]]*\(\*server\)\.([A-Za-z0-9_]+),.*$/handler \1/p' "$route"
+    grep -E '^[[:space:]]*Shape:' "$route" | grep -oE '(Response|Params): *(\[\])?[A-Za-z0-9_]+' |
+      sed -E 's/^[A-Za-z]+: *(\[\])?/shape /'
+  fi
   operation="$(awk -v p="\"$path\": {" "$block"' !f && trimmed() == p {opened(); next}
       f && /get: operations\["/ {sub(/.*get: operations\["/, ""); sub(/"\].*/, ""); print; exit} f && closes() {exit}' "$generated")"
   [[ -z "$operation" ]] || printf 'operation %s\n' "$operation"

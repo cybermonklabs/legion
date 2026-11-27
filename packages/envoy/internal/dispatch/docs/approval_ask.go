@@ -172,12 +172,9 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // either committed already or waits for the version. A settlement that may open or restore an ask
 // holds it already (reconcileAskBlocks), and so does the reopen whose follow moves a request
 // (api's prepareRestoration); the reopen's restored request still reads withdrawn in the store,
-// so this reads no default for it. The decisions step's restore writes at once (joinAtOnce), so by
-// the time its version reaches this move it has locked asks rows already; it takes the hold itself,
-// after the issue's owner lock and before any asks row (restoreIssueDecisions), and a request of
-// its issue falls through to the default only where that issue is one nobody holds, which is when
-// the restore holds it. On that path this hold is one the transaction holds already, which a
-// second request of it is granted at once, waiting on nothing.
+// so this reads no default for it. The decisions step's restore, whose writes run at once, takes
+// this hold before any asks row (restoreIssueDecisions), so there it is one the transaction holds
+// already, which a second request of it is granted at once.
 func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, tree *pmdoc.Node, mover model.Actor, keptEditor *model.Actor, bySettlement bool, serverURL string) error {
 	ask, err := openApprovalAsk(ctx, tx, artifactID)
 	if err != nil {

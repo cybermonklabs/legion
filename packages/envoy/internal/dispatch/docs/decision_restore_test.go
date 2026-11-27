@@ -1999,7 +1999,7 @@ func TestTheRestoreHoldsTheDefaultItsAsksFallThroughToBeforeAnyAsksRow(t *testin
 	}, store.IssueOwner("DOC-1"))
 	project := lockstep.HoldOwner(t, issue.database, &lockstep.Hold{
 		Name: "project DOC's owner lock", Step: lockstep.StepOwner, Taken: true, Kind: "project", ID: "DOC",
-		Statement: strings.ToLower(store.OwnersLockShared),
+		Statement: lockstep.OwnersLockSharedStatement,
 		Unlocked:  []string{"asks", "graph_nodes", "graph_tuples"},
 	}, store.ProjectOwner("DOC"))
 	row := lockstep.HoldRow(t, issue.database, &lockstep.Hold{

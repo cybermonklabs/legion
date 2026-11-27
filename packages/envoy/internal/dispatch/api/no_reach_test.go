@@ -623,7 +623,7 @@ func threeBadRequests(t *testing.T) {
 			answered++
 		}
 		if route.Shape.RefusesUndeclared {
-			requireTheUndeclaredKeyRefused(t, name, walk, walked)
+			requireTheUndeclaredKeyRefused(t, name, route.Shape.Params, walk, walked)
 			continue
 		}
 		if plain.Code != walked.Code {
@@ -644,15 +644,15 @@ func threeBadRequests(t *testing.T) {
 
 // requireTheUndeclaredKeyRefused fails unless walked, the read of a route that refuses every key
 // it does not declare (RefusesUndeclared, the plan's decision 7), answers 400
-// INVALID_QUERY naming the first of walk's keys it does not declare, and nothing else.
-func requireTheUndeclaredKeyRefused(t *testing.T, name, walk string, walked *httptest.ResponseRecorder) {
+// INVALID_QUERY naming the first of walk's keys it does not declare, and nothing else. params is
+// the route's query struct, whose tags are the keys it declares.
+func requireTheUndeclaredKeyRefused(t *testing.T, name string, params any, walk string, walked *httptest.ResponseRecorder) {
 	t.Helper()
 	query, err := url.ParseQuery(walk)
 	if err != nil {
 		t.Fatalf("read the traversal query %q: %v", walk, err)
 	}
-	declaration, _ := declaredRoute(name)
-	declared := queryTagsOf(declaration.Shape.Params)
+	declared := queryTagsOf(params)
 	var undeclared []string
 	for _, key := range slices.Sorted(maps.Keys(query)) {
 		if !slices.Contains(declared, key) {

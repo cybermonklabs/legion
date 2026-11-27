@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testbaseline"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The base build every base-build check of this child boots beside this one: the
@@ -83,11 +84,12 @@ func buildBaseline(t *testing.T, worktree string) (binary, commit string) {
 // baselineDatabaseURL is the database a base-build check boots the base build over, read from
 // variable. Unset, the check fails naming the Verification preamble's lines that make it; a
 // database that already holds tables fails too, since the base build migrates the database it is
-// given and a check's corpus seeded over an earlier run's is two corpora. The URL itself is never
+// given and a check's corpus seeded over an earlier run's is two corpora. The lines it names make
+// the database with JIT off, as production's runs (testdb.WithoutJIT). The URL itself is never
 // printed: it carries the test server's credential.
 func baselineDatabaseURL(t *testing.T, variable, database string) string {
 	t.Helper()
-	recreate := fmt.Sprintf("psql \"$LEGION_TEST_PG_DSN\" -c 'drop database if exists %s' -c 'create database %s strategy file_copy'", database, database)
+	recreate := fmt.Sprintf("psql \"$LEGION_TEST_PG_DSN\" -c 'drop database if exists %s' -c 'create database %s strategy file_copy' -c '%s'", database, database, testdb.WithoutJIT(database))
 	databaseURL := strings.TrimSpace(os.Getenv(variable))
 	if databaseURL == "" {
 		t.Fatalf("%s is unset: this check boots the base build over a database of its own, which the Verification preamble makes with\n"+

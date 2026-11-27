@@ -815,11 +815,9 @@ func approvedVersion(ctx context.Context, q Queryer, artifactID string, number i
 // every writer into an ask's thread takes it before it reads who takes part: a move of the default
 // either committed first, and the answer reaches the person it moved the request to, or waits for
 // the answer, and then finds the request answered and moves nothing of it. A carry whose writes
-// are queued has locked no asks row before the hold. The decisions step's restore runs its writes
-// at once (joinAtOnce), so by the time its version reaches this carry it has locked asks rows
-// already - its issue's question asks, the version's ask blocks and this request, which the
-// version's move rewrote; it takes the hold itself before it locks any asks row
-// (restoreIssueDecisions), so on that path this hold is one the transaction already holds.
+// are queued has locked no asks row before the hold. The decisions step's restore, whose writes run
+// at once, takes this hold before any asks row (restoreIssueDecisions), so there it is one the
+// transaction holds already.
 func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, ask *model.Ask, actor model.Actor, reason, serverURL string, sink func(model.Event)) error {
 	answeredAt, err := transactionNow(ctx, tx)
 	if err != nil {
