@@ -2,13 +2,25 @@
 // Stand-in for `gh` on a skill scenario's PATH. Each call is recorded to
 // $SKILL_SCENARIO_RUN/calls.jsonl (argv, the contents of any file or stdin it hands GitHub a body
 // through, its exit status, and the pull request body it kept, if any), then answered from the
-// first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>". A call no
-// route matches answers `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
+// first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>", each
+// `-F <key>=@<file>` field with the file's or stdin's content in place of `@<file>`, as GitHub
+// reads the call: a query sent through a heredoc (`-F query=@-`) is routed by its mutation, as one
+// given inline is. A call no route matches answers `gh: Not Found (HTTP 404)` and exits 1.
+// Nothing is sent anywhere.
 // `--json a,b` picks those fields of the answer, or of each object of a list answer (`gh pr list`),
 // and `--jq`/`-q` runs jq, as gh does. A pull request body edit (`gh pr edit --body`,
 // `--body-file`, or a PATCH through `gh api`) is kept: every route answering with an object that
 // has a `body`, or with a list that holds such objects, then answers with the new one in each such
 // object, as GitHub's next read would, and the call's record carries it as `body`.
+// A reply on a review thread, GraphQL's `addPullRequestReviewThreadReply`, REST's
+// `repos/<o>/<r>/pulls/<n>/comments/<id>/replies`, or a new review comment whose `in_reply_to`
+// names the thread's first comment, is recorded as `reply: {thread, body}`: the thread's node id,
+// or for REST its first comment's id. A `resolveReviewThread` is recorded as
+// `resolved: <thread node id>`. Both are recorded whatever the call exits with, so the record
+// keeps a reply that no route took; GitHub took one only when its `exit` is 0 (score.ts
+// forwardOnly counts no other). A route's answer that holds `{{HEAD}}` gets the head of
+// $SKILL_SCENARIO_RUN/ready.json in its place, the head the label's test built (rig.sh
+// run_forward); with no such head the call fails, naming the file.
 //   gh-standin.ts gh <args...>
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
@@ -24,6 +36,8 @@ const Fixtures = z.looseObject({
     })
   ),
 });
+/** The part of the label's ready.json that a `{{HEAD}}` route reads: the head the test built. */
+const Ready = z.looseObject({ head: z.string().regex(/^[0-9a-f]{40}$/) });
 
 const run = process.env.SKILL_SCENARIO_RUN;
 if (!run) {
@@ -52,8 +66,13 @@ const prPatch =
   /(^|\s)(-X|--method)\s?PATCH(\s|$)/.test(args.join(" ")) &&
   args.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(arg));
 let body: string | undefined;
+/** Every `-f`/`-F` field of the call, a file's or stdin's content in place of `@<file>`. */
+const given: Record<string, string> = {};
 /** The body this call left the pull request with, once the routes serve it. */
 let kept: string | undefined;
+/** The call's arguments as routes match them: a `-F <key>=@<file>` field holds the file's or
+ * stdin's content in place of `@<file>`. */
+const routed = [...args];
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index] ?? "";
   const next = args[index + 1];
@@ -69,8 +88,10 @@ for (let index = 0; index < args.length; index += 1) {
     if ((arg === "-F" || arg === "--field") && value.startsWith("@")) {
       files[value.slice(1)] = await readSource(value.slice(1));
       value = files[value.slice(1)] ?? "";
+      routed[index + 1] = `${key}=${value}`;
     }
     if (prPatch && key === "body") body = value;
+    given[key] = value;
   }
 }
 const inputIndex = args.indexOf("--input");
@@ -86,14 +107,52 @@ if (prPatch && input !== undefined) {
     body = parsed.body;
   }
 }
-const joined = `${as} ${args.join(" ")}`;
+const joined = `${as} ${routed.join(" ")}`;
 const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(joined));
+// A review thread's reply and resolution, as GraphQL names their fields: a literal string, or a
+// `$variable` that a field of the call gives.
+const graphql = as === "gh" && args[0] === "api" && args[1] === "graphql";
+const query = given.query ?? "";
+const named = (field: string): string | undefined => {
+  const hit = new RegExp(`\\b${field}\\s*:\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|\\$(\\w+))`).exec(query);
+  if (hit === null) return undefined;
+  return hit[1] !== undefined ? String(JSON.parse(`"${hit[1]}"`)) : given[hit[2] ?? ""];
+};
+let reply: { thread: string; body: string } | undefined;
+let resolved: string | undefined;
+if (graphql && /\baddPullRequestReviewThreadReply\b/.test(query))
+  reply = { thread: named("pullRequestReviewThreadId") ?? "", body: named("body") ?? "" };
+if (graphql && /\bresolveReviewThread\b/.test(query)) resolved = named("threadId") ?? "";
+const replies = args
+  .map((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/comments\/(\d+)\/replies$/.exec(arg)?.[1])
+  .find((id) => id !== undefined);
+if (as === "gh" && args[0] === "api" && replies !== undefined)
+  reply = { thread: replies, body: given.body ?? "" };
+// GitHub also takes a thread's reply as a new review comment whose `in_reply_to` names the thread's
+// first comment, given as a field or in the --input body.
+const newComment = args.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/comments$/.test(arg));
+if (as === "gh" && args[0] === "api" && newComment) {
+  const parsed: unknown = input === undefined ? given : JSON.parse(files[input] ?? "null");
+  const sent =
+    typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  const thread = sent.in_reply_to === undefined ? "" : String(sent.in_reply_to);
+  if (thread !== "") reply = { thread, body: sent.body === undefined ? "" : String(sent.body) };
+}
 /** Records the call with the status it exits with, then exits. */
 function exit(status: number): never {
-  appendFileSync(
-    `${run}/calls.jsonl`,
-    `${JSON.stringify({ at, as, argv: args, files, stdin, route: route?.match ?? null, body: kept, exit: status })}\n`
-  );
+  const record = {
+    at,
+    as,
+    argv: args,
+    files,
+    stdin,
+    route: route?.match ?? null,
+    body: kept,
+    ...(reply === undefined ? {} : { reply }),
+    ...(resolved === undefined ? {} : { resolved }),
+    exit: status,
+  };
+  appendFileSync(`${run}/calls.jsonl`, `${JSON.stringify(record)}\n`);
   process.exit(status);
 }
 if (!route) {
@@ -116,6 +175,22 @@ if (body !== undefined) {
   kept = body;
 }
 let output: unknown = route.stdout ?? "";
+if (JSON.stringify(output).includes("{{HEAD}}")) {
+  const ready = `${run}/ready.json`;
+  let head: string | undefined;
+  try {
+    head = Ready.parse(JSON.parse(readFileSync(ready, "utf8"))).head;
+  } catch {
+    head = undefined;
+  }
+  if (head === undefined) {
+    console.error(
+      `gh-standin: the route ${route.match} names {{HEAD}}, and ${ready} holds no head`
+    );
+    exit(1);
+  }
+  output = JSON.parse(JSON.stringify(output).replaceAll("{{HEAD}}", head));
+}
 const jsonIndex = args.indexOf("--json");
 if (jsonIndex >= 0) {
   const fields = (args[jsonIndex + 1] ?? "").split(",");

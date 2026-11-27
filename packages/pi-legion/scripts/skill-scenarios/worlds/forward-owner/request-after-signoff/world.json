@@ -1,0 +1,21 @@
+{
+  "daemon": "label",
+  "scenario": "forward-owner",
+  "world": "request-after-signoff",
+  "role": "architect",
+  "moment": "notice",
+  "issue": "ACME-1",
+  "title": "List rows a page at a time",
+  "steps": ["implementer", "reviewer", "acceptance:owner"],
+  "repository": "acme/widgets",
+  "defaultBranch": "main",
+  "pull": 41,
+  "passes": ["c-list-rows"],
+  "item": 1,
+  "comments": [
+    {
+      "issue": "ACME-1",
+      "body": "One more requirement before this closes: listRows takes its default limit from the WIDGETS_PAGE_SIZE environment variable."
+    }
+  ]
+}

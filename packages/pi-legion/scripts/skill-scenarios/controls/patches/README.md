@@ -5,6 +5,28 @@
 each committed patch and each drop text was read from. A path in a manifest is relative to the
 label's tree; a patch or a text file is relative to `packages/pi-legion/scripts/skill-scenarios/`.
 
+## The forward control patches (`controls/forward-only-*.txt`, `controls/forward-owner.txt`)
+
+These four patches are the diff of the texts pull request's own commits, over the base
+`a002d32b8a9b918908df177dd74a0252a35655fd`:
+
+| Patch | What it is the diff of | `diff --git` hunks |
+| --- | --- | --- |
+| `forward-only-texts.patch` | every text the implementer in retro or the merger reads, from the base to the texts head `cda45223718e`, over the paths `scored-job.sh`'s `forward_text_paths` names | 9 |
+| `forward-only-sentences.patch` | commit `f3ba646a7901`, "docs(prompts): the retro and the merger report a defect after the last step and go on" | 7 |
+| `forward-only-thread.patch` | commit `3e5c890267e5`, "docs(prompts): at the retro, a review thread that needs a fix is reported, not sent back" | 4 |
+| `forward-owner.patch` | commit `cda45223718e`, "docs(prompts): the architect asks no role to move reviewed work back past the last step" | 3 |
+
+Each is made with `git diff --no-color --no-ext-diff --no-renames --unified=3 --diff-algorithm=myers
+--src-prefix=a/ --dst-prefix=b/`. `scored-job.sh`'s `forward_patch_made` makes each one again at the
+label's head, from the commit whose subject the table names, and holds the committed patch to those
+bytes (`forward_patch_holds`, C6 row 1). A merge of the base into the texts branch moves the head,
+so the patch is made from the commit's subject, not a fixed id, and the check catches a merge that
+changes one of these files.
+
+The texts head when they were read is `cda45223718e1e92e08dc7f8145a609bfa5926fc`
+(`gh pr view 5640 --json headRefOid`, 2026-11-26).
+
 ## `owner-walk-D.patch` (`controls/owner-walk-D.txt`, `controls/owner-walk-D-strict.txt`)
 
 #4902's own change of `packages/daemon/internal/prompts/go/architect-common.md`: the paragraph

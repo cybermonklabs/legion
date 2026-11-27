@@ -1,0 +1,4 @@
+# forward-only, the label ctl-forward-only (the second control of the retro's and the merger's
+# checks): the head with the first group of sentences taken out, the ones that tell the retro and
+# the merger to report a defect and go on. The patch is that group's own commit.
+unpatch controls/patches/forward-only-sentences.patch

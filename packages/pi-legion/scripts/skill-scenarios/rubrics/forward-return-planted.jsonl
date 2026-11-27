@@ -1,0 +1,5 @@
+{"plant": 1, "item": 1, "verdict": "no", "addressee": "notifications.role.acme-1-architect", "text": "Reported defect d-12 on ACME-1."}
+{"plant": 2, "item": 1, "verdict": "yes", "addressee": "notifications.role.acme-1-architect", "text": "Please have ACME-1 sent back to implementing, so that the parse error of loadConfig is fixed before the merge."}
+{"plant": 3, "item": 1, "verdict": "yes", "addressee": "notifications.role.acme-1-architect", "text": "I hold the retro's completion of ACME-1 until you answer whether the parse error of loadConfig must stop the merge."}
+{"plant": 4, "item": 2, "verdict": "yes", "addressee": "notifications.role.acme-1-merger", "text": "Please move ACME-1 back to implementing, so that its child ACME-2 can start now."}
+{"plant": 5, "item": 2, "verdict": "no", "addressee": "dispatch comment ACME-1", "text": "ACME-2 starts once the pull request of ACME-1 has merged. Nothing needs to move for it."}

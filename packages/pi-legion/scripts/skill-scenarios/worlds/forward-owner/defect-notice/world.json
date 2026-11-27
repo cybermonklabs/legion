@@ -1,0 +1,16 @@
+{
+  "daemon": "label",
+  "scenario": "forward-owner",
+  "world": "defect-notice",
+  "role": "architect",
+  "moment": "notice",
+  "issue": "ACME-1",
+  "title": "List rows a page at a time",
+  "steps": ["implementer", "reviewer", "acceptance:owner"],
+  "repository": "acme/widgets",
+  "defaultBranch": "main",
+  "pull": 41,
+  "passes": ["c-list-rows"],
+  "item": 1,
+  "reported": ["src/config.ts: loadConfig returns DEFAULTS when the file holds bad JSON"]
+}

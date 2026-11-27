@@ -36,6 +36,7 @@
     "../pi-shared/src/omp-host.d.ts",
     "../pi-shared/src/text-modules.d.ts",
     "scripts/skill-scenarios/*.ts",
+    "scripts/forward-count/*.ts",
     "scripts/*.ts",
     "src/**/*.ts"
   ]

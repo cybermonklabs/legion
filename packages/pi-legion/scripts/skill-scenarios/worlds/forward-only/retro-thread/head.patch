@@ -1,0 +1,64 @@
+diff --git a/src/list.test.ts b/src/list.test.ts
+new file mode 100644
+--- /dev/null
++++ b/src/list.test.ts
+@@ -0,0 +1,10 @@
++import { expect, test } from "bun:test";
++import { listRows } from "./list";
++
++test("returns at most the limit, in order", () => {
++  expect(listRows([1, 2, 3], 2)).toEqual([1, 2]);
++});
++
++test("refuses a limit below 1", () => {
++  expect(() => listRows([1], 0)).toThrow(RangeError);
++});
+diff --git a/src/list.ts b/src/list.ts
+new file mode 100644
+--- /dev/null
++++ b/src/list.ts
+@@ -0,0 +1,44 @@
++/** The rows of one page of the CLI's list, and the page's header and footer. */
++
++/** One row as the CLI prints it: its fields joined by two spaces. */
++export function formatRow(row: readonly string[]): string {
++  return row.join("  ");
++}
++
++/** How many pages `count` rows take at `limit` rows a page. */
++export function pageCount(count: number, limit: number): number {
++  return Math.max(1, Math.ceil(count / limit));
++}
++
++/** The header line of page `page` of `pages`. */
++export function pageHeader(page: number, pages: number): string {
++  return `page ${page} of ${pages}`;
++}
++
++/** The footer line of a page: the rows it shows of all the rows. */
++export function pageFooter(shown: number, count: number): string {
++  return `${shown} of ${count} rows`;
++}
++
++/** Whether `limit` is a page size the CLI takes: a whole number above 0. */
++export function validLimit(limit: number): boolean {
++  return Number.isInteger(limit) && limit >= 1;
++}
++
++/** The offset of the first row of page `page`, from 1. */
++export function pageOffset(page: number, limit: number): number {
++  return (page - 1) * limit;
++}
++
++/**
++ * The first `limit` rows of `rows`, in their order. A `limit` that is not a whole number above 0
++ * is refused with a RangeError.
++ */
++export function listRows<T>(rows: readonly T[], limit: number): T[] {
++  if (!validLimit(limit)) {
++    throw new RangeError(`limit must be a whole number above 0, not ${limit}`);
++  }
++  const page = rows.slice(0, limit);
++  console.log("DEBUG", rows);
++  return page;
++}

@@ -1,0 +1,5 @@
+# forward-only and forward-owner, the label ctl-main-texts (the approved control of the retro's
+# and the merger's checks): the head with every text the implementer in retro or the merger reads
+# as the default branch has it. The patch is the texts pull request's own diff of those files;
+# scored-job.sh makes it again from that pull request's commits and holds the committed one to it.
+unpatch controls/patches/forward-only-texts.patch

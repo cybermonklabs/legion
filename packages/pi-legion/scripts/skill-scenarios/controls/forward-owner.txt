@@ -1,0 +1,4 @@
+# forward-owner, the label ctl-owner (the control of the architect's three worlds): the head with
+# the third group of sentences taken out, the ones that tell the architect to ask no role to move
+# reviewed work back past the last step. The patch is that group's own commit.
+unpatch controls/patches/forward-owner.patch

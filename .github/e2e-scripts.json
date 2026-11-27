@@ -271,6 +271,17 @@
       "jj": true
     },
     {
+      "script": "forward-count-control.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": false,
+      "evidence_variable": "FORWARD_COUNT_CONTROL_EVIDENCE_DIR",
+      "timeout_minutes": 50,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/forward-count-control.sh; the CI pgvector service is the server it needs, its role creates Dispatch and each daemon database there, it builds and starts Dispatch, three daemons and its own GitHub stand-in, it runs the count program under bun, and it reaches no outside service; a run takes ten to twenty-five minutes",
+      "jj": true
+    },
+    {
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],
@@ -387,6 +398,10 @@
     {
       "script": "envoy-session-states.sh",
       "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
+    },
+    {
+      "script": "forward-count.sh",
+      "needs": "a deployed Dispatch and a reader own credential, the dispatch command, gh, tq on PATH for the transcript store, and the readings of two readers. It reads and starts nothing."
     },
     {
       "script": "leak-guard-image-job.sh",
