@@ -221,11 +221,12 @@ func legionIssueStateOf(key string, current legion.IssueCurrent) *legionIssueSta
 
 // legionIssueWaitOf is the answer's wait of key from the daemon's stored waitingOn, nil where the
 // issue waits on nothing. The object is decoded through the daemon's own names (its WaitingOnView)
-// into the answer's. One that does not decode, such as a gateVersion that is no integer or a
-// since that is no time, or that names no kind, is nil too, as the board's card reads it
-// (legionBoardWaitOf), and logs one warning that names key and holds no value of the object, since
-// the daemon chooses those values. A negative gateVersion is passed on as stored: the page checks
-// a version before it links one.
+// into the answer's seven members. One where any of the seven does not decode, such as a
+// gateVersion that is no integer or a since that is no time, or that names no kind, is nil, and
+// logs one warning that names key and holds no value of the object, since the daemon chooses
+// those values. The board's card reads three of the members (legionBoardWaitOf), so such an
+// object can still give a card its wait. A negative gateVersion is passed on as stored: the page
+// checks a version before it links one.
 func legionIssueWaitOf(key string, stored json.RawMessage) *legionIssueWaitingOn {
 	if stored == nil {
 		return nil

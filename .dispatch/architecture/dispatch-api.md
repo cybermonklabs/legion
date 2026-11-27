@@ -22,7 +22,8 @@ No project without a daemon refuses the view: its body says `configured` `false`
 Its one refusal is the route's `404 NOT_FOUND`, sent once as an `error` frame (`viewReads.refusal`).
 The state's `waiting_on` is Dispatch's own type, `legionIssueWaitingOn`: `{kind, ask, artifact_id, gate_version, since, answered_at, answered_by}`, each but `kind` absent where the daemon wrote none.
 `legionIssueWaitOf` decodes the daemon's stored `waitingOn` through the daemon's own names, so a member the daemon writes that Dispatch does not name is not passed on.
-A stored object that does not decode, or that names no `kind`, answers `null`, as the board's card reads it (`legionBoardWaitOf`), and logs one warning that names the issue and holds no value of the object: the daemon chooses those values, and the page checks each id before it links one.
+A stored object where any of those seven members does not decode, or that names no `kind`, answers `null` and logs one warning that names the issue and holds no value of the object: the daemon chooses those values, and the page checks each id before it links one.
+The board's card reads three of the members (`legionBoardWaitOf`), so such an object can still give a card its wait.
 
 `GET /api/v1/issues/{key}/handoffs/bodies?ids=<id>,<id>` (`handoff_bodies.go`) answers the bodies of up to `contracts.HandoffBodiesMaxIDs` (20) handoffs of one issue, `{bodies: [{id, body}], left: [id]}`, so the new issue page reads the bodies of the history's entries near the view in one request rather than one `GET /api/v1/handoffs/{id}` each.
 It adds each entry's size as the encoder sends it, HTML escaping included, to a count, and its `field_trees` too under `Dispatch-Trees: 1`, and stops before the entry that would take the count past `contracts.HandoffBodiesMaxBytes` (1 MiB): that id and each id after it are `left`.
