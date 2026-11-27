@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1151,10 +1152,7 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 // error.
 func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
 	t.Helper()
-	options := []natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.NoReconnect()}
-	if seed != "" {
-		options = append(options, SeedOption(t, seed))
-	}
+	options := append([]natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.NoReconnect()}, seedOptions(t, seed)...)
 	return dialNATS(uri, append(options, opts...)...)
 }
 
@@ -1171,6 +1169,16 @@ func SeedOption(t testing.TB, seed string) natsgo.Option {
 		t.Fatalf("read the seed's public key: %v", err)
 	}
 	return natsgo.Nkey(public, user.Sign)
+}
+
+// seedOptions is the option that signs a connect as the nkey user whose seed is seed
+// (SeedOption), or none when seed is "".
+func seedOptions(t testing.TB, seed string) []natsgo.Option {
+	t.Helper()
+	if seed == "" {
+		return nil
+	}
+	return []natsgo.Option{SeedOption(t, seed)}
 }
 
 // dialNATS is every dial of this package's helpers: natsgo.Connect, which a row of this package's
@@ -1194,12 +1202,20 @@ const (
 // readiness boundaries.
 func Connect(t testing.TB, uri string, opts ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
+	return connectAs(t, uri, "", opts...)
+}
+
+// connectAs is Connect as the nkey user whose seed is seed, or with no credential when seed is "",
+// with opts after the wait's dial options and the credential.
+func connectAs(t testing.TB, uri, seed string, opts ...natsgo.Option) *natsgo.Conn {
+	t.Helper()
 	bound := boundOf(t)
+	credential := seedOptions(t, seed)
 	var conn *natsgo.Conn
 	for {
 		var err error
 		options, retire := bound.dial()
-		conn, err = dialNATS(uri, append(options, opts...)...)
+		conn, err = dialNATS(uri, slices.Concat(options, credential, opts)...)
 		if err == nil {
 			retire()
 			break
