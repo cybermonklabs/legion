@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  The reason `workspace-init fetch` prints for filling a fresh feed from the repository cache's
+  `/tar` rather than its bucket (`source=/tar reason=...`) holds the cache's and the bucket's words
+  only as the redaction rule reads them: a status as its code and standard phrase, the code of the
+  bucket's error answer, a member of the cache's `/packs` manifest the fetch refuses and a ref
+  whose write failed with the cache's bearer and every signed address's query redacted, and an
+  ask or a read that failed in the rule's own words, the download's address named
+  `<signed address>`. A manifest whose bucket, object name or SHA-256 holds a run of the cache's
+  bearer is refused, the member named by its place. Before, the reason printed those words as they
+  came, so a cache or a bucket that wrote the bearer or a signed address's query back into its
+  status line, its error, its manifest or a trailer net/http quotes had it written into the pod's
+  log.
+time: 2026-11-27T02:28:23Z
+custom:
+    Issue: pr4368
