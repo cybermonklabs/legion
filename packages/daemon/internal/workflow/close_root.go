@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -20,15 +21,17 @@ import (
 // admission slot is released in the same fact.
 //
 // It is refused, as the sign-off is and with the same code, while any issue beneath the root is
-// still in the workflow (OpenBeneath): the close lingers the whole tree, which would suspend
-// those issues mid-turn and lose their work, and the order a tree keeps is that its children
-// finish first. A root at admitted with children running is exactly the shape children-first
-// creates, so this is the common case rather than a corner of it. Past that, it is refused as the
-// sign-off is, in the same order (acceptanceHeld, dispatch://INFRA-3320 R8), while a root whose
-// step rests on the root's approval is still in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW),
-// and then while a Dispatch child of the root is open (SIGNOFF_CHILD_OPEN). A child filed and never
-// released is open, so a root at admitted with only such children closes once each of them is
-// closed or in icebox, which the refusal says.
+// still in the workflow (OpenBeneath), a child that waits in verifying included: the close lingers
+// the whole tree, which would suspend those issues mid-turn and lose their work, and a child in
+// verifying has its checks and any next change still to happen in that tree (D10). This is wider
+// than the sign-off's hold, which a child in verifying no longer holds (WorkBeneath), because the
+// sign-off accepts work and this ends the tree. A root at admitted with children running is
+// exactly the shape children-first creates, so this is the common case rather than a corner of
+// it. Past that, it is refused as the sign-off is, in the same order (acceptanceHeld,
+// dispatch://INFRA-3320 R8), while a root whose step rests on the root's approval is still in the
+// workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW), and then while a Dispatch child of the root is open
+// (SIGNOFF_CHILD_OPEN). A child filed and never released is open, so a root at admitted with only
+// such children closes once each of them is closed or in icebox, which the refusal says.
 //
 // A root waiting on a person (phase.AwaitingPerson) closes the same way, because it has started
 // no phase either: a root reaches that phase only from admitted, and it is where the answer
@@ -36,10 +39,12 @@ import (
 // controller's own Dispatch close the daemon set back, as a session's write on a waiting root).
 // It keeps its slot while it waits (blockers.waitsOf), and leave frees that slot once.
 //
-// It is refused for a root whose work merged (CLOSE_AFTER_MERGE): such a root closes by the checks
-// of its goal or by a person (D16, door 8), whether it waits in verifying or a next change of it
-// waits at admitted. Its architect withdraws each defect it judges moot and asks a person, whose
-// done closes it.
+// It is refused for a root whose work of this generation merged (CLOSE_AFTER_MERGE,
+// mergedThisGeneration): such a root closes by the checks of its goal or by a person (D16, door
+// 8), whether it waits in verifying or a next change of it waits at admitted. Its architect
+// withdraws each defect it judges moot and asks a person, whose done closes it. A root re-run after
+// an earlier generation's merge keeps that merge's snapshot, and nothing of its own generation has
+// merged, so its architect closes it as any other.
 func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil {
@@ -48,7 +53,11 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if !claim.IsTreeRoot(root.Key, root.Tree) {
 		return refused("ROOT_REQUIRED", fmt.Sprintf("%s is a child of %s. close_root ends a tree root.", root.Key, root.Tree)+" "+record.EndChildRule), nil
 	}
-	if root.Merge.Merged() {
+	merged, err := e.mergedThisGeneration(ctx, tx, *root)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if merged {
 		return refused("CLOSE_AFTER_MERGE", fmt.Sprintf("Pull request #%d of %s merged, so %s closes by the checks of its goal. "+
 			"Withdraw each defect you judge moot with its reason, then ask a person, whose done closes it. "+
 			"A check you judge wrong goes into a new version of the Verification document that a person approves.",
@@ -56,6 +65,15 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	}
 	if !closableAtPhase(root.Phase) || root.Lingers() || record.OutOfWorkflow(root.Status) {
 		return refused("CLOSE_AFTER_PHASE_STARTED", fmt.Sprintf("%s is in phase %s with status %s; close_root ends a tree only while its root has started no phase — at admitted, whether or not it holds its slot, or waiting on a person — and a tree past that, or one already leaving, ends through its workflow or a human", root.Key, root.Phase, root.Status)), nil
+	}
+	members, err := e.treeMembers(ctx, tx, *root)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if beneath := record.OpenBeneath(*root, members); len(beneath) > 0 {
+		hold := acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(beneath, ", ")}
+		refusal, _ := hold.refusal(actCloseRoot, root.Key, "")
+		return refusal, nil
 	}
 	held, err := e.acceptanceHeld(ctx, tx, *root)
 	if err != nil {

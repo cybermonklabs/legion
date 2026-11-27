@@ -1106,18 +1106,26 @@ func (e *Engine) personClosedPast(ctx context.Context, tx pgx.Tx, issue *record.
 }
 
 // closesByChecks says whether issue, a child, closes by its checks and not by its owning
-// architect's done: the work of its current generation merged, so its checks or a person close it
-// (D16, door 7). It reads the generation, not the merge snapshot alone: a child run again keeps the
-// snapshot of an earlier generation's merge (Issue.Merge), which no clear touches, and its own work
-// has not merged, so its architect's done is the architect's to make. The current generation's
-// work merged where the issue waits in verifying, where a next change of it runs (NextChange), or
-// where its pull request row merged: each clear of a generation deletes every row that is not open
-// (clearPullRequests), so a merged row is this generation's, as it is for a child whose pull
-// request merged before the child reached merging.
+// architect's done: the work of its current generation merged (mergedThisGeneration), so its
+// checks or a person close it (D16, door 7). A root is answered false: its own architect closes it
+// through close_root, which asks the same rule.
 func (e *Engine) closesByChecks(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return false, nil
 	}
+	return e.mergedThisGeneration(ctx, tx, issue)
+}
+
+// mergedThisGeneration says whether the work of issue's current generation merged, so it closes by
+// the checks of its goal or by a person. It reads the generation, not the merge snapshot alone: an
+// issue run again keeps the snapshot of an earlier generation's merge (Issue.Merge), which no clear
+// touches, and its own work has not merged. The current generation's work merged where the issue
+// waits in verifying, where a next change of it runs (record.OnNextChange), or where its pull
+// request row merged: each clear of a generation deletes every row that is not open
+// (clearPullRequests), so a merged row is this generation's, as it is for an issue whose pull
+// request merged before it reached merging. It is the one statement of the rule for a child's
+// architect's done (closesByChecks) and a root's close_root (closeRoot).
+func (e *Engine) mergedThisGeneration(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase == phase.Verifying || record.OnNextChange(issue) {
 		return true, nil
 	}

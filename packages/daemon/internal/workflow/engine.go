@@ -2798,9 +2798,11 @@ func heldAcceptanceBack(w Walk) string {
 
 // acceptanceHeld reads the three holds on issue's acceptance and on its close, in R8's order, and
 // answers the first that holds; each later one is read only when the one before it holds nothing.
-// First, an issue beneath it in its own tree that is still in the workflow (record.OpenBeneath,
-// SIGNOFF_CHILD_IN_WORKFLOW). Then a root of any tree whose design-gate step rests on its approval
-// and is still in the workflow (record.RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks
+// First, an issue beneath it in its own tree whose work has still to happen (record.WorkBeneath,
+// SIGNOFF_CHILD_IN_WORKFLOW): a child in verifying has merged its work and holds no acceptance
+// (D10), though close_root, which ends the tree, refuses on it first (OpenBeneath). Then a root
+// of any tree whose design-gate step rests on its approval and is still in the workflow
+// (record.RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks
 // of the issues under an ancestor prove its requirements together, so it is accepted only after
 // them. Then a Dispatch child of it that is still open, one that runs as a tree of its own included
 // (childrenOpen, SIGNOFF_CHILD_OPEN). A root that rests on the issue's approval and is a Dispatch
