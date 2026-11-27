@@ -6,8 +6,8 @@ package daemon
 // kubeconfig names; restarts on one database that keep the worker stream's and the API's ports,
 // so a pod a restart did not end is adopted; the wall clock, so a turn the bound cuts is cut;
 // several roles in one pod, the project controller's own pod among the pods; and a workspace in
-// every issue pod made by the real provisioning from a remote, which the role processes read with
-// the shim's own read and push to.
+// every issue pod made from a remote where a pod's provisioning puts one (idleRigWorkspaces),
+// which the role processes read with the shim's own read and push to.
 
 import (
 	"context"

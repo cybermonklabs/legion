@@ -38,7 +38,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // idleRigImage is the worker image the rig's configuration names, pinned by digest as the runtime
@@ -180,8 +179,8 @@ type idleRigOptions struct {
 	// entrySweep is how often the daemon converges the phase entries with no fact arriving
 	// (overrides.entrySweep); zero is the daemon's minute.
 	entrySweep time.Duration
-	// workspaces gives each issue pod a workspace made by the real provisioning from a local
-	// remote (idleRigWorkspaces), which the pod's role processes read and push.
+	// workspaces gives each issue pod a workspace made with git and jj from a local remote, where a
+	// pod's provisioning puts one (idleRigWorkspaces), which the pod's role processes read and push.
 	workspaces bool
 	// secondCluster makes the stand-in for a second cluster beside the first, and aimSecond boots
 	// the daemon on it first.
@@ -322,8 +321,7 @@ func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) 
 					issue = seeded.key
 				}
 			}
-			return idleRigWorkspaceAnswer{Dir: live.dir, Issue: issue, Env: rig.work.env(), Remote: rig.work.remote,
-				URL: workspace.GitHubURL(rig.work.repo)}, true
+			return idleRigWorkspaceAnswer{Dir: live.dir, Issue: issue, Env: rig.work.env()}, true
 		})
 	}
 	rig.kube.prefix = "a-"

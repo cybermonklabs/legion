@@ -156,14 +156,11 @@ type idleRigReadUnpushed struct {
 
 // idleRigWorkspaceAnswer is the workspace of a pod as the rig hands it to the pod's role
 // processes (idleRigAgents.workspace): its directory, which LEGION_WORKSPACE names in a pod, the
-// issue whose branch it is on, the environment its git and jj run under, and the remote that
-// stands for GitHub, which a push reaches in place of the GitHub URL the clone's origin names.
+// issue whose branch it is on, and the environment its git and jj run under.
 type idleRigWorkspaceAnswer struct {
-	Dir    string   `json:"dir"`
-	Issue  string   `json:"issue"`
-	Env    []string `json:"env"`
-	Remote string   `json:"remote"`
-	URL    string   `json:"url"`
+	Dir   string   `json:"dir"`
+	Issue string   `json:"issue"`
+	Env   []string `json:"env"`
 }
 
 // idleRigReleaseAsk finds the round a project release's ask names in its text
@@ -982,8 +979,8 @@ func (p *idleRigRoleProcess) workspace() (idleRigWorkspaceAnswer, bool, error) {
 
 // push pushes the workspace's work to the issue's branch as a role does when the release asks:
 // a change in the working copy is committed first, then the branch is set to the newest commit
-// under the working copy and pushed. The clone's origin names the repository's GitHub URL, which
-// the remote standing for GitHub takes the place of here (git's url.<base>.insteadOf).
+// under the working copy and pushed. The clone's origin is the remote standing for GitHub
+// (idleRigWorkspaces), so the push reaches it as a pod's push reaches GitHub.
 func (p *idleRigRoleProcess) push() error {
 	ws, ok, err := p.workspace()
 	if err != nil {
@@ -992,12 +989,11 @@ func (p *idleRigRoleProcess) push() error {
 	if !ok {
 		return errors.New("the pod runs no workspace to push from")
 	}
-	env := append(slices.Clone(ws.Env), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url."+ws.Remote+".insteadOf", "GIT_CONFIG_VALUE_0="+ws.URL)
 	jj := func(args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "jj", append([]string{"-R", ws.Dir}, args...)...)
-		cmd.Dir, cmd.Env = ws.Dir, env
+		cmd.Dir, cmd.Env = ws.Dir, ws.Env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("jj %s: %v\n%s", strings.Join(args, " "), err, out)

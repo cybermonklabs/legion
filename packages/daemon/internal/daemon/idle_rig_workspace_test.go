@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,33 +22,33 @@ import (
 
 // idleRigWorkspaces is the remote the rig's issue pods are provisioned from and the workspace of
 // each pod while it runs: a local bare repository standing for GitHub, holding `main` and each
-// issue's branch `legion/<KEY>`, and on each pod's disk the workspace the real provisioning makes,
-// as `legion workspace-init` makes it in a pod. Its first init container fills the pod's feed from
-// GitHub (`workspace-init fetch`); here a mirror of the remote stands for that fetch, which needs
-// GitHub itself. Its second (`workspace-init provision`) runs workspace.Provision from the feed,
-// which is what this runs: the shared clone from the feed, then the issue's workspace on its
-// branch. So a pod's workspace holds what the remote holds when the pod started, and nothing the
-// test wrote by hand anywhere else; a pod the controller makes again on the same disk is
-// provisioned again over the workspace that disk kept, as the kubelet runs a restarted pod's init
-// containers again.
+// issue's branch `legion/<KEY>`, and on each pod's disk a workspace where a pod's provisioning
+// puts one (workspace.Location): one clone of the remote, and the issue's jj workspace of that
+// clone on the issue's branch. The rig makes it with git and jj run on the remote directly
+// (provision), not with workspace.Provision: since cybermonklabs/legion#5646 removed the feed a
+// pod's provisioning could read from, Provision reaches the repository at
+// https://github.com/<repo> alone (workspace.GitHubURL), and every process it starts may use no
+// transport but https, so it can reach no local remote. So a pod's workspace holds what the
+// remote holds when the pod starts, and nothing the test wrote by hand anywhere else; a pod the
+// controller makes again on the same disk finds the workspace that disk kept and fetches the
+// remote again, as a restarted pod's provisioning does over the workspace its disk kept.
 //
 // Every git and jj it runs, and every one the pods' role processes run, is under one home of its
-// own (fixtureenv.Home, which the rig sets on the test process, since workspace.Provision reads
-// the process's environment) with an identity of the test's. A push runs the git first on PATH,
-// which in an issue pod is Legion's wrapper running the leak guard before it writes, so the
-// environment names a stand-in of the shared check that clears every write, as the shim's own
-// workspace tests name one (leakguardtest).
+// own (env) with an identity of the test's. The rig sets that home and identity on the test
+// process too (fixtureenv.Home), so nothing it starts with the process's own environment reads
+// the machine's. A push runs the git first on PATH, which in an issue pod is Legion's wrapper
+// running the leak guard before it writes, so the environment names a stand-in of the shared
+// check that clears every write, as the shim's own workspace tests name one (leakguardtest).
 type idleRigWorkspaces struct {
 	root string
-	// remote is the bare repository standing for GitHub; repo is the repository the rig's issues
-	// are on (liveRepo), whose GitHub URL each clone's origin names.
+	// remote is the bare repository standing for GitHub: the origin of each disk's clone, which
+	// the pods' role processes push to. repo is the repository the rig's issues are on
+	// (liveRepo), which places each disk's clone and workspace (workspace.Location).
 	remote string
 	repo   ghrepo.Repository
 	home   string
 	// leakCheck is the stand-in of the shared public leak check every push of the rig runs.
 	leakCheck string
-	// tools is the git and jj provisioning runs, as `workspace-init` resolves them on PATH.
-	tools map[string]string
 
 	mu sync.Mutex
 	// live is each running pod's workspace, by pod name: where its role processes read and push.
@@ -65,17 +67,14 @@ func newIdleRigWorkspaces(t *testing.T, keys []string) *idleRigWorkspaces {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tools := map[string]string{}
 	for _, tool := range []string{"git", "jj"} {
-		path, err := exec.LookPath(tool)
-		if err != nil {
+		if _, err := exec.LookPath(tool); err != nil {
 			t.Fatalf("%s is required for the rig's workspaces: %v", tool, err)
 		}
-		tools[tool] = path
 	}
 	root := t.TempDir()
 	w := &idleRigWorkspaces{root: root, remote: filepath.Join(root, "remote.git"), repo: repo,
-		home: filepath.Join(root, "home"), leakCheck: leakguardtest.Write(t, root, leakguardtest.Passes), tools: tools,
+		home: filepath.Join(root, "home"), leakCheck: leakguardtest.Write(t, root, leakguardtest.Passes),
 		live: map[string]idleRigWorkspace{}}
 	for _, dir := range []string{w.home, filepath.Join(root, "disks")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -129,43 +128,82 @@ func writeRigFile(t *testing.T, path, content string) {
 	}
 }
 
-// provision readies the pod's disk as its init containers do: the feed filled from the remote,
-// then workspace.Provision of the issue's workspace from that feed. It runs on the pod's own
-// goroutine (idleRigPods.podReady), so it answers its failure rather than failing the test.
+// provision readies the pod's disk for the issue's workspace (readyDisk) and records that
+// workspace as the pod's. It runs on the pod's own goroutine (idleRigPods.podReady), so it answers
+// its failure rather than failing the test.
 func (w *idleRigWorkspaces) provision(ctx context.Context, cluster, disk, pod, key string) error {
 	if disk == "" {
 		return fmt.Errorf("the pod %s has no disk", pod)
 	}
 	diskRoot := filepath.Join(w.root, "disks", disk)
-	feed := filepath.Join(diskRoot, "feed")
-	feedRepo, err := workspace.FeedRepository(feed, w.repo)
+	ws, err := workspace.Location(diskRoot, w.repo, key)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(feedRepo); os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(feedRepo), 0o755); err != nil {
-			return err
-		}
-		if err := w.run(ctx, diskRoot, "git", "clone", "--quiet", "--mirror", w.remote, feedRepo); err != nil {
-			return err
-		}
-	} else if err := w.run(ctx, feedRepo, "git", "--git-dir="+feedRepo, "fetch", "--quiet", "--prune"); err != nil {
-		return err
-	}
-	provisioned, err := workspace.Provision(ctx, workspace.NewRunner(workspace.CommandTimeout, w.tools), workspace.Request{
-		StateDir: diskRoot, Repo: w.repo, Issue: key, DefaultBranch: "main", CredentialHelper: "!false",
-		Source: workspace.FromFeed(feed), Log: func(string) {},
-	})
-	if err != nil {
+	if err := w.readyDisk(ctx, diskRoot, ws); err != nil {
 		return fmt.Errorf("provision %s's workspace on disk %s: %w", key, disk, err)
 	}
 	w.mu.Lock()
-	w.live[pod] = idleRigWorkspace{cluster: cluster, dir: provisioned.Dir}
+	w.live[pod] = idleRigWorkspace{cluster: cluster, dir: ws.Dir}
 	w.mu.Unlock()
 	return nil
 }
 
-// run runs one git of a provision in dir, answering its failure with its output.
+// readyDisk readies ws on the disk at diskRoot with git and jj run on the remote, as a pod's
+// provisioning readies it from GitHub. On a disk that kept the workspace, the workspace stays as
+// it is, with its commits, bookmarks and working-copy change, and is brought up to date as
+// workspace.Provision brings a kept one: `jj workspace update-stale`, then a fetch of the remote.
+// On a disk with none, the disk's clone of the remote is made, colocated as a pod's is, or
+// fetched where a provision cut short left one; the issue's branch is tracked from origin, which
+// makes the bookmark `legion/<KEY>` at origin's commit; and the issue's jj workspace is added on
+// that bookmark with a working copy of its own on top, where createWorkspace starts the workspace
+// of a branch GitHub has. The remote holds every issue's branch (newIdleRigWorkspaces), so no
+// workspace starts on `main`, as createWorkspace starts one whose branch GitHub does not have.
+func (w *idleRigWorkspaces) readyDisk(ctx context.Context, diskRoot string, ws workspace.Workspace) error {
+	kept, err := idleRigPathExists(ws.Dir)
+	if err != nil {
+		return err
+	}
+	if kept {
+		if err := w.run(ctx, ws.Dir, "jj", "workspace", "update-stale"); err != nil {
+			return err
+		}
+		return w.run(ctx, ws.Dir, "jj", "git", "fetch")
+	}
+	// `jj git clone` makes the directories above the clone, and `jj workspace add` does not make
+	// those above the workspace.
+	if err := os.MkdirAll(filepath.Dir(ws.Dir), 0o755); err != nil {
+		return err
+	}
+	cloned, err := idleRigPathExists(ws.Clone)
+	if err != nil {
+		return err
+	}
+	if cloned {
+		err = w.run(ctx, ws.Clone, "jj", "git", "fetch")
+	} else {
+		err = w.run(ctx, diskRoot, "jj", "git", "clone", "--colocate", w.remote, ws.Clone)
+	}
+	if err != nil {
+		return err
+	}
+	if err := w.run(ctx, ws.Clone, "jj", "bookmark", "track", ws.Bookmark, "--remote", "origin"); err != nil {
+		return err
+	}
+	return w.run(ctx, ws.Clone, "jj", "workspace", "add", ws.Dir, "--name", filepath.Base(ws.Dir), "--revision", ws.Bookmark)
+}
+
+// idleRigPathExists is whether path exists, answering a stat that fails for any other reason.
+func idleRigPathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// run runs one git or jj of a provision in dir under the rig's environment, bounded at two
+// minutes, answering its failure with its output.
 func (w *idleRigWorkspaces) run(ctx context.Context, dir string, argv ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
