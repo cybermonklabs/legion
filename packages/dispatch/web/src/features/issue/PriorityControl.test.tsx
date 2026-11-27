@@ -169,9 +169,9 @@ function CachedControl({ commits }: { commits: Commits<IssuePriority | null> }):
   if (cached === undefined) {
     return null;
   }
-  const host = issuePriority(cached.priority);
+  const host = issuePriority(cached);
   return (
-    <commits.Recorded host={host}>
+    <commits.Recorded host={host.own}>
       <PriorityControl issueKey={cached.key} priority={host} />
     </commits.Recorded>
   );
@@ -187,10 +187,10 @@ function PageControl({
   commits: Commits<IssuePriority | null>;
   variant?: "header";
 }): ReactNode {
-  const host = issuePriority(useCachedIssue()?.priority);
+  const host = issuePriority(useCachedIssue() ?? { priority: null });
   const write = useIssuePriority(issue.key, host);
   return (
-    <commits.Recorded host={host}>
+    <commits.Recorded host={host.own}>
       <PriorityEditor issueKey={issue.key} variant={variant} write={write} />
     </commits.Recorded>
   );
@@ -419,7 +419,11 @@ test("the issue page's priority editor draws each of two picks made before its h
 });
 
 test("PriorityControl sends null for Unset and shows the muted tag", async () => {
-  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: null });
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    priority: null,
+    resolved_priority: null,
+  });
   const { unmount, user } = renderControl();
   try {
     await user.selectOptions(select(), "");
@@ -557,7 +561,7 @@ test("PriorityControl keeps mouse, pointer and touch presses on the select out o
         onPointerDown={() => reached.push("pointerdown")}
         onTouchStart={() => reached.push("touchstart")}
       >
-        <PriorityControl issueKey="CORE-1" priority={1} />
+        <PriorityControl issueKey="CORE-1" priority={issuePriority({ priority: 1 })} />
       </article>
     </QueryClientProvider>
   );

@@ -127,6 +127,8 @@ function issueDetails(artifacts: readonly Artifact[]): IssueDetails {
     primary_artifact_id: artifacts.find((one) => one.primary)?.id ?? "",
     verification_artifact_id: "",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     project: "CORE",
     progress: { children: null, tasks: null },
     rank: "U",

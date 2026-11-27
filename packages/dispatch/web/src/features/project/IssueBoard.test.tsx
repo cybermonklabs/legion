@@ -680,7 +680,7 @@ test("a resolved-priority event moves the board card to P1 with its source and s
       project: "CORE",
       seq: 2,
     };
-    list[0] = { ...priorityChild, ...updated };
+    listIssues.mockResolvedValue([{ ...priorityChild, ...updated }]);
     listIssues.mockClear();
     await act(async () => {
       refreshQueries(queryClient, eventRefreshTargets(event, "alice"));

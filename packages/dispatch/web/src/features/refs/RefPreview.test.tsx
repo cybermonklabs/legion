@@ -183,7 +183,7 @@ test("the card opens only after the hover delay, loads populated, and closes whe
   }
 });
 
-test("the issue preview card shows the inherited P0 and links its source", async () => {
+test("the issue preview card shows the inherited P0 and reads its source as text", async () => {
   const inherited = {
     ...issue("CORE-2", "Second target"),
     parent: "ACME-1",
@@ -203,9 +203,9 @@ test("the issue preview card shows the inherited P0 and links its source", async
     );
     expect(card, "issue preview priority").toHaveTextContent("P0 · from ACME-1");
     expect(
-      card.querySelector('a[href="/issues/ACME-1"]'),
-      "issue preview source link"
-    ).toHaveTextContent(/^ACME-1$/);
+      card.querySelectorAll("a"),
+      "issue preview holds no link inside the card's own"
+    ).toHaveLength(1);
   } finally {
     view.unmount();
     getIssue.mockRestore();

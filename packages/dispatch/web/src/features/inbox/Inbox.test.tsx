@@ -107,6 +107,8 @@ function artifactAsk(projectDefault: string | null = FIXTURE_PROJECT_DEFAULT): I
     },
     question: "Does this design need review?",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     snoozed_until: null,
     state: "open",
     waiting_on: "human",

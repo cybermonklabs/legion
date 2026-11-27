@@ -98,14 +98,14 @@ const renderings = (
   },
   priority: {
     header: "Priority",
-    accessorFn: (item) => item.issue.priority ?? undefined,
+    accessorFn: (item) => issuePriority(item.issue).level ?? undefined,
     sortUndefined: "last",
     sortDescFirst: false,
     cell: ({ row }) => (
       <PriorityControl
         disabled={row.original.issue.status === "done"}
         issueKey={row.original.issue.key}
-        priority={issuePriority(row.original.issue.priority)}
+        priority={issuePriority(row.original.issue)}
       />
     ),
   },

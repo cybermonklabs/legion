@@ -52,6 +52,8 @@ function ask(id: string, overrides: Partial<InboxRow> = {}): InboxRow {
       route_status_reason: null,
     },
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     snoozed_until: null,
     question: "Which approach?",
     state: "open",
