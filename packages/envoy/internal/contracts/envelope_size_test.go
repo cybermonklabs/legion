@@ -65,9 +65,9 @@ func TestTheLargestEnvelopeOfEachKindTheDaemonReadsIsStored(t *testing.T) {
 				body: object{"action": over, "repository": repository, "pull_request": object{
 					"number": 42, "title": over, "body": over, "html_url": over, "user": object{"login": over},
 					"head": object{"sha": over, "ref": over}, "base": object{"ref": over},
-					"merged": true, "merge_commit_sha": over, "merged_by": object{"login": over}, "updated_at": over,
+					"merged": true, "merge_commit_sha": over, "merged_at": over, "merged_by": object{"login": over}, "updated_at": over,
 				}},
-				capped: []string{"action", "title", "body", "author", "url", "head_sha", "head_ref", "base_ref", "merge_commit_sha", "merged_by", "updated_at"},
+				capped: []string{"action", "title", "body", "author", "url", "head_sha", "head_ref", "base_ref", "merge_commit_sha", "merged_at", "merged_by", "updated_at"},
 			},
 			{
 				event: "pull_request_review",

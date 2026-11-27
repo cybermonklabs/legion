@@ -22,14 +22,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Scheduling is where Legion's pods may run, beyond the Legion pool every one of them selects.
+// Scheduling is the placement the operator gives Legion's pods, which share the cluster's general
+// nodes: a pod selects and tolerates what this names and, in a microVM, its ComputeClass, and
+// nothing else (placement).
 type Scheduling struct {
-	// NodeSelector is added to {legion.dev/pool: legion}; it may not set legion.dev/pool itself. A
+	// NodeSelector is every pod's node selector; it may not set legion.dev/pool (poolKey). A
 	// microVM pod, an issue's or the project controller's, names its own ComputeClass in place of
 	// any this names (placement).
 	NodeSelector map[string]string
-	// Tolerations are appended to the Legion pool's own toleration, less one of another
-	// ComputeClass on a microVM pod, an issue's or the project controller's (placement).
+	// Tolerations are every pod's tolerations, less one of another ComputeClass on a microVM pod,
+	// an issue's or the project controller's, which tolerates its own class's taint after them
+	// (placement).
 	Tolerations   []corev1.Toleration
 	PriorityClass string
 }
@@ -133,8 +136,9 @@ type Tools struct{ GH, Git, JJ, Legion, AgentSecrets string }
 // or the probe's), never an init container, the volumes those mounts name, beside Legion's own, and
 // the ServiceAccount the pods run as, the namespace's default when unset. ControllerServiceAccount
 // is the one the project controller's pod runs as in its place when set (controllerPod's
-// serviceAccount); unset, that pod runs as ServiceAccount like every other. A variable's value
-// reaches the process as written: the kubelet's `$(NAME)` expansion does not apply
+// serviceAccount); unset, that pod runs as ServiceAccount like every issue pod, and a repository
+// cache's pod runs as ServiceAccount too while the cache's bucket is off (RepositoryCache). A
+// variable's value reaches the process as written: the kubelet's `$(NAME)` expansion does not apply
 // (kubeletLiteral). CheckPod refuses a name or path of Legion's own or the worker image's. Its
 // fields are config.PodConfig's, one for one, since the daemon converts the one into the other.
 type Pod struct {
@@ -360,6 +364,12 @@ type Options struct {
 	// AdoptTimeout bounds a working-copy adoption (slow_command_timeout_seconds).
 	AdoptTimeout time.Duration
 	Tokens       ProvisionTokens
+	// GitHubRefreshInterval is how often the runtime's gh refresher ticks once it starts
+	// (refreshGitHubCredentialsEvery): the role Secrets, the caches' tokens and their health read.
+	// Zero is gitHubRefreshInterval, a minute, which the daemon's own runtime runs at. A test sets
+	// it short to see ticks; the test rig's default (testOptions) is out of reach, so a test sees
+	// none it did not ask for.
+	GitHubRefreshInterval time.Duration
 	// GitHubCredential is the daemon's function for a role's gh files
 	// (runtime.GitHubCredential): hosts.yml and config.yml rendered from the role's App token. It
 	// is called for every launcher role when the pod's role Secrets are written

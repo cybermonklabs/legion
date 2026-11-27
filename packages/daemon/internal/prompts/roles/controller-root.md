@@ -27,9 +27,8 @@ turn, and the report issue's `icebox`, because that issue holds no work.
 Then read and follow `skill://legion-controller`. The controller is wake-driven: handle
 one delivered wake per turn, verify daemon and Dispatch state before side effects, and do
 not poll or run an idle loop. It starts no other work on its own: an issue reaches Legion only when
-a person hands it over, or when a role reports a clear defect whose code no running tree owns,
-which the controller files for Legion. A clear defect in a running tree's code goes to that tree
-from the role that found it, and the controller forwards no message from one agent to another.
+a person hands it over, or when a role reports a clear defect, which the controller files for
+Legion. The controller forwards no message from one agent to another.
 A free slot is never a reason to label or admit one. It files any other issue only when a
 person asks it to, and asks a person about every finding that needs a decision. It ranks work from
 the weekly plan in a prioritization pass: every turn that a `tick`, `slot-free` or `todo` wake

@@ -188,6 +188,7 @@ func fillRetryEvery(t *testing.T, every time.Duration) {
 // lease at its next try, labels every row and returns for good: a fill nothing has to boot to
 // finish.
 func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolderDies(t *testing.T) {
+	// Not parallel: it writes the package variable embeddingProjectKeyFillRetry (fillRetryEvery).
 	const project = "LEAS"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
@@ -306,6 +307,8 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 // intervals it writes one error line and no more. A loop that still tried would write one per
 // interval and never return.
 func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) and writes the package variable
+	// embeddingProjectKeyFillRetry (fillStopsWhenItsProgressIsGone, fillRetryEvery).
 	fillStopsWhenItsProgressIsGone(t, "delete from embeddings_project_key_backfill")
 }
 
@@ -315,6 +318,8 @@ func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressRowIsGone(t *testing.T) {
 // wants the same thing of both: nothing it can do brings either back. Until this was matched,
 // the loop stopped on the row and tried the table every interval for the life of the process.
 func TestTheEmbeddingProjectKeyFillStopsWhenItsProgressTableIsGone(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault) and writes the package variable
+	// embeddingProjectKeyFillRetry (fillStopsWhenItsProgressIsGone, fillRetryEvery).
 	fillStopsWhenItsProgressIsGone(t, "drop table embeddings_project_key_backfill")
 }
 
