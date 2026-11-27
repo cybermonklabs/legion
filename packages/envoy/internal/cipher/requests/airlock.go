@@ -611,15 +611,15 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''),
 		`+grantAndEnrollmentLive("g", "e")+`,
-		e.kind, e.operator, e.subject, e.issuer, e.projects, c.service
+		`+credentialColumnsOf("e")+`, c.service
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where p.placeholder_sha256 = $1`, placeholderHash(presented)).
-		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
-			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Issuer, &enr.Projects, &enr.Service)
+		Scan(slices.Concat([]any{&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
+			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live}, enr.credentialDest(), []any{&enr.Service})...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
@@ -719,7 +719,7 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		p.name, p.slot, p.placeholder,
-		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''), e.kind, e.operator, e.subject, e.issuer, e.projects, c.service
+		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''), `+credentialColumnsOf("e")+`, c.service
 		from grants g
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
@@ -743,9 +743,9 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	for rows.Next() {
 		var row liveGrant
 		var name, slot, placeholder string
-		if err := rows.Scan(&row.conn.GrantID, &row.conn.RequestID, &row.conn.Expires, &row.reason, &row.decidedBy,
+		if err := rows.Scan(slices.Concat([]any{&row.conn.GrantID, &row.conn.RequestID, &row.conn.Expires, &row.reason, &row.decidedBy,
 			&name, &slot, &placeholder,
-			&row.conn.RuntimeID, &row.conn.SessionID, &row.conn.Operator, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Issuer, &enr.Projects, &enr.Service); err != nil {
+			&row.conn.RuntimeID, &row.conn.SessionID, &row.conn.Operator}, enr.credentialDest(), []any{&enr.Service})...); err != nil {
 			return nil, err
 		}
 		if len(grants) == 0 || grants[len(grants)-1].conn.GrantID != row.conn.GrantID {

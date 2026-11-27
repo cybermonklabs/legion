@@ -36,14 +36,14 @@ func TestTheSecondNamedIssuersTokenOfAListedAudienceEnrolsAPod(t *testing.T) {
 		t.Fatalf("B's daemon's token login with B's token of the first listed audience answered %d %q, want 200 with a credential", status, code)
 	}
 	t.Run("B's pod token of the second listed audience enrolls", func(t *testing.T) {
-		status, code, p := client.enroll(login, "pod-of-b-listed", clusterTokenFor(t, b, bKey, namedWorker, "pod-of-b-listed", podAudienceOld))
+		status, code, p := client.enroll(login, "pod-of-b-listed", audienceToken(t, b, bKey, namedWorker, podAudienceOld, "pod-of-b-listed", false))
 		if status != http.StatusCreated || code != "" || p.enrollmentID == "" {
 			t.Fatalf("answered %d %q, want 201 with an enrollment", status, code)
 		}
 	})
 	expect(t, "B's pod token ", []namedRoute{
 		{"of an audience the setting does not list is refused", func() (int, string) {
-			status, code, _ := client.enroll(login, "pod-of-b-unlisted", clusterTokenFor(t, b, bKey, namedWorker, "pod-of-b-unlisted", unlistedPodAudience))
+			status, code, _ := client.enroll(login, "pod-of-b-unlisted", audienceToken(t, b, bKey, namedWorker, unlistedPodAudience, "pod-of-b-unlisted", false))
 			return status, code
 		}, http.StatusForbidden, "POD_IDENTITY_MISMATCH"},
 	})

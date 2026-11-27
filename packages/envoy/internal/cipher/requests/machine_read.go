@@ -219,10 +219,11 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, `+grantAndEnrollmentLive("g", "e")+`,
-		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, e.issuer, c.service, c.host, e.projects
+		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, `+credentialColumnsOf("e")+`, c.service, c.host
 		from grants g join enrollments e on e.id=g.enrollment_id join requests r on r.id=g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where g.id=$1`, grantID).
-		Scan(&enrollmentID, &expires, &live, &requestID, &reason, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Issuer, &enr.Service, &enr.Host, &enr.Projects)
+		Scan(slices.Concat([]any{&enrollmentID, &expires, &live, &requestID, &reason, &policyVersion, &decidedBy, &lifetime},
+			enr.credentialDest(), []any{&enr.Service, &enr.Host})...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return grantRelease{}, ErrGrantNotLive
 	}
@@ -1802,7 +1803,7 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 //
 // A session's move re-points its requests row and not the append-only record, so enr is the
 // enrollment that asked and cur the one the request hangs off now. enr is read for its session id,
-// and both for the projects their credentials name (credentialColumns, currentCredentialColumns,
+// and both for the projects their credentials name (credentialColumnsOf,
 // credentialsProjects): an adoption moves a session's rows only to another enrollment of the same
 // session id (the carry pair enroll.Create matches on), so that id is the one the enrollment
 // holding the request names too, but the projects the two credentials name can differ. Which
@@ -1820,8 +1821,8 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // (Machine.Groups' GroupsOf), in the group form. Each row carries the approver it waits on, so the
 // list tells a person's own machine login from a row that waits on them only as one of its
 // approvers (approverRow).
-const pendingListFrom = `select cr.id, cr.kind, cr.approver, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
-		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumns + `, ` + currentCredentialColumns + `
+var pendingListFrom = `select cr.id, cr.kind, cr.approver, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
+		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumnsOf("enr") + `, ` + credentialColumnsOf("cur") + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
@@ -1829,18 +1830,19 @@ const pendingListFrom = `select cr.id, cr.kind, cr.approver, cr.body, cr.created
 	cross join lateral (select ` + recordStateSQL + ` as state offset 0) s
 	where (cr.approver = $1 or cr.approver = $2 or cr.approver = any($3::text[])) and `
 
-// credentialColumns are the enrollment's columns namedProjects reads, over a left join aliased
-// enr, in the order a scan into enrollmentRow's Kind, Operator, Subject, Issuer and Projects takes
-// them. A record no enrollment asked answers an empty kind, which names no project.
-const credentialColumns = `coalesce(enr.kind, ''), enr.operator, enr.subject, enr.issuer, coalesce(enr.projects, '{}')`
+// credentialColumnsOf is the one SQL text of the columns of the enrollment aliased alias that
+// namedProjects reads, in the order a scan into enrollmentRow's Kind, Operator, Subject, Issuer
+// and Projects takes them (credentialDest). Every read of an enrollment's credential takes them
+// through it, so none leaves a column out, the issuer among them. Over a left join that finds no
+// enrollment they answer an empty kind, which names no project: enr for a record no enrollment
+// asked, and cur, the enrollment a request hangs off now, for a record with no request (a machine
+// login).
+func credentialColumnsOf(alias string) string {
+	return `coalesce(` + alias + `.kind, ''), ` + alias + `.operator, ` + alias + `.subject, ` + alias + `.issuer, coalesce(` + alias + `.projects, '{}')`
+}
 
-// currentCredentialColumns are credentialColumns over a left join aliased cur: the enrollment a
-// request hangs off now, where enr is the one that asked. A record with no request (a machine
-// login) answers an empty kind, which names no project.
-const currentCredentialColumns = `coalesce(cur.kind, ''), cur.operator, cur.subject, cur.issuer, coalesce(cur.projects, '{}')`
-
-// credentialDest is where a scan of credentialColumns or currentCredentialColumns puts each of
-// their columns: e's Kind, Operator, Subject, Issuer and Projects, in that order.
+// credentialDest is where a scan of credentialColumnsOf puts each of its columns: e's Kind,
+// Operator, Subject, Issuer and Projects, in that order.
 func (e *enrollmentRow) credentialDest() []any {
 	return []any{&e.Kind, &e.Operator, &e.Subject, &e.Issuer, &e.Projects}
 }
@@ -1875,7 +1877,7 @@ func (e *enrollmentRow) credentialDest() []any {
 // nothing about how Postgres joins in req and enr (a hash join over requests and enrollments,
 // measured locally at 5,000 enrollments — free to change with the planner's own cost estimates,
 // and not this test's concern).
-const pendingForApproverQuery = pendingListFrom + `(
+var pendingForApproverQuery = pendingListFrom + `(
 		cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending' and (r.judge_until is null or r.judge_until <= now()))
 		or cr.kind='launcher_credential' and not exists (
 			select 1 from credential_request_events ev where ev.record_id=cr.id and ev.event in ('approved','denied','expired','cancelled'))
@@ -1890,7 +1892,7 @@ const pendingForApproverQuery = pendingListFrom + `(
 // nobody can.
 // TestPendingForApproverAvoidsSequentialScans holds the dismissal's NOT EXISTS to the table's
 // primary key, as it holds the rest of this statement to pendingForApproverQuery's indexes.
-const pendingOrExpiredForApproverQuery = pendingListFrom + `(
+var pendingOrExpiredForApproverQuery = pendingListFrom + `(
 		s.state = 'pending' and $4::boolean
 		or s.state = 'expired' and $5::boolean and not exists (
 			select 1 from credential_request_dismissals d where d.record_id = cr.id)
@@ -2661,9 +2663,9 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 			mappedPersons = append(mappedPersons, person)
 		}
 	}
-	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
+	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.runtime_id, e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
 		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
-		coalesce(e.projects, '{}'), e.subject, e.issuer, r.reason, `+credentialColumns+`
+		r.reason, `+credentialColumnsOf("e")+`, `+credentialColumnsOf("enr")+`
 		from grants g
 		join requests r on r.id=g.request_id
 		join enrollments e on e.id=g.enrollment_id
@@ -2696,14 +2698,11 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		var g ApproverGrant
 		var s seen
 		var current, asked enrollmentRow
-		if err := rows.Scan(append([]any{&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names,
-			&current.Projects, &current.Subject, &current.Issuer, &s.reason}, asked.credentialDest()...)...); err != nil {
+		if err := rows.Scan(slices.Concat([]any{&g.GrantID, &g.RecordID, &g.Enrollment.RuntimeID, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names, &s.reason},
+			current.credentialDest(), asked.credentialDest())...); err != nil {
 			return nil, err
 		}
-		current.Kind = g.Enrollment.Kind
-		if g.Enrollment.Operator != "" {
-			current.Operator = &g.Enrollment.Operator
-		}
+		g.Enrollment.Kind = current.Kind
 		s.sessionProjects = m.credentialsProjects(asked, current)
 		s.operator = m.operatorOf(current)
 		s.notOwn = record.CanonicalLogin(deref(s.operator)) != login

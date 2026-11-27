@@ -82,7 +82,7 @@ func rowFactsColumns(key rowKey) string {
 	}
 	return `coalesce(cr.kind, ''), ` + key.approver + `, coalesce(` + key.held + `::text, ''), coalesce(` + key.request + `.reason, ''),
 		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where ` + names + `), '{}'),
-		` + credentialColumns + `, ` + currentCredentialColumns + `, c.service`
+		` + credentialColumnsOf("enr") + `, ` + credentialColumnsOf("cur") + `, c.service`
 }
 
 // rowFactsJoins are the joins rowFactsColumns reads past key's own tables: the enrollment that
@@ -305,7 +305,7 @@ func (m *Machine) hideGrantFromSession(ctx context.Context, grantID, enrollmentI
 // atDecision's bound together.
 func (m *Machine) hideFromSession(ctx context.Context, enrollmentID string, facts rowFacts) error {
 	var caller enrollmentRow
-	if err := m.Store.Pool.QueryRow(ctx, `select `+credentialColumns+` from enrollments enr where enr.id=$1`, enrollmentID).
+	if err := m.Store.Pool.QueryRow(ctx, `select `+credentialColumnsOf("enr")+` from enrollments enr where enr.id=$1`, enrollmentID).
 		Scan(caller.credentialDest()...); err != nil {
 		return err
 	}

@@ -878,10 +878,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 // The starts waiting in one pod go in the spec's order (dispatch://INFRA-5297/spec R3), whatever
 // order they were asked in: the role whose task or message caused the pod's start goes first, and
 // the others in the order asked, a later request's start included. Where no request raised one —
-// relaunches after deaths, as a roles container's restart makes, and the daemon's boot starts of
-// the claims a project release stopped — the first start to reach a pod that holds nothing goes
-// first, whatever its role, and the ones that wait behind it go with the role working the issue's
-// phase first, then the others in the order of claim.Roles.
+// relaunches after deaths, as a roles container's restart makes — the first start to reach a pod
+// that holds nothing goes first, whatever its role, and the ones that wait behind it go with the
+// role working the issue's phase first, then the others in the order of claim.Roles.
 func TestThePodsStartsGoInTheDesignsOrder(t *testing.T) {
 	t.Run("a start a request raised goes first, then the others in the order asked", func(t *testing.T) {
 		// The tester works the phase, which a start a request raised goes ahead of.
@@ -971,31 +970,6 @@ func TestThePodsStartsGoInTheDesignsOrder(t *testing.T) {
 		h.wantWaitsForPod(implementer, 1)
 
 		h.wantStartOrder(merger, waitingStart{tester, testerStarted}, waitingStart{implementer, implementerStarted},
-			waitingStart{reviewer, reviewerStarted})
-	})
-
-	t.Run("the boot's starts of the claims a project release stopped go as no request raised them: the phase worker first, then claim.Roles", func(t *testing.T) {
-		// The implementer works the phase. The daemon's next boot resumes by rule each claim the
-		// project release stopped (workflow's startReleaseStopped), here in an order that puts the
-		// phase worker last, while an operator's resume of the planner holds the pod.
-		h := podHarness(t, claim.RoleImplementer)
-		holder := h.podRole(claim.RolePlanner, StateSuspended)
-		reviewer := h.podRoleSuspendedBy(claim.RoleReviewer, SuspendedByProjectRelease)
-		tester := h.podRoleSuspendedBy(claim.RoleTester, SuspendedByProjectRelease)
-		implementer := h.podRoleSuspendedBy(claim.RoleImplementer, SuspendedByProjectRelease)
-		h.mustPostTo(holder.m, RequestResume{Claim: holder.token, By: SuspendedByOperator})
-		bootStart := func(r *podRole) <-chan error {
-			return h.postAsync(r.m, RequestRuleResume{Claim: r.token, Reason: "the boot starts a claim the project release stopped"})
-		}
-
-		reviewerStarted := bootStart(reviewer)
-		h.wantWaitsForPod(reviewer, 0)
-		testerStarted := bootStart(tester)
-		h.wantWaitsForPod(tester, 0)
-		implementerStarted := bootStart(implementer)
-		h.wantWaitsForPod(implementer, 0)
-
-		h.wantStartOrder(holder, waitingStart{implementer, implementerStarted}, waitingStart{tester, testerStarted},
 			waitingStart{reviewer, reviewerStarted})
 	})
 }

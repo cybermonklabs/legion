@@ -2615,10 +2615,10 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if err := tx.QueryRow(ctx, `select e.id,
 			e.dormant_since is not null or (e.revoked_at is null
 				and (enrollment_lease_live(e.lease_expires_at) or (`+enrollmentWouldGoDormant+`))),
-			e.kind, e.operator, e.subject, c.service, c.host, e.runtime_id, coalesce(e.session_id,'')
+			`+credentialColumnsOf("e")+`, c.service, c.host, e.runtime_id, coalesce(e.session_id,'')
 		from requests req join enrollments e on e.id = req.enrollment_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1 for share of e`, recordID).
-		Scan(&enr.ID, &mayGrant, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host, &enr.RuntimeID, &enr.SessionID); err != nil {
+		Scan(slices.Concat([]any{&enr.ID, &mayGrant}, enr.credentialDest(), []any{&enr.Service, &enr.Host, &enr.RuntimeID, &enr.SessionID})...); err != nil {
 		return Decision{}, false, err
 	}
 	if m.testAdoptionHook != nil {
@@ -3148,10 +3148,10 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 // enrollment reads a live enrollment (not revoked, lease not lapsed); pgx.ErrNoRows otherwise.
 func (m *Machine) enrollment(ctx context.Context, id string) (enrollmentRow, error) {
 	var e enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.issuer, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,''), e.projects, coalesce(e.claim,'') from enrollments e
+	err := m.Store.Pool.QueryRow(ctx, `select e.id, `+credentialColumnsOf("e")+`, c.service, c.host, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,''), coalesce(e.claim,'') from enrollments e
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where e.id=$1 and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)`, id).
-		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Issuer, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID, &e.Projects, &e.Claim)
+		Scan(slices.Concat([]any{&e.ID}, e.credentialDest(), []any{&e.Service, &e.Host, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID, &e.Claim})...)
 	return e, err
 }
 

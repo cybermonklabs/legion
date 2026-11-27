@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"crypto"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -61,6 +62,9 @@ type issuerEntry struct {
 func NewIssuerSet(issuers []NamedIssuer, audience string, failureSpacing time.Duration) *IssuerSet {
 	return newIssuerSet(issuers, []string{audience}, failureSpacing)
 }
+
+// errNoAudience refuses an IssuerSet of no audience (NewIssuerSetFor).
+var errNoAudience = errors.New("oidc: an issuer set needs one or more audiences")
 
 // NewIssuerSetFor is NewIssuerSet for tokens each of issuers issues to any of audiences, one list
 // that serves every issuer of the set: a token of any listed audience is taken from any issuer,

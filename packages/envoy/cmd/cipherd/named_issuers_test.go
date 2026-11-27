@@ -410,7 +410,7 @@ func TestARegistrationTokenIsCheckedByTheIssuerItNames(t *testing.T) {
 		t.Run("a pod whose token of the registration audience "+row.name+" issued "+row.about, func(t *testing.T) {
 			podUID := "pod-of-" + strings.ToLower(row.name)
 			session := namedSession + "-" + strings.ToLower(row.name)
-			status, answer := client.registerFor(registrar, clusterTokenFor(t, row.issuer, row.key, namedWorker, podUID, namedRegistrationAudience), session)
+			status, answer := client.registerFor(registrar, audienceToken(t, row.issuer, row.key, namedWorker, namedRegistrationAudience, podUID, false), session)
 			if status != row.status || codeOf(answer) != row.code {
 				t.Fatalf("answered %d %q, want %d %q", status, codeOf(answer), row.status, row.code)
 			}

@@ -172,9 +172,6 @@ func NewWithKeys(issuer, audience string, keys KeySource) *Verifier {
 	return newWithKeys(issuer, []string{audience}, keys)
 }
 
-// errNoAudience refuses an IssuerSet of no audience (NewIssuerSetFor).
-var errNoAudience = errors.New("oidc: a verifier needs one or more audiences")
-
 // newWithKeys is the verifier NewWithKeys returns and a LazyVerifier builds (newLazyVerifier), of
 // audiences, which holds one or more: one go-oidc verifier of each audience, in the order listed,
 // all on keys.

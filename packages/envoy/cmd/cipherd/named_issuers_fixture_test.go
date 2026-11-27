@@ -71,13 +71,7 @@ func bothIssuers(a, b *oidctest.Issuer) string {
 // not cluster's makes a token naming one issuer and carrying another's signature.
 func clusterToken(t *testing.T, cluster *oidctest.Issuer, key *oidctest.Key, account, podUID string) string {
 	t.Helper()
-	return clusterTokenFor(t, cluster, key, account, podUID, enrolmentAudience)
-}
-
-// clusterTokenFor is clusterToken for audience in place of enrolmentAudience.
-func clusterTokenFor(t *testing.T, cluster *oidctest.Issuer, key *oidctest.Key, account, podUID, audience string) string {
-	t.Helper()
-	return audienceToken(t, cluster, key, account, audience, podUID, false)
+	return audienceToken(t, cluster, key, account, enrolmentAudience, podUID, false)
 }
 
 // namedClient drives one running broker as the clusters' daemons, pods and listed callers do.
