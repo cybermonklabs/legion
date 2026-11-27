@@ -870,6 +870,9 @@ function standInBrowser(world: {
         listeners.set(type, [...(listeners.get(type) ?? []), listener]);
       },
       innerHeight: world.height,
+      // The width of the projects the acts of 1440 px run in, which a press outside a row's
+      // words reads its row across (`wordsPoint`).
+      innerWidth: 1440,
     },
   };
   const loadingDone = () => {
@@ -1328,11 +1331,11 @@ function editedRow(
   return { editable, row };
 }
 
-test("Enter shows its result at the first frame whose caret is in the focused row's text: an editable inside the row's editor box holding the focus, with one point selected in it", async () => {
+test("Enter after a press on a row with text shows its result at the first frame whose caret is in the focused row's text: an editable inside the row's editor box holding the focus, with one point selected in it", async () => {
   const enter = LOAD_ACTS[1440].find((act) => act.kind === "edit");
-  const [forward, enterStep] = enter?.steps ?? [];
-  if (forward === undefined || enterStep === undefined || enter?.name !== "Enter") {
-    throw new Error("the acts at 1440 px hold no Enter that first steps forward with j");
+  const [onRow, enterStep] = enter?.steps ?? [];
+  if (onRow === undefined || enterStep === undefined || enter?.name !== "Enter") {
+    throw new Error("the acts at 1440 px hold no Enter that first presses a row with text");
   }
   let active: StandInElement | null = null;
   let selection: StandInSelection | null = null;
@@ -1344,12 +1347,12 @@ test("Enter shows its result at the first frame whose caret is in the focused ro
     active: () => active,
     drawn: () => [row],
     height: 900,
-    // `j` with no row focused puts the focus on the first row.
-    key: (key) => {
-      if (key === "j") active = row;
+    key: () => {},
+    // A press on the row with text, outside its words, puts the focus on it.
+    press: (hit) => {
+      if (hit === row) active = row;
     },
-    press: () => {},
-    selected: { [VIEW_ROW_SELECTOR]: () => [row] },
+    selected: { [DOCUMENT_ROW_SELECTOR]: () => [row], [VIEW_ROW_SELECTOR]: () => [row] },
     selection: () => selection,
   });
   await withStandIns(browser.globals, async (instruments) => {
@@ -1358,7 +1361,7 @@ test("Enter shows its result at the first frame whose caret is in the focused ro
         (at) => (window.__loadInstruments?.record().frames.length ?? 0) >= at,
         count
       );
-    await makeSteps(browser.page, 0, [forward], "now");
+    await makeSteps(browser.page, 0, [onRow], "now");
     expect(instruments.shown(0)).toBe(true);
     await armStep(browser.page, 1, enterStep, "now");
     await makeInput(browser.page, enterStep);
@@ -1732,4 +1735,79 @@ test("the press on Spec of the first capture drew its result from what the page 
       .slice(1)
       .map((bound) => bound.readings)
   ).toEqual([Array(5).fill(NOT_APPLICABLE), Array(5).fill(NOT_APPLICABLE)]);
+});
+
+test("the act's read is the request its result draws from, and another read in the window is not", () => {
+  const { record } = captures["view-press-read"];
+  const act = record.acts[0];
+  const frame = act?.result == null ? undefined : record.frames[act.result];
+  if (act?.event == null || frame === undefined || frame.shown === null) {
+    throw new Error("the capture holds no press with the frame of its result");
+  }
+  const event = act.event.timeStamp;
+  const spec = record.resource.find(
+    ({ name, startTime }) => name.endsWith("/tree?view=spec") && startTime >= event
+  );
+  if (spec === undefined) throw new Error("the capture holds no Spec read after the press");
+  const replies = read("/api/v1/me/replies?issue=LAY-1&limit=200", event + 5, event + 25);
+  const withReplies = { ...record, resource: [...record.resource, replies] };
+  // The recorded frame found the result before Spec's read answered. Replies did answer,
+  // but the result did not draw from them.
+  expect(actReading(withReplies, 0).read).toBeNull();
+  // With the same response and a frame that finds the result after it, count Spec's start
+  // and answer, not the earlier replies read.
+  const afterSpec = withReplies.frames.map((one) =>
+    one === frame ? { ...one, at: spec.responseEnd + 1 } : one
+  );
+  expect(actReading({ ...withReplies, frames: afterSpec }, 0).read).toEqual({
+    drawn: frame.shown - spec.responseEnd,
+    sent: spec.startTime - event,
+    url: "/api/v1/issues/LAY-1/tree?view=spec",
+  });
+});
+
+test("a read in flight at the event is read in three parts, and only a read answered before it once", () => {
+  const { record } = captures["view-press-read"];
+  const act = record.acts[0];
+  const frame = act?.result == null ? undefined : record.frames[act.result];
+  if (act?.event == null || frame === undefined || frame.shown === null) {
+    throw new Error("the capture holds no press with the frame of its result");
+  }
+  const event = act.event.timeStamp;
+  const spec = record.resource.find(
+    ({ name, startTime }) => name.endsWith("/tree?view=spec") && startTime >= event
+  );
+  if (spec === undefined) throw new Error("the capture holds no Spec read after the press");
+  const answerAfterEvent = event + 40;
+  const inFlight: ResourceEntry = {
+    ...spec,
+    duration: answerAfterEvent - (event - 80),
+    requestStart: event - 80,
+    responseEnd: answerAfterEvent,
+    responseStart: answerAfterEvent - 1,
+    startTime: event - 80,
+  };
+  // The capture's result frame callback (`frame.at`) is before Spec's answer; move Spec's
+  // answer after the press and before `frame.at` so the result waited on the in-flight read.
+  const frames = record.frames.map((one) =>
+    one === frame ? { ...one, at: Math.max(one.at, answerAfterEvent + 1) } : one
+  );
+  const withoutSpec = record.resource.filter((entry) => entry !== spec);
+  expect(actReading({ ...record, frames, resource: [...withoutSpec, inFlight] }, 0).read).toEqual({
+    drawn: frame.shown - answerAfterEvent,
+    sent: 0,
+    url: "/api/v1/issues/LAY-1/tree?view=spec",
+  });
+  // Answered before the press: the page already held the answer, so the act is read once.
+  const answeredBefore: ResourceEntry = {
+    ...spec,
+    duration: 40,
+    requestStart: event - 80,
+    responseEnd: event - 40,
+    responseStart: event - 41,
+    startTime: event - 80,
+  };
+  expect(
+    actReading({ ...record, frames, resource: [...withoutSpec, answeredBefore] }, 0).read
+  ).toBeNull();
 });

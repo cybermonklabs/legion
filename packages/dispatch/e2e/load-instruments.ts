@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { errors, expect, type Page, type Request } from "@playwright/test";
 import type * as WebVitals from "web-vitals";
+import { PRESET_NAMES, PRESET_ORDER, type Preset } from "../web/src/features/issue-page/page-words";
 import { TYPEFACE } from "./issue-page-typeface";
 
 /**
@@ -556,13 +557,38 @@ function shownFrom(
   return null;
 }
 
-/** The reading of the step armed under `index`: from its event to the stamp of the first frame
- *  after it that shows its result, and where the result needed a read the page did not hold, the
- *  three parts R2 bounds for such an act. A result needed a read where Resource Timing shows a
- *  read the page's code sent (`fetch` or `xmlhttprequest`) after the event and answered at or
- *  before the callback of the frame that found the result in the document (`FrameEntry.at`): a
- *  read that answered after that callback, even before the frame was shown, cannot have drawn
- *  what the document already held. */
+/** The names the clock rows give these steps (`issue-page-load.ts`). A saved load record
+ *  carries the step's name, so a captured act and a live act use the same read rule. */
+export const UNFOLD_ACT = "an unfold";
+export const PAGE_ACT = "a press on the paging control";
+export function viewActName(preset: Preset): string {
+  return `a press on ${PRESET_NAMES[preset]}`;
+}
+const VIEW_ACTS = new Map(PRESET_ORDER.map((preset) => [viewActName(preset), preset] as const));
+
+/** Whether a request is the read the named step draws its result from. An unfold or a paging
+ *  press may read a page of the tree. A view press may read that view's tree or its filter.
+ *  Other reads, including reference titles and replies, do not measure the act
+ *  (dispatch://INFRA-5939/comment/97bce61c-cfa9-459c-b4ee-428de69eeb36). */
+function isActRead(address: string, view: Preset | undefined, page: boolean): boolean {
+  const url = new URL(address);
+  const route = url.pathname.match(/^\/api\/v1\/issues\/[^/]+\/(tree|decisions)$/)?.[1];
+  if (page) return route === "tree" && url.searchParams.has("cursor");
+  if (route === "decisions") return view === "decisions";
+  if (route !== "tree" || url.searchParams.has("cursor")) return false;
+  const filter = url.searchParams.get("view");
+  if (view === "graph") return filter === null && !url.searchParams.has("kind");
+  if (view === "conversation") return filter === null && url.searchParams.has("kind");
+  return filter === view;
+}
+
+/** Reads the step's time from its event to the frame showing its result. Where the act needs a
+ *  read whose answer the page does not hold at the event - either sent after the event, or sent
+ *  before it and still in flight at it (Verification v31,
+ *  dispatch://INFRA-5939/comment/90452577-dd0c-419a-b7cb-cc29a65016a8) - each matching request
+ *  answered by the callback of the frame that found the result counts toward the three read
+ *  bounds, with `sent` equal to 0 where a matching read was already out at the event. Only a read
+ *  answered before the event leaves the act read once, from the event to the result. */
 export function actReading(
   record: Pick<LoadRecord, "acts" | "frames" | "resource">,
   index: number
@@ -574,15 +600,18 @@ export function actReading(
   }
   const result = shownFrom(record.frames, act.result, event.timeStamp);
   const loading = shownFrom(record.frames, act.loading, event.timeStamp);
+  const view = VIEW_ACTS.get(act.name);
+  const page = act.name === UNFOLD_ACT || act.name === PAGE_ACT;
   const reads =
-    result === null
+    result === null || (view === undefined && !page)
       ? []
       : record.resource
           .filter(
             (entry) =>
               (entry.initiatorType === "fetch" || entry.initiatorType === "xmlhttprequest") &&
-              entry.startTime >= event.timeStamp &&
-              entry.responseEnd <= result.at
+              (entry.startTime >= event.timeStamp || entry.responseEnd > event.timeStamp) &&
+              entry.responseEnd <= result.at &&
+              isActRead(entry.name, view, page)
           )
           .sort((a, b) => a.startTime - b.startTime);
   const first = reads[0];
@@ -594,7 +623,7 @@ export function actReading(
         ? null
         : {
             drawn: result.shown - Math.max(...reads.map((entry) => entry.responseEnd)),
-            sent: first.startTime - event.timeStamp,
+            sent: Math.max(0, first.startTime - event.timeStamp),
             url: pathOf(first.name),
           },
     shown: result === null ? null : result.shown - event.timeStamp,

@@ -71,14 +71,23 @@ import type { Browser, Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
+import { listIssueAsks } from "./api";
 import {
   AFTER_LOAD_ENTERS,
+  actAddress,
+  afterLoadOrder,
+  answeredQuestion,
+  boundWord,
   HEADER_SELECTORS,
+  LOAD_ACTS,
   LOAD_ROW_SELECTOR,
   LOAD_VIEWS,
+  type LoadAct,
   loadCpuRate,
   loadWidth,
   makeSteps,
+  namedRow,
+  outlineRows,
   READER,
   test,
   VIEW_ROW_SELECTOR,
@@ -88,9 +97,11 @@ import { owedUnless } from "./issue-page-t-tree";
 import {
   type ActReading,
   actReading,
+  boxesMoved,
   firstDrawing,
   installInstruments,
   type LoadRecord,
+  moveLine,
   type RequestSpan,
   recordOf,
   type TaskEntry,
@@ -507,15 +518,16 @@ function printLongest(
   const samples = samplesOf(load.profile);
   const parents = parentsOf(load.profile);
   const clock = profileClock(load, samples, parents);
+  // With no sample of the anchor the window is the whole profile, which an act's profile spans
+  // from just before its measured step to its result: its functions then are every task's there.
+  const from = clock === null ? Number.NEGATIVE_INFINITY : clock(task.startTime);
+  const to = clock === null ? Number.POSITIVE_INFINITY : clock(task.startTime + task.duration);
   if (clock === null) {
     console.log(
-      `LONGEST-ERROR ${label} the profile holds no sample of the anchor, so the profiler did not ` +
-        "follow the page through its navigation and no window is read"
+      `LONGEST-ERROR ${label} the profile holds no sample of the anchor: the window read is the ` +
+        "whole profile"
     );
-    return;
   }
-  const from = clock(task.startTime);
-  const to = clock(task.startTime + task.duration);
   const inside = samples.filter((sample) => sample.at >= from && sample.at < to);
   const nodes = new Map(load.profile.nodes.map((node) => [node.id, node]));
   // Each node's stack as the functions on it, each once: a function that recurses stands in a
@@ -866,3 +878,405 @@ declare global {
     };
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The acts, profiled: each act of the width made as Row 4 makes it, at its first moment during a
+// cold load, and as Row 5 makes it, once in one load after its end; and the named rows' loads,
+// with every layout shift's sources and every box that changed its size.
+// ---------------------------------------------------------------------------------------------
+
+/** How many cold loads each act made during the load is profiled over. */
+const ACT_RUNS = 2;
+
+/** One act, profiled. */
+interface ProfiledAct {
+  /** The index its measured step was armed under. */
+  readonly index: number;
+  readonly load: ProfiledLoad;
+  /** Every request of the load, in its page's performance time. */
+  readonly spans: readonly RequestSpan[];
+}
+
+/** `act` made at its first moment in a cold load of its address, as Row 4 makes it, with the
+ *  profiler running from before the navigation to the load's end. */
+async function profiledAct(
+  browser: Browser,
+  rate: number,
+  address: string,
+  act: LoadAct
+): Promise<ProfiledAct> {
+  const load = await openLoad(browser, rate, address, "none");
+  try {
+    await load.cdp.send("Profiler.start");
+    await load.goto();
+    const made = await makeSteps(load.page, 0, act.steps, act.when);
+    await waitForLoadEnd(load.page, load.requests);
+    const record = await recordOf(load.page);
+    const anchoredAt = await anchor(load.page);
+    const { profile } = await load.cdp.send("Profiler.stop");
+    return {
+      index: made.last,
+      load: { anchoredAt, profile, record },
+      spans: load.requests.spans(record.timeOrigin),
+    };
+  } finally {
+    await load.context.close();
+  }
+}
+
+/** Prints one act's reading as Rows 4 and 5 read it (`ACT`), the frames that showed its loading
+ *  and its result, each request sent from a second before its event to its result (`ACT-REQUEST`),
+ *  each long task in that window (`ACT-TASK`), each time from the event, and the longest task
+ *  there as `printLongest` prints it, under the view `act-<word>`. */
+function printAct(label: string, width: number, run: number, made: ProfiledAct): void {
+  const { record } = made.load;
+  const reading = actReading(record, made.index);
+  const armed = record.acts[made.index];
+  const event = armed?.event ?? null;
+  console.log(
+    `ACT ${width} ${label} ${run} result=${part(reading.shown)} loading=${part(reading.loading)} ` +
+      `read-sent=${part(reading.read?.sent)} read-drawn=${part(reading.read?.drawn)} ` +
+      `read=${reading.read?.url ?? "none"} landed=${event?.target ?? "none"}`
+  );
+  if (event === null) return;
+  const from = event.timeStamp;
+  const to = from + (reading.shown ?? 3_000);
+  for (const [what, index] of [
+    ["loading", armed?.loading ?? null],
+    ["result", armed?.result ?? null],
+  ] as const) {
+    const frame = index === null ? undefined : record.frames[index];
+    if (frame === undefined) continue;
+    console.log(
+      `ACT-FRAME ${width} ${label} ${run} ${what} at=${shown(frame.at - from)} ` +
+        `shown=${frame.shown === null ? "none" : shown(frame.shown - from)}`
+    );
+  }
+  for (const span of made.spans) {
+    if (span.start < from - 1_000 || span.start >= to) continue;
+    const path = URL.canParse(span.url)
+      ? new URL(span.url).pathname + new URL(span.url).search
+      : span.url;
+    console.log(
+      `ACT-REQUEST ${width} ${label} ${run} start=${shown(span.start - from)} ` +
+        `end=${span.end === null ? "open" : shown(span.end - from)} ${path.slice(0, 160)}`
+    );
+  }
+  for (const task of record.longtask) {
+    if (task.startTime + task.duration < from - 300 || task.startTime >= to) continue;
+    console.log(
+      `ACT-TASK ${width} ${label} ${run} start=${shown(task.startTime - from)} ` +
+        `duration=${shown(task.duration)}`
+    );
+  }
+  printLongest(`act-${label}`, width, run, made.load, longestIn(record, from, to));
+}
+
+// SLOW(>=2s): two cold loads for each act of the width, each act made at its first moment and the
+// load profiled to its end.
+test("the acts made during the load, profiled", async ({ browser, loadSeeds }, testInfo) => {
+  test.skip(
+    process.env.ISSUE_PAGE_LOAD_LONGEST !== "1",
+    "the longest-task probes run only where ISSUE_PAGE_LOAD_LONGEST=1, so CI load legs stay fast"
+  );
+  test.skip(
+    !LOAD_PROJECTS.includes(testInfo.project.name),
+    "the probe profiles the clock rows' loads, which only chromium-load and iphone-load make"
+  );
+  refuseASharedRun();
+  test.setTimeout(PROBE_MS * 4);
+  const rate = loadCpuRate(testInfo.project.name);
+  const width = loadWidth(testInfo);
+  const seeded = await loadSeeds.shape();
+  const only = process.env.ISSUE_PAGE_LOAD_ACTS;
+  for (const act of LOAD_ACTS[width]) {
+    const label = `during-${boundWord(act.name)}`;
+    if (only !== undefined && !new RegExp(only).test(label)) continue;
+    for (let run = 1; run <= ACT_RUNS; run += 1) {
+      printAct(
+        label,
+        width,
+        run,
+        await profiledAct(browser, rate, actAddress(seeded.key, act), act)
+      );
+    }
+  }
+});
+
+// SLOW(>=2s): one cold load waited out, then each act of the width made once in it as Row 5 makes
+// it, each profiled from just before its measured step.
+test("the acts made after the load, profiled", async ({ browser, loadSeeds }, testInfo) => {
+  test.skip(
+    process.env.ISSUE_PAGE_LOAD_LONGEST !== "1",
+    "the longest-task probes run only where ISSUE_PAGE_LOAD_LONGEST=1, so CI load legs stay fast"
+  );
+  test.skip(
+    !LOAD_PROJECTS.includes(testInfo.project.name),
+    "the probe profiles the clock rows' loads, which only chromium-load and iphone-load make"
+  );
+  refuseASharedRun();
+  test.setTimeout(PROBE_MS * 2);
+  const rate = loadCpuRate(testInfo.project.name);
+  const width = loadWidth(testInfo);
+  const seeded = await loadSeeds.shape();
+  const load = await openLoad(browser, rate, presetPath(seeded.key, "conversation"), "none");
+  try {
+    await load.goto();
+    await waitForLoadEnd(load.page, load.requests);
+    let next = 0;
+    for (const act of afterLoadOrder(LOAD_ACTS[width])) {
+      const label = `after-${boundWord(act.name)}`;
+      await waitForLoadEnd(load.page, load.requests);
+      if (act.paging !== undefined) {
+        const pages = await load.page.evaluate(
+          (selector) => document.querySelector(selector) !== null,
+          act.paging
+        );
+        if (!pages) {
+          console.log(`ACT ${width} ${label} 1 not made: no paging control drawn`);
+          continue;
+        }
+      }
+      await load.cdp.send("Profiler.start");
+      const made = await makeSteps(load.page, next, act.steps, "now");
+      const anchoredAt = await anchor(load.page);
+      const { profile } = await load.cdp.send("Profiler.stop");
+      const record = await recordOf(load.page);
+      printAct(label, width, 1, {
+        index: made.last,
+        load: { anchoredAt, profile, record },
+        spans: load.requests.spans(record.timeOrigin),
+      });
+      next = (await makeSteps(load.page, made.next, act.after, "now")).next;
+    }
+  } finally {
+    await load.context.close();
+  }
+});
+
+/** The init script of the shift probe: each layout shift with its sources, each box of a row or
+ *  of the page's frame that changed its size after its first report (a `ResizeObserver`), and
+ *  each scroll of the window, kept on `window.__shiftProbe`. */
+function shiftProbe(): void {
+  const lines: string[] = [];
+  const describe = (node: Node | null | undefined): string => {
+    const element = node instanceof Element ? node : (node?.parentElement ?? null);
+    if (element === null) return "none";
+    const marks = [
+      "data-row-key",
+      "data-node-id",
+      "data-node-type",
+      "data-testid",
+      "data-child-entry",
+      "role",
+      "aria-label",
+      "data-spec-because",
+      "data-spec-checks",
+      "data-spec-cell",
+      "data-node-trail",
+    ]
+      .map((name) => {
+        const value = element.getAttribute(name);
+        return value === null ? "" : `${name}=${value.slice(0, 70)}`;
+      })
+      .filter((mark) => mark !== "")
+      .join(" ");
+    const row = element.parentElement?.closest("[data-node-row], [data-child-entry]");
+    const inRow =
+      row === null || row === undefined
+        ? ""
+        : ` in-row=${row.getAttribute("data-row-key") ?? row.getAttribute("data-child-entry") ?? "?"}`;
+    const words = (element.textContent ?? "").replace(/\s+/g, " ").slice(0, 40);
+    const kind = `${element.tagName.toLowerCase()}.${String(element.className).split(" ").slice(0, 2).join(".")}`;
+    return `${kind} ${marks} "${words}"${inRow}`;
+  };
+  const rect = (box: DOMRectReadOnly): string =>
+    `${box.width.toFixed(0)}x${box.height.toFixed(0)}@${box.x.toFixed(0)},${box.y.toFixed(0)}`;
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      const shift = entry as PerformanceEntry & {
+        readonly hadRecentInput: boolean;
+        readonly sources?: readonly {
+          readonly currentRect: DOMRectReadOnly;
+          readonly node: Node | null;
+          readonly previousRect: DOMRectReadOnly;
+        }[];
+        readonly value: number;
+      };
+      lines.push(
+        `shift t=${shift.startTime.toFixed(0)} value=${shift.value.toFixed(4)} ` +
+          `recent=${shift.hadRecentInput} scrollY=${window.scrollY}`
+      );
+      for (const source of shift.sources ?? []) {
+        lines.push(
+          `  source ${describe(source.node)} ${rect(source.previousRect)} -> ${rect(source.currentRect)}`
+        );
+      }
+    }
+  }).observe({ buffered: true, type: "layout-shift" });
+  const sizes = new WeakMap<Element, string>();
+  // Each row's parts as last seen - every child of its content and of its words, by tag, data
+  // attributes and height - so a row that grew names the part that came, left or grew.
+  const partsSeen = new WeakMap<Element, string>();
+  const partsOf = (row: Element): string =>
+    [
+      ...row.querySelectorAll(
+        "[data-node-content] > *, [data-node-words] > *, [data-spec-statement] > div > *"
+      ),
+    ]
+      .map((part) => {
+        const data = [...part.attributes]
+          .filter((attribute) => attribute.name.startsWith("data-"))
+          .map((attribute) => attribute.name.slice(5))
+          .join(",");
+        return `${part.tagName.toLowerCase()}[${data}]${part.getBoundingClientRect().height.toFixed(0)}`;
+      })
+      .join(" ");
+  const resized = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const size = `${entry.contentRect.width.toFixed(0)}x${entry.contentRect.height.toFixed(0)}`;
+      const before = sizes.get(entry.target);
+      sizes.set(entry.target, size);
+      // A child's entry is one run of inline words: its words before and after tell what changed.
+      const parts = entry.target.hasAttribute("data-node-row")
+        ? partsOf(entry.target)
+        : entry.target.hasAttribute("data-child-entry")
+          ? `"${(entry.target.textContent ?? "").replace(/\s+/g, " ").slice(0, 200)}"`
+          : "";
+      const partsBefore = partsSeen.get(entry.target);
+      if (parts !== "") partsSeen.set(entry.target, parts);
+      if (before !== undefined && before !== size) {
+        const top = entry.target.getBoundingClientRect().top.toFixed(0);
+        lines.push(
+          `resize t=${performance.now().toFixed(0)} ${before} -> ${size} top=${top} ` +
+            `scrollY=${window.scrollY} ${describe(entry.target)}`
+        );
+        if (parts !== "" && partsBefore !== parts) {
+          lines.push(`  parts ${partsBefore ?? "none"} => ${parts}`);
+        }
+        if (entry.target.hasAttribute("data-spec-statement")) {
+          // Identify the growing part of the measured statement, not just the nearby read.
+          const parts = entry.target.querySelectorAll(
+            "[data-node-words], [data-node-trail], [data-spec-because], [data-spec-checks]"
+          );
+          for (const part of parts) {
+            lines.push(`  part ${describe(part)} ${rect(part.getBoundingClientRect())}`);
+          }
+        }
+      }
+    }
+  });
+  const watched = [
+    "[data-node-row]",
+    "[data-node-body]",
+    "[data-node-counts]",
+    "[data-child-entry]",
+    "[data-identity-block]",
+    "[data-filter-row]",
+    "[data-issue-body]",
+    "[data-spec-statement]",
+    "[data-spec-cell]",
+    "[data-spec-because]",
+    "[data-spec-checks]",
+    "[data-spec-statement] [data-node-words]",
+    "[data-spec-statement] [data-node-trail]",
+    '[role="tree"]',
+    // Every part of the page's column and header that stands above the rows: a part that grows or
+    // shrinks there moves every row under it.
+    '[data-testid="issue-column"] *:not([data-node-row] *):not([data-node-row])',
+    "[data-identity-block] > *",
+  ].join(", ");
+  const seen = new WeakSet<Element>();
+  const watch = (): void => {
+    for (const element of document.querySelectorAll(watched)) {
+      if (seen.has(element)) continue;
+      seen.add(element);
+      resized.observe(element);
+    }
+  };
+  new MutationObserver(watch).observe(document, { childList: true, subtree: true });
+  let scrolled = window.scrollY;
+  addEventListener(
+    "scroll",
+    () => {
+      if (window.scrollY === scrolled) return;
+      lines.push(`scroll t=${performance.now().toFixed(0)} ${scrolled} -> ${window.scrollY}`);
+      scrolled = window.scrollY;
+    },
+    { capture: true, passive: true }
+  );
+  Reflect.set(window, "__shiftProbe", lines);
+}
+
+/** One cold load of `address`, every box recorded, with the shift probe's init script; prints
+ *  what the probe kept up to the load's end (`SHIFT`) and every box the recorder saw change
+ *  (`SHIFT-MOVE`). */
+async function shiftLoad(
+  browser: Browser,
+  rate: number,
+  label: string,
+  run: number,
+  address: string
+): Promise<void> {
+  const load = await openLoad(browser, rate, address, "all");
+  try {
+    await load.page.addInitScript(shiftProbe);
+    await load.goto();
+    const end = await waitForLoadEnd(load.page, load.requests);
+    const record = await recordOf(load.page);
+    const lines = await load.page.evaluate(
+      () => (Reflect.get(window, "__shiftProbe") as string[] | undefined) ?? []
+    );
+    console.log(
+      `SHIFT ${label} ${run} end=${shown(end)} cls=${record.cls.at(-1)?.value ?? "none"}`
+    );
+    for (const line of lines.slice(0, 400)) console.log(`SHIFT ${label} ${run} ${line}`);
+    for (const move of boxesMoved(record, end)) {
+      console.log(`SHIFT-MOVE ${label} ${run} ${moveLine(move).slice(0, 400)}`);
+    }
+  } finally {
+    await load.context.close();
+  }
+}
+
+// SLOW(>=2s): a load to find Row 2's last row, then two cold loads of each of Row 2's first two
+// addresses and of Spec's and Conversation's own.
+test("the layout shifts of the named rows' loads", async ({ browser, loadSeeds }, testInfo) => {
+  test.skip(
+    process.env.ISSUE_PAGE_LOAD_LONGEST !== "1",
+    "the longest-task probes run only where ISSUE_PAGE_LOAD_LONGEST=1, so CI load legs stay fast"
+  );
+  test.skip(
+    !LOAD_PROJECTS.includes(testInfo.project.name),
+    "the probe profiles the clock rows' loads, which only chromium-load and iphone-load make"
+  );
+  refuseASharedRun();
+  test.setTimeout(PROBE_MS);
+  const rate = loadCpuRate(testInfo.project.name);
+  const seeded = await loadSeeds.shape();
+  const conversation = presetPath(seeded.key, "conversation");
+  const finder = await openLoad(browser, rate, conversation, "none");
+  let lastRow: string;
+  try {
+    await finder.goto();
+    await waitForLoadEnd(finder.page, finder.requests);
+    lastRow = namedRow(seeded.key, await outlineRows(finder.page)).address;
+  } finally {
+    await finder.context.close();
+  }
+  const question = answeredQuestion(seeded.key, await listIssueAsks(seeded.key));
+  const addresses: (readonly [string, string])[] = [
+    ["last-row", lastRow],
+    ...(question === null ? [] : [["question", question.address] as const]),
+    ["spec", presetPath(seeded.key, "spec")],
+    ["conversation", conversation],
+  ];
+  const only = process.env.ISSUE_PAGE_SHIFT_LOADS;
+  for (const [label, address] of addresses) {
+    if (only !== undefined && !new RegExp(only).test(label)) continue;
+    console.log(`SHIFT ${label} address=${address}`);
+    for (let run = 1; run <= ACT_RUNS; run += 1) {
+      await shiftLoad(browser, rate, label, run, address);
+    }
+  }
+});

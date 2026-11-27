@@ -35,9 +35,12 @@ import {
   longestEvent,
   longestTaskAfterViewRow,
   makeInput,
+  PAGE_ACT,
   readingLine,
   resultShown,
   revealStep,
+  UNFOLD_ACT,
+  viewActName,
   watchLoadRequests,
 } from "./load-instruments";
 import { resetDatabase } from "./seed";
@@ -234,7 +237,7 @@ function stroke(name: string, key: string, result: ActStep["result"], measured: 
  *  choice in the one control's menu, opened first, after which the one control names the view. */
 function viewPress(view: Preset, width: LoadWidth): LoadAct {
   const word = PRESET_NAMES[view];
-  const name = `a press on ${word}`;
+  const name = viewActName(view);
   const naming = (selector: string): ControlTarget => ({
     kind: "control",
     label: { text: word, within: "[data-preset-name]" },
@@ -276,17 +279,55 @@ function viewPress(view: Preset, width: LoadWidth): LoadAct {
 }
 
 const UNFOLD = press(
-  "an unfold",
+  UNFOLD_ACT,
   { control: FOLD_CONTROL, kind: "folded" },
   { kind: "expanded", value: "true" },
   true
 );
 const NEXT = stroke("j", "j", { kind: "ring", step: 1 }, true);
+/** The outline's tab-stop row: the row a reader reading the outline is on. */
+const TAB_STOP_OUTLINE_ROW = '[data-issue-body] [data-node-row][tabindex="0"]';
+/** A press on the outline's tab-stop row outside its words, which puts the focus on the row as a
+ *  reader reading is on it, so `j` steps from a row wherever an act before it left the focus - the
+ *  one control, after its menu's Escape, at 390 px. Unmeasured, as Row 5's press on a row before
+ *  its `Enter` is. */
+const ON_THE_ROW = press(
+  "a press on the outline's tab-stop row",
+  {
+    drawn: "any",
+    kind: "row",
+    outsideWords: "[data-node-words]",
+    row: TAB_STOP_OUTLINE_ROW,
+    words: ROW_WORDS,
+  },
+  { kind: "focus" },
+  false
+);
 /** `Enter` on the focused row, which puts the caret in the row's text (`useTreeKeymap.ts`'s
  *  `tree-edit`). */
 const ENTER = stroke("Enter", "Enter", { box: EDITOR_BOX_SELECTOR, kind: "caret" }, true);
 /** Escape from the row's text, which gives the focus back to the row (`tree-leave-caret`). */
 const LEAVE_TEXT = stroke("Escape", "Escape", { kind: "focus" }, false);
+
+/**
+ * The unmeasured press that puts the focus on a row of a document's block (`DOCUMENT_ROW_SELECTOR`)
+ * outside its words, without opening the editor, before `Enter` on it: the first such row the view
+ * draws (`drawn: "any"`), or the first of those a paging control drew (`drawn: "since"`).
+ */
+function onRowWithText(drawn: "any" | "since") {
+  return press(
+    "a press on the row",
+    {
+      drawn,
+      kind: "row",
+      outsideWords: "[data-node-words]",
+      row: DOCUMENT_ROW_SELECTOR,
+      words: ROW_WORDS,
+    },
+    { kind: "focus" },
+    false
+  );
+}
 
 /**
  * `Enter` once the load has ended, named `name` and made in `on`, on a row of a document's block:
@@ -296,19 +337,8 @@ const LEAVE_TEXT = stroke("Escape", "Escape", { kind: "focus" }, false);
  */
 function enterOn(name: string, on: Preset, paging: string | null): LoadAct {
   const pager = (selector: string) =>
-    press("a press on the paging control", { kind: "control", selector }, { kind: "more" }, false);
-  const row = press(
-    "a press on the row",
-    {
-      drawn: paging === null ? "any" : "since",
-      kind: "row",
-      outsideWords: "[data-node-words]",
-      row: DOCUMENT_ROW_SELECTOR,
-      words: ROW_WORDS,
-    },
-    { kind: "focus" },
-    false
-  );
+    press(PAGE_ACT, { kind: "control", selector }, { kind: "more" }, false);
+  const row = onRowWithText(paging === null ? "any" : "since");
   return {
     after: [LEAVE_TEXT],
     kind: "edit",
@@ -335,8 +365,12 @@ export const AFTER_LOAD_ENTERS: readonly LoadAct[] = [
 
 /**
  * The acts every width makes on Conversation's rows: a fold and an unfold of the first row that
- * holds children, `j`, `k` and `Enter` on the focused row. An unfold first folds that row, and `k`
- * and `Enter` first step forward with `j`, so each has a row to act on at its first moment.
+ * holds children, `j`, `k` and `Enter`. An unfold first folds that row, `j` first puts the focus
+ * on the outline's tab-stop row with a press on it, `k` first steps forward with `j`, and `Enter`
+ * first puts the focus on the first row of a document's block the outline draws, whose text it
+ * puts the caret in, with a press on that row outside its words, as Row 5's `Enter`s do
+ * (`onRowWithText`): the row after the page's first focus may be an ask's, which has no text. So
+ * each has a row to act on at its first moment.
  *
  * At 1440 px the row folded is the first in the viewport under the header that holds children,
  * which the first drawing of the rows holds. At 390 px the first screen is the children's section,
@@ -366,7 +400,7 @@ function outlineActs(within: "document" | "viewport"): readonly LoadAct[] {
       steps: [{ ...fold, measured: false }, UNFOLD],
       when: "rows",
     },
-    { after: [], kind: "next", name: "j", steps: [NEXT], when: "rows" },
+    { after: [], kind: "next", name: "j", steps: [ON_THE_ROW, NEXT], when: "rows" },
     {
       after: [],
       kind: "previous",
@@ -378,7 +412,7 @@ function outlineActs(within: "document" | "viewport"): readonly LoadAct[] {
       after: [LEAVE_TEXT],
       kind: "edit",
       name: "Enter",
-      steps: [{ ...NEXT, measured: false }, ENTER],
+      steps: [onRowWithText("any"), ENTER],
       when: "rows",
     },
   ];
@@ -799,9 +833,8 @@ export async function fiveLoads<T>(
  * Makes `steps` on the load's page, the first under the index `first` and each after it under the
  * next: each armed once it can be made (the first at `when`, every other at once), made, and
  * waited on until its result shows. A step armed at once is first brought where a press reaches
- * its control (`revealStep`), which an earlier act may have scrolled away, and so is a fold of the
- * first row of the document that holds children (390 px), whose row is scrolled to before the
- * fold's first moment. No other step made at a first drawing waits for `revealStep`. All presses
+ * its control (`revealStep`), which an earlier act may have scrolled away. The 390 px fold and
+ * the unmeasured press that puts `j` on a row also reveal their targets first. All presses
  * read the target's current point just before sending the input. `settle` runs before each
  * measured step: a row of acts after the load waits for the load to end again there. If the
  * result does not show, the next step has nothing to act on. Returns the measured step's index
@@ -818,8 +851,8 @@ export async function makeSteps(
     const armedAt = at === 0 ? when : "now";
     const scrolledTo =
       step.input.kind === "press" &&
-      step.input.target.kind === "fold" &&
-      step.input.target.within === "document";
+      ((step.input.target.kind === "fold" && step.input.target.within === "document") ||
+        (step.input.target.kind === "row" && !step.measured));
     if (armedAt === "now" || scrolledTo) await revealStep(page, step);
     if (step.measured) await settle?.();
     await armStep(page, first + at, step, armedAt);
