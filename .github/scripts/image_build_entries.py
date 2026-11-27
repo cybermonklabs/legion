@@ -24,25 +24,30 @@ The steps are few and kept by hand; what each build reads is derived. A new RUN 
 build in any Dockerfile and is no step here fails the check until a row names it.
 """
 
+# The Oh My Pi packages both plugins' bundles leave out, which the build of each plugin's package
+# names (`--external`, packages/pi-envoy/package.json and packages/pi-legion/package.json), and
+# the notices both plugins' prepacks write (scripts/third-party-notices.ts, run with Bun).
+PI_PLUGIN_ARGS = ["--target", "bun"] + [
+    word
+    for package in ["@oh-my-pi/pi-ai", "@oh-my-pi/pi-coding-agent", "@oh-my-pi/pi-tui", "@oh-my-pi/pi-utils"]
+    for word in ("--external", package)
+]
+PI_PLUGIN_NOTICES = ("bundle", ".", "scripts/third-party-notices.ts", ["--target", "bun"])
+
 # pi-plugin-prepack.sh, which `bun pm pack` runs, builds the Envoy plugin's bundle
 # (`scripts/pi-plugin-prepack.sh#bun build extensions/envoy.ts`), the dispatch command beside it
-# (`packages/envoy-client/scripts/build-dispatch-cli.sh#dispatch.js`) and their notices
-# (scripts/third-party-notices.ts, run with Bun).
+# (`packages/envoy-client/scripts/build-dispatch-cli.sh#dispatch.js`) and their notices.
 PI_ENVOY_BUILDS = [
-    ("bundle", "packages/pi-envoy", "extensions/envoy.ts",
-     ["--target", "bun", "--external", "@oh-my-pi/pi-ai", "--external", "@oh-my-pi/pi-coding-agent",
-      "--external", "@oh-my-pi/pi-tui", "--external", "@oh-my-pi/pi-utils"]),
+    ("bundle", "packages/pi-envoy", "extensions/envoy.ts", PI_PLUGIN_ARGS),
     ("bundle", "packages/envoy-client", "bin/dispatch.ts", ["--target", "bun"]),
-    ("bundle", ".", "scripts/third-party-notices.ts", ["--target", "bun"]),
+    PI_PLUGIN_NOTICES,
 ]
 
 # The Legion plugin's prepack runs its package's `build` (packages/pi-legion/package.json) and the
 # same notices script.
 PI_LEGION_BUILDS = [
-    ("bundle", "packages/pi-legion", "extensions/legion.ts",
-     ["--target", "bun", "--external", "@oh-my-pi/pi-ai", "--external", "@oh-my-pi/pi-coding-agent",
-      "--external", "@oh-my-pi/pi-tui", "--external", "@oh-my-pi/pi-utils"]),
-    ("bundle", ".", "scripts/third-party-notices.ts", ["--target", "bun"]),
+    ("bundle", "packages/pi-legion", "extensions/legion.ts", PI_PLUGIN_ARGS),
+    PI_PLUGIN_NOTICES,
 ]
 
 # `bun scripts/build.ts --out` runs the script itself, its bundles (BUNDLE_ENTRYPOINTS, through
