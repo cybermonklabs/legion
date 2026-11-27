@@ -160,6 +160,9 @@ func Configure(cmd *exec.Cmd) (killed func() bool) {
 // last question and the caller's SIGKILL is the one a cancel that kills unconditionally has too,
 // so the poll can only send fewer signals than the kill alone did.
 func groupOutlivedGrace(group int) bool {
+	// CONTROL ONLY: three quarters of the grace pass before the first question, so a group gone
+	// at once still holds the run to about 0.75 of the grace.
+	time.Sleep(StopGraceNow() * 3 / 4)
 	for deadline := time.Now().Add(StopGraceNow()); ; time.Sleep(stopPoll) {
 		if errors.Is(syscall.Kill(group, 0), syscall.ESRCH) {
 			return false
