@@ -25,7 +25,7 @@ import {
 } from "../../__tests__/live-socket-harness";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
-import { prependEventToLog } from "../../api/event-feed";
+import type { EventPages } from "../../api/event-feed";
 import { liveSocketFor } from "../../api/live-socket";
 import {
   issueCoverageQuery,
@@ -64,7 +64,9 @@ import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
+import { arriveInHistoryLog } from "./history-log-fixture";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { framesByHand, type HeldFrames } from "./outline-fixtures";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { PROPERTY_LABELS } from "./page-structure";
 import {
@@ -3067,9 +3069,19 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
       legion_registry: "ok",
       people: [],
     }),
-    spyOn(api, "getIssueEvents").mockImplementation((_key, query) =>
-      query?.before !== undefined && drawn.older !== undefined ? drawn.older() : log
-    ),
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, query) => {
+      if (query?.before !== undefined && drawn.older !== undefined) return drawn.older();
+      const events = await log;
+      const after = query?.after;
+      // The read of the first event past the reader's read mark (`IssueHistory.tsx`): the oldest
+      // event the log holds after it.
+      return after === undefined
+        ? events
+        : events
+            .filter((event) => event.seq > after)
+            .sort((one, other) => one.seq - other.seq)
+            .slice(0, query?.limit);
+    }),
   ];
   const hold: PeopleHold = {};
   const view = render(
@@ -3431,6 +3443,63 @@ test("t v pressed again at /activity with Details read far down lands the histor
       "t v at /activity left the history's heading out of the top of Details' view"
     ).toBe(BOX_TOP);
   } finally {
+    page.restore();
+  }
+});
+
+// `t v` with the history's log already read lands the history's heading at the top of Details'
+// view as soon as the key opens it, and the key's own focus follows two frames later. A row above
+// the history that changes height in between moves the heading from the top, and the history,
+// taller than the view, is not brought into it by the least scroll, so the hold kept the heading
+// where that change left it: 18 px above Details' view on a copy of a real issue at 390 px, by
+// pointer and by keyboard. The heading is brought back to the top as the focus lands, and the
+// hold keeps it there.
+test("t v with the history's log read leaves the history's heading at the top of Details' view when a row above it shrinks before the focus lands", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`, {
+    log: Promise.resolve(claimsNewestFirst(30)),
+  });
+  let frames: HeldFrames | undefined;
+  try {
+    act(() => page.hold.open?.(true));
+    await page.historyDrawn(PAGE_SIZE);
+    await nextFrames(2);
+    const history = screen.getByTestId("issue-history");
+    const heading = history.querySelector<HTMLElement>("h2");
+    if (heading === null) throw new Error("the history drew no heading");
+    expect(
+      history.getBoundingClientRect().height,
+      "the history is no taller than Details' view, so the case proves nothing"
+    ).toBeGreaterThan(BOX_HEIGHT);
+    frames = framesByHand();
+
+    await userEvent.keyboard("tv");
+    expect(
+      heading.getBoundingClientRect().top,
+      "t v did not land the history's heading at the top of Details' view, so the case proves nothing"
+    ).toBe(BOX_TOP);
+
+    page.grow("row-above", -18);
+    page.resized();
+    expect(
+      heading.getBoundingClientRect().top,
+      "the row above shrank and did not move the heading, so the case proves nothing"
+    ).toBe(BOX_TOP - 18);
+
+    for (let frame = 0; frame < 4; frame += 1) await frames.run();
+    expect(document.activeElement, "t v did not focus the history").toBe(history);
+    const landed = heading.getBoundingClientRect().top;
+    expect(landed, `t v left the History heading ${BOX_TOP - landed} px above Details' view`).toBe(
+      BOX_TOP
+    );
+
+    page.grow("row-above", 18);
+    page.resized();
+    expect(
+      heading.getBoundingClientRect().top,
+      "the row above grew again and moved the heading from the top of Details' view"
+    ).toBe(BOX_TOP);
+  } finally {
+    frames?.restore();
     page.restore();
   }
 });
@@ -3973,7 +4042,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
         expect(whollyInBox(seen), "the reader's entry is not in the view").toBe(true);
 
         if (above === "arrives") {
-          act(() => prependEventToLog(client, claimMade(log.length + 1, 1)));
+          act(() => arriveInHistoryLog(client, KEY, claimMade(log.length + 1, 1)));
           await page.historyDrawn(PAGE_SIZE + 1);
         } else {
           growEntryAbove(page, entry);

@@ -189,6 +189,11 @@ export interface HistoryInput {
    *  still to be read; undefined once the whole log is in. A thread that began before it is
    *  left out until its page is read: its place among events not read yet is not known. */
   readonly loadedFrom?: string;
+  /** When the first event of the whole log past the read mark was made, where the log holds
+   *  one; undefined where it holds none, or while that is not known. A thread whose first turn's
+   *  event the log read does not hold is new where it began at that time or later, as the
+   *  Conversation tab says a post is new (`conversation-model.ts`). */
+  readonly unreadFrom?: string;
   readonly messages: readonly MessageRead[] | undefined;
   /** Local YYYY-MM-DD. */
   readonly today: string;
@@ -265,17 +270,24 @@ export function historyBlocks(
  *  delete, an answer, and a message taken as an agent's turn. None is a line of the history,
  *  whichever thread it is of: a thread the history holds is drawn from its comments and
  *  messages, each turn whole with its marks, and the outline draws every other thread. */
-const POST_WRITES: Readonly<Record<string, true>> = {
-  "comment.answered": true,
-  "comment.created": true,
-  "comment.deleted": true,
-  "comment.edited": true,
-  "message.accepted": true,
-  "message.answered": true,
-  "message.created": true,
-  "message.deleted": true,
-  "message.edited": true,
-};
+const POST_WRITE_TYPES = [
+  "comment.answered",
+  "comment.created",
+  "comment.deleted",
+  "comment.edited",
+  "message.accepted",
+  "message.answered",
+  "message.created",
+  "message.deleted",
+  "message.edited",
+] as const;
+
+const POST_WRITES: ReadonlySet<string> = new Set(POST_WRITE_TYPES);
+
+/** The event types the history's read of the log leaves out (`exclude_types`): the post writes,
+ *  so a page of the log holds 200 events the history can draw, and a log of thousands of
+ *  comments is read in one request. */
+export const HISTORY_EXCLUDED_TYPES = POST_WRITE_TYPES.join(",");
 
 /** The event types of a row the outline draws, which the history leaves out. Every other event
  *  of a comment or a message - a delivery, a resolution, a reopening, an anchor refresh - is left
@@ -324,14 +336,10 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   // Each upload's event and file, oldest first, gathered into runs once every event is read.
   const uploads: { event: DispatchEvent; file: UploadedFile }[] = [];
   const ordered = [...input.events].sort((left, right) => left.seq - right.seq);
-  const seqOf = new Map<string, number>();
   // The `handoff.recorded` event of each handoff the log holds, by its handoff: no line of its
   // own, it gives the entry that holds the handoff its Pin (`runsOf`).
   const recorded = new Map<string, DispatchEvent>();
   for (const event of ordered) {
-    if (event.type === "comment.created" || event.type === "message.created") {
-      seqOf.set(event.payload.id, event.seq);
-    }
     if (event.type === "handoff.recorded") {
       recorded.set(event.payload.handoff_id, event);
       continue;
@@ -344,7 +352,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         : undefined;
     const upload = uploadOf(event, artifacts);
     if (
-      POST_WRITES[event.type] === true ||
+      POST_WRITES.has(event.type) ||
       ofOutlineRow(event, agentsOnly, approvals) ||
       isDocumentVersion(event, artifacts)
     ) {
@@ -368,20 +376,28 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   }
   entries.push(
     ...uploadRuns(uploads.reverse()),
-    ...threadsOf(input, agentsOnly, seqOf),
+    ...threadsOf(input, agentsOnly),
     ...runsOf(input, recorded)
   );
 
-  // Newest first, by when each happened; one instant by the log's own order.
+  // Newest first, by when each happened; one instant by the log's own order, then by id.
   entries.sort((one, other) => comparePlaces(other, one));
-  const read = entries.some((entry) => entry.seq > 0 && entry.seq <= input.lastReadSeq);
-  const unread = entries.some((entry) => entry.seq > input.lastReadSeq);
-  let marked = !(read && unread);
+  // Whether an entry is new to the reader: by its place in the log where the log read holds it,
+  // past the read mark or not; else - a thread whose first turn's event the log read does not
+  // hold, `seq` 0 - by when it began (`unreadFrom`), and neither while that is not known.
+  const isNew = (entry: Dated): boolean | undefined => {
+    if (entry.seq > 0) return entry.seq > input.lastReadSeq;
+    if (input.unreadFrom === undefined) return undefined;
+    return compareTimestamps(entry.at, input.unreadFrom) >= 0;
+  };
+  const read = entries.some((entry) => isNew(entry) === false);
+  const unread = entries.some((entry) => isNew(entry) === true);
+  let marked = !(read && unread) || entries.some((entry) => isNew(entry) === undefined);
   const days: { date: string; entries: HistoryEntry[] }[] = [];
   for (const entry of entries) {
     // The line that says what is new stands after the oldest unread entry, in that entry's own
     // day, which it closes where the reader last read through an earlier day.
-    if (!marked && entry.seq > 0 && entry.seq <= input.lastReadSeq) {
+    if (!marked && isNew(entry) === false) {
       days.at(-1)?.entries.push({ id: "unread", kind: "unread" });
       marked = true;
     }
@@ -416,19 +432,25 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
  *  says what is new is none (`historyDownTo`). */
 export const HISTORY_PAGE = 20;
 
-/** Where an entry stands in the history, newest first: when it happened, and for one instant its
- *  place in the log (`buildHistory`). The panel draws the history down to the place of the last
- *  entry it draws, so an entry that arrives above that place is drawn and takes none of the
- *  entries drawn out. */
+/** Where an entry stands in the history, newest first: when it happened, for one instant its
+ *  place in the log (`buildHistory`), and for one place its id - two threads whose first turns'
+ *  events the log read does not hold share place 0. The panel draws the history down to the
+ *  place of the last entry it draws, so an entry that arrives above that place is drawn and
+ *  takes none of the entries drawn out. */
 export interface HistoryPlace {
   readonly at: string;
+  readonly id: string;
   readonly seq: number;
 }
 
 /** How `one` stands to `other` in the history: above it (more than 0) where it is newer, at the
  *  same place (0), or under it (less than 0). */
 export function comparePlaces(one: HistoryPlace, other: HistoryPlace): number {
-  return compareTimestamps(one.at, other.at) || one.seq - other.seq;
+  return (
+    compareTimestamps(one.at, other.at) ||
+    one.seq - other.seq ||
+    (one.id < other.id ? -1 : one.id > other.id ? 1 : 0)
+  );
 }
 
 /** The entries of `days` in the order the history draws them, newest first, with no read mark. */
@@ -439,7 +461,7 @@ function datedIn(days: readonly HistoryDay[]): Dated[] {
 }
 
 function placeOf(entry: Dated): HistoryPlace {
-  return { at: entry.at, seq: entry.seq };
+  return { at: entry.at, id: entry.id, seq: entry.seq };
 }
 
 /**
@@ -548,11 +570,7 @@ function uploadRuns(
  *  names the ask (`ask_id`), where the server's climb to a thread's head stops, so the thread of
  *  an approval request is every comment naming it (`agents-only.ts`), whatever its `reply_to`
  *  says: one entry per ask, at its earliest comment, the rest its replies. */
-function threadsOf(
-  input: HistoryInput,
-  ids: ReadonlySet<string>,
-  seqOf: ReadonlyMap<string, number>
-): Dated[] {
+function threadsOf(input: HistoryInput, ids: ReadonlySet<string>): Dated[] {
   const threads: Dated[] = [];
   const comments = (input.comments ?? []).filter((comment) => ids.has(comment.id));
   const byAsk = new Map<string, typeof comments>();
@@ -567,7 +585,7 @@ function threadsOf(
       compareTimestamps(one.created_at, other.created_at)
     );
     if (root === undefined) continue;
-    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn), seqOf));
+    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn)));
   }
   const unasked = comments.filter((comment) => comment.ask_id === null);
   const repliesTo = new Map<string, typeof comments>();
@@ -582,13 +600,11 @@ function threadsOf(
     const replies = (repliesTo.get(root.id) ?? []).sort((one, other) =>
       compareTimestamps(one.created_at, other.created_at)
     );
-    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn), seqOf));
+    threads.push(threadEntry(commentTurn(root), replies.map(commentTurn)));
   }
   for (const thread of input.messages ?? []) {
     if (!ids.has(thread.message.id)) continue;
-    threads.push(
-      threadEntry(messageTurn(thread.message), (thread.replies ?? []).map(messageTurn), seqOf)
-    );
+    threads.push(threadEntry(messageTurn(thread.message), (thread.replies ?? []).map(messageTurn)));
   }
   // A thread stands at its first turn's time (`threadEntry`), so one whose first turn is older
   // than every event read so far is left out whole, its replies too however recent, until the
@@ -603,8 +619,7 @@ function threadsOf(
 
 function threadEntry(
   root: HistoryTurn,
-  replies: readonly HistoryTurn[],
-  seqOf: ReadonlyMap<string, number>
+  replies: readonly HistoryTurn[]
 ): Extract<Dated, { kind: "thread" }> {
   return {
     at: root.at,
@@ -613,7 +628,7 @@ function threadEntry(
     kind: "thread",
     replies,
     root,
-    seq: seqOf.get(root.id) ?? 0,
+    seq: 0,
   };
 }
 
@@ -623,13 +638,13 @@ const BEFORE_ALL = new Date(0).toISOString();
 
 /**
  * The runs and the handoffs of the timeline (the plan's D9): each run of `input.runs` one entry,
- * in the server's order, so runs at one instant keep that order; and each handoff of
- * `input.handoffs` that no run holds one entry at its own time. A run stands at its start; where
- * its record holds none, at its end; then at the time of the handoff it reports, where the list
- * holds it; then at the place of the next run of its task; then at the issue's own start. It
- * holds the handoff its `report` names where the list holds it, and where two runs report one,
- * the newer holds it: the one that stands higher, and of two at one place the later in the
- * server's order. The handoff's own event (`recorded`) gives the entry that holds the handoff its
+ * whose place is its time with sequence 0, so runs at one instant stand in the order of their ids
+ * (`comparePlaces`); and each handoff of `input.handoffs` that no run holds one entry at its own
+ * time. A run stands at its start; where its record holds none, at its end; then at the time of
+ * the handoff it reports, where the list holds it; then at the place of the next run of its task
+ * in the server's order; then at the issue's own start. It holds the handoff its `report` names
+ * where the list holds it, and where two runs report one, the newer holds it: the one that stands
+ * higher. The handoff's own event (`recorded`) gives the entry that holds the handoff its
  * Pin, and an entry of the handoff alone its place in the log. A run or a handoff older than what
  * the log has read waits for its page, as a thread does (`threadsOf`), all but the entry an
  * address names (`HistoryInput.addressed`).
@@ -667,12 +682,17 @@ function runsOf(input: HistoryInput, recorded: ReadonlyMap<string, DispatchEvent
       }
     }
   }
-  // The run that holds each handoff the list holds and a run reports.
+  // The run that holds each handoff the list holds and a run reports: the one that stands higher.
+  const placeOfRun = (run: (typeof runs)[number]): HistoryPlace => ({
+    at: run.at,
+    id: `run:${run.row.id}`,
+    seq: 0,
+  });
   const holders = new Map<string, number>();
   for (const [index, run] of runs.entries()) {
     if (run.report === null || !handoffs.has(run.report)) continue;
     const holder = runs[holders.get(run.report) ?? -1];
-    if (holder === undefined || compareTimestamps(run.at, holder.at) >= 0) {
+    if (holder === undefined || comparePlaces(placeOfRun(run), placeOfRun(holder)) > 0) {
       holders.set(run.report, index);
     }
   }

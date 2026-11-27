@@ -719,7 +719,17 @@ test("the history is drawn 20 entries at a time, a thread and a run of uploads o
     ...["09:00:10", "09:00:20", "09:00:30"].map((time, index) => shot(time, `run-${index}`)),
   ];
   // Read through the claim of 11:50, so the line that says what is new stands among the first 20.
-  const days = daysOf(events, 32, [thread, ...replies]);
+  const days = buildHistory({
+    artifacts: [],
+    asks: [],
+    blocks: new Map(),
+    comments: [thread, ...replies],
+    events,
+    lastReadSeq: 32,
+    messages: [],
+    today: "2026-11-15",
+    unreadFrom: "2026-11-15T11:50:00Z",
+  });
   expect(entriesIn(days), "the history holds 41 claims, a thread and a run").toBe(43);
 
   const first = historyDownTo(days, placeUnder(days, undefined, PAGE_SIZE));
@@ -1127,6 +1137,74 @@ test("while the blocks are not known, a repaired block's line names a block, nev
   );
 });
 
+// When post-write events are left out of the log, every thread carries sequence 0; entries of one
+// instant are ordered by id, so two threads at that instant are two places, and `placeUnder` and
+// `historyDownTo` count them separately.
+test("two threads at one instant are two places when created events are left out of the log", () => {
+  seq = 0;
+  const instant = "2026-11-15T10:00:00Z";
+  const first = comment("c-1", instant, AGENT);
+  const second = comment("c-2", instant, AGENT);
+  const days = daysOf([], 0, [first, second]);
+  const places = days.flatMap((day) => day.entries).map((entry) => entry.id);
+  expect(places, "two threads at one instant are not ordered by id").toEqual([
+    "thread:c-2",
+    "thread:c-1",
+  ]);
+
+  const firstPlace = placeUnder(days, undefined, 1);
+  const drawn = historyDownTo(days, firstPlace);
+  expect(
+    drawn.days.flatMap((day) => day.entries).map((entry) => entry.id),
+    "the first thread drawn is not the first by id"
+  ).toEqual(["thread:c-2"]);
+  expect(drawn.left, "one thread is left under the first").toBe(1);
+
+  const secondPlace = placeUnder(days, firstPlace, 1);
+  const both = historyDownTo(days, secondPlace);
+  expect(
+    both.days.flatMap((day) => day.entries).map((entry) => entry.id),
+    "the second thread drawn is not the second by id"
+  ).toEqual(["thread:c-2", "thread:c-1"]);
+  expect(both.left, "no thread is left under both").toBe(0);
+});
+
+// A thread whose created event the log read does not hold carries sequence 0, and is new where
+// it began at or after the first event past the read mark, as the Conversation tab says a post is
+// new; threads whose created event is held keep the sequence rule.
+test("a thread whose created event is left out of the log is new where it began at or after the first unread event", () => {
+  seq = 0;
+  const before = comment("before", "2026-11-15T09:00:00Z", AGENT);
+  const after = comment("after", "2026-11-15T11:00:00Z", REVIEWER);
+  const events = [
+    event("issue.claimed", "2026-11-15T08:00:00Z", {}),
+    event("issue.claimed", "2026-11-15T12:00:00Z", {}),
+  ];
+  const draw = (unreadFrom: string | undefined) =>
+    flat(
+      buildHistory({
+        artifacts: [],
+        asks: [],
+        blocks: new Map(),
+        comments: [before, after],
+        events,
+        lastReadSeq: 1,
+        messages: [],
+        today: "2026-11-15",
+        ...(unreadFrom === undefined ? {} : { unreadFrom }),
+      })
+    ).map((entry) => entry.id);
+
+  expect(
+    draw("2026-11-15T10:30:00Z"),
+    "the thread after the read mark is not new, or the line that says what is new is not between the threads"
+  ).toEqual(["event:2", "thread:after", "unread", "thread:before", "event:1"]);
+  expect(
+    draw(undefined),
+    "threads were told apart as read and unread while the first unread event is not known"
+  ).toEqual(["event:2", "thread:after", "thread:before", "event:1"]);
+});
+
 // ---------------------------------------------------------------------------------------------
 // The one timeline (the plan's D9, rows M1 to M12): each run of the issue's steps is one entry,
 // placed by its start, and holds the handoff it reports; every other handoff of the list is an
@@ -1427,15 +1505,25 @@ describe("the timeline holds each run and the handoff it reports", () => {
     ]);
   });
 
-  // Runs go in in the server's order, so runs that stand at one instant keep that order.
-  test("M9: runs at one instant keep the server's order", () => {
+  // A run's place is its time with sequence 0, so runs at one instant are ordered by their ids,
+  // as threads at one instant are (`comparePlaces`): one order on every draw, whatever order the
+  // server lists them in.
+  test("M9: runs at one instant stand in one order, by their ids, in whatever order the server lists them", () => {
     seq = 0;
     const at = "2026-11-15T09:00:00Z";
-    const runs = stepsOf(
-      [runOf("first", at), runOf("second", at)],
-      [runOf("third", at, {}, "docs")]
-    );
-    expect(timeline({ handoffs: [], runs })).toEqual(["run:first", "run:second", "run:third"]);
+    const drawn = ["run:third", "run:second", "run:first"];
+    expect(
+      timeline({
+        handoffs: [],
+        runs: stepsOf([runOf("first", at), runOf("second", at)], [runOf("third", at, {}, "docs")]),
+      })
+    ).toEqual(drawn);
+    expect(
+      timeline({
+        handoffs: [],
+        runs: stepsOf([runOf("third", at, {}, "docs")], [runOf("second", at), runOf("first", at)]),
+      })
+    ).toEqual(drawn);
   });
 
   // Until the runs have answered, every handoff of the list is an entry of its own; once they
