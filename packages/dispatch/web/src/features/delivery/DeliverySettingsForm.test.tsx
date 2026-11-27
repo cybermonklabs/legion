@@ -1,8 +1,9 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
+import { type HeldNotifications, holdNotifications, recordCommits } from "../../__tests__/commits";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
@@ -416,36 +417,220 @@ test("another writer's save keeps the line break a reader typed after a list's l
   }
 });
 
-// The field this tab's save sent follows the record only as Save sent it: text the reader types
-// after the save went - here a name typed and taken back, which leaves the very text the save
-// sent - stays as typed when that save's record arrives, with the caret where the reader left it.
+// The fields this tab's save sent follow the record from its landing on, unless the reader types
+// in one after the save went. A save Dispatch took with no answer to give (`409 KEY_COMMITTED`)
+// keeps its fields as typed until the read its landing started answers, and the reader can type
+// meanwhile: text typed then - here a name typed and taken back, which leaves the very text the
+// save sent - stays as typed when that read's record arrives, with the caret where the reader
+// left it.
 test("text a reader types after their save went stays as typed when that save's record arrives", async () => {
   const user = userEvent.setup();
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const form = (initial: DeliverySettings) => (
-    <QueryClientProvider client={queryClient}>
-      <DeliverySettingsForm initial={initial} />
-    </QueryClientProvider>
+  const saved = {
+    ...record,
+    population_authors: ["alice", "bob"],
+    updated_at: "2026-10-08T12:00:00Z",
+  };
+  const reread = Promise.withResolvers<DeliverySettings>();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockReturnValue(reread.promise);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
+  );
+  try {
+    const queryClient = renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Population authors", "alice\nbob\n");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await user.type(field("Population authors"), "c{Backspace}");
+    reread.resolve(saved);
+    await waitFor(() =>
+      expect(queryClient.getQueryData<DeliverySettings | null>(["delivery-settings"])).toEqual(
+        saved
+      )
+    );
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    await user.keyboard("carol");
+    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+  } finally {
+    reread.resolve(saved);
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// This tab's save lands, and the read its landing starts answers another writer's newer record,
+// which holds a deploy workflow of their own and never the one this tab sent. Dispatch's answer to
+// the save is the record the form follows from the landing on, so the field shows the other
+// writer's value once their record arrives, and the next Save sends it, rather than this tab's old
+// text, which would undo their save.
+test("a landed save whose own record never arrives follows another writer's newer record, and the next Save sends it", async () => {
+  const user = userEvent.setup();
+  const saved = {
+    ...record,
+    deploy_workflow_path: ".github/workflows/ship.yml",
+    updated_at: "2026-10-08T12:00:00Z",
+  };
+  const theirs = {
+    ...record,
+    deploy_workflow_path: ".github/workflows/theirs.yml",
+    updated_at: "2026-10-08T12:00:05Z",
+  };
+  const getDeliverySettings = spyOn(api, "getDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockResolvedValue(theirs);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy workflow", ".github/workflows/ship.yml");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() =>
+      expect(field("Deploy workflow").value).toBe(".github/workflows/theirs.yml")
+    );
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(2));
+    expect(putDeliverySettings.mock.calls[1]?.[0]).toMatchObject({
+      deploy_workflow_path: ".github/workflows/theirs.yml",
+    });
+  } finally {
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// This tab's save lands, and the read its landing starts has not answered: the record read before
+// the save still stands in the cache. Dispatch's answer is the record from the landing on, so the
+// list shows as the save stored it, one entry per line, and a second Save sends it, rather than
+// the record from before the save, which would undo the reader's own save.
+test("a second Save before the read a landed save started answers sends the first save's value", async () => {
+  const user = userEvent.setup();
+  const saved = {
+    ...record,
+    population_authors: ["alice", "bob"],
+    updated_at: "2026-10-08T12:00:00Z",
+  };
+  const reread = Promise.withResolvers<DeliverySettings>();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockReturnValue(reread.promise);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
+
+  try {
+    const queryClient = renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Population authors", "alice, bob\n");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(2));
+    expect(putDeliverySettings.mock.calls[1]?.[0]).toMatchObject({
+      population_authors: ["alice", "bob"],
+    });
+    expect(field("Population authors").value).toBe("alice\nbob");
+  } finally {
+    reread.resolve(saved);
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// The save's answer reaches the cache in its own callback, and the form's host only when TanStack
+// Query tells the cache's observers, in a browser a timer later, which the row holds back. The
+// fields the save sent are retired in that callback and follow the answer in the very commit that
+// retires them, so no commit draws the record from before the save in their place (INFRA-3904).
+test("every commit from a save's landing draws the saved value, while the form's host still passes the record before it", async () => {
+  const user = userEvent.setup();
+  // The list as each commit drew it; none while the form still reads the record.
+  const commits = recordCommits<null>(
+    () => (screen.queryByLabelText("Population authors") as HTMLTextAreaElement | null)?.value ?? ""
   );
   const saved = {
     ...record,
     population_authors: ["alice", "bob"],
     updated_at: "2026-10-08T12:00:00Z",
   };
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
-  const view = render(form(record));
+  const answer = Promise.withResolvers<DeliverySettings>();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockReturnValue(new Promise<DeliverySettings>(() => {}));
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockReturnValue(answer.promise);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <commits.Recorded host={null}>
+        <DeliverySettingsForm />
+      </commits.Recorded>
+    </QueryClientProvider>
+  );
+  let notifications: HeldNotifications | undefined;
   try {
-    await replace(user, "Population authors", "alice\nbob\n");
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Population authors", "alice, bob\n");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    const fromLanding = commits.markAt(document, "landing");
+    notifications = holdNotifications();
+    document.dispatchEvent(new Event("landing"));
+    await act(async () => {
+      answer.resolve(saved);
+      await answer.promise;
+    });
+    await waitFor(() => expect(field("Population authors").value).toBe("alice\nbob"));
+    // The cache holds the answer, and its host has not been told.
+    expect(notifications.held()).toBeGreaterThan(0);
+    const drawn = fromLanding()
+      .map((commit) => commit.drawn)
+      .filter((value) => value !== "alice, bob\n");
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn).toEqual(drawn.map(() => "alice\nbob"));
+  } finally {
+    notifications?.tell();
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Dispatch took the save and had no answer to give for it (`409 KEY_COMMITTED`): the record it
+// now holds is the read its landing started, so the fields the save sent stay as typed until that
+// read answers - not the record from before the save - and then follow it.
+test("a save landed with no answer keeps its fields as typed until the read its landing started answers", async () => {
+  const user = userEvent.setup();
+  const saved = {
+    ...record,
+    population_authors: ["alice", "bob"],
+    updated_at: "2026-10-08T12:00:00Z",
+  };
+  const reread = Promise.withResolvers<DeliverySettings>();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings")
+    .mockResolvedValueOnce(record)
+    .mockReturnValue(reread.promise);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
+  );
+
+  try {
+    const queryClient = renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Population authors", "alice, bob\n");
     await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
     await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
-    await user.type(field("Population authors"), "c{Backspace}");
-    view.rerender(form(saved));
-    expect(field("Population authors").value).toBe("alice\nbob\n");
-    await user.keyboard("carol");
-    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(field("Population authors").value).toBe("alice, bob\n");
+    reread.resolve(saved);
+    await waitFor(() => expect(field("Population authors").value).toBe("alice\nbob"));
   } finally {
+    reread.resolve(saved);
     cleanup();
+    getDeliverySettings.mockRestore();
     putDeliverySettings.mockRestore();
   }
 });

@@ -10,7 +10,8 @@ import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { Agent, DeliverySessionGroup } from "../../api/types";
+import { deliveryTimelineQuery } from "../../api/queries";
+import type { Agent, DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -67,6 +68,21 @@ function renderEditor(
     queryClient,
     regroup: (shown: readonly DeliverySessionGroup[]) => view.rerender(tree(shown)),
   };
+}
+
+/** A Delivery page's timeline read in `queryClient`'s cache, holding `groups` as the live socket
+ *  wrote its snapshot, with no observer. */
+function seedTimeline(queryClient: QueryClient, groups: readonly DeliverySessionGroup[]) {
+  const timeline = deliveryTimelineQuery({ kind: "timeline", window: { preset: 28 }, query: "" });
+  queryClient.getQueryCache().build(queryClient, {
+    gcTime: Number.POSITIVE_INFINITY,
+    meta: timeline.meta,
+    queryKey: timeline.queryKey,
+  });
+  queryClient.setQueryData(timeline.queryKey, {
+    session_groups: [...groups],
+  } as unknown as DeliveryTimelineWithMeasures);
+  return timeline.queryKey;
 }
 
 test("it lists the window's sessions busiest first, each with its title, count and group", () => {
@@ -459,6 +475,80 @@ test("a rename still out keeps its trailing space under another tab's rename to 
     expect(nameOf("Ship crew").value).toBe("Ship crew ");
     answer.resolve({ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:01Z" });
     await waitFor(() => expect(nameOf("Ship crew").value).toBe("Ship crew"));
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// This card's Rename lands, and Dispatch's delta for it has not reached the editor; another tab
+// then renames the same group. The Rename's answer is the group from its landing on, written into
+// the page's groups read as well, so the field follows the newer name, rather than keep this
+// card's old draft over it with Rename live.
+test("a landed rename whose delta never arrives follows another tab's later rename of the group", async () => {
+  const user = userEvent.setup();
+  const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" };
+  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(renamed);
+  const editor = renderEditor([crew]);
+  const timeline = seedTimeline(editor.queryClient, [crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    expect(nameOf("Release crew").value).toBe("Ship crew");
+    editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-12T00:00:05Z" }]);
+    expect(nameOf("Day crew").value).toBe("Day crew");
+    expect(editor.queryClient.getQueryData(timeline)?.session_groups).toEqual([renamed]);
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// Dispatch took this card's Rename and had no answer to give for it (`409 KEY_COMMITTED`): the
+// group stands as the reads that landing starts answer it, so the draft stays as typed until a
+// version of the group other than the one the Rename was made over arrives - the group as it
+// was, redrawn, is no answer - and then follows the group's name.
+test("a rename landed with no answer keeps its draft until a version of the group other than the one it was sent over arrives", async () => {
+  const user = userEvent.setup();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockRejectedValue(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
+  );
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(nameOf("Release crew").value).toBe("Ship crew ");
+    editor.regroup([crew]);
+    expect(nameOf("Release crew").value).toBe("Ship crew ");
+    editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-12T00:00:05Z" }]);
+    expect(nameOf("Day crew").value).toBe("Day crew");
   } finally {
     cleanup();
     update.mockRestore();

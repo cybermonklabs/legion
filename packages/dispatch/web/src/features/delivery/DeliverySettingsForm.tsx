@@ -7,6 +7,7 @@ import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { compareTimestamps } from "../../lib/timestamps";
 import { borderDefault, textMutedOnCanvas } from "../../theme/classes";
 import {
   ownerRepoPattern,
@@ -90,33 +91,24 @@ function recordDraft(record: DeliverySettings | null): Draft {
   };
 }
 
-/** A field's text as Save sends it and the record then holds it: lists split and joined one entry
- *  per line, paths and optional names trimmed, and an empty optional name as no text. */
-function savedForm(field: keyof Draft, text: string): string {
-  switch (field) {
-    case "excluded_repos":
-    case "population_authors":
-      return listEntries(text).join("\n");
-    case "production_job_names":
-      return lineEntries(text).join("\n");
-    case "deploy_repo":
-      return text;
-    default:
-      return text.trim();
-  }
+/** The later of two versions of the record, by when Dispatch wrote each (`updated_at`): `held`,
+ *  as a reader of it has it, and `other`, which may be newer - a save's own answer, or the
+ *  cache's record beside the one the form was handed - and wins a tie. No record, or none read
+ *  yet, gives way to any record. */
+function laterRecord(
+  held: DeliverySettings | null | undefined,
+  other: DeliverySettings | null | undefined
+): DeliverySettings | null {
+  if (other == null) return held ?? null;
+  if (held == null) return other;
+  return compareTimestamps(other.updated_at, held.updated_at) >= 0 ? other : held;
 }
 
-/** The fields of `next` that differ from `stored`: what the reader has changed. `form` reads each
- *  side before they are compared: as typed, or in its saved form for a field of this tab's Save
- *  once Dispatch has taken it (`DeliverySettingsFields`). */
-function changedFields(
-  next: Draft,
-  stored: Draft,
-  form: (field: keyof Draft, text: string) => string = (_field, text) => text
-): Partial<Draft> {
+/** The fields of `next` that differ from `stored`, as typed: what the reader has changed. */
+function changedFields(next: Draft, stored: Draft): Partial<Draft> {
   const changed: Partial<Draft> = {};
   for (const field of Object.keys(next) as (keyof Draft)[]) {
-    if (form(field, next[field]) !== form(field, stored[field])) changed[field] = next[field];
+    if (next[field] !== stored[field]) changed[field] = next[field];
   }
   return changed;
 }
@@ -131,14 +123,33 @@ function stillSent(sent: Partial<Draft>, edited: Partial<Draft>): Partial<Draft>
   return kept;
 }
 
-/** What this tab's newest Save sent: the fields it changed, as the reader typed them and has not
- *  typed in since (`stillSent`), and whether Dispatch has taken that Save. */
-interface Sent {
-  readonly fields: Partial<Draft>;
-  readonly landed: boolean;
+/** What the reader has changed over the record, and what this tab's newest Save sent of it. */
+interface Changes {
+  /** The fields the reader has changed, as typed. */
+  readonly edited: Partial<Draft>;
+  /** The newest Save's: the fields it sent that the reader has not typed in since (`stillSent`),
+   *  the Save itself, so only its own landing retires them, the record it was made over, and
+   *  whether it landed with no record of its own to retire them by (`awaiting`). `null` before any
+   *  Save, and once Dispatch has refused it or its landing has retired them. */
+  readonly sent: {
+    readonly awaiting: boolean;
+    readonly fields: Partial<Draft>;
+    readonly over: string | undefined;
+    readonly save: object;
+  } | null;
 }
 
-const NOTHING_SENT: Sent = { fields: {}, landed: false };
+const NO_CHANGES: Changes = { edited: {}, sent: null };
+
+/** `changes` once the Save `save` has landed and the record holds what it sent: the fields it
+ *  sent that the reader has not typed in since follow the record again. Where a newer Save is out
+ *  or this one was refused, nothing changes. */
+function retired(changes: Changes, save: object): Changes {
+  if (changes.sent?.save !== save) return changes;
+  const edited = { ...changes.edited };
+  for (const field of Object.keys(changes.sent.fields) as (keyof Draft)[]) delete edited[field];
+  return { edited, sent: null };
+}
 
 /** The three optional job names the Pipeline page follows, in the order the form lists them. */
 const PIPELINE_JOB_FIELDS = [
@@ -178,15 +189,17 @@ interface DeliverySettingsFormProps {
  * (a list, only separators) is empty, so the browser refuses it before any request; an optional job
  * name left empty saves `null`. Save replaces the whole record; the server first checks that the
  * GitHub App can read the deploy repository, and a refusal shows under the form as the server wrote
- * it. A save refreshes the record and every delivery read, so the Delivery page, which renders this
- * form in place of a timeline it cannot read yet, shows the timeline once the save succeeds.
+ * it. A save writes Dispatch's answer as the record and refreshes the record and every delivery
+ * read, so the Delivery page, which renders this form in place of a timeline it cannot read yet,
+ * shows the timeline once the save succeeds.
  *
  * Its groups, in this order: Fields (each field one item, two columns from `sm` and one below it)
  * and Save; a refusal shows under them. A one-line value longer than its field ends in an ellipsis
  * with the whole value as its title; a list wraps inside its own box. The fields the reader has
  * changed stay as they typed them when the record changes under them - anyone's save - and the
- * rest follow the record, as does a changed field once this tab's Save of it has landed and the
- * record holds it as that Save sent it.
+ * rest follow the record, as does a changed field once this tab's Save of it has landed: that
+ * Save's answer is the record from then on, or, where Dispatch had none to give, the read its
+ * landing started.
  */
 export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): ReactNode {
   const settings = useQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
@@ -223,31 +236,47 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
   const queryClient = useQueryClient();
   const id = useId();
   const submitGuard = useSubmitGuard();
+  // The record the fields start from: the one the form was handed, or the cache's where that is
+  // newer. A save writes its own answer there in the callback that retires the fields it sent,
+  // and this read of the cache takes it in that same render, while TanStack Query has not yet
+  // told the form's host of it - in a browser, a timer later.
+  const cached = useQuery({ ...deliverySettingsQuery(), enabled: false }).data;
+  const written = laterRecord(record, cached);
+  const stored = recordDraft(written);
   // What the reader has changed, over the record as the server now holds it: a save from anywhere
   // refreshes the fields the reader has not touched and keeps the ones they have as they typed
   // them, so a line break typed to start the next entry stays, and the caret after it. `sent`
   // holds the changed fields this tab's newest Save sent, as typed, until the reader types in one
-  // again; a refusal of that Save drops them all. Once Dispatch has taken the Save, such a field
-  // whose saved form the record holds follows the record again, so a list typed with a trailing
-  // line break or with commas, which Save rewrites, is not kept over the next writer's change.
-  // While the Save is out, a record - another writer's - is no answer to it and keeps every field
-  // as typed.
-  const stored = recordDraft(record);
-  const [edited, setEdited] = useState<Partial<Draft>>({});
-  const [sent, setSent] = useState<Sent>(NOTHING_SENT);
-  const ownSave = sent.landed ? stillSent(sent.fields, edited) : {};
-  const kept = changedFields({ ...stored, ...edited }, stored, (field, text) =>
-    ownSave[field] === undefined ? text : savedForm(field, text)
-  );
-  if (Object.keys(kept).length !== Object.keys(edited).length) {
-    setEdited(kept);
-    setSent({ ...sent, fields: stillSent(sent.fields, kept) });
+  // again; a refusal of that Save drops them all. That Save's own landing retires them: they
+  // follow the record its answer is, so a list typed with a trailing line break or with commas,
+  // which Save rewrites, shows as saved, and a later writer's record after it shows too. While the
+  // Save is out, a record - another writer's - is no answer to it and keeps every field as typed.
+  const [changes, setChanges] = useState<Changes>(NO_CHANGES);
+  const { edited, sent } = changes;
+  const retiredByRecord =
+    sent?.awaiting === true && written?.updated_at !== sent.over
+      ? retired(changes, sent.save)
+      : changes;
+  const kept = changedFields({ ...stored, ...retiredByRecord.edited }, stored);
+  if (
+    retiredByRecord !== changes ||
+    Object.keys(kept).length !== Object.keys(retiredByRecord.edited).length
+  ) {
+    setChanges({
+      edited: kept,
+      sent: retiredByRecord.sent && {
+        ...retiredByRecord.sent,
+        fields: stillSent(retiredByRecord.sent.fields, kept),
+      },
+    });
   }
   const draft: Draft = { ...stored, ...edited };
   const setDraft = (next: Draft) => {
     const changed = changedFields(next, stored);
-    setEdited(changed);
-    setSent({ ...sent, fields: stillSent(sent.fields, changed) });
+    setChanges({
+      edited: changed,
+      sent: sent && { ...sent, fields: stillSent(sent.fields, changed) },
+    });
   };
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
@@ -269,7 +298,14 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     submitGuard.guard(() => {
-      setSent({ fields: edited, landed: false });
+      // This Save, by identity: its own landing, and no record that arrives meanwhile, retires
+      // what it sent, and the landing of an earlier Save leaves a newer one's fields as typed.
+      // The record it is made over tells a later one apart where Dispatch answers it none.
+      const press = {};
+      setChanges({
+        edited,
+        sent: { awaiting: false, fields: edited, over: written?.updated_at, save: press },
+      });
       save.mutate(
         {
           deploy_repo: draft.deploy_repo,
@@ -283,10 +319,33 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
           staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
           staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
         },
-        // This press's own answer, and no record that arrives meanwhile, decides `sent`.
         {
-          onError: () => setSent(NOTHING_SENT),
-          onSuccess: () => setSent((current) => ({ ...current, landed: true })),
+          onError: () =>
+            setChanges((current) =>
+              current.sent?.save === press ? { ...current, sent: null } : current
+            ),
+          onSuccess: (answer) => {
+            if (answer === null) {
+              // Dispatch took the save and had no answer to give for it. The record it holds now
+              // is whatever the reads this landing starts answer - the save's own `onSuccess`
+              // asks the record again, and the write store reads every query again for a landing
+              // with no answer - so the fields it sent stay as typed until a record other than
+              // the one it was made over arrives, and never take that one back.
+              setChanges((current) =>
+                current.sent?.save === press
+                  ? { ...current, sent: { ...current.sent, awaiting: true } }
+                  : current
+              );
+              return;
+            }
+            // The answer is the record from now on, written where the form and every other
+            // reader of it read it, unless a newer one is there already: another writer's, read
+            // meanwhile. The fields it sent follow it in the render that takes it in.
+            queryClient.setQueryData(deliverySettingsQuery().queryKey, (current) =>
+              laterRecord(current, answer)
+            );
+            setChanges((current) => retired(current, press));
+          },
         }
       );
     });

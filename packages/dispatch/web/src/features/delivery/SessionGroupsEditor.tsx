@@ -1,11 +1,12 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
-import type { DeliverySessionGroup } from "../../api/types";
+import type { DeliverySessionGroup, DeliveryTimelineWithMeasures } from "../../api/types";
 import { CappedGroup } from "../../components/CappedGroup";
 import { QueryError } from "../../components/QueryError";
+import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
   borderStrong,
@@ -22,6 +23,7 @@ import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { applyDelta } from "./lib/applyDelta";
 import { storedSessionTitle } from "./lib/sessionTitles";
 
 /** One change to the groups: what it is, as the editor's sentences name it (`the rename of the
@@ -34,6 +36,62 @@ interface GroupChange {
   readonly method: WriteMethod;
   readonly run: (bounds: WriteBounds) => Promise<unknown>;
   readonly what: string;
+}
+
+/** A card's rename draft, as the reader typed it, and its newest Rename while the draft is still
+ *  as that Rename sent it: the press, so only that Rename's own landing clears the draft, and the
+ *  group it was made over, to tell a later version apart where Dispatch answers it none. */
+interface RenameDraft {
+  /** Whether that Rename landed with no group of its own to clear the draft by. */
+  readonly awaiting: boolean;
+  readonly draft: string | null;
+  readonly sent: { readonly over: DeliverySessionGroup; readonly press: object } | null;
+}
+
+const NO_RENAME: RenameDraft = { awaiting: false, draft: null, sent: null };
+
+/** The Delivery page's reads that hold the groups: its timeline, an entry per view
+ *  (`deliveryTimelineQuery`). */
+const GROUP_READS = { queryKey: ["delivery", "timeline"] };
+
+/** The later of two versions of a group, by when Dispatch wrote each (`updated_at`): `held`, as
+ *  the editor was handed it or a read holds it, and `other`, which may be newer - a Rename's
+ *  answer, or the group as another read holds it - and wins a tie. */
+function laterGroup(
+  held: DeliverySessionGroup,
+  other: DeliverySessionGroup | undefined
+): DeliverySessionGroup {
+  return other !== undefined && compareTimestamps(other.updated_at, held.updated_at) >= 0
+    ? other
+    : held;
+}
+
+/** Writes `group`, a Rename's answer, into each groups read that holds an older version of it, as
+ *  Dispatch's delta for the rename will (`applyDelta`): in that one's place, in Dispatch's order. */
+function writeGroup(queryClient: QueryClient, group: DeliverySessionGroup): void {
+  queryClient.setQueriesData<DeliveryTimelineWithMeasures>(GROUP_READS, (body) => {
+    const held = body?.session_groups?.find((each) => each.id === group.id);
+    if (body === undefined || held === undefined || laterGroup(held, group) === held) return body;
+    // The delta as `applyDelta` reads it: the list's change alone. Its place in the change log
+    // (`sub`, `seq`, `revs`) is the socket's own, and Dispatch's delta for the rename brings it.
+    return applyDelta(body, {
+      changed_at: null,
+      counts: {},
+      items: { session_groups: { remove: [], upsert: [group] } },
+      maps: {},
+      revs: {},
+      seq: "",
+      set: {},
+      sub: "",
+      type: "delta",
+    });
+  });
+}
+
+/** Whether `group` is a version other than `over`, the one a card's Rename was made over: a card
+ *  whose Rename landed with no answer holds its draft until such a version arrives. */
+function arrivedSince(over: DeliverySessionGroup, group: DeliverySessionGroup): boolean {
+  return group.updated_at !== over.updated_at || group.name !== over.name;
 }
 
 const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
@@ -60,29 +118,42 @@ function GroupCard({
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
   pending: boolean;
-  write: (change: GroupChange, press?: { onError?: () => void; onSuccess?: () => void }) => void;
+  write: (
+    change: GroupChange,
+    press?: { onError?: () => void; onSuccess?: (answer: unknown) => void }
+  ) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
+  const queryClient = useQueryClient();
   // The reader's rename draft, kept as they typed it while the group changes under it (a member
   // added, a rename from another tab): null while the reader has typed nothing, so the field
   // shows the group's name as it now stands, and back to null once the group's name is the draft.
-  // `sent` is the draft this card's Rename sent, until the reader types again or Dispatch refuses
-  // that Rename: once Dispatch has taken it (`landed`) and the group's name is that draft as Rename
-  // sends it, trimmed, the draft goes too. A draft that is the name only once trimmed - a space
-  // typed before the next word, or a Rename still out - otherwise stays as typed.
-  const [draft, setDraft] = useState<string | null>(null);
-  const [sent, setSent] = useState<{ readonly draft: string; readonly landed: boolean } | null>(
-    null
-  );
+  // `sent` is this card's newest Rename while the draft is still as that Rename sent it: typing
+  // drops it, and so does Dispatch refusing that Rename. That Rename's own landing clears the
+  // draft, and its answer (`landed`) is the group from then on, until the editor is handed a newer
+  // one. Taken in the render the draft clears in, it shows while TanStack Query has not yet told
+  // the editor's host of the write - in a browser, a timer later. Where Dispatch had no answer to
+  // give, the draft stays until a version of the group other than the one the Rename was made
+  // over arrives. A rename that arrives while the Rename is out is no answer to it, and keeps the
+  // draft as typed.
+  const [rename, setRename] = useState<RenameDraft>(NO_RENAME);
+  const [landed, setLanded] = useState<DeliverySessionGroup | undefined>(undefined);
+  const current = laterGroup(group, landed);
   if (
-    draft !== null &&
-    (draft === group.name || (sent?.landed && draft === sent.draft && draft.trim() === group.name))
+    rename.draft !== null &&
+    (rename.draft === current.name ||
+      (rename.awaiting && rename.sent !== null && arrivedSince(rename.sent.over, current)))
   ) {
-    setDraft(null);
-    setSent(null);
+    setRename(NO_RENAME);
   }
-  const name = draft ?? group.name;
+  const name = rename.draft ?? current.name;
+  /** Rename `press` landed with `renamed` as its answer: that group stands until the editor is
+   *  handed a newer one, and the draft goes where it is still as that Rename sent it. */
+  const land = (press: object, renamed: DeliverySessionGroup) => {
+    setLanded((before) => (before === undefined ? renamed : laterGroup(before, renamed)));
+    setRename((now) => (now.sent?.press === press ? NO_RENAME : now));
+  };
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   return (
     <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
@@ -93,17 +164,20 @@ function GroupCard({
         <input
           className={fieldClass}
           id={`${id}-name`}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            setSent(null);
-          }}
+          onChange={(event) =>
+            setRename({ awaiting: false, draft: event.target.value, sent: null })
+          }
           value={name}
         />
         <button
           className={secondaryButtonCompact}
-          disabled={pending || name.trim() === "" || name.trim() === group.name}
+          disabled={pending || name.trim() === "" || name.trim() === current.name}
           onClick={() => {
-            setSent({ draft: name, landed: false });
+            // This Rename, by identity: its own landing, and no rename that arrives meanwhile,
+            // clears the draft, and only while the draft is still as this Rename sent it. The
+            // group it is made over tells a later version apart where Dispatch answers it none.
+            const press = {};
+            setRename({ awaiting: false, draft: name, sent: { over: current, press } });
             write(
               {
                 group,
@@ -112,11 +186,28 @@ function GroupCard({
                   api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
                 what: `the rename of the group ${group.name}`,
               },
-              // This press's own answer, and no rename that arrives meanwhile, decides `sent`.
               {
-                onError: () => setSent(null),
-                onSuccess: () =>
-                  setSent((current) => (current === null ? null : { ...current, landed: true })),
+                onError: () =>
+                  setRename((now) => (now.sent?.press === press ? { ...now, sent: null } : now)),
+                onSuccess: (answer) => {
+                  if (answer === null) {
+                    // Dispatch took the Rename and had no answer to give for it. The group stands
+                    // as the reads this landing starts answer it - the editor's own `onSuccess`
+                    // asks the delivery reads again, the write store reads every query again for
+                    // a landing with no answer, and Dispatch sends its delta - so the draft stays
+                    // as typed until a version other than the one it was made over arrives, and
+                    // never takes that one back.
+                    setRename((now) =>
+                      now.sent?.press === press ? { ...now, awaiting: true } : now
+                    );
+                    return;
+                  }
+                  // A rename's answer is the group as renamed (`updateDeliverySessionGroup`),
+                  // written into the page's groups reads as Dispatch's delta for it will be.
+                  const renamed = answer as DeliverySessionGroup;
+                  writeGroup(queryClient, renamed);
+                  land(press, renamed);
+                },
               }
             );
           }}
