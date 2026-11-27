@@ -52,7 +52,7 @@ func TestTheRoomBudgetClosesTheLeastRecentlyUsedPeerlessRooms(t *testing.T) {
 
 	// The browser's document is written first, so it is the oldest room of all.
 	browsers := ids[0]
-	connection, err := dialDocument(httpServer.URL, browsers)
+	connection, err := dialDocument(t, httpServer.URL, browsers)
 	if err != nil {
 		t.Fatalf("open the browser's document: %v", err)
 	}

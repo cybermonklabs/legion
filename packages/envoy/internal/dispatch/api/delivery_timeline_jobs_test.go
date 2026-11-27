@@ -109,7 +109,7 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	}
 	for _, days := range []int{84, 28, 7} {
 		from, to := fixture.To.AddDate(0, 0, -days), fixture.To
-		pop, err := s.readDeliveryPopulation(ctx, fixture.Settings, from, to, url.Values{}, true)
+		pop, err := s.readDeliveryPopulation(ctx, s.deps.Store.Pool, fixture.Settings, from, to, url.Values{}, true)
 		if err != nil {
 			t.Fatalf("%d days: read the timeline's population: %v", days, err)
 		}
