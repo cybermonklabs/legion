@@ -127,6 +127,11 @@ const slowCleanFilter = "sleep 300; cat"
 // nothing wrong.
 func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	git := realTool(t, "git")
+	stalled := filepath.Join(t.TempDir(), "git")
+	if err := os.WriteFile(stalled, []byte("#!/bin/sh\nsleep 1.5\nexec '"+git+"' \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git = stalled
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	runSetup(t, root, fixturegit.InitWorkTree(repository, "main")...)
