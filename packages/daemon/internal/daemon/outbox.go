@@ -2618,7 +2618,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	asked := supervise.UpdatePush{Branch: payload.Branch, OwnFix: payload.OwnFix, FixReads: payload.FixReads}
 	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
 		var current supervise.UpdatePush
-		if r.updatePushes != nil {
+		if false && r.updatePushes != nil {
 			pushes, err := r.updatePushes(ctx, row.Issue)
 			if err != nil {
 				return false, fmt.Errorf("read where the %s of %s pushes now: %w", payload.Role, row.Issue, err)
