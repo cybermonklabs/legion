@@ -8,9 +8,9 @@ export function historyLogKey(issueKey: string): readonly ["events", string, "hi
   return ["events", issueKey, "history"];
 }
 
-/** The first event of the whole log past the reader's read mark, shared by the Conversation tab
- *  and Details' history: its time tells whether a thread whose created event the filtered log
- *  leaves out is new. */
+/** The first event of the whole log past the reader's read mark, under the same query key the
+ *  Conversation tab reads so the cache is shared without changing that tab: its time tells
+ *  whether a thread whose created event the filtered log leaves out is new. */
 export function issueUnreadBoundaryQuery(issueKey: string, lastReadSeq: number) {
   return queryOptions({
     queryKey: ["events", issueKey, "unread-boundary", lastReadSeq] as const,
