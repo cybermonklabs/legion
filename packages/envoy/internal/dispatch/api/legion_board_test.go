@@ -350,7 +350,7 @@ func TestAMergedIssueWaitingForItsChecksStandsInTheVerifyingColumn(t *testing.T)
 	}
 	at := slices.Index(ids, "verifying")
 	if at < 1 || at+1 >= len(ids) || ids[at-1] != legion.ColumnMerging || ids[at+1] != legion.ColumnAwaitingChildren {
-		t.Errorf("the columns are %v, want verifying between merging and awaiting_children", ids)
+		t.Fatalf("the columns are %v, want verifying between merging and awaiting_children", ids)
 	}
 	if label := board.Columns[at].Label; label != "Verifying" {
 		t.Errorf("the verifying column is labelled %q, want %q", label, "Verifying")
