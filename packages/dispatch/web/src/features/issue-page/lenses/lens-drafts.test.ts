@@ -221,14 +221,15 @@ const FIRST = "c3000000-0000-4000-8000-000000000003";
 const SECOND = "b2000000-0000-4000-8000-000000000002";
 const THIRD = "a1000000-0000-4000-8000-000000000001";
 
-// A node's lenses stand one level under it, among its conversation nodes, which the read answers
-// first by `made_at`, before its ranked children (INFRA-1253's spec at version 247): the order they
-// were invoked in, though their ids sort the other way; a lens's findings in the order they were
-// written; a lens on the issue at the top level.
-test("a lens hangs under its parent, after its other children, in invocation order", () => {
+// A node's lenses stand one level under it, among its conversation nodes, which the tree read
+// orders first by `made_at`, then by id, before its ranked children: the order they were invoked
+// in, though their ids sort the other way; a lens's findings in the order they were written; a
+// lens on the issue at the top level, before the issue's ranked children too.
+test("a lens hangs under its parent, among its conversation nodes and before its ranked children, in invocation order", () => {
   const { root } = drawn(
     answer(
       [
+        lens("on-issue", KEY),
         block("r1", "requirement", KEY, SPEC, 0),
         lens(FIRST, "r1", "2026-11-05T09:00:00Z"),
         finding(`lens/${FIRST}#f-b`, FIRST, "The bill doubles."),
@@ -237,7 +238,6 @@ test("a lens hangs under its parent, after its other children, in invocation ord
         lens(THIRD, "r1", "2026-11-05T11:00:00Z"),
         block("c1", "check", "r1", VERIFICATION, 0),
         block("t1", "plan_task", "r1", PLAN, 0),
-        lens("on-issue", KEY),
         TRADE_OFF,
       ],
       [FIRST, SECOND, THIRD, "on-issue"].map((id) => tuple("has_kind", id, TRADE_OFF.id))
@@ -245,7 +245,7 @@ test("a lens hangs under its parent, after its other children, in invocation ord
   );
   const statement = rowOf(root, blockNodeId("spec", "r1"));
 
-  expect(childIds(root)).toEqual([blockNodeId("spec", "r1"), "on-issue"]);
+  expect(childIds(root)).toEqual(["on-issue", blockNodeId("spec", "r1")]);
   expect(childIds(statement)).toEqual([
     FIRST,
     SECOND,
@@ -291,9 +291,9 @@ test("a lens is found by its parent's id on an unconverted issue", () => {
 
 // A finding is a block whose read parent is a lens, by either spelling of its kind; its
 // words are its reading's, and its address is its lens's with its block id. A block under
-// anything else is no finding: a plain block under the issue is prose (decision 495), and a lens
-// block of no lens is drawn nowhere. A lens's read id may carry its kind, which its address does
-// not repeat. Another address in a verdict stays as written, for the row's renderer to name.
+// anything else is no finding: a plain block under the issue is prose rather than a finding, and a
+// lens block of no lens is drawn nowhere. A lens's read id may carry its kind, which its address
+// does not repeat. Another address in a verdict stays as written, for the row's renderer to name.
 test("a finding is a block whose parent is a lens", () => {
   const lensId = `lens/${FIRST}`;
   const { drafts, root } = drawn(
@@ -422,6 +422,14 @@ function linksIn(tree: DisplayTree | undefined): [string, unknown][] {
   return [...own, ...children.flatMap(linksIn)];
 }
 
+/** The runs of `tree`'s first paragraph, or none where `tree` holds none. */
+function firstRuns(tree: DisplayTree | undefined): unknown[] {
+  const blocks = Array.isArray(tree?.content) ? tree.content : [];
+  const first: unknown = blocks[0];
+  if (typeof first !== "object" || first === null || !("content" in first)) return [];
+  return Array.isArray(first.content) ? first.content : [];
+}
+
 /** The address of the row of the node `readId` names on the issue's page, which a link in a
  *  row's words holds as its `title` and its row makes its address (`?node=`). */
 function rowPath(readId: string): string {
@@ -432,7 +440,7 @@ function rowPath(readId: string): string {
 // the lens by its kind's words, as its chip names it, in a link beside the run's own marks that
 // holds the lens's address and the path of its row. The comment's stored words, which the read
 // sent no reading of, are read to one paragraph of their plain words that holds the link, with no
-// emphasis, since a row draws no parse made in the page (R20), and its row draws its words from
+// emphasis, since a row draws no parse made in the page, and its row draws its words from
 // it.
 test("a statement's and a comment's words read a lens they cite by its kind's words, linked to its row", () => {
   const cited = `dispatch://lens/${FIRST}`;
@@ -588,7 +596,7 @@ test("a name keeps another reference it holds out of its link", () => {
   const link = { attrs: { href: cited, title: rowPath(constraint) }, type: "link" };
 
   expect(lineWordsRaw(statement)).toBe(`Answer as Retention as ${other} sets it.`);
-  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+  expect(firstRuns(statement.tree)).toEqual([
     { text: "Answer as ", type: "text" },
     { marks: [link], text: "Retention as ", type: "text" },
     { text: other, type: "text" },
@@ -814,7 +822,7 @@ test("an author's words linked to a store address link the node's row", () => {
     "Two regions, until the risk or another.",
     "Two regions, until the risk or another.",
   ]);
-  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+  expect(firstRuns(statement.tree)).toEqual([
     { text: "Two regions, until ", type: "text" },
     {
       marks: [{ type: "strong" }, { attrs: { href: cited, title: rowPath(risk) }, type: "link" }],
@@ -1102,7 +1110,7 @@ test("a store address inside a link's words reads as its node's name in that one
   ]);
   const link = [{ attrs: { href: cited, title: rowPath(risk) }, type: "link" }];
 
-  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+  expect(firstRuns(statement.tree)).toEqual([
     { text: "Two regions, until ", type: "text" },
     { marks: link, text: kindWords(PRE_MORTEM_WORDS), type: "text" },
     { text: " or ", type: "text" },
@@ -1136,7 +1144,7 @@ test("a verdict's author's link whose words are code links the constraint's row"
   const verdict = rowOf(root, FIRST);
 
   expect(verdict.text).toBe("Held to RFC 9110.");
-  expect((verdict.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+  expect(firstRuns(verdict.tree)).toEqual([
     { text: "Held to ", type: "text" },
     {
       marks: [{ attrs: { href: held, title: rowPath(constraint) }, type: "link" }],
@@ -1178,7 +1186,7 @@ test("a server's reading links an author's code words to the constraint's row", 
   );
   const statement = rowOf(root, blockNodeId("spec", "r1"));
 
-  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+  expect(firstRuns(statement.tree)).toEqual([
     { text: "Held to ", type: "text" },
     {
       marks: [
@@ -1251,7 +1259,7 @@ test("a server's reading of an author's link whose code words are its own addres
   );
   const statement = rowOf(root, blockNodeId("spec", "r1"));
 
-  expect((statement.tree?.content as DisplayTree[] | undefined)?.[0]?.content).toEqual([
+  expect(firstRuns(statement.tree)).toEqual([
     { text: "Held to ", type: "text" },
     { marks: [{ type: "inlineCode" }], text: held, type: "text" },
     { text: ".", type: "text" },
@@ -1494,8 +1502,8 @@ test("a chip whose far end no page read so far holds names its kind and links it
 // A risk's row draws its heading, its early warning and its prevention, each read to
 // plain words, a line whose words hold code as their reading, which its line draws them from so
 // it reads the code as written, and a chip for each check its `prevented_by` names, named by that
-// check's whole text in the tree - both its blocks, past the 32 characters part G cuts a chip
-// at, with no cut - not by the first block its row draws a line from, and linked to its row; a
+// check's whole text in the tree - both its blocks, past the 32 characters `node-row-chip.ts` cuts
+// a chip at, with no cut - not by the first block its row draws a line from, and linked to its row; a
 // risk no check prevents has none.
 test("a check's chip takes its words whole from its node", () => {
   const whole = "C1. The index builds concurrently. Then it is checked.";
@@ -1780,8 +1788,8 @@ test("a catalogue constraint is no row and its chip has no link", () => {
 });
 
 // A chip, a tag and the chain's place draw their node's words whole, however long. Each case
-// holds words longer than the 32 characters part G cuts a chip at: a lens's kind, a constraint's
-// standard, a check's text over two blocks, a statement's text over two blocks and a risk's
+// holds words longer than the 32 characters `node-row-chip.ts` cuts a chip at: a lens's kind, a
+// constraint's standard, a check's text over two blocks, a statement's text over two blocks and a risk's
 // heading.
 test("a lens chip, a check's chip, a constraint's chip and a lens's place hold whole words", () => {
   const constraint = "d4000000-0000-4000-8000-000000000004";
@@ -1847,7 +1855,7 @@ test("a lens chip, a check's chip, a constraint's chip and a lens's place hold w
 // A lens's tag draws its kind's words, which its row carries (`LensFacts.kind`), capitalised as
 // `lensChipWords` names a lens, and a chip that names the lens - here the "Triggered by" chip of
 // the lens it triggered - draws the same words. Both are whole however long a kind's words run:
-// 129 characters here, past the 32 characters part G cuts a chip at.
+// 129 characters here, past the 32 characters `node-row-chip.ts` cuts a chip at.
 test("a lens's chip and tag draw its kind's words whole", () => {
   const words =
     "pre-mortem: imagine the work failed a year from now, then name each warning the team missed and say why nobody acted on it at all";
@@ -1938,7 +1946,7 @@ test("a lens row is reached by its ?node= id", () => {
   }
 });
 
-// R7: Graph's own address names a lens's row by `?node=` as the issue's own address does, with
+// Graph's own address names a lens's row by `?node=` as the issue's own address does, with
 // the preset Graph and the words filter kept, and a zoom address (`/graph/<node id>`) keeps its
 // zoom. A filter's address reads no node from `?node=`: it opens its own view, on no node.
 test("Graph's address names a row by its ?node= id, and a filter's address names none", () => {
