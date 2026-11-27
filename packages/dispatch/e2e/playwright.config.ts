@@ -344,17 +344,53 @@ const parallelProjects = [
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
   // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
-  // does with no `focusout`: `table-controls`'s row that a date the reader gives the search bar's
-  // Updated since is their press, whose box the date takes away, its row that Unpin on a pinned
-  // agent keeps the keyboard focus on a control in sight, whose row the unpin moves to its new
-  // place, and its row that a references Retry on the Artifacts tab keeps the keyboard focus, a
-  // control held under the reader's press, which a native `disabled` takes the focus from.
-  // Measured in WebKit as well as Firefox: neither fires a `focusout` for it.
+  // does with no `focusout`: `table-controls`'s row whose focused row a live update takes away,
+  // its row that a date the reader gives the search bar's Updated since is their press, whose box
+  // the date takes away, its row that clear brush window pressed with the Window control scrolled
+  // out of sight scrolls the Delivery page nothing, whose button the cleared brush takes away and
+  // whose landing each engine scrolls into view its own way, its row that a bulk action that takes
+  // the marked rows out of the project List's view hands the focus to the row now at their place,
+  // whose bar and rows the action takes away, its row that Unpin on a pinned agent keeps the
+  // keyboard focus on a control in sight, whose row the unpin moves to its new place, its two rows
+  // that a control held under the reader's press keeps the keyboard focus - a references Retry on
+  // the Artifacts tab and a group card's Rename in the Session groups dialog - which a native
+  // `disabled` takes the focus from, and its row that offline, Take out of epic hands the focus to
+  // the marked row's checkbox in the render the bar goes, whose bar and rows the action takes away
+  // and whose frames each engine paces its own way.
+  // Measured in WebKit as well as Firefox: neither fires a `focusout` for it. And a table scrolled
+  // while one of its rows holds the focus, whose row the virtual list takes away out of sight:
+  // `table-controls`'s scrolling-table row.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
   // WebKit writes each space of the name it read from `filename*` as `_`, which the row of a name
   // with spaces reads.
+  // The rows INFRA-3135's round-25 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the Delivery page's Filter panel draws no count before the read it counts answers,
+  // and that a Move with only closed issues marked keeps no press live.
+  // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the shared list keeps the option it marks active inside its box when Enter ticks a
+  // value, that the Delivery page's session-groups editor and the project List's Claimed by and
+  // header filters draw no count before the read they count answers, that a double click on a
+  // marked row's held control and the List bar's partly cut landing leave the focus where it
+  // belongs, and that a Board move whose dry run is out leaves the focus where the reader's click
+  // put it.
+  // The rows INFRA-3135's round-27 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters draw each count the
+  // list does not decide, that a Tab onto the moving card's link while a Board move's dry run is
+  // out leaves the focus on the moved card, and that the selection bar's return shows its landing
+  // whole by the least scroll: to a row the table has not drawn, and to a row at the place cut by
+  // 70%.
+  // The rows INFRA-3135's round-28 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters keep each count the
+  // list does not decide while a later poll of the list is out, and that the selection bar's
+  // return shows its landing whole by the least scroll at 390 on the List after Take out of epic
+  // with the rows marked last far below the view.
+  // The rows INFRA-3135's round-29 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refilling from the start the project List still says the list is
+  // refilling while a poll is out five minutes on; that the project List's box keeps its frame
+  // after Take out of epic lands; and that with Take out of epic's writes held and both marks
+  // unticked the List keeps the focus on the list.
   // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
   // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
   // one drag row, which drags a row of the priorities table by its grip and reads the order back.
@@ -430,11 +466,38 @@ const parallelProjects = [
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
   // A focused control taken away, itself or with a parent, for which this engine fires no
   // `focusout`, as measured above `webkit`: every `table-controls` row the `webkit` clause names
-  // for it. Each of those rows carries `@firefox` as well as `@webkit`, and its own comment names
-  // this clause.
+  // for it, from its row whose focused row a live update takes away to its row that offline, Take
+  // out of epic hands the focus to the marked row's checkbox, and its scrolling-table row, whose
+  // focused row a scroll takes away. Each of those rows carries `@firefox` as well as `@webkit`,
+  // and its own comment names this clause.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
+  // The rows INFRA-3135's round-25 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the Delivery page's Filter panel draws no count before the read it counts answers,
+  // and that a Move with only closed issues marked keeps no press live.
+  // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the shared list keeps the option it marks active inside its box when Enter ticks a
+  // value, that the Delivery page's session-groups editor and the project List's Claimed by and
+  // header filters draw no count before the read they count answers, and that a double click on a
+  // marked row's held control and the List bar's partly cut landing leave the focus where it
+  // belongs.
+  // The rows INFRA-3135's round-27 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters draw each count the
+  // list does not decide, that a Tab onto the moving card's link while a Board move's dry run is
+  // out leaves the focus on the moved card, and that the selection bar's return shows its landing
+  // whole by the least scroll: to a row the table has not drawn, and to a row at the place cut by
+  // 70%.
+  // The rows INFRA-3135's round-28 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refused the project List's header filters keep each count the
+  // list does not decide while a later poll of the list is out, and that the selection bar's
+  // return shows its landing whole by the least scroll at 390 on the List after Take out of epic
+  // with the rows marked last far below the view.
+  // The rows INFRA-3135's round-29 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that with the agent list refilling from the start the project List still says the list is
+  // refilling while a poll is out five minutes on; that the project List's box keeps its frame
+  // after Take out of epic lands; and that with Take out of epic's writes held and both marks
+  // unticked the List keeps the focus on the list.
   // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the
   // grip writes the id it moves into the drag: `priorities`' one drag row, which drags a row of the
   // priorities table by its grip and reads the order back.
