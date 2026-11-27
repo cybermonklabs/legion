@@ -52,6 +52,7 @@ function CommitProbe(): null {
 }
 
 function List({
+  arriving,
   banner = false,
   children,
   enabled,
@@ -60,7 +61,10 @@ function List({
   leaving,
   rows,
   scroller,
+  trailing,
 }: {
+  /** The rows a press of the reader's is bringing in, as the host names them. */
+  arriving?: (id: string) => boolean;
   /** Whether a banner BANNER_HEIGHT tall stands above the list, as the Inbox's header stands
    *  above its rows. */
   banner?: boolean;
@@ -78,9 +82,13 @@ function List({
   rows: string[];
   /** When given, the rows scroll in this element instead of the document. */
   scroller?: RefObject<HTMLDivElement | null>;
+  /** The rows an item that is no row is drawn right after, as a band's **Show more** is drawn
+   *  after the last row the band draws. It is laid out as a heading is. */
+  trailing?: readonly string[];
 }): ReactNode {
   const list = (
     <ViewportAnchor
+      arriving={arriving}
       enabled={enabled}
       group="data-group"
       item="data-row"
@@ -94,6 +102,7 @@ function List({
           <div data-group={groups?.[id] ?? "one"} data-row={id} tabIndex={-1}>
             <button type="button">{id}</button>
           </div>
+          {trailing?.includes(id) === true ? <div data-heading={`more-${id}`} /> : null}
         </Fragment>
       ))}
       <CommitProbe />
@@ -871,6 +880,105 @@ test("a group's heading that goes with the last named rows under it lets the foc
   }
 });
 
+// A band's unfold: the reader's press on its toggle draws the band's rows again, between that
+// toggle and the row nearest the list's centre, which the anchor holds when no row is in hand. The
+// press brought them in, so the anchor does not make up for them: what stands above them stays
+// where it stood, as the toggle the reader pressed does, and the rows after them, the next group's
+// heading among them, move down by their whole space. The window does not scroll. Measured in the
+// Inbox at 390x664 while the anchor made up for them: the window went from 30 px to 3,630 px, and
+// the toggle stood at -3,329 px.
+test("rows the host names as arriving above the row at the list's centre move it down by their whole space, and the window does not scroll", () => {
+  const coming = (id: string) => id.startsWith("new-");
+  const view = render(<List headings={["r3"]} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    // Visible centre: document y 400, the seventh item: r6, after r1, r2, r3's heading and r3-r5.
+    expect(chosen()).toEqual({ id: "r6", via: "center" });
+    const above = viewportTop("r2");
+    const heading = headingTop("r3") ?? 0;
+    const before = viewportTop("r6") ?? 0;
+
+    const unfolded = ["r1", "r2", "new-a", "new-b", "new-c", ...ids(10, 3)];
+    view.rerender(<List arriving={coming} headings={["r3"]} rows={unfolded} />);
+    expect(viewportTop("r2")).toBe(above);
+    expect(headingTop("r3")).toBe(heading + 3 * ROW_HEIGHT);
+    expect(viewportTop("r6")).toBe(before + 3 * ROW_HEIGHT);
+    expect(window.scrollY).toBe(100);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A live update draws a row above the row at the list's centre in the commit of the reader's
+// unfold. Nobody pressed for that row, so the anchor makes up for it as for any shift the reader
+// did not cause: the centre row moves down by the rows the press brought in alone, and the window
+// scrolls by the live row, so what stood above the press's rows stays where it stood.
+test("a row the host does not name, arriving above the centre row in the same commit as rows it names, is still made up for", () => {
+  const coming = (id: string) => id.startsWith("new-");
+  const view = render(<List rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    // Visible centre: document y 400, the seventh row: r7.
+    expect(chosen()).toEqual({ id: "r7", via: "center" });
+    const above = viewportTop("r2");
+    const before = viewportTop("r7") ?? 0;
+
+    const updated = ["live", "r1", "r2", "new-a", "new-b", ...ids(10, 3)];
+    view.rerender(<List arriving={coming} rows={updated} />);
+    expect(viewportTop("r7")).toBe(before + 2 * ROW_HEIGHT);
+    expect(viewportTop("r2")).toBe(above);
+    expect(window.scrollY).toBe(100 + ROW_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A band's fold over the rows it draws and the **Show more** drawn right after them: that item is
+// no row, and it goes with the last row the press takes away, so it frees its space as the rows
+// do. The focused row below moves up by the rows and the item, and the window does not scroll.
+test("an item right after the last named rows that goes with them frees its space too, and the window does not scroll", () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List leaving={going} rows={ids(12)} trailing={["r4"]} />);
+  try {
+    setScrollY(100);
+    buttonOf("r7").focus();
+    const place = viewportTop("r3");
+
+    view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(viewportTop("r5")).toBe(place);
+    expect(viewportTop("r7")).toBe((place ?? 0) + 2 * ROW_HEIGHT);
+    expect(window.scrollY).toBe(100);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A band's unfold that draws a **Show more** right after the rows it brings in: that item is no
+// row and came into the list with them, so the anchor does not make up for it either. What stands
+// above the rows stays where it stood, and the window does not scroll. The next group's heading
+// after it stood in the list before the commit, and is not counted with them.
+test("an item that comes into the list right after the rows the host names as arriving is not made up for either", () => {
+  const coming = (id: string) => id.startsWith("new-");
+  const view = render(<List headings={["r3"]} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    // Visible centre: document y 400, the seventh item: r6, after r1, r2, r3's heading and r3-r5.
+    expect(chosen()).toEqual({ id: "r6", via: "center" });
+    const above = viewportTop("r2");
+    const before = viewportTop("r6") ?? 0;
+
+    const unfolded = ["r1", "r2", "new-a", "new-b", ...ids(10, 3)];
+    view.rerender(
+      <List arriving={coming} headings={["r3"]} rows={unfolded} trailing={["new-b"]} />
+    );
+    expect(viewportTop("r2")).toBe(above);
+    expect(viewportTop("r6")).toBe(before + 3 * ROW_HEIGHT);
+    expect(window.scrollY).toBe(100);
+  } finally {
+    view.unmount();
+  }
+});
+
 // A press over two rows far apart: one the reader scrolled above the view, one in sight. Each
 // frees its whole space, the part above the view included, so the rows in view move up by the
 // row above it, and the focused row after both moves up by the two and ends in sight. Nothing
@@ -1175,6 +1283,39 @@ test("a resize after the rows a press took away have gone puts back no row under
     // The list's own box is shorter by the two rows, which the engine reports after the commit.
     sizes.resize();
     expect(viewportTop("r8")).toBe(before - 2 * ROW_HEIGHT);
+    expect(scroller.scrollTop).toBe(100);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+// In a named box, with the pointer resting on a row below the rows the reader's unfold brings in
+// and the focus on no row, the commit lets that row move down with the rows after them and scrolls
+// nothing. The place the anchor keeps for that row moves down with it, so the resize that follows
+// the commit puts nothing back.
+test("in a named box the kept place moves down with the row under the pointer as the rows a press brings in arrive, and the resize after the commit keeps it there", () => {
+  const sizes = installResizeObserver();
+  const coming = (id: string) => id.startsWith("new-");
+  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 100;
+    // The pointer comes to rest on r8, 350 px down the box: the anchor keeps its place.
+    const hovered = document.querySelector<HTMLElement>('[data-row="r8"]');
+    if (hovered === null) throw new Error("r8 missing");
+    fireEvent.pointerOver(hovered, { clientX: 20, clientY: 370 });
+    expect(chosen()).toEqual({ id: "r8", via: "pointer" });
+    const before = viewportTop("r8") ?? 0;
+
+    const unfolded = ["r1", "r2", "new-a", "new-b", ...ids(10, 3)];
+    view.rerender(<List arriving={coming} rows={unfolded} scroller={scrollerRef} />);
+    expect(viewportTop("r8")).toBe(before + 2 * ROW_HEIGHT);
+    expect(scroller.scrollTop).toBe(100);
+    // The list's own box is taller by the two rows, which the engine reports after the commit.
+    sizes.resize();
+    expect(viewportTop("r8")).toBe(before + 2 * ROW_HEIGHT);
     expect(scroller.scrollTop).toBe(100);
   } finally {
     view.unmount();

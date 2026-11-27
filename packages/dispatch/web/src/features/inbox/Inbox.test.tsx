@@ -4741,6 +4741,173 @@ test("a band the reader folds above the list's centre row frees its rows' space:
   }
 });
 
+/** Two P0 asks, two P1 asks and six P2 asks, banded under Priority as the fold case above bands
+ *  its own. */
+const PRIORITY_BANDS: readonly InboxRow[] = [
+  ...[1, 2].map((n) => inboxIssue(`ask-p0-${n}`, `CORE-${n}`, `Urgent ${n}?`, { priority: 0 })),
+  ...[3, 4].map((n) => inboxIssue(`ask-p1-${n}`, `CORE-${n}`, `Soon ${n}?`, { priority: 1 })),
+  ...[5, 6, 7, 8, 9, 10].map((n) =>
+    inboxIssue(`ask-p2-${n}`, `CORE-${n}`, `Later ${n}?`, { priority: 2 })
+  ),
+];
+
+// The reader, scrolled down the list, opens again the band they folded, whose toggle stands at
+// the window's top. Its rows come back between the toggle and the row nearest the list's centre,
+// which the anchor holds when no row is in hand. The reader's own press brings them in, so the
+// anchor does not make up for them: the rows after them move down, and the window does not scroll
+// to hold the centre row against their coming. Made up for, at 390x664 a band of 40 rows scrolled
+// the window from 30 px to 3,630 px and left the toggle, and the focus on it, at -3,329 px, in
+// Chromium, Firefox and WebKit.
+test("a band the reader unfolds above the list's centre row moves the rows after it down: the window does not scroll and the toggle stays where it stood", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([...PRIORITY_BANDS]);
+  const getAsk = mockAskReads(PRIORITY_BANDS);
+  // P0's heading and two rows above the window, P1's heading at its top.
+  const laidOut = layItemsDown(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+  const { unmount } = renderInbox();
+  try {
+    await screen.findByText("Later 10?");
+    const toggle = screen.getByRole("button", { name: "P1 (2)" });
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+    const stood = toggle.getBoundingClientRect().top;
+    expect(stood).toBe(0);
+    const next = screen.getByRole("button", { name: "P2 (6)" });
+    const nextStood = next.getBoundingClientRect().top;
+
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "true"));
+    expect(rowIds().filter((id) => id.startsWith("ask-p1-"))).toHaveLength(2);
+    expect(window.scrollY).toBe(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+    expect(toggle.getBoundingClientRect().top).toBe(stood);
+    expect(next.getBoundingClientRect().top).toBe(nextStood + 2 * LAID_ROW_PX);
+    expect(toggle).toHaveFocus();
+  } finally {
+    unmount();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The rows the reader's unfold brings in go uncompensated in the commit that draws them, and in
+// no other. A row a live update draws above the list's centre row after that commit is made up
+// for, as any shift the reader did not cause is: the window scrolls by its height, and the toggle
+// the reader pressed stays where it stood.
+test("a row a live update draws above the list's centre row after a band's unfold is made up for, and the toggle stays where it stood", async () => {
+  const user = userEvent.setup();
+  const live = inboxIssue("ask-p0-11", "CORE-11", "Urgent 11?", { priority: 0 });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([...PRIORITY_BANDS]);
+  const getAsk = mockAskReads([...PRIORITY_BANDS, live]);
+  const laidOut = layItemsDown(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+  const { queryClient, unmount } = renderInbox();
+  try {
+    await screen.findByText("Later 10?");
+    const toggle = screen.getByRole("button", { name: "P1 (2)" });
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "true"));
+    const stood = toggle.getBoundingClientRect().top;
+    const scrolled = window.scrollY;
+
+    act(() => {
+      queryClient.setQueryData<InboxRow[]>(["inbox"], [...PRIORITY_BANDS, live]);
+    });
+    await waitFor(() => expect(rowIds()).toContain("ask-p0-11"));
+    expect(window.scrollY).toBe(scrolled + LAID_ROW_PX);
+    expect(toggle.getBoundingClientRect().top).toBe(stood);
+  } finally {
+    unmount();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The band's fold after the reader opened it again is the fold it always was: its rows free their
+// space, the rows after them move up, the window does not scroll, and the toggle stays where it
+// stood, as at the band's first fold.
+test("a band folded again after its unfold frees its rows' space as its first fold did: the window does not scroll and the toggle stays where it stood", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([...PRIORITY_BANDS]);
+  const getAsk = mockAskReads(PRIORITY_BANDS);
+  const laidOut = layItemsDown(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+  const { unmount } = renderInbox();
+  try {
+    await screen.findByText("Later 10?");
+    const toggle = screen.getByRole("button", { name: "P1 (2)" });
+    const stood = toggle.getBoundingClientRect().top;
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "true"));
+    const next = screen.getByRole("button", { name: "P2 (6)" });
+    const nextStood = next.getBoundingClientRect().top;
+
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+    expect(rowIds().filter((id) => id.startsWith("ask-p1-"))).toEqual([]);
+    expect(window.scrollY).toBe(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+    expect(toggle.getBoundingClientRect().top).toBe(stood);
+    expect(next.getBoundingClientRect().top).toBe(nextStood - 2 * LAID_ROW_PX);
+  } finally {
+    unmount();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// A band of 60 rows draws its first 50 and a **Show 10 more** after them. The reader, scrolled
+// down the list with that band's toggle at the window's top, folds the band and opens it again.
+// The item goes with the rows the fold takes away and comes with the rows the unfold draws, the
+// press's own as they are, so the anchor makes up for it no more than for them: at each press the
+// window does not scroll and the toggle stays where it stood. Made up for, the item moved the
+// toggle by its own height at each press.
+test("a band of more than a page the reader folds and unfolds above the list's centre row keeps its toggle where it stood, its Show more going and coming with its rows", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    ...[1, 2].map((n) => inboxIssue(`ask-p0-${n}`, `CORE-${n}`, `Urgent ${n}?`, { priority: 0 })),
+    ...Array.from({ length: 60 }, (_, index) => index + 3).map((n) =>
+      inboxIssue(`ask-p1-${n}`, `CORE-${n}`, `Soon ${n}?`, { priority: 1 })
+    ),
+    ...[63, 64, 65, 66, 67, 68].map((n) =>
+      inboxIssue(`ask-p2-${n}`, `CORE-${n}`, `Later ${n}?`, { priority: 2 })
+    ),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  // P0's heading and two rows above the window, P1's heading at its top.
+  const laidOut = layItemsDown(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+  const { unmount } = renderInbox();
+  try {
+    await screen.findByText("Later 68?");
+    const more = { name: "Show 10 more in P1" };
+    expect(screen.queryAllByRole("button", more).length).toBe(1);
+    const toggle = screen.getByRole("button", { name: "P1 (60)" });
+    const stood = toggle.getBoundingClientRect().top;
+    expect(stood).toBe(0);
+
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+    expect(screen.queryAllByRole("button", more).length).toBe(0);
+    expect(window.scrollY).toBe(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+    expect(toggle.getBoundingClientRect().top).toBe(stood);
+
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "true"));
+    expect(screen.queryAllByRole("button", more).length).toBe(1);
+    expect(window.scrollY).toBe(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+    expect(toggle.getBoundingClientRect().top).toBe(stood);
+  } finally {
+    unmount();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 // A row the bar's Snooze is saving is held as a row's own Snooze pick holds it: the optimistic
 // moment would draw Un-snooze, so the list stays drawn, held, with the moment being saved before
 // it and `Snoozing…` on its badge, and its status says what is being saved. The hold lasts through

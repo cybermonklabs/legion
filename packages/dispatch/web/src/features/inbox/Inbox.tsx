@@ -1278,8 +1278,18 @@ function InboxBody({
    *  that press writes it - an address's `?item=` that opens a folded band (`openFoldedBand`)
    *  takes no row away - and it is let go once the commit is in. */
   const folding = useRef<ReadonlySet<string> | null>(null);
+  /** The rows a press of the reader's on a folded band's toggle is bringing into the list, for the
+   *  commit that opens the band: the rows its fold held back, not the rows it drew while folded.
+   *  The press draws them above every row after the band, so the list's anchor does not hold the
+   *  row at the list's centre against their coming (`arriving` below): the toggle stays where the
+   *  reader pressed it, and the rows after the band move down. Only that press writes it - an
+   *  address's `?item=` that opens a folded band (`openFoldedBand`) is no press on its toggle, and
+   *  the rows it draws are made up for as any other - and it is let go once the commit that draws
+   *  them is in. */
+  const unfolding = useRef<ReadonlySet<string> | null>(null);
   useLayoutEffect(() => {
     folding.current = null;
+    unfolding.current = null;
   });
   // What this list holds, and computed here rather than after the early returns so the bindings
   // below speak for exactly the rows on the page.
@@ -3136,7 +3146,15 @@ function InboxBody({
   // the list back by its height). Beside them, the rows an Assign to me, a hand-on, an answer, a
   // decline, a question back or a reply lets go of, which then leave the list where the read no
   // longer lists them there, and the rows of a band the reader's press on its toggle folds shut
-  // (`folding`), in the commit that folds it.
+  // (`folding`), in the commit that folds it. Nor does it hold the reader's row against the rows
+  // that press brings back when it opens the band (`arriving`, `unfolding`), in the commit that
+  // draws them: the toggle stays where the reader pressed it, and the rows after the band move
+  // down. The anchor is given the function only for that commit, so it reads no row for it in any
+  // other. A band's **Show more**, drawn right after the last row the band draws, goes with the
+  // rows its fold takes away and comes with the rows its unfold draws, and the anchor counts it
+  // with them (`ViewportAnchor`'s `trail`): its going or coming moves the toggle no more than
+  // theirs does.
+  const unfolded = unfolding.current;
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -3163,6 +3181,7 @@ function InboxBody({
       style={mode === "columns" ? { overflowAnchor: "none" } : undefined}
     >
       <ViewportAnchor
+        arriving={unfolded === null ? undefined : (id) => unfolded.has(id)}
         className="space-y-4"
         group="data-inbox-section"
         item={ROW_ATTRIBUTE}
@@ -3180,10 +3199,19 @@ function InboxBody({
               group: band,
               held: folded.has(band.key) ? 0 : band.rows.length - visible.length,
               onShowMore: showMore,
-              // Folding a band shut takes the rows it draws off the list, as the reader asked:
-              // they are named to the anchor as leaving for the commit that folds it.
+              // Folding a band shut takes the rows it draws off the list, and opening it brings
+              // back the rows its fold held, as the reader asked: they are named to the anchor as
+              // leaving, or as arriving, for the commit that folds or opens it, and its **Show
+              // more** goes or comes with them.
               onToggleFold: (key) => {
-                if (!folded.has(key)) folding.current = new Set(visible.map((row) => rowId(row)));
+                if (folded.has(key)) {
+                  const drawnNow = new Set(visible.map((row) => rowId(row)));
+                  unfolding.current = new Set(
+                    band.rows.map((row) => rowId(row)).filter((id) => !drawnNow.has(id))
+                  );
+                } else {
+                  folding.current = new Set(visible.map((row) => rowId(row)));
+                }
                 toggleFold(key);
               },
               renderRow: (row) => renderRow(band.key, row),
