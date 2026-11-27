@@ -418,7 +418,7 @@ func (b *bucket) put(ctx context.Context, name string, local localObject) (uploa
 	attrs, err := object.Attrs(ctx)
 	switch {
 	case err == nil:
-		return false, b.reuse(storedOf(attrs), local)
+		return false, b.reuse(name, storedOf(attrs), local)
 	case !errors.Is(err, storage.ErrObjectNotExist):
 		return false, fmt.Errorf("read %s in bucket %s: %w", name, b.name, err)
 	}
@@ -428,7 +428,7 @@ func (b *bucket) put(ctx context.Context, name string, local localObject) (uploa
 		if err != nil {
 			return false, fmt.Errorf("read %s in bucket %s again, after another upload created it first: %w", name, b.name, err)
 		}
-		return false, b.reuse(storedOf(attrs), local)
+		return false, b.reuse(name, storedOf(attrs), local)
 	}
 	if err != nil {
 		return false, fmt.Errorf("upload %s to bucket %s: %w", name, b.name, err)
@@ -470,11 +470,12 @@ func upload(ctx context.Context, object *storage.ObjectHandle, local localObject
 	return storedOf(w.Attrs()), nil
 }
 
-// reuse takes o, the object already under its name, for local's file where it holds the same
-// bytes (differs), and otherwise refuses it, leaving it as it is.
-func (b *bucket) reuse(o storedObject, local localObject) error {
+// reuse takes o, the object already under name, for local's file where it holds the same bytes
+// (differs), and otherwise refuses it, leaving it as it is. The refusal names the object by name,
+// the name the cache asked for: o's own is Cloud Storage's words.
+func (b *bucket) reuse(name string, o storedObject, local localObject) error {
 	if field := o.differs(local); field != "" {
-		return fmt.Errorf("bucket %s already holds %s with another %s: the cache never replaces an object, so it leaves it as it is", b.name, o.Name, field)
+		return fmt.Errorf("bucket %s already holds %s with another %s: the cache never replaces an object, so it leaves it as it is", b.name, name, field)
 	}
 	return nil
 }
@@ -535,16 +536,20 @@ func storedOf(attrs *storage.ObjectAttrs) storedObject {
 }
 
 // differs names the first of the size, the CRC32C and the sha256Metadata in which o is not
-// local's, with both values, or answers "" where all three match: the one test of whether an
-// object in the bucket holds the local file's bytes.
+// local's, or answers "" where all three match: the one test of whether an object in the bucket
+// holds the local file's bytes. A size and a CRC32C are named with both values, figures the cache
+// reads as numbers. The sha256Metadata o states is Cloud Storage's words, which can quote the
+// bearer the read carried, so it is named only as missing or as not the local file's.
 func (o storedObject) differs(local localObject) string {
 	switch {
 	case o.Size != local.Size:
 		return fmt.Sprintf("size (%d bytes, the local file's %d)", o.Size, local.Size)
 	case o.CRC32C != local.CRC32C:
 		return fmt.Sprintf("CRC32C (%08x, the local file's %08x)", o.CRC32C, local.CRC32C)
+	case o.SHA256 != local.SHA256 && o.SHA256 == "":
+		return fmt.Sprintf("%s metadata (none, the local file's %s)", sha256Metadata, local.SHA256)
 	case o.SHA256 != local.SHA256:
-		return fmt.Sprintf("%s metadata (%q, the local file's %s)", sha256Metadata, o.SHA256, local.SHA256)
+		return fmt.Sprintf("%s metadata (not the local file's %s)", sha256Metadata, local.SHA256)
 	}
 	return ""
 }
