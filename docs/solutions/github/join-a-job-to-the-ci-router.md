@@ -42,8 +42,9 @@ its own workflows; this page covers this repository only.
    Every output carries the every-job term, since a run that selects every job (a dispatch of main, or one given `every-job`) skips the filter step:
    `<filter>: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.<filter> }}`.
    `ci-router-outputs.test.sh` fails an output without it, since a dispatch of main then leaves its job off.
-   A slow suite carries the `full-ci` term too, with its own `lane:<filter>` label beside it (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
-   `<filter>: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
+   A slow suite carries the `full-ci` term too, with its own `lane:<filter>` label beside it (step 5 says why), ends with the `'false'` that makes the skip `changes`' own, and reads first, off a pull request, the verdict of the changes job's `own` step, the filter of its own packages:
+   `<filter>: ${{ steps.scope.outputs.every_job && 'true' || github.event_name != 'pull_request' && steps.own.outputs.<filter> == 'true' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
+   Its own packages are an entry of `.github/lane-packages.yaml`, under the job's id with `output: <filter>`: a merge group that changes one of them runs the suite, and ci-ok fails a group where it did not (`.github/ci-notes/ci.md`, "A merge group runs every slow suite whose own package the change touches"). `lane-packages.test.sh` fails a slow suite with no entry, and each go test package the suite's workflow names that its entry does not give it.
    Which jobs are slow suites is `.github/ci-notes/ci.md`'s rule ("Which lane a job runs in: the pull request or the merge queue"): a test job above 10 minutes at the 90th percentile of its pull-request runs. A build, vet, format, typecheck or lint check runs on every pull request whatever its time, so it never takes this term. No job runs in part: a job that mixes such checks with slow tests is split in two, the checks in a job of their own that a pull request runs and the tests in the job that keeps the old id and takes this term, so each runs all its steps wherever it runs (step 4 says where the second job's steps go).
 3. **`needs: changes`** on the job, and
    `if: needs.changes.outputs.<filter> == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')`.
@@ -97,8 +98,10 @@ its own workflows; this page covers this repository only.
    A job an event must hold back gets its `changes` output
    set false on that event instead of an `if:` that skips it, so `ci-ok` reads the skip as
    unselected: that is how the slow suites are held back on a pull request that carries neither
-   the label `full-ci` nor the job's own `lane:<filter>` (step 2's term). `ci-ok` names such a job
-   as not run at this head, with the label that would run it. `ci-ok` fails a job in none of the three classes, naming all three remedies, and
+   the label `full-ci` nor the job's own `lane:<filter>` (step 2's term). `ci-ok` names such a
+   job as not run at this head, with the label that would run it, in its log, its summary and a
+   notice on the pull request's checks, and its lane check fails a merge group that skipped a
+   suite whose own package it changes. `ci-ok` fails a job in none of the three classes, naming all three remedies, and
    `check-ci-filters.sh` fails when the map or a list is not exactly what the `if:`s test, when a
    job is in none of the classes or in two, when a job `CI_OK_ALWAYS_RUN` names is gated by a
    `changes` output after all, or when a
@@ -456,8 +459,9 @@ dispatch-browser. The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
 find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
 carries. The slow suites go the
-other way: the queue is where their result normally comes from, and a pull request runs them only
-when it carries the label `full-ci`, or `lane:<filter>` for one of them. The
+other way: the queue runs each one its paths select, and each whose own package the group
+changes, and a pull request runs one only when it carries the label `full-ci`, or
+`lane:<filter>` for one of them. The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's
 site on a push trigger of its own.
 

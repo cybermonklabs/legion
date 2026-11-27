@@ -249,6 +249,8 @@ check "the job summary names docs as not run at this head" \
 check "the job summary lists the jobs that ran and passed apart from it" \
   "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, typecheck, worker-image$')"
 check "the job summary's headline says the verdict passed" "$(contains "$step_summary" '^### ci-ok: success, ')"
+check "one notice annotation names docs as not run, for the pull request's page" \
+  "$(contains "$out" "^::notice title=ci-ok did not run every job its paths selected; the merge queue runs them::$not_run_docs\$")"
 
 echo "case: docs held back by the label beside a selected job that failed"
 # A red ci-ok sends its reader to the failure, and the not-run line still says docs did not run,
@@ -260,6 +262,7 @@ check "and so does the job summary" "$(contains "$step_summary" "^- $not_run_doc
 check "which leaves the failed job out of the jobs that ran and passed" \
   "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, worker-image$')"
 check "the job summary's headline says the verdict failed" "$(contains "$step_summary" '^### ci-ok: failure, ')"
+check "and so does the notice" "$(contains "$out" "^::notice title=ci-ok did not run every job its paths selected; the merge queue runs them::$not_run_docs\$")"
 
 echo "case: the not-run line names each held-back job's own lane label"
 # The label that turns one held-back job on is lane:<its changes output>, which is not its job id:

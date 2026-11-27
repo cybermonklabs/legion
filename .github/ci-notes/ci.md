@@ -1865,8 +1865,20 @@ full lane already runs every row of it
 
 What this accepts: a slow test that would have failed the pull request now fails first in the
 queue, where the failure takes the entry out and the queue rebuilds the groups behind it. Every
-build, vet, format, typecheck and lint failure, and every failure of a fast test, still comes
-back on the pull request.
+build, vet, format, typecheck and lint failure, and every failure of a fast test, still comes back
+on the pull request. What it does not accept is a merge without the suite: the queue runs every
+slow suite the group's paths select, and ci-ok fails a group that skipped one whose own package
+it changes
+(.github/ci-notes/ci.md#ci-ok-fails-a-merge-group-that-skipped-a-slow-suite-whose-own-package-it-touches).
+
+Measured over the 276 pull requests merged 2026-11-23T23:53Z to 2026-11-26T23:31Z whose last run's
+computed filters could be read (the jobs API for each job's own result, the run's own `ci-filters`
+artifact over the pull request's files for its selection): 244 had a slow suite their paths
+selected skipped at their last head, 60 of them a race suite, and in all 244 every such suite ran
+and passed in the merge group at the merge commit. So the skip is where this repository chose to
+run the suite, and running the suites on the pull request too would buy back only the queue
+failures they would have caught first: a push would add, on average, 73.5 runner-minutes for every
+slow suite its paths select, or 14.4 for those whose own package it changes.
 
 ## How a slow suite is held back on a pull request
 
@@ -1876,14 +1888,85 @@ tree the change lands as, and that is where its result normally comes from; a pu
 it only when it carries the label `full-ci`, or that one when it carries its `lane:<output>`
 label (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). Each such output is false on a pull-request run without the label, so
 the skip is one `changes` chose: ci-ok reads it as it reads any other output, and no job's `if:`
-knows about the label. The label is read
-from the pull request the run's own event carries, so it takes effect at the next push,
-reopen or ready-for-review, not when it is added: this workflow takes no `labeled`
-trigger, which would start a run that joins this workflow's concurrency group and cancels the
-pull request's run in progress. Take the label off once the run it was added for passes,
+knows about the label. The run says so where a reader looks: the changes job's log and summary
+name each suite it held back and why
+(.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite), and ci-ok names them
+again, in its log, its job summary and one notice on the pull request's checks
+(.github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter-before-the-full-ci-term).
+Take the label off once the run it was added for passes,
 since every later push would run the slow suites again, unless a `ci_check` of the issue
 names one of them: without the label that job's own check run (`test`) concludes `skipped`,
 no job of the file it calls starts, and the run the check names (`test / test`) is absent.
+
+## The changes job says what decided each slow suite
+
+dorny/paths-filter's own log prints `Filter <name> = true` for each filter whose paths matched,
+and for a slow suite on a pull request without its label that line says the opposite of what the
+run does: the suite's output is false and the suite does not run on this head. The step "Say
+what decided each slow suite on this run" (`.github/scripts/lane-verdicts.py`) prints, for each
+output that reads the pull request's labels, what decided it: its paths matched or not, the
+label the pull request carries, whether the suite runs on this run, and for one held back that the
+merge queue runs it. One notice annotation names every suite held back, and the job summary
+lists them. The decision is the output's own expression, evaluated by ci_router_outputs.py's
+evaluator over what the step is handed, and ci-router-outputs.test.sh hands the script the env
+ci.yaml's step evaluates to on each shape of run and holds its decisions to the outputs, so the
+line cannot say what the output does not. A failure of the step is its own red mark and fails
+no job (`continue-on-error`): it only reads.
+
+## A merge group runs every slow suite whose own package the change touches
+
+The merge queue is where completeness belongs: a merge group runs every slow suite its paths
+select. Its paths are the computed filters, which follow build tags: a file only another job's tag
+compiles is in that job's filter and not in this one's. So each slow suite's own packages are
+written in .github/lane-packages.yaml: the packages its legs run (.github/go-legs.yaml), every
+package of the module no place names when it runs the module's `unlisted`, the packages its other
+go test steps name, the paths of its specs, and the harnesses its steps run with their subjects;
+the file's header says what each kind means. On every run but a pull request the changes job
+writes from it one paths filter per suite (`.github/scripts/lane_packages.py filters`, the step
+"Write a filter of each slow suite's own packages") and evaluates it in a second
+dorny/paths-filter step, `own`, and each slow suite's output reads that verdict ahead of its label
+terms: `github.event_name != 'pull_request' && steps.own.outputs.<output> == 'true' && 'true' || ...`.
+A pull request is untouched: the own step does not run there.
+
+Measured on the tree of 2026-11-26, the computed filters leave out 193 files the table gives a
+suite (tagged files such as a package's `natslive`, `!race` or `multiprocess` tests), and over the
+276 pull requests above, the own term would have added a suite to 2 merge groups, about 17
+runner-minutes a day: 0.01 percent of running every selected suite on the pull request too.
+
+The own filter is computed by no rule of check-ci-filters.sh, which admits it as the one other
+filters file of the changes job (its rule 21) and holds each name an output reads from it to the
+table (rule 19). ci-router-outputs.test.sh holds each gated output to reading its own name, off a
+pull request alone; lane-packages.test.sh holds the filter to the gate's reading of the same table
+on every file of the tree, and the table to ci.yaml and to every go test package each suite's
+workflow names.
+
+## ci-ok fails a merge group that skipped a slow suite whose own package it touches
+
+ci-ok's verdict step runs `.github/scripts/lane_packages.py gate` after ci-ok.sh, over the same
+NEEDS, and fails the step when it fails, so the group's failing verdict waits for the front of the
+queue as any other does. On a merge_group run it reads the files the group changes out of git,
+its head against its `base_sha`, which it fetches one commit deep when the sparse checkout does
+not hold it; maps each file to the slow suites that own it, by its own reading of
+.github/lane-packages.yaml in Python (each file to its package directory, testdata folded into the
+package above it, *.md outside one to none); and fails each such suite whose own result in NEEDS is
+not success:
+`<job> is skipped in this merge group, and the group changes its own packages (<files>)`.
+On a pull request and a dispatched run it says it does not judge them.
+
+It reads none of `changes`' outputs. A group that changes a suite's own package selects that suite,
+so such a skip is a fault of the changes job or of the suite's `if:` - a broken own filter, a lost
+output term, a misnamed output - and a check that asked `changes` whether the suite was selected
+would agree with the fault and pass. Reading the change itself, it fails instead. What it shares
+with the changes job is the table, which is the definition of what a suite owns, and
+lane-packages.test.sh holds the two readings of it to the same answer. No label decides a merge
+group: the label term of every output is true off a pull request, and the paths filter reads the
+group's own diff, `base_sha..head_sha` (ci-router-outputs.test.sh's case "a merge group: neither
+input, so its own base_sha..head_sha").
+
+A group git reads no file of is refused as UNKNOWN rather than passed. A head that no run of this
+workflow reached at all has no ci-ok for this check to fail: a pull request that conflicts with
+its base gets no merge commit, and GitHub starts no pull_request run for it on any event;
+.github/workflows/heads-without-runs.yaml names those heads.
 
 ## A citation names a symbol, never a line
 
@@ -1975,10 +2058,12 @@ that output on where its paths matched: `daemon_go_tests`, `dispatch_browser`,
 `dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds`, `envoy_go`,
 `envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
 `envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull
-request that needs one slow suite's result at its head - a test that only that suite runs, or a
-`ci_check` naming that job - without running the others. Each term names its own label, so the
-label that turns a job on is written beside it and nowhere else, and the paths term stays: a
-lane label never runs a suite its filter did not select.
+request that reaches one slow suite only through what the suite's packages import or read, and
+needs the suite's result at its head - a `ci_check` naming that job, a change to a helper a test
+of that suite reads - without running the others. A change to a suite's own package needs no
+label (.github/ci-notes/ci.md#a-change-to-a-slow-suites-own-package-runs-it-on-its-pull-request).
+Each term names its own label, so the label that turns a job on is written beside it and nowhere
+else, and the paths term stays: a lane label never runs a suite its filter did not select.
 
 A label that names no such output - a misspelling, a job id such as `lane:envoy-go` where the
 output is `lane:envoy_go`, or an output that is not held back - turns on nothing and fails
@@ -1988,9 +2073,14 @@ job not run. Failing the run on such a label would fail every check of it for a 
 step of its own that reads the labels. GitHub compares the label without regard to case.
 
 A lane label is read as `full-ci` is, from the pull request the run's own event carries: it
-takes effect at the next push, reopen or ready-for-review, not when it is added, since this
-workflow takes no `labeled` trigger. On a head with no new commit to push, close the pull
-request and reopen it. Take it off once the run it was added for passes, as `full-ci`.
+takes effect at the pull request's next run, not when it is added, since this workflow takes no
+`labeled` trigger. A push, a reopen or a ready-for-review starts that run only while GitHub can
+build the pull request's merge commit: a pull request that conflicts with its base gets no run on
+any event until the conflict is resolved (.github/workflows/heads-without-runs.yaml names such
+heads). On a head with no new commit to push, close the pull request and reopen it; or dispatch
+the branch with every job, `gh workflow run ci.yaml --ref <branch> -f every-job=true`, whose
+verdict is `ci-ok (dispatch)` and counts for no pull request. Take the label off once the run it
+was added for passes, as `full-ci`.
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
 own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
@@ -2042,10 +2132,12 @@ A job a pull request held back did not run at this head, and ci-ok passes over i
 ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
 `not run at this head: <job> (selected by paths, held back on a pull request without full-ci or lane:<output>; runs in the merge queue)`,
 where `<output>` is the job's own `changes` output, so the line names the label that would run
-it. The same lines go to the ci-ok job's summary, apart from the jobs that ran and passed, so a
-green ci-ok on a pull request without the label is not read as those jobs passing. No job runs
+it. The same lines go to the ci-ok job's summary, apart from the jobs that ran and passed, and
+all of them to one notice annotation, which GitHub shows on the pull request's checks beside
+ci-ok, so a green ci-ok on a pull request without the label is not read as those jobs passing,
+whether its reader opens the run or only the pull request. No job runs
 in part, so a job that ran and passed ran all its steps. A run that held nothing back writes no
-summary.
+summary and no notice.
 
 ## What the filter step diffs on a dispatched run
 
@@ -3354,8 +3446,13 @@ queue's refs needs no token at all.
 ## The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and
 
 The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-hold.sh, ci-ok-reconcile.sh and
-the gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
-it needs.
+the gh-read.sh and runner-shutdown.sh they source, and the lane check's lane_packages.py, the
+workflow_paths.py it imports, the two tables it reads (.github/lane-packages.yaml and
+.github/go-legs.yaml) and the two workflows whose harnesses it reads, so the .github cone is the
+whole checkout it needs. The lane check reads a merge group's file names out of git, which needs
+the commits and not their files: the group's head is the checkout, and its base is fetched one
+commit deep
+(.github/ci-notes/ci.md#ci-ok-fails-a-merge-group-that-skipped-a-slow-suite-whose-own-package-it-touches).
 
 ## Why a draft pull request is refused in a step
 

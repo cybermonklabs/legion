@@ -20,8 +20,10 @@ is what the harness tests. It runs the `changes` job's steps in order the way th
 a step's `if:`, `env:` and `with:` are evaluated when it starts, over the outputs of the steps
 before it alone, a step whose `if:` is false is skipped and its outputs read as null, a `run:`
 step that carries an `id` runs in bash with its `env:` and GITHUB_EVENT_NAME, GITHUB_REF,
-GITHUB_SHA and GITHUB_OUTPUT set, and its outputs are what it wrote there. Three steps it models
+GITHUB_SHA and GITHUB_OUTPUT set, and its outputs are what it wrote there. Four steps it models
 instead of running: the `filter` step's outputs are the verdicts given and the list below; the
+`own` step's, the paths filter of the slow suites' own packages, are the --own verdicts given, and
+empty for every other name, as a filter that matched nothing reads; the
 `base` step's `sha` is the --base given, since that step fetches main's history to find it; and
 the `generate` step writes nothing, as ci-filters-generate.sh writes to its outputs only when it
 falls open (--step-outputs gives what it wrote then). One reader, runs(), decides whether each
@@ -47,13 +49,15 @@ false.
 
 Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--ref <ref>] [--sha <sha>]
   [--base <sha>] [--pull-base <sha>] [--input <name>=<value>]... [--label <name>]...
-  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--step-outputs <id>=<file>]...
-  [--filter-step | --generate-step | --concurrency | --steps <job> [--changes-result <result>]]
-       ci_router_outputs.py <workflow> --label-readers
+  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--own <output>=<value>]...
+  [--step-outputs <id>=<file>]...
+  [--filter-step | --generate-step | --concurrency | --step-env <step name>
+   | --steps <job> [--changes-result <result>]]
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
 the changes job's filters, which it computes when it runs (.github/scripts/ci-filters-generate.sh)
 and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
-verdict (default true); --verdict overrides one. --ref defaults to a pull request's merge ref, the
+verdict (default true); --verdict overrides one. --own sets the `own` step's verdict for one slow
+suite's output, which no other verdict sets. --ref defaults to a pull request's merge ref, the
 queue's branch, or refs/heads/main for any other event; --sha to forty 1s. --base is the commit
 the run is measured against, forty 3s by default: a merge group's base, or the commit the `base`
 step finds - the first parent of a pull request's merge commit, the merge base with main on a
@@ -65,7 +69,8 @@ lines, in place of running or modelling it (the generate step's, for one: ci-fil
 writes every_filter=true there when it falls open). --filter-step prints whether the filter step
 runs and the `base` and `ref` it is handed when it starts; --generate-step prints the
 CI_FILTERS_BASE the filter generation step is handed when it starts, its whole `env:` evaluated
-there; --concurrency prints the workflow's concurrency `group` and
+there; --step-env prints, as one JSON object, whether the changes job's step of that name runs
+and its whole `env:` evaluated when it starts; --concurrency prints the workflow's concurrency `group` and
 `cancel-in-progress`. --steps <job> prints instead, for the workflow that job of <workflow>
 calls, `<step>=<true|false>` for each step whose `if:` reads an input the job fills from the
 changes job, with that job's `with:` evaluated over those outputs and needs.changes.result
@@ -98,7 +103,7 @@ class Refused(Exception):
 
 # The contexts an expression may read, whole: the event's name, the run's ref and commit, the pull
 # request's number, label names and base commit, the merge group's base commit, the runner's
-# temporary directory, an input, and a
+# temporary directory, an input, a variable of the workflow's own `env:`, and a
 # step's outputs or one of them; and under --steps the changes job's result and outputs, which only
 # that mode's context holds. A read of anything else, `github.event.pull_request` or `github.event`
 # as a whole among them, is refused, so an output can read the labels only through the path
@@ -106,6 +111,7 @@ class Refused(Exception):
 MODELLED = re.compile(r"github\.event_name|github\.ref|github\.sha|github\.event\.pull_request\.number"
                       r"|github\.event\.pull_request\.labels\.\*\.name|github\.event\.pull_request\.base\.sha"
                       r"|github\.event\.merge_group\.base_sha|runner\.temp|inputs\.[A-Za-z0-9_-]+"
+                      r"|env\.[A-Za-z0-9_]+"
                       r"|steps\.[A-Za-z0-9_-]+\.outputs(?:\.[A-Za-z0-9_-]+)?"
                       r"|needs\.changes(?:\.result|\.outputs(?:\.[A-Za-z0-9_-]+)?)?", re.I)
 # An `inputs.<name>` read, and a value naming the changes job: what makes a step's `if:` one --steps
@@ -326,7 +332,7 @@ def run_step(step, env, context):
     return outputs
 
 
-def run_steps(job, context, filter_outputs, base, given):
+def run_steps(job, context, filter_outputs, base, given, own_outputs=None):
     """Each step of the job in order, as the runner takes them, its outputs into
     context["steps"] under its `id`: a step given with --step-outputs has those outputs, the
     filter, base and generate steps are modelled as the docstring above says, and any other `run:`
@@ -351,6 +357,8 @@ def run_steps(job, context, filter_outputs, base, given):
             outputs = dict(given[step_id])
         elif step_id == "filter":
             outputs = dict(filter_outputs)
+        elif step_id == "own":
+            outputs = dict(own_outputs or {})
         elif step_id == "base":
             outputs = {"sha": base}
         elif step_id == "generate":
@@ -446,10 +454,12 @@ def main():
     parser.add_argument("--concurrency", action="store_true")
     parser.add_argument("--label", action="append", default=[])
     parser.add_argument("--verdict", action="append", default=[])
+    parser.add_argument("--own", action="append", default=[])
     parser.add_argument("--verdicts", default="true", choices=["true", "false"])
     parser.add_argument("--steps")
     parser.add_argument("--changes-result", default="success")
     parser.add_argument("--step-outputs", action="append", default=[])
+    parser.add_argument("--step-env")
     args = parser.parse_args()
     document = yaml.safe_load(Path(args.workflow).read_text())
     outputs = document["jobs"]["changes"]["outputs"]
@@ -502,6 +512,7 @@ def main():
                                                   "base": {"sha": (args.pull_base or args.base) if pull_request else None}},
                                  "merge_group": {"base_sha": args.base if args.event == "merge_group" else None}}},
             "inputs": dispatch_inputs(document, args.event, args.input),
+            "env": {str(name): text_of(value) for name, value in (document.get("env") or {}).items()},
             "steps": {step_id: {"outputs": {}} for step_id in ids},
         }
         evaluator = Evaluator(context)
@@ -510,7 +521,8 @@ def main():
             print(f"group={text_of(interpolate(concurrency.get('group', ''), evaluator))}")
             print(f"cancel-in-progress={text_of(truthy(interpolate(concurrency.get('cancel-in-progress', False), evaluator)))}")
             return 0
-        started = run_steps(changes, context, filter_outputs, args.base, given)
+        own_outputs = dict(pair.partition("=")[::2] for pair in args.own)
+        started = run_steps(changes, context, filter_outputs, args.base, given, own_outputs)
         if args.filter_step:
             step, at_start, ran = started_step(started, lambda s: s.get("id") == "filter", "step of id filter")
             with_ = step.get("with") or {}
@@ -527,6 +539,13 @@ def main():
             env = {str(name): text_of(interpolate(value, Evaluator(at_start)))
                    for name, value in (step.get("env") or {}).items()}
             print(f"filters-base={env.get('CI_FILTERS_BASE', '')}")
+            return 0
+        if args.step_env:
+            step, at_start, ran = started_step(started, lambda s: s.get("name") == args.step_env,
+                                               f"step named {args.step_env!r}")
+            env = {str(name): text_of(interpolate(value, Evaluator(at_start)))
+                   for name, value in (step.get("env") or {}).items()} if ran else {}
+            print(json.dumps({"runs": ran, "env": env}))
             return 0
     except Refused as refusal:
         print(f"ci_router_outputs: {refusal}", file=sys.stderr)

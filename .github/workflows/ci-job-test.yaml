@@ -297,6 +297,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok.test.sh .github/scripts/ci-ok.test.sh
 
+      - name: Test the slow suites' own packages and ci-ok's lane check
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"lane_packages_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/lane-packages.test.sh .github/scripts/lane-packages.test.sh
+
       - name: Test ci-ok's report and the check-run post (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_report_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok-report.test.sh .github/scripts/ci-ok-report.test.sh
