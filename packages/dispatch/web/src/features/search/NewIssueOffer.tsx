@@ -192,7 +192,7 @@ function NewIssueSaid({ state }: { readonly state: OfferState | undefined }): Re
     <p className={barNoteClassName} data-testid="search-new-issue-said" role="status">
       {filed.session === ""
         ? `${filed.issue.key} is made. No conversation was started: this Dispatch names no session for a new issue.`
-        : `${filed.issue.key} is made, and its first message went to the session ${filed.session}.`}
+        : `${filed.issue.key} is made and routed to the session ${filed.session}.`}
     </p>
   );
 }

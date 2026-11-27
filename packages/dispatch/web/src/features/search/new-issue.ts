@@ -34,8 +34,8 @@ export type RefusedWrite = UnconfirmedWrite & { readonly what: string };
 /** What one acceptance made. */
 export interface FiledIssue {
   readonly issue: Issue;
-  /** The session the issue was routed to and its first message went to; `""` where the
-   *  deployment names none, which is the issue made with no conversation started on it. */
+  /** The session the issue was routed to; `""` where the deployment names none, which is the
+   *  issue made with no route. No message goes to the session (R9). */
   readonly session: string;
   /** The first write onto the issue that Dispatch did not confirm, where there was one: the
    *  filing ended there, and the issue stands without it - or with it, where a stopped one
@@ -68,7 +68,9 @@ async function writeOnto<T>(
  * Files the person's typed words as an issue, through the routes every other client writes
  * through: the create, whose own related-item check answers whether anything already in the
  * project is a close match, then the Verification document holding the one criterion, and then,
- * where the deployment names a session, the issue's route and its first message to that session.
+ * where the deployment names a session, the issue's route to that session. It sends that session
+ * no first message: a message is always a row of a plan the person approves (spec R7, R9), and
+ * this offer writes no plan.
  *
  * The create alone decides whether there is an issue. Once it lands the issue is the answer
  * whatever becomes of the writes onto it: the first of those Dispatch refuses ends the filing
@@ -123,13 +125,5 @@ export async function fileNewIssue(
   if (route !== undefined) {
     return filed(route);
   }
-  return filed(
-    await writeOnto(
-      writes,
-      "its first message",
-      `The first message on ${issue.key}`,
-      "POST",
-      (bounds) => api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds)
-    )
-  );
+  return filed(route);
 }

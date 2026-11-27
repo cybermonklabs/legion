@@ -1756,9 +1756,9 @@ test("with no deciding model, words that match nothing offer a New issue group u
     expect(screen.getByTestId("search-keyboard-hints")).toHaveTextContent("↵ Make · Esc Close");
     await user.keyboard("{Enter}");
 
-    // Main's filing: the create, labelled; the words as the issue's first criterion; its route
-    // to the session the deployment names, and its first message there; then the issue opens.
-    await waitFor(() => expect(spies.createMessage).toHaveBeenCalled());
+    // Main's filing, less its first message: the create, labelled; the words as the issue's
+    // first criterion; its route to the session the deployment names; then the issue opens.
+    await waitFor(() => expect(spies.patchIssue).toHaveBeenCalled());
     expect(spies.createIssue.mock.calls[0]?.[0]).toEqual({
       labels: ["from-the-bar"],
       project: "CORE",
@@ -1772,10 +1772,8 @@ test("with no deciding model, words that match nothing offer a New issue group u
       "CORE-7",
       { route: "session:sess-1" },
     ]);
-    expect(spies.createMessage.mock.calls[0]?.slice(0, 2)).toEqual([
-      "CORE-7",
-      { body: NEW_ISSUE_WORDS, delivery: "aside", target: "session:sess-1" },
-    ]);
+    // Spec R9: the bar sends the routed session no first message.
+    expect(spies.createMessage).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-7")
     );

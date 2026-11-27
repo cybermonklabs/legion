@@ -148,7 +148,7 @@ test("accepting writes the words as the issue's first criterion, labels it, rout
   try {
     await user.click(await offerFor(user));
 
-    await waitFor(() => expect(bar.createMessage).toHaveBeenCalled());
+    await waitFor(() => expect(bar.patchIssue).toHaveBeenCalled());
     expect(bar.createIssue.mock.calls[0]?.[0]).toEqual({
       labels: ["from-the-bar"],
       project: "CORE",
@@ -160,11 +160,8 @@ test("accepting writes the words as the issue's first criterion, labels it, rout
       name: "verification.md",
     });
     expect(bar.patchIssue.mock.calls[0]?.[1]).toEqual({ route: "session:sess-1" });
-    expect(bar.createMessage.mock.calls[0]?.[1]).toEqual({
-      body: words,
-      delivery: "aside",
-      target: "session:sess-1",
-    });
+    // Spec R9: the bar sends the routed session no first message.
+    expect(bar.createMessage).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-7")
     );
