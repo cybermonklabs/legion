@@ -52,9 +52,9 @@ type Deps struct {
 	// such a caller — its name, its powers and every refusal — is the Kubernetes caller's.
 	GoogleAPIAccounts map[string]Account
 	// AccountTokens verifies those callers' projected ServiceAccount tokens, against the same
-	// Kubernetes issuer and audience a pod enrolls with (cmd/cipherd passes the one verifier it
-	// builds). Nil is a broker that trusts no Kubernetes issuer, where no Kubernetes caller
-	// authenticates.
+	// Kubernetes issuer and audiences a pod enrolls with, any audience BROKER_K8S_OIDC_AUDIENCE
+	// lists (cmd/cipherd passes the one verifier it builds). Nil is a broker that trusts no
+	// Kubernetes issuer, where no Kubernetes caller authenticates.
 	AccountTokens enroll.PodVerifier
 	// GoogleAccountTokens verifies a Google caller's identity token, against the issuer and
 	// audience BROKER_GOOGLE_OIDC_ISSUER and BROKER_GOOGLE_OIDC_AUDIENCE name — the audience
@@ -74,10 +74,10 @@ type Deps struct {
 	PodRegistrars PodRegistrars
 	// PodRegistrationTokens verifies a registration's pod token at
 	// BROKER_POD_REGISTRATION_AUDIENCE, against the cluster issuer and key set Enroll.Pod verifies
-	// the broker's own audience with (cmd/cipherd builds both on one oidc.Keys). Only POST
-	// /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no other route accepts a
-	// token of that audience. Nil is a broker with no such audience, whose registration route
-	// accepts the broker's own audience alone.
+	// the audiences BROKER_K8S_OIDC_AUDIENCE lists with (cmd/cipherd builds both on one
+	// oidc.Keys). Only POST /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no
+	// other route accepts a token of that audience. Nil is a broker with no such audience, whose
+	// registration route accepts the listed audiences alone.
 	PodRegistrationTokens enroll.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).

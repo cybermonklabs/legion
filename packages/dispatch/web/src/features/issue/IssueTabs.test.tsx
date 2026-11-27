@@ -30,6 +30,7 @@ test("IssueTabs exposes the Conversation tab at its canonical route", async () =
 
   try {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Dashboard",
       "Spec",
       "Verification",
       "Plan",

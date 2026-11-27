@@ -204,6 +204,7 @@ function renderOutlineHeader(shown: IssueDetails) {
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(shown),
     spyOn(api, "getMyState").mockResolvedValue({ [shown.key]: state }),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
   ];

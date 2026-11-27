@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { oklchToSrgb8 } from "./contrast";
+import { declarationsWithTrailingComment } from "./css-source";
 import * as P from "./palette";
 
 /**
@@ -21,10 +22,11 @@ for (const value of Object.values(P)) {
   }
 }
 
-/** A hex or `rgb()`/`rgb(... / N%)` color literal immediately followed by `;` and an annotation
- * comment naming the swatch it's meant to equal. */
-const ANNOTATED_COLOR_PATTERN =
-  /(#[0-9a-fA-F]{6}|rgb\([^)]+\));\s*\/\*\s*([a-z]+(?:-[a-z0-9]+)+)(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//g;
+/** A hex or `rgb()`/`rgb(... / N%)` color literal. */
+const COLOR_LITERAL_PATTERN = /#[0-9a-fA-F]{6}\b|rgb\([^)]+\)/g;
+
+/** The comment that ends a color's declaration, naming the swatch it's meant to equal. */
+const SWATCH_COMMENT_PATTERN = /^([a-z]+(?:-[a-z0-9]+)+)(?:\s+at\s+[\d.]+%\s+alpha)?$/;
 
 function hexToRgb(hex: string): readonly [number, number, number] {
   const value = Number.parseInt(hex.slice(1), 16);
@@ -46,20 +48,24 @@ interface Annotation {
   readonly swatchName: string;
 }
 
-const annotations: Annotation[] = [...stylesCss.matchAll(ANNOTATED_COLOR_PATTERN)].map((match) => {
-  const [, literal, swatchName] = match;
-  const actual = literal.startsWith("#") ? hexToRgb(literal) : rgbFunctionToRgb(literal);
-  return { actual, swatchName };
-});
-
-/** Every hex/`rgb()` literal in the file, annotated or not — the exhaustiveness check below
- * (not just the count-of-annotated-literals guard above) is what actually prevents a future
- * hand-added color from silently skipping this whole test by never getting a `/* swatch-name *\/`
- * comment in the first place. */
-const ANY_COLOR_LITERAL_PATTERN = /#[0-9a-fA-F]{6}\b|rgb\([^)]+\)/g;
-const allColorLiterals = [...stylesCss.matchAll(ANY_COLOR_LITERAL_PATTERN)].map(
-  (match) => match[0]
-);
+/** Every color literal in a declaration of the file, annotated or not, with the annotated ones
+ * apart: a declaration whose value ends in a literal and whose trailing comment names a swatch.
+ * The exhaustiveness check below (not just the count-of-annotated-literals guard above) is what
+ * actually prevents a future hand-added color from silently skipping this whole test by never
+ * getting a `/* swatch-name *\/` comment in the first place. A color named in any other comment
+ * is in no declaration, so it counts for nothing. */
+const allColorLiterals: string[] = [];
+const annotations: Annotation[] = [];
+for (const { comment, value } of declarationsWithTrailingComment(stylesCss)) {
+  const literals = value.match(COLOR_LITERAL_PATTERN) ?? [];
+  allColorLiterals.push(...literals);
+  const literal = literals[literals.length - 1];
+  const swatchName = comment === undefined ? undefined : SWATCH_COMMENT_PATTERN.exec(comment)?.[1];
+  if (literal !== undefined && swatchName !== undefined && value.endsWith(literal)) {
+    const actual = literal.startsWith("#") ? hexToRgb(literal) : rgbFunctionToRgb(literal);
+    annotations.push({ actual, swatchName });
+  }
+}
 
 test("every color literal in the file carries a swatch-name annotation", () => {
   expect(allColorLiterals.length).toBe(annotations.length);

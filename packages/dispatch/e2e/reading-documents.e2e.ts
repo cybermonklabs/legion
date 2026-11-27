@@ -140,7 +140,7 @@ test("margin-decision-passage: a margin decision card's passage draws every form
   // The card is an article a click selects, never a link or a button, and its passage is drawn
   // in it, so each reference is a link.
   const card = page.getByRole("article", { name: `Decision: ${DECISION}` });
-  await expectReadsReferences(card.locator("[data-markdown-preview]"), scoped, "link");
+  await expectReadsReferences(card.locator("[data-decision-text]"), scoped, "link");
 });
 
 // SLOW(>=2s): the reading world, a message, and the Conversation drawn while the reader pins it

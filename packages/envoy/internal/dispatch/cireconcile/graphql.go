@@ -706,5 +706,9 @@ func (r *Reconciler) graphQLPace(ctx context.Context, c *counts) {
 // graphQLWait is the pause one query of took earns: the time outside the budget, shared out in
 // the same proportion the budget shares out the minute.
 func graphQLWait(took time.Duration) time.Duration {
-	return took * (time.Minute - GraphQLTimePerMinute) / GraphQLTimePerMinute
+	// The 45 s processing budget leaves 15 s for waiting, an exact 3:1 ratio. Reduce the
+	// constants first: multiplying two nanosecond durations overflows even for a 1 s query.
+	const processing = int64(GraphQLTimePerMinute / time.Second)
+	const waiting = int64((time.Minute - GraphQLTimePerMinute) / time.Second)
+	return time.Duration(int64(took) / (processing / waiting))
 }

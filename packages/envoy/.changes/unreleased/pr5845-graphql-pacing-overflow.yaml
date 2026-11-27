@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  CI reconciliation keeps its 45-second-per-minute GraphQL processing budget when a query
+  takes more than about 615 ms. The request gap no longer overflows into a negative or
+  misleadingly short positive duration, and previously safe results keep their exact value.
+time: 2026-11-27T13:26:09Z
+custom:
+    Issue: pr5845

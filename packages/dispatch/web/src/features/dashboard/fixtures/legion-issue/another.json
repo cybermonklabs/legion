@@ -1,0 +1,17 @@
+{
+  "issue": "ACME-7",
+  "project": "ACME",
+  "configured": true,
+  "state": {
+    "phase": "unknown_state",
+    "phase_since": "2026-11-25T14:04:47.054501Z",
+    "phase_start_seen": false,
+    "roles": [{ "role": "architect", "state": "working" }, { "role": "planner", "state": "idle" }],
+    "slot": null,
+    "waiting_line": null,
+    "blocked_by": [],
+    "waiting_on": null
+  },
+  "read": { "at": "2026-11-25T14:04:47.054501Z", "ok": true, "error": null },
+  "runs_revision": 0
+}

@@ -8,7 +8,7 @@ import {
   DECISIONS_WORDS,
   NODE_STATE_WORDS,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
 import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
@@ -279,7 +279,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     // folded where it lands, so the facts are read again, every branch unfolded first, until
     // the reads are in.
     await page.setViewportSize(DESKTOP);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect
       .poll(
@@ -371,7 +371,7 @@ test("only a decision that changed a statement waits for review @phone", async (
     // The other two are drawn in the outline under the issue, with no Keep or Change control,
     // the focus on them included.
     await page.setViewportSize(DESKTOP);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     for (const block of [seeded.tiedToNote, seeded.untied]) {
@@ -492,7 +492,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     // With no filter on, the decision says the same and the change hangs under it. The
     // decisions and the comments arrive after the tree is drawn, each maybe folded where it
     // lands, so the facts are read again, every branch unfolded first, until the reads are in.
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect
       .poll(

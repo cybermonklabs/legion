@@ -102,3 +102,6 @@ export function RefusableButton({
     </>
   );
 }
+
+// The page's looks, which the decision card's own buttons draw too (`DecisionCard.tsx`'s `TONES`).
+export { PAGE_LOOKS };

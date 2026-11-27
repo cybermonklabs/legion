@@ -12,12 +12,12 @@ import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
-import { filterSignals, isFilter, presetView } from "../presets";
+import { filterSignals, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
- * The view row (R2, R11): the five view controls and Keys
+ * The view row (R2, R11): the six view controls, Dashboard first, and Keys
  * (`IssuePresets.tsx`), each control's signal read off the issue's one tree, and below 1024 px,
  * with no view on, the Outline control beside the one control (`contents-frame.tsx`). It binds
  * the views' chords (`useIssueKeymap.ts`). The signals are drawn only once every read the tree
@@ -72,7 +72,11 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
-        outline={paned || isFilter(address.preset) ? undefined : <OutlineSheet slot={props} />}
+        // The Outline control stands only beside the outline: every filter draws its own view, and
+        // Dashboard draws none.
+        outline={
+          paned || address.preset !== "conversation" ? undefined : <OutlineSheet slot={props} />
+        }
         signals={signals}
       />
     </div>

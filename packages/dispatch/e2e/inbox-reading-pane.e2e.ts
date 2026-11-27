@@ -107,15 +107,14 @@ test("the Inbox shows a decision block in the reading pane and answers it in two
       })
       .toBe(true);
 
-    // Two taps answer it: the option, then Answer. The note disclosure stays shut - a reader who
-    // picks an option is done - and nothing else is pressed.
+    // Two taps answer it: the option, then Answer. The answer box stands in place and keeps
+    // nothing the reader did not type - a reader who picks an option is done - and nothing else
+    // is pressed.
     const card = block.locator("article[data-testid^=ask-]");
-    const disclosure = card.getByRole("button", {
-      name: "Add a note or answer in your own words",
-    });
-    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    const answerBox = card.locator("[data-ask-answer]");
+    await expect(answerBox).toHaveValue("");
     await card.getByRole("radio", { exact: true, name: "Ledger first" }).click();
-    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    await expect(answerBox).toHaveValue("");
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
 
     // The answered row leaves the list and the Inbox read behind it, and the next row is shown.
@@ -347,9 +346,7 @@ test("an options-only answer the server refuses keeps its question in the column
   }
 });
 
-test("Enter opens the selected decision block's note field and puts the focus in it", async ({
-  browser,
-}) => {
+test("Enter puts the focus in the selected decision block's answer field", async ({ browser }) => {
   const seed = await seedInbox();
   const alice = await asUser(browser, "alice");
   try {
@@ -361,18 +358,16 @@ test("Enter opens the selected decision block's note field and puts the focus in
     const card = pane
       .locator(`[data-dispatch-ask-block="${DECISION_BLOCK}"]`)
       .locator("article[data-testid^=ask-]");
-    const disclosure = card.getByRole("button", {
-      name: "Add a note or answer in your own words",
-    });
-    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    const answerBox = card.locator("[data-ask-answer]");
+    await expect(answerBox).toBeVisible();
+    await expect(answerBox).not.toBeFocused();
 
-    // One Enter, the key the Inbox offers for answering the selected question: the note field
-    // opens AND the reader is in it. A field that opens without the focus leaves every later
+    // One Enter, the key the Inbox offers for answering the selected question: the reader is in
+    // the answer field, which stands in place. A field without the focus leaves every later
     // keystroke to the Inbox's own keys - `j` walks the list while the reader believes they are
     // writing an answer.
     await page.keyboard.press("Enter");
-    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    await expect(card.locator("[data-ask-answer]")).toBeFocused();
+    await expect(answerBox).toBeFocused();
 
     // What the reader types then reaches the answer, and the selection stays where it was.
     await page.keyboard.type("Ledger first, for the lease.");

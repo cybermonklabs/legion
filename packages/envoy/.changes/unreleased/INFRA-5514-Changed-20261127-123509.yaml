@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  The secrets broker's `BROKER_K8S_OIDC_AUDIENCE` takes one or more audiences, separated by white
+  space, all of the issuer `BROKER_K8S_OIDC_ISSUER` names. So a deployment can take an old and a
+  new pod-token audience while it moves its callers from one to the other. A token of any listed
+  audience is taken where a token of the one audience was: a pod's enrolment and its renewals, a
+  service's token login of `BROKER_SERVICE_LOGINS` and the registration and release routes it
+  calls with its token, a caller of `BROKER_API_ACCOUNTS`, an edge listener's
+  `GET /v1/project-repositories`, and the pod token a registration carries. The token exchange,
+  the NATS auth service and the NATS writer hold take none of them. The broker checks a token
+  against the listed audience it carries, so an expired token of a listed audience is refused as
+  expired, and a token of an audience the setting does not list is refused as before.
+
+  The broker refuses to start on two more values: an audience listed twice, naming the setting and
+  the audience, and a listed audience equal to `BROKER_EXCHANGE_K8S_AUDIENCE`,
+  `BROKER_POD_REGISTRATION_AUDIENCE` or `BROKER_NATS_K8S_AUDIENCE`, naming both settings. A value
+  of one audience is read as before, with one exception: a deployment whose exchange or NATS
+  audience equals its one pod-token audience started before and now stops at start. Give that
+  setting an audience of its own. The operate page's "Moving callers to another pod-token
+  audience" gives the steps of a move.
+time: 2026-11-27T12:35:09Z
+custom:
+    Issue: INFRA-5514

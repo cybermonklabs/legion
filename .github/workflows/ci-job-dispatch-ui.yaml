@@ -42,18 +42,26 @@ jobs:
       # (every job of dispatch-browser.yaml that runs the suite needs contracts built for the
       # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
       # file's shard job explains).
-      # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself,
-      # ./dispatch-snippet, ./dispatch-tools and ./http-status
+      # `build:dispatch` bundles only the contracts entries Dispatch imports, five of them: the
+      # package itself, ./dispatch-snippet, ./dispatch-tools and ./http-status
       # (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
       # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`,
       # `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` and
-      # `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four) - so the
-      # build compiles no module outside the set the dashboard's tsc
-      # programs compile, which is what this job's filter lists, and not ./legion-api, which
-      # Dispatch never imports. package.json allows no comment, so this is where the list is
-      # explained: a new import of a contracts subpath by packages/dispatch adds its entry to
-      # that script, or Playwright's Node resolution fails on the missing dist/ file. The
-      # package's own `bun run test` below runs the same script again (build:contracts).
+      # `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four), and
+      # ./legion-api. The SPA's sources import ./legion-api as types only
+      # (`packages/dispatch/web/src/features/dashboard/phase-track.ts#LegionPhase` and
+      # `packages/dispatch/web/src/features/dashboard/role-words.ts#LegionClaimState`), so the
+      # SPA build removes the import and vite needs no alias for it. The e2e seed imports
+      # `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` as a value, which
+      # Playwright's Node run reads from dist/legion-api.js, and that is why the script builds
+      # this fifth entry; packages/dispatch/e2e/__tests__/contracts-build-entries.test.ts holds
+      # the script to every contracts subpath the dashboard and the proof editor import. The
+      # dashboard's tsc program compiles ./legion-api through those imports, so the build
+      # compiles no module outside the set the dashboard's tsc programs compile, which is what
+      # this job's filter lists. package.json allows no comment, so this is where the list is
+      # explained: a new import of a contracts subpath by packages/dispatch adds its entry to that
+      # script, or Playwright's Node resolution fails on the missing dist/ file. The package's own
+      # `bun run test` below runs the same script again (build:contracts).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build:dispatch
         working-directory: packages/contracts

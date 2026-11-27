@@ -218,6 +218,19 @@ var ScratchVariables = []string{"TMPDIR", "XDG_CACHE_HOME", "XDG_DATA_HOME", "GO
 // fresh volume. The shim runs as the pod's own user, which can write the volume, and makes
 // exactly the directories the runtime told it to use, read from the same environment the agent
 // starts on, so the names cannot drift.
+//
+// TMPDIR is left without the set-group-ID bit. The issue's volume carries the pod's fsGroup, and
+// the kubelet's ownership change for it sets that bit on each of the volume's directories, so
+// Linux gives it to every directory made under one, whatever mode its maker asked for: a tool a
+// role runs that makes a directory 0700 in its TMPDIR, as test suites do, would find 02700
+// (OSSV-775, four mode assertions of OSS Verify's that fail there and pass under a 0700
+// temporary directory off the volume). Clearing the bit on TMPDIR, the one directory every
+// role's tools make their own directories directly under, gives those directories the mode
+// asked for. It is cleared on a TMPDIR this call makes and on one it finds, a retained volume's
+// from an earlier release; TMPDIR's access bits, its owner and its group stay as they are, and
+// so do its parent and the other directories of the set, which keep the volume's group as the
+// kubelet set it. A bit that cannot be cleared is a refusal naming the path, as a directory that
+// cannot be made is.
 func EnsureScratch(environ []string) error {
 	env := lookup(environ)
 	for _, name := range ScratchVariables {
@@ -228,8 +241,27 @@ func EnsureScratch(environ []string) error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("pod safety: make the directory %s names, %s: %w", name, dir, err)
 		}
+		if name != "TMPDIR" {
+			continue
+		}
+		if err := clearSetgid(dir); err != nil {
+			return fmt.Errorf("pod safety: clear the set-group-ID bit of the directory TMPDIR names, %s: %w", dir, err)
+		}
 	}
 	return nil
+}
+
+// clearSetgid removes the set-group-ID bit from dir's mode, where it is set, and changes nothing
+// else of it: its access bits, its set-user-ID and sticky bits, its owner and its group.
+func clearSetgid(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSetgid == 0 {
+		return nil
+	}
+	return os.Chmod(dir, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSticky))
 }
 
 // GhExtensionsDir is where the worker image installs the gh extensions it ships

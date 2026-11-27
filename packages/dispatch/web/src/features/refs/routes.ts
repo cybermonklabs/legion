@@ -36,6 +36,7 @@ export type IssueRoute =
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
+  | { key: string; kind: "dashboard" }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
@@ -170,6 +171,7 @@ export type IssueTab =
   | "artifacts"
   | "activity"
   | "decisions"
+  | "dashboard"
   | "collaborators";
 
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
@@ -275,6 +277,9 @@ export function issueTabForRoute(
   }
   if (route.kind === "decisions") {
     return "decisions";
+  }
+  if (route.kind === "dashboard") {
+    return "dashboard";
   }
   if (route.kind === "artifact") {
     return isPrimaryDocumentArtifactRoute(route, artifact) ? "spec" : "artifacts";
@@ -504,6 +509,12 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "decisions") {
     return { key, kind: "decisions" };
   }
+  // Dashboard's tab is a page of the web alone, out of `PLAIN_ISSUE_TABS`: its path opens the tab,
+  // and no reader of text reads `dispatch://<KEY>/dashboard` or this path as a reference
+  // (`pageRoutes`), as the server's `text` reads neither.
+  if (target === "dashboard") {
+    return { key, kind: "dashboard" };
+  }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
@@ -681,6 +692,10 @@ function pageRoutes(
   if (route === undefined || (isProjectRoute(route) && route.kind !== "document")) {
     return undefined;
   }
+  // Dashboard's path names nothing in text, as the server's `text` reads it (`parseIssuePath`).
+  if (route.kind === "dashboard") {
+    return undefined;
+  }
   // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
   // whatever its fragment, as the server's `text` and the agent client read the page.
   if (route.kind === "decisions") {
@@ -757,6 +772,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   // verification, plan, steps, activity, children, artifacts, collaborators and the
   // conversation's `log` - were references the server refused to read.
   if (isPlainIssueRoute(route) || route.kind === "conversation") {
+    return issue;
+  }
+  // Dashboard's tab is the issue, as every other tab is, though no reference names the tab.
+  if (route.kind === "dashboard") {
     return issue;
   }
   if (route.kind === "decisions") {
@@ -997,6 +1016,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} log`;
     case "decisions":
       return `${route.key} decisions`;
+    case "dashboard":
+      return `${route.key} dashboard`;
     case "artifact":
       return `${route.key} ${route.slug}${block}`;
     case "ask":
@@ -1143,6 +1164,9 @@ export function buildIssuePath(route: IssueRoute): string {
   }
   if (route.kind === "decisions") {
     return `${issue}/decisions`;
+  }
+  if (route.kind === "dashboard") {
+    return `${issue}/dashboard`;
   }
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;
