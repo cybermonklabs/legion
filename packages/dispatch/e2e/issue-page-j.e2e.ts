@@ -2907,7 +2907,6 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
     const body = await openSpecStatement(page, seeded, "r-kind-1").then(() =>
       issuePage(page).locator("[data-spec-body]")
     );
-    const failures: string[] = [];
     const statementOf = (index: number) =>
       body.locator(
         `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, `r-kind-${index}`)}"]`
@@ -2963,14 +2962,14 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
             return null;
           }
           const paragraph = drawn.querySelector("p") ?? drawn;
-          const point = document.createRange();
-          if (target === undefined) point.setStart(caret.anchorNode, caret.anchorOffset);
-          else if (target === "end") point.setStart(paragraph, paragraph.childNodes.length);
+          const spot = document.createRange();
+          if (target === undefined) spot.setStart(caret.anchorNode, caret.anchorOffset);
+          else if (target === "end") spot.setStart(paragraph, paragraph.childNodes.length);
           else {
             const breaks = [...paragraph.querySelectorAll("br:not(.ProseMirror-trailingBreak)")];
             const broken = breaks[target.before];
             if (broken === undefined) return null;
-            point.setStartBefore(broken);
+            spot.setStartBefore(broken);
           }
           let text = "";
           let atoms = 0;
@@ -2979,11 +2978,11 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
             NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT
           );
           for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-            if (point.comparePoint(node, 0) >= 0) break;
+            if (spot.comparePoint(node, 0) >= 0) break;
             if (node instanceof Text) {
               if (node.parentElement?.isContentEditable === true) {
-                const within = point.startContainer === node;
-                text += within ? node.data.slice(0, point.startOffset) : node.data;
+                const within = spot.startContainer === node;
+                text += within ? node.data.slice(0, spot.startOffset) : node.data;
                 if (within) break;
               }
             } else if (
@@ -2999,19 +2998,21 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
         },
         { block: blockId, target: place }
       );
-    /** Leaves the editor or the page a press opened, and brings the Spec view back. */
-    const recover = async (row: Locator, address: string) => {
-      if (page.url() !== address) {
+    /** Expectations that note a cell's failure and go on to the next cell: the row reads every
+     *  cell, and fails once, naming each cell whose caret is not where the press was. */
+    const softly = expect.configure({ soft: true });
+    /** Leaves what a press opened - the statement's editor, or what a link opened - and brings the
+     *  Spec view back. */
+    const recover = async (row: Locator, address: string, opened: "editor" | "link") => {
+      if (opened === "link" && page.url() !== address) {
         await page.goBack();
         await expect(row, "Back does not bring the Spec view back").toBeVisible();
       }
-      if ((await page.locator("[role='dialog']").count()) > 0) await page.keyboard.press("Escape");
-      if ((await row.locator("[data-editor-box]").count()) > 0) {
-        await page.keyboard.press("Escape");
-        await expect(row.locator("[data-editor-box]"), "Escape leaves the editor open").toHaveCount(
-          0
-        );
-      }
+      await page.keyboard.press("Escape");
+      await expect(page.locator("[role='dialog']"), "Escape leaves a dialog open").toHaveCount(0);
+      await expect(row.locator("[data-editor-box]"), "Escape leaves the editor open").toHaveCount(
+        0
+      );
     };
     for (const width of [DESKTOP.width, 390]) {
       await page.setViewportSize({ height: DESKTOP.height, width });
@@ -3086,60 +3087,50 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
                   };
           }
         }
-        if (point === undefined) {
-          failures.push(`${cell}: the statement draws nothing to press there`);
-          continue;
-        }
-        await page.mouse.click(point.x, point.y);
+        expect(point, `${cell}: the statement draws nothing to press there`).toBeDefined();
+        const at = point ?? { x: 0, y: 0 };
+        const block = `r-kind-${index}`;
+        await page.mouse.click(at.x, at.y);
         if (place === "inside" && kind?.link === true) {
-          // A link opens where it is pressed, and the caret does not go into the words.
+          // A link opens where it is pressed, so once the page stops moving no caret is in the
+          // words.
           await settledScrollTop(page);
-          if (await caretInRowBlock(page, `r-kind-${index}`)) {
-            failures.push(`${cell}: the press put the caret in the words, not the link's press`);
-          }
-          await recover(row, address);
+          softly(
+            await caretInRowBlock(page, block),
+            `${cell}: the press put the caret in the words, not the link's press`
+          ).toBe(false);
+          await recover(row, address, "link");
           continue;
         }
-        const placed = await expect
-          .poll(() => caretInRowBlock(page, `r-kind-${index}`), { timeout: 10_000 })
-          .toBe(true)
-          .then(
-            () => true,
-            () => false
-          );
-        if (!placed) {
-          failures.push(`${cell}: the press at (${point.x}, ${point.y}) put no caret in the words`);
-          await recover(row, address);
-          continue;
-        }
+        await softly
+          .poll(() => caretInRowBlock(page, block), {
+            message: `${cell}: the press at (${at.x}, ${at.y}) puts no caret in the words`,
+            timeout: 10_000,
+          })
+          .toBe(true);
         if (place === "before" || place === "after") {
           const word = `${place === "before" ? "prior" : "later"}${index}`;
-          const caretWord = await wordAtCaret(page, "selection");
-          if (caretWord !== word)
-            failures.push(`${cell}: the caret is in "${caretWord}", not "${word}"`);
+          softly(
+            await wordAtCaret(page, "selection"),
+            `${cell}: the caret is in another word`
+          ).toBe(word);
         } else {
-          const caret = await caretPlace(row, `r-kind-${index}`);
           const wanted =
             place === "inside"
               ? { atoms: 0, text: `prior${index} ` }
               : await caretPlace(
                   row,
-                  `r-kind-${index}`,
+                  block,
                   place === "words end" ? "end" : { before: kind === undefined ? 0 : 1 }
                 );
-          if (JSON.stringify(caret) !== JSON.stringify(wanted)) {
-            failures.push(
-              `${cell}: the caret stands after ${JSON.stringify(caret)}, not after ${JSON.stringify(wanted)}`
-            );
-          }
+          softly(
+            await caretPlace(row, block),
+            `${cell}: the caret stands elsewhere than the place pressed`
+          ).toEqual(wanted);
         }
-        await recover(row, address);
+        await recover(row, address, "editor");
       }
     }
-    expect(
-      failures,
-      `cells whose caret is not where the press was:\n${failures.join("\n")}`
-    ).toEqual([]);
   });
 });
 
