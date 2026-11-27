@@ -32,8 +32,8 @@ const (
 	carriedClosing       = " The daemon starts that phase's own worker itself."
 	carriedOwnClosing    = " That phase is your own, so the daemon starts no worker for it."
 	carriedHeldClosing   = " No worker works that phase, so the daemon starts none for it."
-	carriedMergedClosing = " Its pull request has merged, so the daemon starts no worker for that phase, and the root stands " +
-		"there until the rest of its tree has left the workflow, when the daemon closes it."
+	carriedMergedClosing = " Its pull request has merged, so the daemon starts no worker for that phase. The root moves into " +
+		"verifying, where it waits for its checks and the rest of its tree before the daemon closes it."
 	gateStandingClosing  = " Its own first phase starts only once its design gate opens."
 	gateOpenClosing      = " The daemon starts its first phase itself once it holds an admission slot and neither an open child under it nor an issue it is blocked by holds that phase back."
 	readmittedClosing    = " Its own first phase starts only once its design gate opens again."
