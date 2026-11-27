@@ -2,24 +2,20 @@ package admit
 
 import (
 	"context"
-	"reflect"
-	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The admission rules a merged issue waiting for the checks of its goal meets (Task 7 of
-// dispatch://INFRA-5580/artifact/plan-md): the unslotted release passes over it, a quiet tree
-// whose root waits for a child in verifying is no stall, and the wait holds none of the cap's
-// slots.
+// The admission rules a merged issue waiting for the checks of its goal meets (Task 7 of the
+// done-by-checks plan): the unslotted release passes over it, and the wait holds none of the cap's
+// slots. The quiet tree whose root waits for its child in verifying is
+// TestAQuietTreeWhoseRootWaitsForItsChildIsNoStall in tree_stalled_test.go.
 
 // seedVerifyingRoot records key as a root whose pull request merged and whose close waits in
 // verifying, with the merge snapshot on its row and the stored status of that wait.
@@ -76,60 +72,6 @@ func closeLifecycle(t *testing.T, pool *pgxpool.Pool, key string) {
 			t.Fatalf("close the tree lifecycle of %s: %v", key, err)
 		}
 	})
-}
-
-// A quiet tree whose merged root waits in verifying for a child that waits there too is no stall:
-// neither issue's wait ends by a worker of the tree, so the controller hears nothing, however
-// many passes run. The control stands beside it on the same database and the same clock: a root
-// in implementing, which a worker of its tree is there to move, is told.
-func TestAQuietTreeWhoseRootWaitsForItsChildIsNoStall(t *testing.T) {
-	pool := migratedPool(t)
-	bound := deploymentBound(t, "")
-	admission := quiet(t, 4)
-	admission.UseStalledTreeNotice(bound)
-	registerController(t, pool)
-	records := claimStore(t, pool)
-
-	const root, child, stoppedRoot = "LEGION-630", "LEGION-631", "LEGION-640"
-	seedVerifyingRoot(t, pool, root, "A")
-	seedLifecycle(t, pool, root)
-	seedPullRequest(t, pool, root, 63, record.PullRequestMerged)
-	seedClaim(t, records, root, root, claim.RoleArchitect, supervise.StateIdle)
-
-	// The child beneath it, merged and waiting in verifying too: the root's close waits for it
-	// (record.OpenBeneath), and nothing of the tree is at work.
-	beneath := seedQuietChild(t, pool, root, child, "B", phase.Verifying, "testing")
-	beneath.Merge = record.Merge{Number: 64, Head: "head-64", SHA: "merge-64", Base: "main", Repo: "acme/widgets", MergedAt: fixedNow.Add(-2 * time.Hour)}
-	putIssue(t, pool, beneath)
-	seedPullRequest(t, pool, child, 64, record.PullRequestMerged)
-	seedClaim(t, records, root, child, claim.RoleArchitect, supervise.StateIdle)
-
-	seedQuietRoot(t, pool, stoppedRoot, "C", phase.Implementing)
-	seedClaim(t, records, stoppedRoot, stoppedRoot, claim.RoleImplementer, supervise.StateIdle)
-
-	// The fixture's own premise: the root's close waits for the child beneath it, and neither
-	// holds one of the cap's slots.
-	members := []record.Issue{issue(t, pool, root), issue(t, pool, child)}
-	if open := record.OpenBeneath(members[0], members); !slices.Equal(open, []string{child}) {
-		t.Fatalf("the issues beneath %s still in the workflow = %v, want %s: this case is a root that waits for its child", root, open, child)
-	}
-	_, slotRows := passFacts(t, pool)
-	for _, slot := range slotRows {
-		if slot.Issue == root || slot.Issue == child {
-			t.Fatalf("%s holds one of the cap's slots: this case is a tree that waits on no slot", slot.Issue)
-		}
-	}
-
-	settled := settleMovements(t, pool, root, child, stoppedRoot)
-	admission.now = func() time.Time { return settled.Add(bound + time.Hour) }
-
-	for _, pass := range []string{"first", "second", "third"} {
-		tick(t, pool, admission, "quiet-tree-"+pass)
-	}
-
-	if got, want := stalledRoots(t, pool), []string{stoppedRoot}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the controller was told of %v, want %v alone: a tree whose root waits for a child in verifying waits by design", got, want)
-	}
 }
 
 // An issue that waits in verifying holds none of the cap's slots, so the project's one slot is

@@ -395,13 +395,14 @@ func planOf(t *testing.T, rig *waitRig, issue string, generation uint64) *record
 	return stored
 }
 
-// Generation 3 ran the owner's plan `implementer reviewer`. Its next change, given no plan, runs
-// the project's default steps and not that plan again.
+// The owner gave the plan `implementer reviewer`, the newest plan in force of any generation
+// (record.OwnersNewestPlan; it is given at generation 0, outside the merged generation's own walk).
+// The next change, given no plan, runs the project's default steps and not that plan again.
 func TestANextChangeRunsTheDefaultStepsAndNotTheLastPlan(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, "")
 	mergedRoot(t, rig)
-	ownersPlanRows(t, rig, waitRoot, waitGeneration, "implementer", "reviewer")
+	ownersPlanRows(t, rig, waitRoot, 0, "implementer", "reviewer")
 	rig.read(waitRoot, answerOf(waitRoot, nil, failing("c-after", waitRootMerge)))
 	rig.started(waitRoot, changeGeneration, 1)
 
@@ -440,7 +441,7 @@ func TestTheExperimentsSecondGroupRunsTheDefaultStepsOnItsNextChange(t *testing.
 	rig := newWaitRig(t, "")
 	mergedRoot(t, rig)
 	drawnInto(t, rig.pool, waitRoot, "planning", "b", "default")
-	ownersPlanRows(t, rig, waitRoot, waitGeneration, "implementer", "reviewer")
+	ownersPlanRows(t, rig, waitRoot, 0, "implementer", "reviewer")
 	rig.read(waitRoot, answerOf(waitRoot, nil, failing("c-after", waitRootMerge)))
 	rig.started(waitRoot, changeGeneration, 1)
 
