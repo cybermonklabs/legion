@@ -5313,6 +5313,56 @@ test("a copy leaves a focus the reader moved elsewhere where it is", async () =>
   });
 });
 
+// A reader who moves the focus to another control while a copy is out, and whose control then
+// leaves the page, has the focus on the body when the clipboard refuses: the fallback's text box
+// takes the focus and leaves the page, and `copyText` gives the focus back to the body it found it
+// on, which takes no focus. Inside `NoTooltips` the copy then gives the focus back to its button,
+// the last element the focus held since the press that is still on the page; `returnFocus` is
+// what does it, once the copy settles. Outside `NoTooltips` the press records nothing and the
+// focus stays on the body, as on `main`.
+test("inside NoTooltips a copy whose reader's new focus left the page while the copy was out gives the focus back to its button", async () => {
+  const user = userEvent.setup();
+  // A browser's `focus()` on the body, which is no focusable area, does nothing; happy-dom's
+  // fires `focusin` on it, which the press would record as the focus landing there.
+  const bodyFocus = spyOn(document.body, "focus").mockImplementation(() => {});
+  try {
+    await withCopyFallback(async (copied) => {
+      for (const surface of ["inside", "outside"] as const) {
+        const refused = Promise.withResolvers<void>();
+        setClipboard({ writeText: () => refused.promise });
+        copied.length = 0;
+        const view = draw(<CopyButton value="CORE-1" what="issue key" />, surface);
+        const other = draw(<button type="button">Elsewhere</button>, surface);
+        try {
+          const scope = within(view.container);
+          const button = scope.getByRole("button", { name: "Copy issue key CORE-1" });
+          const elsewhere = within(other.container).getByRole("button", { name: "Elsewhere" });
+          button.focus();
+          await user.keyboard("{Enter}");
+          await settleReads();
+          // The copy is out: the clipboard has not answered, and the fallback has not run.
+          expect(copied).toEqual([]);
+          expect(document.activeElement).toBe(button);
+
+          elsewhere.focus();
+          undraw(other);
+          expect(document.activeElement).toBe(document.body);
+          refused.reject(new Error("denied"));
+          await scope.findByText("Copied");
+          await settleReads();
+          expect(copied).toEqual(["copy"]);
+          expect(document.activeElement).toBe(surface === "inside" ? button : document.body);
+        } finally {
+          if (other.container.isConnected) undraw(other);
+          undraw(view);
+        }
+      }
+    });
+  } finally {
+    bodyFocus.mockRestore();
+  }
+});
+
 // A copy's write to the clipboard is the button's write: inside `NoTooltips` a press while it is
 // out does nothing, so a second Enter makes no second write and draws no "Copied" before the first
 // write lands, and the focus stays on the button, which says it is refused (`aria-disabled`) until
