@@ -28,15 +28,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/stateevent"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // Unrecorded is what this route reads for an issue the workflow does not record, where an
-// operator's claim exists and an issue does not (LEGION-272). It is not a workflow phase: no
-// issue record holds it, the transition table never reaches it, and no role works it — so it
-// lives with the wire shape that carries it rather than in the domain's phases.
-const Unrecorded phase.Phase = "unrecorded"
+// operator's claim exists and an issue does not (LEGION-272), and the phase a state event names for
+// such an issue: stateevent.Unrecorded, the one source of the word for both wire shapes.
+const Unrecorded = stateevent.Unrecorded
 
 // State is the daemon's own facts, and nothing another system owns (spec: State and store).
 type State struct {
@@ -623,13 +623,37 @@ func (s State) MarshalJSON() ([]byte, error) {
 }
 
 // DaemonInfo is the running daemon itself: which project it coordinates, the schema its store is
-// migrated to, and its boot history.
+// migrated to, its boot history, and the state event its snapshot reflects.
 type DaemonInfo struct {
 	Project       string    `json:"project"`
 	SchemaVersion int       `json:"schemaVersion"`
 	Boots         int       `json:"boots"`
 	FirstBootAt   time.Time `json:"firstBootAt"`
 	StartedAt     time.Time `json:"startedAt"`
+	// StateSeq is the sequence of the newest state event the project's daemon committed
+	// (record.Store.StatePublication, state_publication.last_seq), read in the same
+	// repeatable-read snapshot as the rest of the body: every state event at or below it is in
+	// this body and every event above it is not, so a reader of the state events starts after this
+	// body at StateSeq + 1, with nothing lost and nothing applied twice. The route's source sets it
+	// on every body, 0 while the project has no state row; it is a pointer so that the one body
+	// without it is the one stateSeqContract's narrowing serves a caller below that entry's number
+	// (withoutStateSeq), not a 0 a reader would take for a sequence.
+	StateSeq *int64 `json:"stateSeq,omitempty"`
+	// StateID is the id of the store the state events are counted in (state_publication.store_id),
+	// read in the same read as StateSeq: the commit trigger makes it at the project's first state
+	// row and nothing changes it after, and every state message carries it, so a reader that took
+	// this body as its starting point applies only messages whose `stateId` is this one. It is
+	// empty, and left off the wire, while the project has no state row, and stateSeqContract's
+	// narrowing leaves it off with StateSeq.
+	StateID string `json:"stateId,omitempty"`
+	// StateRun is the id of the daemon run that serves this body, minted once at the process's
+	// start, which is the `run` every state message that run publishes carries. A reader that took
+	// this body as its starting point takes it as the run of that starting point: a boot event of
+	// this run at or below StateSeq is one the body already holds, not a daemon whose sequence went
+	// back. Only a daemon whose state events are on (one with a workflow) serves it; it is empty,
+	// and left off the wire, from any other, and stateSeqContract's narrowing leaves it off with
+	// StateSeq.
+	StateRun string `json:"stateRun,omitempty"`
 }
 
 // ContractView is the mark of the serving-down: the contract this body was built at and the
@@ -778,6 +802,18 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 		out.Held = []HeldIssue{}
 	}
 	return json.Marshal(out)
+}
+
+// AdmissionOf is the block the state route serves: the cap, the P0 holders and the five lists of
+// the block blockers.AdmissionOf builds, field for field (blockers.AdmissionOf says over which
+// judgement each reader builds it), so the block a caller reads here and the block a state event
+// carries are one value, and the two encodings write the same keys
+// (record.AdmissionBlock.MarshalJSON) but `p0Bound`, which the state route reads beside the
+// judgement (P0BoundStateTx) and the event does not carry.
+func AdmissionOf(block record.AdmissionBlock) Admission {
+	p0Holders := block.P0Holders
+	return Admission{Cap: block.Cap, P0Holders: &p0Holders, Active: block.Active, Waiting: block.Waiting,
+		Trees: block.Trees, Blocked: block.Blocked, Held: block.Held}
 }
 
 type Issue struct {
@@ -1083,24 +1119,12 @@ type AssignmentView struct {
 	Plan       string     `json:"plan,omitempty"`
 }
 
-// WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
-// is `ask` with Ask, the id of the oldest question of its tree still with the person, or `gate`
-// with GateVersion and ArtifactID, the spec version of its registered document a person has not
-// reviewed. Since is Dispatch's time of the hand-back the wait began at,
-// absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
-// wait; the answered root then stands in admission's waiting line as well, within its priority,
-// among the issues whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
-// of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
-// (contract 68) — among them, and it names how the wait was answered, not always by a person.
-type WaitingOnView struct {
-	Kind        string        `json:"kind"`
-	Ask         string        `json:"ask,omitempty"`
-	GateVersion int           `json:"gateVersion,omitempty"`
-	ArtifactID  string        `json:"artifactId,omitempty"`
-	Since       *time.Time    `json:"since,omitempty"`
-	AnsweredAt  *time.Time    `json:"answeredAt,omitempty"`
-	AnsweredBy  record.Answer `json:"answeredBy,omitempty"`
-}
+// WaitingOnView is what a root in awaiting_person waits on from a person: record.WaitingOnView,
+// which declares its fields. An answered root then stands in admission's waiting line as well,
+// within its priority, among the issues whose work came back, oldest first, until the pass that
+// resumes it (record.Waiting). The state's `waitingOn` and a state event's are the same value read
+// two ways (record.ObservationOf), and the view is declared once, under both.
+type WaitingOnView = record.WaitingOnView
 
 // PriorityView is a Dispatch priority on this wire, as Dispatch sends one: its number, 0 for P0
 // to 3 for P3, or null for none (record.Priority). A field of it is a pointer with `omitempty`,
@@ -2123,6 +2147,90 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 	return wakes
 }
 
+// ObservedState is the observed view of the state route, the body of
+// `GET /legion/v1/state?view=observed` (stateSeqContract's entry): what Dispatch reads of a daemon
+// and nothing more. Daemon, Settings and Admission are the full state's own blocks, read in the
+// same kind of repeatable-read snapshot: the same DaemonInfo, stateSeq, stateId and stateRun
+// included, the same settings, and the same admission block, unfiltered and in the same order.
+// Issues lists every issue the full state lists, and each carries only the members Dispatch
+// observes (ObservedIssue). The route serves it at the caller's contract (shaping.go's
+// observedFor).
+type ObservedState struct {
+	Daemon    DaemonInfo               `json:"daemon"`
+	Settings  Settings                 `json:"settings"`
+	Admission Admission                `json:"admission"`
+	Issues    map[string]ObservedIssue `json:"issues"`
+}
+
+// MarshalJSON keeps `issues` an object on the wire for a state that lists no issue.
+func (s ObservedState) MarshalJSON() ([]byte, error) {
+	type wire ObservedState
+	out := wire(s)
+	if out.Issues == nil {
+		out.Issues = map[string]ObservedIssue{}
+	}
+	return json.Marshal(out)
+}
+
+// ObservedIssue is one issue of the observed view: the members of the full view's issue (Issue) that
+// Dispatch observes, each spelled and valued as the full view spells and values it. Tree, Slot,
+// WaitingOn and Architect are absent where the full view leaves them absent, and Workers is absent
+// where the full view's `workers` is empty. The full view's other members are not served.
+type ObservedIssue struct {
+	Key       string                        `json:"key"`
+	Phase     phase.Phase                   `json:"phase"`
+	Tree      string                        `json:"tree,omitempty"`
+	Slot      *ObservedSlot                 `json:"slot,omitempty"`
+	WaitingOn *WaitingOnView                `json:"waitingOn,omitempty"`
+	Architect *ObservedClaim                `json:"architect,omitempty"`
+	Workers   map[claim.Role]ObservedWorker `json:"workers,omitempty"`
+}
+
+// ObservedSlot is the admission slot of an issue as the observed view shows it: its index (the full
+// view's SlotView.Index) and nothing else.
+type ObservedSlot struct {
+	Index int `json:"index"`
+}
+
+// ObservedClaim is a claim as the observed view shows it: the state of the full view's claim
+// (ClaimView.State) and nothing else.
+type ObservedClaim struct {
+	State string `json:"state"`
+}
+
+// ObservedWorker is one entry of an observed issue's `workers`: the claim of the full view's entry
+// (PhaseView.Claim), as the observed view shows a claim.
+type ObservedWorker struct {
+	Claim ObservedClaim `json:"claim"`
+}
+
+// observedOf is state's observed view, issue for issue: each member Dispatch observes, as the full
+// view serves it, and the full view's daemon block, settings and admission block. It is the one
+// reading of which members of the full view the observed view carries: the route serves the
+// observed view through it (shaping.go's observedFor), and the observed view's golden is written
+// through it (TestObservedStateGolden).
+func observedOf(state State) ObservedState {
+	observed := ObservedState{Daemon: state.Daemon, Settings: state.Settings, Admission: state.Admission,
+		Issues: make(map[string]ObservedIssue, len(state.Issues))}
+	for key, issue := range state.Issues {
+		view := ObservedIssue{Key: issue.Key, Phase: issue.Phase, Tree: issue.Tree, WaitingOn: issue.WaitingOn}
+		if issue.Slot != nil {
+			view.Slot = &ObservedSlot{Index: issue.Slot.Index}
+		}
+		if issue.Architect != nil {
+			view.Architect = &ObservedClaim{State: issue.Architect.State}
+		}
+		if len(issue.Workers) > 0 {
+			view.Workers = make(map[claim.Role]ObservedWorker, len(issue.Workers))
+			for role, worker := range issue.Workers {
+				view.Workers[role] = ObservedWorker{Claim: ObservedClaim{State: worker.Claim.State}}
+			}
+		}
+		observed.Issues[key] = view
+	}
+	return observed
+}
+
 // WakeView is the wake the pacing holds for one claim, as that claim's view names it
 // (ClaimView.Wake): what kind of wake it is and the pacing's estimate, at the read, of the moment
 // it lets the wake out (WakeWaiting says how that moment moves). The claim, its issue and its role
@@ -2159,10 +2267,17 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 
 // StateSource maps the daemon's durable and live facts through the transaction the state route
 // owns. It does not commit it: the route can refuse one failed projection without publishing a
-// partial snapshot. It answers the project's claims beside the state, the ones it read through
+// partial snapshot. State answers the project's claims beside the state, the ones it read through
 // that transaction to build the claim views, so the route decides what the caller's plugin reads
 // (shaping.go's stateFor) from the claims of the snapshot it serves, rather than reading the
 // table a second time at another moment.
+//
+// ObservedState answers, through the same transaction, the part of the state that the observed
+// view reads (observedOf), and reads only what that part needs (internal/projection's Observe says
+// what it reads and what it leaves empty). The route serves the observed view of that State
+// (shaping.go's observedFor). It answers the project's claims beside it for the same reason as
+// State, so the view is cut to the caller's contract from the claims of the snapshot it serves.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
+	ObservedState(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
 }

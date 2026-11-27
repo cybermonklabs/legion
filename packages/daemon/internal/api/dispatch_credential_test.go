@@ -93,20 +93,20 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 		}
 	}
 
-	at, narrowings := stateNarrowedStating(t, state, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
-	if _, carried := dispatchCredentialServed(t, at); !carried {
+	// A caller at the contract stands below no frozen row, so no line says it dropped
+	// dispatchCredential: the lines it is written are the bands' above it (narrowingsExpected). It
+	// reads carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
+	carried := carriedState(t)
+	at, narrowings := stateNarrowedStating(t, carried, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
+	if _, served := dispatchCredentialServed(t, at); !served {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
-	// A caller at the contract stands below the bands above it alone, each entry's: the gate
-	// basis's (narrowing_test.go reads its line), the P0 start's and the repository correction's,
-	// so the log holds one line for each of those (narrowingsExpected) and none for this band, whose
-	// line would mean the object had been taken out of the body just read.
 	for _, line := range narrowings {
 		if line.Dropped == "dispatchCredential" {
 			t.Errorf("a caller stating %d is told it lost dispatchCredential: %+v", dispatchCredentialContract, narrowings)
 		}
 	}
-	wantNarrowings(t, narrowings, dispatchCredentialContract, narrowingsExpected(state, dispatchCredentialContract))
+	wantNarrowings(t, narrowings, dispatchCredentialContract, narrowingsExpected(carried, dispatchCredentialContract))
 
 	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))
 	if _, carried := dispatchCredentialServed(t, operator); !carried {

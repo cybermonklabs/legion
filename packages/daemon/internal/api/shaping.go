@@ -4,8 +4,9 @@ package api
 // the caller's own plugin read? It holds the contract header a caller states, the reading of the
 // pod a caller that states none is in, the shape of every answer at every contract this daemon
 // serves, and the one writer each answer goes through. The table it reads is answers.go's, beside
-// it; server.go routes the requests and calls writeAnswer and writeAnswerFrom for every body it
-// answers, and reads lowestPluginContract for the number the state carries.
+// it. server.go routes the requests, and the handlers, in server.go and in the files beside it,
+// call writeAnswer and writeAnswerFrom for every body they answer. state_route.go reads
+// lowestPluginContract for the number the state carries.
 
 import (
 	"encoding/json"
@@ -278,6 +279,12 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
 		return shapeIssue(issue, restore, strip, nil), took
+	case AnswerObservedState:
+		observed, isObserved := body.(State)
+		if !isObserved {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		return observedFor(observed, restore, strip), took
 	case AnswerReleaseRecords:
 		records, isRecords := body.(ReleaseRecordsResponse)
 		if !isRecords {
@@ -508,6 +515,24 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 		}
 	}
 	return issue
+}
+
+// observedFor is the observed view's row of shapeAnswer (AnswerObservedState): the observed view
+// of state, the part of a whole state the observed read answers (StateSource.ObservedState), as a
+// caller at restore and strip reads it, whose wire shape is the contract's
+// LegionObservedStateResponse (packages/contracts/src/legion-api.ts). The state is shaped by the
+// very bands and value strips stateFor applies to the whole state and then read as the observed
+// view (observedOf), so at every contract each member of the view is the whole state's member at
+// that contract, and a band a later contract adds to a member the view carries reaches the view
+// with no line here. The whole state's mark (ContractView) is no member of the view and is left
+// out with the rest of the whole state's keys.
+//
+// A caller at this daemon's own contract takes no band and no value strip, and stateFor copies no
+// issue map for it. That is every read Dispatch makes, since it states no contract and asks from
+// no pod. The shaping records nothing in the log, where recordShaping writes the whole state's
+// lines alone.
+func observedFor(state State, restore, strip int) ObservedState {
+	return observedOf(stateFor(state, restore, strip, nil))
 }
 
 // narrowedTheState is the message of the line the daemon writes for each band it serves the
@@ -2055,6 +2080,21 @@ func withoutPause(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutStateSeq is state with no `daemon.stateSeq`, no `daemon.stateId` and no
+// `daemon.stateRun`, the three keys stateSeqContract's entry added to this route; nothing else of
+// that entry is a key of the state. The sequence is left off rather than zeroed, because the
+// strict reader before the entry's number refuses it when it is 0 as surely as when it names a
+// sequence, and a 0 would tell a reader of this contract that the project has no state event.
+// The daemon's own source sets the sequence on every body it answers, 0 included, so the band
+// reports a move for every such body; a state built without any of the three carries nothing to
+// strip. The daemon block is a value of the state's own, so the state the source answered is left
+// as it was.
+func withoutStateSeq(state State) (State, bool) {
+	moved := state.Daemon.StateSeq != nil || state.Daemon.StateID != "" || state.Daemon.StateRun != ""
+	state.Daemon.StateSeq, state.Daemon.StateID, state.Daemon.StateRun = nil, "", ""
+	return state, moved
+}
+
 // withoutDispatchCredential is state with no `dispatchCredential`, the one key
 // dispatchCredentialContract added to the state; nothing else of that contract is a key of an
 // answer a plugin parses, since the settings block's `dispatch_token_broker` is a key no reader
@@ -2248,6 +2288,14 @@ func stripTurnRecord(view ClaimView) ClaimView {
 // is the plugin's table alone, and it shapes to nothing, since no contract describes a shape for
 // a body no plugin reads (writeUnparsedAnswer).
 const answerUnparsed AnswerID = "unparsed"
+
+// AnswerObservedState names the observed view of the state route, the body of
+// `GET /legion/v1/state?view=observed` (ObservedState), which Dispatch reads. It is no row of
+// Answers, which is the plugin's table alone: no plugin parses the view, and pi-shared's census of
+// that table holds every row to a parse site of the plugin's client. It is shaped all the same,
+// unlike answerUnparsed (observedFor). The route writes it the State that the observed read
+// answers (StateSource.ObservedState), and observedFor shapes that State to the view.
+const AnswerObservedState AnswerID = "observed-state"
 
 // answerWritten is told the pattern of the route and the id of the answer of every body this
 // package writes (writeAnswerFrom). It is nil in a daemon and set by one test of this package,

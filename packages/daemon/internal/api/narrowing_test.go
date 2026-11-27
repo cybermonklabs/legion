@@ -509,6 +509,31 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		wantNarrowings(t, narrowings, below, want)
 	})
 
+	// The state sequence's narrowing is an entry's band, a row of the table like every other, so
+	// the caller below it is told what it lost: a caller one contract below
+	// entryNumber(stateSeqContract), which states that contract in its header as every plugin from
+	// shapedAnswersContract on does, is served the daemon block without the three keys. The band's
+	// line is the first of the lines narrowingsExpected counts for that caller, and it is named
+	// here as a literal rather than read from stateNarrowings, so a strip moved beside the loop,
+	// which writes no line, fails here.
+	t.Run("the state sequence narrowing writes its own line", func(t *testing.T) {
+		const dropped = "daemon.stateSeq, daemon.stateId and daemon.stateRun"
+		state := carriedState(t)
+		added := entryNumber(stateSeqContract)
+		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), added-1)
+
+		for _, key := range []string{"stateSeq", "stateId", "stateRun"} {
+			if raw, carried := daemonKeyServed(t, body, key); carried {
+				t.Errorf("the body served to a caller below %d carries `daemon.%s`, a key that contract added: %s", added, key, raw)
+			}
+		}
+		want := narrowingsExpected(state, added-1)
+		if len(want) == 0 || want[0] != dropped {
+			t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q first", added-1, want, dropped)
+		}
+		wantNarrowings(t, narrowings, added-1, want)
+	})
+
 	// The pod hold line is named as a literal for the reason the assignments line below is: take
 	// the row out of stateNarrowings and clear the key beside the loop as an `if` of its own, and
 	// every subtest that reads the table loses its expectation with its answer, so the body is

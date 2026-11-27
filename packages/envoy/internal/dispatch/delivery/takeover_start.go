@@ -70,9 +70,14 @@ func takeOverConfig(deployed *natsgo.ConsumerInfo, wanted natsgo.ConsumerConfig,
 // A durable with an ack floor starts right after it, the floor the session consumers read
 // (bus.AckFloor, over consumerPosition): the recreated durable redelivers at once every message
 // the durable had not acknowledged -- what a dead holder had been handed, what a stopped one
-// handed back -- replays nothing it had, and skips nothing
-// (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse, and
+// handed back, what a handler handed back with a delay (intakeDelivery.handBackOwn) -- and skips
+// nothing (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse, and
 // TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt for a create retried).
+// The ack floor stays below the oldest message not acknowledged, so the recreated durable also
+// replays every message after that one that the durable had acknowledged. A message handed back
+// with a delay holds the floor there for a bounded time: an envelope whose head row was not stored
+// for headWriteMaxDeliveries deliveries, and a Legion state message that holds its project's owed
+// read for the time legion's stateMaxHolds bounds, past which that bound names one case.
 // That rule reads the floor the server reports as it is, even below the durable's own start after
 // a one-copy stream lost data, so the messages the stream stores after the loss are delivered.
 // And it reads nats-server v2.10.29's fresh consumer, which reports both ack floors as 0 until its

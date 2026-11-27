@@ -589,10 +589,10 @@ type planRatingCase struct {
 // again in TypeScript, where blank is Go's set written out by hand: goBlankPattern, whose comment
 // in `packages/contracts/src/go-blank.ts` names the characters JavaScript's trim and Go's
 // strings.TrimSpace part on. So the cases a rule of the scale, of the pair, of blank or of length
-// can part on are a golden. Each is posted as its raw body, from a plugin at PlanRatingContract, to
-// the completion that ends the retro of an issue of its own: the workflow moves an issue on to
-// merging at the first completion of its retro it takes, so each case is that first completion.
-// The route's answer is the verdict Go writes (`-update`), never one typed here;
+// can part on are a golden. Each is posted as its raw body, from a plugin at PlanRatingContract or
+// later, to the completion that ends the retro of an issue of its own: the workflow moves an issue
+// on to merging at the first completion of its retro it takes, so each case is that first
+// completion. The route's answer is the verdict Go writes (`-update`), never one typed here;
 // `packages/contracts` and the plugin hold their own verdicts to the file. An answer that is
 // neither a 200 nor a 400 of the rating fails the test, so no trouble of the harness is written
 // down as a verdict, and an accepted case's fact is its issue's and carries the rating and the
