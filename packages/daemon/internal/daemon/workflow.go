@@ -1692,8 +1692,10 @@ func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.
 		// refill's check of which keys the listing holds.
 		prepared.scope = append(prepared.scope, summary)
 	}
-	// shown is the scope by key, each entry pointing into prepared.scope, for the walk up an
-	// unrecorded todo child's parents, made once the listing holds such a child.
+	// shown is the whole listing by key, each entry pointing into issues, for the walk up an
+	// unrecorded todo child's parents, made once the listing holds such a child: a parent the
+	// scope leaves out, as a recovery's scope leaves out the issues of every repository it does not
+	// recover, is still one the child can stand under by the time its fact applies.
 	var shown map[string]*dispatch.IssueSummary
 	for _, summary := range prepared.scope {
 		fact := intake.ListedIssue(summary)
@@ -1711,9 +1713,9 @@ func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.
 			// the listing.
 			if records[summary.Key] == nil && fact.ChildTodo() {
 				if shown == nil {
-					shown = make(map[string]*dispatch.IssueSummary, len(prepared.scope))
-					for i := range prepared.scope {
-						shown[prepared.scope[i].Key] = &prepared.scope[i]
+					shown = make(map[string]*dispatch.IssueSummary, len(issues))
+					for i := range issues {
+						shown[issues[i].Key] = &issues[i]
 					}
 				}
 				fact.Transition, err = w.childTransition(ctx, fact, listedParentAtWork(records, shown, fact.Parent))
@@ -1783,10 +1785,13 @@ func (w *workflowRuntime) leftOutUnreadable(key string, err error) bool {
 
 // listedParentAtWork says whether parent, the parent of an unrecorded todo child of a listing, can
 // stand in Legion's work when admission's pass over the listing reaches the child, read from
-// records and from shown, the listing's scope by key: recorded in Legion's work, or recorded and
-// listed at a status of work the pass may return it to, or unrecorded and listed todo, which the
-// pass records first (admit's parentsFirst), as a root handed to Legion or as a child whose own
-// parent can, up to record.MaxChainLinks issues above the child.
+// records and from shown, the whole listing by key: recorded in Legion's work, or recorded and
+// listed at a status of work the pass may return it to, or unrecorded and listed todo, as a root
+// handed to Legion or as a child whose own parent can, up to record.MaxChainLinks issues above the
+// child. The pass records such a parent first where its scope holds it (admit's parentsFirst), and
+// its own event records it where the scope does not, as a recovery's scope leaves out an issue of
+// a repository it does not recover: admission holds the child's summary until the Dispatch consumer
+// has applied every event the listing may be ahead of (admit's Reconcile), the parent's among them.
 func listedParentAtWork(records map[string]*record.Issue, shown map[string]*dispatch.IssueSummary, parent string) bool {
 	for range record.MaxChainLinks {
 		listed, inListing := shown[parent]

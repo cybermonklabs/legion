@@ -425,10 +425,13 @@ func TestControllerStatusParksTheRecordWithoutWaitingForItsDispatchEvent(t *test
 	}
 }
 
-// The controller's set_status can name an issue of another Dispatch project, whose events the
-// consumer drops: its write is queued, and the answer to it, which the outbox applies as the
-// daemon's own write of an issue it does not record (ApplyOwnStatusWrite), records nothing, so the
-// daemon never admits a foreign issue.
+// The controller's set_status naming an issue of another Dispatch project, whose events the
+// consumer drops, is refused before anything is read or queued: 422 ISSUE_OF_ANOTHER_PROJECT,
+// whose sentence names that project, and no outbox row keyed by the issue, since only that
+// project's daemon writes its status. And should Dispatch's answer to a write of a foreign issue
+// reach the daemon all the same, the outbox applies it as the daemon's own write of an issue it
+// does not record (ApplyOwnStatusWrite), which records nothing, so the daemon never admits a
+// foreign issue.
 func TestControllerStatusOnAnotherProjectsIssueRecordsNothing(t *testing.T) {
 	h, handlers, statuses := statusHarness(t)
 	const foreign = "OTHER-12"
@@ -436,10 +439,12 @@ func TestControllerStatusOnAnotherProjectsIssueRecordsNothing(t *testing.T) {
 	grant := controllerGrant(t, h)
 
 	recorder := h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{GrantID: grant.GrantID, Issue: foreign, Status: "todo"}, nil)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("set_status = %d %s, want 200", recorder.Code, recorder.Body)
+	if text := refused(t, recorder, http.StatusUnprocessableEntity, "ISSUE_OF_ANOTHER_PROJECT"); !strings.Contains(text, "project OTHER") {
+		t.Fatalf("the refusal of set_status on %s says %q, want it to name project OTHER", foreign, text)
 	}
-	queuedWrite(t, h, recorder, foreign, "todo")
+	if rows := outboxRows(t, h, foreign); len(rows) != 0 || len(statuses.writes) != 0 {
+		t.Fatalf("the refused set_status queued %v on %s and wrote %v to Dispatch, want nothing", rows, foreign, statuses.writes)
+	}
 	written := statuses.issues[foreign]
 	written.Status, written.LastSeq = "todo", 8
 	own := OwnStatusWrite{DispatchProject: testDispatchProject, Apply: func(ctx context.Context, eventID string, fact intake.Fact) (intake.Result, error) {

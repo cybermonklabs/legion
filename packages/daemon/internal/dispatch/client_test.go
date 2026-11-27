@@ -312,7 +312,8 @@ func TestChangeStatusPostsItsOptionsUnderTheDaemonSessionAndItsKey(t *testing.T)
 
 // Each answer Dispatch gives a status change, and each of its request key's answers, as the client
 // reads them: the answers of testdata, each captured from a real Dispatch as its README says.
-// Every file there has its case here, so a capture added there is read too.
+// Every file there has its case here, so a capture added there is read too; a directory there
+// holds another test's files (testdata/resolved, resolved_test.go's), and is passed over.
 func TestChangeStatusReadsEachSavedAnswerOfDispatch(t *testing.T) {
 	ctx := context.Background()
 	change := StatusChange{Status: "backlog", ExpectedSequence: 7, IncludeChildren: true, IdempotencyKey: "outbox-12-1"}
@@ -524,7 +525,7 @@ func TestChangeStatusReadsEachSavedAnswerOfDispatch(t *testing.T) {
 		t.Fatalf("list the saved answers: %v", err)
 	}
 	for _, entry := range saved {
-		if entry.Name() != "README" && !read[entry.Name()] {
+		if !entry.IsDir() && entry.Name() != "README" && !read[entry.Name()] {
 			t.Errorf("testdata/%s is read by no case", entry.Name())
 		}
 	}
