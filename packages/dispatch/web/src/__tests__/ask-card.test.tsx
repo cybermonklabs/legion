@@ -1759,9 +1759,7 @@ test("a form refusal of the header's Approve with no request open does not reach
     const approve = within(header).getByRole("button", { name: "Approve" });
     await user.click(approve);
 
-    expect((await within(header).findByRole("alert")).textContent).toBe(
-      specFormRefusalBody.error
-    );
+    expect((await within(header).findByRole("alert")).textContent).toBe(specFormRefusalBody.error);
     // The press's focus comes back to Approve in an effect of the same draw as the card's effect
     // that would put the reason in the request's draft, so both have run once it is there.
     await waitFor(() => expect(approve).toHaveFocus());
