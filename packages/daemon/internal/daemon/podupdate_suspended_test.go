@@ -313,17 +313,22 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 }
 
 // The round passed over the implementer, a claim the daemon suspended, and the implementer answers
-// the round while the sweep decides the replacement: its machine has published the answer and
-// waits on the store's write of it, which the test holds with a lock on the claim's row. The
-// replacement's decision reads such a claim as one that has not answered (masked), but the round
-// waits for no answer of a claim it passed over, so the replacement is made at this sweep. The
-// read of the workspace is made before every replacement (readPodWorkspace, R7 of #5285), through
-// the tester, and it finds work; the round is over a drift that breaks the pod, so the replacement
-// takes the pod all the same. The keep, the line and the architect's notice read the claim as it
-// holds its answer (noticeGroup): the implementer answered the round, so it pushed its work, and
-// no claim is left that the round did not wait for and that had not answered. So the line names
-// no claim under notWaitedFor, the architect's workspace-taken notice names no role, and the issue
-// is written nothing.
+// the round while the sweep decides the replacement: its machine decides the answer and waits on
+// the store's write of it, which the test holds with a lock on the claim's row. A machine
+// publishes a decision's claim only once that decision's write has answered (supervise's
+// publishAnswered, D10 of dispatch://INFRA-4099's plan), so the view the sweep reads holds no
+// answer yet, and the claim reads as one the round passed over that had not answered. The round
+// waits for no answer of a claim it passed over, but before the round's bound the replacement
+// names no claim whose machine is deciding something, since that decision may be its answer
+// (replaceForRound): that sweep replaces nothing and reads nothing, as a masked claim costs a sweep
+// (masked). Once the write lands, the next sweep makes the replacement. The read of the workspace
+// is made before every replacement (readPodWorkspace, R7 of #5285), through the tester, and it
+// finds work; the round is over a drift that breaks the pod, so the replacement takes the pod all
+// the same. The keep, the line and the architect's notice read the claim as it holds its answer
+// (noticeGroup): the implementer answered the round, so it pushed its work, and no claim is left
+// that the round did not wait for and that had not answered. So the line names no claim under
+// notWaitedFor, the architect's workspace-taken notice names no role, and the issue is written
+// nothing.
 func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t, suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon), readyWorker(claim.RoleTester))
@@ -355,16 +360,26 @@ func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *te
 	rig.sup.post(token, supervise.PodUpdateSignalled{Claim: token, Generation: answering.Generation, Session: answering.Session,
 		Round: answering.UpdateRound, Head: "c0ffee"})
 	m, _ := rig.sup.Machine(token)
-	testwait.Eventually(t, "the implementer's machine to publish its answer and wait on the store's write of it", func() bool {
-		return m.Deciding() != nil && m.View().Claim.UpdateSignalledAt != nil
+	testwait.Eventually(t, "the implementer's machine to decide its answer and wait on the store's write of it", func() bool {
+		_, deciding := m.Deciding().(supervise.PodUpdateSignalled)
+		return deciding && waitingOnARowLock(t, rig.pool)
 	})
 	rig.tick()
+	if n := len(rig.replacements()); n != 0 {
+		t.Fatalf("the pod was replaced %d times at the sweep that read the implementer's machine deciding its answer, want none before the round's bound: "+
+			"the replacement would name the implementer as a claim that had not answered", n)
+	}
 	unlock()
 
+	rig.awaitClaim(claim.RoleImplementer, "its answer written", func(c supervise.Claim) bool {
+		return c.UpdateSignalledAt != nil
+	})
+	rig.settleAll()
+	rig.tick()
 	if n := len(rig.replacements()); n != 1 {
-		t.Fatalf("the pod was replaced %d times at the sweep, want once: the tester answered and the round passed over the implementer", n)
+		t.Fatalf("the pod was replaced %d times at the sweep after the answer's write, want once: the tester answered and the round passed over the implementer", n)
 	}
-	rig.awaitClaim(claim.RoleImplementer, "its answer written and the round's end taken", func(c supervise.Claim) bool {
+	rig.awaitClaim(claim.RoleImplementer, "the round's end taken", func(c supervise.Claim) bool {
 		return c.UpdateRound == ""
 	})
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
