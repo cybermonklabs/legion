@@ -88,6 +88,7 @@ func storedCauses(t *testing.T, store *Store, token string) []string {
 // it ships and decodes `provider_error`; the claim failed under `provider_error` alone, with
 // held_for empty, is the control that reads `provider_error` back on this release too.
 func TestAClaimHeldForCyberPolicyStoresOnlyWordsTheReleaseBeforeKnows(t *testing.T) {
+	t.Parallel()
 	const token = "legion-LEGION-209-implementer"
 	held := func() supervise.Claim {
 		c := tmuxClaim(token)

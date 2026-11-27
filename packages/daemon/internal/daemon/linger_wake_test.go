@@ -68,6 +68,7 @@ func lastAdmissionMessage(t *testing.T, r *admissionStateRig) (stateMessage, any
 // The deadline is real time a few seconds out, which the test waits for: the pass reads the
 // admission's own clock, and the deadline is what that clock must pass.
 func TestTheAdmissionBlockALingerDeadlineChangesIsPublishedAtTheDeadline(t *testing.T) {
+	// Not parallel: it holds its first pass to end within 4 s of real time, before the linger's deadline, and the change to commit within 5 s after it, bounds the load of tests running beside it could push it past.
 	const root, child = "LEGION-100", "LEGION-101"
 	r := newAdmissionStateRig(t)
 	w := &workflowRuntime{pool: r.pool, handlers: r.handlers, dispatchProject: "LEGION", bootID: "linger-wake-test",
