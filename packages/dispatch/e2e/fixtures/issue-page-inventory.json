@@ -1,18 +1,22 @@
 {
-  "commit": "0f5715b0540d6e36eeadf36f4a82b4135de6bd6e",
-  "recordedAtHead": "0f5715b0540d6e36eeadf36f4a82b4135de6bd6e",
-  "recordedAt": "2026-11-27T12:18:33.766Z",
+  "commit": "8868205a18f3387a5bb8e176b97cb9a2271e0f41",
+  "recordedAtHead": "8868205a18f3387a5bb8e176b97cb9a2271e0f41",
+  "recordedAt": "2026-11-27T15:24:03.859Z",
   "open-1440": [
     {
       "name": "1 references on block",
       "role": "button"
     },
     {
-      "name": "Add a note or answer in your own words",
+      "name": "All",
       "role": "button"
     },
     {
-      "name": "All",
+      "name": "Answer",
+      "role": "button"
+    },
+    {
+      "name": "Ask back",
       "role": "button"
     },
     {
@@ -21,6 +25,14 @@
     },
     {
       "name": "Change answer",
+      "role": "button"
+    },
+    {
+      "name": "Checks passed 0 / 6 0",
+      "role": "button"
+    },
+    {
+      "name": "Children done 1 / 7 1",
       "role": "button"
     },
     {
@@ -160,6 +172,10 @@
       "role": "button"
     },
     {
+      "name": "Questions waiting on others 0 / 1 0",
+      "role": "button"
+    },
+    {
       "name": "Reaches 3",
       "role": "button"
     },
@@ -201,6 +217,10 @@
     },
     {
       "name": "Sign out",
+      "role": "button"
+    },
+    {
+      "name": "Statements met 0 / 13 0",
       "role": "button"
     },
     {
@@ -320,30 +340,6 @@
       "role": "link"
     },
     {
-      "name": "Block r1",
-      "role": "link"
-    },
-    {
-      "name": "Block r2",
-      "role": "link"
-    },
-    {
-      "name": "Block r3",
-      "role": "link"
-    },
-    {
-      "name": "Block r4",
-      "role": "link"
-    },
-    {
-      "name": "Block r5",
-      "role": "link"
-    },
-    {
-      "name": "Block r6",
-      "role": "link"
-    },
-    {
       "name": "decisions.md",
       "role": "link"
     },
@@ -373,6 +369,14 @@
     },
     {
       "name": "Every property of the issue that carries a value is visible …",
+      "role": "link"
+    },
+    {
+      "name": "Every property of the issue that carries a value is visible at every width the page draws, with no control opened and no sideways scroll. The right-hand panel holds the rest.",
+      "role": "link"
+    },
+    {
+      "name": "Every property of the issue…",
       "role": "link"
     },
     {
@@ -472,6 +476,10 @@
       "role": "link"
     },
     {
+      "name": "Requirement 2 of the redesign…",
+      "role": "link"
+    },
+    {
       "name": "Requirement 3 of the redesign stands on a row of its own.",
       "role": "link"
     },
@@ -480,7 +488,15 @@
       "role": "link"
     },
     {
+      "name": "Requirement 4 of the redesign…",
+      "role": "link"
+    },
+    {
       "name": "Requirement 5 of the redesign stands on a row of its own.",
+      "role": "link"
+    },
+    {
+      "name": "Requirement 5 of the redesign…",
       "role": "link"
     },
     {
@@ -712,6 +728,10 @@
       "role": "region"
     },
     {
+      "name": "Progress",
+      "role": "region"
+    },
+    {
       "name": "Recipients",
       "role": "region"
     },
@@ -729,6 +749,10 @@
     },
     {
       "name": "Waiting for your review",
+      "role": "region"
+    },
+    {
+      "name": "Waiting on you",
       "role": "region"
     },
     {
@@ -764,6 +788,10 @@
       "role": "tab"
     },
     {
+      "name": "Dashboard",
+      "role": "tab"
+    },
+    {
       "name": "Decisions",
       "role": "tab"
     },
@@ -794,6 +822,10 @@
     {
       "name": "Document editor",
       "role": "textbox"
+    },
+    {
+      "name": "Your answer",
+      "role": "textbox"
     }
   ],
   "open-390": [
@@ -806,11 +838,15 @@
       "role": "button"
     },
     {
-      "name": "Add a note or answer in your own words",
+      "name": "All",
       "role": "button"
     },
     {
-      "name": "All",
+      "name": "Answer",
+      "role": "button"
+    },
+    {
+      "name": "Ask back",
       "role": "button"
     },
     {
@@ -819,6 +855,14 @@
     },
     {
       "name": "Change answer",
+      "role": "button"
+    },
+    {
+      "name": "Checks passed 0 / 6 0",
+      "role": "button"
+    },
+    {
+      "name": "Children done 1 / 7 1",
       "role": "button"
     },
     {
@@ -950,6 +994,10 @@
       "role": "button"
     },
     {
+      "name": "Questions waiting on others 0 / 1 0",
+      "role": "button"
+    },
+    {
       "name": "Reaches 3",
       "role": "button"
     },
@@ -983,6 +1031,10 @@
     },
     {
       "name": "Show fields",
+      "role": "button"
+    },
+    {
+      "name": "Statements met 0 / 13 0",
       "role": "button"
     },
     {
@@ -1090,30 +1142,6 @@
       "role": "link"
     },
     {
-      "name": "Block r1",
-      "role": "link"
-    },
-    {
-      "name": "Block r2",
-      "role": "link"
-    },
-    {
-      "name": "Block r3",
-      "role": "link"
-    },
-    {
-      "name": "Block r4",
-      "role": "link"
-    },
-    {
-      "name": "Block r5",
-      "role": "link"
-    },
-    {
-      "name": "Block r6",
-      "role": "link"
-    },
-    {
       "name": "decisions.md",
       "role": "link"
     },
@@ -1131,6 +1159,14 @@
     },
     {
       "name": "Every property of the issue that carries a value is visible …",
+      "role": "link"
+    },
+    {
+      "name": "Every property of the issue that carries a value is visible at every width the page draws, with no control opened and no sideways scroll. The right-hand panel holds the rest.",
+      "role": "link"
+    },
+    {
+      "name": "Every property of the issue…",
       "role": "link"
     },
     {
@@ -1206,6 +1242,10 @@
       "role": "link"
     },
     {
+      "name": "Requirement 2 of the redesign…",
+      "role": "link"
+    },
+    {
       "name": "Requirement 3 of the redesign stands on a row of its own.",
       "role": "link"
     },
@@ -1214,7 +1254,15 @@
       "role": "link"
     },
     {
+      "name": "Requirement 4 of the redesign…",
+      "role": "link"
+    },
+    {
       "name": "Requirement 5 of the redesign stands on a row of its own.",
+      "role": "link"
+    },
+    {
+      "name": "Requirement 5 of the redesign…",
       "role": "link"
     },
     {
@@ -1422,6 +1470,10 @@
       "role": "region"
     },
     {
+      "name": "Progress",
+      "role": "region"
+    },
+    {
       "name": "Recipients",
       "role": "region"
     },
@@ -1435,6 +1487,10 @@
     },
     {
       "name": "Waiting for your review",
+      "role": "region"
+    },
+    {
+      "name": "Waiting on you",
       "role": "region"
     },
     {
@@ -1466,6 +1522,10 @@
       "role": "tab"
     },
     {
+      "name": "Dashboard",
+      "role": "tab"
+    },
+    {
       "name": "Decisions",
       "role": "tab"
     },
@@ -1492,6 +1552,10 @@
     {
       "name": "Document editor",
       "role": "textbox"
+    },
+    {
+      "name": "Your answer",
+      "role": "textbox"
     }
   ],
   "closed-1440": [
@@ -1505,6 +1569,14 @@
     },
     {
       "name": "Change answer",
+      "role": "button"
+    },
+    {
+      "name": "Checks passed 0 / 6 0",
+      "role": "button"
+    },
+    {
+      "name": "Children done 1 / 7 1",
       "role": "button"
     },
     {
@@ -1628,6 +1700,10 @@
       "role": "button"
     },
     {
+      "name": "Questions waiting on others 0 / 0 0",
+      "role": "button"
+    },
+    {
       "name": "Referenced by",
       "role": "button"
     },
@@ -1665,6 +1741,10 @@
     },
     {
       "name": "Sign out",
+      "role": "button"
+    },
+    {
+      "name": "Statements met 0 / 13 0",
       "role": "button"
     },
     {
@@ -1772,30 +1852,6 @@
       "role": "link"
     },
     {
-      "name": "Block r1",
-      "role": "link"
-    },
-    {
-      "name": "Block r2",
-      "role": "link"
-    },
-    {
-      "name": "Block r3",
-      "role": "link"
-    },
-    {
-      "name": "Block r4",
-      "role": "link"
-    },
-    {
-      "name": "Block r5",
-      "role": "link"
-    },
-    {
-      "name": "Block r6",
-      "role": "link"
-    },
-    {
       "name": "decisions.md",
       "role": "link"
     },
@@ -1829,6 +1885,14 @@
     },
     {
       "name": "Every property of the issue that carries a value is visible …",
+      "role": "link"
+    },
+    {
+      "name": "Every property of the issue that carries a value is visible at every width the page draws, with no control opened and no sideways scroll. The right-hand panel holds the rest.",
+      "role": "link"
+    },
+    {
+      "name": "Every property of the issue…",
       "role": "link"
     },
     {
@@ -1924,6 +1988,10 @@
       "role": "link"
     },
     {
+      "name": "Requirement 2 of the redesign…",
+      "role": "link"
+    },
+    {
       "name": "Requirement 3 of the redesign stands on a row of its own.",
       "role": "link"
     },
@@ -1932,7 +2000,15 @@
       "role": "link"
     },
     {
+      "name": "Requirement 4 of the redesign…",
+      "role": "link"
+    },
+    {
       "name": "Requirement 5 of the redesign stands on a row of its own.",
+      "role": "link"
+    },
+    {
+      "name": "Requirement 5 of the redesign…",
       "role": "link"
     },
     {
@@ -2144,6 +2220,10 @@
       "role": "region"
     },
     {
+      "name": "Progress",
+      "role": "region"
+    },
+    {
       "name": "Replaced",
       "role": "region"
     },
@@ -2153,6 +2233,10 @@
     },
     {
       "name": "Waiting for your review",
+      "role": "region"
+    },
+    {
+      "name": "Waiting on you",
       "role": "region"
     },
     {
@@ -2185,6 +2269,10 @@
     },
     {
       "name": "Conversation",
+      "role": "tab"
+    },
+    {
+      "name": "Dashboard",
       "role": "tab"
     },
     {
@@ -2235,6 +2323,14 @@
     },
     {
       "name": "Change answer",
+      "role": "button"
+    },
+    {
+      "name": "Checks passed 0 / 6 0",
+      "role": "button"
+    },
+    {
+      "name": "Children done 1 / 7 1",
       "role": "button"
     },
     {
@@ -2350,6 +2446,10 @@
       "role": "button"
     },
     {
+      "name": "Questions waiting on others 0 / 0 0",
+      "role": "button"
+    },
+    {
       "name": "Referenced by",
       "role": "button"
     },
@@ -2379,6 +2479,10 @@
     },
     {
       "name": "Show fields",
+      "role": "button"
+    },
+    {
+      "name": "Statements met 0 / 13 0",
       "role": "button"
     },
     {
@@ -2474,30 +2578,6 @@
       "role": "link"
     },
     {
-      "name": "Block r1",
-      "role": "link"
-    },
-    {
-      "name": "Block r2",
-      "role": "link"
-    },
-    {
-      "name": "Block r3",
-      "role": "link"
-    },
-    {
-      "name": "Block r4",
-      "role": "link"
-    },
-    {
-      "name": "Block r5",
-      "role": "link"
-    },
-    {
-      "name": "Block r6",
-      "role": "link"
-    },
-    {
       "name": "decisions.md",
       "role": "link"
     },
@@ -2519,6 +2599,14 @@
     },
     {
       "name": "Every property of the issue that carries a value is visible …",
+      "role": "link"
+    },
+    {
+      "name": "Every property of the issue that carries a value is visible at every width the page draws, with no control opened and no sideways scroll. The right-hand panel holds the rest.",
+      "role": "link"
+    },
+    {
+      "name": "Every property of the issue…",
       "role": "link"
     },
     {
@@ -2590,6 +2678,10 @@
       "role": "link"
     },
     {
+      "name": "Requirement 2 of the redesign…",
+      "role": "link"
+    },
+    {
       "name": "Requirement 3 of the redesign stands on a row of its own.",
       "role": "link"
     },
@@ -2598,7 +2690,15 @@
       "role": "link"
     },
     {
+      "name": "Requirement 4 of the redesign…",
+      "role": "link"
+    },
+    {
       "name": "Requirement 5 of the redesign stands on a row of its own.",
+      "role": "link"
+    },
+    {
+      "name": "Requirement 5 of the redesign…",
       "role": "link"
     },
     {
@@ -2790,6 +2890,10 @@
       "role": "region"
     },
     {
+      "name": "Progress",
+      "role": "region"
+    },
+    {
       "name": "Replaced",
       "role": "region"
     },
@@ -2799,6 +2903,10 @@
     },
     {
       "name": "Waiting for your review",
+      "role": "region"
+    },
+    {
+      "name": "Waiting on you",
       "role": "region"
     },
     {
@@ -2827,6 +2935,10 @@
     },
     {
       "name": "Conversation",
+      "role": "tab"
+    },
+    {
+      "name": "Dashboard",
       "role": "tab"
     },
     {
