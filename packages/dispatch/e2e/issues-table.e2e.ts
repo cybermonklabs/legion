@@ -2284,7 +2284,11 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     const shown = await watchShown(page, `Priority of ${issue.key}`);
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", "none"));
-    await page.goto("/priorities?tab=none");
+    // The tab lists every issue active under no priority on the worker's stack, and rows before
+    // this one leave theirs there, so it opens newest first: the row's two issues, written last,
+    // are then its first two rows whatever stood before them, as the fault lists of
+    // priorities.e2e.ts open (`n.sort=-updated`).
+    await page.goto("/priorities?tab=none&n.sort=-updated");
     const table = page.getByRole("region", { name: "Active under no priority" });
     // The fault list opens with R6's columns alone; the reader shows the issue's own priority
     // from the column control, as anyone who picks one there does.

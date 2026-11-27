@@ -4736,8 +4736,26 @@ const tableCells: {
       });
       await typeAndLeave(cell, " five-g");
       await lateThenStop(cell, () => tried);
+      // She edits again once her late text has landed and the page has read it. The field's
+      // base moves only on a read the page takes in, never on a write (InPlaceField.tsx), so an
+      // edit typed before that read is answered names the text from before hers, and Dispatch
+      // refuses it. The wait starts before the write is let go, so no such answer comes unseen.
+      const tookIn = cell.page.waitForResponse(
+        async (response) =>
+          response.request().method() === "GET" &&
+          new URL(response.url()).pathname === "/api/v1/priorities" &&
+          (await response.text()).includes(" five-g"),
+        { timeout: 15_000 }
+      );
       late.resolve();
       await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" five-g");
+      await tookIn;
+      // Two frames, as `checkClean` waits, so the field has taken that answer in.
+      await cell.page.evaluate(() => {
+        const frames = Promise.withResolvers<void>();
+        requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+        return frames.promise;
+      });
       await cell.page.unroute(`**/api/v1/priorities/${cell.id}`);
       await typeAndLeave(cell, " five-h");
       await checkClean(cell, " five-g five-h");
