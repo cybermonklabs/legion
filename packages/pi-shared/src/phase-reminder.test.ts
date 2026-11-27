@@ -83,7 +83,7 @@ test("the owed check aborts a daemon request that outlives its bound, and remind
   ]);
   expect(handed).toHaveLength(1);
   expect(handed[0]?.aborted).toBe(true);
-  expect((handed[0]?.reason as Error).message).toBe("no answer within 20ms");
+  expect((handed[0]?.reason as Error | undefined)?.message).toBe("no answer within 20ms");
   expect(debugged).toEqual(["legion: the daemon did not say what this claim owes"]);
 });
 
