@@ -14,7 +14,13 @@ import { DECISIONS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { inDocument } from "../slots/stage-fixtures";
 import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
-import { outlineQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
+import {
+  outlineQuery,
+  type TreeAnswer,
+  useDecisionsView,
+  viewKey,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { useDecisionsEntries, useDecisionsTree } from "./decisions-entries";
 import {
   AGENT,
@@ -423,6 +429,43 @@ test("answers older than the app's staleTime are not read again as the seam moun
   } finally {
     for (const read of reads) read.mockRestore();
     request.mockRestore();
+  }
+});
+
+// Every reader of the decisions view takes it through `useDecisionsView`, whose read is tracked
+// only as far as each reader reads it (`useLoadView`'s getters): a reader of the answer alone -
+// the page's tree, the header's count, each Decisions row's Keep and Change - is drawn again only
+// as the answer or its refusal changes, not as a read of the view starts and ends. Here the view
+// is read again, and its read answers what the view held, which TanStack's structural sharing
+// keeps as the same answer.
+test("a reader of the decisions view's answer draws once, and not again when the view is read again to the same answer", async () => {
+  const held = treeAnswer([decision("d1")]);
+  const read = spyOn(api, "getIssueTree").mockImplementation(async () =>
+    treeAnswer([decision("d1")])
+  );
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(viewKey(KEY, "decisions"), held);
+    let draws = 0;
+    const hook = renderHook(
+      () => {
+        draws += 1;
+        return useDecisionsView(KEY).answer;
+      },
+      { wrapper: decisionsAddress(client) }
+    );
+    await act(() => Promise.resolve());
+    expect(hook.result.current, "the reader holds no answer of the decisions view").toBe(held);
+    expect(draws, "the reader drew more than once as it mounted").toBe(1);
+    await act(async () => {
+      await client.fetchQuery({ ...viewQuery(KEY, "decisions"), staleTime: 0 });
+    });
+    expect(read, "the decisions view was not read again").toHaveBeenCalledTimes(1);
+    expect(hook.result.current, "the read again changed the answer the reader holds").toBe(held);
+    expect(draws, "the reader of the answer drew again as the view was read again").toBe(1);
+    hook.unmount();
+  } finally {
+    read.mockRestore();
   }
 });
 

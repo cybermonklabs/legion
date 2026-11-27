@@ -85,6 +85,7 @@ import {
   issueTreeQuery,
   useBlocksRunning,
   useLastAnswer,
+  useLoadView,
   useTreeRead,
   viewQuery,
 } from "../tree-read/tree-read";
@@ -267,9 +268,10 @@ export function SpecFilterBody({
   // it (`dropViews`), and the column then draws the answer it last held (`useLastAnswer`) until
   // the next one lands. That answer is this load's alone: on a return to the issue the page's
   // tree holds no view of the earlier visit (`useIssueTree.ts`, `loadEnded`), so the column's
-  // first render keeps none of it. A read again that fails keeps its answer, which leaves the
-  // body an answer to draw too.
-  const specRead = useQuery(treeRead(specQuery));
+  // first render keeps none of it, and the view read's state is this load's too (`useLoadView`),
+  // so that render draws no failed line for a refusal of the earlier visit. A read again that
+  // fails keeps its answer, which leaves the body an answer to draw too.
+  const specRead = useLoadView(issue.key, "spec");
   const held = useLastAnswer(root.views?.spec);
   const decisions = useMemo(
     () => (held === undefined ? [] : decisionNodes(held, { asks, issue })),
