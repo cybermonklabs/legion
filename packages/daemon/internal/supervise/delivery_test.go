@@ -182,10 +182,10 @@ func TestARetiredRetrosTaskLeavesItsRunOnTheClaimAndAPhaseTaskTakesItBack(t *tes
 }
 
 // The retro run a claim serves outlasts what the daemon does to the claim's process: a restart
-// builds the machine again from what the store holds, and a resume of the claim's kept session
-// (the retro's agent suspended by an idle release or a close, then woken for the retro or a
-// finding) relaunches it. The claim's next turn there is still the retro's, as the run and the
-// entry are, so its report is taken and not refused.
+// builds the machine again from what the store holds, and the rule's resume of the claim's kept
+// session (the retro's agent suspended by an idle release, then woken for the retro or a finding,
+// as the daemon's wake and its retro start resume it) relaunches it. The claim's next turn there
+// is still the retro's, as the run and the entry are, so its report is taken and not refused.
 func TestAClaimServingARetroKeepsItAcrossARestartAndARelaunchOfItsSession(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -202,8 +202,8 @@ func TestAClaimServingARetroKeepsItAcrossARestartAndARelaunchOfItsSession(t *tes
 	}
 
 	before := h.generation()
-	h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestSuspend{Claim: testToken, Reason: "the idle pod was released", By: SuspendedByReleased})
+	h.must(RequestRuleResume{Claim: testToken, Reason: "a wake for the retro's finding"})
 	h.wantCalls("Resume", 1)
 	h.relaunched()
 	if h.generation() == before {
