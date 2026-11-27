@@ -2,11 +2,12 @@
 // the model as an SVG plot on its two axes, its groups' lines, points, error bars and bands, its
 // references and annotations, and, while the compare range is shown, the compare range's readings
 // muted (over time a second line, a band as an outline; against an x series and by step hollow
-// points). Each value it draws names itself as the chart's table names it (`data-chart`,
-// `data-series`, `data-statistic`, `data-x`, `data-range`, `data-value`), so the table holds every
-// number the graph draws. With `y_options` a button for each option picks the view, with `panels`
-// the views stand side by side, with `zoom` a drag on the plot narrows its x axis, and with
-// `items` a button for each x lists its items.
+// points). A step chart over measured time draws each line and band from the model's step holds
+// (D21), from the window's start to the window's end or the present. Each value it draws names
+// itself as the chart's table names it (`data-chart`, `data-series`, `data-statistic`, `data-x`,
+// `data-range`, `data-value`), so the table holds every number the graph draws. With `y_options` a
+// button for each option picks the view, with `panels` the views stand side by side, with `zoom`
+// a drag on the plot narrows its x axis, and with `items` a button for each x lists its items.
 import { type PointerEvent, type ReactNode, useId, useRef, useState } from "react";
 
 import {
@@ -28,6 +29,7 @@ import {
   type PlotPoint,
   type PlotSeries,
   type PlotView,
+  type StepHold,
 } from "./plot";
 
 const WIDTH = 640;
@@ -273,6 +275,34 @@ function linePath(places: readonly [number, number][], step: boolean): string {
     .join(" ");
 }
 
+/** A run of a step line as a path: each hold across its stretch, joined upright to the next. */
+function stepPath(
+  run: readonly StepHold[],
+  xOf: (value: number) => number,
+  yOf: (value: number) => number
+): string {
+  return run
+    .map(
+      (hold, index) =>
+        `${index === 0 ? `M${xOf(hold.from)},${yOf(hold.y)}` : `V${yOf(hold.y)}`} H${xOf(hold.to)}`
+    )
+    .join(" ");
+}
+
+/** A piece of a step band as an area: along each hold's high, then back along each hold's low. */
+function stepAreaPath(
+  piece: readonly { from: number; to: number; low: number; high: number }[],
+  xOf: (value: number) => number,
+  yOf: (value: number) => number
+): string {
+  const top = piece.map(
+    (hold, index) =>
+      `${index === 0 ? `M${xOf(hold.from)},${yOf(hold.high)}` : `V${yOf(hold.high)}`} H${xOf(hold.to)}`
+  );
+  const back = [...piece].reverse().map((hold) => `V${yOf(hold.low)} H${xOf(hold.from)}`);
+  return `${top.join(" ")} ${back.join(" ")} Z`;
+}
+
 /** The runs of places a line joins: a reading with no value breaks it. */
 function runs(places: readonly ([number, number] | null)[]): [number, number][][] {
   const out: [number, number][][] = [];
@@ -365,6 +395,13 @@ function ViewPlot(props: {
       }
     }
     if (one.fromStart !== null) ys.push(one.fromStart);
+    // A step line reaches from the window's start to its end or the present.
+    const steps = one.steps;
+    if (steps !== null) {
+      for (const range of ranges) {
+        for (const run of steps[range]) for (const hold of run) xs.push(hold.from, hold.to);
+      }
+    }
   }
   const reference = view.reference;
   if (reference?.type === "rule") ys.push(reference.y);
@@ -474,21 +511,65 @@ function ViewPlot(props: {
     const join = plot.line !== "none" || one.joined || one.role === "summary";
     if (!join || (one.role === "median" && !one.joined)) return null;
     const muted = range === "compare";
+    const stroke = {
+      className: `fill-none ${muted ? chartLine.compareStroke : tones(one.tone).stroke}`,
+      opacity: one.role === "run" ? 0.35 : undefined,
+      strokeDasharray: muted ? "4 3" : one.joined ? "2 2" : undefined,
+      strokeWidth: one.role === "summary" || one.joined ? 1 : 1.5,
+    };
+    // A step line over measured time: each run of the step rule's holds, a single reading's too.
+    if (one.steps !== null) {
+      return one.steps[range].map((run) => (
+        <path
+          d={stepPath(run, xOf, clampY)}
+          data-step-line={range}
+          key={`${range}-${run[0]?.from}-${run[0]?.y}`}
+          {...stroke}
+        />
+      ));
+    }
     return lineOf(one, range).map((run) =>
       run.length < 2 ? null : (
         <path
-          className={`fill-none ${muted ? chartLine.compareStroke : tones(one.tone).stroke}`}
           d={linePath(run, plot.line === "step")}
           key={`${range}-${run[0]?.[0]}-${run[0]?.[1]}`}
-          opacity={one.role === "run" ? 0.35 : undefined}
-          strokeDasharray={muted ? "4 3" : one.joined ? "2 2" : undefined}
-          strokeWidth={one.role === "summary" || one.joined ? 1 : 1.5}
+          {...stroke}
         />
       )
     );
   };
 
+  /** A step band's pieces in `range`: each run's holds with an interval, split where one has none. */
+  const stepBand = (one: PlotSeries, range: "window" | "compare") => {
+    const pieces: { from: number; to: number; low: number; high: number }[][] = [];
+    for (const run of one.steps?.[range] ?? []) {
+      let piece: { from: number; to: number; low: number; high: number }[] = [];
+      for (const { from, high, low, to } of run) {
+        if (low === null || high === null) {
+          if (piece.length > 0) pieces.push(piece);
+          piece = [];
+        } else piece.push({ from, high, low, to });
+      }
+      if (piece.length > 0) pieces.push(piece);
+    }
+    return pieces;
+  };
+
   const bandOf = (one: PlotSeries, range: "window" | "compare", outline: boolean): ReactNode => {
+    const className = outline
+      ? `fill-none ${chartLine.compareStroke}`
+      : `${range === "compare" ? "fill-transparent" : tones(one.tone).band} stroke-none`;
+    if (one.steps !== null) {
+      return stepBand(one, range).map((part) => (
+        <path
+          className={className}
+          d={stepAreaPath(part, xOf, clampY)}
+          data-band-range={range}
+          key={`${range}-${part[0]?.from}`}
+          strokeDasharray={outline ? "4 3" : undefined}
+        />
+      ));
+    }
     const places = one.points
       .filter((point) => (range === "window" ? point.held : point.compareHeld))
       .map((point) => ({
@@ -512,11 +593,7 @@ function ViewPlot(props: {
     return pieces.map((part) =>
       part.length < 2 ? null : (
         <path
-          className={
-            outline
-              ? `fill-none ${chartLine.compareStroke}`
-              : `${range === "compare" ? "fill-transparent" : tones(one.tone).band} stroke-none`
-          }
+          className={className}
           d={areaPath(part, plot.line === "step")}
           data-band-range={range}
           key={`${range}-${part[0]?.x}`}
@@ -556,19 +633,24 @@ function ViewPlot(props: {
             : null;
       const low = valueAt(point, "ci_low", range);
       const high = valueAt(point, "ci_high", range);
+      // A step line's reading before its range stands at the window's start, where its line
+      // starts: named there as the table names it, with no dot of a reading measured there.
+      const before = range === "window" ? point.before : point.compareBefore;
       const dot =
-        plot.marks !== "end" || at === lastAt || range === "compare" || one.role === "summary";
+        !before &&
+        (plot.marks !== "end" || at === lastAt || range === "compare" || one.role === "summary");
       const median = (plot.strip && point.median) || one.role === "median";
       const bound = range === "window" ? point.bound : point.compareBound;
       const band = plot.kind === "band" && low !== null && high !== null;
       const errorBar =
         (plot.kind === "xy" || one.role === "summary") && low !== null && high !== null;
+      const barShown = errorBar && !before;
       const reach = median && plot.strip ? stepWidth * 0.4 : 0;
       return [
         <g data-point={point.x} key={`${range}-${point.x}`}>
           {errorBar || (band && one.role !== "median") ? (
             <>
-              {errorBar ? (
+              {barShown ? (
                 <line
                   className={classes.stroke}
                   opacity={one.role === "run" ? 0.35 : undefined}
@@ -583,7 +665,7 @@ function ViewPlot(props: {
                 const end = statistic === "ci_low" ? (low as number) : (high as number);
                 return (
                   <line
-                    className={errorBar ? classes.stroke : "stroke-transparent"}
+                    className={barShown ? classes.stroke : "stroke-transparent"}
                     key={statistic}
                     strokeWidth={1}
                     x1={x - 2.5}

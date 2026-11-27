@@ -114,11 +114,16 @@ function EvalRow({ row }: { row: EvalItemRow }): ReactNode {
  * plan D9, D12), read through the eval's `items` view a page of `limit` at a time: each row with
  * its own address and its links beside it, and a reading as logged with the value, note and links
  * it carried. A page past the first is its own view, so moving to it subscribes it and leaves the
- * one before.
+ * one before. A logged eval's rows are its readings alone (`source=readings`, so its `total`
+ * counts readings and no day row), read with no repository: its readings are no repository's
+ * (plan D21, ledger item 27), and a `repo` keeps only the readings whose `attributes.repo` names
+ * it. A step chart's reading before the window, which the items read answers on every page of an
+ * eval that draws one, is the chart's and no row of the window's.
  */
 export function EvalRows({
   label,
   limit,
+  logged,
   scope,
   slug,
 }: {
@@ -126,6 +131,8 @@ export function EvalRows({
   label: string;
   /** How many rows a page holds, 1 to 200. */
   limit: number;
+  /** Whether the eval's values are readings an agent or a job logs (`isLogged`). */
+  logged: boolean;
   scope: EvalsScope;
   slug: string;
 }): ReactNode {
@@ -136,8 +143,9 @@ export function EvalRows({
       limit,
       offset,
       project: scope.project,
-      repos: scope.repos,
+      repos: logged ? [] : scope.repos,
       slug,
+      sources: logged ? ["readings"] : undefined,
       window: scope.window,
     })
   );
@@ -157,7 +165,7 @@ export function EvalRows({
       </p>
     );
   }
-  const rows = items.data.items ?? [];
+  const rows = (items.data.items ?? []).filter((row) => row.before_window !== true);
   const total = items.data.total;
   if (total === 0) return <p className={`text-xs ${textMutedOnSurface}`}>No rows in the window.</p>;
   const last = Math.min(offset + rows.length, total);

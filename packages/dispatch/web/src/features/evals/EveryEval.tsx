@@ -117,7 +117,13 @@ function EvalBox({
         {`${unit === "" ? "" : `in ${unit} \u00b7 `}${target === null ? "no target" : `target ${targetLabel(target)}`}`}
       </div>
       {rows ? (
-        <EvalRows label={`Rows of ${name}`} limit={LOGGED_ROWS} scope={scope} slug={slug} />
+        <EvalRows
+          label={`Rows of ${name}`}
+          limit={LOGGED_ROWS}
+          logged={isLogged(item)}
+          scope={scope}
+          slug={slug}
+        />
       ) : null}
     </article>
   );

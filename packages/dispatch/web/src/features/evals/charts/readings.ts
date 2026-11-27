@@ -8,6 +8,11 @@ import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 /** A reading's bound: its value is at least (`>=`) or at most (`<=`) the true value's. */
 export type Bound = ">=" | "<=";
 
+/** Why the bounded read of a step series kept a reading (dispatch://INFRA-2918/artifact/plan-md,
+ *  D21): the first or the last of its span, its smallest or largest value, its first reading with
+ *  no value, or a band's smallest `ci_low` or largest `ci_high`. */
+export type KeptRole = NonNullable<EvalItemRow["kept"]>[number];
+
 /** One reading as a declared chart reads it. */
 export interface DeclaredReading {
   readonly id: string;
@@ -41,6 +46,12 @@ export interface DeclaredReading {
   readonly recordedAt: string;
   /** Which range of the header the reading is of. */
   readonly range: "window" | "compare";
+  /** True on the newest reading of its group before its range's start, which a step line starts
+   *  that range at (plan D20 (a)); a mock-up's readings, which no read answers, leave it out. */
+  readonly beforeWindow?: boolean;
+  /** The roles the bounded read of a step series kept it for (plan D21), empty where its read
+   *  kept every reading; a mock-up's readings leave it out. */
+  readonly kept?: readonly KeptRole[];
   /** The id of the reading it corrects, "" for none. */
   readonly replaces: string;
   readonly attributes: Readonly<Record<string, unknown>>;
@@ -71,7 +82,9 @@ export function compareReadings(a: DeclaredReading, b: DeclaredReading): number 
  * computes behind a number carry none, so they are left out. A reading that another names in
  * `replaces` draws nowhere: the correction draws in its place (the readings write's `replaces`,
  * the platform's `supersedes`). The items read leaves a superseded reading out already; this holds
- * where two pages of one series answer the reading and its correction apart.
+ * where two pages of one series answer the reading and its correction apart. A reading is held
+ * once in each range, and once more where it is a range's reading before the window: every page
+ * of a step series answers that reading again, and it may be the compare range's own reading too.
  */
 export function readingsOf(rows: readonly EvalItemRow[]): DeclaredReading[] {
   const readings = rows.flatMap((row): DeclaredReading[] => {
@@ -89,12 +102,14 @@ export function readingsOf(rows: readonly EvalItemRow[]): DeclaredReading[] {
       {
         absentReason: text(cols.value_absent_reason),
         attributes,
+        beforeWindow: row.before_window === true,
         bound: bound === ">=" || bound === "<=" ? bound : null,
         ciHigh: finite(cols.ci_high),
         ciLevel: finite(cols.ci_level),
         ciLow: finite(cols.ci_low),
         col: text(cols.col),
         id,
+        kept: row.kept ?? [],
         links: row.links ?? [],
         measuredAt: row.measured_at,
         measuredMs: Date.parse(row.measured_at),
@@ -118,8 +133,9 @@ export function readingsOf(rows: readonly EvalItemRow[]): DeclaredReading[] {
   const seen = new Set<string>();
   return readings
     .filter((reading) => {
-      if (replaced.has(reading.id) || seen.has(reading.id)) return false;
-      seen.add(reading.id);
+      const place = `${reading.id}\n${reading.range}\n${reading.beforeWindow === true}`;
+      if (replaced.has(reading.id) || seen.has(place)) return false;
+      seen.add(place);
       return true;
     })
     .sort(compareReadings);

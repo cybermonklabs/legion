@@ -5,7 +5,9 @@
 // place, holds each series' value there, and a place a series has no reading at reads "no data".
 // The compare range's readings are each point's compare values: over time at the instant the
 // compare range's shift onto the window's axis puts them, against an x series and by step at the
-// same row or step, so a reading's change is its value less the compare range's there. Pure.
+// same row or step, so a reading's change is its value less the compare range's there. A chart
+// with `curve: "step"` over measured time draws each group by the step rule (D21, `stepRuns`).
+// Pure.
 import {
   type ChartAxis,
   type ChartModel,
@@ -30,7 +32,13 @@ import {
   specText,
   type Tone,
 } from "./kind";
-import { type Bound, type DeclaredReading, newestByCell } from "./readings";
+import {
+  type Bound,
+  compareReadings,
+  type DeclaredReading,
+  type KeptRole,
+  newestByCell,
+} from "./readings";
 
 export type PlotKind = "xy" | "band";
 
@@ -169,20 +177,39 @@ export type SeriesRole = "group" | "run" | "median" | "summary";
 
 export interface PlotPoint extends ChartPoint {
   /** Its place on the x axis: epoch milliseconds, the x series' number, or the step's index;
-   *  null where it has none (no x reading), or where the series has no reading here. */
+   *  null where it has none (no x reading), or where the series has no reading here. A step
+   *  line's reading before the window stands at the window's start, where its line starts. */
   readonly at: number | null;
   /** Whether the series has a reading of the window here. */
   readonly held: boolean;
+  /** Whether that reading is the series' newest before the window (plan D20 (a)). */
+  readonly before: boolean;
   readonly bound: Bound | null;
   /** The compare range's reading's place on the window's axis. */
   readonly compareAt: number | null;
   readonly compareHeld: boolean;
+  /** Whether the compare range's reading is the series' newest before that range. */
+  readonly compareBefore: boolean;
   readonly compareBound: Bound | null;
   readonly rowGroup: string;
   /** On a strip, a median row's bar rather than a dot; `overall`, the median over every run. */
   readonly median: boolean;
   readonly overall: boolean;
 }
+
+/** One stretch of a step line: the value `y` held from `from` to `to` on the x axis, with the
+ *  band's spread around it (`low` to `high`, null where its reading has no interval). */
+export interface StepHold {
+  readonly from: number;
+  readonly to: number;
+  readonly y: number;
+  readonly low: number | null;
+  readonly high: number | null;
+}
+
+/** One range's step line of a series: its runs, each a list of holds, each hold starting where
+ *  the one before it ends; a reading with no value ends a run. */
+export type StepRuns = readonly (readonly StepHold[])[];
 
 export interface PlotSeries extends ChartSeries {
   /** The index of its view among `plot.views`. */
@@ -198,6 +225,9 @@ export interface PlotSeries extends ChartSeries {
   /** On an xy with steps and `reference.from_start`: the target at its last step. */
   readonly fromStart: number | null;
   readonly points: readonly PlotPoint[];
+  /** Over measured time with `curve: "step"`, its line in each range by the step rule
+   *  (`stepRuns`); null where the chart draws no such line. */
+  readonly steps: { readonly window: StepRuns; readonly compare: StepRuns } | null;
 }
 
 export interface PlotModel extends ChartModel {
@@ -261,6 +291,8 @@ interface Cell {
   readonly x: DeclaredReading | null;
   readonly median: boolean;
   readonly overall: boolean;
+  /** A step line's reading before its range, which stands at the window's start. */
+  readonly before?: boolean;
 }
 
 /** One range's cells of one view, by group and then by place. */
@@ -293,6 +325,11 @@ interface Reader {
   readonly overall: string | null;
   /** Milliseconds the compare range's readings move to stand on the window's axis. */
   readonly shift: number;
+  /** Whether each group draws by the step rule: `curve: "step"` over measured time, with no
+   *  mock-up drawn. Its readings before the window then stand at `start`, the window's start in
+   *  epoch milliseconds; on any other chart they are left out. */
+  readonly stepped: boolean;
+  readonly start: number;
 }
 
 function groupOf(reader: Reader, reading: DeclaredReading): string {
@@ -319,7 +356,8 @@ function cellName(reader: Reader, reading: DeclaredReading): string {
 }
 
 /** One range's cells of the view that draws `ys` (and, against an x series, `xs`), and how many of
- *  its readings the chart does not plot and why. */
+ *  its readings the chart does not plot and why. A reading before its range is a cell only of a
+ *  step chart, which holds each group's newest one at the window's start. */
 function cellsOf(
   reader: Reader,
   range: "window" | "compare",
@@ -327,7 +365,7 @@ function cellsOf(
   xs: readonly DeclaredReading[]
 ): { cells: Cells; notAStep: number } {
   const cells: Cells = new Map();
-  const own = ys.filter((reading) => reading.range === range);
+  const own = ys.filter((reading) => reading.range === range && reading.beforeWindow !== true);
   if (reader.form === "time") {
     const shift = range === "compare" ? reader.shift : 0;
     for (const reading of own) {
@@ -342,11 +380,29 @@ function cellsOf(
         x: null,
       });
     }
+    if (reader.stepped) {
+      const before = ys.filter(
+        (reading) => reading.range === range && reading.beforeWindow === true
+      );
+      for (const [group, reading] of newestByCell(before, (one) => groupOf(reader, one))) {
+        const at = reading.measuredMs + shift;
+        addCell(cells, group, {
+          at: reader.start,
+          before: true,
+          key: new Date(at).toISOString(),
+          label: timeLabel(at),
+          median: false,
+          overall: false,
+          reading,
+          x: null,
+        });
+      }
+    }
     return { cells, notAStep: 0 };
   }
   if (reader.form === "number") {
     const newest = newestByCell(own, (reading) => `${reading.row}\n${reading.col}`);
-    const xOwn = xs.filter((reading) => reading.range === range);
+    const xOwn = xs.filter((reading) => reading.range === range && reading.beforeWindow !== true);
     // An x series of one col joins by row alone; else by row and col.
     const byRow = new Set(xOwn.map((reading) => reading.col)).size <= 1;
     const xNewest = newestByCell(xOwn, (reading) =>
@@ -384,6 +440,90 @@ function cellsOf(
     });
   }
   return { cells, notAStep: own.length - stepped.length };
+}
+
+/**
+ * One range's step line of one group, from its cells (plan D21): from the window's start at the
+ * value of its reading before the range, each value held until the group's next reading, the line
+ * ended at a reading with no value, and the newest value held to `end`, the range's end or the
+ * present, whichever comes first, on the window's axis. With no reading before the range, the line
+ * starts at its first reading in it.
+ */
+function stepRuns(cells: Iterable<Cell>, end: number): StepHold[][] {
+  const ordered = [...cells].sort(
+    (a, b) =>
+      Number(b.before === true) - Number(a.before === true) ||
+      (a.at ?? 0) - (b.at ?? 0) ||
+      compareReadings(a.reading, b.reading)
+  );
+  const runs: StepHold[][] = [];
+  let run: StepHold[] = [];
+  let held: Omit<StepHold, "to"> | null = null;
+  for (const { at, reading } of ordered) {
+    if (at === null) continue;
+    if (held !== null) run.push({ ...held, to: at });
+    if (reading.value === null) {
+      if (run.length > 0) runs.push(run);
+      run = [];
+      held = null;
+    } else {
+      held = { from: at, high: reading.ciHigh, low: reading.ciLow, y: reading.value };
+    }
+  }
+  if (held !== null) run.push({ ...held, to: Math.max(held.from, end) });
+  if (run.length > 0) runs.push(run);
+  return runs;
+}
+
+/** The roles a bounded read keeps a reading for, in the order its table names them, and the
+ *  words it names each with. */
+const KEPT_ORDER: readonly KeptRole[] = [
+  "first",
+  "last",
+  "min",
+  "max",
+  "no_value",
+  "min_low",
+  "max_high",
+];
+const KEPT_WORDS: Readonly<Record<KeptRole, string>> = {
+  first: "the first",
+  last: "the last",
+  max: "the highest",
+  max_high: "the highest interval high",
+  min: "the lowest",
+  min_low: "the lowest interval low",
+  no_value: "the first with no value",
+};
+
+/** "a", "a and b", "a, b and c". */
+function wordList(words: readonly string[]): string {
+  return words.length <= 1
+    ? (words[0] ?? "")
+    : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/** What the table says of a place's readings beside its time: the reading before the window or the
+ *  compare range, and the roles the bounded read kept the window's and the compare range's
+ *  readings there for, of the readings of its span of time (one of the read's `buckets`). */
+function placeMarks(cells: readonly { cell: Cell; range: "window" | "compare" }[]): string[] {
+  if (!cells.some(({ cell }) => cell.before === true || (cell.reading.kept?.length ?? 0) > 0)) {
+    return [];
+  }
+  const marks: string[] = [];
+  for (const range of ["window", "compare"] as const) {
+    const own = cells.filter((one) => one.range === range).map(({ cell }) => cell);
+    if (own.some((cell) => cell.before === true)) {
+      marks.push(range === "window" ? "before the window" : "before the compare range");
+    }
+    const kept = new Set(own.flatMap((cell) => cell.reading.kept ?? []));
+    const roles = KEPT_ORDER.filter((role) => kept.has(role));
+    if (roles.length > 0) {
+      const words = `kept as ${wordList(roles.map((role) => KEPT_WORDS[role]))} in its span of time`;
+      marks.push(range === "window" ? words : `compare range: ${words}`);
+    }
+  }
+  return marks;
 }
 
 /** A mock-up point as a reading of the view's y series, so the chart draws it as it draws one. */
@@ -795,7 +935,11 @@ function itemsOf(
   const series = specText(items.series);
   if (series === null) return null;
   const drawn = readings.filter(
-    (reading) => reading.series === series && reading.range === "window" && reading.value !== null
+    (reading) =>
+      reading.series === series &&
+      reading.range === "window" &&
+      reading.beforeWindow !== true &&
+      reading.value !== null
   );
   if (drawn.length === 0) return null;
   const newest = newestByCell(
@@ -879,6 +1023,36 @@ export function plotReads(spec: DeclaredSpec): ChartRead[] {
   return [...new Set(names)].map((series) => ({ series }));
 }
 
+/** What a step series' bounded read groups its readings by: the chart's group. */
+export type StepGroup = "col" | "row" | "row_group";
+
+/** Whether `spec` is an `xy` or a `band` with `curve: "step"` over measured time (no `x.series`,
+ *  no `x.steps`), which draws by the step rule (plan D21). */
+function isStepChart(spec: DeclaredSpec): boolean {
+  const x = specObject(spec.x);
+  return (
+    (spec.kind === "xy" || spec.kind === "band") &&
+    spec.curve === "step" &&
+    specText(x.series) === null &&
+    specList(x.steps).length === 0 &&
+    spec.points !== "only"
+  );
+}
+
+/** The series a step chart draws by the step rule, each read through one bounded items view
+ *  grouped as the chart groups its lines (`col` where it names no group, the read's default),
+ *  so its reading before the window and the readings the bound keeps are each group's (plan D21,
+ *  departure 7); none for any other chart. */
+export function stepReads(spec: DeclaredSpec): { series: string; group: StepGroup }[] {
+  if (!isStepChart(spec)) return [];
+  const group: StepGroup = spec.group === "row" || spec.group === "row_group" ? spec.group : "col";
+  const names = [
+    specObject(spec.y).series,
+    ...specList(spec.y_options).map((option) => specObject(option).series),
+  ].filter((name): name is string => typeof name === "string");
+  return [...new Set(names)].map((series) => ({ group, series }));
+}
+
 /**
  * The model of an `xy` or a `band` (plan D10) from its spec and the readings of its series:
  * - over time (no `x.series`), each reading is a point at its measured time, and each group (its
@@ -894,7 +1068,10 @@ export function plotReads(spec: DeclaredSpec): ChartRead[] {
  *   the view before's; a mock-up's points stand for readings where the chart has no reading with a
  *   value.
  * Each series is a group, in the order its colour's place gives it (`groupTones`); its points are
- * every place of the chart, in the order of their x.
+ * every place of the chart, in the order of their x. A step chart over measured time draws each
+ * group by the step rule from its reading before the window (`stepRuns`), and its table marks
+ * that reading and the roles the bounded read kept each reading for (`placeMarks`); any other
+ * chart leaves out a reading before the window.
  */
 export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInput): PlotModel {
   const x = specObject(spec.x);
@@ -912,7 +1089,11 @@ export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInp
       ...specList(spec.y_options).map((o) => specObject(o).series),
     ].concat(specList(spec.panels).map((panel) => specObject(specObject(panel).y).series))
   );
-  const measured = input.readings.filter((reading) => drawnSeries.has(reading.series));
+  const curve = spec.curve === "step" || spec.curve === "linear" ? spec.curve : null;
+  const stepChart = ownForm === "time" && curve === "step" && pointsField !== "only";
+  const measured = input.readings.filter(
+    (reading) => drawnSeries.has(reading.series) && (stepChart || reading.beforeWindow !== true)
+  );
 
   // A mock-up draws where none of the chart's y series holds a reading with a value.
   const mockup = spec.mockup === undefined ? null : specObject(spec.mockup);
@@ -933,6 +1114,8 @@ export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInp
     overall: specText(medians.overall),
     shift:
       input.compare === null ? 0 : Date.parse(input.window.from) - Date.parse(input.compare.from),
+    start: Date.parse(input.window.from),
+    stepped: stepChart && !mocked,
     steps,
     strip,
   };
@@ -1015,24 +1198,40 @@ export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInp
         window: summaryCells(name, cells.window),
       }))
   );
-  const places = new Map<string, { at: number; label: string }>();
-  const place = (cell: Cell) => {
-    const held = places.get(cell.key);
+  // Each place's time and the cells drawn there, whose marks its label carries.
+  const places = new Map<
+    string,
+    { at: number; label: string; readonly cells: { cell: Cell; range: "window" | "compare" }[] }
+  >();
+  const place = (cell: Cell, range: "window" | "compare") => {
     const at = cell.at ?? Number.POSITIVE_INFINITY;
-    if (held === undefined || at < held.at) places.set(cell.key, { at, label: cell.label });
+    const held = places.get(cell.key);
+    if (held === undefined) {
+      places.set(cell.key, { at, cells: [{ cell, range }], label: cell.label });
+      return;
+    }
+    if (at < held.at) {
+      held.at = at;
+      held.label = cell.label;
+    }
+    held.cells.push({ cell, range });
   };
   viewCells.forEach((cells, index) => {
-    for (const range of [cells.window, cells.compare]) {
-      for (const cellsOfGroup of range.values())
-        for (const cell of cellsOfGroup.values()) place(cell);
+    for (const range of ["window", "compare"] as const) {
+      for (const cellsOfGroup of cells[range].values())
+        for (const cell of cellsOfGroup.values()) place(cell, range);
     }
     for (const summary of summaries[index] ?? []) {
-      for (const cell of [...summary.window.values(), ...summary.compare.values()]) place(cell);
+      for (const cell of summary.window.values()) place(cell, "window");
+      for (const cell of summary.compare.values()) place(cell, "compare");
     }
   });
   const keys = [...places.entries()]
     .sort((a, b) => a[1].at - b[1].at || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-    .map(([key, { label }]) => ({ key, label }));
+    .map(([key, { cells, label }]) => {
+      const marks = placeMarks(cells);
+      return { key, label: marks.length === 0 ? label : `${label}, ${marks.join("; ")}` };
+    });
 
   const comparing = input.compare !== null;
   const rings = specObject(spec.rings);
@@ -1041,6 +1240,12 @@ export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInp
     value === true ? !overallOnly || row === reader.overall : specList(value).includes(row);
   const fromStart = (viewSpec: ViewSpec) =>
     viewSpec.reference?.type === "from-start" ? viewSpec.reference.by : null;
+  // Where each range's step line holds its newest value to on the window's axis: the range's end
+  // or the present, whichever comes first.
+  const now = input.now ?? Number.POSITIVE_INFINITY;
+  const windowEnd = Math.min(Date.parse(input.window.to), now);
+  const compareEnd =
+    input.compare === null ? 0 : Math.min(Date.parse(input.compare.to), now) + reader.shift;
 
   const series: PlotSeries[] = [];
   viewSpecs.forEach((view, index) => {
@@ -1087,6 +1292,7 @@ export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInp
             : Object.fromEntries(statistics.map(({ id }) => [id, cellValue(then, id, true)]));
         return {
           at: own?.at ?? null,
+          before: own?.before === true,
           bound: own?.reading.bound ?? null,
           change:
             compareValues === null
@@ -1096,6 +1302,7 @@ export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInp
                 : changeOf(values, compareValues, units),
           compare: compareValues,
           compareAt: then?.at ?? null,
+          compareBefore: then?.before === true,
           compareBound: then?.reading.bound ?? null,
           compareHeld: then !== undefined,
           held: own !== undefined,
@@ -1151,6 +1358,13 @@ export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInp
         repositoryNote: null,
         role,
         statistics,
+        steps:
+          reader.stepped && role !== "summary"
+            ? {
+                compare: comparing ? stepRuns(compare.values(), compareEnd) : [],
+                window: stepRuns(window.values(), windowEnd),
+              }
+            : null,
         target: null,
         tone,
         unit,
@@ -1261,7 +1475,6 @@ export function plotModel(kind: PlotKind, spec: DeclaredSpec, input: DeclaredInp
       : key.length >= 2 && key.length <= 10
         ? "key"
         : "none";
-  const curve = spec.curve === "step" || spec.curve === "linear" ? spec.curve : null;
   const line: Plot["line"] =
     pointsField === "only" || strip
       ? "none"

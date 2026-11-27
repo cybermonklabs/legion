@@ -81,6 +81,8 @@ function PanelBody({ item, scope }: { item: EvalListItem; scope: EvalsScope }): 
         <EvalRows
           label={`Rows behind ${evalName(item)}`}
           limit={PANEL_ROWS}
+          // `isLogged`'s test (EveryEval.tsx), which imports this module and so is not imported.
+          logged={item.definition.source === "logged"}
           scope={scope}
           slug={slug}
         />

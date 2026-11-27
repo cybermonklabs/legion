@@ -627,8 +627,10 @@ export const evalsViewQuery = (params: EvalsViewParams) => {
 
 /** One items view of a project's Evals tab: the eval whose rows it shows (`slug`), its window and
  *  compare range (null for none), the repositories, and what of the rows it keeps: one series,
- *  one row kind, one row, pr-ci's jobs in one order (`sort`), and the page, `limit` rows at
- *  `offset`. */
+ *  one row kind, one row, pr-ci's jobs in one order (`sort`), the sources its rows come from
+ *  (`sources`, every source when absent), and the page, `limit` rows at `offset`; or, for a step
+ *  series, the bounded read in `buckets` spans of each range, grouped by `group` (plan D21), which
+ *  names no page because the route refuses one beside it. */
 export interface ItemsViewParams {
   readonly project: string;
   readonly slug: string;
@@ -639,8 +641,11 @@ export interface ItemsViewParams {
   readonly rowKind?: string;
   readonly row?: string;
   readonly sort?: "median" | "failures";
-  readonly limit: number;
+  readonly sources?: readonly ("computed" | "readings" | "days")[];
+  readonly limit?: number;
   readonly offset?: number;
+  readonly buckets?: number;
+  readonly group?: "col" | "row" | "row_group";
 }
 
 /** The rows behind one eval's numbers, live (dispatch://INFRA-2918/artifact/plan-md, D9): the body
@@ -658,7 +663,12 @@ export const itemsViewQuery = (params: ItemsViewParams) => {
   if (params.row !== undefined) query.set("row", params.row);
   for (const repo of params.repos) query.append("repo", repo);
   if (params.sort !== undefined) query.set("sort", params.sort);
-  query.set("limit", String(params.limit));
+  for (const source of params.sources ?? []) query.append("source", source);
+  if (params.buckets !== undefined) {
+    query.set("buckets", String(params.buckets));
+    if (params.group !== undefined) query.set("group", params.group);
+  }
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
   if (params.offset !== undefined && params.offset > 0) query.set("offset", String(params.offset));
   const view = {
     kind: "items",

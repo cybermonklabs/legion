@@ -10,6 +10,7 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { api } from "../../api/client";
 import type {
   DeliveryLiveDelta,
@@ -404,3 +405,334 @@ test("prose charts draw after all the other charts, in the order they are declar
     "convergence/caveats",
   ]);
 });
+
+// A step chart's bounded read (plan D21, T39): one items view per step series whatever the count
+// of its readings, at `buckets` from the chart's drawn width (rounded up to a multiple of 80, 160
+// to 2,000) and `group` from its grouping, replaced when a resize changes that number.
+
+/** A step chart of the eval's admission cap, one line a col. */
+const CAP: DeclaredSpec = {
+  curve: "step",
+  group: "col",
+  id: "cap-steps",
+  kind: "xy",
+  title: "Admission cap",
+  y: { label: "Cap", series: "cap" },
+};
+
+/** A reading of the series `cap` as the items read answers it. */
+function capRow(
+  id: string,
+  measuredAt: string,
+  value: number,
+  marks: Pick<EvalItemRow, "before_window" | "kept"> = {}
+): EvalItemRow {
+  return {
+    cols: {
+      attributes: {},
+      ci_high: null,
+      ci_level: null,
+      ci_low: null,
+      col: "",
+      id,
+      n: null,
+      n_unit: "",
+      note: "",
+      recorded_at: measuredAt,
+      replaces: "",
+      series: "cap",
+      unit: "",
+      value,
+      value_absent_reason: "",
+    },
+    href: "",
+    links: [],
+    measured_at: measuredAt,
+    range: "window",
+    row_key: "",
+    row_kind: "reading",
+    source: "daemon",
+    ...marks,
+  };
+}
+
+/** A bounded read's answer of `rows`: readings alone and no page, its total the kept readings. */
+function boundedOf(rows: EvalItemRow[]): EvalItemsResponse {
+  return {
+    compare: COMPARE,
+    items: rows,
+    limit: 0,
+    offset: 0,
+    total: rows.filter((row) => row.before_window !== true).length,
+    window: WINDOW,
+  };
+}
+
+/** Dispatch's change of the items view `sub` to `body`, every field of it sent whole. */
+function itemsDelta(sub: string, body: EvalItemsResponse): DeliveryLiveDelta {
+  return {
+    changed_at: null,
+    counts: {},
+    items: {},
+    maps: {},
+    revs: { fields: { items: "00000000000000bb", total: "00000000000000bc" } },
+    seq: "2",
+    set: { items: body.items, total: body.total },
+    sub,
+    type: "delta",
+  };
+}
+
+/** The query an items view's subscribe frame names. */
+function queryOf(frame: LiveSubscribe): URLSearchParams {
+  return new URLSearchParams(frame.view.kind === "items" ? frame.view.query : "");
+}
+
+/** The items views of `series` subscribed and not unsubscribed since. */
+function liveViews(socket: FakeLiveSocket, series: string): LiveSubscribe[] {
+  const dropped = new Set(socket.unsubscribes().map((frame) => frame.sub));
+  return itemsViews(socket, series).filter((frame) => !dropped.has(frame.sub));
+}
+
+/** The eval drawn with the detail `charts`: its evals view and its detail answered, its items
+ *  views not yet. */
+async function declare(charts: DeclaredSpec[]): Promise<FakeLiveSocket> {
+  const socket = await renderLogged();
+  const view = await waitFor(() => socket.subscribed("evals"));
+  act(() => socket.receive(snapshotFrame(view.sub, evalsAnswer([convergence(1, "")]))));
+  await waitFor(() => expect(reads).toHaveLength(1));
+  act(() => reads[0]?.(detailOf(1, charts, "")));
+  return socket;
+}
+
+function capChart(): HTMLElement {
+  return within(declared()).getByRole("figure", { name: "Admission cap" });
+}
+
+/** Lays out every declared chart `width()` CSS pixels wide, as happy-dom lays out nothing. */
+function layOutCharts(width: () => number): void {
+  spies.push(
+    spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      return new DOMRect(0, 0, this.matches("[data-declared-chart]") ? width() : 0, 0);
+    })
+  );
+}
+
+test("a step series opens one view whatever its readings", async () => {
+  const socket = await declare([CAP, TOKENS]);
+  // One reading.
+  const frame = await serveItems(
+    socket,
+    "cap",
+    boundedOf([capRow("cap-1", "2026-11-02T00:00:00Z", 3)])
+  );
+  // happy-dom lays the chart out 0 px wide: the least buckets, the chart's group, no page.
+  expect(["buckets", "group", "limit", "offset"].map((name) => queryOf(frame).get(name))).toEqual([
+    "160",
+    "col",
+    null,
+    null,
+  ]);
+  await waitFor(() =>
+    expect(capChart().querySelectorAll('[data-statistic="y"][data-range="window"]')).toHaveLength(1)
+  );
+  expect(itemsViews(socket, "cap")).toHaveLength(1);
+
+  // A series of 10,000 readings, of which the bounded read keeps four in each of its 160 spans.
+  const start = Date.parse(WINDOW.from);
+  const span = (Date.parse(WINDOW.to) - start) / 160;
+  const kept = Array.from({ length: 160 }, (_, at) =>
+    (["first", "min", "max", "last"] as const).map((role, index) =>
+      capRow(
+        `cap-${at}-${index}`,
+        new Date(start + at * span + (index + 1) * 60_000).toISOString(),
+        (at + index) % 9,
+        { kept: [role] }
+      )
+    )
+  ).flat();
+  act(() => socket.receive(itemsDelta(frame.sub, boundedOf(kept))));
+  await waitFor(() =>
+    expect(capChart().querySelectorAll('[data-statistic="y"][data-range="window"]')).toHaveLength(
+      640
+    )
+  );
+  // Still its one view, and none for each 200 readings; a series no step chart draws keeps its
+  // pages.
+  expect(itemsViews(socket, "cap")).toHaveLength(1);
+  const tokens = await serveItems(socket, "tokens", itemsOf(xyFixture.items, "tokens"));
+  expect([queryOf(tokens).get("limit"), queryOf(tokens).has("buckets")]).toEqual(["200", false]);
+});
+
+test("a resize past an 80 px step replaces the view", async () => {
+  const sizes = installResizeObserver();
+  try {
+    let width = 500;
+    layOutCharts(() => width);
+    const socket = await declare([CAP]);
+    const first = await serveItems(
+      socket,
+      "cap",
+      boundedOf([
+        capRow("cap-0", "2026-10-31T12:00:00Z", 2, { before_window: true }),
+        capRow("cap-1", "2026-11-02T00:00:00Z", 3, { kept: ["first", "last", "min", "max"] }),
+      ])
+    );
+    expect(queryOf(first).get("buckets")).toBe("560");
+    await waitFor(() => capChart());
+
+    // A resize inside the same 80 px step keeps the view.
+    width = 555;
+    sizes.resize();
+    // Any subscription the resize asks for goes out once its render's work is done.
+    await act(async () => {});
+    expect(itemsViews(socket, "cap")).toHaveLength(1);
+
+    // Past it: a view of the new buckets in its place, the old one unsubscribed.
+    width = 700;
+    sizes.resize();
+    const next = await waitFor(() => {
+      const [, sent] = itemsViews(socket, "cap");
+      if (sent === undefined) throw new Error("no second view of cap was subscribed");
+      return sent;
+    });
+    expect(queryOf(next).get("buckets")).toBe("720");
+    await waitFor(() => expect(liveViews(socket, "cap")).toEqual([next]));
+    // While the new view is read, the chart stays drawn from the old one's readings.
+    expect(
+      capChart().querySelector('[data-statistic="y"][data-range="window"][data-value="3"]')
+    ).not.toBeNull();
+
+    act(() =>
+      socket.receive(
+        snapshotFrame(
+          next.sub,
+          boundedOf([
+            capRow("cap-0", "2026-10-31T12:00:00Z", 2, { before_window: true }),
+            capRow("cap-1", "2026-11-02T00:00:00Z", 4, { kept: ["first", "last", "min", "max"] }),
+          ])
+        )
+      )
+    );
+    await waitFor(() =>
+      expect(
+        capChart().querySelector('[data-statistic="y"][data-range="window"][data-value="4"]')
+      ).not.toBeNull()
+    );
+    expect(liveViews(socket, "cap")).toHaveLength(1);
+  } finally {
+    sizes.restore();
+  }
+});
+
+test("the buckets are the plot's width", async () => {
+  const sizes = installResizeObserver();
+  try {
+    // Each width the chart is drawn at, and the buckets its view reads at: rounded up to the
+    // next multiple of 80, at least 160 and at most 2,000.
+    const widths: [number, string][] = [
+      [100, "160"],
+      [560, "560"],
+      [561, "640"],
+      [1_999, "2000"],
+    ];
+    let width = widths[0]?.[0] ?? 0;
+    layOutCharts(() => width);
+    const socket = await declare([CAP]);
+    for (const [drawn, buckets] of widths) {
+      width = drawn;
+      sizes.resize();
+      const frame = await waitFor(() => {
+        const sent = itemsViews(socket, "cap").at(-1);
+        expect(sent === undefined ? null : queryOf(sent).get("buckets")).toBe(buckets);
+        return sent as LiveSubscribe;
+      });
+      act(() =>
+        socket.receive(
+          snapshotFrame(frame.sub, boundedOf([capRow("cap-1", "2026-11-02T00:00:00Z", 3)]))
+        )
+      );
+    }
+    // Wider than 2,000 px it reads at 2,000: the view it holds.
+    width = 2_400;
+    sizes.resize();
+    await act(async () => {});
+    expect(itemsViews(socket, "cap")).toHaveLength(widths.length);
+  } finally {
+    sizes.restore();
+  }
+});
+
+// The section state table's rows of a declared step chart (plan, "The state table of a section").
+const stepStateRows: [string, () => Promise<void>][] = [
+  [
+    "painted, a declared step chart | its plot's width crosses an 80 px step | resubscribed: the series' one bounded view replaced by one with the new buckets; the old view unsubscribed; one view per series",
+    async () => {
+      const sizes = installResizeObserver();
+      try {
+        let width = 640;
+        layOutCharts(() => width);
+        const socket = await declare([CAP]);
+        const first = await serveItems(
+          socket,
+          "cap",
+          boundedOf([capRow("cap-1", "2026-11-02T00:00:00Z", 3)])
+        );
+        await waitFor(() => capChart());
+        width = 641;
+        sizes.resize();
+        await waitFor(() =>
+          expect(liveViews(socket, "cap").map((frame) => queryOf(frame).get("buckets"))).toEqual([
+            "720",
+          ])
+        );
+        expect(socket.unsubscribes().map((frame) => frame.sub)).toContain(first.sub);
+      } finally {
+        sizes.restore();
+      }
+    },
+  ],
+  [
+    "painted, a declared step chart | a reading of its series written | painted: the view's delta; the chart drawn again by the step rule; one view per series",
+    async () => {
+      const socket = await declare([CAP]);
+      const before = capRow("cap-0", "2026-10-31T12:00:00Z", 2, { before_window: true });
+      const frame = await serveItems(
+        socket,
+        "cap",
+        boundedOf([before, capRow("cap-1", "2026-11-02T00:00:00Z", 3)])
+      );
+      await waitFor(() => capChart());
+      expect(capChart().querySelectorAll('[data-step-line="window"]')).toHaveLength(1);
+
+      // A reading of 5 on 3 Nov is written: the view's delta draws it on the same line, the
+      // value before the window still held from the window's start.
+      act(() =>
+        socket.receive(
+          itemsDelta(
+            frame.sub,
+            boundedOf([
+              before,
+              capRow("cap-1", "2026-11-02T00:00:00Z", 3),
+              capRow("cap-2", "2026-11-03T00:00:00Z", 5),
+            ])
+          )
+        )
+      );
+      await waitFor(() =>
+        expect(
+          [...capChart().querySelectorAll('[data-statistic="y"][data-range="window"]')].map(
+            (value) => [value.getAttribute("data-x"), value.getAttribute("data-value")]
+          )
+        ).toEqual([
+          ["2026-10-31T12:00:00.000Z", "2"],
+          ["2026-11-02T00:00:00.000Z", "3"],
+          ["2026-11-03T00:00:00.000Z", "5"],
+        ])
+      );
+      expect(capChart().querySelectorAll('[data-step-line="window"]')).toHaveLength(1);
+      expect(itemsViews(socket, "cap")).toHaveLength(1);
+    },
+  ],
+];
+for (const [name, body] of stepStateRows) test(name, body);
