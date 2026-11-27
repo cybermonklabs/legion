@@ -281,6 +281,43 @@ function until(
   return waitFor(async () => condition(), what, run.describeState, PROCESS_WAIT_MS)
 }
 
+/**
+ * Waits until each of `threads` has a running Envoy session at the owner, read through a forwarded
+ * `envoy_whoami`, and answers what each answered. A session takes its relay subject and registers
+ * before its start returns, so neither says the session runs; a call while it still starts, or
+ * while no server serves the threads yet, is answered so and tried again.
+ */
+async function untilRunning(
+  run: { readonly describeState: () => string; readonly serversDirectory: string },
+  ...threads: string[]
+): Promise<unknown[]> {
+  const answers: unknown[] = []
+  for (const thread of threads) {
+    let answer: unknown
+    await waitFor(
+      async () => {
+        try {
+          answer = await forwardToolCall(run.serversDirectory, {
+            arguments: {},
+            name: "envoy_whoami",
+            thread,
+          })
+          return true
+        } catch (error) {
+          const text = error instanceof Error ? error.message : String(error)
+          if (text.includes("is starting") || text.includes("cannot be reached")) return false
+          throw error
+        }
+      },
+      `thread ${thread}'s Envoy session to run`,
+      run.describeState,
+      PROCESS_WAIT_MS,
+    )
+    answers.push(answer)
+  }
+  return answers
+}
+
 describe("under Codex's shared app server", () => {
   test("the owner registers each recorded thread as its own session, titled by its directory and short id, before any tool call", async () => {
     const run = await startSharedAppServer(1)
@@ -318,11 +355,7 @@ describe("under Codex's shared app server", () => {
     const run = await startSharedAppServer(1)
     await run.record(A, "alpha")
     await run.record(B, "beta")
-    await until(
-      run,
-      () => run.relaySubscribed(A) && run.relaySubscribed(B),
-      "each thread's relay subject",
-    )
+    await untilRunning(run, A, B)
     run.send(A, 1, "nonce-for-alpha", "_INBOX.alpha")
     run.send(B, 1, "nonce-for-beta", "_INBOX.beta")
     const holding = (nonce: string): string[] =>
@@ -351,12 +384,9 @@ describe("under Codex's shared app server", () => {
     const run = await startSharedAppServer(1)
     await run.record(A, "alpha")
     await run.record(B, "beta")
-    await until(
-      run,
-      () => run.relaySubscribed(A) && run.relaySubscribed(B),
-      "each thread's relay subject",
-    )
+    await untilRunning(run, A, B)
     const instanceOfA = run.registrations.find((each) => each.session === A)?.instance
+    expect(instanceOfA).toBeDefined()
     run.end(A)
     await until(
       run,
@@ -383,15 +413,11 @@ describe("under Codex's shared app server", () => {
     const run = await startSharedAppServer(1)
     await run.record(A, "alpha")
     await run.record(B, "beta")
-    await until(
-      run,
-      () => run.relaySubscribed(A) && run.relaySubscribed(B),
-      "each thread's relay subject",
-    )
+    const [b, a] = await untilRunning(run, B, A)
+    expect(b).toMatchObject({ session_id: B, dir: join(run.root, "beta") })
+    expect(a).toMatchObject({ session_id: A, dir: join(run.root, "alpha") })
     const whoami = (thread: string) =>
       forwardToolCall(run.serversDirectory, { arguments: {}, name: "envoy_whoami", thread })
-    expect(await whoami(B)).toMatchObject({ session_id: B, dir: join(run.root, "beta") })
-    expect(await whoami(A)).toMatchObject({ session_id: A, dir: join(run.root, "alpha") })
     await expect(whoami("019c0000-0000-7000-8000-000000000000")).rejects.toThrow(
       "this thread has no Envoy session",
     )
@@ -410,12 +436,9 @@ describe("under Codex's shared app server", () => {
     const [owner, next] = run.serversInOrder()
     await run.record(A, "alpha")
     await run.record(B, "beta")
-    await until(
-      run,
-      () => run.relaySubscribed(A) && run.relaySubscribed(B),
-      "each thread's relay subject",
-    )
+    await untilRunning(run, A, B)
     const first = run.registrations.find((each) => each.session === B)?.instance
+    expect(first).toBeDefined()
     // Codex unloads A, whose server is the owner: its marker, then the owner's server stops.
     run.end(A)
     await until(
@@ -446,21 +469,10 @@ describe("under Codex's shared app server", () => {
     expect(run.registrations.slice(before).filter((each) => each.session === A)).toEqual([])
     await until(run, () => run.serversInOrder().length === 1, "the stopped owner's entry removed")
     expect(run.serversInOrder()).toEqual([next ?? 0])
-    // And B's tool calls reach it there.
-    await until(
-      run,
-      () =>
-        run.relaySubscribed(B) &&
-        run.hub.subscribed.filter((each) => each === deliverSubject(B)).length === 2,
-      "thread B's relay subject on the next server",
-    )
-    expect(
-      await forwardToolCall(run.serversDirectory, {
-        arguments: {},
-        name: "envoy_whoami",
-        thread: B,
-      }),
-    ).toMatchObject({ session_id: B })
+    // And B's tool calls reach it there: the stopped owner served none after its stop began.
+    const [taken] = await untilRunning(run, B)
+    expect(taken).toMatchObject({ session_id: B })
+    expect(run.hub.subscribed.filter((each) => each === deliverSubject(B)).length).toBe(2)
   })
 })
 
