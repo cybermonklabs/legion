@@ -27,6 +27,7 @@ const wrongTree = "LEGION-999"
 // stands after it — is the same. This is k45's half in the runtime; internal/daemon's test of this
 // name is its half over the daemon's decisions.
 func TestEveryDecisionIsTheSameWithEveryStoredTreeWrong(t *testing.T) {
+	t.Parallel()
 	authorized := func(context.Context) (bool, error) { return true, nil }
 	decisions := []struct {
 		name   string

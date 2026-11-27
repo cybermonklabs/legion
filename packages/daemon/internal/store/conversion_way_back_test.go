@@ -140,6 +140,7 @@ func decodedBeforeTheConversion(kind record.OutboxKind, payload []byte) string {
 // the copy above), and the relabel of a Sandbox, which the block's last statement prints the
 // rows of and a cluster's kubectl does.
 func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {

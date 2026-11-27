@@ -42,6 +42,7 @@ func wantNoDaemonMechanics(t *testing.T, reason string) {
 // for any failure: the architect retries or escalates, and its retry starts the agent in a new
 // session by itself. A claim failed for another cause keeps the promise, which is the control.
 func TestAWorkerDiedForCyberPolicyPromisesNoRestartOfTheDaemonsOwn(t *testing.T) {
+	t.Parallel()
 	root := "LEGION-208"
 	liveRoot := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
@@ -107,6 +108,7 @@ func TestAWorkerDiedForCyberPolicyPromisesNoRestartOfTheDaemonsOwn(t *testing.T)
 // is the same failure for a provider error that cannot clear, whose worker-died still names the
 // look that retries the claim.
 func TestAProductionCheckRoleFailedForCyberPolicyIsPromisedNoLook(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		cause supervise.FailureCause
@@ -153,6 +155,7 @@ func TestAProductionCheckRoleFailedForCyberPolicyIsPromisedNoLook(t *testing.T) 
 // agent in a new session (supervise's freshSession). Without the refusal's fact the child would
 // stand in the phase with no worker and nobody told.
 func TestAHeldChildsTodoHoldsItAgainAtTheHeldWorkersPhaseAndTellsItsArchitect(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	approved := 1
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION",

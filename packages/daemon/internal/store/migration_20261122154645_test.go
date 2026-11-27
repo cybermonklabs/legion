@@ -33,6 +33,7 @@ const issueFactsVersion = 20261122154645
 // reads back with none of its new facts, and every kind the outbox took before is taken still,
 // with retention_end.
 func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, issueFactsVersion-1)
@@ -199,6 +200,7 @@ func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t
 // architect and the phase worker on the root hold the gate, and the architect of a member of that
 // tree holds none.
 func TestTheIssueFactsMigrationMarksEveryClaimOnARootOfTheReleaseBefore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, issueFactsVersion-1)

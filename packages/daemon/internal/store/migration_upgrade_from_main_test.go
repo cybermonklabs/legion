@@ -242,6 +242,7 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // taken out of either list, where the Migrate below then fails on that pending row, and
 // merge_holds_changed taken out of the last one, where the row queued after the upgrade is refused.
 func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
@@ -515,6 +516,7 @@ const (
 // added after this test still finds the database that release left, and the upgrade applies it
 // too.
 func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// queueMainsKinds writes a row of each kind main's kind check admits, and queueBasisSeeds a row
 	// of each basis seed after the upgrade: the seed and the check of a database main migrated.

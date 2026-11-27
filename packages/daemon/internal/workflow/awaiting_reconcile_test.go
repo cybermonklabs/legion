@@ -370,6 +370,7 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 // ancestor's document and its version, not a person's changes request on the root's document; and
 // an end that came after the act that answered the wait is named after that act.
 func TestTheResumeTaskOfAStepOnAnAncestorsApproval(t *testing.T) {
+	t.Parallel()
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	basis := record.GateBasis{Issue: "LEGION-100", ArtifactID: "artifact-100", Version: 3, Approval: record.EventMark{Seq: 40, At: answered},
 		Approver: "user:alice", RegisteredAt: answered}

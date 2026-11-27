@@ -214,6 +214,7 @@ func basisSeedPending(generation uint64) record.PendingBasisSeed {
 // legion label: the wait ends instead. A read for another generation changes nothing, and the
 // same read again is told nothing new.
 func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
+	t.Parallel()
 	approvedAt, sentBackAt := basisSeedApprovedAt.Add(24*time.Hour), basisSeedApprovedAt.Add(25*time.Hour)
 	reason := "name the rollback path"
 	// The review list of version 4 Dispatch serves, newest first: the person approved it, and then
@@ -292,6 +293,7 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 // finer than the store keeps, so the seed the registration queues from the step it has not yet
 // read back still names the wait the store holds.
 func TestTheSameReadEndsAWaitRegisteredAgainOnTheSameRequest(t *testing.T) {
+	t.Parallel()
 	rig := newBasisSeedRig(t)
 	now := basisSeedApprovedAt.Add(time.Hour + 123456789*time.Nanosecond)
 	engine := workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
@@ -358,6 +360,7 @@ func TestTheSameReadEndsAWaitRegisteredAgainOnTheSameRequest(t *testing.T) {
 // given before that approval passes nothing on. A newer version of the root's own document closes
 // the step as ever, and the closed step reads no ancestor.
 func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testing.T) {
+	t.Parallel()
 	approved := dispatch.Review{Version: 3, State: "approved", Actor: basisSeedPerson, At: basisSeedApprovedAt}
 	reason := "name the rollback path"
 	asked := dispatch.Approval{State: "changes_requested", LatestVersion: 3, Version: new(3), Reason: &reason, At: basisSeedApprovedAt.Add(time.Hour), Seq: 45, By: basisSeedPerson}
@@ -442,6 +445,7 @@ func TestTheGateSeedOfABasisStepPassesOnTheAncestorsChangesRequestOnce(t *testin
 // issue Dispatch shows done, or for another project's issue. The seed it queued then opens the
 // step on the person's approval the daemon missed, and the boot left the open step as it was.
 func TestTheBootQueuesAPendingBasisSeedForEachPendingStep(t *testing.T) {
+	t.Parallel()
 	rig := newBasisSeedRig(t)
 	const (
 		open         = "LEGION-209"
@@ -626,6 +630,7 @@ const (
 // the request, a close of a question and an event that shows the ancestor at work cannot cue any
 // step, so the workflow does not even look up steps for them.
 func TestAnEventReadsDispatchOnlyThroughTheSeedOfEachStepItCues(t *testing.T) {
+	t.Parallel()
 	const open, openDoc = "LEGION-209", "artifact-209"
 	person := dispatch.Actor{Kind: "user", ID: "alice"}
 	review := func(kind intake.DispatchArtifactKind, version int) intake.DispatchArtifact {
@@ -744,6 +749,7 @@ func TestAnEventReadsDispatchOnlyThroughTheSeedOfEachStepItCues(t *testing.T) {
 // while its approval shows it closed, its approval and its ask read either side of a reopen, is no
 // close: the seed's run fails, to read again on its backoff, and the step still waits.
 func TestThePendingBasisSeedReadsTheCloseOnlyWhereTheApprovalShowsTheRequestClosed(t *testing.T) {
+	t.Parallel()
 	approvedAt := basisSeedApprovedAt.Add(24 * time.Hour)
 	reason := "name the rollback path"
 	closer := dispatch.Actor{Kind: "session", ID: "session-architect"}
@@ -843,6 +849,7 @@ func TestThePendingBasisSeedReadsTheCloseOnlyWhereTheApprovalShowsTheRequestClos
 // opens or ends the wait and no event waits on it, so a long outage puts the opening or the end
 // off by the seed's retries and nothing else: the step stays waiting, and nobody is told anything.
 func TestAFailedPendingBasisSeedIsRetriedOnItsBackoff(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		failing string

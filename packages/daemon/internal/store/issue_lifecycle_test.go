@@ -71,6 +71,7 @@ func issueClaim(issue string, role claim.Role) supervise.Claim {
 // empty cleanup releases that one issue's resources, and only a fresh explicit open of the issue
 // starts its epoch two, which the claim then binds.
 func TestAnIssueCleanupFencesADelayedClaimOfThatIssueUntilAFreshOpen(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	seedIssue(t, store, rootIssue, rootIssue, 1, "implementing", "in_progress")
@@ -110,6 +111,7 @@ func TestAnIssueCleanupFencesADelayedClaimOfThatIssueUntilAFreshOpen(t *testing.
 // generation: the outbox's ordinary fences finish its row, and the issue's lifecycle stays open
 // for its claims.
 func TestAnIssueCleanupOfAnotherGenerationOrOfAnIssueInWorkReservesNothing(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	seedIssue(t, store, childIssue, rootIssue, 1, "done", "done")
@@ -133,6 +135,7 @@ func TestAnIssueCleanupOfAnotherGenerationOrOfAnIssueInWorkReservesNothing(t *te
 // generation at the cleanup. The operator's own close reserves it, and asked again after its
 // cleanup confirmed reserves nothing.
 func TestAMalformedWorkflowCleanupCannotSelectTheOperatorsIssue(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	if _, err := store.OpenIssueLifecycle(ctx, "legion", childIssue, treelifecycle.AuthorityOperator); err != nil {
@@ -167,6 +170,7 @@ func TestAMalformedWorkflowCleanupCannotSelectTheOperatorsIssue(t *testing.T) {
 // A reservation whose transaction commits while a start waits on the shared serializer wins: the
 // start is refused with the named cleanup wait once the reservation commits, and writes nothing.
 func TestAnIssueReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openIssueLifecycle(t, store, childIssue)
@@ -218,6 +222,7 @@ func TestAnIssueReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
 // persistence, and its retry returns the original epoch rather than losing the cleanup marker in a
 // runtime-local cache.
 func TestARestartRetainsTheIssueCleanupReservation(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	seedIssue(t, store, childIssue, rootIssue, 1, "done", "done")
@@ -246,6 +251,7 @@ func TestARestartRetainsTheIssueCleanupReservation(t *testing.T) {
 // pod and of no other, and confirms. A retained claim token is then no authority to launch a later
 // lifetime: the next open rebinds it, and its persisted IssueEpoch changes with that lifecycle.
 func TestAReservedIssueCleanupWaitsForEveryClaimOfItsIssueAndTheNextEpochRebindsIt(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	seedIssue(t, store, rootIssue, rootIssue, 1, "implementing", "in_progress")
@@ -302,6 +308,7 @@ func TestAReservedIssueCleanupWaitsForEveryClaimOfItsIssueAndTheNextEpochRebinds
 // Every lifecycle operation of an issue takes the shared apply_fact serializer before any
 // lifecycle row (holdSerializerThenLock).
 func TestIssueCleanupStepsTakeTheSerializerBeforeTheirRows(t *testing.T) {
+	t.Parallel()
 	const lifecycleRow = `select 1 from issue_lifecycles where project = 'legion' and issue = $1 for update`
 	t.Run("reservation", func(t *testing.T) {
 		store := migratedStore(t)
@@ -334,6 +341,7 @@ func TestIssueCleanupStepsTakeTheSerializerBeforeTheirRows(t *testing.T) {
 // An issue that never had a lifecycle reserves no cleanup at its close: there is nothing for one
 // to release, and the outbox's ordinary fences finish the row.
 func TestAWorkflowCleanupOfAnIssueNeverOpenedReservesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	seedIssue(t, store, childIssue, rootIssue, 1, "done", "done")
@@ -348,6 +356,7 @@ func TestAWorkflowCleanupOfAnIssueNeverOpenedReservesNothing(t *testing.T) {
 // another project opened are none, and so is a child with no lifecycle of its own under a live
 // root, its record's tree and its Dispatch parent both that root (R17).
 func TestIssueLiveIsAnIssueLifecycleWhoseCleanupIsNotConfirmed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	for _, row := range []struct {
@@ -388,6 +397,7 @@ func TestIssueLiveIsAnIssueLifecycleWhoseCleanupIsNotConfirmed(t *testing.T) {
 // the tree the operator named. The claim read back carries both and the issue's own epoch, and the
 // project controller's claim binds neither.
 func TestAnAdmittedClaimStoresItsIssuesStoredTreeAndThatTreesEpoch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	seedIssue(t, store, childIssue, rootIssue, 1, "implementing", "in_progress")

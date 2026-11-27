@@ -26,6 +26,7 @@ import (
 // R20 of dispatch://INFRA-3320). The same event delivered again writes nothing more, since
 // ApplyFact records the event's id, and an event of another project writes nothing.
 func TestAMergeHoldsChangeTellsTheArchitectInAcceptingAndTheMergerInMerging(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seed := func(key string, at phase.Phase, status string) {
 		seedIssue(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key,
@@ -75,6 +76,7 @@ func TestAMergeHoldsChangeTellsTheArchitectInAcceptingAndTheMergerInMerging(t *t
 // attempt, says the issue left merging. The control is a root in merging whose pull request is
 // still open: it gets its row, and MergingNow says it works merging.
 func TestAMergeHoldsChangeTellsNoMergerWhosePullRequestMerged(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	for i, state := range []record.PullRequestState{record.PullRequestMerged, record.PullRequestOpen} {
 		key := fmt.Sprintf("LEGION-%d", 208+i)

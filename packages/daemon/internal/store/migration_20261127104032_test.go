@@ -20,6 +20,7 @@ const kindsAfterTheStateEventsVersion = 20261127104032
 // before the migration is kept through it, and once those rows are gone (some kinds hold one row
 // per project or issue) every kind is queued after it; a kind that is none is still refused.
 func TestTheUnionKindListMovesTheSchemaVersionAboveTheStateEvents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, kindsAfterTheStateEventsVersion-1)

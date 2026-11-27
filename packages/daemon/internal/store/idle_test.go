@@ -492,6 +492,7 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 // close, and one whose cleanup has started is that cleanup's, and the idle view reads those two
 // facts for the same issues (pods.IdleView.OperatorHolds, CleanupStarted).
 func TestTheLeftPodCandidatesAreTheIssuesOutOfTheWorkflowByTheirOwnStanding(t *testing.T) {
+	t.Parallel()
 	const (
 		parent    = "LEGION-400"
 		parked    = "LEGION-401"
@@ -776,6 +777,7 @@ func queueWaitingKeptRow(t *testing.T, st *Store, payload record.OutboxPayload) 
 // other's control: a term that let every such row go would fail the rows that hold, and the
 // predicate before the term, which held the pod for every such row, fails the rest.
 func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *testing.T) {
+	t.Parallel()
 	for _, message := range keptRoleMessageRows {
 		for _, tc := range []struct {
 			name      string
@@ -839,6 +841,7 @@ func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *t
 // control: a predicate that let the slot term exempt the phase-ended row would fail the first, and
 // one that let the claim term hold the start would fail the second.
 func TestAPhaseEndedMessageToARoleWhoseStartWaitsForItsSlotHoldsThePodByItsOwnRule(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		by    supervise.SuspendSource

@@ -31,6 +31,7 @@ func crossings(t *testing.T, store *Store, token claim.Token) (published, unpubl
 // anew, after that leave, and keeps the leave: a suspension by another source is a move out, the
 // launch after it a move in, and a failure a move out again. idle to working writes neither.
 func TestAClaimCrossingWritesItsPublicationTime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

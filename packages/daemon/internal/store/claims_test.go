@@ -454,6 +454,7 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 // release before reads, which they never overwrite: a restart builds every claim from this table,
 // and the spawn spec, the launch check and the machine's root reading take them from it.
 func TestAClaimsLaunchTreeIssueEpochAndGateMarkRoundTrip(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	want := tmuxClaim("legion-LEGION-209-launched")
@@ -1744,6 +1745,7 @@ func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 // it, and the next mark is a new one. A retired claim takes no mark, and a claim loses the one it
 // holds as it retires.
 func TestAMessageMarkOutlivesMachineWritesButStandsOnlyUntilTheNextTurn(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	st := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

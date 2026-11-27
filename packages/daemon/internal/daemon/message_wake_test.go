@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -167,13 +168,11 @@ func (r *priorityWakeRig) report(c supervise.Claim, kind string) {
 	}
 	// A later event in the same machine inbox gives us an ordering fence, even if the report
 	// was ignored. Do not wait on a mark itself: the FIFO control must fail on launch order.
+	// The wait ends at the test binary's deadline, not at a span of its own, so the load of the
+	// tests beside it cannot fail it (docs/testing.md, testwait.Receive).
 	fence := make(chan struct{})
 	r.sup.drained(c.Token, fence)
-	select {
-	case <-fence:
-	case <-time.After(5 * time.Second):
-		r.t.Fatal("supervision did not drain the listener report")
-	}
+	testwait.Receive(r.t, "supervision to drain the listener report", fence)
 }
 
 // observe tells c's machine that the runtime found its process gone: displaced by a pod that was
@@ -222,6 +221,7 @@ func wantWakeOrder(t *testing.T, launches []waveLaunch, want []claim.Token) {
 // wake runs last, 21 turns out, which is how legion-infra-infra-4857-architect's wake waited an
 // hour on 2026-11-23 while Envoy dropped the messages it was woken for.
 func TestAMessageWakeGoesAheadOfTheRuleResumesItFindsQueued(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	other := r.wave(20, pods.WakeChecks)
 	message := r.start(pods.WakeRoleMessage).Token
@@ -236,6 +236,7 @@ func TestAMessageWakeGoesAheadOfTheRuleResumesItFindsQueued(t *testing.T) {
 // listener reports an agent message for its claim. The claim is not released, since its launch
 // is under way, so the report wakes nothing: the mark alone moves the wake.
 func TestAListenerReportMarksAWaitingWake(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	other := r.wave(3, pods.WakeChecks)
 	waiting := r.start(pods.WakeChecks)
@@ -249,6 +250,7 @@ func TestAListenerReportMarksAWaitingWake(t *testing.T) {
 // gets one turn, and then three message turns run (refill). No two wakes run in one turn, so each
 // of the 28 runs at least one interval after the run before it (interval).
 func TestMessageWakesKeepTheirOrderTheShareAndTheRate(t *testing.T) {
+	t.Parallel()
 	t.Run("share", func(t *testing.T) {
 		r := newPriorityWakeRig(t)
 		other := r.wave(20, pods.WakeChecks)
@@ -316,6 +318,7 @@ func (r *priorityWakeRig) restart(older, priority claim.Token) {
 // other's, is placed in the message queue by the boot's pass. The mark the start row's executor
 // stored on the claim is what the pass reads.
 func TestARestartKeepsTheMessageMark(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	older := r.start(pods.WakeChecks)
 	// The wake record and start are separate: seed a released role's open resume before the
@@ -337,6 +340,7 @@ func TestARestartKeepsTheMessageMark(t *testing.T) {
 // queue, though its work is owed later than the other's. A mark kept in the machine's memory alone
 // would be lost here.
 func TestARestartKeepsAReportedMark(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	older := r.start(pods.WakeChecks)
 	unfinished := r.seed(supervise.StateLaunching)
@@ -353,6 +357,7 @@ func TestARestartKeepsAReportedMark(t *testing.T) {
 // the store and in the machine, and the relaunch takes the message queue and runs first, so
 // this test fails.
 func TestARetriedMessageStartAfterATurnMarksNothingThatStands(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	c := r.seed(supervise.StateIdle)
 	row := r.runStart(c, pods.WakeRoleMessage)
@@ -398,6 +403,7 @@ func TestARetriedMessageStartAfterATurnMarksNothingThatStands(t *testing.T) {
 // the earliest turn still held, and the 20 run after it in their order, each from the other queue:
 // a displaced relaunch charges no death and takes no place in the first queue.
 func TestADeathRelaunchGoesAheadOfDisplacedRelaunches(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	var displaced []claim.Token
 	for range 20 {
@@ -422,6 +428,7 @@ func TestADeathRelaunchGoesAheadOfDisplacedRelaunches(t *testing.T) {
 // R2: the relaunch after a charged death keeps its place in the first queue across a restart,
 // where the boot finds it by the death the claim records.
 func TestARestartKeepsTheDeathRelaunchInTheFirstQueue(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	older := r.start(pods.WakeChecks)
 	dead := r.seed(supervise.StateWorking)

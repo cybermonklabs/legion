@@ -23,6 +23,7 @@ const mergeHoldsChangedVersion = 20261126110259
 // migration rewrites the list whole and a kind left out would stop its own effect. A kind that is
 // none is still refused, and so is a kind of the merge the daemon no longer submits.
 func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, basisSeedsVersion)

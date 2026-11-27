@@ -1344,6 +1344,7 @@ func TestControllerStartUnreachableDaemonIsNamedAndNoOtherAddressTried(t *testin
 // daemon without them, and so does the refusal when the daemon cannot be reached (printRefusal), whose
 // *url.Error masks only the password.
 func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	const credential = "madeUpDaemonUser0123:madeUpDaemonPassword0123"
 	holdsNone := func(t *testing.T, errb string) {
 		t.Helper()

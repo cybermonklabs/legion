@@ -254,6 +254,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 // document the architect registered under a deployment that gates the spec alone gates the tree
 // too (record.TreeSteps), so its clause stands beside the spec's.
 func TestTheArchitectTaskSaysEachStepTheTreeIsGatedOnByWhatOpenedIt(t *testing.T) {
+	t.Parallel()
 	basis := record.GateBasis{Issue: "LEGION-90", ArtifactID: "artifact-90", Version: 5, Approver: "user:alice", RegisteredAt: time.Unix(0, 0).UTC()}
 	for _, tc := range []struct {
 		name  string
@@ -819,6 +820,7 @@ const restingOnTheRoot = "These roots rest on the approval of LEGION-208 and are
 // and the narrowing of a held task writes them again, whether the task is of an entry or of none
 // and whether or not a decision is left, so a task with no decision left still names them.
 func TestTheArchitectTaskNamesTheRootsRestingOnItInEveryShape(t *testing.T) {
+	t.Parallel()
 	for _, label := range append(slices.Clone(shapeLabels), ArchitectDecompositionLabel) {
 		if strings.Contains(restingOnTheRoot, label) {
 			t.Fatalf("the resting roots' text carries the label %q, so a task would carry a shape's label it is not of", label)

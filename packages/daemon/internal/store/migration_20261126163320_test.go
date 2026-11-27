@@ -34,6 +34,7 @@ const stateEventsVersion = 20261126163320
 // last written. How the sequence follows commit order is record's
 // TestStateEventsTakeTheirSequenceInCommitOrder.
 func TestTheOutboxTakesTheStateKindsAndTheirSequenceWith20261126163320(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, stateEventsVersion-1)

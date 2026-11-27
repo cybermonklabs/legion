@@ -385,6 +385,7 @@ func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishes(t *testing.T) {
 // parent's architect. A failed claim holds no role, so the notices go on up to the root's
 // architect.
 func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
+	t.Parallel()
 	const parent = "LEGION-5"
 	for _, tc := range []struct {
 		name     string

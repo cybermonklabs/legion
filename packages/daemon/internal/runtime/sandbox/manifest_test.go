@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -326,6 +327,7 @@ func TestManifestGoldens(t *testing.T) {
 // of dispatch://INFRA-4730), pinned whole by the `member` golden. The daemon half, the spec's tree
 // read from the Dispatch chain, is internal/daemon's test of this name.
 func TestANewLaunchSetsLegionTreeToTheGateRoot(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -607,7 +609,7 @@ func TestEveryRolesGitAsksItsOwnHelperForGitHubOutsideAnyClone(t *testing.T) {
 	legion := "#!/bin/sh\n[ \"$1 $2\" = 'git-credential get' ] || exit 0\n" +
 		"while read -r line; do case $line in path=*) p=${line#path=} ;; esac; done\n" +
 		"[ -n \"$p\" ] || exit 1\necho username=x-access-token\necho \"password=role-token-for-${p%%/*}\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "legion"), []byte(legion), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "legion"), []byte(legion), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	global := filepath.Join(dir, "gitconfig")
@@ -848,7 +850,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	sink := filepath.Join(dir, "ran")
 	recorder := func(name string) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name+" >> '"+sink+"'\n"), 0o755); err != nil {
+		if err := execfile.Write(path, []byte("#!/bin/sh\necho "+name+" >> '"+sink+"'\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
@@ -2027,6 +2029,7 @@ func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 // repository cache's — keeps pod.service_account whatever the controller's key says: the key moves
 // the controller alone.
 func TestTheControllersPodAloneRunsAsTheControllersServiceAccount(t *testing.T) {
+	t.Parallel()
 	resume := controllerSpec(t)
 	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", controllerSession
 	for name, tc := range map[string]struct{ pods, controller, wantController string }{

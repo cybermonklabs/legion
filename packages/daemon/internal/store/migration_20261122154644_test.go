@@ -23,6 +23,7 @@ const holdsGateVersion = 20261122154644
 // a record written afterwards takes the default, and the column refuses null, which the record's
 // read cannot scan.
 func TestTheHoldsGateMigrationMarksEveryRootOfTheReleaseBefore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, holdsGateVersion-1)

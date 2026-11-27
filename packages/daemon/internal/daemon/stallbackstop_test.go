@@ -658,6 +658,7 @@ func failedArchitectStall(t *testing.T, unconfirmed bool) (record.Notice, []reco
 // its own row cannot open the finding for a process that may still be running, and nobody else
 // inside the tree would (enqueueStallNotice).
 func TestATreeArchitectsFailedStallOverAnUnconfirmedStopIsCopiedToTheController(t *testing.T) {
+	t.Parallel()
 	notice, rows := failedArchitectStall(t, true)
 	if len(rows) != 2 {
 		t.Fatalf("rows = %+v, want two: the architect's notice and the controller's copy of a claim that failed over a stop the runtime did not confirm", rows)
@@ -672,6 +673,7 @@ func TestATreeArchitectsFailedStallOverAnUnconfirmedStopIsCopiedToTheController(
 // it (workflow's claimFailed; skill://legion-controller, the `worker-stalled` row) and does
 // nothing on the stall's copy, so the copy would wake it for nothing (enqueueStallNotice).
 func TestATreeArchitectsFailedStallOverAConfirmedStopIsNotCopiedToTheController(t *testing.T) {
+	t.Parallel()
 	if _, rows := failedArchitectStall(t, false); len(rows) != 1 {
 		t.Fatalf("rows = %+v, want the architect's notice alone: the controller answers the worker-died of a claim that failed over a stop the runtime confirmed", rows)
 	}
@@ -685,6 +687,7 @@ func TestATreeArchitectsFailedStallOverAConfirmedStopIsNotCopiedToTheController(
 // the claim working and the one that failed it alike, the stop confirmed or not, for a worker on
 // the tree's root issue and for one on a child.
 func TestTheStallBackstopTellsTheControllerNothingOfAWorkersStall(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, issue string
 	}{
@@ -727,6 +730,7 @@ func TestTheStallBackstopTellsTheControllerNothingOfAWorkersStall(t *testing.T) 
 // claim over a stop the runtime did not confirm and for no other end. The copy is written once:
 // the sweep after the one that wrote it finds nothing owed and tries no write.
 func TestARetriedStallNoticeOfATreeArchitectCopiesTheControllerOnlyWhenItFailedTheClaimOverAnUnconfirmedStop(t *testing.T) {
+	t.Parallel()
 	for _, end := range supervise.ProcessEnds() {
 		if !end.TellsOwner() {
 			continue
