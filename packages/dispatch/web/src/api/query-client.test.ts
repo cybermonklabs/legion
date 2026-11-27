@@ -746,6 +746,124 @@ test("an attempt listener that throws fails no read: the read answers, and the o
   }
 });
 
+/** Dispatch's refusal of a search whose statement ran past its bound, and of one its database was
+ *  too busy to take. */
+const searchTimedOut = new ApiError(503, {
+  code: "SEARCH_TIMEOUT",
+  error: "the search statement ran past its 15s bound, so nothing was found",
+});
+const databaseBusy = new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
+
+// A search that ran past the server's bound is never sent again on its own, at an interval
+// either: polled every second, a search answered `503 SEARCH_TIMEOUT` asks once, and one refused
+// for any other reason asks at every interval, as every polled read does.
+test("a polled search answered 503 SEARCH_TIMEOUT asks once, and one answered 503 DATABASE_BUSY at every interval", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const asked = { busy: 0, timedOut: 0 };
+  const polled = (queryKey: string[], ask: () => void, refusal: ApiError) =>
+    new QueryObserver(queryClient, {
+      queryFn: async () => {
+        ask();
+        throw refusal;
+      },
+      queryKey,
+      refetchInterval: 1_000,
+      refetchIntervalInBackground: true,
+    });
+  const observers = [
+    polled(["search", "astrolabe"], () => (asked.timedOut += 1), searchTimedOut),
+    polled(["search", "sextant"], () => (asked.busy += 1), databaseBusy),
+  ];
+  jest.useFakeTimers();
+  const unsubscribes = observers.map((observer) => observer.subscribe(() => {}));
+  try {
+    await settle();
+    expect(asked).toEqual({ busy: 1, timedOut: 1 });
+    for (let interval = 0; interval < 5; interval += 1) {
+      jest.advanceTimersByTime(1_000);
+      await settle();
+    }
+    expect(asked).toEqual({ busy: 6, timedOut: 1 });
+  } finally {
+    jest.useRealTimers();
+    for (const unsubscribe of unsubscribes) unsubscribe();
+    queryClient.clear();
+  }
+});
+
+// TanStack passes a static query by only while an observer renders it (`Query.isStatic`), so the
+// hold is the client's own test: a search answered `503 SEARCH_TIMEOUT` that nothing renders, as
+// once the palette is closed, is sent by neither `refetchQueries` nor an invalidation of every
+// query, while a search refused for another reason is sent by each.
+test("a search answered 503 SEARCH_TIMEOUT that nothing renders is sent again by neither refetchQueries nor an invalidation of every query", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const asked = { busy: 0, timedOut: 0 };
+  try {
+    await queryClient
+      .fetchQuery({
+        queryFn: async () => {
+          asked.timedOut += 1;
+          throw searchTimedOut;
+        },
+        queryKey: ["search", "astrolabe"],
+      })
+      .catch(() => undefined);
+    await queryClient
+      .fetchQuery({
+        queryFn: async () => {
+          asked.busy += 1;
+          throw databaseBusy;
+        },
+        queryKey: ["search", "sextant"],
+      })
+      .catch(() => undefined);
+    expect(asked).toEqual({ busy: 1, timedOut: 1 });
+
+    await queryClient.refetchQueries();
+    expect(asked).toEqual({ busy: 2, timedOut: 1 });
+
+    await queryClient.invalidateQueries({ refetchType: "all" });
+    expect(asked).toEqual({ busy: 3, timedOut: 1 });
+  } finally {
+    queryClient.clear();
+  }
+});
+
+// An invalidation made while a read is out asks once more when that read settles (`#refetch`),
+// but not once a search's read answers that it ran past the server's bound.
+test("an invalidation made while a search is out asks again once it settles, but not once it answered 503 SEARCH_TIMEOUT", async () => {
+  const asked = { busy: 0, timedOut: 0 };
+  for (const [name, refusal] of [
+    ["busy", databaseBusy],
+    ["timedOut", searchTimedOut],
+  ] as const) {
+    const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const out: ((error: ApiError) => void)[] = [];
+    const observer = new QueryObserver(queryClient, {
+      queryFn: () => {
+        const { promise, reject } = Promise.withResolvers<string>();
+        out.push(reject);
+        return promise;
+      },
+      queryKey: ["search", "astrolabe"],
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      await settle();
+      void queryClient.invalidateQueries({ queryKey: ["search"] });
+      await settle();
+      out[0]?.(refusal);
+      await settle();
+      asked[name] = out.length;
+    } finally {
+      for (const reject of out.slice(1)) reject(databaseBusy);
+      unsubscribe();
+      queryClient.clear();
+    }
+  }
+  expect(asked).toEqual({ busy: 2, timedOut: 1 });
+});
+
 /**
  * When each request of one read went out, in ms after the first, through main.tsx's retry options
  * and the real API client, with every response a 503 refusal carrying `headers`. The clock is

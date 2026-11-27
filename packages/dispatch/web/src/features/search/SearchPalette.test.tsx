@@ -1465,6 +1465,36 @@ async function refreshForAnEditAndWait(queryClient: QueryClient, ms: number): Pr
   await tick(ms);
 }
 
+/** The bar as the shell holds it: Escape closes it, and `Open search` opens it again, as Ctrl+K
+ *  does, mounted afresh with an empty box. */
+function ReopenablePalette(): ReactNode {
+  const [open, setOpen] = useState(true);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} type="button">
+        Open search
+      </button>
+      <SearchPalette onClose={() => setOpen(false)} open={open} />
+    </>
+  );
+}
+
+function renderReopenablePalette(queryClient: QueryClient): {
+  queryClient: QueryClient;
+  unmount: () => void;
+} {
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <ReopenablePalette />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { queryClient, unmount: view.unmount };
+}
+
 // Automatic retry behavior for a search across the palette's states, on the app's own retry
 // policy. A search that ran past the server's bound (`503 SEARCH_TIMEOUT`) is never sent again on
 // its own: no automatic retry, no focus of the tab, no return of the network and no refresh of the
@@ -1570,6 +1600,78 @@ test("a search answered 503 DATABASE_BUSY is sent again, retries and all, on the
     await refreshForAnEditAndWait(view.queryClient, 6_000);
     expect(tiers.sent).toEqual({ fused: 12, words: 12 });
     expect(screen.getByRole("alert")).toHaveTextContent("Search failed.");
+  } finally {
+    focusManager.setFocused(undefined);
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A search that answered and whose refetch then ran past the server's bound keeps its hits on the
+// list, since TanStack keeps a query's answer through a failed refetch, so the bar draws no
+// failure and offers no Retry. The reader asks for those words again by typing them again, or by
+// opening the bar again and typing them: each of those sends each of the bar's two searches of
+// the words once, and the tab's focus, the network's return and a refresh of the live feed send
+// neither. Every request after a search's first runs past the bound, and the row counts the
+// requests by the words they ask for, since a letter typed past the keystroke's wait is a search
+// of other words.
+test("a search whose refetch answered 503 SEARCH_TIMEOUT over its hits is sent again on neither the tab's focus, the network's return nor a refresh of the live feed, and once when its words are typed again and once when the bar is opened again and they are typed", async () => {
+  const user = userOnFakeClock();
+  const sent: Record<string, { fused: number; words: number }> = {};
+  const answer = (
+    query: string,
+    options: { keywords_only?: boolean } = {}
+  ): Promise<SearchResponse> => {
+    const counts = sent[query] ?? { fused: 0, words: 0 };
+    sent[query] = counts;
+    const tier = options.keywords_only === true ? "words" : "fused";
+    counts[tier] += 1;
+    return counts[tier] === 1
+      ? Promise.resolve(searchAnswer([issueHit("LEGION-3")]))
+      : searchTimedOut();
+  };
+  const search = spyOn(api, "search").mockImplementation(answer);
+  const view = renderReopenablePalette(appQueryClient());
+
+  try {
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(sent).toEqual({ astrolabe: { fused: 1, words: 1 } });
+
+    // The reader comes back to the tab once both answers are 30 s old: stale, each is read
+    // again, and each read runs past the bound.
+    await tick(30_000);
+    await refocusAndWait(6_000);
+    expect(sent).toEqual({ astrolabe: { fused: 2, words: 2 } });
+    expect(screen.queryByText("Search failed.")).not.toBeInTheDocument();
+
+    await refocusAndWait(6_000);
+    expect(sent).toEqual({ astrolabe: { fused: 2, words: 2 } });
+
+    await reconnectAndWait(6_000);
+    expect(sent).toEqual({ astrolabe: { fused: 2, words: 2 } });
+
+    await refreshForAnEditAndWait(view.queryClient, 6_000);
+    expect(sent).toEqual({ astrolabe: { fused: 2, words: 2 } });
+
+    // A letter typed, and deleted once the keystroke's wait has sent its words, brings the box
+    // back to the same words.
+    await user.keyboard("s");
+    await tick(KEYSTROKE_DEBOUNCE_MS);
+    await user.keyboard("{Backspace}");
+    await tick(6_000);
+    expect(sent).toEqual({
+      astrolabe: { fused: 3, words: 3 },
+      astrolabes: { fused: 0, words: 1 },
+    });
+
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Open search" }));
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(sent).toEqual({
+      astrolabe: { fused: 4, words: 4 },
+      astrolabes: { fused: 0, words: 1 },
+    });
   } finally {
     focusManager.setFocused(undefined);
     search.mockRestore();

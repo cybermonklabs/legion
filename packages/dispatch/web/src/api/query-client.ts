@@ -67,23 +67,35 @@ export function queryRetryDelay(
 }
 
 /**
- * `option`, a query's `staleTime` or `refetchInterval`, as `defaultQueryOptions` hands it to every
- * query, but `held` for a query whose last answer was a search that ran past the server's bound
- * (`503 SEARCH_TIMEOUT`, `isSearchTimeout`). Such a search is never sent again on its own: it gets
- * no retry (`queryRetry`), and held static (`staleTime: "static"`), it is fetched again on no
- * focus and no reconnect, `refetchQueries` passes it by and so does every invalidation, and so
- * does every refresh of the live feed (`refreshQueries`); held at no interval, it is not polled.
- * The reader's own fetch of it, the bar's Retry, still asks, and new words or filters are another
- * query. The last answer is TanStack's `fetchFailureReason`: a fetch's start and its success clear
- * it, and a write of the answer the query keeps (a post's correction, which the live feed writes
- * into every search answer the cache holds) leaves it.
+ * Whether `query`'s last answer was a search that ran past the server's bound (`503
+ * SEARCH_TIMEOUT`, `isSearchTimeout`). Such a search is never sent again on its own. It gets no
+ * retry (`queryRetry`). Its `refetchOnWindowFocus`, `refetchOnReconnect` and `refetchInterval`
+ * answer `false` (`defaultQueryOptions`), so no focus, reconnect or interval fetches it.
+ * `DispatchQueryClient.refetchQueries`, and through it every invalidation, passes it by whether
+ * or not anything renders it, and so does every refresh of the live feed (`refreshQueries` in
+ * `query-refresh.ts`), which only marks it stale. Its `staleTime` is left as it was given, and a
+ * failed fetch marks a query invalidated (TanStack's `error` action), so the query is stale and
+ * what the reader does still asks: the bar's Retry, the palette opened again, which mounts a new
+ * observer, and the same words typed again, which bring the observer back to the query. New words
+ * or filters are another query. The last answer is TanStack's `fetchFailureReason`: a fetch's
+ * start and its success clear it, and a write of the answer the query keeps leaves it, as a post's
+ * correction does, which the live feed writes into each search answer that holds a copy of the
+ * post (`markCorrectedPost`).
  */
-function heldAfterSearchTimeout<
-  Q extends { readonly state: { readonly fetchFailureReason: unknown } },
-  V,
->(option: V | ((query: Q) => V), held: V): (query: Q) => V {
+export function heldAfterSearchTimeout(query: {
+  readonly state: { readonly fetchFailureReason: unknown };
+}): boolean {
+  return isSearchTimeout(query.state.fetchFailureReason);
+}
+
+/** `option`, a query's `refetchOnWindowFocus`, `refetchOnReconnect` or `refetchInterval`, as
+ *  `defaultQueryOptions` hands it to every query, but `false` for a query whose last answer was
+ *  a search that ran past the server's bound (`heldAfterSearchTimeout`). */
+function unlessHeldAfterSearchTimeout<Q extends Parameters<typeof heldAfterSearchTimeout>[0], V>(
+  option: V | ((query: Q) => V)
+): (query: Q) => V | false {
   return (query) => {
-    if (isSearchTimeout(query.state.fetchFailureReason)) return held;
+    if (heldAfterSearchTimeout(query)) return false;
     return typeof option === "function" ? (option as (query: Q) => V)(query) : option;
   };
 }
@@ -98,7 +110,9 @@ function heldAfterSearchTimeout<
  * fetch. Every mutation's own `invalidateQueries` call keeps its shape. It also tells whoever
  * listens each time a query calls its function (`onAttempt`), holds back a read that a write's
  * optimistic value stands in for until Dispatch has taken that write (`holdBackReads`), and never
- * sends again on its own a search that ran past the server's bound (`heldAfterSearchTimeout`).
+ * sends again on its own a search that ran past the server's bound (`heldAfterSearchTimeout`):
+ * `refetchQueries` passes such a query by, and its focus, reconnect and interval options answer
+ * `false` for it.
  */
 export class DispatchQueryClient extends QueryClient {
   readonly #attempts = new Set<(queryHash: string) => void>();
@@ -120,8 +134,9 @@ export class DispatchQueryClient extends QueryClient {
    *  (`holdBackReads`); the wrapper hands the function its context and returns what the function
    *  returns, and a listener that throws fails no read. `skipToken`, an absent function and a
    *  wrapped one are left as they are. Each observer's render passes a function of its own, so a
-   *  wrapper is made for each call rather than kept. The query's `staleTime` and interval are
-   *  held for a search that ran past its bound (`heldAfterSearchTimeout`). */
+   *  wrapper is made for each call rather than kept. The query's `refetchOnWindowFocus`,
+   *  `refetchOnReconnect` and `refetchInterval` answer `false` for a search that ran past its
+   *  bound (`heldAfterSearchTimeout`). */
   override defaultQueryOptions<
     TQueryFnData = unknown,
     TError = DefaultError,
@@ -137,9 +152,13 @@ export class DispatchQueryClient extends QueryClient {
     const defaulted = super.defaultQueryOptions(options);
     // An object already defaulted is this method's own, held when it was made.
     if (defaulted !== options) {
-      defaulted.staleTime = heldAfterSearchTimeout(defaulted.staleTime ?? 0, "static");
+      // TanStack fetches on focus where it was given no `refetchOnWindowFocus` (`shouldFetchOn`).
+      defaulted.refetchOnWindowFocus = unlessHeldAfterSearchTimeout(
+        defaulted.refetchOnWindowFocus ?? true
+      );
+      defaulted.refetchOnReconnect = unlessHeldAfterSearchTimeout(defaulted.refetchOnReconnect);
       if (defaulted.refetchInterval) {
-        defaulted.refetchInterval = heldAfterSearchTimeout(defaulted.refetchInterval, false);
+        defaulted.refetchInterval = unlessHeldAfterSearchTimeout(defaulted.refetchInterval);
       }
     }
     const { queryFn, queryHash } = defaulted;
@@ -172,7 +191,9 @@ export class DispatchQueryClient extends QueryClient {
     const promises = notifyManager.batch(() =>
       this.getQueryCache()
         .findAll(filters)
-        .filter((query) => !query.isDisabled() && !query.isStatic())
+        .filter(
+          (query) => !query.isDisabled() && !query.isStatic() && !heldAfterSearchTimeout(query)
+        )
         .map((query) => this.#refetch(query, options))
     );
     return Promise.all(promises).then(() => undefined);
@@ -196,8 +217,15 @@ export class DispatchQueryClient extends QueryClient {
         )
         .then(() => {
           this.#followUps.delete(hash);
-          // Removed while it waited (a sign-out, garbage collection): nothing renders it now.
-          if (this.getQueryCache().get(hash) !== query || query.isDisabled() || query.isStatic()) {
+          // Removed while it waited (a sign-out, garbage collection): nothing renders it now. A
+          // fetch waited on that answered a search past the server's bound is not followed up
+          // either: such a search is never sent again on its own (`heldAfterSearchTimeout`).
+          if (
+            this.getQueryCache().get(hash) !== query ||
+            query.isDisabled() ||
+            query.isStatic() ||
+            heldAfterSearchTimeout(query)
+          ) {
             return;
           }
           // A fetch that began after the one waited on was composed after this call: it answers.
