@@ -241,6 +241,7 @@ var budgetResets = map[string]string{
 	"turnEnded":       "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
 	"retirePending":   "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
 	"retry":           "an operator's retry of a failed claim starts every budget again from nothing, or with one attempt left of each budget the failure spent (RequestRetry, Budgets.OneAttemptLeft)",
+	"RetireLookTask":  "a recorded production check report proves the role read its look's task and resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
 }
 
 // The packages this test reads, by import path.

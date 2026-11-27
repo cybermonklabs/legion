@@ -102,6 +102,7 @@ func newLookEndsRig(t *testing.T, base time.Time) *lookEndsRig {
 	conns := sup.deps.Conns.(*fake.Conns)
 	sup.deps.Store = st
 	sup.deps.PhaseHolds = r.answers.phaseHolds
+	sup.deps.LookHolds = r.answers.lookHolds
 	sup.deps.RootHears = r.answers.rootHears
 	sup.deps.RootTask = r.answers.rootTask
 	sup.OnDurableState(r.answers.terminal)

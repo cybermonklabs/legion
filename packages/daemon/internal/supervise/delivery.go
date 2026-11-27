@@ -31,6 +31,27 @@ type CheckLook struct {
 	OpenedAt time.Time
 }
 
+// same says whether l and other name the same look of the same check instance, comparing OpenedAt
+// by instant rather than by struct equality.
+func (l CheckLook) same(other CheckLook) bool {
+	return l.Look == other.Look && l.OpenedAt.Equal(other.OpenedAt)
+}
+
+// newerThan says whether l is a newer look than other: a later check instance (OpenedAt), or a
+// higher look number on the same check instance. Any positive look is newer than the zero value.
+func (l CheckLook) newerThan(other CheckLook) bool {
+	if l.Look <= 0 {
+		return false
+	}
+	if other.Look <= 0 {
+		return true
+	}
+	if !l.OpenedAt.Equal(other.OpenedAt) {
+		return l.OpenedAt.After(other.OpenedAt)
+	}
+	return l.Look > other.Look
+}
+
 // Delivery is a claim's pending task: at most one per claim, persisted, and sent only when the
 // claim is ready or idle and its connection is registered.
 //
@@ -573,6 +594,29 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		if (id != "" && pending.ID == id && pending.Task == request.Task) || queued {
 			return nil
 		}
+		if pending.CheckLook.Look > 0 && pending.ConfirmedAt.IsZero() {
+			holds, err := m.lookHolds(ctx, *pending)
+			if err != nil {
+				return err
+			}
+			if !holds {
+				if m.send != nil {
+					return m.refuseBehindPending(ctx)
+				}
+				m.log.Info("supervise: the pending production check look no longer holds; the newer task takes its place",
+					"replaced", pending.ID, "look", pending.CheckLook.Look, "delivery", id)
+				if err := m.retirePending(ctx); err != nil {
+					return err
+				}
+				m.disarm(TimerTurn)
+				m.answeredBusy = ""
+				if err := m.answerAskFirstAfterDrop(ctx); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if pending := m.claim.Pending; pending != nil {
 		switch {
 		case request.NewsOnly && HoldsTask(pending):
 			// A task of news alone waits behind every task that holds work, confirmed or owed
@@ -910,6 +954,14 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return err
 		}
 	}
+	lookEnded := false
+	if holds {
+		var err error
+		if holds, err = m.lookHolds(ctx, *p); err != nil {
+			return err
+		}
+		lookEnded = !holds
+	}
 	if holds {
 		var err error
 		if says, err = m.currentNews(ctx); err != nil {
@@ -924,6 +976,9 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		case spent:
 			m.log.Info("supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that record no longer tells; it is dropped rather than sent",
 				"delivery", p.ID, "cause", m.claim.EndedWork.Cause, "ended", m.claim.EndedWork.Generation, "toldBy", m.claim.EndedWork.ToldBy)
+		case lookEnded:
+			m.log.Info("supervise: the production check look this task was queued for no longer holds; it is dropped rather than sent",
+				"delivery", p.ID, "issue", m.claim.Issue, "look", p.CheckLook.Look)
 		case !holds:
 			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than sent",
 				"delivery", p.ID, "issue", m.claim.Issue, "queuedFor", p.Phase)
@@ -1024,7 +1079,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// earlier daemon's prompt did carry is asked about, and the agent's turn confirms it with what
 	// that prompt carried (turnAnswers: the delivery's copy, Delivery.Carried), never with the news
 	// the send above rendered again.
-	askAgent := m.askFirst && !unsentNews(*p)
+	askAgent := m.askFirst && !m.askFirstNeverTakes(*p)
 	m.askFirst = false
 	if askAgent {
 		if streaming, _ := m.streaming(ctx, conn); streaming {
@@ -1109,12 +1164,20 @@ func (m *Machine) asksRoot(d Delivery) bool {
 // one that loses nothing.
 func unsentNews(d Delivery) bool { return len(d.News) > 0 && len(d.Carried) == 0 }
 
+// unacknowledgedLook says whether d is a production check look task that no prompt of its own
+// carried to an acknowledgement (DeliveredAt is zero). A restart that left such a task pending
+// knows no prompt of it was acknowledged by the agent, so askFirst never takes a running turn
+// (such as a previous look's late turn) for this look's turn.
+func unacknowledgedLook(d Delivery) bool { return d.CheckLook.Look > 0 && d.DeliveredAt.IsZero() }
+
 // askFirstNeverTakes says whether a turn the agent started by itself is never taken for d's turn
 // by the question a restart left (askFirst): a root architect's task of a run (asksRoot), which
-// may be a task nobody has sent, and a task carrying news no acknowledged prompt carried
-// (unsentNews). The confirmation of either tells something — a person's decisions, or the news —
-// so only a turn a send of this machine's own started may confirm it.
-func (m *Machine) askFirstNeverTakes(d Delivery) bool { return m.asksRoot(d) || unsentNews(d) }
+// may be a task nobody has sent, a task carrying news no acknowledged prompt carried
+// (unsentNews), and a production check look task no prompt of its own carried to an
+// acknowledgement (unacknowledgedLook).
+func (m *Machine) askFirstNeverTakes(d Delivery) bool {
+	return m.asksRoot(d) || unsentNews(d) || unacknowledgedLook(d)
+}
 
 // rootHears asks whether the root of this claim's tree has an architect to hear the task now
 // (Deps.RootHears). Only a root architect's task of a run is put to the answer (asksRoot): it names
@@ -1418,6 +1481,73 @@ func (m *Machine) RetireStoppedTask(ctx context.Context, p phase.Phase, generati
 	return true, m.relaunchAfterDrop(ctx)
 }
 
+// RetireLookTask retires the pending task of look when the look fence rejects it, and answers
+// whether it retired one. It runs in every state of a claim (suspended, failed, idle included).
+// It answers ErrTaskSending while a send of that task is in flight, leaves a confirmed task to
+// settle at its turn's end, and otherwise retires the task, disarms TimerTurn, clears
+// answeredBusy, answers the restart's question and gives a claim left holding nothing its
+// relaunch record.
+//
+// When reported is true, it also writes look as ServingCheckLook when newer than the one the
+// claim holds, retires look's unconfirmed task as served, and clears Budgets.PromptFailures and
+// Budgets.PromptRetires in one line — whatever else the claim holds (a new run's testing task or
+// a confirmed task included). A report that also closes the check queues one row with reported
+// true and one with reported false, and both orders leave the same end state.
+func (m *Machine) RetireLookTask(ctx context.Context, look CheckLook, reported bool) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+
+	retire := false
+	if d := m.claim.Pending; d != nil && d.CheckLook.same(look) && d.ConfirmedAt.IsZero() {
+		holds, err := m.lookHolds(ctx, *d)
+		if err != nil {
+			return false, err
+		}
+		if !holds {
+			if m.send != nil {
+				return false, ErrTaskSending
+			}
+			retire = true
+		}
+	}
+
+	claimChanged := false
+	if reported {
+		if look.newerThan(m.claim.ServingCheckLook) {
+			m.claim.ServingCheckLook = look
+			claimChanged = true
+		}
+		before := m.claim.Budgets
+		m.claim.Budgets.PromptFailures, m.claim.Budgets.PromptRetires = 0, 0
+		if m.claim.Budgets != before {
+			claimChanged = true
+		}
+	}
+
+	if !retire {
+		if claimChanged {
+			return false, m.persist(ctx)
+		}
+		return false, nil
+	}
+
+	d := m.claim.Pending
+	m.log.Info("supervise: the production check look this task was queued for ended; it is retired rather than kept",
+		"delivery", d.ID, "issue", m.claim.Issue, "look", look.Look, "reported", reported, "outstanding", m.outstanding)
+	if err := m.retirePending(ctx); err != nil {
+		if claimChanged {
+			m.oweWrite("RetireDelivery", err)
+		}
+		return false, err
+	}
+	m.disarm(TimerTurn)
+	m.answeredBusy = ""
+	if err := m.answerAskFirstAfterDrop(ctx); err != nil {
+		return true, err
+	}
+	return true, m.relaunchAfterDrop(ctx)
+}
+
 // relaunchAfterDrop gives a claim that one of sendPending's drops left holding nothing the
 // daemon's own delivery of its record of the last let-go (queueRelaunch), when that record still
 // tells, and sends it. The ready queues that delivery only for a claim that holds nothing when it
@@ -1462,6 +1592,24 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	holds, err := m.deps.PhaseHolds(ctx, m.claim.Issue, d.Phase, d.Generation)
 	if err != nil {
 		return false, fmt.Errorf("read the phase of %s: %w", m.claim.Token, err)
+	}
+	return holds, nil
+}
+
+// lookHolds asks whether the production check look this task was queued for still holds
+// (Deps.LookHolds). A delivery that names no look (CheckLook.Look <= 0) is never put to the
+// answer. A daemon with no workflow configured supplies no answer (Deps.LookHolds == nil), and
+// every delivery holds. Otherwise, a look task carrying no look id never holds.
+func (m *Machine) lookHolds(ctx context.Context, d Delivery) (bool, error) {
+	if m.deps.LookHolds == nil || d.CheckLook.Look <= 0 {
+		return true, nil
+	}
+	if d.LookID == "" {
+		return false, nil
+	}
+	holds, err := m.deps.LookHolds(ctx, m.claim.Issue, d.CheckLook, d.LookID)
+	if err != nil {
+		return false, fmt.Errorf("read the production check look of %s: %w", m.claim.Token, err)
 	}
 	return holds, nil
 }

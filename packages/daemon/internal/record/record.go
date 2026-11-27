@@ -3747,6 +3747,24 @@ func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
 	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
 }
 
+// LookHolds says whether a production check look's task (look, lookID) still holds against issue
+// and check: the issue and check exist, the check is open, it is the check look names (NamedBy),
+// look is its current look (Looks) and is open (LookOpen), the issue is out of the workflow, and
+// lookID is non-empty and equal to check.CurrentLookID(). A delivery carrying no look id — one an
+// older daemon queued — never holds. It is the one definition of that question: the daemon answers
+// supervise's Deps.LookHolds with it (daemon's workflowRuntime.lookHolds).
+func LookHolds(issue *Issue, check *ProductionCheck, look supervise.CheckLook, lookID string) bool {
+	return issue != nil &&
+		check != nil &&
+		check.Open() &&
+		check.NamedBy(look.OpenedAt) &&
+		look.Look > 0 && check.Looks == look.Look &&
+		check.LookOpen &&
+		!InWorkflow(*issue) &&
+		lookID != "" &&
+		lookID == check.CurrentLookID()
+}
+
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"
 // with an empty string, and the record says it with a nil pointer.
 func ParentOf(key string) *string {

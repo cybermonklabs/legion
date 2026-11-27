@@ -1225,6 +1225,14 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// LookHolds says whether production check look of issue, carrying lookID, still holds: the
+	// check is open, it is the check look names, look is its current look and is open, the issue
+	// is out of the workflow, and lookID is non-empty and equal to the check's current look id
+	// (record.LookHolds). It is asked only about a delivery that names a production check look
+	// (Delivery.CheckLook.Look > 0); every other delivery is never put to it, which the machine
+	// decides rather than this answer. A delivery carrying no look id never holds. nil holds every
+	// delivery.
+	LookHolds func(ctx context.Context, issue string, look CheckLook, lookID string) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
