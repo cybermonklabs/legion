@@ -343,6 +343,26 @@ func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 	}
 }
 
+// A room's failure closes its sockets and drops its settlement, and nothing else said so until a
+// later write met the failed room, so a peer that lost its socket to one left no trace in the log
+// (TestStoredOrderSoak, job 140239891619). The failure is logged with its cause when it happens.
+func TestARoomFailureIsLoggedWithItsCause(t *testing.T) {
+	// Not parallel: it reads the process's default logger (captureWarnings).
+	logs := captureWarnings(t)
+	service, artifactID := newTestService(t)
+	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
+		t.Fatalf("load live document: %v", err)
+	}
+	service.failRoom(artifactID, errors.New("a cause the log must name"))
+	awaitRecovered(t, service, artifactID)
+	logged := logs.String()
+	for _, want := range []string{"level=WARN", "a document room failed", "room=" + artifactID, "a cause the log must name"} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("the room's failure logged no %q; logged:\n%s", want, logged)
+		}
+	}
+}
+
 func indexedAsks(t *testing.T, service *Service, artifactID string) int {
 	t.Helper()
 	var count int
