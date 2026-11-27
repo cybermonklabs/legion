@@ -11,8 +11,13 @@
 -- of the tester's handoff (workflow's clearHandoff), and a new generation clears it too
 -- (record.Postgres.ClearGeneration). Every other row holds 0.
 --
--- Every row the table already holds takes the default, 0: no completion of the release before
--- named a step this release can read, since that release moved its issue at the completion.
+-- The column is nullable with a default of 0, as phases.states_serial is: a migration that a
+-- rolling release runs adds only tables, nullable columns and non-unique indexes, so the release
+-- before still runs on the migrated database during a roll or a rollback. Every row the table
+-- already holds takes the default, 0: no completion of the release before named a step this
+-- release can read, since that release moved its issue at the completion. A row that holds no
+-- value reads as 0 (record's Phases reads coalesce(return_to, 0)), and the check refuses a
+-- negative place.
 --
 -- The release before this one names each column of phases it reads and writes (record's Phases
 -- and PutPhase), and none of them is this one, so every row it inserts takes the default, and a
@@ -33,4 +38,4 @@
 -- alter table phases drop column if exists return_to;
 -- delete from schema_version where version = 20261126110302;
 -- commit;
-alter table phases add column return_to integer not null default 0 check (return_to >= 0);
+alter table phases add column return_to integer default 0 check (return_to >= 0);
