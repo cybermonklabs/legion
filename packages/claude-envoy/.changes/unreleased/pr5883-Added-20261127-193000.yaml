@@ -6,4 +6,4 @@ body: |-
   Codex 0.170.0 and later run every session in one shared app server; each of its threads is its own Envoy session.
 time: 2026-11-27T19:30:00Z
 custom:
-    Issue: codex-shared-envoy
+    Issue: pr5883
