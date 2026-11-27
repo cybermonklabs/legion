@@ -222,6 +222,29 @@ func TestAnArchitectsDoneOnAChildRunAgainAfterAMergeDropsIt(t *testing.T) {
 	}
 }
 
+// The merge GitHub reports for an issue's current pull request is the issue's newest merge: every
+// clear deletes the rows of the generation it leaves, so only the current generation's pull request
+// has a row to merge. Its snapshot replaces one of an earlier merge even where the report names no
+// merged_at. Refused there by the rule that an unknown time never replaces a known one, and the
+// refusal ignored, the issue kept the earlier merge's snapshot and its close judged the checks at
+// the earlier merge commit.
+func TestTheCurrentPullRequestsMergeReplacesAnEarlierSnapshotWithNoMergedAt(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Merging, "retro")
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		_, err := record.NewStore().PutMergeSnapshot(t.Context(), tx, waitRoot, record.Merge{Number: 41, Head: headTwo, SHA: waitLaterMerge,
+			Base: "main", Repo: waitRepo, MergedAt: waitMergedAt.Add(-24 * time.Hour)})
+		return err
+	})
+	rig.fact(intake.PullRequestMerged{Repo: waitRepo, Number: waitRootNumber, MergeSHA: waitRootMerge, HeadSHA: headOne})
+	if merge := rig.issue(waitRoot).Merge; merge.Number != waitRootNumber || merge.SHA != waitRootMerge {
+		t.Fatalf("the root's merge snapshot after its pull request merged = %+v, want #%d at %s: the current pull request's merge is the newest",
+			merge, waitRootNumber, waitRootMerge)
+	}
+	rig.stands(waitRoot, phase.Verifying, "testing")
+}
+
 // close_root refuses a root whose pull request merged, CLOSE_AFTER_MERGE: such a root closes by
 // its checks or a person. Here its next change waits at admitted.
 func TestCloseRootRefusesARootWhosePullRequestMerged(t *testing.T) {
