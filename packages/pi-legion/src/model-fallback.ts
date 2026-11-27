@@ -426,7 +426,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
    * (`turn-recovery.ts:2177-2211` and `:3605-3615` at tag
-   * `v18.18.6-sami.20261126-222037`).
+   * `v18.18.6-sami.20261127-010836`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
@@ -727,7 +727,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         appliedThisTurn = { entryId: own.entry.id, reasoned: event.reason !== undefined };
         // What the host walked for, in the provider's own words: it names the reason as
         // `Request failed: ` and the error text of the message that failed
-        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261126-222037`), so
+        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261127-010836`), so
         // `Request failed: Refusal (cyber): Declined` reads as Anthropic's `cyber` filter and
         // arms the same refusal the plugin's own walk arms, category and all.
         //

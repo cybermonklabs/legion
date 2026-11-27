@@ -1636,7 +1636,9 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Three cases are not seen.
   An earlier build whose boot takes more than an hour from its dashboard publish to its registration is not in the fleet from that hour's end until it registers: every step between the two is bounded at 30 to 60 seconds and its admission at 20, but the seed of the repository projects is not.
   A process of an earlier build silent past the prune age (10 minutes) - frozen, or cut from the database - has its row pruned and is not in the fleet until a heartbeat's admission of it, whose insert is an arrival, commits.
-  Each such admission waits for the gate at most 2 seconds, its heartbeat's own bound, so a write of this build that holds the gate longer defers it, and that process serves writes in its row-first order meanwhile; production rolls with `Recreate` (above), which stops every process of one release before the other starts, so it does not reach this case.
+  Each such admission waits for the gate at most 2 seconds, its heartbeat's own bound, so a write of this build that holds the gate longer defers it, and that process serves writes in its row-first order meanwhile.
+  Production did not reach this case under the `Recreate` rollout of the release this was written for, which stopped every process of one release before the other started.
+  It now runs two replicas under `strategy: RollingUpdate`, which overlaps the old and the new pods for the length of a rollout, so a pod of the earlier release that falls silent past the prune age during a rollout can reach it.
   That is the registry's own model: every other decision over the fleet (the signing keys, the embedder, the schema admission) counts a process silent past its live window as gone.
   A subcommand of an earlier build that an operator runs beside this one neither publishes nor registers, so it is never in the fleet.
   Of those subcommands, `rebuild-refs` takes issues' and documents' rows `for no key update` (from `legion-envoy-v30.21.1` on), and `backfill-block-ids` and `backfill-anchor-blocks` settle a document they open that owes a settlement, which takes its owner's row and appends its events: run those from a build that carries this change.
@@ -2690,9 +2692,11 @@ A new table: nothing existing is read, locked or rewritten, the previous release
 Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
 `heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
 The new index's first two columns are the old one's, so every read `block_refs_to` served it serves, and `block_refs` keeps one index of targets, with the key the target indexes of `comment_block_refs`, `message_block_refs` and `ask_block_refs` already have.
-The build is a plain `create index` in the runner's transaction, not `concurrently`: production runs one app pod under `Recreate`, which migrates before it listens, so no writer runs while the build holds `SHARE` on `block_refs` for one scan of the table.
+The build is a plain `create index` in the runner's transaction, not `concurrently`.
+Under the `Recreate` rollout of the release it shipped in, production ran one app pod, which migrates before it listens, so no writer ran while the build held `SHARE` on `block_refs` for one scan of the table.
+Production now runs two replicas under `strategy: RollingUpdate`, which overlaps the old and the new pods, so where a deployment applies this migration in a rolling update, the build holds off the old pods' writes to `block_refs` for that scan (below).
 The census admits it only while `block_refs` is under `CensusTableLimit` and refuses it above, and then the build must be rewritten in the concurrent form (`-- pgmigrate:non-transactional`, `create index concurrently if not exists`, alone in its file) before the deployment can move.
-The drop sets `lock_timeout` to `120s` for its own transaction, because it takes `ACCESS EXCLUSIVE` on `block_refs` for the instant it unlinks the index and waits for any read the stopped pod left running, which can outlast the runner's three attempts of 5 s.
+The drop sets `lock_timeout` to `120s` for its own transaction, because it takes `ACCESS EXCLUSIVE` on `block_refs` for the instant it unlinks the index and waits for any read an earlier pod left running or still runs, which can outlast the runner's three attempts of 5 s.
 That bound holds on each try, and `store.Migrate` tries a migration up to 3 times after a lock timeout (`pgmigrate.RetryLockTimeouts`), so the drop waits up to 120 s on each of those 3 tries.
 Where two builds serve at once, the build holds off the earlier build's writes to `block_refs` for its scan, and the drop its reads and writes for as long as it waits, up to 120 s on each of `store.Migrate`'s 3 tries.
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
@@ -2862,11 +2866,23 @@ Its census answers `0`: a trigger runs only on later inserts and rewrites no row
 Migration `20261117100016_session_titles_backfill` creates `session_titles_backfill`, the one row that stands for the fill of `20261117100008`'s table for the events stored before `20261117100015`'s trigger: `session_id`, the keyset cursor, `''` before the first batch.
 It writes no `session_titles` row and reads no other table, so it locks only the table it creates; its census answers `0`.
 The fill is `store.FillSessionTitles`, which the boot runs after `store.FillDocumentSearch` and before the server listens (`cmd/dispatch/main.go`), not a migration, for `20261101182501`'s reason: one statement would read every session's events in one transaction while the trigger is live, and a write of a session the statement had already written would wait for the whole statement at its commit.
-Each batch is instead one short transaction that takes the next `store.SessionTitlesFillBatch` (1,000) sessions above the cursor, writes each one's newest title under the trigger's own guard, so a row the trigger wrote meanwhile is never replaced by an older one, moves the cursor and commits.
+Production runs two replicas under `strategy: RollingUpdate`.
+A new pod listens only after the migrations and the fill, so the old pods serve requests while the migrations and the fill run.
+The old build reads titles from `events`, and `20261117100015`'s trigger stores the titles of the events the old pods write.
+A failed fill exits the new pod, stops the rollout and leaves the old pods serving.
+Each batch is one short transaction that takes the next `store.SessionTitlesFillBatch` (1,000) sessions above the cursor, writes each one's newest title under the trigger's own guard, so a row the trigger wrote meanwhile is never replaced by an older one, moves the cursor and commits.
 The batch that takes no further session deletes the row, so a boot after the pass has finished reads one empty table and stops, and a database emptied of its rows owes no fill.
 A failure stops the boot (`slog.Error`, then exit 1): this release reads titles from `session_titles` alone, so a process serving with the table unfilled would name every earlier session by its id.
-Production runs one replica under `strategy: Recreate`, so no process serves while the migrations and the fill run, and the operator follow-up is that wait on the first boot of this release:
+The operator follow-up is the wait for the migrations and the fill on the first boot of this release:
 `packages/envoy/scripts/session-titles-scale.sh` times the four migrations and the fill together on 1.5 million titled session events, more than 1.25 times production's newest event id on 2026-11-24, and they end inside the 60 s that leaves the compose deployer's 90 s room for the rest of the boot.
+
+Migration `20261126203311_delivery_run_jobs_failed` builds `delivery_run_jobs_failed` on `delivery_run_jobs (repo, run_id) where conclusion = 'failure'`, the failed jobs alone.
+The Delivery reads of a deploy run's jobs name the jobs they read (`delivery.ListRunJobsForRuns`, `name = any($3)`, a descent of the primary key for each run and name), where the read with no name read every job of each run, 660 ms a call at ten times the stated run rate.
+The timeline lists each deploy run with its failed jobs and the job that failed first, which can be any job the run holds, so it reads each run's production jobs by name and its failed jobs through this index (`delivery.listRunJobsFailedForRuns`), whose read grows with the runs' failures and not with every job they ran.
+The predicate is the read's own `conclusion = 'failure'`, written into its statement rather than bound, so the planner proves the index under a generic plan too.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because the intake and the reconcile write `delivery_run_jobs` on every job listing: a concurrent build takes `SHARE UPDATE EXCLUSIVE`, which no read or write of a job waits for.
+A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
+Its census answers `0`: an ordinary index refuses and rewrites no row.
 
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
@@ -3414,8 +3430,9 @@ A project left with no default after both statements is one to name a person on 
 Reaching the migration with one left stops it, and its refusal names the repair that works from there: nothing is serving by then, so it is `update projects set default_assignee = '<the person''s email>' where key = '<KEY>';` on the database itself.
 
 **`20261111210103` is a stop-the-world migration: deploy it with no server of the earlier release running.**
-The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because the deployment runs one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
-no server of the earlier release serves while the migration runs, and the release that boots over it names a default on every project it creates.
+The narrowing shipped in the same release as the fill (`legion-envoy-v30.11.0`), where the rule above splits a narrowing across two releases, because the deployment then ran one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
+no server of the earlier release served while the migration ran, and the release that boots over it names a default on every project it creates.
+That held under the `Recreate` rollout of that release; production now runs two replicas under `strategy: RollingUpdate`, which overlaps the old and the new pods, so a deployment still on a release before `20261111210103` stops every server of the old release before it starts this one (Database migrations, above).
 An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
 recover a failed deploy forward, as `0113` and `0117` require.
 
@@ -5642,13 +5659,29 @@ Each item below names a path with its method and identity, then its purpose.
   A quote mark carries the ask's id and who asked, which no rendering shows and every load of the document builds:
   the marks a document's comments, suggestions and asks hold on its text carry at most 1 MiB of ids and authors, and a quote anchor that would leave them past it and carrying more is `413 CAP_EXCEEDED`, naming the bound and both sizes.
 
-- `/api/v1/issues/{key}/asks?state=&thread=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/asks?state=&thread=&order=&limit=&before=&author=` (GET; cookie, trusted header, or bearer)
 
   List an issue's asks, open and/or answered (`state`: `all` default, `open`, or `answered`).
   Each row carries `last_reply`, the newest comment in the ask's thread or null.
   `thread=1` adds `thread`, its `replies`, `edits`, `answers` and `followers`, batched over the list so no card fetches its own;
   without it no `thread` is returned, which is what the readers that render the ask alone want from this unpaged list.
   Any other `thread` value is `400 INVALID_ASK_THREAD`.
+  `order=activity` answers one page of the issue's threads in place of the list, `{threads, before, remaining}`: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first.
+  An ask's thread is the ask, each comment whose `ask_id` names it, and the answer and the resolution the ask holds now (a person's decline among them), each written by its actor at its own `at`;
+  an answer or a resolution a later one replaced is no entry.
+  Its row is the list's row with `last_activity_at`, and `state` and `thread=1` filter and shape the page as they filter and shape the list.
+  A row's `last_activity_at` is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits, such as `2026-11-23T22:34:52.010780Z`;
+  a deleted entry counts and an edit does not.
+  `limit` is how many threads a page holds at most, an integer from 1 to 100, and 20 without it.
+  `before` is the position of the page's last thread, `<last_activity_at>,<id>`, and null when no thread follows;
+  `?before=` with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it.
+  `remaining` is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when `before` is null.
+  `author` keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly;
+  `remaining` counts under it.
+  The route takes no `person`.
+  Without `order` the route answers its list.
+  Each refusal is `400 INVALID_QUERY`, names the parameter and the values it takes, and answers no thread:
+  `limit`, `before`, `author` or `person` without `order=activity`, an `order` other than `activity`, a `limit` that is not an integer from 1 to 100, a `before` that is not a position this API wrote, an empty `author`, a `person` value the route does not take, and any of `order`, `limit`, `before`, `author` and `person` given twice.
 
 - `/api/v1/asks/{id}` (GET; cookie, trusted header, or bearer)
 
@@ -5719,9 +5752,27 @@ Each item below names a path with its method and identity, then its purpose.
   The whole resolution rides `ask.resolved` to every session following the ask, and a write that opens another question on the issue is answered the issue's `declined_asks`.
   `GET /api/v1/agents/{session_id}/answers` lists the decline under the relation `declined_your_ask` for the ask's author and its followers, and under `declined_an_ask`, without Dispatch's sentences, for any other session it reached.
 
-- `/api/v1/issues/{key}/comments?artifact=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/comments?artifact=&order=&limit=&before=&author=&person=` (GET; cookie, trusted header, or bearer)
 
   List comments, optionally limited to an artifact ID.
+  `order=activity` answers one page of the issue's threads in place of the list, `{threads, before, remaining}`: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first.
+  A comment thread is a comment with no `reply_to` and no `ask_id`, and each comment whose `reply_to` names it;
+  its row is `{comment, replies, last_activity_at}`, the replies oldest first, each shaped as the list shapes it.
+  A comment with an `ask_id` is an entry of its ask's thread on `GET /api/v1/issues/{key}/asks`, and of no comment thread.
+  A row's `last_activity_at` is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits;
+  a deleted entry counts and an edit does not.
+  `limit` is how many threads a page holds at most, an integer from 1 to 100, and 20 without it.
+  `before` is the position of the page's last thread, `<last_activity_at>,<id>`, and null when no thread follows;
+  `?before=` with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it.
+  `remaining` is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when `before` is null.
+  `author` keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly;
+  `remaining` counts under it.
+  `person=in` keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor, or one of its comments is a reply that stores a `quote`;
+  the route takes no other `person` value.
+  With `order=activity`, `artifact` keeps each thread whose first comment is anchored in that document, with all its replies, and the page's ETag hashes every parameter of the request, `If-None-Match` answering `304` as for the list.
+  Without `order` the route answers its list.
+  Each refusal is `400 INVALID_QUERY`, names the parameter and the values it takes, and answers no thread:
+  `limit`, `before`, `author` or `person` without `order=activity`, an `order` other than `activity`, a `limit` that is not an integer from 1 to 100, a `before` that is not a position this API wrote, an empty `author`, a `person` value the route does not take, and any of `order`, `limit`, `before`, `author` and `person` given twice.
 
 - `/api/v1/issues/{key}/comments` (POST; cookie, trusted header, or bearer)
 
@@ -5731,6 +5782,13 @@ Each item below names a path with its method and identity, then its purpose.
   with `ask_id` instead of `reply_to` it names a part of that ask.
   `400 INVALID_COMMENT` with neither `reply_to` nor `ask_id`, and for a block or part the named item does not hold now.
   The delivery callback `POST /api/v1/comments/{id}/reply` takes `reply_to_block` for a block of comment `{id}`, never for a part of the ask its thread hangs under.
+
+  - Beside `reply_to_block`, here, on that delivery callback and on `POST /api/v1/artifacts/{id}/comments`, `quote` and `occurrence` name the words of that block or part the reply quotes:
+    `quote` is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and `occurrence` is which match of `quote` in that one block it is, counted from 0 with overlapping matches counted, `0` where none is sent and the block holds `quote` once.
+    The reply stores both.
+    An `occurrence` without `quote`, a `quote` without `reply_to_block`, an empty `quote` and an `occurrence` below 0 are each `400 INVALID_COMMENT`, naming the field.
+    A `quote` the block's text does not hold, or an `occurrence` past its last match, is `404 TARGET_NOT_FOUND`, and a `quote` it holds more than once with no `occurrence` is `409 TARGET_AMBIGUOUS`, as a document anchor's quote is answered but with no candidate ranges.
+
   A `reply_to` naming a comment its author deleted is `409 POST_DELETED`, the refusal every write that would add to a deleted post takes, read from the parent the create already locks and so before the named block is looked for;
   a reply written before the delete keeps its text and its place.
   A reply or error callback on `POST /api/v1/comments/{id}/reply` or `POST /api/v1/messages/{id}/reply` is accepted from the session the attempt names, and, for an attempt sent for a `role:` route, from the session the role's claim names when the reply arrives while the listener's role lookup (`GET /v1/roles/<role>`) calls it live: the session that took the role from the one Dispatch sent to, which the listener hands what that session had not read.
@@ -5748,7 +5806,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   Read a comment and its reply chain.
   Every comment a route or event returns carries `reply_block` (`{node, ref, block_id, text, removed}`), the block of the comment it answers, `null` when it names none:
-  `text` the block's text cut to 480 characters, its last text once removed, and `removed` true while the comment's current revision no longer holds it.
+  `text` the block's text cut to at most 480 characters, and earlier where a reference would cross the cut, its last text once removed, and `removed` true while the comment's current revision no longer holds it.
+  `reply_block` also carries `quote` and `occurrence` as the reply stored them, and neither where the reply stored none.
+  Every answer leaves both out where the answered post is deleted, which `reply_block.deleted_at` marks, and so does every event payload written after the delete;
+  the event payloads written before the delete keep them, as they keep the block's `text`, and a reply's own delete event carries neither.
 
 - `/api/v1/comments/{id}/blocks` (GET; cookie, trusted header, or bearer)
 
@@ -5802,13 +5863,34 @@ Each item below names a path with its method and identity, then its purpose.
   A reply may name the block of the message `in_reply_to` names that it answers, `in_reply_to_block` (`b2`), as may `POST /api/v1/agents/{session_id}/messages` and, for a block of message `{id}`, `POST /api/v1/messages/{id}/reply` (not on a follow-up):
   `400 INVALID_MESSAGE` without `in_reply_to` and for a block that message does not hold now.
   A reply naming a block carries that block's text as `reply_body`.
+  Beside `in_reply_to_block`, on each of the three routes, `quote` and `occurrence` name the words of that block the reply quotes, as they do beside a comment's `reply_to_block`:
+  `quote` is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and `occurrence` is which match of `quote` in that one block it is, counted from 0 with overlapping matches counted, `0` where none is sent and the block holds `quote` once.
+  The reply stores both.
+  An `occurrence` without `quote`, a `quote` without `in_reply_to_block`, an empty `quote` and an `occurrence` below 0 are each `400 INVALID_MESSAGE`, naming the field.
+  A `quote` the block's text does not hold, or an `occurrence` past its last match, is `404 TARGET_NOT_FOUND`, and a `quote` it holds more than once with no `occurrence` is `409 TARGET_AMBIGUOUS`, with no candidate ranges.
   An `in_reply_to` naming a message its author deleted is `409 POST_DELETED`, as a `reply_to` naming a deleted comment is;
   a reply written before the delete keeps its text and its place.
 
-- `/api/v1/issues/{key}/messages` (GET; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/messages?order=&limit=&before=&author=&person=` (GET; cookie, trusted header, or bearer)
 
   List an issue's message threads: every root message, oldest first, unpaged, each with its delivery attempts and its replies.
   Every message a route or event returns carries `reply_block`, the block of the message it answers, as a comment does.
+  `order=activity` answers one page of the issue's threads in place of the list, `{threads, before, remaining}`: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first.
+  A message thread is a root message and every message under it at any depth, and its row is the list's row with `last_activity_at`.
+  A row's `last_activity_at` is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits;
+  a deleted entry counts and an edit does not.
+  `limit` is how many threads a page holds at most, an integer from 1 to 100, and 20 without it.
+  `before` is the position of the page's last thread, `<last_activity_at>,<id>`, and null when no thread follows;
+  `?before=` with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it.
+  `remaining` is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when `before` is null.
+  `author` keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly;
+  `remaining` counts under it.
+  `person=in` keeps each thread with an entry a person wrote, and each thread whose root has no target;
+  `person=none` keeps each thread whose root targets an agent, as `role:<name>` or `session:<id>`, and that holds no entry a person wrote.
+  Neither value holds a thread whose root the Legion daemon of the issue's project wrote, the session `legion-daemon:<PROJECT>` (`legion-daemon:ACME` on an `ACME` issue), whoever wrote its other entries, so each other thread is on the pages of exactly one of the two.
+  Without `order` the route answers its list.
+  Each refusal is `400 INVALID_QUERY`, names the parameter and the values it takes, and answers no thread:
+  `limit`, `before`, `author` or `person` without `order=activity`, an `order` other than `activity`, a `limit` that is not an integer from 1 to 100, a `before` that is not a position this API wrote, an empty `author`, a `person` value the route does not take, and any of `order`, `limit`, `before`, `author` and `person` given twice.
 
 - `/api/v1/messages/{id}/blocks` (GET; cookie, trusted header, or bearer)
 
@@ -6610,10 +6692,12 @@ Each item below names a status and code, then its meaning.
 - `404 TARGET_NOT_FOUND`
 
   The quote requested by an anchor or document edit is absent, or the block id a block read (`GET /api/v1/artifacts/{id}/blocks/{block_id}`) names is not in the live document.
+  It also answers a reply's `quote` that the block it names does not hold, or an `occurrence` past that quote's last match, on each route that takes `reply_to_block` or `in_reply_to_block`.
 
 - `409 TARGET_AMBIGUOUS`
 
   A quote matches more than once without an `occurrence`; the response includes candidate ranges and context.
+  It also answers a reply's `quote` that its block holds more than once, sent without an `occurrence`, on the same routes, with no candidate ranges: a position inside one block means nothing to the reply's writer.
 
 - `400 TARGET_SPANS_BLOCKS`
 
@@ -6752,6 +6836,7 @@ Each item below names a status and code, then its meaning.
 - `400 INVALID_COMMENT`
 
   A reply must target a thread-root comment.
+  A reply's `quote` and `occurrence` are refused with it too, the message naming the field: an `occurrence` without `quote`, a `quote` without `reply_to_block`, an empty `quote`, and an `occurrence` below 0.
 
 - `403 NOT_AUTHOR`
 

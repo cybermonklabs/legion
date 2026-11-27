@@ -1,0 +1,21 @@
+# proxy-leftover-query-whole-only: an escape that is no escape anywhere in the query fails its
+# whole unescape, as url.QueryUnescape does, so a placeholder one of whose letters is written as
+# an escape, in any pair of that query, goes upstream.
+# must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/leftover.go
++++ b/packages/envoy/internal/cipher/proxy/leftover.go
+@@ -57,6 +57,12 @@
+ 	if !strings.ContainsAny(query, "%+") {
+ 		return query
+ 	}
++	// MUTANT: an escape that is no escape fails the whole unescape, as url.QueryUnescape does.
++	for i := 0; i < len(query); i++ {
++		if query[i] == '%' && (i+2 >= len(query) || !ishex(query[i+1]) || !ishex(query[i+2])) {
++			return ""
++		}
++	}
+ 	var b strings.Builder
+ 	b.Grow(len(query))
+ 	for i := 0; i < len(query); i++ {
