@@ -498,10 +498,10 @@ printed an act message, naming each message with its component and the frames th
 `packages/dispatch/bunfig.toml` sets `[test] randomize = true`. Bun reads that file only from the
 directory it starts in, and `bun run <script>` starts in the package's directory, so the file
 reaches `bun run test`, `test:web`, `test:web:cold`, `test:harness` and `test:repeat` from any
-directory, and with them CI's "Test dispatch dashboard" step and the weekly repeated run. It also
-reaches a `bun test <file>` started in `packages/dispatch`, but not one started from the repository
-root or from a subdirectory. Each `web/src/` and `e2e/` path below is under `packages/dispatch`,
-and each command runs there.
+directory, and with them CI's "Test dispatch dashboard" and "Test dispatch harness" steps and the
+weekly repeated run. It also reaches a `bun test <file>` started in `packages/dispatch`, but not one
+started from the repository root or from a subdirectory. Each `web/src/` and `e2e/` path below is
+under `packages/dispatch`, and each command runs there.
 
 - To reproduce a failing row, run its file alone with the seed its lane printed in its summary
   (` --seed=<n>`): `bun run test:web web/src/<file> --seed=<n>`,

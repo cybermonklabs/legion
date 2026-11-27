@@ -176,10 +176,10 @@ set, to CI. It names no other whole-package
 suite, and no `.github/scripts/check-biome-tree.sh`, which checks the whole tree. It leaves the
 place of those heavy runs to the project's deployment instructions. These whole runs leave the
 pod, and CI runs each of them, on the pull request or, for a slow suite the pull request holds
-back, in the merge queue. CI's run of `bun run test` in `packages/dispatch` has no Postgres, so
-its cases that need `LEGION_TEST_PG_DSN` skip there. A role whose change touches what they
-cover runs them by name, as the comment above the step "Test dispatch dashboard" in
-`.github/workflows/ci-job-dispatch-ui.yaml` says. Where the project's deployment instructions
+back, in the merge queue. CI's run of `packages/dispatch`'s `test` script, whose lanes run in two
+jobs, has no Postgres, so its cases that need `LEGION_TEST_PG_DSN` skip there. A role whose change
+touches what they cover runs them by name, as the comment above the step "Test dispatch harness"
+in `.github/workflows/ci-job-dispatch-ui.yaml` says. Where the project's deployment instructions
 name another place for a heavy run, or send a compile out of the pod, which takes the typecheck
 and the vet out too, those instructions win.
 

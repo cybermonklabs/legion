@@ -40,7 +40,7 @@ PROGRAMS = [
     ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
     ("pi_legion_build", "packages/pi-legion", at("pi-legion-build", "Typecheck pi-legion", "pi-legion")),
     ("claude_envoy", "packages/claude-envoy", at("claude-envoy", "Typecheck Claude Envoy plugin")),
-    ("dispatch_ui", "packages/dispatch", at("dispatch-ui", "Typecheck dispatch dashboard")),
+    ("dispatch_ui", "packages/dispatch", at("dispatch-ui-harness", "Typecheck dispatch dashboard", "dispatch-ui")),
     # The proof editor's and the docs site's steps run the same `bun run typecheck`, whose recipe
     # names a project file of its own rather than the directory's tsconfig.json.
     ("dispatch_ui", "packages/proof-editor/tsconfig.check.json",
