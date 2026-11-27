@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+    Before the reviewer approves a head, it makes two checks of the roles before it. First, it
+    lists the issue's handoff versions beside the issue's step runs. When one session wrote two or
+    more versions of one phase inside one step run, it writes one comment on the issue for the
+    architect that names each such phase and the id of each version, and says that a refused
+    `handoff_complete` may have come between them. This check does not stop an approval. Second,
+    it reads the task threads of `plan.md`. For each departure from a task that the pull request, a
+    commit message or a handoff shows and that no comment in the task's thread records, it comments
+    on the task's block for the architect. It approves only when the architect's decision is in
+    that thread, writes no handoff and submits no review while it waits, and requests changes when
+    the architect does not accept the departure. Each round sends the architect one message that
+    holds only the links of the comments the round wrote.
+time: 2026-11-27T15:40:31Z
+custom:
+    Issue: INFRA-5996
