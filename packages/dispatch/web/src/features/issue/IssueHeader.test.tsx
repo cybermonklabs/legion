@@ -836,6 +836,92 @@ for (const move of askedMoves) {
   }
 }
 
+// The rule's dry run of a Close issue can answer after the reader saved the title meanwhile, and
+// the close then finds that save out within its deadline. It waits behind the save, as a title
+// saved then waits behind another write, with Close issue held and reading Closing…, and goes
+// once the save has landed (`requestStatusSubmit`). It once sent nothing, queued nothing and said
+// nothing (dispatch://INFRA-2160).
+test("Close issue whose rule check answers while a title save is out closes the issue once the save lands", async () => {
+  const [closing] = askedMoves;
+  const checked = Promise.withResolvers<StatusChangeAnswer>();
+  answerStatusChanges().mockReturnValue(checked.promise);
+  const { patches, unmount, user } = header(closing.shown);
+  const titleSaved = Promise.withResolvers<Issue>();
+  patches.mockImplementation((_key, input) =>
+    input.title === undefined
+      ? Promise.resolve(statusAnswer(closing.shown, input))
+      : titleSaved.promise
+  );
+  try {
+    const control = await screen.findByRole("button", { name: "Close issue" });
+    act(() => control.focus());
+    await user.keyboard("{Enter}");
+    await editTitle(user, "Renamed");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patches).toHaveBeenCalledWith("CORE-1", { title: "Renamed" }, keyedAttempt)
+    );
+
+    await act(async () => checked.resolve({ changed: [], issue: moved(closing) }));
+    const waiting = screen.getByRole("button", { name: "Close issue" }).textContent;
+    await act(async () =>
+      titleSaved.resolve({
+        ...patchAnswer(closing.shown, { title: "Renamed" }),
+        updated_at: "2026-09-24T07:30:00Z",
+      })
+    );
+    await waitFor(() => expect(patches).toHaveBeenCalledTimes(2));
+    expect({ waiting, writes: patches.mock.calls.map(([, input]) => input) }).toEqual({
+      waiting: "Closing…",
+      writes: [{ title: "Renamed" }, { status: "done" }],
+    });
+    expect(await screen.findByRole("button", { name: "Reopen issue" })).toBeInTheDocument();
+  } finally {
+    unmount();
+  }
+});
+
+// The line stops at the save's refusal, which the header says, and a close has no field to wait
+// in as a title does, so the close is let go unsent, Close issue takes a press again, and the
+// close's press takes back its ask for the focus (`unwritten`). A close made later in another
+// session then takes Close issue away with the focus the reader put on it and leaves that focus
+// on the page's body, as a change the reader did not make does (dispatch://INFRA-2160).
+test("Close issue whose rule check answers while a title save is out, which Dispatch refuses, sends no close, and a close made in another session moves no focus", async () => {
+  const [closing] = askedMoves;
+  const checked = Promise.withResolvers<StatusChangeAnswer>();
+  answerStatusChanges().mockReturnValue(checked.promise);
+  const { client, patches, unmount, user } = header(closing.shown);
+  const titleSaved = Promise.withResolvers<Issue>();
+  patches.mockReturnValue(titleSaved.promise);
+  try {
+    const control = await screen.findByRole("button", { name: "Close issue" });
+    act(() => control.focus());
+    await user.keyboard("{Enter}");
+    await editTitle(user, "Renamed");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patches).toHaveBeenCalledWith("CORE-1", { title: "Renamed" }, keyedAttempt)
+    );
+    await act(async () => checked.resolve({ changed: [], issue: moved(closing) }));
+    await act(async () =>
+      titleSaved.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "not this title" }))
+    );
+    await screen.findByText("Could not update this issue.");
+    await waitFor(() => expect(control).not.toHaveAttribute("aria-disabled"));
+    expect(patches.mock.calls.map(([, input]) => input)).toEqual([{ title: "Renamed" }]);
+
+    act(() => control.focus());
+    act(() => {
+      client.setQueryData(issueQuery(base.key).queryKey, moved(closing));
+    });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Close issue" })).toBeNull());
+    expect(screen.getByRole("button", { name: "Reopen issue" })).not.toHaveFocus();
+    expect(document.activeElement).toBe(document.body);
+  } finally {
+    unmount();
+  }
+});
+
 // Today's header draws Release beside the claim only while the issue has one, so the release its
 // press makes takes it off the page, with the focus it holds, once it lands. The focus goes on,
 // with no scroll, to the control now at its place in the header's order - the labels' control,

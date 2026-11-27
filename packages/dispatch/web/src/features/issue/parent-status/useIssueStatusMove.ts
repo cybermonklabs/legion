@@ -13,8 +13,11 @@ export interface IssueStatusMove {
    *  for an issue the page knows has a parent or an open child, the dry run first, then `patch`,
    *  or the question where Dispatch's rule would refuse it. A pick the rule asks nothing of is
    *  saved even if the header has gone by the time the dry run answers; a question nobody is
-   *  left to answer writes nothing. */
-  readonly move: (status: string, patch: () => unknown) => void;
+   *  left to answer writes nothing. A `patch` that can find the write it asks for not sent - one
+   *  that waits behind a write of the issue's fields that Dispatch then refuses
+   *  (`requestStatusSubmit`) - answers whether it was sent. */
+  // biome-ignore lint/suspicious/noConfusingVoidType: a `patch` that says nothing of whether its write went - the new issue page's, whose header takes no `unwritten`, and its pick, whose write goes in the issue's line at once - hands any callback, as a void callback takes one
+  readonly move: (status: string, patch: () => Promise<boolean> | void) => void;
   /** The `onError` of each header write of `key` that can carry a status: where the write set the
    *  status and Dispatch refused it under the rule - the page read the parent or the children
    *  before they changed - it asks the question, as a refused dry run does. Each such write
@@ -43,18 +46,18 @@ export interface IssueStatusMove {
  * rows - goes through `move`, and each write that can carry a status hands its refusal to
  * `onError`. `unwritten`, where a header gives it, is called once for each status write of the
  * header that ends with nothing written: its dry run, or its `PATCH`, refused for another reason
- * than the rule; its question closed unanswered (`kept`), or closed behind a chosen write that
- * Dispatch then refused (`left`); or a move made while another asked (`busy`). A write that ends
- * written - by the `PATCH`, or by a choice the question took - changes the issue, which the
- * header reads.
+ * than the rule; its `PATCH` never sent (`patch` answering `false`); its question closed
+ * unanswered (`kept`), or closed behind a chosen write that Dispatch then refused (`left`); or a
+ * move made while another asked (`busy`). A write that ends written - by the `PATCH`, or by a
+ * choice the question took - changes the issue, which the header reads.
  */
 export function useIssueStatusMove(
   issue: Pick<IssueDetails, "children" | "key" | "parent">,
   unwritten?: () => void
 ): IssueStatusMove {
   const parentStatus = useParentStatusMove();
-  /** Tells `unwritten` of a move or a question that ended with nothing written. A move that went
-   *  to the `PATCH` (`patched`) ends through `onError` where Dispatch refuses it. */
+  /** Tells `unwritten` of a move or a question that ended with nothing written. A move whose
+   *  `PATCH` went (`patched`) ends through `onError` where Dispatch refuses it. */
   const ended = (end: StatusMoveEnd) => {
     if (end.kind === "left") {
       void end.written.catch(() => unwritten?.());
@@ -64,14 +67,21 @@ export function useIssueStatusMove(
   };
   return {
     move: (status, patch) => {
+      // Whether `patch` answered that its `PATCH` never went.
+      let unsent = false;
       void parentStatus
         .move({
           key: issue.key,
-          patch,
+          patch: async () => {
+            unsent = (await patch()) === false;
+          },
           related: issueHasParentOrOpenChild(issue),
           status,
         })
-        .then(ended);
+        .then((end) => {
+          if (end.kind === "patched" && unsent) unwritten?.();
+          else ended(end);
+        });
     },
     onError: (error, key, input) => {
       if (input.status === undefined) return;

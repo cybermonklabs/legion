@@ -32,9 +32,9 @@ import { focusOnDocument } from "../features/shell/roving";
  * `letGo` takes back a `handBack` whose editor will not end as it asked, so a commit that ends it
  * later for another reason gives no focus: the Priorities page's empty state, once every add sent
  * from it has ended and the read after it drew no priority (`PrioritiesPage`), and the issue
- * header's Close issue and Reopen, once their status write is refused or the rule's question
- * closes unanswered, so a close or a reopen made in another session moves no focus
- * (`IssueHeader`).
+ * header's Close issue and Reopen, once their status write is refused or let go unsent, or the
+ * rule's question closes unanswered, so a close or a reopen made in another session moves no
+ * focus (`IssueHeader`).
  */
 export function useFocusBack<Opener extends HTMLElement = HTMLButtonElement>(
   editing: boolean

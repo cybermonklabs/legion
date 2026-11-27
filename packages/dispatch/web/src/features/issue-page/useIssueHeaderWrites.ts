@@ -113,7 +113,9 @@ export interface IssueHeaderWrites {
   /** The status a pick is saving right now, which the pill and the closed line show: the newest
    *  pending write of this issue's fields that holds a status, whichever caller on the page made
    *  it, so the header and Details show one status. A pick waiting in the issue's line behind an
-   *  earlier write is pending from the moment it is made (`pickStatus`), so it shows at once. */
+   *  earlier write is pending from the moment it is made (`pickStatus`), so it shows at once, and
+   *  so is a Close or a Reopen waiting in the drafts behind a write of the fields
+   *  (`drafts.statusQueued`). */
   readonly pendingStatus: string | undefined;
   /** Whether a pick is waiting its turn or being saved: `pendingStatus` stands. */
   readonly statusSaving: boolean;
@@ -134,7 +136,9 @@ export interface IssueHeaderWrites {
   readonly pickStatus: (next: string) => void;
   /** Close, Reopen and the palette's two rows: the status sent through the drafts
    *  (`drafts.requestStatusSubmit`, a write of `updateIssue`), through the rule's question as the
-   *  pick goes. That write, refused by the rule, asks the same question. */
+   *  pick goes. Let go by the question while a title, route or parent write is out within its
+   *  deadline, it waits behind that write and goes once it lands. That write, refused by the rule,
+   *  asks the same question. */
   readonly requestStatus: (next: string) => void;
   /** The rule's question every status write of the header (`pickStatus`, `requestStatus`) goes
    *  through: the question while Dispatch's rule would refuse a write, and why the dry run of the
@@ -331,9 +335,12 @@ export function useIssueHeaderWrites(
   const requestStatus = (next: string) => {
     statusMove.move(next, () => drafts.requestStatusSubmit(next));
   };
-  // A status the rule's question is checking or asking about is pending too, so the pill shows it.
+  // A status the rule's question is checking or asking about is pending too, so the pill shows it,
+  // and so is one waiting in the drafts behind a write of the fields, newer than every write out.
   const pendingStatus =
-    statusMove.pending ?? pendingStatuses.filter((status) => status !== undefined).at(-1);
+    statusMove.pending ??
+    drafts.statusQueued ??
+    pendingStatuses.filter((status) => status !== undefined).at(-1);
   const statusSaving = pendingStatus !== undefined;
   return {
     drafts,

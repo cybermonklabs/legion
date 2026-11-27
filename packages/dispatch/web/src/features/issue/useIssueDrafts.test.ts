@@ -176,6 +176,17 @@ class Session {
     return [...answered, ...this.showIssue(next)];
   }
 
+  /**
+   * A press of a status, as a header's Close issue makes once the rule's question lets it go: the
+   * header hands the hook a callback that hears whether the status was sent, which `answers`
+   * collects where a row reads it.
+   */
+  pressStatus(status: string, answers?: boolean[]): IssueUpdateInput[] {
+    return this.step(() => {
+      this.drafts.requestStatusSubmit(status, (sent) => answers?.push(sent));
+    });
+  }
+
   titlesSent(): string[] {
     return this.received.flatMap((input) => (input.title === undefined ? [] : [input.title]));
   }
@@ -210,6 +221,7 @@ const alphabet = [
   "otherOwed",
   "otherOut",
   "otherFieldLands",
+  "close",
 ] as const;
 type EventName = (typeof alphabet)[number];
 /** The events by which another reader sets the issue to a title of the reader's own. */
@@ -453,6 +465,11 @@ class Reader {
       case "otherFieldLands":
         this.picks += 1;
         return session.otherFieldLands(`p${this.picks}`);
+      case "close":
+        // A press of Close issue as the rule's question lets it go: a write of no field, which
+        // goes at once, waits behind the write out, or is in hand where that write carries it
+        // (`requestStatusSubmit`). The checks judge the titles sent around it.
+        return session.pressStatus("done");
     }
   }
 
@@ -778,21 +795,22 @@ async function explore(): Promise<Exploration> {
 }
 
 // The eight tests below - the seven checks and the count - share one exploration: it is the slow
-// part, and it judges all seven checks at once. It plays about 171,000 sequences of five events,
-// which judge 186,538 sequences of one to five, about 147 to 255 s in this pod on one core, so
-// each of the eight has a time limit of its own above the suite's minute: whichever runs first
-// pays for the exploration.
+// part, and it judges all seven checks at once. It plays 273,749 sequences of five events, which
+// judge 296,085 sequences of one to five, 128 to 167 s in this pod on one core in three runs;
+// before a press of Close issue joined the alphabet it judged 186,538, in 147 to 255 s. So each of
+// the eight has a time limit of its own above the suite's minute: whichever runs first pays for
+// the exploration.
 let explored: Promise<Exploration> | undefined;
 function exploration(): Promise<Exploration> {
   explored ??= explore();
   return explored;
 }
 // Sized as `__tests__/setup.ts` sizes the suite's minute: twice the slowest run on the slower of
-// the two pod shapes, which runs the suite 2.15 times slower. The 255 s measured here (the eight
-// tests, beside other roles' work in the same pod) is about 548 s there, derived rather than
-// measured on that pod, and twice that is about 1,096 s; 1,100 s rounds it up, the 255 s being
-// the slowest of the runs here.
-const explorationTimeout = 1_100_000;
+// the two pod shapes, which runs the suite 2.15 times slower. The slowest run here, 255 s for the
+// 186,538 sequences beside other roles' work in the same pod, stands for about 405 s at 296,085,
+// scaled by the count; that is about 871 s there, derived rather than measured on that pod, and
+// twice that is about 1,742 s, which 1,750 s rounds up.
+const explorationTimeout = 1_750_000;
 
 // I2 and I3 each name a send that I1 also refuses, or one with nothing left to send. A value an
 // escape put away is not the reader's last ended choice: the escape withdrew that choice, and only
@@ -841,9 +859,9 @@ for (const [invariant, statement] of invariants) {
 // seven checks with this number wrong, so a change to the alphabet, to what an event applies to,
 // or to the enumeration states its new count here.
 test(
-  "the sweep judges every sequence of one to five events once: 186,538",
+  "the sweep judges every sequence of one to five events once: 296,085",
   async () => {
-    expect((await exploration()).judged).toBe(186_538);
+    expect((await exploration()).judged).toBe(296_085);
   },
   explorationTimeout
 );
@@ -1037,5 +1055,64 @@ test("a status pressed past the deadline of a title write goes, and a title save
     titleLanded: [],
     statusLanded: [{ title: "ab" }],
     title: "ab",
+  });
+});
+
+// A status pressed while a write of the issue's fields is out within its deadline waits behind
+// that write, as a title saved then does, and goes as it lands. Today's header makes such a press
+// when the rule's dry run of its Close issue answers after a title, route or parent save went out
+// (`useIssueStatusMove`), and the press that once sent nothing, queued nothing and said nothing now
+// hears that its status went (dispatch://INFRA-2160).
+test("a status pressed while a title write is out waits behind it and goes as that write lands, and its press hears that it went", () => {
+  const session = new Session();
+  session.type("a");
+  session.end();
+  const answers: boolean[] = [];
+  const pressed = session.pressStatus("done", answers);
+  const waiting = { pressed, answers: [...answers], queued: session.drafts.statusQueued };
+  const landed = session.land();
+  expect({ waiting, landed, answers, queued: session.drafts.statusQueued }).toEqual({
+    waiting: { pressed: [], answers: [], queued: "done" },
+    landed: [{ status: "done" }],
+    answers: [true],
+    queued: undefined,
+  });
+});
+
+// The line stops at a refusal (decision 315): a title queued behind the refused write stays in
+// the field for the reader's next end, but a status has no field to wait in, so it is let go and
+// its press hears that nothing was sent. The next press sends it at once.
+test("a status queued behind a title write Dispatch refuses is not sent, its press hears so, and the next press sends it", () => {
+  const session = new Session();
+  session.type("a");
+  session.end();
+  const answers: boolean[] = [];
+  session.pressStatus("done", answers);
+  const refused = session.refuse();
+  const after = { refused, answers: [...answers], queued: session.drafts.statusQueued };
+  const again = session.pressStatus("done", answers);
+  expect({ after, again, answers }).toEqual({
+    after: { refused: [], answers: [false], queued: undefined },
+    again: [{ status: "done" }],
+    answers: [false, true],
+  });
+});
+
+// A second press of the status the write out carries, made before the page drew the first press
+// held, sends no second write and queues none: the write out writes that status, so the press
+// hears that it went.
+test("a second press of the status a write out carries sends nothing more, and both presses hear that it went", () => {
+  const session = new Session();
+  const answers: boolean[] = [];
+  const first = session.pressStatus("done", answers);
+  const second = session.pressStatus("done", answers);
+  const queued = session.drafts.statusQueued;
+  const landed = session.land();
+  expect({ first, second, queued, landed, answers }).toEqual({
+    first: [{ status: "done" }],
+    second: [],
+    queued: undefined,
+    landed: [],
+    answers: [true, true],
   });
 });

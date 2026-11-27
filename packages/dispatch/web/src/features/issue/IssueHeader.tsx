@@ -314,8 +314,16 @@ export function IssueHeader({
   const labelsShown =
     (labelsMutation.late ? labelsMutation.variables : undefined) ?? issue.labels ?? [];
   const drafts = useIssueDrafts(issue, updateIssue);
+  // A status the rule's question lets go while a title, route or parent save is out within its
+  // deadline waits behind that save (`requestStatusSubmit`), and goes once it lands; where that
+  // save is refused it is let go unsent, and the press hears so, which takes back the focus its
+  // Close issue or Reopen asked for (`unwritten`).
   const requestStatus = (status: string) => {
-    statusMove.move(status, () => drafts.requestStatusSubmit(status));
+    statusMove.move(status, () => {
+      const sent = Promise.withResolvers<boolean>();
+      drafts.requestStatusSubmit(status, sent.resolve);
+      return sent.promise;
+    });
   };
   // Close issue is drawn only while the issue is open and Reopen only while it is closed, so the
   // status write each one asks for takes it off the page as it lands, with the focus it holds.
@@ -382,10 +390,11 @@ export function IssueHeader({
     })),
   ]);
   // The status the status list and the closed line show while it is out: the one the rule's
-  // question is checking or asking about, else the one the write is saving.
-  const checkingStatus = statusMove.pending;
+  // question is checking or asking about, else the one waiting behind the write out, else the one
+  // the write is saving.
+  const unsentStatus = statusMove.pending ?? drafts.statusQueued;
   const statusSaving =
-    checkingStatus !== undefined ||
+    unsentStatus !== undefined ||
     (updateIssue.isPending && updateIssue.variables?.status !== undefined);
   const routeSaving = updateIssue.isPending && updateIssue.variables?.route !== undefined;
   // A route saved with no answer stands for the issue until the issue is read again: until then
@@ -394,8 +403,7 @@ export function IssueHeader({
     routeUnread !== null &&
     routeUnread.seq === issue.last_seq &&
     routeUnread.route !== (issue.route ?? "");
-  const pendingStatus =
-    checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
+  const pendingStatus = unsentStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
   // What the status list's trigger shows: the status a pick is checking or saving, else the
   // issue's.
   const statusValue = pendingStatus ?? issue.status;
