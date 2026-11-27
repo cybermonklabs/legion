@@ -193,7 +193,8 @@ export function MentionField({
    *  above while the list is showing. */
   readonly onPickerOpenChange?: (open: boolean) => void;
   /** The words the picker draws in this box (`RefPickerWords`), where the host has its own: the
-   *  issue page's box. With none, the picker's own. */
+   *  issue page's box, and the ask card's answer box (`REF_PICKER_ASK_ANSWER_WORDS`). With
+   *  none, the picker's own. */
   readonly pickerWords?: RefPickerWords;
   /** What the empty box says it takes, where the host has words for it (an ask's answer box
    *  names what the picked option asks of the reader). */

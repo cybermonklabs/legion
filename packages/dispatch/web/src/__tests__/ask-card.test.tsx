@@ -2522,6 +2522,58 @@ test("the ask's @ picker offers the issue's Not running roles", async () => {
   }
 });
 
+// The answer box makes two writes that treat a role nobody runs apart
+// (`DISPATCH_WRITING_HINT_ASK`): Answer keeps its copy for a session that claims the role within
+// three hours, and Ask back, a comment, does not tell it. So the picker's `not told`, true of a
+// comment's mention, is false here: the role's row says what each write does
+// (`REF_PICKER_ASK_ANSWER_WORDS`).
+test("the ask's @ picker says an answer waits for a Not running role and Ask back does not tell it", async () => {
+  const user = userEvent.setup();
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const architecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [
+      {
+        kind: "session",
+        last_at: null,
+        legion: {
+          replaced_at: null,
+          replaced_by: null,
+          role: "reviewer",
+          role_token: "legion-p-core-1-reviewer",
+          started_at: "2026-10-26T02:00:00Z",
+        },
+        reasons: [],
+        session_id: "new-reviewer",
+        title: "New reviewer",
+      },
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const input = ask();
+  const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
+
+  try {
+    const field = await view.findByLabelText("Your answer");
+    await user.click(field);
+    await user.paste("@");
+    const listbox = await screen.findByRole("listbox", { name: "References" });
+    const roles = await within(listbox).findByRole("group", { name: "Roles" });
+    const options = within(roles).getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0]?.textContent).toContain(
+      "reviewer · not running: an answer waits for it, Ask back does not tell it"
+    );
+  } finally {
+    view.unmount();
+    architecture.mockRestore();
+    collaborators.mockRestore();
+    listAgents.mockRestore();
+  }
+});
+
 test("answering a document ask invalidates the document and projects, not an issue", async () => {
   const user = userEvent.setup();
   const input = ask({

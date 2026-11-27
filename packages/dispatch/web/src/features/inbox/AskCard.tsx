@@ -50,6 +50,7 @@ import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/A
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
+import { REF_PICKER_ASK_ANSWER_WORDS } from "../refs/ref-picker";
 import { buildDispatchReference, type DocumentOwner, itemRoute } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
@@ -673,6 +674,7 @@ export function AskCard({
           issueKey={displayedAsk.issue_key ?? undefined}
           label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
           labelHidden={!reasonRequired}
+          pickerWords={REF_PICKER_ASK_ANSWER_WORDS}
           placeholder={answerPlaceholder}
           project={documentProject}
           writing={dispatchWritingBox("ask-answer", "ask-answer")}

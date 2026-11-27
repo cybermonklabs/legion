@@ -96,14 +96,16 @@ export function mentionOptions(
  * (`recordedRoles`) that no live agent holds (`roleHolders`, the set the live role options are),
  * addressed `role:<token>` and drawn by the session `recordedRoles` shows the role by, its newest,
  * so a replaced session is never an option of its own. A role whose newest session the live list
- * names but which no longer claims the role is one of them: nobody holds it, and its mention is
- * linked and not told, as every other role nobody holds.
+ * names but which no longer claims the role is one of them: nobody holds it, and a comment's
+ * mention of it is linked and not told, as of every other role nobody holds.
  *
  * The options keep the server's order, which the collaborators contract states - the registry's
  * agents by role in workflow order, then newest first - each token where the answer first names
  * it (`recordedRoles`), a token every session of which was replaced among them. Each option's
- * detail says, after its role, that nobody running holds it and so it is not told, in the words
- * the picker draws (`RefPickerWords.stoppedRole`).
+ * detail says, after its role, that nobody running holds it and what a write of the box does with
+ * it, in the words the picker draws (`RefPickerWords.stoppedRole`): not told, by a comment's
+ * rule, except where the host says otherwise (the ask card's answer box,
+ * `REF_PICKER_ASK_ANSWER_WORDS`, whose answer is kept for the role's next session).
  */
 export function stoppedRoleOptions(
   live: readonly Agent[],
@@ -120,8 +122,8 @@ export function stoppedRoleOptions(
       const storedTitle = agent.title ?? "";
       return {
         capabilities: [],
-        // Not running, so a mention of it is refused rather than kept for its next session: the
-        // line says so, as the box's hint does.
+        // Not running, so a comment's mention of it is refused rather than kept for its next
+        // session, and an answer is kept: the line says which, in the host's words.
         detail: `${agent.legion.role} · ${notRunning}`,
         holder: text.sessionText(agent.session_id, storedTitle),
         sessionId: agent.session_id,
