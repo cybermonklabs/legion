@@ -245,22 +245,32 @@ func (r *Request) ToolResults() []string {
 		if message["role"] != "tool" {
 			continue
 		}
-		switch content := message["content"].(type) {
-		case string:
-			results = append(results, content)
-		case []any:
-			var parts []string
-			for _, part := range content {
-				if part, ok := part.(map[string]any); ok {
-					if text, ok := part["text"].(string); ok {
-						parts = append(parts, text)
-					}
-				}
-			}
-			results = append(results, strings.Join(parts, "\n"))
+		if text, ok := MessageText(message); ok {
+			results = append(results, text)
 		}
 	}
 	return results
+}
+
+// MessageText is the text of one message a request gives the model: its content where that is a
+// string, and the texts of its parts joined by line breaks where it is a list of parts. Content
+// of any other shape is no text, and false.
+func MessageText(message map[string]any) (string, bool) {
+	switch content := message["content"].(type) {
+	case string:
+		return content, true
+	case []any:
+		var parts []string
+		for _, part := range content {
+			if part, ok := part.(map[string]any); ok {
+				if text, ok := part["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n"), true
+	}
+	return "", false
 }
 
 func (m *Model) serve(w http.ResponseWriter, r *http.Request) {

@@ -103,16 +103,16 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 
 // httpsBaseURL refuses an endpoint setting that can carry a credential (a user name, a password,
 // an "@" past the host, a query or a fragment), named by the setting alone (credentialURLRefusal),
-// and then one that is not an absolute https URL with a host and no query or fragment, naming the
-// setting and the route its client appends to it. That refusal quotes the endpoint through
-// redact.URL, so it prints no credential the URL holds. The two chat endpoints and the decision
-// model's endpoint each refuse through it, so the three refuse a shape alike.
+// and then one that is not an absolute https URL with a host, naming the setting and the route its
+// client appends to it. That refusal quotes the endpoint through redact.URL, so it prints no
+// credential the URL holds. The two chat endpoints, the decision model's endpoint and the Azure
+// embedder's endpoint each refuse through it, so the four refuse a shape alike.
 func httpsBaseURL(name, endpoint, route string) error {
 	if err := credentialURLRefusal(name, "an endpoint's URL", endpoint); err != nil {
 		return err
 	}
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the %s is appended to)", name, redact.URL(endpoint), route)
 	}
 	return nil

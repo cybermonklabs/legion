@@ -17,7 +17,6 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -243,16 +242,12 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// A run asked of a project reads that project alone. Otherwise it reads the project the model
 	// names or falls back to the page. A scoped run reads only projects access.CredentialCovers
 	// covers, and refuses an uncovered private project in the same words as a missing one
-	// (goingReadRun.project). It is offered neither roster nor delivery (goingReadsFor).
+	// (goingReadRun.project), by the same rule as this check (goingAllowProject). It is offered
+	// neither roster nor delivery (goingReadsFor).
 	covers, scoped := s.callerProject(r)
 	if scoped && project != "" {
-		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, project)
-		if err != nil {
+		if err := goingAllowProject(r.Context(), s.deps.Store.Pool, covers, project); err != nil {
 			s.writeHandlerError(w, err)
-			return
-		}
-		if !found || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, private) {
-			s.writeHandlerError(w, errProjectNotFound())
 			return
 		}
 	}
@@ -522,16 +517,11 @@ func goingRunStopped(requestID string, err error) {
 }
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
-// of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of. It reads every kind the index holds, as the question is
-// of all of them. It searches as the run's author, the credential that asked the question and the
-// only one the stream serves, so the answer is drawn from what that credential may read and no
-// more.
+// of. It reads every kind the index holds, as the question is of all of them. It searches as the
+// run's author, the credential that asked the question and the only one the stream serves, so
+// the answer is drawn from what that credential may read and no more.
 func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
-		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
-		// reading each hit for display would be work no reader of this answer ever sees, which is
-		// what these parameters leaving trees unset says.
 		found, err := s.runGoingSearch(ctx, q, project, author, false)
 		if err != nil {
 			return nil, err
@@ -546,14 +536,19 @@ func (s *server) goingSearch(project string, author model.Actor) func(context.Co
 
 // runGoingSearch shares the project boundary between the exact-name tier and the answerer's
 // searches. An explicit project receives the same refusal as a tool read. The search SQL
-// applies the scope to each candidate, including when no project was asked of.
+// applies the scope to each candidate, including when no project was asked of. The route
+// supplies the project, the limit and the offset, so the model cannot widen the search past what
+// the caller asked of.
 func (s *server) runGoingSearch(ctx context.Context, words, project string, author model.Actor, keywordsOnly bool) (model.SearchResponse, error) {
 	scope := deref(author.Project)
 	if scope != "" && project != "" {
 		if err := goingAllowProject(ctx, s.deps.Store.Pool, scope, project); err != nil {
-			return model.SearchResponse{}, err
+			return model.SearchResponse{}, goingReadError(err)
 		}
 	}
+	// No display tree: the answerer and the exact-name tier read a hit's names and its href, never
+	// its markdown, so reading each hit for display would be work no reader of their answers ever
+	// sees, which is what these parameters leaving trees unset says.
 	return s.runSearch(ctx, searchParameters{text: words, project: project, limit: searchDefaultLimit,
 		keywordsOnly: keywordsOnly, who: author, goingScope: scope})
 }

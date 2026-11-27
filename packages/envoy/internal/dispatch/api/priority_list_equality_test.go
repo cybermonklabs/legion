@@ -209,7 +209,7 @@ func listStatementAnswer(t *testing.T, s *server, statement string, arguments []
 		err    error
 	)
 	if page != nil {
-		issues, total, err = s.scanIssuePage(context.Background(), statement, arguments)
+		issues, total, err = scanIssuePage(context.Background(), s.deps.Store.Pool, statement, arguments)
 	} else {
 		issues, err = s.scanIssueSummaries(context.Background(), statement, arguments)
 		total = len(issues)

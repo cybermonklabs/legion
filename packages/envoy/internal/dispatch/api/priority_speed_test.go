@@ -731,7 +731,7 @@ type speedScan struct {
 func speedScanAllocs(t *testing.T, corpus speedCorpusShape, query string, arguments []any) speedScan {
 	t.Helper()
 	ctx := context.Background()
-	issues, _, err := corpus.server.scanIssuePage(ctx, query, arguments)
+	issues, _, err := scanIssuePage(ctx, corpus.server.deps.Store.Pool, query, arguments)
 	if err != nil {
 		t.Fatalf("scan a page of the listing: %v", err)
 	}
@@ -741,7 +741,7 @@ func speedScanAllocs(t *testing.T, corpus speedCorpusShape, query string, argume
 	}
 	var failed error
 	scan.allocs = testing.AllocsPerRun(speedScanRuns, func() {
-		if _, _, err := corpus.server.scanIssuePage(ctx, query, arguments); err != nil {
+		if _, _, err := scanIssuePage(ctx, corpus.server.deps.Store.Pool, query, arguments); err != nil {
 			failed = err
 		}
 	})
@@ -806,7 +806,7 @@ func speedLiterals(t *testing.T, arguments []any) string {
 // them. The issue below it inherits all twenty, which is the walk the measurement is of.
 func assertSpeedPage(t *testing.T, corpus speedCorpusShape, query string, arguments []any, readsRelation bool) {
 	t.Helper()
-	issues, total, err := corpus.server.scanIssuePage(context.Background(), query, arguments)
+	issues, total, err := scanIssuePage(context.Background(), corpus.server.deps.Store.Pool, query, arguments)
 	if err != nil {
 		t.Fatalf("read a page of the listing: %v", err)
 	}

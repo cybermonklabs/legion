@@ -16,6 +16,14 @@ import (
 
 var deployProgram = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 
+// deployAhead is how far past now a deploy's deployed_at may be, and deployAheadRefusal the words
+// a later one is refused in: by the route (createDeploy) and by the bar's rule for its call
+// (goingDeployProblem), which refuses one as the route does.
+const (
+	deployAhead        = 5 * time.Minute
+	deployAheadRefusal = "deployed_at must not be more than five minutes in the future"
+)
+
 type deployInput struct {
 	Repo       string     `json:"repo" required:"true"`
 	Program    string     `json:"program" required:"true"`
@@ -82,8 +90,8 @@ func (s *server) createDeploy(w http.ResponseWriter, r *http.Request) {
 	if input.DeployedAt != nil {
 		deployedAt = input.DeployedAt.UTC()
 	}
-	if deployedAt.After(now.Add(5 * time.Minute)) {
-		writeError(w, "DEPLOY_INPUT", http.StatusBadRequest, "deployed_at must not be more than five minutes in the future")
+	if deployedAt.After(now.Add(deployAhead)) {
+		writeError(w, "DEPLOY_INPUT", http.StatusBadRequest, deployAheadRefusal)
 		return
 	}
 	held, readErr := delivery.RepositoryHoldsCommit(r.Context(), s.deps.GitHub, repo, input.Commit)

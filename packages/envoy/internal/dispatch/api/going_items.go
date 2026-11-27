@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -47,17 +48,17 @@ select w.kind, w.id, left(txt.text, $3::int)
   left join lateral (
     select case w.kind
       when 'issue' then (select issue_embedding_text(i.title, issue_embedding_spec(i.key))
-        from issues i where i.key = w.id and ` + goingProjectCoveredSQL("i.project_key", "$4") + `)
+        from issues i where i.key = w.id and ` + access.ScopeCoversSQL("i.project_key", "$4") + `)
       when 'document' then (select v.markdown from artifact_versions v join artifacts a on a.id = v.artifact_id
-        where v.artifact_id = w.uuid and ` + goingProjectCoveredSQL("a.project_key", "$4") + ` order by v.number desc limit 1)
+        where v.artifact_id = w.uuid and ` + access.ScopeCoversSQL("a.project_key", "$4") + ` order by v.number desc limit 1)
       when 'comment' then (select c.body from comments c
         left join issues i on i.key = c.issue_key left join artifacts a on a.id = c.artifact_id
-        where c.id = w.uuid and ` + goingProjectCoveredSQL("coalesce(i.project_key, a.project_key)", "$4") + `)
+        where c.id = w.uuid and ` + access.ScopeCoversSQL("coalesce(i.project_key, a.project_key)", "$4") + `)
       when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k
         left join issues i on i.key = k.issue_key left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
-        where k.id = w.uuid and ` + goingProjectCoveredSQL("coalesce(i.project_key, a.project_key)", "$4") + `)
+        where k.id = w.uuid and ` + access.ScopeCoversSQL("coalesce(i.project_key, a.project_key)", "$4") + `)
       when 'message' then (select m.body from messages m left join issues i on i.key = m.issue_key
-        where m.id = w.uuid and ` + goingProjectCoveredSQL("i.project_key", "$4") + `)
+        where m.id = w.uuid and ` + access.ScopeCoversSQL("i.project_key", "$4") + `)
     end as text
   ) txt on true
  where txt.text is not null`

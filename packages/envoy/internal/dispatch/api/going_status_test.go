@@ -386,9 +386,8 @@ func TestGoingUnassignedProjectReadsRespectTheAuthorScope(t *testing.T) {
 	const query = "quernstone"
 	rig := newBlockRig(t, testServerOptions{embedder: &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}})
 	seedActivityFixture(t, rig.database)
+	rig.seedHiddenProject(t)
 	rig.seed(t,
-		`insert into projects (key, name, default_assignee) values ('HIDDEN', 'Hidden', 'alice')`,
-		`update projects set visibility = 'private', owner = 'alice' where key in ('DEMO', 'HIDDEN')`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank, parent_key)
 			values ('HIDDEN-1', 'HIDDEN', 1, 'Quernstone hidden', 'done', '{"kind":"system","id":"test"}', 'U', 'DEMO-1')`,
 		`update issues set parent_key = 'DEMO-1' where key = 'OTHER-1'`,
@@ -536,9 +535,8 @@ func TestAScopedRunsMeaningSearchFindsAPublicIssuePastAHiddenCrowd(t *testing.T)
 	}}
 	rig := newBlockRig(t, testServerOptions{embedder: embedder})
 	seedActivityFixture(t, rig.database)
+	rig.seedHiddenProject(t)
 	rig.seed(t,
-		`insert into projects (key, name, default_assignee) values ('HIDDEN', 'Hidden', 'alice')`,
-		`update projects set visibility = 'private', owner = 'alice' where key in ('DEMO', 'HIDDEN')`,
 		fmt.Sprintf(`insert into issues (key, project_key, number, title, status, created_by, rank)
 			select 'HIDDEN-' || n, 'HIDDEN', n, '%s', 'todo', '{"kind":"system","id":"test"}', lpad(n::text, 4, '0')
 			from generate_series(1, %d) n`, crowd, contracts.SearchKindDepth+1),
@@ -574,9 +572,8 @@ func TestAScopedRunsFallbackPicksTheRarestWordsWhereItsScopeReaches(t *testing.T
 	const query = "astrolabe sextant quadrant alidade orrery gnomon"
 	rig := newBlockRig(t, testServerOptions{})
 	seedActivityFixture(t, rig.database)
+	rig.seedHiddenProject(t)
 	rig.seed(t,
-		`insert into projects (key, name, default_assignee) values ('HIDDEN', 'Hidden', 'alice')`,
-		`update projects set visibility = 'private', owner = 'alice' where key in ('DEMO', 'HIDDEN')`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank) values
 			('DEMO-3', 'DEMO', 3, 'Astrolabe sextant quadrant alidade orrery', 'todo', '{"kind":"system","id":"test"}', 'W'),
 			('DEMO-4', 'DEMO', 4, 'Astrolabe sextant quadrant alidade orrery', 'todo', '{"kind":"system","id":"test"}', 'X'),
@@ -595,6 +592,16 @@ func TestAScopedRunsFallbackPicksTheRarestWordsWhereItsScopeReaches(t *testing.T
 	if ids := goingSearchIDs(t, rig, scoped, query); !slices.Equal(ids, []string{"DEMO-3", "DEMO-4", "OTHER-2"}) {
 		t.Errorf("the scoped search matched %v, want DEMO-3, DEMO-4 and OTHER-2: HIDDEN's counts, which the scope does not cover, pushed gnomon out of the fallback's words", ids)
 	}
+}
+
+// seedHiddenProject adds HIDDEN, a private project of alice's that an author scoped to DEMO does
+// not cover, and makes DEMO private and alice's too, so the scope's own project is private as
+// well: the seed each scoped-run test of this file takes after seedActivityFixture.
+func (rig blockRig) seedHiddenProject(t *testing.T) {
+	t.Helper()
+	rig.seed(t,
+		`insert into projects (key, name, default_assignee) values ('HIDDEN', 'Hidden', 'alice')`,
+		`update projects set visibility = 'private', owner = 'alice' where key in ('DEMO', 'HIDDEN')`)
 }
 
 // The roster read names every session that holds a claim (status-11 of the eval, which no try

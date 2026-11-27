@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -49,7 +50,7 @@ var (
 
 // goingCoveredIssuePageQuery filters child issues by the run author's scope before paging.
 var goingCoveredIssuePageQuery = issueSummaryQueryFiltered(false, true, true,
-	" and "+goingProjectCoveredSQL("i.project_key", "$20"))
+	" and "+access.ScopeCoversSQL("i.project_key", "$20"))
 
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
 // alone, so `total` is a count over `filtered`, which runs none of the six joins that resolve a
@@ -793,7 +794,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	total := 0
 	if inSQL {
 		arguments = append(arguments, page.limit, page.offset)
-		issues, total, err = s.scanIssuePage(r.Context(), listQuery, arguments)
+		issues, total, err = scanIssuePage(r.Context(), s.deps.Store.Pool, listQuery, arguments)
 	} else {
 		issues, err = s.scanIssueSummaries(r.Context(), listQuery, arguments)
 	}
@@ -918,15 +919,11 @@ func (s *server) scanIssueSummaries(ctx context.Context, listQuery string, argum
 	return issues, rows.Err()
 }
 
-// scanIssuePage runs a paged list query and returns the page's rows and the count of every issue
-// the filters match, which the same statement made of the same snapshot. The row the statement
-// answers for an empty page carries that count alone: it is dropped before it is resolved, so a
-// parent chain of an issue off the page refuses nothing. No row at all is an empty filtered set,
-// whose count is 0.
-func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments []any) ([]model.IssueSummary, int, error) {
-	return scanIssuePage(ctx, s.deps.Store.Pool, listQuery, arguments)
-}
-
+// scanIssuePage runs a paged list query through q and returns the page's rows and the count of
+// every issue the filters match, which the same statement made of the same snapshot. The row the
+// statement answers for an empty page carries that count alone: it is dropped before it is
+// resolved, so a parent chain of an issue off the page refuses nothing. No row at all is an empty
+// filtered set, whose count is 0.
 func scanIssuePage(ctx context.Context, q queryer, listQuery string, arguments []any) ([]model.IssueSummary, int, error) {
 	rows, err := q.Query(ctx, listQuery, arguments...)
 	if err != nil {

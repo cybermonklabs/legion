@@ -299,18 +299,20 @@ func (o goingObserver) deployRecorded(ctx context.Context, prepared goingPrepare
 	var current struct {
 		Deploys []struct {
 			Program string `json:"program"`
-			Commit  string `json:"commit"`
-			URL     string `json:"url"`
+			goingDeployValue
 		} `json:"deploys"`
 	}
 	query := url.Values{"repo": {goingText(prepared.arguments, "repo")}}
 	if err := o.read.get(ctx, "/api/v1/deploys?"+query.Encode(), &current); err != nil {
 		return observed, err
 	}
+	// The read answers each program's current deploy alone (delivery.CurrentDeploys), so the
+	// first deploy of the program is its one.
 	program := goingText(prepared.arguments, "program")
 	for _, deploy := range current.Deploys {
 		if deploy.Program == program {
-			observed.value = goingDeployValue{Commit: deploy.Commit, URL: deploy.URL}
+			observed.value = deploy.goingDeployValue
+			break
 		}
 	}
 	return observed, nil

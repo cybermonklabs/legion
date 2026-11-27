@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -238,7 +239,7 @@ func (s *server) searchOwnIssueKeys(ctx context.Context, parameters searchParame
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select i.key from issues i where i.number = $1 and ($2 = '' or i.project_key = $2)
-		and `+goingProjectCoveredSQL("i.project_key", "$3")+` order by i.project_key`,
+		and `+access.ScopeCoversSQL("i.project_key", "$3")+` order by i.project_key`,
 		number, parameters.numberScope(), parameters.goingScope)
 	if err != nil {
 		return nil, err
@@ -321,7 +322,7 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // the pick.
 var searchRarestWordsSQL = searchRarestWordsStatement("")
 
-var goingCoveredRarestWordsSQL = searchRarestWordsStatement(" and " + goingProjectCoveredSQL("s.project_key", "$4"))
+var goingCoveredRarestWordsSQL = searchRarestWordsStatement(" and " + access.ScopeCoversSQL("s.project_key", "$4"))
 
 func searchRarestWordsStatement(coverage string) string {
 	return `

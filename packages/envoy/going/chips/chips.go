@@ -114,7 +114,7 @@ func (t Target) drawn(items Items) (string, string, string) {
 		case t.tab != "":
 			return title, ref.IssueKey, title
 		default:
-			return ref.IssueKey + " · " + StatusText(status) + " · " + title, ref.IssueKey, title
+			return ref.IssueKey + " · " + statusText(status) + " · " + title, ref.IssueKey, title
 		}
 	case ref.Kind == "artifact" && ref.Session == "" && ref.IssueKey != "" && ref.ID == "spec":
 		// The bar titles a link to an issue's spec with the issue's title.
@@ -229,9 +229,9 @@ var StatusWords = map[string]string{
 	"testing": "Testing", "needs_review": "Needs review", "retro": "Retro", "done": "Done",
 }
 
-// StatusText is status as the chip words it: a status of the lifecycle by its words, any other as
+// statusText is status as the chip words it: a status of the lifecycle by its words, any other as
 // it is.
-func StatusText(status string) string {
+func statusText(status string) string {
 	if words, ok := StatusWords[status]; ok {
 		return words
 	}

@@ -70,23 +70,11 @@ func (s *fakeServer) replyFrames(t *testing.T) []replyFrame {
 	return replies
 }
 
-// messageText is the text of one message of a request, its content a string or a list of parts.
+// messageText is the text of one message of a request (agenttest.MessageText), "" where its
+// content is neither a string nor a list of parts.
 func messageText(message map[string]any) string {
-	switch content := message["content"].(type) {
-	case string:
-		return content
-	case []any:
-		var parts []string
-		for _, part := range content {
-			if part, ok := part.(map[string]any); ok {
-				if text, ok := part["text"].(string); ok {
-					parts = append(parts, text)
-				}
-			}
-		}
-		return strings.Join(parts, "\n")
-	}
-	return ""
+	text, _ := agenttest.MessageText(message)
+	return text
 }
 
 // toldAfter reports whether request gives the model prose as its own reply, and the person's

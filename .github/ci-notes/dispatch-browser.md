@@ -1122,17 +1122,22 @@ four rows of going-agent-answer-length.e2e.ts were red tests then, three of whic
 for an answer that did not come, and once more on their retry. With every row passing it read
 121 s and 122 s at 61e9cbf6 (jobs 140094660234 and 140094660196), still with those four rows;
 three of them went with the hold of a long answer they tested, and the fourth is now
-going-agent-list-total.e2e.ts. So 122 s x 1.15 = 140 s -> 3 min. The
+going-agent-list-total.e2e.ts. ba54d858 then added eight rows: going-agent-answer's
+short-answer row became two, a brief reply and a longer one, beside a new row for a long reply
+in the panel, and going-agent-place went from five rows to eleven. With five rows more than at
+that reading, the step read 129 s at 6660cfff (job 140266025645, 02:09:13Z to 02:11:22Z) and
+128 s at 92209719 (job 140278869851). So 129 s x 1.15 = 149 s -> 3 min. The
 Firefox install is the Chromium install's figure, 4 min: one browser's archives, with no apt,
 for the reason
 .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
 gives, and a library the image lacked would fail the launch visibly. The Firefox step runs one
 row, the one row of going-agent-place tagged `@firefox`: the `firefox` project selects a row by
-that tag (e2e/playwright.config.ts), so the file's four other rows, which the models step runs,
-are not run again here. The file's five rows ran in 3.5 s of row time on Chromium, so the step
-takes the 4 min of the step before the models step, whose two rows are as short, until its
-first runs give it a reading. 4 + 4 + 3 + 2 + 4 + 4 min plus 135 s and 120 s = 25 min 15 s ->
-26 min.
+that tag (e2e/playwright.config.ts), so the file's ten other rows are not run again here. The
+models step runs all eleven, the `@firefox` row among them, since the `chromium` project drops
+no engine tag. When the file had five rows they ran in 3.5 s of row time on Chromium, so the
+step takes the 4 min of the step before the models step, whose two rows are as short, until
+its first runs give it a reading. 4 + 4 + 3 + 2 + 4 + 4 min plus 135 s and 120 s = 25 min 15 s
+-> 26 min.
 
 ## Why the embedder job builds contracts
 

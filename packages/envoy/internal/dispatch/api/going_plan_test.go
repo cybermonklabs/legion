@@ -782,24 +782,7 @@ func (rig goingPlanRig) partlyLandedWaiting(t *testing.T, title string) (run, is
 	rig.answer(t, run, "approve", map[string]any{"plan": 1})
 	// The test is the run's agent until the row waits again: it claims the run and makes the row's
 	// call itself.
-	claimed := rig.claim(t, "i-retries-"+issue)
-	if claimed == nil || claimed.ID != run {
-		t.Fatalf("the claim took %+v, want run %s", claimed, run)
-	}
-	var patches atomic.Int32
-	rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
-		if patches.Add(1) == 1 {
-			panic("the close crashed")
-		}
-		inner.ServeHTTP(w, r)
-	})
-	call := goingRouteCall(run, claimed.LeaseToken, 7, 1, "dispatch_issue_update", closing)
-	call.Row = &agentwire.PlanRow{Plan: 1, Row: 0}
-	_, err := rig.call(call)
-	requireAgentCode(t, err, agentwire.CodeCallPanicked, "the call whose close panicked")
-	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "in_progress"})
-	_, err = rig.call(call)
-	requireAgentCode(t, err, agentwire.CodeRowWaits, "the retry of the key after Bob's change")
+	claimed, patches := rig.landReasonThenWait(t, "i-retries-"+issue, run, issue, closing)
 	if row := rig.plan(t, run).Rows[0]; row.State != "waiting" || !row.Changed || row.Result == nil ||
 		!strings.Contains(row.Result.Message, "the reason posted on "+issue+" was already written") || goingRowNumbered.MatchString(row.Result.Message) {
 		t.Fatalf("after the retry the row is %s (changed %v) with %+v, want it waiting again, saying the reason on %s was already written",
@@ -813,6 +796,36 @@ func (rig goingPlanRig) partlyLandedWaiting(t *testing.T, title string) (run, is
 		t.Fatalf("end the turn waiting: %v", err)
 	}
 	return run, issue, reason
+}
+
+// landReasonThenWait is the steps a test takes as the agent of run, approved and not yet claimed,
+// to make row 0 of plan 1 - closing, a reasoned close of issue - land its reason and wait for its
+// person again: it claims the run as instance, makes the row's call while a hook panics the first
+// close that reaches issue, so the reason lands and the close fails in the server, has bob move
+// the issue to in_progress, and makes the call again under its key, which the row answers by
+// waiting. It answers the claim, whose lease the caller ends the turn under, and the count of the
+// closes that reached the issue's route.
+func (rig goingPlanRig) landReasonThenWait(t *testing.T, instance, run, issue string, closing map[string]any) (*agentwire.ClaimedRun, *atomic.Int32) {
+	t.Helper()
+	claimed := rig.claim(t, instance)
+	if claimed == nil || claimed.ID != run {
+		t.Fatalf("the claim took %+v, want run %s", claimed, run)
+	}
+	patches := &atomic.Int32{}
+	rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		if patches.Add(1) == 1 {
+			panic("the close crashed")
+		}
+		inner.ServeHTTP(w, r)
+	})
+	call := goingRouteCall(run, claimed.LeaseToken, 7, 1, "dispatch_issue_update", closing)
+	call.Row = &agentwire.PlanRow{Plan: 1, Row: 0}
+	_, err := rig.call(call)
+	requireAgentCode(t, err, agentwire.CodeCallPanicked, "the call whose close panicked")
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "in_progress"})
+	_, err = rig.call(call)
+	requireAgentCode(t, err, agentwire.CodeRowWaits, "the retry of the key after Bob's change")
+	return claimed, patches
 }
 
 // TestARetryOfAPartlyLandedRowReadsItsItemAgainAndPostsItsReasonOnce: a reasoned close whose reason

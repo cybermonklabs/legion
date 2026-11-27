@@ -8,5 +8,7 @@ body: |-
   compact. Such a command names its own arguments and no owner, so `LEGION_ISSUE` fills none of
   them. AskGate reviews no such command, so it keeps `dispatch api`'s rule: in a session whose
   AskGate record is on or cannot be read, it sends a `GET` route alone and refuses any other before
-  any request, with exit 1 and AskGate's mark, and `dispatch api`'s refusal never names one. A
-  change a command-bar run made prints its actor as "<person>, through the command bar".
+  any request, with exit 1 and AskGate's mark, and `dispatch api`'s refusal never names one: for a
+  write that no hand-written command makes, it says that no `dispatch` command the session may run
+  makes it. A change a command-bar run made prints its actor as "<person>, through the command
+  bar".

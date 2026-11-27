@@ -30,8 +30,9 @@ type Credential struct {
 // projects a full member's credential reads, and a write of the whole deployment stays a person's or
 // an unlisted credential's.
 //
-// VisibleProjectsSQL is its SQL twin for reads, which TestTheListRuleIsOneInGoAndSQL holds equal to
-// it over every combination. Each write check in internal/dispatch/api calls it with Listed
+// VisibleProjectsSQL is its SQL twin for reads, and ScopeCoversSQL its twin for a credential scoped
+// to one project, which TestTheListRuleIsOneInGoAndSQL holds equal to it over every combination.
+// Each write check in internal/dispatch/api calls it with Listed
 // alone, the project each write names, and that project's visibility, which each check reads in
 // the statement or the transaction that reads the project, before the write. The project check of
 // a retraction asks it once more, for the check's issue, before any other layer reads the request
@@ -52,6 +53,19 @@ func CredentialCovers(cred Credential, project string, private bool) bool {
 		return listed
 	}
 	return !private || listed
+}
+
+// ScopeCoversSQL is CredentialCovers in SQL for a credential scoped to one project, scope, as
+// Dispatch's command-bar runs read through their author's scope: whether project, a key, is
+// scope's own or a project that is not private, among the projects Dispatch holds. It reads
+// projects in the statement that binds it, so a project made private between two statements of
+// a run is left out of the second, which a viewer resolved once (Resolve) would not do. An empty
+// or null scope is no scope, and every row passes. TestTheListRuleIsOneInGoAndSQL holds it equal
+// to CredentialCovers.
+func ScopeCoversSQL(project, scope string) string {
+	return fragment("ScopeCoversSQL", `(coalesce(`+scope+`::text, '') = '' or `+project+` in (
+		select key from projects where key = `+scope+` or visibility <> 'private'
+	))`)
 }
 
 // Sees reports whether the credential sees project, which is private or not: the projects its list

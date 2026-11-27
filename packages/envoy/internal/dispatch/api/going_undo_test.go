@@ -888,24 +888,7 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 		}
 		// The close's reason lands and its close fails in the server; Bob moves the issue, so the
 		// retry of the key makes the close wait again, the reason already written.
-		claimed := rig.claim(t, "i-unticked-"+issue)
-		if claimed == nil || claimed.ID != run {
-			t.Fatalf("the claim took %+v, want run %s", claimed, run)
-		}
-		var patches atomic.Int32
-		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
-			if patches.Add(1) == 1 {
-				panic("the close crashed")
-			}
-			inner.ServeHTTP(w, r)
-		})
-		call := goingRouteCall(run, claimed.LeaseToken, 7, 1, "dispatch_issue_update", closing)
-		call.Row = &agentwire.PlanRow{Plan: 1, Row: 0}
-		_, err := rig.call(call)
-		requireAgentCode(t, err, agentwire.CodeCallPanicked, "the call whose close panicked")
-		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "in_progress"})
-		_, err = rig.call(call)
-		requireAgentCode(t, err, agentwire.CodeRowWaits, "the retry of the key after Bob's change")
+		claimed, _ := rig.landReasonThenWait(t, "i-unticked-"+issue, run, issue, closing)
 		if err := rig.client.End(context.Background(), agentwire.EndRequest{Run: run, LeaseToken: claimed.LeaseToken, State: agentwire.StateWaiting}); err != nil {
 			t.Fatalf("end the turn waiting: %v", err)
 		}
@@ -1543,18 +1526,11 @@ func TestAnEditOfAPostIsUndoneUnlessItChangedSince(t *testing.T) {
 func TestADeleteOfAPostIsNotUndone(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
-	never := func(t *testing.T, run, when string) {
-		t.Helper()
-		got := decodeBody[goingRun](t, dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"))
-		if got.Undoable || got.UndoneAt != nil || goingUndoCountsOf(got) != (goingUndoCounts{}) {
-			t.Fatalf("%s the run reads undoable %v, undone at %v, counts %+v; want it never undoable and in no count", when, got.Undoable, got.UndoneAt, goingUndoCountsOf(got))
-		}
-	}
 	for _, c := range goingPostCases {
 		t.Run("a "+c.kind, func(t *testing.T) {
 			id, _ := c.make(t, rig, "The ferry leaves at noon.")
 			run := rig.ran(t, "delete the "+c.kind+" of the ferry", c.deleting(id))
-			never(t, run, "before Undo")
+			rig.requireNeverUndoable(t, run, "before Undo")
 			line := rig.undone(t, run, c.delete)[0]
 			if line.Undo != goingUndoNotUndone || line.Outcome != (goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingDeletedNotUndone}) {
 				t.Fatalf("Undo answered %+v, want %q", line, goingDeletedNotUndone)
@@ -1562,7 +1538,7 @@ func TestADeleteOfAPostIsNotUndone(t *testing.T) {
 			if landed := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'undo'`, run); landed != 0 {
 				t.Fatalf("Undo landed %d requests, want none", landed)
 			}
-			never(t, run, "after Undo")
+			rig.requireNeverUndoable(t, run, "after Undo")
 		})
 	}
 }
@@ -1612,13 +1588,6 @@ func TestADeployRecordWaitsAndIsNotUndone(t *testing.T) {
 	currentCommit := func() string {
 		return rig.textOf(t, `select commit_sha from deploys where repo = 'acme/arch' and program = 'worker' order by id desc limit 1`)
 	}
-	never := func(run, when string) {
-		t.Helper()
-		got := decodeBody[goingRun](t, dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"))
-		if got.Undoable || goingUndoCountsOf(got) != (goingUndoCounts{}) {
-			t.Fatalf("%s the run reads undoable %v, counts %+v; want it never undoable and in no count", when, got.Undoable, goingUndoCountsOf(got))
-		}
-	}
 
 	run := rig.begin(t, goingLoopRun{login: "alice", words: words, mode: goingModeAutoReview})
 	plan := rig.waiting(t, run)
@@ -1657,7 +1626,7 @@ func TestADeployRecordWaitsAndIsNotUndone(t *testing.T) {
 	if plan := rig.plan(t, run); plan.Rows[0].State != "done" {
 		t.Fatalf("after the approval the deploy's row is %s, want done", plan.Rows[0].State)
 	}
-	never(run, "before Undo")
+	rig.requireNeverUndoable(t, run, "before Undo")
 
 	line := rig.undone(t, run, "dispatch_deploy")[0]
 	if line.Undo != goingUndoNotUndone || line.Outcome != (goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingRecordedNotUndone}) {
@@ -1669,7 +1638,17 @@ func TestADeployRecordWaitsAndIsNotUndone(t *testing.T) {
 	if bodies, commit := sends(), currentCommit(); len(bodies) != 1 || commit != recorded {
 		t.Fatalf("after Undo the bar has sent %d deploys and the current one is %s, want the one approved and %s current", len(bodies), commit, recorded)
 	}
-	never(run, "after Undo")
+	rig.requireNeverUndoable(t, run, "after Undo")
+}
+
+// requireNeverUndoable fails t unless alice's read of run says, at when, that the run is never
+// undoable: not undoable, never undone (no undo of it landed) and in no count.
+func (rig goingPlanRig) requireNeverUndoable(t *testing.T, run, when string) {
+	t.Helper()
+	got := decodeBody[goingRun](t, dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice"))
+	if got.Undoable || got.UndoneAt != nil || goingUndoCountsOf(got) != (goingUndoCounts{}) {
+		t.Fatalf("%s the run reads undoable %v, undone at %v, counts %+v; want it never undoable and in no count", when, got.Undoable, got.UndoneAt, goingUndoCountsOf(got))
+	}
 }
 
 // goingTakesTheCallingSession reports whether every row of the write tool name fills a

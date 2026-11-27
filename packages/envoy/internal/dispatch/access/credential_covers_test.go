@@ -79,7 +79,11 @@ func TestACredentialOfNoPersonSeesThePrivateProjectsItLists(t *testing.T) {
 // With no private project a full member's list decides nothing it reads (R9): each of its tokens
 // sees what its token listing none sees. Resolve still answers a personal token's list as Lists,
 // which is new with private projects, and no Lists for a full member's broker token, whose list it
-// answered as none before (R9); a restricted member's list holds in every state.
+// answered as none before (R9); a restricted member's list holds in every state. The scope's
+// fragment (ScopeCoversSQL), CredentialCovers for a credential scoped to one project, answers as
+// CredentialCovers does for each scope - none, each of the four projects and one Dispatch does not
+// hold - and each project, in a statement of its own, before and after every project is made
+// public, so it is held to the projects as each statement reads them.
 func TestTheListRuleIsOneInGoAndSQL(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -177,10 +181,28 @@ func TestTheListRuleIsOneInGoAndSQL(t *testing.T) {
 	if wantCompared := (2*(1+len(lists)) + len(lists)) * len(projects); compared != wantCompared {
 		t.Fatalf("compared %d answers, want %d: not every combination was read", compared, wantCompared)
 	}
+	scopes := append([]string{"", "NOSUCH"}, projects...)
+	scopeCovers := func(state string, private map[string]bool) {
+		t.Helper()
+		for _, scope := range scopes {
+			for _, project := range projects {
+				var sqlForm bool
+				if err := database.Pool.QueryRow(ctx, `select `+ScopeCoversSQL("$1::text", "$2::text"), project, scope).Scan(&sqlForm); err != nil {
+					t.Fatalf("ScopeCoversSQL(%s, %q): %v", project, scope, err)
+				}
+				goForm := scope == "" || CredentialCovers(Credential{Listed: []string{scope}}, project, private[project])
+				if sqlForm != goForm {
+					t.Errorf("%s, scope %q, %s: ScopeCoversSQL = %t, CredentialCovers = %t", state, scope, project, sqlForm, goForm)
+				}
+			}
+		}
+	}
+	scopeCovers("with two private projects", private)
 
 	if _, err := database.Pool.Exec(ctx, `update projects set visibility = 'public'`); err != nil {
 		t.Fatalf("make every project public: %v", err)
 	}
+	scopeCovers("with no private project", map[string]bool{})
 	unlisted := map[string]model.Viewer{}
 	for _, c := range callers {
 		if c.actor.Kind != "user" && len(c.listed) == 0 {

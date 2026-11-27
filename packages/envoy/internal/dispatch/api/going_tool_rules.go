@@ -502,8 +502,8 @@ func goingDeployProblem(call goingRuleCall, _ string) string {
 	if err != nil {
 		return "deployed_at must be a valid calendar date"
 	}
-	if deployed.After(time.Now().Add(5 * time.Minute)) {
-		return "deployed_at must not be more than five minutes in the future"
+	if deployed.After(time.Now().Add(deployAhead)) {
+		return deployAheadRefusal
 	}
 	return ""
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -515,14 +516,18 @@ var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searc
 // The short answer has no project filter when the question names none. Filter the owners by
 // the credential's project scope before ranking or paging. The meaning statement also
 // filters within each candidate limit, so a hidden match cannot take a visible match's place.
+// An issue-owned row's project is read from its key, as scanSearchRows reads an issue owner's:
+// an issue's key is its project's key, a hyphen and its number (createIssue), a project's key
+// holds no hyphen (contracts.ProjectKeyPattern), every issue_key an arm carries references an
+// issue, and no issue moves between projects (project_scope.go), so no row reads issues again.
 const goingSearchOwnerProject = `case when arms.issue_key is not null then
-	(select i.project_key from issues i where i.key = arms.issue_key) else arms.owner_project end`
+	split_part(arms.issue_key, '-', 1) else arms.owner_project end`
 
 var (
 	goingCoveredKeywordSearch = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL,
-		"not "+goingProjectCoveredSQL(goingSearchOwnerProject, searchParam(searchSeenParam+1)), searchSeenParam)
+		"not "+access.ScopeCoversSQL(goingSearchOwnerProject, searchParam(searchSeenParam+1)), searchSeenParam)
 	goingCoveredMeaningSearch = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL,
-		"not "+goingProjectCoveredSQL(goingSearchOwnerProject, searchParam(searchMeaningSeenParam+1)), searchMeaningSeenParam, meaningCoveredProjects)
+		"not "+access.ScopeCoversSQL(goingSearchOwnerProject, searchParam(searchMeaningSeenParam+1)), searchMeaningSeenParam, meaningCoveredProjects)
 )
 
 // searchSeenParam and searchMeaningSeenParam are where each of search's own two queries binds
@@ -952,12 +957,11 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 	switch scope {
 	case meaningOneProject:
 		return " and e.project_key = $2"
-	case meaningOneProjectJoined, meaningCoveredProjects:
-		project := " and ($2 = '' or " + column + " = $2)"
-		if scope == meaningCoveredProjects {
-			project += " and " + goingProjectCoveredSQL(column, searchParam(searchMeaningSeenParam+1))
-		}
-		return project
+	case meaningOneProjectJoined:
+		return " and ($2 = '' or " + column + " = $2)"
+	case meaningCoveredProjects:
+		return meaningOneProjectJoined.candidateProject(column) + " and " +
+			access.ScopeCoversSQL(column, searchParam(searchMeaningSeenParam+1))
 	default:
 		return ""
 	}
@@ -1545,19 +1549,19 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchPa
 }
 
 // runFusedSearchQuery runs the keyword statement of the kinds asked for (searchKinds.statements),
-// assuming nodes > 0 or an issue named by key already, which its callers (runKeywordOnlyDegraded,
-// and runSearch itself for a request that asked for keywords only, both after runSearch's checks)
-// must have established first. The text is assumed already validated (length, non-empty after
-// trimming); an empty project searches every project, an empty filter narrows nothing, and the
-// kinds leave at least one kind in.
+// or, for a search with goingScope, the covered statement (goingCoveredKeywordSearch) with the
+// scope bound after the credential, assuming nodes > 0 or an issue named by key already, which
+// its callers (runKeywordOnlyDegraded, and runSearch itself for a request that asked for keywords
+// only, both after runSearch's checks) must have established first. The text is assumed already
+// validated (length, non-empty after trimming); an empty project searches every project, an empty
+// filter narrows nothing, and the kinds leave at least one kind in.
 func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	started := time.Now()
-	statement := goingCoveredKeywordSearch
+	statement := parameters.kinds.statements().keyword
 	arguments := searchQueryArguments(parameters)
 	if parameters.goingScope != "" {
+		statement = goingCoveredKeywordSearch
 		arguments = append(arguments, parameters.goingScope)
-	} else {
-		statement = parameters.kinds.statements().keyword
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, statement, arguments...)
 	if err != nil {
@@ -1582,9 +1586,11 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 // the one row that says whether the fill has labelled the corpus (embeddingProjectKeysFilled);
 // meaningProjectScope says why the choice is made here, in Go, rather than written as one
 // "$2 is empty, or it matches" predicate the planner would have to serve all three ways. The
-// arguments are the same seventeen whichever it is, $2 among them: the keyword legs read it in
+// arguments are the same eighteen whichever it is, $2 among them: the keyword legs read it in
 // all three. Each of the three is held to the kinds this search ranks, so the choice of scope
-// and the kind parameter compose.
+// and the kind parameter compose. A search with goingScope runs none of the three: it runs the
+// covered statement (goingCoveredMeaningSearch) with the scope bound after the credential, a
+// nineteenth argument, and reads no fill.
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan), the bound on the statement among them. A statement the server ends at that
@@ -1605,8 +1611,9 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	// search's own kinds, so a request naming a kind runs the scope it would have run anyway
 	// with that kind's rows left out, rather than one choice overriding the other.
 	arguments := searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())
-	statement := goingCoveredMeaningSearch
+	var statement string
 	if parameters.goingScope != "" {
+		statement = goingCoveredMeaningSearch
 		arguments = append(arguments, parameters.goingScope)
 	} else {
 		filtered := parameters.filtered()
