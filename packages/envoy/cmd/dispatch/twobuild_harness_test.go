@@ -9,8 +9,9 @@
 // (twobuild_cli_test.go), the stored documents and the document
 // socket (twobuild_documents_test.go), the messages and subscription settings on the bus
 // (twobuild_messages_test.go), what the page admission does while the previous build's process
-// is live and once it has left the registry (twobuild_transition_test.go), and what the previous
-// build does with a read-only personal token this tree mints (twobuild_read_token_test.go). This
+// is live and once it has left the registry (twobuild_transition_test.go), what the previous
+// build does with a read-only personal token this tree mints (twobuild_read_token_test.go), and
+// the routes a personal token holding p0 keeps on each build (twobuild_p0_token_test.go). This
 // file is the harness every twobuild_*_test.go starts its builds with.
 //
 // The previous build is a directory packages/envoy/scripts/build-dispatch-build.sh writes, named by

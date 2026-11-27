@@ -21551,6 +21551,8 @@ test("the open decision block test refuses another caller in that caller's own w
     );
   const words = {
     call: "legion register_gate",
+    blocks: "decision block",
+    decidedBy: "version" as const,
     effect: "Answering one writes a version the registration does not name.",
     remedy: "Register the version that carries the answer.",
   };

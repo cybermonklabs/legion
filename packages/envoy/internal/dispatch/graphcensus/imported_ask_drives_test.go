@@ -46,8 +46,8 @@ const (
 // person's edit that takes the block of an answered ask out of its document; an upload that changes
 // nothing, whose version no index pass plans; the settlement of a person's upload that writes the
 // answered ask's block back, which retracts that person's removal; the decisions step's conversion
-// of an issue whose decisions document holds one section a person kept; and the step's catch-up of
-// an unfollow a build before this one recorded.
+// of an issue whose decisions document holds one section a session wrote and a person kept; and
+// the step's catch-up of an unfollow a build before this one recorded.
 func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	t.Helper()
 	ctx := context.Background()
@@ -419,12 +419,13 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Counts: followCounted,
 	}, {
 		// The decisions step's conversion of an issue of a project of its own, whose decisions
-		// document holds one section a person kept (docs.DecisionStep.RestoreAndConvert): the
-		// decisions document's version without the section, the spec's version holding it as a
-		// decision, the section's move and the Keep carried onto the decision's node, and the
-		// decisions document's retirement. This release's upload refuses a decisions document
-		// (DECISIONS_ARE_NODES), so the document is written as a release before wrote one: its
-		// row, its first text and version, and that version's block index.
+		// document holds one section an agent's session wrote and a person kept
+		// (docs.DecisionStep.RestoreAndConvert): the decisions document's version without the
+		// section, the spec's version holding it as a decision, the section's move and the Keep
+		// carried onto the decision's node, and the decisions document's retirement. This release's
+		// upload refuses a decisions document (DECISIONS_ARE_NODES), so the document is written as a
+		// release before wrote one: its row, its first text and version, and that version's block
+		// index.
 		Name: "docs/decision_restore.go#writeFacts, converting a decisions document", Database: r.database,
 		Sites: []string{"docs/decision_restore.go#writeFacts", "docs/decision_restore.go#writeVersion",
 			"docs/retire.go#RetireDocument", "docs/retire.go#writeRetiredNode", "refs/blocks.go#Queue"},
@@ -434,8 +435,11 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				"project": decided, "title": "What the decisions step converts",
 				"spec": "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n",
 			}, "alice", http.StatusCreated)).Key
+			// The section's author is ses_decider, whose node the Keep drive's upload wrote, so the
+			// conversion's decided_by names a node the store holds and states none of its own.
 			decisions := r.earlierDecisionsDocument(t, issue, decided,
-				"# Decisions\n\n## Files stay out of the corpus\n\nWe write no file beside the database.\n")
+				"# Decisions\n\n## Files stay out of the corpus\n\nWe write no file beside the database.\n",
+				model.Actor{Kind: "session", ID: "ses_decider"})
 			if err := r.documents.SettleIssueDocuments(ctx, issue); err != nil {
 				t.Fatalf("settle the documents of %s: %v", issue, err)
 			}
@@ -481,8 +485,9 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		},
 		// The versions' blocks - the spec's new decision with its values, and the decisions
 		// document's section stated gone - the two versions' nodes, the spec's a query version with
-		// its definition_version, the decision's decided_by, the section's move, the Keep it
-		// carries with the keeper's node, and the retired document's node stated gone.
+		// its definition_version, the decision's decided_by, which names the session that wrote its
+		// section (docs' creditSectionAuthors), the section's move, the Keep it carries with the
+		// keeper's node, and the retired document's node stated gone.
 		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted, queryVersionCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeState}:         {"block", "block_gone"},
 			{refs.BlockNodeKind, graphstore.TupleDecidedBy}:         {"decision"},
@@ -515,14 +520,13 @@ func (r *writersRig) settledAsk(t *testing.T, document, block string) string {
 // earlierDecisionsDocument writes issue's decisions document holding markdown as a release before
 // this one wrote one, which this release's upload refuses: its artifacts row, of the decisions
 // role, then in one transaction of the document service its first text, its version 1 written by
-// alice and that version's block index, caused at the sentinel as a version no event recorded is.
+// writer and that version's block index, caused at the sentinel as a version no event recorded is.
 // Its node is then written as the decisions step's first phase writes the node of a row an
 // earlier release wrote with none (graphcensus.BackfillAsks), which a server of this release runs
 // at boot before the conversion can. It answers the document's id.
-func (r *writersRig) earlierDecisionsDocument(t *testing.T, issue, project, markdown string) string {
+func (r *writersRig) earlierDecisionsDocument(t *testing.T, issue, project, markdown string, writer model.Actor) string {
 	t.Helper()
 	ctx := context.Background()
-	alice := model.Actor{Kind: "user", ID: "alice"}
 	var document string
 	if err := r.database.Pool.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, role, created_by)
@@ -538,14 +542,14 @@ func (r *writersRig) earlierDecisionsDocument(t *testing.T, issue, project, mark
 	defer tx.Rollback(ctx)
 	joined, ledger := r.documents.Join(ctx, tx)
 	defer ledger.Discard()
-	written, err := r.documents.SeedText(joined, document, markdown, alice)
+	written, err := r.documents.SeedText(joined, document, markdown, writer)
 	if err != nil {
 		t.Fatalf("write the decisions document's first text: %v", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown, authors)
-		values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')
-	`, document, written); err != nil {
+		values ($1, 1, $2, jsonb_build_array(jsonb_build_object('kind', $3::text, 'id', $4::text)))
+	`, document, written, writer.Kind, writer.ID); err != nil {
 		t.Fatalf("write the decisions document's version 1: %v", err)
 	}
 	_, indexed, err := r.documents.IndexDocumentReferences(joined, document, 1, written)

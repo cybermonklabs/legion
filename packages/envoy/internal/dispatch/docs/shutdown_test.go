@@ -246,7 +246,6 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 //
 // The final version cannot prove this order: settlement can also persist unstored room updates
 // (Ledger.flushThrough). Compare the append's commit with settlement's start instead.
-// Do not spend the drain budget on a fixed hold: both appends and settlement need that budget.
 func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)

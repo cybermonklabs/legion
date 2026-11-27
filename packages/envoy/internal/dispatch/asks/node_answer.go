@@ -182,8 +182,10 @@ func NodeResolutionOf(ask string) string {
 // NodeAnswerJSONOf is the answer of the ask aliased ask as ApplyTo lays it over the row, as jsonb
 // of asks.answer's shape without its act: the answer, selection, answerer and time its node holds
 // on an ask the node holds answered - the selection the empty list where none is stated - null on
-// any other the node holds, and the row's own answer where the row names no node. The search text
-// reads the words of it (ask_search_suffix) and the session answers read the whole of it.
+// any other the node holds, and the row's own answer where the row names no node. Its two readers
+// are the search text, which reads the words of it (api's askSearchTextOf, ask_search_suffix), and
+// the session answers, which read the whole of it and hold it to their window by its time
+// (sessionanswers' query).
 func NodeAnswerJSONOf(ask string) string {
 	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer when ` +
 		NodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + StateAnswered + `' then jsonb_build_object(

@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -147,8 +146,11 @@ func artifactMissing(err error) bool {
 // ones. An ask's block is in the spec where the spec's block index holds an ask block under its
 // block id (document_blocks, keyed as the ask is): a row that names the spec and a block it no
 // longer holds - one a reopen restored with no block to write, which a later settlement retracts -
-// is no question of it. An ask whose node holds a value that does not parse is left out and
-// logged, as decisionEntries leaves out its entry, and the read goes on (R4, scanOpenQuestions).
+// is no question of it. An ask a stored value of which does not decode - one its node holds, or
+// its row's author, options, anchor, answer, resolution or approval, or its newest reply's author -
+// is left out and logged, as decisionEntries leaves out its entry, and the read goes on (R4,
+// scanOpenQuestions); only a failure of the query or of its rows fails the read, a column pgx
+// cannot scan among them, which ends the rows.
 //
 // That index cannot say so while the spec owes it - while the spec is among the documents the
 // coverage read names as owing their block index (queueOwedDocuments), read in the same batch: a
@@ -230,12 +232,13 @@ func (s *server) specOpenQuestions(
 }
 
 // scanOpenQuestions appends to questions each ask rows reads (askReadColumns) that is open as its
-// node holds it, in the order rows reads them. An ask of issue key whose node holds a value that
-// does not parse (asks.ErrNodeAnswerUnreadable) is left out and logged, and the scan goes on.
+// node holds it, in the order rows reads them. An ask of issue key a stored value of which does
+// not decode (scanAskRead) is left out and logged, and the scan goes on; only a failure of rows
+// itself, a column pgx cannot scan among them, which ends the rows, fails the scan.
 func scanOpenQuestions(rows pgx.Rows, key string, questions *[]issueAskRow) error {
 	for rows.Next() {
 		ask, reply, err := scanAskRead(rows)
-		if errors.Is(err, asks.ErrNodeAnswerUnreadable) {
+		if err != nil && rows.Err() == nil {
 			slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
 				"issue", key, "err", err)
 			continue
