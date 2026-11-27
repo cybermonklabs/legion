@@ -8,6 +8,7 @@ import "testing"
 // already makes. An enrollment that names no operator - a pod's own, a machine's own session -
 // answers the empty string rather than refusing the connection, so the proxy asks nobody about it.
 func TestAirlockConnectionAnswersTheEnrollmentsOperator(t *testing.T) {
+	t.Parallel()
 	m, enr, _, release := twoNameGrant(t, "reach the service")
 	placeholder := release.Airlock.Names["LOGIN_KEY"].Slots[SlotValue]
 	var operator string

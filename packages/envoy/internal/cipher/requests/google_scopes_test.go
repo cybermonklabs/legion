@@ -31,6 +31,7 @@ import (
 // its entry's and not the tag's, mints under the widened tag at its own scope, the grant live;
 // and the first release of each grant mints at the scope it was decided under.
 func TestAScopesTagChangeEndsTheGrantsDecidedUnderTheOldScopes(t *testing.T) {
+	t.Parallel()
 	const (
 		account  = "robot-1@acme-deployment.iam.gserviceaccount.com"
 		readOnly = "https://www.googleapis.com/auth/devstorage.read_only"

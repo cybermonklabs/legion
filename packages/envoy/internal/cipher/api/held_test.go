@@ -296,6 +296,7 @@ func expectRecordNames(t *testing.T, capture *logtest.Recorder, what string, bod
 // every such session is 503 HOLD_UNCHECKABLE, and a pod's, whose enrollment names no person, is
 // asked nothing and served.
 func TestHeldSessionRouteIsRefused(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	b := newHoldBroker(t)
@@ -334,6 +335,7 @@ func TestHeldSessionRouteIsRefused(t *testing.T) {
 // Control: rereadSecret asking no hold after the proof verifies, as it did: ada's reread answers
 // 200 with whether the broker serves the name, and the test fails there.
 func TestHeldSessionRereadIsRefused(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	b := newHoldBroker(t)
@@ -366,6 +368,7 @@ func TestHeldSessionRereadIsRefused(t *testing.T) {
 // of the refusal names the machine login; bob's is served. While Dispatch refuses the broker's
 // own account, each is 503 HOLD_UNCHECKABLE.
 func TestHeldLauncherRouteIsRefused(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	b := newHoldBroker(t)
@@ -473,6 +476,7 @@ func (b *holdBroker) serves(t *testing.T, whose string, u upkeep) {
 // broker's own gate answers her held; and each of bob's is served while the gate cannot decide
 // anyone, Dispatch refusing the broker's own account, so none of them asks the gate at all.
 func TestHeldUpkeepIsServed(t *testing.T) {
+	t.Parallel()
 	b := newHoldBroker(t)
 	ada := b.upkeep(t, heldAda)
 	bob := b.upkeep(t, servedBob)
@@ -495,6 +499,7 @@ func TestHeldUpkeepIsServed(t *testing.T) {
 // Dispatch releases her; a login revoked after its approval gets its own refusal first; bob's is
 // redeemed; and while Dispatch refuses the broker's own account, a redemption is server_error.
 func TestHeldDeviceCodeRedemptionIsRefused(t *testing.T) {
+	t.Parallel()
 	b := newHoldBroker(t)
 	b.hold()
 	adaKey := newSigningKey(t)
@@ -535,6 +540,7 @@ func TestHeldDeviceCodeRedemptionIsRefused(t *testing.T) {
 // token, which names her as the login's operator; bob's answer active and not held; and while
 // Dispatch refuses the broker's own account, each is 503 HOLD_UNCHECKABLE.
 func TestHeldIntrospectionReportsHeld(t *testing.T) {
+	t.Parallel()
 	b := newHoldBroker(t)
 	tokens := map[string]map[string]string{}
 	for _, person := range []string{heldAda, servedBob} {

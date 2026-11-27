@@ -206,6 +206,7 @@ func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
 // nothing answers for holds no 10-character run of the token, in the issuer or in the error. The
 // token is made up.
 func TestClientCheckLogsNoCredentialOfTheIssuer(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const token = "madeUpIssuerToken0123456789"
 	st := storetest.Open(t)
 	issuer := oidctest.New(t)

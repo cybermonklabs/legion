@@ -756,6 +756,7 @@ func TestProfilesCheckComparesAgainstAnOldFileTheBrokerWouldRefuse(t *testing.T)
 // UNKNOWN, and exits 0. The control is the same new file with the kind named bearer, which no old
 // block's kind is named.
 func TestProfilesCheckComparesTheKindsAFileDeclares(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "TOKEN", "proxy": {"hosts": ["api.example.com"]}}]}`)
 	for _, kind := range []string{"token", "bearer"} {
 		t.Run(kind, func(t *testing.T) {
@@ -790,6 +791,7 @@ func TestProfilesCheckComparesTheKindsAFileDeclares(t *testing.T) {
 // block as behind the proxy there. Here TOKEN's block is behind the kind token, and OTHER's source
 // OTHER_SRC carries proxy=token, which the new file declares.
 func TestProfilesCheckServesNoTagByAKindAFileOfNoKindsMadeForABlock(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "TOKEN", "proxy": {"hosts": ["api.example.com"]}}, {"name": "OTHER", "source": "OTHER_SRC"}]}`)
 	now := profilesFile(t, `{"kinds": [{"name": "token", "hosts": ["api.example.com"], "ways": ["swap", "mint"]}], "profiles": [{"name": "TOKEN", "proxy": "token"}, {"name": "OTHER", "source": "OTHER_SRC"}]}`)
 	tags := writeTempFile(t, "secrets.json", []byte(`[

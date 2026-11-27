@@ -183,6 +183,7 @@ func (ts *testServer) pageSessionLive(t *testing.T, secret string) bool {
 // used; the same login approved as the account that holds the address now mints, and the
 // credential records that account. An approval that names half an account is 400.
 func TestAnApprovalByAReplacedAccountIsRefusedAndTheHoldersMints(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	replaced, holder := accountOf(testApprover), holderOf(testApprover)
 	if status, body := ts.revokeSubject(t, testApprover, googleSchemeless, replaced.Subject, holder.Subject, new(int64(1))); status != http.StatusOK {
@@ -223,6 +224,7 @@ func TestAnApprovalByAReplacedAccountIsRefusedAndTheHoldersMints(t *testing.T) {
 // first account as holder — the address coming back — stops refusing the first account and ends
 // what the holder made.
 func TestRevokingAReplacedAccountEndsWhatItAndNoAccountMade(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	replaced, holder := accountOf(testApprover), holderOf(testApprover)
 
@@ -286,6 +288,7 @@ func TestRevokingAReplacedAccountEndsWhatItAndNoAccountMade(t *testing.T) {
 // naming one account as both the replaced one and the holder, is 400 with the code that says
 // which, and records nothing: the account it named still approves.
 func TestTheSubjectRevokeRefusesARequestItCannotServe(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	replaced := accountOf(testApprover)
 	for _, c := range []struct {
@@ -317,6 +320,7 @@ func TestTheSubjectRevokeRefusesARequestItCannotServe(t *testing.T) {
 // staying pending, whether it names no account or the holder; one carrying that generation, or a
 // greater one, is approved and mints.
 func TestARevokeRecordsItsGenerationAndAnApprovalCheckedBeforeItIsRefused(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	replaced, holder := accountOf(testApprover), holderOf(testApprover)
 	for _, revoke := range []struct {
@@ -391,6 +395,7 @@ func (ts *testServer) approvalsWithoutGeneration(t *testing.T) int {
 // and one that carries it adds none, so the counter reads how many approves the no-generation
 // fallback (machine.ApprovalInFlightWindow) still decides.
 func TestAnApprovalWithoutAGenerationIsCounted(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	if n := ts.approvalsWithoutGeneration(t); n != 0 {
 		t.Fatalf("before any approve the counter reads %d, want 0", n)
@@ -427,6 +432,7 @@ func passkeyAccountOf(subject string) store.IssuerSubject {
 // Google's issuer ends nothing of it, the revoke naming the outside origin ends it, and an approval
 // as that account afterwards is 403 APPROVER_REPLACED and mints nothing.
 func TestPasskeyApproverIssuerIsRecordedAndComparedAtTheBroker(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	member := passkeyAccountOf("Zm9yLXRoZS1wYXNza2V5IQ")
 	holder := passkeyAccountOf("bmV3LWVucm9sbG1lbnQhIQ")

@@ -543,6 +543,7 @@ func TestHealthzFailsWhileDrainingAndNothingElseDoes(t *testing.T) {
 // a roll keeps the old pods, while every other route answers as it always does; once the proxy
 // is ready again so is the pod. The reason the proxy gives is in the body.
 func TestHealthzFailsWhileTheProxyHoldsNoIntermediate(t *testing.T) {
+	t.Parallel()
 	var holds atomic.Bool
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.ProxyReady = func() error {

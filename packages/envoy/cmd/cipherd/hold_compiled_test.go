@@ -558,6 +558,7 @@ func verbOf(outcome string) string {
 // rule's place serves the colleague at the fourth, and this test fails naming that place and that
 // line.
 func TestTheCompiledBrokerHoldsAHeldPerson(t *testing.T) {
+	t.Parallel()
 	r := newHoldRig(t)
 	heldAda := &holdPerson{login: ada, deploySecret: approvalSecretName, airlockSecret: "ADA_AIRLOCK"}
 	servedBob := &holdPerson{login: bob, deploySecret: "BOB_DEPLOY_KEY", airlockSecret: "BOB_AIRLOCK"}

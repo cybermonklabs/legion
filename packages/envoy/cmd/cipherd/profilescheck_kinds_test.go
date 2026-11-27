@@ -231,6 +231,7 @@ func TestProfilesCheckKeepsEveryProxiedNameOfTheMoveBehindTheProxy(t *testing.T)
 // that declares no kind has no kind a source's tag could name. The control that the run reads
 // blocks at all is the fixture itself, which holds the 18 blocks proxiedOnMain lists.
 func TestProfilesCheckServesTheFileOfProxyBlocks(t *testing.T) {
+	t.Parallel()
 	var file jsonObject
 	decodeFixture(t, proxyBlocksFixture, &file)
 	blocks := 0

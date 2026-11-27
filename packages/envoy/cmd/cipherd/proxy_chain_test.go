@@ -90,6 +90,7 @@ func caStandService(t *testing.T, options proxyrulestest.CAOptions) (*proxyrules
 // failure; once the service answers it logs its intermediate, with the names of its bound host,
 // and is ready. The stand-in is sent no credential.
 func TestABrokerOnAPoolIsNotReadyUntilItHoldsAnIntermediate(t *testing.T) {
+	t.Parallel()
 	stand, service := caStandService(t, proxyrulestest.CAOptions{})
 	stand.Fail(true)
 	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t, storetest.URL(t)),
@@ -141,6 +142,7 @@ func caPolicyNames(t *testing.T, path string) []string {
 // both names and is ready. Control: under a policy of the kind's hosts alone, the policy a filter
 // that read no dpop block gave, the broker refuses every answer and answers 503 NO_INTERMEDIATE.
 func TestABrokerWithADpopBlockIsReadyUnderTheLocalCAPolicy(t *testing.T) {
+	t.Parallel()
 	profiles := profilesFile(t, withKinds(mintedProfiles(`"dispatch.test"`, []string{"RESULTS_TOKEN"}),
 		`[{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"]}]`))
 	names := caPolicyNames(t, profiles)
@@ -182,6 +184,7 @@ func TestABrokerWithADpopBlockIsReadyUnderTheLocalCAPolicy(t *testing.T) {
 // intermediate a minute before 2 days of it remain, and takes the next once they do: a day after
 // the first's start, not halfway through its life.
 func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
+	t.Parallel()
 	clockFile := filepath.Join(t.TempDir(), "clock-offset")
 	setOffset := func(offset time.Duration) {
 		t.Helper()
@@ -244,6 +247,7 @@ func TestABrokerRenewsAThreeDayIntermediateWithTwoDaysLeft(t *testing.T) {
 // broker whose mounted pair is an intermediate and its chain to its root starts, ready, and logs
 // that intermediate.
 func TestABrokerStartsOnAMountedIntermediateAndItsChain(t *testing.T) {
+	t.Parallel()
 	certFile, keyFile, intermediate := mountedIntermediate(t, []string{"api.deel.com"})
 	broker := startBroker(t, brokerOptions{Env: append(localProxyEnv(t, storetest.URL(t)),
 		"BROKER_AIRLOCK_CA_CERT_FILE="+certFile,
@@ -257,6 +261,7 @@ func TestABrokerStartsOnAMountedIntermediateAndItsChain(t *testing.T) {
 // the bound host, and a clock file that holds no duration, each refuse the start naming what is
 // wrong. The database is unreachable, so each refusal is made before the broker reaches it.
 func TestMainRefusesAProxyChainItCannotStartOn(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	const unreachable = "postgres://nonexistent-host-this-test-must-never-reach/db"
 	elsewhereCert, elsewhereKey, _ := mountedIntermediate(t, []string{"elsewhere.example"})
@@ -288,6 +293,7 @@ func TestMainRefusesAProxyChainItCannotStartOn(t *testing.T) {
 // TestEveryProxyBlocksHostIsBound: the hosts every intermediate must permit exactly are those of
 // every kind and inline dpop binding, each once, in the profiles file's order.
 func TestEveryProxyBlocksHostIsBound(t *testing.T) {
+	t.Parallel()
 	rules := proxyrules.Rules{
 		Kinds: []proxyrules.Kind{
 			{Name: "deel", Hosts: []string{"api.deel.com", "*.deel.com"}},
@@ -305,6 +311,7 @@ func TestEveryProxyBlocksHostIsBound(t *testing.T) {
 // cannot be read, holds nothing, holds a key - which would otherwise ride in every release - or a
 // certificate that is no authority is refused, naming the setting.
 func TestTheReleaseRootsFileHoldsRootsAlone(t *testing.T) {
+	t.Parallel()
 	first, second := testAuthority(t, "today's authority"), testAuthority(t, "the new root")
 	roots, err := readProxyReleaseRoots(writeTempFile(t, "roots.pem", slices.Concat(first.CertificatePEM(), second.CertificatePEM())))
 	if err != nil || len(roots) != 2 || roots[0].Subject.CommonName != "today's authority" || roots[1].Subject.CommonName != "the new root" {

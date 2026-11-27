@@ -106,6 +106,7 @@ func requireUncheckable(t *testing.T, what string, err error, person string) {
 // Control: a client with no keeper refuses ines's release while Dispatch is down, so the outage is
 // real. The fault: MemberKind not reading the kept kind; ines's release is refused.
 func TestWhileDispatchCannotBeAskedAPersonKeptFullIsServed(t *testing.T) {
+	t.Parallel()
 	const (
 		outsider = "outsider@outside.example"
 		unasked  = "uma@example.com"
@@ -234,6 +235,7 @@ func TestWhileDispatchCannotBeAskedAPersonKeptFullIsServed(t *testing.T) {
 // their list, so the outage is real. The fault: MemberKind not reading the kept kind; secondMember's
 // list leaves the group's rows off.
 func TestAnApproverReadsTheKeptKindWhileDispatchCannotBeAsked(t *testing.T) {
+	t.Parallel()
 	rows := groupApproverRows(t)
 	m := rows.m
 	ctx := context.Background()

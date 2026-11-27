@@ -1476,6 +1476,7 @@ func TestMainStartsWithAProfilesFile(t *testing.T) {
 // deployment ran before the kinds), and goes on to serve: the file declares no kind, so the
 // broker reads its blocks as the broker before the kinds did (policy.ParseProfiles).
 func TestMainStartsWithAFileOfProxyBlocks(t *testing.T) {
+	t.Parallel()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)

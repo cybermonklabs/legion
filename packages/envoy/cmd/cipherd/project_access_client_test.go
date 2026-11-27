@@ -155,6 +155,7 @@ func TestTheBrokerAsksProjectAccessOnTheClientThatKeepsItsConnections(t *testing
 // nil without BROKER_PROJECT_ACCESS_URL and non-nil with it; dropping either half of that choice
 // ends old sign-ins on every broker or on none.
 func TestEndUnrecordedSignInsFollowsProjectAccess(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name          string
 		projectAccess projectaccess.Access
