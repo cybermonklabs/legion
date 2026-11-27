@@ -6078,7 +6078,7 @@ async function headFromGithub(seed: Record<string, FakeRepository>): Promise<str
     await counted;
     expect(
       answer.status === 400 && listenerRefusedLane(answered) && fromListener === 0 && reached === 1,
-      `${label}: the listener refuses the forged ${action} of ${repository}#${number} on GitHub's lane, and it reaches no bus: it answered ${answer.status} ${answered}; ${subject} carried ${fromListener} message(s) in the second after, and ${reached - fromListener} once the copy went straight onto the bus, want 0 and 1`
+      `${label}: the listener refuses the forged ${action} of ${repository}#${number} on GitHub's lane, and it reaches no bus: it answered ${answer.status} ${answered.trimEnd()}; ${subject} carried ${fromListener} message(s) in the second after, and ${reached - fromListener} once the copy went straight onto the bus, want 0 and 1`
     );
     await Bun.sleep(3_000);
     const calls = await fakeCalls();
