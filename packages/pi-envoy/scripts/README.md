@@ -857,9 +857,13 @@ starts; `HANDOFF_NOT_FOUND` for the `review` handoff is declared for reviewer-te
 reviewer; a run
 with no such log is unhealthy); the run's GitHub stand-in answered as GitHub does, by its own log,
 `<run>/logs/github.log` (no request it refused or holds no route of, no status GitHub does not
-give, and a worker world's log kept); every push of the pull request's branch was stored as
-Dispatch's head, by the head watcher's `<run>/logs/heads.log`, and the branch stands at a head
-the record stored; no tool call names a path under another run's directory;
+give, and a worker world's log kept, holding a request where its seeds record a result below the
+pull request head the world stored, as in threads-closed's accept, correct and crossing:
+production's Dispatch asks GitHub whether the repository holds such a commit, and answers a result
+at an open or merged head it stores from that head alone, since #5416); every push of the pull
+request's branch was stored as Dispatch's head, by the head watcher's `<run>/logs/heads.log`, and
+the branch stands at a head the record stored; no tool call names a path under another run's
+directory;
 no tool call reads a path another of the runs given wrote last before the read, or, for a run from
 before the rig gave each run a namespace (one with no `<run>/namespace.txt`), a `/tmp` entry that
 was there before the run (its `<run>/logs/scratch-before.txt`, which the agent's world hides, or

@@ -60,7 +60,8 @@ export const GITHUB_ROUTES: readonly GithubRoute[] = [
     site: "githubapp/client.go installation",
     asked:
       "githubapp.Client.RepositoryToken, which mints the installation token of every read of the repository below (delivery/branch.go repositoryRead)",
-    measured: "each worker world's seeds, at the first result a seed records",
+    measured:
+      "a worker world's seeds, at the first result they record below the pull request's stored head (threads-closed's accept, correct and crossing); in every other worker world, at the first repository read its Dispatch makes (`dispatch results` one push below the head, or the reconcile's re-read of a stale head)",
   },
   {
     route: "POST /app/installations/{id}/access_tokens",
@@ -69,7 +70,8 @@ export const GITHUB_ROUTES: readonly GithubRoute[] = [
     site: "githubapp/client.go token",
     asked:
       "githubapp.Client.RepositoryToken → RepositoryTokenWithStatuses, once a token's life (an hour); since #4299 the request is built in token, which Token calls too",
-    measured: "each worker world's seeds, at the first result a seed records",
+    measured:
+      "a worker world's seeds, at the first result they record below the pull request's stored head (threads-closed's accept, correct and crossing); in every other worker world, at the first repository read its Dispatch makes (`dispatch results` one push below the head, or the reconcile's re-read of a stale head)",
   },
   {
     route: "GET /repos/{owner}/{repo}/commits/{sha}",
@@ -78,8 +80,9 @@ export const GITHUB_ROUTES: readonly GithubRoute[] = [
     status: 200,
     site: "githubapp/commits.go HasCommit",
     asked:
-      "api/results.go refuseUnknownCommit → delivery.RepositoryHoldsCommit (commit_held.go): a result is refused at a commit the repository does not hold",
-    measured: "each result the worker worlds' seeds record (implement-handoff, tester-result)",
+      "api/results_linked.go refuseUnknownCommit → delivery.RepositoryHoldsCommit (commit_held.go): a result is refused at a commit the repository does not hold; one at an open or merged head Dispatch stores for the issue is answered from that head and asks nothing (HeadsAttributedTo, since #5416)",
+    measured:
+      "each result a worker world's seeds record below the pull request's stored head (implement-handoff and tester-result in threads-closed's accept, correct and crossing); measured asking nothing at a seeded result at that head (run 7ca197407eba, 2026-11-27)",
   },
   {
     route: "GET /repos/{owner}/{repo}",

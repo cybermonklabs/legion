@@ -208,10 +208,13 @@
  *      success but the status GitHub answers its route with, no answer of 400 or more the
  *      scenario does not declare (GITHUB_DECLARED), and no line that is not the stand-in's own.
  *      A route it refused changed what Dispatch told an agent whether or not an agent asked for
- *      it. A worker world (run-names.ts's SCENARIOS, `world: "worker"`), whose seeds make its
- *      Dispatch ask GitHub, must also have kept that record and a request in it: a log missing,
- *      empty, not opening with the `listening` line, or holding that line alone is a run whose
- *      record was not kept, never one with no refusals. It is read right after rule 16;
+ *      it. A worker world (run-names.ts's SCENARIOS, `world: "worker"`) must also have kept that
+ *      record, and one whose seeds make its Dispatch ask GitHub (`seedsAskGitHub`: a result seeded
+ *      below the pull request head the world stored, which production's Dispatch reads of GitHub,
+ *      where it answers a result at a stored head from that head alone) a request in it: a log
+ *      missing, empty, not opening with the `listening` line, or holding that line alone where a
+ *      request is due is a run whose record was not kept, never one with no refusals. It is read
+ *      right after rule 16;
  *  19. head: the head the run's Dispatch compares results with is the pull request's, as the
  *      push's own event moves it in production (`headUnmoved`): the run's head watcher
  *      (head-watcher.ts, which rig.sh's start_heads starts) recorded every push of
@@ -1597,7 +1600,8 @@ const GithubLine = z.union([
   }),
 ]);
 /** Why a run with no record of its GitHub is unhealthy, by how the record is absent: a worker
- * world's missing, any run's empty or not opened, and a worker world's that holds no request. */
+ * world's missing, any run's empty or not opened, and the record of a worker world whose seeds
+ * make its Dispatch ask GitHub that holds no request (`seedsAskGitHub`). */
 export const GITHUB_NOT_KEPT = {
   missing: `github: ${GITHUB_LOG} is missing, so the run kept no record of what its Dispatch asked GitHub`,
   empty: `github: ${GITHUB_LOG} is empty, so the run kept no record of what its Dispatch asked GitHub`,
@@ -1605,16 +1609,50 @@ export const GITHUB_NOT_KEPT = {
   unasked: `github: ${GITHUB_LOG} holds the stand-in's listening line and no request, so the run's Dispatch never asked GitHub what its world's seeds make it ask`,
 };
 
+/** The implementer's handoff body rig.sh's fixture_implement writes, <run>/implement.json, as far
+ * as rule 18 reads it: `head`, the commit the `implement-handoff` seed records the implementer's
+ * result at (worker_run_world). */
+const ImplementHead = z.object({ head: z.string() });
+
+/** Whether a worker world's seeds make its Dispatch ask GitHub, by the run's own files. The world
+ * stores the pull request's head, world.json's `head`, before its first result (worker_run_world:
+ * `seed.ts pull-request`, then `implement-handoff`), and production's Dispatch asks GitHub whether
+ * the repository holds a result's commit only where no open or merged head it stores for the issue
+ * names that commit (packages/envoy/internal/dispatch/api/results_linked.go, refuseUnknownCommit,
+ * which reads HeadsAttributedTo first since #5416). So a world whose implementer's result
+ * (implement.json's `head`) is at that head asks nothing at its seeds — every tester-proof and
+ * reviewer-text-findings world, and threads-closed's code-defect, whose reviewer pushed nothing
+ * (measured: run 7ca197407eba's log, at a Dispatch of b537de2d, held its listening line alone,
+ * where run f559439bac75's, at 52a884c8, from before #5416, held the installation read, the
+ * token's mint and a commit read at each seeded result). A world whose reviewer pushed a commit
+ * above the implementer's (threads-closed's accept, correct and crossing) records both results one
+ * push below the stored head, and its Dispatch reads each commit of GitHub. A run whose files do
+ * not show the two heads agree, an implement.json or a world.json missing or unreadable among
+ * them, is held to a request, since nothing shows that its seeds asked nothing. */
+function seedsAskGitHub(dir: string): boolean {
+  const read = readWorld(dir);
+  if (!("world" in read)) return true;
+  let body: unknown;
+  try {
+    body = JSON.parse(readFileSync(path.join(dir, "implement.json"), "utf8"));
+  } catch {
+    return true;
+  }
+  const implement = ImplementHead.safeParse(body);
+  return !implement.success || implement.data.head !== read.world.head;
+}
+
 /** Rule 18: why the run's GitHub stand-in's record makes it unhealthy, or undefined. A worker
- * world (run-names.ts's `workerWorld`, the rig's scenario table), whose seeds make its Dispatch
- * ask GitHub (measured: the installation read, the token's mint and a commit read at each result
- * a seed records), must have kept the record and must hold a request in it (GITHUB_NOT_KEPT). Any
- * other run that has a record is read the same way but for that last, and one with none started
- * no stand-in. Then each line after the first: one the stand-in does not write, a second
- * `listening` line (the stand-in started twice), a refusal, a request that is no route of
- * GITHUB_ROUTES (`githubRouteOf`, read from the table whatever route the line names), a success
- * other than the one GitHub answers that route with (its `status`), and an answer of 400 or more
- * `declared` (GITHUB_DECLARED) does not declare for the run's scenario. */
+ * world (run-names.ts's `workerWorld`, the rig's scenario table) must have kept the record, and
+ * one whose seeds make its Dispatch ask GitHub (`seedsAskGitHub`: the installation read, the
+ * token's mint and a commit read at each result a seed records below the pull request's stored
+ * head) must hold a request in it (GITHUB_NOT_KEPT). Any other run that has a record is read the
+ * same way but for that last, and one with none started no stand-in. Then each line after the
+ * first: one the stand-in does not write, a second `listening` line (the stand-in started twice),
+ * a refusal, a request that is no route of GITHUB_ROUTES (`githubRouteOf`, read from the table
+ * whatever route the line names), a success other than the one GitHub answers that route with
+ * (its `status`), and an answer of 400 or more `declared` (GITHUB_DECLARED) does not declare for
+ * the run's scenario. */
 export function githubRefusal(
   run: Pick<Run, "dir" | "scenario">,
   declared: Readonly<Record<string, readonly GithubDeclared[]>> = GITHUB_DECLARED
@@ -1659,7 +1697,7 @@ export function githubRefusal(
       continue;
     return `github refusal: ${where}, ${asked} answered ${line.status} on ${route.route}, which ${run.scenario} does not declare (health.ts GITHUB_DECLARED)`;
   }
-  return worker && requests === 0 ? GITHUB_NOT_KEPT.unasked : undefined;
+  return worker && requests === 0 && seedsAskGitHub(run.dir) ? GITHUB_NOT_KEPT.unasked : undefined;
 }
 
 /** The run's head watcher's record (head-watcher.ts), under the run directory. */

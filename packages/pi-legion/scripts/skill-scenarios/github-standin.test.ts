@@ -557,6 +557,60 @@ describe("health's rule 18 over the stand-in's log", () => {
     expect(githubRefusal(run("reviewer-text-findings", listening + served))).toBeUndefined();
   });
 
+  // Catches: a worker world whose seeds record every result at the pull request head the world
+  // stored, which production's Dispatch answers from that head and asks GitHub nothing for
+  // (results_linked.go's refuseUnknownCommit reads HeadsAttributedTo first since #5416), read as a
+  // run whose record was not kept, as every reviewer-text-findings run on a Dispatch of b537de2d
+  // was (7ca197407eba, whose log held its listening line alone); a log missing there read as kept;
+  // and a world whose implementer's result is below that head (threads-closed's accept, correct and
+  // crossing, whose reviewer pushed above it), or whose files do not show the two heads agree,
+  // read as healthy with no request.
+  test("a worker world whose seeded results stand at the head it stored is held to its log and to no request, and one with a result below that head to a request", () => {
+    const stored = "5e6192df8ac40859d7e5f95ea8530879b198ac84";
+    const below = "fa77948cafa4ac3bac7094dd8a36897a25cb5b19";
+    /** A run of `scenario` whose world.json (rig.sh's fixture_write) names `head`, beside an
+     * implement.json holding `implement` and the stand-in log `log`, each absent where undefined. */
+    const seededAt = (
+      scenario: string,
+      head: string,
+      implement: string | undefined,
+      log: string | undefined
+    ) => {
+      const made = run(scenario, log);
+      const world = {
+        key: "WID-1",
+        repo: REPO,
+        pr: 1001,
+        branch: "legion/WID-1",
+        base: "main",
+        head,
+      };
+      writeFileSync(path.join(made.dir, "world.json"), `${JSON.stringify(world)}\n`);
+      if (implement !== undefined) writeFileSync(path.join(made.dir, "implement.json"), implement);
+      return made;
+    };
+    /** implement.json as rig.sh's fixture_implement writes it. */
+    const implement = (head: string) => `${JSON.stringify({ head }, null, 2)}\n`;
+    for (const scenario of WORKER) {
+      const read = (body: string | undefined, log: string | undefined) => [
+        scenario,
+        githubRefusal(seededAt(scenario, stored, body, log)),
+      ];
+      expect(read(implement(stored), listening)).toEqual([scenario, undefined]);
+      expect(read(implement(stored), listening + served)).toEqual([scenario, undefined]);
+      expect(read(implement(stored), undefined)).toEqual([scenario, GITHUB_NOT_KEPT.missing]);
+      expect(read(implement(below), listening)).toEqual([scenario, GITHUB_NOT_KEPT.unasked]);
+      expect(read(undefined, listening)).toEqual([scenario, GITHUB_NOT_KEPT.unasked]);
+      expect(read("{", listening)).toEqual([scenario, GITHUB_NOT_KEPT.unasked]);
+      expect(read(implement(below), listening + served)).toEqual([scenario, undefined]);
+    }
+    for (const scenario of OTHER)
+      expect([
+        scenario,
+        githubRefusal(seededAt(scenario, stored, implement(below), listening)),
+      ]).toEqual([scenario, undefined]);
+  });
+
   // Catches: the stand-in started twice in one run, whose second Dispatch's requests the first
   // stand-in never saw.
   test("a second listening line is unhealthy", () => {
@@ -875,13 +929,20 @@ function worldRun(call: string, after: string[] = []) {
 // Catches: a world whose Dispatch cannot read its repository (GitHub at port 1, or a stand-in that
 // refuses the default-branch read), which answers "not known" where production answers that the
 // commit is none of the compared commits; a read of the world's GitHub the measurement did not
-// see; and a run of it rule 18 reads as unhealthy.
+// see; and a run of it rule 18 reads as unhealthy. And a world whose seeds ask GitHub where
+// production's Dispatch asks nothing, or the other way round: both seeded results stand at the
+// head the world stored, which Dispatch answers from that head (results_linked.go's
+// refuseUnknownCommit, since #5416), so the seeds ask nothing and rule 18 holds the run to no
+// request, and GitHub is first asked at the read one push below the head.
 test.skipIf(pg === undefined)(
   "a reviewer reads a result one push below the head as production answers it, and nothing reads not known",
   () => {
     const { scratch, code, stderr } = worldRun(
       "run_reviewer_text_findings pin proj 0 0 text-only",
       [
+        'mkdir -p "$SCRATCH/at-seeds/logs"',
+        'cp "$R/logs/github.log" "$SCRATCH/at-seeds/logs/github.log"',
+        'cp "$R/world.json" "$R/implement.json" "$SCRATCH/at-seeds/"',
         "results at-head",
         'jq -r .head "$R/world.json" >"$SCRATCH/seeded"',
         'git clone -q "$R/remote.git" "$SCRATCH/later"',
@@ -914,9 +975,16 @@ test.skipIf(pg === undefined)(
       expect(answer).not.toContain("not known");
       expect(answer).not.toContain("cannot read the repository");
     }
+    const seededLog = read("at-seeds/logs/github.log");
+    expect([
+      seededLog.split("\n").filter((line) => line !== "").length,
+      callsOf(seededLog),
+    ]).toEqual([1, []]);
+    expect(
+      githubRefusal({ dir: path.join(scratch, "at-seeds"), scenario: "reviewer-text-findings" })
+    ).toBeUndefined();
     expect(callsOf(read("github.log"))).toEqual([
       "GET /repos/{owner}/{repo}",
-      "GET /repos/{owner}/{repo}/commits/{sha} (application/vnd.github.sha)",
       "GET /repos/{owner}/{repo}/commits/{sha}/pulls",
       "GET /repos/{owner}/{repo}/installation",
       "POST /app/installations/{id}/access_tokens",
