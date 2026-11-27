@@ -39,14 +39,13 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   NOT_OWNER_NAME,
-  ownerRepoPattern,
+  ownerRepo,
   settingsFieldLabel,
   settingsMonoInput,
   settingsSubmitButton,
   settingsTableHead,
   settingsTableRow,
   settingsTableWrapper,
-  wholeValue,
 } from "./classes";
 
 /** Lists native projects, lets a human create one, and carries two settings of each project:
@@ -597,11 +596,6 @@ function DefaultAssigneeSelect({
     </select>
   );
 }
-
-/** The check the default-repository cell makes before it sends. The server holds the name to
- *  GitHub's own grammar, which is stricter than `ownerRepoPattern`, and its refusal shows under
- *  the cell. */
-const ownerRepo = wholeValue(ownerRepoPattern);
 
 /** One project's default-repository cell. The text box holds the project's default repository,
  *  labelled `Default repository of <KEY>`, and an empty box reads **None**. Save sends what was

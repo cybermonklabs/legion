@@ -24,12 +24,12 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { buildProjectPath } from "../refs/routes";
 import {
-  ownerRepoPattern,
+  ownerRepo,
   settingsFieldLabel,
   settingsMonoInput,
   settingsSubmitButton,
-  wholeValue,
 } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -68,10 +68,6 @@ function textOrNull(text: string): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
-/** The check a source's repository box makes before Save sends: `owner/name`. The server holds
- *  the name to GitHub's own grammar, which is stricter, and its refusal shows under the form. */
-const ownerRepo = wholeValue(ownerRepoPattern);
-
 /** The most deploy sources one project holds (the settings route's own bound). */
 const MAX_SOURCES = 50;
 
@@ -83,7 +79,7 @@ type SourceKind = ProjectDeploySource["kind"];
 /** The seven evals whose targets the settings name (the spec's Design), each a number in its
  *  eval's own unit or `off`. `TARGET_LABELS` lists them in the order the route's own list
  *  (`deliverySettingsTargetSlugs`) gives, which is the order the editor shows them in. */
-type TargetSlug = keyof NonNullable<ProjectDeliverySettings["targets"]>;
+type TargetSlug = keyof ProjectDeliverySettings["targets"];
 
 const TARGET_LABELS: Record<TargetSlug, string> = {
   "deploy-frequency": "Deploy frequency (deploys a day)",
@@ -170,7 +166,7 @@ interface Refusal {
 function writerRefusal(project: string, viewer: AuthenticatedUser | undefined): Refusal | null {
   if (viewer?.kind !== "agent" || agentSession(viewer) !== undefined) return null;
   return {
-    message: `An agent saves these settings as one of its sessions, and this page names none: open it at /projects/${project}/settings?session=<your session>.`,
+    message: `An agent saves these settings as one of its sessions, and this page names none: open it at ${buildProjectPath({ kind: "settings", project })}?session=<your session>.`,
   };
 }
 
@@ -213,7 +209,7 @@ function sourceDraft(source: ProjectDeploySource): SourceDraft {
 function draftOf(record: ProjectDeliverySettings | null): Draft {
   const targets = {} as Record<TargetSlug, string>;
   for (const slug of TARGET_SLUGS) {
-    const target = record?.targets?.[slug];
+    const target = record?.targets[slug];
     targets[slug] = target === undefined ? "" : String(target);
   }
   return {

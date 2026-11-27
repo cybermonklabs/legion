@@ -18,6 +18,19 @@ export function deploySource(page: Page, n: number) {
   return page.getByRole("group", { name: `Deploy source ${n}` });
 }
 
+/** Fills deploy source `n`'s rule on the settings tab `page` shows: its workflow, its production
+ *  jobs and its PR checks workflow. */
+export async function fillRule(
+  page: Page,
+  n: number,
+  rule: { workflow: string; jobs: string; checks: string }
+): Promise<void> {
+  const source = deploySource(page, n);
+  await source.getByLabel("Deploy workflow", { exact: true }).fill(rule.workflow);
+  await source.getByLabel("Production jobs", { exact: true }).fill(rule.jobs);
+  await source.getByLabel("PR checks workflow", { exact: true }).fill(rule.checks);
+}
+
 /** Presses Save on `project`'s settings tab and waits for the server's 200 and the line that
  *  says so. */
 export async function saveDeliverySettings(page: Page, project: string): Promise<void> {

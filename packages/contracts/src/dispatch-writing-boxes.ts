@@ -72,7 +72,7 @@ export type DispatchWritingBox =
  *   and which is sent to nobody.
  * - `priority-title`: a priority's title.
  * - `issue-title`: an issue's title.
- * - `delivery-settings`: the delivery settings of this Dispatch.
+ * - `delivery-settings`: one project's delivery settings, on its Settings tab.
  */
 export type DispatchWriting =
   | "comment"

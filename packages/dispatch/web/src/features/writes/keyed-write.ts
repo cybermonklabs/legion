@@ -455,7 +455,7 @@ export async function writeUnderKey<T>(
           login,
           progress: uploading,
           sent: told,
-          ...(session === undefined ? {} : { session }),
+          session,
         });
       } catch (error) {
         if (isKeyCommitted(error) || error instanceof AnswerNotKeptError) return null;

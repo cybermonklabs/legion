@@ -57,14 +57,10 @@ const PENDING = "\u2026";
 /** What a failure measure shows where the window holds no row of its eval: "no data", never 0. */
 const NO_DATA = "No data for this window";
 
-/** A failure measure's rate as a figure, `NO_VALUE` where the window holds no row of its eval
- *  (the measure is null) or it states no rate. */
-function failureRate(
-  measure: { rate: number | null } | null | undefined,
-  digits: number,
-  extra: number
-): string {
-  return measure?.rate == null ? NO_VALUE : pct(measure.rate, digits + extra);
+/** A failure measure's rate as a figure of `digits` decimals, `NO_VALUE` where the window holds no
+ *  row of its eval (the measure is null) or it states no rate. */
+function failureRate(measure: { rate: number | null } | null | undefined, digits: number): string {
+  return measure?.rate == null ? NO_VALUE : pct(measure.rate, digits);
 }
 
 /** A figure of the whole window that the target of `measure`'s eval may judge (`JudgedFigure`),
@@ -199,7 +195,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     },
     {
       label: "CFR (per deploy)",
-      write: show((_, extra) => failureRate(changeFail, 1, extra)),
+      write: show((_, extra) => failureRate(changeFail, 1 + extra)),
       judged: {
         measure: "change_failure_rate",
         statistic: "per_deploy.rate",
@@ -212,7 +208,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     },
     {
       label: "Deploy rework",
-      write: show(() => failureRate(failures?.rework, 1, 0)),
+      write: show(() => failureRate(failures?.rework, 1)),
     },
     { label: "Rework share", write: show((d) => pct(d.measures.rework_share)) },
   ];
@@ -284,7 +280,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               statistic="per_deploy.rate"
               targets={targets}
               value={changeFail?.rate ?? null}
-              write={show((_, extra) => failureRate(changeFail, 2, extra))}
+              write={show((_, extra) => failureRate(changeFail, 2 + extra))}
             />
             <span className={`text-xs ${textMutedOnSurface}`}>per deploy</span>
           </div>
@@ -689,7 +685,7 @@ function Definitions({
             "change_failure_rate",
             "per_deploy.rate",
             changeFailRate?.rate ?? null,
-            (extra) => failureRate(changeFailRate, 1, extra)
+            (extra) => failureRate(changeFailRate, 1 + extra)
           )}
         >
           {changeFailRate === null ? (
@@ -723,7 +719,7 @@ function Definitions({
             : `median, deploy ${"\u2192"} restore, of ${recovery.n} restored; ${recovery.not_restored} not restored`}
         </DefinitionCard>
 
-        <DefinitionCard title="Deployment rework rate" value={failureRate(rework, 1, 0)}>
+        <DefinitionCard title="Deployment rework rate" value={failureRate(rework, 1)}>
           {rework === null
             ? NO_DATA
             : `${rework.restoring} of ${rework.total} deploys restored a failure`}

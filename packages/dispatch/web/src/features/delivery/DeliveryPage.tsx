@@ -325,10 +325,10 @@ function OwnColourPicker({
 
 /** `/delivery`: successful production deploys, pipeline failures, and merged PRs labelled by
  *  agent session, Dispatch issue, priority, and architectural component, as the prototype's
- *  timeline view shows them. Until the timeline's configuration is set, Dispatch refuses the
- *  page's live view with `DELIVERY_NOT_CONFIGURED` and the page shows the settings form in the
- *  timeline's place; once a save configures it, Dispatch answers the same subscription with the
- *  timeline. */
+ *  timeline view shows them. Until a project has delivery on, Dispatch refuses the page's live
+ *  view with `DELIVERY_NOT_CONFIGURED` and the page shows, in the timeline's place, a link to each
+ *  project's settings tab (`ProjectSettingsLinks`); once a save turns delivery on, Dispatch answers
+ *  the same subscription with the timeline. */
 export function DeliveryPage(): ReactNode {
   useDocumentTitle("Delivery · Dispatch");
   const [state, setState] = useDeliveryUrlState();

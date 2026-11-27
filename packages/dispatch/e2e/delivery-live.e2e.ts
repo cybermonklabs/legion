@@ -22,6 +22,10 @@ interface LiveSocket {
 
 const deliveryGet = /\/api\/v1\/delivery\/(timeline|measures|pipeline)(?:\?|$)/;
 
+/** Marks every deploy source as heard from and reconciled now, so no source is stale when the
+ *  page opens. */
+const FRESH_SOURCES = `UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`;
+
 /** Stores review screenshots outside Playwright's success-cleaned output when a caller requests it. */
 function screenshotPath(testInfo: TestInfo, name: string): string {
   const directory = process.env.DISPATCH_DELIVERY_LIVE_SCREENSHOT_DIR;
@@ -219,7 +223,7 @@ test("a merge appears without a reload, and the page issues no delivery GET @pr"
   browser,
 }, testInfo) => {
   await seedDeliveryFixture();
-  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
+  await sql(FRESH_SOURCES);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const deliveryRequests: string[] = [];
@@ -455,7 +459,7 @@ test("the freshness row says Live with the last change, and Reconnecting while d
 }) => {
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
-  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
+  await sql(FRESH_SOURCES);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -480,7 +484,7 @@ test("on a phone the delivery page shows a merge without a reload", async ({
 }, testInfo) => {
   await seedDeliveryFixture();
   await seedDeliveryReconcileGithub();
-  await sql(`UPDATE project_deploy_sources SET last_event_at = now(), last_reconcile_at = now()`);
+  await sql(FRESH_SOURCES);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 

@@ -6,7 +6,12 @@ import {
   seedMeasuresFixture,
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
-import { deploySource, projectWithDefault, saveDeliverySettings } from "./delivery-settings-steps";
+import {
+  deploySource,
+  fillRule,
+  projectWithDefault,
+  saveDeliverySettings,
+} from "./delivery-settings-steps";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
@@ -532,18 +537,14 @@ test("an unconfigured Delivery page links to the project settings tabs, and a sa
     // A repository the App cannot read is refused with the server's own reason, and nothing is
     // stored: the switch and the draft stay.
     await repository.fill("acme/unseen");
-    await source
-      .getByLabel("Deploy workflow", { exact: true })
-      .fill(".github/workflows/deploy.yml");
-    await source
-      .getByLabel("Production jobs", { exact: true })
-      .fill("widgets-release / widgets-release\nrelease / release");
+    await fillRule(page, 1, {
+      checks: ".github/workflows/pr-checks.yml",
+      jobs: "widgets-release / widgets-release\nrelease / release",
+      workflow: ".github/workflows/deploy.yml",
+    });
     await source
       .getByLabel("Production apply step", { exact: true })
       .fill("Run ./.github/actions/apply");
-    await source
-      .getByLabel("PR checks workflow", { exact: true })
-      .fill(".github/workflows/pr-checks.yml");
     await page
       .getByLabel("Population authors", { exact: true })
       .fill("octocat\noctocat-agent[bot]");

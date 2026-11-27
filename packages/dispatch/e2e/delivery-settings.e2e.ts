@@ -5,8 +5,7 @@
  *  (dispatch://INFRA-978, R1, R2, R4 and k5). */
 
 // acme-shaped placeholders throughout (AGENTS.md: "This repository is public").
-import type { Page } from "@playwright/test";
-
+import type { DeliveryPipelineResponse } from "../web/src/api/types";
 import {
   baseUrl,
   e2eAgentToken,
@@ -14,7 +13,12 @@ import {
   putProjectDeliverySettings,
 } from "./api";
 import { PIPELINE_AT, seedPipelineFixture } from "./delivery-seed";
-import { deploySource, projectWithDefault, saveDeliverySettings } from "./delivery-settings-steps";
+import {
+  deploySource,
+  fillRule,
+  projectWithDefault,
+  saveDeliverySettings,
+} from "./delivery-settings-steps";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -27,18 +31,6 @@ async function appReads(...repos: string[]): Promise<void> {
       repos.map((repo, index) => [repo, { contents: "read", installation_id: 970 + index }])
     )
   );
-}
-
-/** Fills deploy source `n`'s rule: its workflow, its production jobs and its PR checks workflow. */
-async function fillRule(
-  page: Page,
-  n: number,
-  rule: { workflow: string; jobs: string; checks: string }
-): Promise<void> {
-  const source = deploySource(page, n);
-  await source.getByLabel("Deploy workflow", { exact: true }).fill(rule.workflow);
-  await source.getByLabel("Production jobs", { exact: true }).fill(rule.jobs);
-  await source.getByLabel("PR checks workflow", { exact: true }).fill(rule.checks);
 }
 
 test("two projects keep the settings saved on their own tabs, one with two deploy sources", async ({
@@ -110,16 +102,16 @@ test("two projects keep the settings saved on their own tabs, one with two deplo
         resolved_repo: "acme/deploys",
       },
     ]);
-    expect(acme?.targets?.["deploy-frequency"]).toBe(8);
-    expect(acme?.targets?.["failed-deploy-recovery"]).toBe(120);
+    expect(acme?.targets["deploy-frequency"]).toBe(8);
+    expect(acme?.targets["failed-deploy-recovery"]).toBe(120);
     const gadgets = await getProjectDeliverySettings("GADG");
     expect(gadgets?.sources?.map(({ repo, resolved_repo }) => [repo, resolved_repo])).toEqual([
       [null, "acme/gadgets"],
     ]);
     expect(gadgets?.failure_sources).toEqual(["reverts"]);
     expect(gadgets?.failures_measured_since).toBe("2026-11-01");
-    expect(gadgets?.targets?.["deploy-frequency"]).toBe(3);
-    expect(gadgets?.targets?.["change-fail-rate"]).toBe("off");
+    expect(gadgets?.targets["deploy-frequency"]).toBe(3);
+    expect(gadgets?.targets["change-fail-rate"]).toBe("off");
 
     // And each tab, opened again, shows its own.
     await page.goto("/projects/ACME/settings");
@@ -168,7 +160,7 @@ test("a project turned off shows the switch alone, and the pipeline counts none 
       headers: { Authorization: `Bearer ${e2eAgentToken}` },
     });
     expect(response.status()).toBe(200);
-    const body = (await response.json()) as { production_apply: { total: { n: number } } };
+    const body = (await response.json()) as DeliveryPipelineResponse;
     return body.production_apply.total.n;
   };
 
@@ -242,7 +234,7 @@ test("the settings tab saves under the stack's agent bearer with no sign-in", as
     const acme = await getProjectDeliverySettings("ACME");
     expect(acme?.delivery).toBe(true);
     expect(acme?.sources?.map(({ resolved_repo }) => resolved_repo)).toEqual(["acme/widgets"]);
-    expect(acme?.targets?.["deploy-frequency"]).toBe(5);
+    expect(acme?.targets["deploy-frequency"]).toBe(5);
     expect(acme?.updated_by).toMatchObject({ id: AGENT_SESSION, kind: "session" });
 
     await page.reload();

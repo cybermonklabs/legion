@@ -8,11 +8,12 @@ import { sql } from "./psql";
 const SEED_ACTOR = `'{"kind":"system","id":"e2e-seed"}'`;
 
 /** The statements that give `project` the delivery settings every delivery fixture reads: the
- *  project (made, under `name`, where it does not exist yet) with `acme/widgets` as its default
- *  repository, its settings row with delivery on, and one `github_workflow` source that names no
- *  repository, so it reads the default. Every project names a default assignee: alice, the person
- *  every row of these fixtures is read as. */
-function deliverySettingsSql(project = "ACME", name = "Acme"): string[] {
+ *  project (made where it does not exist yet, named Acme for ACME and by its key otherwise) with
+ *  `acme/widgets` as its default repository, its settings row with delivery on, and one
+ *  `github_workflow` source that names no repository, so it reads the default. Every project names
+ *  a default assignee: alice, the person every row of these fixtures is read as. */
+function deliverySettingsSql(project = "ACME"): string[] {
+  const name = project === "ACME" ? "Acme" : project;
   return [
     `INSERT INTO projects (key, name, default_assignee, default_repo)
      VALUES ('${project}', '${name}', 'alice', 'acme/widgets')
@@ -346,6 +347,6 @@ export async function seedPipelineRows(): Promise<void> {
 /** The Pipeline page's fixture on a reset database: the delivery settings, of `project` (the
  *  fixture's ACME unless named), then its rows. */
 export async function seedPipelineFixture(project = "ACME"): Promise<void> {
-  await sql(...deliverySettingsSql(project, project === "ACME" ? "Acme" : project));
+  await sql(...deliverySettingsSql(project));
   await seedPipelineRows();
 }

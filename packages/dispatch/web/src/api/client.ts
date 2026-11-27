@@ -1955,47 +1955,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
   }
 
-  /** One page of the project's deploys and failed changes, newest first, `{items, total, limit,
-   *  offset}`: a deploy by its `finished_at` and a failure by its `detected_at` within
-   *  `[from, to)` (the last 7 days by default, at most 84). `kind` and `state` narrow it, and
-   *  `deploy_id` keeps the failures that blame one deploy, the drill-down's read. */
-  listProductionEvents(
-    project: string,
-    query: Query<"/api/v1/projects/{key}/production-events", "get"> = {}
-  ) {
-    return this.read("/api/v1/projects/{key}/production-events", { key: project }, query);
-  }
-
-  /** Posts one deploy or failure: `201` for a new row, and `200` with the row the project holds
-   *  under the same `source_ref`, which writes nothing. A person's credential posts a failure
-   *  alone, the drill-down's flag, keyed by the server as `person:<deploy id>:<login>`; a failure
-   *  whose deploy no row matches is `409 PRODUCTION_EVENT_NO_DEPLOY`. */
-  postProductionEvent(
-    project: string,
-    input: Body<"/api/v1/projects/{key}/production-events", "post">,
-    bounds: WriteBounds
-  ) {
-    return this.post("/api/v1/projects/{key}/production-events", { key: project }, input, bounds);
-  }
-
-  /** Rejects, re-counts or restores (Mark restored) one failure of the project, answering the
-   *  row; a reject and a re-count need a `reason`. A person writes every state, the project's
-   *  controller a reject and a re-count, and anyone else is `403
-   *  PRODUCTION_EVENT_STATE_FORBIDDEN`. */
-  putProductionEventState(
-    project: string,
-    id: string,
-    input: Body<"/api/v1/projects/{key}/production-events/{id}/state", "put">,
-    bounds: WriteBounds
-  ) {
-    return this.put(
-      "/api/v1/projects/{key}/production-events/{id}/state",
-      { key: project, id },
-      input,
-      bounds
-    );
-  }
-
   /** One project's delivery settings, or `null` for a project with none: the switch, its deploy
    *  sources (each with its `id`, the repository it reads as `resolved_repo`, and
    *  `reconciled_through`, null until that repository's import has run), the population, the

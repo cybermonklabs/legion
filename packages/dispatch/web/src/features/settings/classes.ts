@@ -38,6 +38,11 @@ export function wholeValue(pattern: string): RegExp {
   return new RegExp(`^(?:${pattern})$`);
 }
 
+/** `ownerRepoPattern` as a test of a whole value: the check a Settings repository box makes before
+ *  it sends. The server holds the name to GitHub's own grammar, which is stricter, and its refusal
+ *  shows under the box. */
+export const ownerRepo = wholeValue(ownerRepoPattern);
+
 /** The gap between one Settings section and the next: the spec's step between the parts of a
  *  page. The page owns the rhythm - no section sets an outer margin of its own, which is how
  *  three sections came to line up at 40px by coincidence rather than by rule. */
