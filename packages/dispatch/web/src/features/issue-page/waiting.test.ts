@@ -374,7 +374,14 @@ test("what waits on the reader is their open questions, the review list and thei
     commentNode(change, "changed"),
   ]);
   const counted = waitingOnReader(issue, "alice", isCoverageStatement, { answer: tree });
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3, unread: 0 });
+  expect(counted).toEqual({
+    approvals: [spec.id],
+    asks: 1,
+    decisions: 1,
+    mayWait: 0,
+    total: 3,
+    unread: 0,
+  });
   expect(waitingIn(buildIssueTree({ coverage, issue, tree, viewer: "alice" }))).toEqual([
     "mine",
     "spec#b-listed",
@@ -407,7 +414,14 @@ test("a Change its author deleted leaves its decision on the review list and in 
     markedCommentNode(deleted, "changed"),
   ]);
   const counted = waitingOnReader(issue, "alice", isCoverageStatement, { answer: tree });
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4, unread: 0 });
+  expect(counted).toEqual({
+    approvals: [spec.id],
+    asks: 1,
+    decisions: 2,
+    mayWait: 0,
+    total: 4,
+    unread: 0,
+  });
 
   const root = buildIssueTree({ coverage, issue, tree, viewer: "alice" });
   expect(waitingIn(root)).toEqual(["mine", "spec#b-listed", "spec#b-changed"]);
@@ -449,6 +463,7 @@ test("waitingOnReader counts a waiting decision node", () => {
     approvals: [],
     asks: 0,
     decisions: 1,
+    mayWait: 0,
     total: 1,
     unread: 0,
   });
@@ -507,6 +522,7 @@ test("an overtaken open question is not counted", () => {
     approvals: [spec.id],
     asks: 0,
     decisions: 0,
+    mayWait: 0,
     total: 1,
     unread: 0,
   });
@@ -578,7 +594,7 @@ test("a decision past Conversation's first page with the reader's Change in the 
   expect(
     waitingOnReader(quiet, "alice", isCoverageStatement, { answer: decisions }),
     "the count counts a decision whose Change the decisions view read hangs under it"
-  ).toEqual({ approvals: [], asks: 0, decisions: 1, total: 1, unread: 0 });
+  ).toEqual({ approvals: [], asks: 0, decisions: 1, mayWait: 0, total: 1, unread: 0 });
 });
 
 // A Change its author deleted asks nothing any more. The tree read's answer marks the delete on
@@ -920,4 +936,45 @@ test("a decision whose Change may stand on the tree read's next page waits on no
     markedAndCounted(answerOf(firstPage)),
     "once the next page that holds none of its Changes is read"
   ).toEqual({ counted: 1, marked: [], unread: 0, waiting: ["spec#b-next"] });
+});
+
+// Decision 578 (2): while the tree read holds no answer, the count has read no page of it, so a
+// Change of any decision may stand on a page it has not loaded. The decisions are the decision
+// nodes of the answer the count is read from, so with no answer the count counts no decision and
+// marks none, and the outline draws no decision at all; the count may then be too low, so it
+// takes "+" (`more`, decisions 583 (1) and 586 (B)). Once the read answers, the count counts what
+// that answer makes each: the decision whose Change it holds waits on its agent, and the other on
+// the reader.
+test("no decision waits on the reader while the tree read holds no answer, and each that waits does once it answers", () => {
+  const askedChange: Comment = { ...change, anchor: null, id: "c-asked" };
+  const counted = (tree: TreeAnswer | undefined) => {
+    const { decisions, mayWait, more, unread } = waitingOnReader(
+      issue,
+      "alice",
+      isCoverageStatement,
+      tree === undefined ? {} : { answer: tree }
+    );
+    return { decisions, mayWait, ...(more === undefined ? {} : { more }), unread };
+  };
+  expect(counted(undefined), "while the tree read holds no answer").toEqual({
+    decisions: 0,
+    mayWait: 0,
+    more: true,
+    unread: 0,
+  });
+  expect(
+    waitingIn(buildIssueTree({ coverage, issue, viewer: "alice" })),
+    "the outline drew a decision that waits before the tree read answered"
+  ).toEqual([]);
+  const answered = answerOf([
+    statement,
+    decisionNode("asked", ["r1"]),
+    commentNode(askedChange, "asked"),
+    decisionNode("unasked", ["r1"]),
+  ]);
+  expect(counted(answered), "once the tree read answers").toEqual({
+    decisions: 1,
+    mayWait: 0,
+    unread: 0,
+  });
 });

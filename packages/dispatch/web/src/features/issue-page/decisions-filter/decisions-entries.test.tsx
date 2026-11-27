@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
-import { conversationTreeKey } from "../../../api/queries";
+import { conversationTreeKey, issueCoverageQuery } from "../../../api/queries";
 import type { Actor, Comment } from "../../../api/types";
 import { presetPath } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
@@ -68,6 +68,15 @@ function heldClient(asks: readonly DecisionsAsk[], tree: TreeAnswer): QueryClien
   });
   client.setQueryData(conversationTreeKey(KEY), tree);
   client.setQueryData(["asks", KEY, "thread"], asks);
+  // The coverage read, which places a decision whose statement the tree holds no node for: one
+  // that holds no statement, so each decision here is placed by the statements the tree holds.
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, {
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [],
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  });
   return client;
 }
 
@@ -413,6 +422,17 @@ test("answers older than the app's staleTime are not read again as the seam moun
     const given = { updatedAt: Date.now() - 31_000 };
     client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), given);
     client.setQueryData(["asks", KEY, "thread"], [], given);
+    client.setQueryData(
+      issueCoverageQuery(KEY).queryKey,
+      {
+        gaps: [],
+        has_plan: false,
+        issue: KEY,
+        requirements: [],
+        spec_artifact_id: SPEC_DOCUMENT.id,
+      },
+      given
+    );
     const hook = await mountOver(
       client,
       [statement("s1"), openAsk("q-open"), decisionNode("minor")],
@@ -506,9 +526,11 @@ test("a reader of the decisions view first drawn while the issue's last load has
 // A decisions view that holds no decision gives no decision and no error, and the view draws
 // the questions alone; so does a view that has not answered yet over a tree read that holds no
 // decision node, which is the read the page's tree is built from. Such a read holds its answer
-// all the same (`readsHeld`). While any one of the seam's reads has not answered, the questions
-// are drawn all the same. The view knows what the issue holds once the tree read and the asks
-// have answered, which say which questions and decisions there are; the decisions view only
+// all the same (`readsHeld`). While the tree read or the asks have not answered, no entry is
+// drawn, the questions included, so none is drawn in a part it then leaves (decision 585); while
+// the decisions view is out, the questions are drawn all the same. The view knows what the issue
+// holds once the tree read and the asks have answered, which say which questions and decisions
+// there are, and the coverage read holds an answer or stands refused; the decisions view only
 // stands over the tree read's decisions, so the view knows while it is out. Either of the first
 // two refused before it first answers is the seam's to name, with a retry of its own, so the body
 // can say so without naming a read; one refused only on a later read keeps the answer it gave,
@@ -571,7 +593,11 @@ test("an empty decisions member gives the questions alone and no error", async (
         out: key,
         readsHeld: hook.result.current.readsHeld,
       });
-      expect(reading()).toEqual({ open_questions: ["q-open"], out: key, readsHeld: knownWhileOut });
+      expect(reading()).toEqual({
+        open_questions: knownWhileOut ? ["q-open"] : [],
+        out: key,
+        readsHeld: knownWhileOut,
+      });
       expect(started).not.toHaveBeenCalled();
       await act(async () => client.setQueryData(key, answer));
       expect(reading()).toEqual({ open_questions: ["q-open"], out: key, readsHeld: true });
@@ -814,6 +840,17 @@ test("the seam mounted over reads older than the app's stale time sends no reque
   ];
   client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
   client.setQueryData(["asks", KEY, "thread"], [], { updatedAt: minuteAgo });
+  client.setQueryData(
+    issueCoverageQuery(KEY).queryKey,
+    {
+      gaps: [],
+      has_plan: false,
+      issue: KEY,
+      requirements: [],
+      spec_artifact_id: SPEC_DOCUMENT.id,
+    },
+    { updatedAt: minuteAgo }
+  );
   const never = () => new Promise<never>(() => {});
   const getIssueTree = spyOn(api, "getIssueTree").mockImplementation(never);
   const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockImplementation(never);

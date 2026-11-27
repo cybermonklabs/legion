@@ -91,7 +91,7 @@ func TestTheStoreRefusesAStateOrVisibilityOutsideItsValues(t *testing.T) {
 			}},
 		{"Caused, a state tuple its writer holds for the cause", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {
-				return Caused(ctx, tx, Uncaused{Tuples: []UncausedTuple{{Tuple: stateTuple(node, misspelledState)}}}, NoEvent)
+				return Caused(ctx, tx, Holding(UncausedTuple{Tuple: stateTuple(node, misspelledState)}), NoEvent)
 			}},
 		{"WriteArms, a node at a state it does not take", AttributeState, misspelledState,
 			func(ctx context.Context, tx pgx.Tx, node Node) error {

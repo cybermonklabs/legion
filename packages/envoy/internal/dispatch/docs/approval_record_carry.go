@@ -531,8 +531,8 @@ func readStatedFacts(writes []graphstore.Uncaused) statedFacts {
 			node.live = node.live || written.State != graphstore.StateGone
 			node.supertags = append(node.supertags, written.Supertag)
 		}
-		for index := range write.Tuples {
-			tuple := &write.Tuples[index].Tuple
+		for held := range write.Facts() {
+			tuple := &held.Tuple
 			node := of(tuple.FromKind, tuple.FromID)
 			switch {
 			case tuple.ToKind != graphstore.KindValue:

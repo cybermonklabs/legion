@@ -251,7 +251,7 @@ func TestADeferredRoomPassDatesARemovedDecisionsTiesAtItsFragmentsVersion(t *tes
 		t.Errorf("the deferred pass that removed d1 left it the ties %v, want none", after)
 	}
 	var retracted []time.Time
-	for _, held := range plan.Stated().Tuples {
+	for held := range plan.Stated().Facts() {
 		if tuple := held.Tuple; tuple.FromKind == BlockNodeKind && tuple.FromID == treeRef+"#d1" && slices.Contains(typedKinds, tuple.Kind) && !tuple.Asserted {
 			retracted = append(retracted, tuple.At)
 		}

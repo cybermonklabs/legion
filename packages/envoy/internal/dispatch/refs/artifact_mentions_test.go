@@ -130,7 +130,7 @@ func writeMentionsVersion(t *testing.T, database *store.Store, document string, 
 		if err := refs.Stamp(ctx, tx, graphstore.KindArtifact, document, event); err != nil {
 			return err
 		}
-		return graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, event)
+		return graphstore.Caused(ctx, tx, graphstore.Holding(mentions...), event)
 	}); err != nil {
 		t.Fatalf("write version %d of %s: %v", number, document, err)
 	}

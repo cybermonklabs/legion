@@ -23,7 +23,7 @@ func indexRoomCopies(t *testing.T, tx pgx.Tx, tree, treeRef string, versions Ver
 	_, newest := versions.Newest(tree)
 	var claims graphstore.Uncaused
 	for block, ask := range copies {
-		claims.Tuples = append(claims.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+		claims.State(graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: treeRef + "#" + block, Kind: graphstore.TupleCopiedFrom,
 			ToKind: graphstore.KindAsk, ToID: ask, At: newest.At, Who: roomAuthor, Asserted: true,
 		}})

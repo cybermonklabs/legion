@@ -43,9 +43,12 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * of a document and no comment list of its own. A Change may stand on a page of either read the
  * page has not loaded, a next page or an older comment page: a marked decision (`changeUnread`)
  * is not counted until those pages resolve it (decisions 563 (4) and 574 (B)), which the header
- * reads, the next pages and then the older comment pages of the read it counts, once the page has
- * drawn (`tree-read/tree-read.ts`' `useReadUnloadedPages`), as `unread` says. A Change on a
- * decision past Conversation's pages can still be read with its decision.
+ * reads, the next pages and then the older comment pages of the read it counts, once the page's
+ * view has drawn (`tree-read/tree-read.ts`' `useReadUnloadedPages`), as `unread` says. A Change
+ * on a decision past Conversation's pages can still be read with its decision. A marked decision
+ * that its ties put on the review list may wait on the reader once those pages are read, so
+ * while one does the count is not shown as final: it takes "+" (`WaitingOnReader.mayWait`,
+ * decisions 580 and 583 (1)), and the "+" goes once none is marked.
  * A Change its author deleted asks nothing any more, as in the outline: the same
  * answer's comment nodes carry their author's marks, which say which were (`treeComments`,
  * `deletedPostIds`).
@@ -62,11 +65,12 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * the one rule the outline finds an ask node's row by (`askOfNode`), in the read the decisions
  * are counted from.
  *
- * A count read from a read that names a next page counts the nodes loaded (R15), so it says so
+ * A count read from a read that names a next page, or while no tree answer is held yet
+ * (decisions 583 (1) and 586 (C)), counts only what is loaded (R15), so it says so
  * (`WaitingOnReader.more`), and the header draws it with "+", as the view row draws each count
- * (`presets.ts`' `filterSignals`): Conversation's read while it names one, and the decisions
- * view read, once the page holds it, only where it names one itself. So the count never claims a
- * number the reads it is read from cannot hold.
+ * (`presets.ts`' `filterSignals`): while no answer is held, Conversation's read while it names a
+ * next page, and the decisions view read, once the page holds it, only where it names one itself.
+ * So the count never claims a number the reads it is read from cannot hold.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -79,14 +83,19 @@ export interface WaitingOnReader {
   readonly approvals: readonly string[];
   /** All three, which is the number the count draws. */
   readonly total: number;
-  /** Whether the read the decisions are counted from names a next page (R15), so `total` counts
-   *  the decisions of the pages loaded and the header draws it with "+"; absent where it names
-   *  none. */
+  /** Whether no tree answer is held yet or the read the decisions are counted from names a next
+   *  page (R15, decisions 583 (1) and 586 (C)), so `total` counts only what is loaded and the
+   *  header draws it with "+"; absent once an answer is held that names no next page. */
   readonly more?: true;
   /** How many decisions carry the mark of a Change on a page not read yet (`changeUnread`),
    *  waiting for review or kept, none of them counted: while any does, the header reads those
    *  pages of the answer it counts (`useReadUnloadedPages`). */
   readonly unread: number;
+  /** How many of those marked decisions are on the review list by their ties, and so may wait on
+   *  the reader once their pages are read (decisions 580 and 583 (1)): while any is, the count
+   *  takes "+" after its number, the page's mark of a count with more to read (R15), so a count
+   *  that may be too low is never shown as final. */
+  readonly mayWait: number;
 }
 
 export function waitingOnReader(
@@ -124,6 +133,7 @@ export function waitingOnReader(
   // decisions are counted from alone, by the one rule every reader of a Change reads, and so is
   // which Changes their author deleted, which ask nothing any more, as in the outline.
   let reviewing = 0;
+  let mayWait = 0;
   let unread = 0;
   if (viewer !== undefined && answer !== undefined) {
     const changes = decisionNodeChanges(answer, undefined, deletedPostIds(treeComments(answer)));
@@ -137,13 +147,24 @@ export function waitingOnReader(
       ) {
         reviewing += 1;
       }
+      // One that its mark alone keeps off the count may wait on the reader once its pages are
+      // read (decisions 580 and 583 (1)).
+      if (
+        marked &&
+        decision.node.state !== "overtaken" &&
+        inReviewList(decision, isCoverageStatement, changed)
+      ) {
+        mayWait += 1;
+      }
     }
   }
-  const more = viewer !== undefined && answer !== undefined && nextTreeCursor(answer) !== undefined;
+  const more =
+    viewer !== undefined && (answer === undefined || nextTreeCursor(answer) !== undefined);
   return {
     approvals,
     asks,
     decisions: reviewing,
+    mayWait,
     ...(more ? { more: true as const } : {}),
     total: asks + reviewing + approvals.length,
     unread,

@@ -382,6 +382,16 @@ function publishedStatements(root: TreeNode): PublishedReferences {
   };
 }
 
+/** The coverage read, which places a decision whose statement the tree holds no node for: one
+ *  that holds no statement, so each decision here is placed by the statements the tree holds. */
+const EMPTY_COVERAGE = {
+  gaps: [],
+  has_plan: false,
+  issue: KEY,
+  requirements: [],
+  spec_artifact_id: SPEC_DOCUMENT.id,
+};
+
 /** The body over the issue whose tree holds `children`, over the reads `HeldReads` holds as the
  *  cache holds them. It is drawn under the names store, with what the page publishes for the
  *  tree's statements published to it and handed to the body (`publishedStatements`), where a
@@ -464,6 +474,7 @@ function renderBody(
     client.setQueryData(viewKey(KEY, "decisions"), readView(), answered);
   }
   if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE, answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {
@@ -960,6 +971,7 @@ async function renderReads(
   await hold(conversationTreeKey(KEY), reads.tree, treeAnswer(made));
   await hold(viewKey(KEY, "decisions"), reads.view, treeAnswer(made));
   await hold(["asks", KEY, "thread"], reads.asks, []);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
   const issue = issueDetails();
   const root = issueTree(reads.tree === "answered" ? children : []);
   const view = presetView(root, "decisions", "", new Set()).root;
@@ -1135,6 +1147,7 @@ test("Retry on the decisions' failed line reads them again and draws what they h
     return treeAnswer(made);
   });
   client.setQueryData(["asks", KEY, "thread"], []);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
   const issue = issueDetails();
   // The page's tree as `useIssueTree.ts` builds it from `children`: no node of the read before
   // the tree read answers, and the read's nodes once it has.
@@ -1394,10 +1407,12 @@ test("where the decisions' reads and the asks read both failed, each line names 
 
 // Each read the view's decisions come from can be out, answered or failed when the body is drawn,
 // and the view draws only what the reads that answered say: a decision's row once the tree read
-// its rows come from has answered; the line that its decisions could not be read where the tree
-// read failed, or is out while the decisions view read failed; the line that its open questions
-// could not be read where the asks read failed; and the line that the issue has no decisions only
-// where it holds none and the tree read and the asks read have both answered.
+// its rows come from has answered and the asks read is no longer out (decision 585: no entry is
+// drawn until the decisions, the asks and the coverage read each hold an answer or stand
+// refused); the line that its decisions could not be read where the tree read failed, or is out
+// while the decisions view read failed; the line that its open questions could not be read where
+// the asks read failed; and the line that the issue has no decisions only where it holds none and
+// the tree read and the asks read have both answered.
 test("every state of the tree read, the decisions view read and the asks read draws what the view knows", async () => {
   const issues = [
     {
@@ -1427,7 +1442,7 @@ test("every state of the tree read, the decisions view read and the asks read dr
               drawn.container.querySelector(`[data-node-row][data-node-id="${D("first")}"]`) !==
                 null,
               `${combination}: whether the decision's row is drawn`
-            ).toBe(holds && reads.tree === "answered");
+            ).toBe(holds && reads.tree === "answered" && reads.asks !== "pending");
             expect(
               drawn.queryByText(STATE_LINES.issue_decisions_unreadable) !== null,
               `${combination}: whether the view says its decisions could not be read`
@@ -1584,6 +1599,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["asks", KEY, "thread"], []);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
   const failed = renderOver(client, [], { slot: true, stage: true });
   try {
     await waitFor(() => expect(failedLine(failed, "decisions")).not.toBeNull(), { timeout: 3000 });
@@ -1638,6 +1654,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     });
     bare.setQueryData(conversationTreeKey(KEY), treeAnswer([]));
     bare.setQueryData(viewKey(KEY, "decisions"), treeAnswer([]));
+    bare.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
     await asksDown(bare);
     const noRow = renderOver(bare, [statement("s1")], { stage: true });
     await waitFor(() => expect(failedLine(noRow, "asks")).not.toBeNull());
@@ -1660,6 +1677,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     });
     held.setQueryData(conversationTreeKey(KEY), treeAnswer(made));
     held.setQueryData(viewKey(KEY, "decisions"), treeAnswer(made));
+    held.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
     await asksDown(held);
     const partial = renderOver(held, [statement("s1"), decisionNode("first")]);
     await waitFor(() => expect(retryOf(partial, "asks")).not.toBeNull());
@@ -1698,7 +1716,8 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
   const asksRead = spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise);
   try {
     const early = renderBody({ ...FOOT_ONLY, asks: null }, {}, { stage: true });
-    expect(footControlOf(early)).not.toBeNull();
+    // No entry is drawn while the asks read is out, the foot's decisions included (decision 585).
+    expect(footControlOf(early)).toBeNull();
     const tree = early.getByRole("tree", { name: CONTROL_LABELS.tree });
     await act(async () => chordFocus(tree));
     expect(document.activeElement).toBe(tree);
@@ -3276,10 +3295,10 @@ test("a list that holds only the foot, opened by a link inside the app, gives it
   treeReads.mockReturnValue(answer.promise);
   try {
     const view = renderBody({ ...FOOT_ONLY, made: null }, {}, { main: true, stage: true });
-    // The foot is drawn from the tree, but until the read answers a row may yet come, so the
-    // foot takes no focus.
+    // No entry is drawn until the tree read answers (decision 585), the foot's decisions
+    // included, so nothing takes the focus meanwhile.
     await act(() => Promise.resolve());
-    expect(footControlOf(view)).not.toBeNull();
+    expect(footControlOf(view)).toBeNull();
     expect(document.activeElement).toBe(view.getByRole("main"));
     await act(async () => answer.resolve(treeAnswer(FOOT_ONLY.made)));
     await waitFor(() =>

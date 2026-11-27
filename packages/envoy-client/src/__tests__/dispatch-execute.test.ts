@@ -9029,7 +9029,7 @@ describe("executeDispatchTool", () => {
     });
 
     // A resolved or declined ask leaves no `state` attribute in the markdown, so the trailer names
-    // it as `Resolved <block id>` (JSON-quoted) both from `asks` and from a release-before opener.
+    // it as `Resolved <block id>` (JSON-quoted) from the text's asks member.
     test("and names each resolved ask beside the token", async () => {
       const fromAsks = await readDocument({
         markdown: served,
@@ -9043,7 +9043,11 @@ describe("executeDispatchTool", () => {
       expect(fromAsks.text.split("\n\n").at(-1)).toBe(
         ["Document token: sha256:spec", 'Resolved "q-declined"'].join("\n")
       );
+    });
 
+    // The older server omits the asks member and records resolution on the block's opening line.
+    // The trailer names the resolved ask in the same form.
+    test("and names a resolved ask from its opener when the text sends no asks", async () => {
       const fromOpener = await readDocument({
         markdown:
           ':::ask{#q-declined urgency="med" multiple="false" state="resolved"}\nWhich?\n:::',

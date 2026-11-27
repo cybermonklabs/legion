@@ -266,7 +266,9 @@ export function DecisionsFilterBody({
   // coverage read holds, past the pages of Conversation's read, is one the page's names read was
   // never asked for: the body publishes the reading of that read's row of it to the names store
   // (`ShapedStatement.reading`), as a view publishes the blocks only its own tree holds
-  // (`slots/view-readings.ts`), and names it by the same rule, by the row's own address.
+  // (`slots/view-readings.ts`), and names it by the same rule, by the row's own address. Beside
+  // its name goes its whole line, the title of the link its line draws, which cuts the name to
+  // the line's width (decision 583 (2), amended).
   const { lines } = useKnownReferences();
   const covered = useMemo(() => {
     const readings = new Map<string, ReferenceNameReading>();
@@ -281,8 +283,8 @@ export function DecisionsFilterBody({
     return { readings, references };
   }, [every]);
   usePublishViewReadings(covered.readings);
-  const treeNames = useMemo<ReadonlyMap<string, string>>(() => {
-    const names = new Map<string, string>();
+  const treeNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
+    const names = new Map<string, StatementName>();
     for (const node of nodesInOrder(root)) {
       if (node.type === "requirement" && node.reference !== undefined) {
         nameStatement(names, lines, node.id, node.reference);
@@ -290,7 +292,7 @@ export function DecisionsFilterBody({
     }
     return names;
   }, [lines, root]);
-  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
+  const statementNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
     if (covered.references.size === 0) return treeNames;
     const names = new Map(treeNames);
     for (const [id, reference] of covered.references) nameStatement(names, lines, id, reference);
@@ -1220,18 +1222,27 @@ function pagesOf<Entry>(entries: readonly Entry[], pages: number): readonly Entr
   return entries.slice(0, PAGE * pages);
 }
 
+/** A statement's name on a decision's "informs" line: the words its line draws, cut to a chip's
+ *  room, and its whole line, which the line's title holds (`DecisionsRow`'s `statementNames`). */
+interface StatementName {
+  readonly name: string;
+  readonly title: string;
+}
+
 /** Names statement `id`, at address `reference`, in `names` by the line the names store holds
- *  for it (`lines`), as a chip names it (`chipName`), where `names` names it not yet and the
- *  store holds a line for it. */
+ *  for it (`lines`), as a chip names it (`chipName`), with that whole line as its title, where
+ *  `names` names it not yet and the store holds a line for it. */
 function nameStatement(
-  names: Map<string, string>,
+  names: Map<string, StatementName>,
   lines: ReadonlyMap<string, string>,
   id: string,
   reference: string
 ): void {
   if (names.has(id)) return;
   const line = lines.get(reference);
-  if (line !== undefined) names.set(id, chipName(parseNodeReference(reference), line));
+  if (line !== undefined) {
+    names.set(id, { name: chipName(parseNodeReference(reference), line), title: line });
+  }
 }
 
 /** The page of `entries` that holds the entry of node `id`, counted from 1, or 0 where none

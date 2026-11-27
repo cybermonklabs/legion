@@ -206,7 +206,7 @@ func removalsOf(ctx context.Context, artifactID string) graphstore.Uncaused {
 // (graphstore.QueueCaused).
 func queueRemovals(ctx context.Context, tx pgx.Tx, artifactID string) (graphstore.Uncaused, error) {
 	removals := removalsOf(ctx, artifactID)
-	if len(removals.Nodes) == 0 && len(removals.Tuples) == 0 {
+	if len(removals.Nodes) == 0 && removals.Len() == 0 {
 		return graphstore.Uncaused{}, nil
 	}
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {

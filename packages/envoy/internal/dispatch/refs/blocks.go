@@ -794,9 +794,9 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 		marked = marked || stands[document].owed
 	}
 	if !won {
-		if len(beside.Nodes) > 0 || len(beside.Tuples) > 0 {
+		if len(beside.Nodes) > 0 || beside.Len() > 0 {
 			indexing.stated = graphstore.PlanUncaused(beside.Nodes, nil)
-			indexing.stated.Tuples = append(indexing.stated.Tuples, beside.Tuples...)
+			indexing.stated.StateFactsOf(beside)
 		}
 		return indexing, nil
 	}
@@ -1163,8 +1163,8 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	// each fact of a block once, so the tuples of a block node its own node write makes are
 	// appended with no conflict arm (graphstore.ArmlessFresh), and every other tuple keeps it.
 	indexing.stated = graphstore.ArmlessFresh(graphstore.PlanUncaused(append(written, unwritten(beside.Nodes, written)...), nil), BlockNodeKind)
-	indexing.stated.Tuples = append(indexing.stated.Tuples, memberships...)
-	indexing.stated.Tuples = append(indexing.stated.Tuples, authored...)
+	indexing.stated.State(memberships...)
+	indexing.stated.State(authored...)
 	// The pointer tuples at the blocks it states gone go with them (retractGonePointers): read
 	// here, in the plan, and appended beside the facts that node write states, under the same
 	// cause, in the same write phase as the node write that states each block gone.
@@ -1172,7 +1172,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	if err != nil {
 		return BlockIndexing{}, fmt.Errorf("retract the pointers at the blocks version %d of %s no longer holds: %w", number, artifactID, err)
 	}
-	indexing.stated.Tuples = append(indexing.stated.Tuples, retracted...)
+	indexing.stated.State(retracted...)
 	// A block the version no longer holds is no copy of an ask either, so the copied_from its node
 	// states (docs' claimCopies) is retracted at this version's time and by its writer, as the
 	// tuple of a link the version drops is (planBlockRefs). The settlement that claims copies reads
@@ -1184,7 +1184,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	}
 	for _, id := range dropped {
 		for _, ask := range copies[id] {
-			indexing.stated.Tuples = append(indexing.stated.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			indexing.stated.State(graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 				FromKind: BlockNodeKind, FromID: blockNodeAddress(refKey, id), Kind: graphstore.TupleCopiedFrom,
 				ToKind: graphstore.KindAsk, ToID: ask, At: versionAt, Who: writer, Asserted: false,
 			}})
@@ -1197,7 +1197,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 		if _, fresh := inserted[id]; !fresh || !blockIDFits(refKey, id) {
 			continue
 		}
-		indexing.stated.Tuples = append(indexing.stated.Tuples, membership(blockNodeAddress(refKey, id), record.inDocument(holders[id], fragments), now, writer))
+		indexing.stated.State(membership(blockNodeAddress(refKey, id), record.inDocument(holders[id], fragments), now, writer))
 	}
 	// An issue room's blocks name their documents in issue_room_blocks, beside their
 	// document_blocks rows under the tree artifact, in this transaction.
@@ -1205,18 +1205,22 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	if err != nil {
 		return BlockIndexing{}, err
 	}
-	indexing.stated.Tuples = append(indexing.stated.Tuples, moves...)
+	indexing.stated.State(moves...)
 	sources := authoredSourcesOf(markdown, nodes, located, pointers)
 	placement, parents, placed, err := indexing.planBlockParents(ctx, q, index, record, nodes, fits, fragments, typed.asks(), nil, sources)
 	if err != nil {
 		return BlockIndexing{}, err
 	}
-	indexing.stated.Tuples = append(indexing.stated.Tuples, parents...)
+	indexing.stated.State(parents...)
+	// The blocks' values are held as a run the append builds a batch at a time (blockValueRun), in
+	// their place among the pass's facts, rather than as the tuples of every block at once.
 	values, heldValues, err := planBlockValues(ctx, q, index, record, markdown, nodes, placement, changed, stale, fragments)
 	if err != nil {
 		return BlockIndexing{}, err
 	}
-	indexing.stated.Tuples = append(indexing.stated.Tuples, values...)
+	if values != nil {
+		indexing.stated.HoldRun(values)
+	}
 
 	// The links the version drops, in the order the index listed them, then those it adds and
 	// those whose block types it changes, in the order the insert writes them: the targets the
@@ -1235,14 +1239,14 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	if err != nil {
 		return BlockIndexing{}, err
 	}
-	indexing.stated.Tuples = append(indexing.stated.Tuples, links...)
+	indexing.stated.State(links...)
 	// Where the store's statement is stale, the links another release's version dropped have
 	// no row left for the delete to drop, and the store still asserts them (unheldLinks). They
 	// move no count and no panel, and neither do the blocks goneSinceStated names: what a reader
 	// is shown of a block and its links is read through their rows (graph_edges answers a
 	// block's tuple only while its document_blocks or block_refs row stands), and that release
 	// deleted those rows, and moved what they showed, when it wrote its version.
-	indexing.stated.Tuples = append(indexing.stated.Tuples, unheldLinks(statement, refKey, indexing.pairs, links, versionAt, writer)...)
+	indexing.stated.State(unheldLinks(statement, refKey, indexing.pairs, links, versionAt, writer)...)
 	// A pair held by a block whose text this version moved is a link whose excerpt moved with
 	// it: the blocks the nodes above were stated for, until KeepRespelled takes the blocks it
 	// keeps out of that set and sets these targets again (moveChangedBlockLinks).
@@ -1251,9 +1255,9 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	// The typed-node pass's values and authors come last, as its write followed the index's, and
 	// after them the caller's own facts beside the pass.
 	for _, tuple := range typedTuples {
-		indexing.stated.Tuples = append(indexing.stated.Tuples, graphstore.UncausedTuple{Tuple: tuple})
+		indexing.stated.State(graphstore.UncausedTuple{Tuple: tuple})
 	}
-	indexing.stated.Tuples = append(indexing.stated.Tuples, beside.Tuples...)
+	indexing.stated.StateFactsOf(beside)
 	// What the index holds once the pass is written: its rows, links and placements, its values,
 	// its room's record, the blocks whose authors it settled, and every document it covers stood
 	// at the version the pass covers of it.
