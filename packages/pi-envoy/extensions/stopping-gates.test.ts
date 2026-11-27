@@ -6,14 +6,15 @@ import {
   subscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
 import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
+  rowProbe,
   sessionContext,
   settle,
-  until,
   useExtensionHarness,
 } from "../test/extension-harness";
 import { claimGranted, response, responseWithRegistration } from "../test/listener-stand-in";
@@ -96,7 +97,10 @@ test("a session_start registration that fails after the stop began tells the pan
 
   const starting = fixture.handlers.get("session_start")?.({}, context);
   try {
-    await until(() => heldReads.length === 1, "the role move's read on the wire", 10_000);
+    await until(
+      "the role move's read on the wire",
+      rowProbe(() => heldReads.length === 1)
+    );
     const notified = notifications.length;
     const armed = intervals.length;
 
@@ -141,7 +145,10 @@ test("control: a session_start registration that fails with no stop begun tells 
 
   const starting = fixture.handlers.get("session_start")?.({}, context);
   try {
-    await until(() => heldReads.length === 1, "the role move's read on the wire", 10_000);
+    await until(
+      "the role move's read on the wire",
+      rowProbe(() => heldReads.length === 1)
+    );
     const notified = notifications.length;
     const armed = intervals.length;
 
@@ -169,7 +176,10 @@ async function stopAnsweringDelete(
   heldDeletes: (() => void)[]
 ): Promise<void> {
   const stopping = shutdown();
-  await until(() => heldDeletes.length > 0, "the stop's deregistration on the wire");
+  await until(
+    "the stop's deregistration on the wire",
+    rowProbe(() => heldDeletes.length > 0)
+  );
   for (const answer of heldDeletes.splice(0)) answer();
   await stopping;
 }
@@ -229,7 +239,10 @@ test("envoy_unsubscribe after the stop began sends nothing, writes no ledger ent
   try {
     const beforeStop = run.fetched.length;
     const stopping = run.fixture.handlers.get("session_shutdown")?.({}, run.context);
-    await until(() => run.heldDeletes.length === 1, "the stop's deregistration on the wire");
+    await until(
+      "the stop's deregistration on the wire",
+      rowProbe(() => run.heldDeletes.length === 1)
+    );
     const ledgerWritten = run.ledgerEntries();
 
     const refused = await run.unsubscribe();
@@ -311,7 +324,10 @@ test("a notice a switch raises after the stop began is dropped by the tell gate"
 
   const switching = fixture.handlers.get("session_switch")?.({ reason: "new" }, after);
   try {
-    await until(() => heldReads.length === 1, "the switch's role move read on the wire", 10_000);
+    await until(
+      "the switch's role move read on the wire",
+      rowProbe(() => heldReads.length === 1)
+    );
     const notified = notifications.length;
 
     await fixture.handlers.get("session_shutdown")?.({}, after);
@@ -359,7 +375,10 @@ test("control: a switch whose pass fails with no stop begun tells the pane", asy
 
   const switching = fixture.handlers.get("session_switch")?.({ reason: "new" }, after);
   try {
-    await until(() => heldReads.length === 1, "the switch's role move read on the wire", 10_000);
+    await until(
+      "the switch's role move read on the wire",
+      rowProbe(() => heldReads.length === 1)
+    );
     const notified = notifications.length;
 
     for (const answer of heldReads.splice(0)) answer();
@@ -530,7 +549,10 @@ test("a role-bound notice subscription after the stop began is refused naming th
   try {
     const beforeStop = run.fetched.length;
     const stopping = run.fixture.handlers.get("session_shutdown")?.({}, run.context);
-    await until(() => run.heldDeletes.length === 1, "the stop's deregistration on the wire");
+    await until(
+      "the stop's deregistration on the wire",
+      rowProbe(() => run.heldDeletes.length === 1)
+    );
 
     const refused = await failure(run.subscribe());
     await settle();

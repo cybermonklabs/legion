@@ -3,7 +3,6 @@
   "version": "18.14.1",
   "license": "Apache-2.0",
   "type": "module",
-  "//": "Test guards. The `test` script runs `bun test --parallel=4`, which sets no --timeout: test-timeout-preload.ts declares 300000 ms inside each worker (setDefaultTimeout + @legion/test-fixtures/deadline declareGuard), and a plain `bun test` keeps Bun's 5000 ms (bunfig.toml). The cold role-pane row of extensions/legion-background-subagent-omp.test.ts needs more than 5000 ms in every mode (a cold Oh My Pi pane start and NATS registration read 5-6 s unloaded), so it takes COLD_PANE_GUARD_MS = 300000 of its own: useRowGuard for the shared wait, `test`'s third argument for Bun's row kill, and the afterEach's own hook timeout, whose raw-await cleanup (killing omp, stopping the stub server) also outlasts 5000 ms under load. The value is well above twice the reading, for dev-box load.",
   "omp": {
     "extensions": [
       "extensions/legion.ts"
@@ -20,12 +19,16 @@
     "dist",
     "agents"
   ],
+  "//": [
+    "test, its first command: runs `bun test --parallel=4 --path-ignore-patterns 'scripts/skill-scenarios/score.test.ts'`, which sets no --timeout: test-timeout-preload.ts declares 300000 ms inside each worker (setDefaultTimeout + @legion/test-fixtures/deadline declareGuard), and a plain `bun test` keeps Bun's 5000 ms (bunfig.toml). The cold role-pane row of extensions/legion-background-subagent-omp.test.ts needs more than 5000 ms in every mode (a cold Oh My Pi pane start and NATS registration read 5-6 s unloaded), so it takes COLD_PANE_GUARD_MS = 300000 of its own: useRowGuard for the shared wait, `test`'s third argument for Bun's row kill, and the afterEach's own hook timeout, whose raw-await cleanup (killing omp, stopping the stub server) also outlasts 5000 ms under load. The value is well above twice the reading, for dev-box load.",
+    "test, its second command: runs scripts/skill-scenarios/score.test.ts alone (no --parallel, so test-timeout-preload.ts declares nothing and bunfig's row-deadline preload still marks each row) at --timeout 1060000, the pi-legion job's room for one hang: its 28 minutes less the 616 s its workflow records (.github/workflows/ci-job-pi-legion.yaml), which counts this command's own run in CI (at most 20 s in main's merge-group runs 45723571545, 45721434343 and 45721301880), 1 064 s. Six times the most its beforeAll hooks took at the calibrated load, 1 106 s, is past that room, so the room decides. Over 20 runs of the command at the 96 rung (Job infra-1580-r31sc2-zcqqg of the cluster's builds namespace, two CPUs and 8 GiB, 120 busy loops, row A 38.5 s, at 97bc3646), 20 of 20, a run spent at most 184 410 ms outside its rows: the staging drain, the scoring run and the file's load together (and 178 861 ms at 9f640966, -r33sc2-z9zgq). Bun reports no hook's time apart, so that sum bounds each hook. The slowest row, live-read, took 35 108 ms."
+  ],
   "scripts": {
     "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-ai --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
     "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
-    "test": "bun test --parallel=4",
+    "test": "bun test --parallel=4 --path-ignore-patterns 'scripts/skill-scenarios/score.test.ts' && bun test --timeout 1060000 scripts/skill-scenarios/score.test.ts",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {

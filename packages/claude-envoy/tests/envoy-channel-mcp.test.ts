@@ -1,26 +1,32 @@
-import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { settled, until } from "@legion/test-fixtures/wait"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { modSocketPath } from "../hooks/mod-protocol"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
-import { connectedToServer } from "./mcp-connect"
+import {
+  connectedBeforeTheDeadline,
+  connectedToServer,
+  pastTheDeadline,
+  toolAnswer,
+} from "./mcp-connect"
 import { natsGate } from "./nats-gate"
 import { ROW_TIMEOUT_MS } from "./reopen-server"
-import { ROW_GUARD_MS, rowStarted, untilTheGuard } from "./row-deadline"
+import { rowStarted, untilTheGuard } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
+// Marks each row's start for the dial row's `untilTheGuard` waits (`./row-deadline.ts`).
 beforeEach(rowStarted)
-setDefaultTimeout(ROW_GUARD_MS)
 
 /** Where each session's home is made. Its mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and
  *  that whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
@@ -32,6 +38,63 @@ const SOCKET_ROOT = "/tmp"
 /** A session home of its own, under {@link SOCKET_ROOT}. */
 function sessionHome(prefix: string): Promise<string> {
   return mkdtemp(join(SOCKET_ROOT, prefix))
+}
+
+/**
+ * Aborted by the file's `afterEach` once the row running now has ended, at its guard included,
+ * and then replaced for the next row. A row hands the signal it began with to its fake mod
+ * (`startFakeMod`'s `signal`) together with the signal for the MCP transport's close.
+ */
+let rowEnd = new AbortController()
+afterEach(() => {
+  rowEnd.abort(new Error("the row ended"))
+  rowEnd = new AbortController()
+})
+
+/**
+ * The SDK owns the child; its close callback reports when the transport is gone. `untilServed` is
+ * `until` for a wait on this server: a failure of it also says what the server wrote to stderr.
+ * The close's own reason already says so. `untilStarted` waits for the channel session to start:
+ * the server answers tool calls only once it has. Each of its calls times out just past the row's
+ * deadline (`pastTheDeadline`), so a session that never starts fails the wait naming that fact.
+ */
+function observeServer(client: Client, transport: StdioClientTransport) {
+  let stderr = ""
+  transport.stderr?.on("data", (chunk: Buffer | string) => {
+    stderr += String(chunk)
+  })
+  const closed = new AbortController()
+  client.onclose = () => {
+    closed.abort(new Error(`the channel server's MCP transport closed; its stderr: ${stderr}`))
+  }
+  const untilServed = (what: string, probe: () => boolean | Promise<boolean>): Promise<void> =>
+    until(what, () => {
+      closed.signal.throwIfAborted()
+      return probe()
+    }).then(
+      () => undefined,
+      (error: unknown) => {
+        if (error === closed.signal.reason) throw error
+        throw new Error(`${String(error)}; its stderr: ${stderr}`, { cause: error })
+      },
+    )
+  const untilStarted = (): Promise<void> =>
+    untilServed("the channel session to start", () =>
+      client
+        .callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
+          timeout: pastTheDeadline(),
+        })
+        .then(
+          () => true,
+          (error: unknown) => {
+            // A call the close rejected fails with the close's own reason.
+            closed.signal.throwIfAborted()
+            if (String(error).includes("still starting")) return false
+            throw error
+          },
+        ),
+    )
+  return { stderr: () => stderr, closed: closed.signal, untilServed, untilStarted }
 }
 
 // The rows below start each session in a home of its own and reach it at its mod socket; a home
@@ -56,20 +119,21 @@ test("a session home's mod socket fits however deep TMPDIR is", async () => {
 
 // Each row below starts a channel server of its own, with Bun's transpiler cache off
 // (`./transpiler-cache.ts`), and waits for what that server does: its answer to `initialize`
-// (`connectedToServer`), each later step and each MCP request in the first two rows and in the
-// dial row, until 5 s inside the row's own hang guard (`untilTheGuard`, `./row-deadline.ts`: this
-// file's default, `ROW_GUARD_MS`, 120 s, and the dial row's own 600 s), so a step that never comes
-// fails naming itself before Bun's line would. The other rows keep their own waits and limits, and
-// their requests the MCP SDK's 60 s. The first two rows had 5 s waits and a 20 s limit, and at
-// loads of 720 to 1,150 the first row's server, writing that cache into its empty HOME, had not
-// started within them; the dial row's `initialize` had the MCP SDK's 60 s inside its 600 s, and at
-// a load of 1,200 to 1,400 it failed there at 99 s (dispatch://INFRA-3904).
+// (`connectedBeforeTheDeadline`, or `connectedToServer` for the dial row), each later step and each
+// MCP request, until the row's deadline (`@legion/test-fixtures/wait`), or 5 s inside the dial
+// row's own 600 s (`untilTheGuard`, `./row-deadline.ts`), so a step that never comes fails naming
+// itself before Bun's line would. The session-home row starts no server. The first two rows had 5 s
+// waits and a 20 s limit, and at loads of 720 to 1,150 the first row's server, writing that cache
+// into its empty HOME, had not started within them; the dial row's `initialize` had the MCP SDK's
+// 60 s inside its 600 s, and at a load of 1,200 to 1,400 it failed there at 99 s
+// (dispatch://INFRA-3904).
 
 // What Claude Code sees over MCP, with Dispatch configured: the Envoy tools and nothing else, since
 // agents reach Dispatch through the `dispatch` command the plugin's bin/ puts on the Bash tool's
 // PATH. A terminal session reaches the model only through its mod (INFRA-1026), so it advertises
 // no delivery mode until the mod connects, and Aside, BTW and Send once one has.
 test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, points at the dispatch command, and advertises nothing until its mod connects", async () => {
+  const ended = rowEnd.signal
   const broker = new FakeNatsServer()
   const dispatchRequests: string[] = []
   const dispatch = Bun.serve({
@@ -128,33 +192,16 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     },
     stderr: "pipe",
   })
-  let stderr = ""
-  transport.stderr?.on("data", (chunk: Buffer | string) => {
-    stderr += String(chunk)
-  })
+  const { stderr, closed, untilServed, untilStarted } = observeServer(client, transport)
 
   try {
-    await connectedToServer(client, transport, () => stderr)
-    // The server answers tool calls only once its channel session has started.
-    await waitFor(
-      () =>
-        client
-          .callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
-            timeout: untilTheGuard(),
-          })
-          .then(
-            () => true,
-            (error: unknown) => {
-              if (String(error).includes("still starting")) return false
-              throw error
-            },
-          ),
-      "the channel session to start",
-      () => stderr,
-      untilTheGuard(),
-    )
+    await connectedBeforeTheDeadline(client, transport, stderr)
+    await untilStarted()
 
-    const { tools } = await client.listTools(undefined, { timeout: untilTheGuard() })
+    const { tools } = await settled(
+      "the server's tool list",
+      client.listTools(undefined, { timeout: pastTheDeadline() }),
+    )
     expect(tools.map(({ name }) => name)).toEqual(envoyToolSpecs.map(({ name }) => name))
     // Nothing until the mod connects: without one no message reaches the model at all.
     expect(advertised.length).toBeGreaterThan(0)
@@ -162,14 +209,15 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
 
     const socketPath = modSocketPath("ses_mcp", { XDG_RUNTIME_DIR: stateDirectory })
     if (socketPath === undefined) throw new Error("the session names no mod socket")
-    const mod = await startFakeMod(socketPath, { sessionId: "ses_mcp" })
+    const mod = await startFakeMod(socketPath, {
+      sessionId: "ses_mcp",
+      signal: AbortSignal.any([ended, closed]),
+    })
     try {
       // The mod's hello makes the session register again, with what it can take now.
-      await waitFor(
-        async () => (advertised.at(-1) as string[] | undefined)?.length === 3,
+      await untilServed(
         "the session to advertise its delivery modes",
-        () => JSON.stringify(advertised),
-        untilTheGuard(),
+        () => (advertised.at(-1) as string[] | undefined)?.length === 3,
       )
       expect(advertised.at(-1)).toEqual(["aside", "btw", "steer"])
     } finally {
@@ -180,11 +228,10 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     expect(instructions).not.toContain("Dispatch tools")
 
     await expect(
-      client.callTool(
-        { name: "dispatch_ask", arguments: { issue: "DSP-3", question: "Ship?" } },
-        undefined,
-        { timeout: untilTheGuard() },
-      ),
+      toolAnswer(client, "the server's answer to dispatch_ask", {
+        name: "dispatch_ask",
+        arguments: { issue: "DSP-3", question: "Ship?" },
+      }),
     ).rejects.toThrow("Unsupported Envoy tool: dispatch_ask")
     expect(dispatchRequests).toEqual([])
   } finally {
@@ -201,6 +248,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
 // then advertised nothing until the next heartbeat, up to 90 s later, and Dispatch showed it as
 // taking no messages (INFRA-1026 review). A poll says a mod is there just as well.
 test("the session advertises its delivery modes for a mod that polls and never says hello", async () => {
+  const ended = rowEnd.signal
   const broker = new FakeNatsServer()
   const advertised: unknown[] = []
   const listener = Bun.serve({
@@ -244,51 +292,30 @@ test("the session advertises its delivery modes for a mod that polls and never s
     },
     stderr: "pipe",
   })
-  let stderr = ""
-  transport.stderr?.on("data", (chunk: Buffer | string) => {
-    stderr += String(chunk)
-  })
+  const { stderr, closed, untilServed, untilStarted } = observeServer(client, transport)
 
   try {
-    await connectedToServer(client, transport, () => stderr)
-    await waitFor(
-      () =>
-        client
-          .callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
-            timeout: untilTheGuard(),
-          })
-          .then(
-            () => true,
-            (error: unknown) => {
-              if (String(error).includes("still starting")) return false
-              throw error
-            },
-          ),
-      "the channel session to start",
-      () => stderr,
-      untilTheGuard(),
-    )
+    await connectedBeforeTheDeadline(client, transport, stderr)
+    await untilStarted()
     expect(advertised.at(-1)).toEqual([])
 
     const socketPath = modSocketPath("ses_quiet", { XDG_RUNTIME_DIR: stateDirectory })
     if (socketPath === undefined) throw new Error("the session names no mod socket")
-    await waitFor(
-      () =>
-        stat(socketPath).then(
-          () => true,
-          () => false,
-        ),
-      "the server to bind its mod socket",
-      () => stderr,
-      untilTheGuard(),
+    await untilServed("the server to bind its mod socket", () =>
+      stat(socketPath).then(
+        () => true,
+        () => false,
+      ),
     )
-    const mod = await startFakeMod(socketPath, { sessionId: "ses_quiet", hello: false })
+    const mod = await startFakeMod(socketPath, {
+      sessionId: "ses_quiet",
+      hello: false,
+      signal: AbortSignal.any([ended, closed]),
+    })
     try {
-      await waitFor(
-        async () => (advertised.at(-1) as string[] | undefined)?.length === 3,
+      await untilServed(
         "the session to advertise its delivery modes",
-        () => JSON.stringify(advertised),
-        untilTheGuard(),
+        () => (advertised.at(-1) as string[] | undefined)?.length === 3,
       )
       expect(advertised.at(-1)).toEqual(["aside", "btw", "steer"])
     } finally {
@@ -340,30 +367,16 @@ test("a tool call while the start waits for its broker token says what the start
   })
   // The start has reached its wait for the token once its stderr says what the first trade came
   // to: the token client writes that line at the wait after the trade, and the start names its
-  // wait before it trades. A start that never gets there in 45 s, a minute's row on a loaded
-  // machine, is named with what its stderr said.
-  let stderr = ""
-  const waiting = Promise.withResolvers<void>()
-  transport.stderr?.on("data", (chunk: Buffer | string) => {
-    stderr += String(chunk)
-    if (stderr.includes("trading again")) waiting.resolve()
-  })
-  const bound = setTimeout(
-    () =>
-      waiting.reject(
-        new Error(
-          `the start did not reach its wait for the token within 45 s; its stderr said: ${stderr.slice(-2_000)}`,
-        ),
-      ),
-    45_000,
-  )
-  // Settled here too, so a bound that fires while the connect is still out is no unhandled
-  // rejection; the row reads it where it awaits the wait.
-  waiting.promise.catch(() => undefined)
+  // wait before it trades. A start that never gets there fails at the row's deadline (`until`),
+  // naming the wait.
+  const { stderr, untilServed } = observeServer(client, transport)
   try {
-    await client.connect(transport)
-    await waiting.promise
-    const said = await client.callTool({ name: "envoy_whoami", arguments: {} }).then(
+    await connectedBeforeTheDeadline(client, transport, stderr)
+    await untilServed("the start's wait for the token", () => stderr().includes("trading again"))
+    const said = await toolAnswer(client, "the server's answer to envoy_whoami", {
+      name: "envoy_whoami",
+      arguments: {},
+    }).then(
       () => {
         throw new Error("the session started though its broker answers every trade 503")
       },
@@ -373,12 +386,11 @@ test("a tool call while the start waits for its broker token says what the start
       "Envoy channel server is still starting: it waits for this session's broker token, and its stderr says what each trade came to",
     )
   } finally {
-    clearTimeout(bound)
     await client.close().catch(() => undefined)
     broker.stop(true)
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 60_000)
+})
 
 // The channel server dials NATS again for its life, and an Envoy tool called meanwhile is told
 // why the start is still waiting, which until then only reached stderr. Once the connection is up
@@ -556,32 +568,25 @@ test("a broker token keeper's warning while the start registers leaves the tool 
     },
     stderr: "pipe",
   })
-  let stderr = ""
-  transport.stderr?.on("data", (chunk: Buffer | string) => {
-    stderr += String(chunk)
-  })
-  const whoami = () =>
-    client.callTool({ name: "envoy_whoami", arguments: {} }).then(
+  const { stderr, untilServed } = observeServer(client, transport)
+
+  try {
+    await connectedBeforeTheDeadline(client, transport, stderr)
+    // Connected, and the start's registration held: the keeper warns about the lapsing token.
+    await untilServed(
+      "the session's subscriptions to reach NATS",
+      () => broker.subscribed.length > 0,
+    )
+    await untilServed("the keeper's warning", () =>
+      stderr().includes("envoy-channel: the NATS connection's broker token"),
+    )
+    const answer = await toolAnswer(client, "the server's answer to envoy_whoami", {
+      name: "envoy_whoami",
+      arguments: {},
+    }).then(
       () => "answered",
       (error: unknown) => String(error),
     )
-
-  try {
-    await client.connect(transport)
-    // Connected, and the start's registration held: the keeper warns about the lapsing token.
-    await waitFor(
-      async () => broker.subscribed.length > 0,
-      "the session's subscriptions to reach NATS",
-      () => stderr,
-      30_000,
-    )
-    await waitFor(
-      async () => stderr.includes("envoy-channel: the NATS connection's broker token"),
-      "the keeper's warning",
-      () => stderr,
-      15_000,
-    )
-    const answer = await whoami()
     expect(answer).toContain(
       "Envoy channel server is still starting: it registers this session with Envoy",
     )
@@ -594,4 +599,4 @@ test("a broker token keeper's warning while the start registers leaves the tool 
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 90_000)
+})

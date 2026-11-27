@@ -9,30 +9,70 @@ import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { DeliveryRequest } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { modSocketPath } from "../hooks/mod-protocol"
 import {
   codexSessionRecordFile,
   processStarted,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { waitFor } from "./channel-session-harness"
+import { type FakeMod, startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
+import { collected } from "./row-deadline"
 import { socketOwner } from "./socket-owner"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
-/** Each wait's last-resort bound. Every step here is a whole server process, which a loaded
- *  machine starts and runs slowly, and each wait ends the moment its fact holds: this bound never
- *  decides a row that works, only names the step of one that is stuck. A row that took 25.8 s
- *  alone took longer than an earlier 15 s bound beside other suites at a load of thousands. */
+/** The last-resort bound for a legacy `waitFor` on a whole server process. Every such wait ends
+ *  the moment its fact holds; the bound only names the step of a row that is stuck. A row that took
+ *  25.8 s alone took longer than an earlier 15 s bound beside other suites at a load of thousands. */
 export const PROCESS_WAIT_MS = 120_000
 /** Each row's: above its chain of waits, so a stuck wait names its step before the runner does. */
 export const ROW_TIMEOUT_MS = 600_000
 
+/** The fake mod of `run`'s session `sessionId`, once the server's mod socket answers its hello.
+ *  The probe waits until the row's deadline (`@legion/test-fixtures/wait`), and ends at once,
+ *  naming the exit and the server's stderr, once the server has exited. */
+export async function startSessionMod(
+  run: Pick<ReopenServer, "stateDirectory" | "server" | "stderr">,
+  sessionId: string,
+): Promise<FakeMod> {
+  const socketPath = modSocketPath(sessionId, { XDG_RUNTIME_DIR: run.stateDirectory })
+  if (socketPath === undefined) throw new Error("the session names no mod socket")
+  return await startFakeMod(socketPath, {
+    sessionId,
+    exited: run.server.exited,
+    wrote: run.stderr,
+  })
+}
+
 /** How many times `text` holds `part`. */
 export function count(text: string, part: string): number {
   return text.split(part).length - 1
+}
+
+/**
+ * A probe for a wait on a whole server process (`until` of `@legion/test-fixtures/wait`, or
+ * `startReopenServer`'s `waitForStart`): whether `condition` holds while `run`'s server runs.
+ * Once the server exits, the probe drains stderr. It checks `afterExit`, if supplied, for a fact
+ * that can still appear while stderr drains. If that check does not pass, the probe throws
+ * `ended` with the server's state.
+ */
+export function whileServing(
+  run: Pick<ReopenServer, "server" | "stderrEnded" | "state">,
+  condition: () => boolean,
+  ended = "the server exited",
+  afterExit?: () => boolean,
+): () => Promise<boolean> {
+  return async () => {
+    if (condition()) return true
+    if (run.server.exitCode === null && run.server.signalCode === null) return false
+    await run.stderrEnded
+    if (afterExit?.()) return true
+    throw new Error(`${ended}: ${run.state()}`)
+  }
 }
 
 /** The file in a Codex server's state directory that every `codex queue` call wrote to. */
@@ -140,6 +180,9 @@ export interface ReopenServerOptions {
    *  (the default), or once the server has written its first stderr line: a row that stops the
    *  server while it starts never sees the registration. */
   readonly awaitRegistration?: boolean
+  /** The wait for the start's two facts: the shared `until`, for a row on the command's guard;
+   *  left out, `waitFor` at `PROCESS_WAIT_MS` each. */
+  readonly waitForStart?: (what: string, probe: () => Promise<boolean>) => Promise<unknown>
   /** Whether the gate in front of the hub starts open (the default), or shut: the server's first
    *  dial is then refused, and dialed again, until the row opens it. */
   readonly gateOpen?: boolean
@@ -259,15 +302,12 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     stderr: "pipe",
   })
   serverPid = server.pid
-  let stderr = ""
-  const decoder = new TextDecoder()
-  const stderrEnded = (async () => {
-    for await (const chunk of server.stderr) stderr += decoder.decode(chunk, { stream: true })
-  })()
+  const stderr = collected(server.stderr)
+  const stderrEnded = stderr.ended.then(() => undefined)
   const relaySubscriptions = (): number =>
     broker.subscribed.filter((subject) => subject === relay).length
   const state = (): string =>
-    `exit code ${server.exitCode}; relay subscriptions ${relaySubscriptions()}; live connections ${broker.liveConnections}; stderr:\n${stderr}`
+    `exit code ${server.exitCode}; signal ${server.signalCode}; relay subscriptions ${relaySubscriptions()}; live connections ${broker.liveConnections}; stderr:\n${stderr.text()}`
   const stop = async (): Promise<void> => {
     server.kill("SIGKILL")
     await server.exited
@@ -286,36 +326,31 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     )
     return `this server is pid ${server.pid}; ${seen.join("; ")}`
   }
+  const waitForStart =
+    options.waitForStart ?? ((what, probe) => waitFor(probe, what, state, PROCESS_WAIT_MS))
+  const serving = { server, stderrEnded, state }
   try {
-    // The start's own fact, with no clock of its own: a start a loaded machine slows takes what it
-    // takes, a server that ends first is named with its end at once, and one that never starts is
-    // named at `PROCESS_WAIT_MS`. A fixed 30 s decided it before: a server writing Bun's transpiler
-    // cache into its empty HOME (`./transpiler-cache.ts`) had written nothing in 30 s at a load
-    // near 1,000.
-    await waitFor(
-      async () => {
-        if (stderr.length > 0 || deliveries.length > 0) return true
-        if (server.exitCode === null && server.signalCode === null) return false
-        await stderrEnded
-        if (stderr.length > 0) return true
-        throw new Error(`the server ended before its first stderr line: ${state()}`)
-      },
+    // A server that ends first is named with its exit and stderr. A server writing Bun's
+    // transpiler cache into its empty HOME (`./transpiler-cache.ts`) had written nothing in 30 s
+    // at a load near 1,000.
+    await waitForStart(
       "the server's first stderr line",
-      state,
-      PROCESS_WAIT_MS,
+      whileServing(
+        serving,
+        () => stderr.text().length > 0 || deliveries.length > 0,
+        "the server ended before its first stderr line",
+        () => stderr.text().length > 0,
+      ),
     )
     if (options.awaitRegistration !== false) {
       // A server that printed its first line and then ended is named with its end at once too.
-      await waitFor(
-        async () => {
-          if (deliveries.length > 0 && relaySubscriptions() === 1) return true
-          if (server.exitCode === null && server.signalCode === null) return false
-          await stderrEnded
-          throw new Error(`the server ended before its first registration: ${state()}`)
-        },
+      await waitForStart(
         "the session's first registration and its relay subscription",
-        state,
-        PROCESS_WAIT_MS,
+        whileServing(
+          serving,
+          () => deliveries.length > 0 && relaySubscriptions() === 1,
+          "the server ended before its first registration",
+        ),
       )
     }
   } catch (error) {
@@ -330,7 +365,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     requests,
     sessions,
     deliveries,
-    stderr: () => stderr,
+    stderr: stderr.text,
     stderrEnded,
     relaySubscriptions,
     state,

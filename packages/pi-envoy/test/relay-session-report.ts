@@ -17,7 +17,8 @@ export interface RelaySessionReport {
 /**
  * Starts `relay-session-process.ts` for `session` in `env`, and answers its report
  * (`runReportingProcess`). With `waitFor`, the process reports once a notice or a line holds that
- * text, or 20 s after its start settled, whichever is first; without, once its start settled.
+ * text, and fails at the `LEGION_PROOF_DEADLINE_MS` its `env` names, the shared wait's deadline
+ * outside `bun test`; without, once its start settled. `timeoutMs` kills it.
  */
 export async function runRelaySession(options: {
   readonly session: string;

@@ -2,12 +2,13 @@ import { expect, test } from "bun:test";
 import { LISTENER_CALL_RETRY_DELAY_MS } from "@legion/contracts";
 import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import { onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
+import { until } from "@legion/test-fixtures/wait";
 import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
+  rowProbe,
   sessionContext,
   settle,
-  until,
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
@@ -141,7 +142,10 @@ test("a project refusal answered after the stop began registers nothing again an
   try {
     run.hold();
     run.intervals[0]?.();
-    await until(() => run.held.length === 1, "the heartbeat's registration on the wire", 10_000);
+    await until(
+      "the heartbeat's registration on the wire",
+      rowProbe(() => run.held.length === 1)
+    );
     const heldAt = run.registrations.length;
 
     const stopping = run.fixture.handlers.get("session_shutdown")?.({}, run.context);
@@ -163,11 +167,17 @@ test("control: a project refusal answered with no stop begun registers the rest 
   try {
     run.hold();
     run.intervals[0]?.();
-    await until(() => run.held.length === 1, "the heartbeat's registration on the wire", 10_000);
+    await until(
+      "the heartbeat's registration on the wire",
+      rowProbe(() => run.held.length === 1)
+    );
     const heldAt = run.registrations.length;
 
     for (const answer of run.held.splice(0)) answer();
-    await until(() => run.registrations.length > heldAt, "the registration of the rest");
+    await until(
+      "the registration of the rest",
+      rowProbe(() => run.registrations.length > heldAt)
+    );
     await settle();
 
     expect(
@@ -308,15 +318,14 @@ test("a heartbeat's registration accepted after the stop began makes no role mov
     run.holdRegistration();
     run.intervals[0]?.();
     await until(
-      () => run.held.registrations.length === 1,
       "the heartbeat's registration on the wire",
-      10_000
+      rowProbe(() => run.held.registrations.length === 1)
     );
     const notified = run.notifications.length;
 
     const beforeStop = run.requests.length;
     const stopping = run.stop();
-    await until(run.handedBack, "the stop's hand-back of the role");
+    await until("the stop's hand-back of the role", rowProbe(run.handedBack));
     for (const answer of run.held.registrations.splice(0)) answer();
     await stopping;
     await settle();
@@ -341,15 +350,17 @@ test("control: a heartbeat's registration accepted with no stop begun after the 
     run.holdRegistration();
     run.intervals[0]?.();
     await until(
-      () => run.held.registrations.length === 1,
       "the heartbeat's registration on the wire",
-      10_000
+      rowProbe(() => run.held.registrations.length === 1)
     );
 
     const before = run.requests.length;
     run.loseClaim();
     for (const answer of run.held.registrations.splice(0)) answer();
-    await until(() => run.regained.length > 0, "the regain hook");
+    await until(
+      "the regain hook",
+      rowProbe(() => run.regained.length > 0)
+    );
     await settle();
 
     expect(run.requests.slice(before).filter((request) => request.includes("/v1/roles/"))).toEqual([
@@ -374,7 +385,10 @@ test("control: a heartbeat's role move with no stop begun whose claim the listen
     const notified = run.notifications.length;
 
     run.intervals[0]?.();
-    await until(() => run.notifications.length > notified, "the pane's note of the role move");
+    await until(
+      "the pane's note of the role move",
+      rowProbe(() => run.notifications.length > notified)
+    );
     await settle();
 
     expect(run.notifications.slice(notified)).toEqual([
@@ -401,9 +415,8 @@ test("a heartbeat's role claim that fails after the stop began tells the pane no
     const claimed = run.claims.length;
     run.intervals[0]?.();
     await until(
-      () => run.held.claims.length === 1,
       "the heartbeat's role claim on the wire",
-      10_000
+      rowProbe(() => run.held.claims.length === 1)
     );
     const notified = run.notifications.length;
 
@@ -433,14 +446,16 @@ test("control: a heartbeat's role claim that fails with no stop begun is retried
     const claimed = run.claims.length;
     run.intervals[0]?.();
     await until(
-      () => run.held.claims.length === 1,
       "the heartbeat's role claim on the wire",
-      10_000
+      rowProbe(() => run.held.claims.length === 1)
     );
     const notified = run.notifications.length;
 
     for (const answer of run.held.claims.splice(0)) answer();
-    await until(() => run.notifications.length > notified, "the pane's note of the failure");
+    await until(
+      "the pane's note of the failure",
+      rowProbe(() => run.notifications.length > notified)
+    );
     await settle();
 
     expect(run.claims.length - claimed).toBeGreaterThan(1);
@@ -499,7 +514,10 @@ test("a heartbeat's pass abandoned at its deadline after the stop began tells th
       const notified = run.notifications.length;
       const ticked = performance.now();
       run.intervals[0]?.();
-      await until(() => run.held.length === 1, "the heartbeat's registration on the wire");
+      await until(
+        "the heartbeat's registration on the wire",
+        rowProbe(() => run.held.length === 1)
+      );
       // The pass is still inside its deadline when the stop begins.
       expect(run.notifications.slice(notified)).toEqual([]);
 
@@ -525,10 +543,16 @@ test("control: a heartbeat's pass abandoned at its deadline with no stop begun t
       run.hold();
       const notified = run.notifications.length;
       run.intervals[0]?.();
-      await until(() => run.held.length === 1, "the heartbeat's registration on the wire");
+      await until(
+        "the heartbeat's registration on the wire",
+        rowProbe(() => run.held.length === 1)
+      );
 
       // The queue abandons the pass on its own real timer, a second after the pass began.
-      await until(() => run.notifications.length > notified, "the pane's note of the stall", 5_000);
+      await until(
+        "the pane's note of the stall",
+        rowProbe(() => run.notifications.length > notified)
+      );
       await settle();
 
       expect(run.notifications.slice(notified)).toHaveLength(1);
@@ -554,16 +578,18 @@ test("a heartbeat's role claim granted after the stop began fires no regain hook
     run.holdClaim();
     run.intervals[0]?.();
     await until(
-      () => run.held.claims.length === 1,
       "the heartbeat's role claim on the wire",
-      10_000
+      rowProbe(() => run.held.claims.length === 1)
     );
     const notified = run.notifications.length;
 
     // The stop's last call, held so that the stop still runs when the claim is answered.
     run.holdDeletes();
     const stopping = run.stop();
-    await until(() => run.held.deletes.length === 1, "the stop's deregistration on the wire");
+    await until(
+      "the stop's deregistration on the wire",
+      rowProbe(() => run.held.deletes.length === 1)
+    );
     for (const answer of run.held.claims.splice(0)) answer();
     await settle();
 
@@ -585,13 +611,15 @@ test("control: a heartbeat's role claim granted with no stop begun fires the reg
     run.holdClaim();
     run.intervals[0]?.();
     await until(
-      () => run.held.claims.length === 1,
       "the heartbeat's role claim on the wire",
-      10_000
+      rowProbe(() => run.held.claims.length === 1)
     );
 
     for (const answer of run.held.claims.splice(0)) answer();
-    await until(() => run.regained.length > 0, "the regain hook");
+    await until(
+      "the regain hook",
+      rowProbe(() => run.regained.length > 0)
+    );
     await settle();
 
     expect(run.regained).toEqual([`${ROLE}:reclaimed`]);
@@ -614,10 +642,16 @@ test("a role move that waits its turn when the stop begins claims nothing and te
     expect((await run.claimRole()).isError).toBeFalsy();
     run.holdClaim();
     const claiming = run.claimRole();
-    await until(() => run.held.claims.length === 1, "the tool's claim on the wire");
+    await until(
+      "the tool's claim on the wire",
+      rowProbe(() => run.held.claims.length === 1)
+    );
     const registered = run.registrations();
     run.intervals[0]?.();
-    await until(() => run.registrations() > registered, "the heartbeat's registration", 10_000);
+    await until(
+      "the heartbeat's registration",
+      rowProbe(() => run.registrations() > registered)
+    );
     // The pass's role move is queued a few turns after its registration is answered.
     await settle();
     const notified = run.notifications.length;
@@ -626,8 +660,11 @@ test("a role move that waits its turn when the stop begins claims nothing and te
     // The stop's last call, held so that the stop still runs when the claim is answered.
     run.holdDeletes();
     const stopping = run.stop();
-    await until(run.handedBack, "the stop's hand-back of the role");
-    await until(() => run.held.deletes.length === 1, "the stop's deregistration on the wire");
+    await until("the stop's hand-back of the role", rowProbe(run.handedBack));
+    await until(
+      "the stop's deregistration on the wire",
+      rowProbe(() => run.held.deletes.length === 1)
+    );
     for (const answer of run.held.claims.splice(0)) answer();
     const claimed = await claiming;
     await settle();
@@ -661,17 +698,26 @@ test("control: a role move that waits its turn with no stop begun claims the rol
     expect((await run.claimRole()).isError).toBeFalsy();
     run.holdClaim();
     const claiming = run.claimRole();
-    await until(() => run.held.claims.length === 1, "the tool's claim on the wire");
+    await until(
+      "the tool's claim on the wire",
+      rowProbe(() => run.held.claims.length === 1)
+    );
     const registered = run.registrations();
     run.intervals[0]?.();
-    await until(() => run.registrations() > registered, "the heartbeat's registration", 10_000);
+    await until(
+      "the heartbeat's registration",
+      rowProbe(() => run.registrations() > registered)
+    );
     await settle();
 
     const claimsBefore = run.claims.length;
     run.loseClaim();
     for (const answer of run.held.claims.splice(0)) answer();
     const claimed = await claiming;
-    await until(() => run.regained.length > 0, "the regain hook");
+    await until(
+      "the regain hook",
+      rowProbe(() => run.regained.length > 0)
+    );
     await settle();
 
     expect(run.claims.slice(claimsBefore)).not.toEqual([]);
@@ -710,7 +756,10 @@ test("envoy_role_set called once the stop has begun is refused naming the stop a
   try {
     stopBegan = true;
     const stopping = fixture.handlers.get("session_shutdown")?.({}, context);
-    await until(() => heldDeletes.length === 1, "the stop's deregistration on the wire");
+    await until(
+      "the stop's deregistration on the wire",
+      rowProbe(() => heldDeletes.length === 1)
+    );
 
     const refused = await roleTool.execute("", { role: ROLE });
     await settle();

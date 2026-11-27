@@ -2,19 +2,19 @@
  * A wait of a row that starts a child process, which ends on what the child does and fails by name
  * when that never comes, before the row's hang guard does.
  *
- * The guard, `ROW_GUARD_MS`, is a hang guard and decides no verdict: 120 s, far above any real
- * duration of these rows (the slowest, run with its whole file on one CPU that 200 busy loops
- * share, took 39.7 s), and the value #4924's `HANG_GUARD_MS` holds. Each file that uses this module
- * sets it as its rows' default (`setDefaultTimeout(ROW_GUARD_MS)`: a row's own limit wins over it,
- * and it wins over the package script's `--timeout`), so the rows state no limit of their own. A
- * wait here gives up `NAMED_BEFORE_GUARD_MS` before it, counted from the row's start (`rowStarted`,
- * which each such file calls from a `beforeEach` of its own), ends the child, and fails naming what
- * it waited for and what the child had written. A child that a loaded machine merely slows takes
- * what it takes up to there.
+ * `ROW_GUARD_MS` (120 s) is the default of the files that set `setDefaultTimeout(ROW_GUARD_MS)`
+ * and the default guard of `untilTheGuard`, `beforeTheGuard` and `exitBeforeTheGuard`. It matches
+ * #4924's `HANG_GUARD_MS`. The slowest row #4955 measured took 39.7 s with its whole file on one
+ * CPU shared by 200 busy loops. The MCP dial row passes its own `ROW_TIMEOUT_MS` to
+ * `untilTheGuard` instead.
+ *
+ * These waits give up `NAMED_BEFORE_GUARD_MS` before their guard, counted from `rowStarted`.
+ * `beforeTheGuard` names the fact it waited for and what the child wrote. Converted rows use
+ * `@legion/test-fixtures/wait` instead. They can still use `collected` to read child output.
  */
 import type { Subprocess } from "bun"
 
-/** Each row's hang guard, which every file that uses this module sets as its rows' default. */
+/** The default hang guard for the legacy waits below. */
 export const ROW_GUARD_MS = 120_000
 /** How long before the guard a wait here gives up: room for the row's last steps after it and
  *  for its failure to be printed, where Bun's own timeout line would name nothing. */

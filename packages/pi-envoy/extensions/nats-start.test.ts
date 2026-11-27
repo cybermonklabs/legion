@@ -5,7 +5,7 @@
 // the one `envoy.test.ts` uses, so a row's full name is the same in every file. The rows on the
 // broker trade a dial presents are in `nats-broker-trade.test.ts`. All three files share one
 // harness (`../test/extension-harness`).
-import { describe, expect, setSystemTime, test } from "bun:test";
+import { describe, expect, setSystemTime } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import { natsFailureReason } from "@legion/envoy-client/errors";
 import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/inbound-outage";
 import { NATS_DIAL_PLAN } from "@legion/envoy-client/nats-connection";
-import { logger } from "@oh-my-pi/pi-utils";
+import { until } from "@legion/test-fixtures/wait";
 import {
   type ConnectionOptions,
   ErrorCode,
@@ -26,15 +26,26 @@ import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
   forwardedRoleEnvelope,
+  onPassClock,
+  type PassClock,
+  rowLogSink,
+  rowProbe,
+  rowSessionShutdown,
   sessionContext,
   setNatsConnectForTests,
   settle,
   topLevelSession,
-  until,
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
-import { natsStandInConnect, natsState, responseWithRegistration } from "../test/listener-stand-in";
+import {
+  natsStandInConnect,
+  natsState,
+  responseWithRegistration,
+  rowCheck,
+  stillOn,
+  test,
+} from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
 useExtensionHarness();
@@ -135,6 +146,7 @@ describe("envoy OMP extension", () => {
   // start of Oh My Pi causes, and answers the next one: the pass dials again rather than register
   // with no relay.
   test("a first NATS dial that fails once is dialed again, and the session_start pass registers with its relay", async () => {
+    const ownRow = rowCheck();
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
     natsState.failConnects = 1;
     natsState.failError = () =>
@@ -151,7 +163,13 @@ describe("envoy OMP extension", () => {
       const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?redial-first-dial");
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, context);
+      // The redial's budget, 5 s less the time the pass has spent, and its 5 ms wait between
+      // dials are read from this process's clock, so the start runs on the test's clock
+      // (`onPassClock`), stepped through the wait: on the real clock a host slow enough to spend
+      // the budget before the first dial failed would not dial again, and the row would fail.
+      await onPassClock((clock) =>
+        clock.stepping("the start", fixture.handlers.get("session_start")?.({}, context), 1_000, 5)
+      );
 
       expect(natsState.failConnects).toBe(0);
       expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_redial")).toBe(true);
@@ -160,14 +178,18 @@ describe("envoy OMP extension", () => {
       ).toEqual([]);
       expect(notifications.filter((message) => message.includes("not registered"))).toEqual([]);
     } finally {
-      setNatsConnectForTests(natsStandInConnect);
+      if (ownRow()) setNatsConnectForTests(natsStandInConnect);
     }
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load before it are awaited on the
+    // real clock with no bound of their own: the command's guard ends them.
   });
 
   // A Legion wake after a pod release is a new pod that resumes the session's transcript: its
   // start blocks the event loop as a fresh one does, and its pass also reads the interests the
   // session registered before. The dial the hub closes is dialed again there too.
   test("a session resumed in a new pod, whose first dial the hub closes, is dialed again and registers with its relay in its session_start pass", async () => {
+    const ownRow = rowCheck();
     const registrations: { readonly consumer: boolean }[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
@@ -205,7 +227,13 @@ describe("envoy OMP extension", () => {
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, context);
+      // The redial's budget, 5 s less the time the pass has spent, and its 5 ms wait between
+      // dials are read from this process's clock, so the start runs on the test's clock
+      // (`onPassClock`), stepped through the wait: on the real clock a host slow enough to spend
+      // the budget before the first dial failed would not dial again, and the row would fail.
+      await onPassClock((clock) =>
+        clock.stepping("the start", fixture.handlers.get("session_start")?.({}, context), 1_000, 5)
+      );
 
       expect(natsState.failConnects).toBe(0);
       expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_woken")).toBe(true);
@@ -216,8 +244,11 @@ describe("envoy OMP extension", () => {
       ).toEqual([]);
       expect(notifications.filter((message) => message.includes("not registered"))).toEqual([]);
     } finally {
-      setNatsConnectForTests(natsStandInConnect);
+      if (ownRow()) setNatsConnectForTests(natsStandInConnect);
     }
+    // Every wait on the test's clock above ends by its own count of turns or steps
+    // (`onPassClock`). The module's import and the extension's load before it are awaited on the
+    // real clock with no bound of their own: the command's guard ends them.
   });
 
   // A pod whose first dial fails, and whose relay is still closed once the start race's bound
@@ -228,10 +259,9 @@ describe("envoy OMP extension", () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
     natsState.failConnects = 99;
     const infos: string[] = [];
-    const stopSink = logger.registerLogSink((entry) => {
+    const stopSink = rowLogSink((entry) => {
       if (entry.level === "info") infos.push(entry.message);
     });
-    const start = Date.now();
     try {
       const notifications: string[] = [];
       const intervals: (() => void)[] = [];
@@ -260,20 +290,26 @@ describe("envoy OMP extension", () => {
         []
       );
 
-      // Past the bound, the background retry's pass finds NATS still closed, and the session is
-      // told that it receives nothing.
-      setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
-      await until(() => {
-        intervals.at(-1)?.();
-        return notifications.some((m) => m.includes("inbound messages are unavailable"));
-      }, "the outage notice");
+      // Past the bound, read from `Date.now()` after `session_start` so a slow import or start
+      // cannot leave `setSystemTime` frozen inside the session's `INBOUND_FIRST_OPEN_BOUND_MS`.
+      setSystemTime(new Date(Date.now() + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
+      await until(
+        "the outage notice",
+        rowProbe(() => {
+          intervals.at(-1)?.();
+          return notifications.some((m) => m.includes("inbound messages are unavailable"));
+        })
+      );
 
       // A later retry's pass dials, opens the relay and registers.
       natsState.failConnects = 0;
-      await until(() => {
-        intervals.at(-1)?.();
-        return notifications.some((m) => m.includes("inbound messages are back"));
-      }, "the restored notice");
+      await until(
+        "the restored notice",
+        rowProbe(() => {
+          intervals.at(-1)?.();
+          return notifications.some((m) => m.includes("inbound messages are back"));
+        })
+      );
       expect(infos.filter((m) => m.includes("this session receives again"))).toHaveLength(1);
       expect(
         transcript().filter((content) => content.includes("Envoy inbound restored"))
@@ -297,7 +333,7 @@ describe("envoy OMP extension", () => {
     const reason = "because its relay subject could not be opened: CONNECTION_REFUSED";
     const warnings: string[] = [];
     const infos: string[] = [];
-    const stopSink = logger.registerLogSink((entry) => {
+    const stopSink = rowLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry.message);
       if (entry.level === "info") infos.push(entry.message);
     });
@@ -314,6 +350,7 @@ describe("envoy OMP extension", () => {
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
+      const stop = rowSessionShutdown(fixture, context);
       const heartbeat = () => {
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
       };
@@ -340,7 +377,10 @@ describe("envoy OMP extension", () => {
         await natsState.connections[0]?.close();
         natsState.controls.get(relay)?.end();
         natsState.controls.get(control)?.end();
-        await until(() => natsState.failConnects < 99, "the relay's own redial");
+        await until(
+          "the relay's own redial",
+          rowProbe(() => natsState.failConnects < 99)
+        );
         await settle();
 
         // A registration sent outside a pass while the subject is missing - here the one a new
@@ -364,10 +404,12 @@ describe("envoy OMP extension", () => {
         const beforeHeartbeat = natsState.failConnects;
         heartbeat();
         await until(
-          () =>
-            natsState.failConnects < beforeHeartbeat &&
-            notifications.some((m) => m.includes("registry heartbeat failed")),
-          "the heartbeat's dial and its failure"
+          "the heartbeat's dial and its failure",
+          rowProbe(
+            () =>
+              natsState.failConnects < beforeHeartbeat &&
+              notifications.some((m) => m.includes("registry heartbeat failed"))
+          )
         );
         await settle();
         for (const part of Object.values(told())) expect(part).toHaveLength(1);
@@ -381,8 +423,8 @@ describe("envoy OMP extension", () => {
         natsState.failConnects = 0;
         heartbeat();
         await until(
-          () => notifications.some((m) => m.includes("inbound messages are back")),
-          "the restored notice"
+          "the restored notice",
+          rowProbe(() => notifications.some((m) => m.includes("inbound messages are back")))
         );
         await settle();
         expect(natsState.connectedNames).toHaveLength(2);
@@ -397,12 +439,12 @@ describe("envoy OMP extension", () => {
           .get(`notifications.agent.${id}`)
           ?.push(forwardedRoleEnvelope("legion-controller", "after the relay came back", "back"));
         await until(
-          () => fixture.messages.some((m) => m.includes("after the relay came back")),
-          "the message relayed on the new connection"
+          "the message relayed on the new connection",
+          rowProbe(() => fixture.messages.some((m) => m.includes("after the relay came back")))
         );
       } finally {
         stopSink();
-        await fixture.handlers.get("session_shutdown")?.({}, context);
+        await stop();
       }
     });
   });
@@ -425,6 +467,7 @@ describe("envoy OMP extension", () => {
       );
       const fixture = createPi();
       await envoyExtension(fixture.pi);
+      const stop = rowSessionShutdown(fixture, context);
       try {
         await fixture.handlers.get("session_start")?.({}, context);
         const first = natsState.controls.get(control);
@@ -432,28 +475,34 @@ describe("envoy OMP extension", () => {
 
         natsState.failSubscribes = 1;
         first?.end();
-        await until(() => natsState.failSubscribes === 0, "the control subject's own resubscribe");
+        await until(
+          "the control subject's own resubscribe",
+          rowProbe(() => natsState.failSubscribes === 0)
+        );
         await settle();
         expect(natsState.controls.get(control)).toBe(first);
 
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
         await until(
-          () => natsState.controls.get(control) !== first,
-          "the heartbeat's open of the control subject"
+          "the heartbeat's open of the control subject",
+          rowProbe(() => natsState.controls.get(control) !== first)
         );
         expect(natsState.controls.get(control)?.active()).toBe(true);
         expect(natsState.connectedNames).toHaveLength(1);
       } finally {
-        await fixture.handlers.get("session_shutdown")?.({}, context);
+        await stop();
       }
     });
   });
 
   /** A session for the relay-loss rows: its notices in all three places, and its heartbeat. */
   async function relayLossSession(id: string, query: string) {
+    // The row the session is booted in: its heartbeat and its follow check it first, so a body
+    // its guard abandoned hands the session nothing inside the row after it.
+    const ownRow = rowCheck();
     const warnings: string[] = [];
     const infos: string[] = [];
-    const stopSink = logger.registerLogSink((entry) => {
+    const stopSink = rowLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry.message);
       if (entry.level === "info") infos.push(entry.message);
     });
@@ -467,6 +516,7 @@ describe("envoy OMP extension", () => {
     const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
     await envoyExtension(fixture.pi);
+    const shutdown = rowSessionShutdown(fixture, context);
     await fixture.handlers.get("session_start")?.({}, context);
     const written = (word: string) =>
       fixture.entries
@@ -494,23 +544,49 @@ describe("envoy OMP extension", () => {
         written: written("Envoy inbound restored"),
       }),
       heartbeat: () => {
+        stillOn(ownRow, "ticking the relay-loss session's heartbeat");
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
       },
       follow: async (topic: string) => {
+        stillOn(ownRow, `following ${topic}`);
         const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
         if (subscribe === undefined) throw new Error("envoy_subscribe was not registered");
         return String((await subscribe.execute("", { topics: [topic] })).details.registrationError);
       },
       stop: async () => {
         stopSink();
-        await fixture.handlers.get("session_shutdown")?.({}, context);
+        await shutdown();
       },
     };
+  }
+
+  /**
+   * Moves the test's clock (`onPassClock`) 10 ms at a time, at most 100 times, while `done()` does
+   * not hold, and throws `failure` once 1 s of the clock has passed without it.
+   */
+  async function stepUntil(clock: PassClock, done: () => boolean, failure: string): Promise<void> {
+    for (let step = 0; step < 100 && !done(); step += 1) await clock.advance(10);
+    if (!done()) throw new Error(`${failure} within 1 s of the test's clock`);
+  }
+
+  /**
+   * Moves the test's clock (`onPassClock`) through the own resubscribe delay of the relay or of
+   * the agent stream's control subject, 10 ms here (`ENVOY_RESUBSCRIBE_DELAY_MS`), 10 ms at a
+   * time, until that subject's redial has begun: the stand-in records its connect as it begins,
+   * and parks it. That redial waits under its dial's bound (`boundedDial`, 10 s), and for the
+   * relay the close stays the reason a registration names until the redial gives up, once its
+   * bounds have spent its budget (`NATS_DIAL_PLAN`, 25 s). Both are this process's own, and the
+   * clock moves no further once the redial has begun, so neither ends inside the row. At most 1 s
+   * of the clock passes, and a redial not begun by then fails the row here.
+   */
+  async function redialParked(clock: PassClock): Promise<void> {
+    await stepUntil(clock, () => natsState.connectedNames.length >= 2, "no redial began");
   }
 
   test("a registration sent right after the connection closed names the close", async () => {
     // nats.js ends each subscription of a connection it closes with no error of its own, and the
     // relay's own redial has not failed yet: the close is the only reason there is.
+    const ownRow = rowCheck();
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     const id = "ses_relay_closed";
@@ -519,23 +595,41 @@ describe("envoy OMP extension", () => {
       const parked = Promise.withResolvers<void>();
       try {
         expect(natsState.controls.get(deliverSubject(id))?.active()).toBe(true);
-        // Every dial from now on waits, so the relay's own redial never ends during the row.
-        natsState.heldConnect = parked.promise;
-        await natsState.connections[0]?.close();
-        natsState.controls.get(deliverSubject(id))?.end();
-        await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
         const reason = "because its relay subject could not be opened: the NATS connection closed";
-        expect(await session.follow("team.relay-closed")).toContain(reason);
-        for (const part of Object.values(session.outage())) {
-          expect(part).toHaveLength(1);
-          expect(part[0]).toContain(reason);
-        }
+        // Every dial from now on waits on the stand-in, under the redial's bound (`boundedDial`,
+        // 10 s) and its budget (`NATS_DIAL_PLAN`, 25 s): on the real clock a host slow enough
+        // between the redial and the follow had the follow name the dial's failure, not the
+        // close. So the row runs on the test's clock from the park on, which moves only through
+        // the relay's resubscribe delay, until the redial begins (`redialParked`). No other timer
+        // matters: the context's `setInterval` runs no heartbeat, no pass runs, so no pass
+        // deadline is armed, and the follow's listener call is answered at once, in process. The
+        // boot runs before, on the real clock: its dial answers at once, in process.
+        await onPassClock(async (clock) => {
+          natsState.heldConnect = parked.promise;
+          await natsState.connections[0]?.close();
+          natsState.controls.get(deliverSubject(id))?.end();
+          await redialParked(clock);
+          expect(await clock.run("the follow", session.follow("team.relay-closed"))).toContain(
+            reason
+          );
+          for (const part of Object.values(session.outage())) {
+            expect(part).toHaveLength(1);
+            expect(part[0]).toContain(reason);
+          }
+        });
       } finally {
-        natsState.heldConnect = undefined;
-        parked.resolve();
+        // Only while the row runs: released after it, the parked dial would go on inside the row
+        // after it.
+        if (ownRow()) {
+          natsState.heldConnect = undefined;
+          parked.resolve();
+        }
         await session.stop();
       }
     });
+    // What can hang is the boot or the shutdown, each awaited on the real clock with no bound of
+    // its own; every wait on the test's clock ends by its own count of turns or steps
+    // (`onPassClock`, `redialParked`).
   });
 
   test("a registration sent after a start whose dial failed names the dial's failure, though no relay exists yet", async () => {
@@ -558,6 +652,7 @@ describe("envoy OMP extension", () => {
   test("a registration sent once the connection closed with an error of its own names that error", async () => {
     // nats.js settles `closed()` with the close's own error, which replaces the plugin's own words
     // for the close once it settles.
+    const ownRow = rowCheck();
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     const id = "ses_relay_closed_error";
@@ -566,20 +661,36 @@ describe("envoy OMP extension", () => {
       const session = await relayLossSession(id, "relay-closed-error");
       const parked = Promise.withResolvers<void>();
       try {
-        natsState.heldConnect = parked.promise;
-        natsState.closeError = closeError;
-        await natsState.connections[0]?.close();
-        natsState.controls.get(deliverSubject(id))?.end();
-        await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
         const reason = `because its relay subject could not be opened: ${natsFailureReason(closeError)}`;
         expect(natsFailureReason(closeError)).not.toBe("the NATS connection closed");
-        expect(await session.follow("team.relay-closed-error")).toContain(reason);
+        // As in the row before: from the park on, the test's clock, which moves only through the
+        // relay's resubscribe delay (`redialParked`), so neither the redial's bound
+        // (`boundedDial`, 10 s) nor its budget (`NATS_DIAL_PLAN`, 25 s) ends inside the row, and
+        // the follow names the close's own error, not the dial's failure. The close's error
+        // replaces the plugin's words in process, as `closed()` settles.
+        await onPassClock(async (clock) => {
+          natsState.heldConnect = parked.promise;
+          natsState.closeError = closeError;
+          await natsState.connections[0]?.close();
+          natsState.controls.get(deliverSubject(id))?.end();
+          await redialParked(clock);
+          expect(
+            await clock.run("the follow", session.follow("team.relay-closed-error"))
+          ).toContain(reason);
+        });
       } finally {
-        natsState.heldConnect = undefined;
-        parked.resolve();
+        // Only while the row runs: released after it, the parked dial would go on inside the row
+        // after it.
+        if (ownRow()) {
+          natsState.heldConnect = undefined;
+          parked.resolve();
+        }
         await session.stop();
       }
     });
+    // What can hang is the boot or the shutdown, each awaited on the real clock with no bound of
+    // its own; every wait on the test's clock ends by its own count of turns or steps
+    // (`onPassClock`, `redialParked`).
   });
 
   test("a relay subscription that ends with its own error names that error, and the next heartbeat opens it again", async () => {
@@ -591,35 +702,58 @@ describe("envoy OMP extension", () => {
       const session = await relayLossSession(id, "relay-own-error");
       try {
         const first = natsState.controls.get(relay);
-        // The connection stays up; the relay's own resubscribe is refused, and waits 15 s.
-        natsState.failSubscribes = 1;
-        first?.fail(NatsError.errorForCode(ErrorCode.Disconnect));
-        await until(() => natsState.failSubscribes === 0, "the relay's own resubscribe");
-        const reason = "because its relay subject could not be opened: DISCONNECT";
-        expect(await session.follow("team.relay-errored")).toContain(reason);
-        for (const part of Object.values(session.outage())) {
-          expect(part).toHaveLength(1);
-          expect(part[0]).toContain(reason);
-        }
-        session.heartbeat();
-        await until(
-          () =>
+        // The connection stays up; the relay's own resubscribe is refused, and its next one
+        // waits 15 s (`retryRelay`, at `NATS_RETRY_INTERVAL_MS`), a timer of this process. On the
+        // real clock a host slow enough before the follow or the heartbeat could have that retry
+        // open the relay first, so neither would read what the row reads. So the row runs on the
+        // test's clock from the error on (`onPassClock`), which moves only through the relay's
+        // own resubscribe delay, 10 ms here (`ENVOY_RESUBSCRIBE_DELAY_MS`), 10 ms at a time until
+        // that resubscribe is refused, at most 1 s. No other timer matters: the connection stays
+        // up, so nothing dials; the heartbeat's pass ends at its 45 s deadline only once the clock
+        // moves; and the follow's and the heartbeat's listener calls are answered at once, in
+        // process. The boot runs before, on the real clock: its dial and its registration are
+        // answered at once, in process.
+        await onPassClock(async (clock) => {
+          natsState.failSubscribes = 1;
+          first?.fail(NatsError.errorForCode(ErrorCode.Disconnect));
+          await stepUntil(
+            clock,
+            () => natsState.failSubscribes <= 0,
+            "the relay did not resubscribe"
+          );
+          const reason = "because its relay subject could not be opened: DISCONNECT";
+          expect(await clock.run("the follow", session.follow("team.relay-errored"))).toContain(
+            reason
+          );
+          for (const part of Object.values(session.outage())) {
+            expect(part).toHaveLength(1);
+            expect(part[0]).toContain(reason);
+          }
+          session.heartbeat();
+          const reopened = () =>
             natsState.controls.get(relay) !== first &&
-            natsState.controls.get(relay)?.active() === true,
-          "the heartbeat's open of the relay subject"
-        );
-        await until(() => session.restored().written.length === 1, "the restored notice");
-        for (const part of Object.values(session.restored())) expect(part).toHaveLength(1);
-        expect(natsState.connectedNames).toHaveLength(1);
+            natsState.controls.get(relay)?.active() === true;
+          await clock.hold("the heartbeat's reopening of the relay subject", reopened);
+          await clock.hold(
+            "the transcript's note that inbound is restored",
+            () => session.restored().written.length === 1
+          );
+          for (const part of Object.values(session.restored())) expect(part).toHaveLength(1);
+          expect(natsState.connectedNames).toHaveLength(1);
+        });
       } finally {
         await session.stop();
       }
     });
+    // What can hang is the boot or the shutdown, each awaited on the real clock with no bound of
+    // its own; every wait on the test's clock ends by its own count of turns or steps
+    // (`onPassClock`).
   });
 
   test("two opens of the live view's control subject that race each other take it once", async () => {
     // The control subject's own resubscribe and the heartbeat's pass both dial a closed
     // connection; whichever lands second takes nothing.
+    const ownRow = rowCheck();
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
     const id = "ses_control_race";
@@ -628,69 +762,97 @@ describe("envoy OMP extension", () => {
       const session = await relayLossSession(id, "control-open-race");
       const parked = Promise.withResolvers<void>();
       try {
-        natsState.heldConnect = parked.promise;
-        await natsState.connections[0]?.close();
-        natsState.controls.get(control)?.end();
-        await until(() => natsState.connectedNames.length === 2, "the control subject's own dial");
-        session.heartbeat();
-        await until(() => natsState.connectedNames.length === 3, "the heartbeat's dial");
-        natsState.heldConnect = undefined;
-        parked.resolve();
-        await until(
-          () => (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active()),
-          "the control subject opened again"
-        );
-        await settle();
-        // The first subscription ended with its connection; the stand-in still calls an ended
-        // subscription active, so only those taken after it are counted.
-        const live = (natsState.controlsByTopic.get(control) ?? [])
-          .slice(1)
-          .filter((c) => c.active());
-        expect(live).toHaveLength(1);
+        // Every dial from now on waits on the stand-in, under its bound (`boundedDial`, 10 s) and
+        // its budget (`NATS_DIAL_PLAN`, 25 s), both this process's timers: on the real clock a
+        // host slow enough between the park and the release could have a parked dial give up
+        // before the release. So the row runs on the test's clock from the park on
+        // (`onPassClock`), which moves only through the control subject's own resubscribe delay,
+        // until its redial begins (`redialParked`). No other timer matters: the heartbeat's pass
+        // ends at its 45 s deadline only once the clock moves, and its listener calls are
+        // answered at once, in process. The boot runs before, on the real clock: its dial and its
+        // registration are answered at once, in process.
+        await onPassClock(async (clock) => {
+          natsState.heldConnect = parked.promise;
+          await natsState.connections[0]?.close();
+          natsState.controls.get(control)?.end();
+          await redialParked(clock);
+          session.heartbeat();
+          const raced = () => natsState.connectedNames.length === 3;
+          await clock.hold("the heartbeat's dial beside the parked redial", raced);
+          natsState.heldConnect = undefined;
+          parked.resolve();
+          await clock.hold("a live subscription of the control subject after its first", () =>
+            (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active())
+          );
+          await settle();
+          // The first subscription ended with its connection; the stand-in still calls an ended
+          // subscription active, so only those taken after it are counted.
+          const live = (natsState.controlsByTopic.get(control) ?? [])
+            .slice(1)
+            .filter((c) => c.active());
+          expect(live).toHaveLength(1);
+        });
       } finally {
-        natsState.heldConnect = undefined;
-        parked.resolve();
+        // Only while the row runs: released after it, the parked dial would go on inside the row
+        // after it.
+        if (ownRow()) {
+          natsState.heldConnect = undefined;
+          parked.resolve();
+        }
         await session.stop();
       }
     });
+    // What can hang is the boot or the shutdown, each awaited on the real clock with no bound of
+    // its own; every wait on the test's clock ends by its own count of turns or steps
+    // (`onPassClock`, `redialParked`).
   });
 
   test("the budget of the pass: a pass whose deadline is 7.5 s dials once, bounded by that deadline", async () => {
-    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
-      const bounds: number[] = [];
-      setNatsConnectForTests(
-        (async (options: ConnectionOptions) => {
-          bounds.push(options.timeout ?? Number.NaN);
-          throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
-        }) as unknown as typeof realConnect,
-        NATS_DIAL_PLAN
-      );
-      try {
-        const context: SessionContext = {
-          cwd: "/tmp/envoy-omp-test",
-          sessionManager: { ...topLevelSession, getSessionId: () => "ses_pass_budget" },
-          setInterval: () => {},
-          ui: sessionContext().ui,
-        };
-        const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pass-budget");
-        const fixture = createPi();
-        await envoyExtension(fixture.pi);
-        await fixture.handlers.get("session_start")?.({}, context);
-        // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits.
-        expect(bounds).toHaveLength(1);
-        expect(bounds[0]).toBeLessThanOrEqual(7_500);
-        expect(bounds[0]).toBeGreaterThan(6_000);
-      } finally {
-        setNatsConnectForTests(natsStandInConnect);
-      }
-    });
-  }, 30_000);
+    // The dial's bound is what the pass has left of its deadline (`dialNats`), read from the
+    // clock, so the row runs on the test's clock (`onPassClock`), which the start's own work does
+    // not move: the bound is then the whole 7.5 s. On the real clock the row read it as more than
+    // 6 s, which a host slow enough to spend 1.5 s of the pass before its dial failed.
+    const ownRow = rowCheck();
+    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, () =>
+      onPassClock(async (clock) => {
+        globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+        const bounds: number[] = [];
+        setNatsConnectForTests(
+          (async (options: ConnectionOptions) => {
+            bounds.push(options.timeout ?? Number.NaN);
+            throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
+          }) as unknown as typeof realConnect,
+          NATS_DIAL_PLAN
+        );
+        try {
+          const context: SessionContext = {
+            cwd: "/tmp/envoy-omp-test",
+            sessionManager: { ...topLevelSession, getSessionId: () => "ses_pass_budget" },
+            setInterval: () => {},
+            ui: sessionContext().ui,
+          };
+          const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pass-budget");
+          const fixture = createPi();
+          await envoyExtension(fixture.pi);
+          await clock.run("the start", fixture.handlers.get("session_start")?.({}, context));
+          // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits, and
+          // the one dial is bounded by the whole deadline, which nothing has spent.
+          expect(bounds).toEqual([7_500]);
+        } finally {
+          if (ownRow()) setNatsConnectForTests(natsStandInConnect);
+        }
+      })
+    );
+    // Every wait on the test's clock above ends by its own count of turns (`onPassClock`). The
+    // module's import and the extension's load, awaited in the clock's body but not through the
+    // clock, have no bound of their own: the command's guard ends them.
+  });
 
   // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
   // of connections lists: the image's build-commit stamp, else a packed build's release version,
   // else none.
   test("the connection name the server sees ends with the plugin's build", async () => {
+    const ownRow = rowCheck();
     await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
       const names: string[] = [];
@@ -704,10 +866,17 @@ describe("envoy OMP extension", () => {
       const stampDirectory = mkdtempSync(join(tmpdir(), "pi-envoy-build-"));
       try {
         // An instance of its own (the query), as each row of this file loads one: the build source
-        // it is given is that instance's module state.
-        const entry = await import("./envoy.ts?connection-build");
-        // The query names no file, so `entry` is untyped; its factory is read through
-        // `EnvoyModule`, so a call of it left without `await` fails Biome's noFloatingPromises.
+        // it is given is that instance's module state. The query names no file, so nothing types
+        // the import but this annotation, which names what the row uses of it: the factory
+        // (`EnvoyModule`) and the setter of the build source. The factory is read through
+        // `EnvoyModule` alone, which Biome follows where it does not follow an intersection, so a
+        // call of it left without `await` fails Biome's noFloatingPromises.
+        const entry: EnvoyModule & {
+          readonly setBuildSourceForTests: (source: {
+            readonly stamp: string;
+            readonly packed: boolean;
+          }) => void;
+        } = await import("./envoy.ts?connection-build");
         const { default: envoyExtension }: EnvoyModule = entry;
         const commit = "0123456789abcdef0123456789abcdef01234567";
         const rows = [
@@ -719,29 +888,48 @@ describe("envoy OMP extension", () => {
           },
           { stamp: undefined, packed: false, want: "omp-ses_build" },
         ];
-        for (const [index, row] of rows.entries()) {
-          const stamp = join(stampDirectory, `build-commit-${index}`);
-          if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
-          entry.setBuildSourceForTests({ stamp, packed: row.packed });
-          const context: SessionContext = {
-            cwd: "/tmp/envoy-omp-test",
-            sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
-            setInterval: () => {},
-            ui: sessionContext().ui,
-          };
-          const fixture = createPi();
-          await envoyExtension(fixture.pi);
-          names.length = 0;
-          await fixture.handlers.get("session_start")?.({}, context);
-          await fixture.handlers.get("session_shutdown")?.({}, context);
-          expect(names[0]).toBe(row.want);
-        }
+        // The sessions run on the test's clock (`onPassClock`). The pass's deadline of 7.5 s gives
+        // its dial no budget to redial, so each session dials once; with an hour's deadline the
+        // redials take the row past 60 s. On the real clock that deadline ran beside a row that
+        // cost up to 5 404 ms at the 96 rung, above a tenth of it. The clock is held, so the
+        // deadline ends no pass however slow the host, and it still allows no redial.
+        await onPassClock(async (clock) => {
+          for (const [index, row] of rows.entries()) {
+            // Each turn starts, and goes on after each await, only while its row runs, and its
+            // session ends with the row (`rowShutdown`): a row its guard abandoned inside
+            // `session_start` leaves no session running, and its loop acts in no row after it.
+            stillOn(ownRow, "starting a turn of the connection-name loop");
+            const stamp = join(stampDirectory, `build-commit-${index}`);
+            if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
+            entry.setBuildSourceForTests({ stamp, packed: row.packed });
+            const context: SessionContext = {
+              cwd: "/tmp/envoy-omp-test",
+              sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
+              setInterval: () => {},
+              ui: sessionContext().ui,
+            };
+            const fixture = createPi();
+            await envoyExtension(fixture.pi);
+            const shutdown = rowSessionShutdown(fixture, context);
+            names.length = 0;
+            await clock.run(
+              "a session's start in the connection-name loop",
+              fixture.handlers.get("session_start")?.({}, context)
+            );
+            stillOn(ownRow, "shutting down a session of the connection-name loop");
+            await clock.run("a session's shutdown in the connection-name loop", shutdown());
+            stillOn(ownRow, "reading the connection name of the loop's session");
+            expect(names[0]).toBe(row.want);
+          }
+        });
       } finally {
         rmSync(stampDirectory, { recursive: true, force: true });
         setNatsConnectForTests(natsStandInConnect);
       }
     });
-  }, 30_000);
+    // What can hang is the import of the row's own instance, or a session's boot or shutdown, each
+    // held for at most 10_000 turns of the test's clock.
+  });
 
   for (const { row, error, shown, withheld } of [
     {
@@ -762,10 +950,9 @@ describe("envoy OMP extension", () => {
       natsState.failConnects = 99;
       natsState.failError = error;
       const warnings: string[] = [];
-      const stopSink = logger.registerLogSink((entry) => {
+      const stopSink = rowLogSink((entry) => {
         if (entry.level === "warn") warnings.push(entry.message);
       });
-      const start = Date.now();
       try {
         const notifications: string[] = [];
         const intervals: (() => void)[] = [];
@@ -781,13 +968,17 @@ describe("envoy OMP extension", () => {
         const fixture = createPi();
         await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
-        // The start race is held for its bound (`INBOUND_FIRST_OPEN_BOUND_MS`). Past it, the
-        // background retry's pass, whose dial fails too, tells the session.
-        setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
-        await until(() => {
-          intervals.at(-1)?.();
-          return notifications.some((m) => m.includes("inbound messages are unavailable"));
-        }, "the outage notice");
+        // The start race is held for its bound (`INBOUND_FIRST_OPEN_BOUND_MS`). Advance from
+        // `Date.now()` after `session_start` so a slow import or start never leaves the clock
+        // frozen inside the bound; the background retry's pass then tells the session.
+        setSystemTime(new Date(Date.now() + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
+        await until(
+          "the outage notice",
+          rowProbe(() => {
+            intervals.at(-1)?.();
+            return notifications.some((m) => m.includes("inbound messages are unavailable"));
+          })
+        );
 
         const parts = {
           "the session_start notice": notifications.find((m) =>

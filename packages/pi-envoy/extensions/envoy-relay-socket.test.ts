@@ -14,10 +14,25 @@ import {
 } from "@legion/envoy-client/test/relay-socket-stand-in";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { runRelaySession } from "../test/relay-session-report";
 
 const tempDir = temporaryDirectories("pi-envoy-relay-socket");
 const SESSION = "ses_relay_socket";
+
+// What can hang in each row is the session process, which loads the real extension and opens its
+// relay socket. It is killed at the row's deadline (`timeLeft()`, `@legion/test-fixtures/wait`),
+// inside the command's guard, so a run that never reports fails the row naming that process.
+// The refusal row's process waits for its text through the shared wait, at a deadline the row
+// hands it (`LEGION_PROOF_DEADLINE_MS`, since it is no `bun test`) `REPORT_MS` before that kill,
+// so the wait's own failure reaches the row's error before the kill would end the process.
+const REPORT_MS = 1_000;
+// Each session's pass deadline: an hour, past the command's guard, as envoy.test.ts's
+// `UNRACED_PASS_DEADLINE_MS` is. With none named the extension's pass deadline is 90 s, and the
+// relay socket's dial is bounded under it (`startTradeBoundMs`, src/start-bound.ts: 80 s), so on a
+// slow host either would end the session's start before the row's deadline and decide the row in
+// the guard's place.
+const PASS_DEADLINE_MS = "3600000";
 
 test("a relay socket session takes its relay subject on the socket and no agent stream", async () => {
   const server = startRelaySocketStandIn();
@@ -25,6 +40,8 @@ test("a relay socket session takes its relay subject on the socket and no agent 
     const home = tempDir();
     const tokenFile = join(home, "token");
     writeFileSync(tokenFile, `${fixtureSecret("proj")}\n`);
+    // Whole milliseconds: `Bun.spawn` takes an integer `timeout`.
+    const timeoutMs = Math.max(1, Math.floor(timeLeft()));
     const report = await runRelaySession({
       session: SESSION,
       cwd: import.meta.dir,
@@ -39,8 +56,9 @@ test("a relay socket session takes its relay subject on the socket and no agent 
         AGENT_SECRETS_URL: server.url,
         AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
         AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+        ENVOY_PASS_DEADLINE_MS: PASS_DEADLINE_MS,
       },
-      timeoutMs: 30_000,
+      timeoutMs,
     });
     const opened = server.upgrades.filter((upgrade) => upgrade.status === 101);
     if (opened.length === 0) {
@@ -59,15 +77,16 @@ test("a relay socket session takes its relay subject on the socket and no agent 
     expect(report.notices.join("\n")).toContain(
       "Envoy's inbound messages come through the listener's relay socket (ENVOY_INBOUND is listener), which carries no live view: the Agents page shows nothing of this session's turns"
     );
-    // The fixture's hook removes HOME after the row, within Bun's 5 s bound on a hook: the session
-    // process must leave no transpiler cache there (`runReportingProcess`), which held about 360
-    // files and outlasted that bound on a loaded box.
+    // The fixture's hook (`temporaryDirectories`' `afterEach`) removes HOME after the row, under
+    // the command's guard (package.json). The session process must leave no transpiler cache there
+    // (`runReportingProcess`): that cache held about 360 files, which the hook would otherwise
+    // remove.
     const left = readdirSync(home, { recursive: true });
     expect(left.length).toBeLessThan(20);
   } finally {
     server.stop();
   }
-}, 60_000);
+});
 
 // The wire lets the listener answer any `sub` `subject_not_granted`. #4658 answers so only a
 // subject other than the session's own, and closes the socket 1013 when NATS refuses a subscribe;
@@ -82,6 +101,7 @@ test("a relay subject the listener refuses is told naming why", async () => {
     const tokenFile = join(home, "token");
     writeFileSync(tokenFile, `${fixtureSecret("proj")}\n`);
     const refusal = `the listener's relay socket refused the subject ${standInDeliverSubject(SESSION)} (subject_not_granted)`;
+    const timeoutMs = Math.max(1, Math.floor(timeLeft()));
     const report = await runRelaySession({
       session: SESSION,
       cwd: import.meta.dir,
@@ -95,8 +115,10 @@ test("a relay subject the listener refuses is told naming why", async () => {
         AGENT_SECRETS_URL: server.url,
         AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
         AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+        ENVOY_PASS_DEADLINE_MS: PASS_DEADLINE_MS,
+        LEGION_PROOF_DEADLINE_MS: String(Date.now() + timeoutMs - REPORT_MS),
       },
-      timeoutMs: 45_000,
+      timeoutMs,
       waitFor: "receives nothing",
     });
     expect(server.refusedSubs[0]).toEqual({
@@ -112,4 +134,4 @@ test("a relay subject the listener refuses is told naming why", async () => {
   } finally {
     server.stop();
   }
-}, 60_000);
+});

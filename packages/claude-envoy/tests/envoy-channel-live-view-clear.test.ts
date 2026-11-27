@@ -8,16 +8,15 @@
 // the mod is `./fake-mod`, and the registration is held until it has reported the `/clear`.
 import { expect, test } from "bun:test"
 import { agentStreamControlSubject } from "@legion/contracts"
-import { modSocketPath } from "../hooks/mod-protocol"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { waitFor } from "./channel-session-harness"
-import { startFakeMod } from "./fake-mod"
 import {
   PROCESS_WAIT_MS,
   ROW_TIMEOUT_MS,
   type SessionBroker,
   sessionBroker,
   startReopenServer,
+  startSessionMod,
 } from "./reopen-server"
 
 const BEFORE = "ses_view_before_clear"
@@ -43,9 +42,7 @@ async function startWithEarlyClear(broker?: SessionBroker) {
       method === "POST" && path === "/v1/interests/subscribe" ? held.promise : undefined,
   })
   try {
-    const socketPath = modSocketPath(BEFORE, { XDG_RUNTIME_DIR: run.stateDirectory })
-    if (socketPath === undefined) throw new Error("the session names no mod socket")
-    const mod = await startFakeMod(socketPath, { sessionId: BEFORE })
+    const mod = await startSessionMod(run, BEFORE)
     // The link has the `/clear` before the session starts, so before the live view listens.
     await mod.send({ kind: "session-id", sessionId: AFTER })
     held.resolve()

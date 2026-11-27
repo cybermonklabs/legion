@@ -4,12 +4,16 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
 // score reports it as a rig error and leaves it out of the pass counts. An agent that got a turn and
 // then did nothing the scenario asks is a failure.
+
+// This file runs in its own command. Its hooks and rows use that command's guard.
+// Each child process has an earlier kill deadline so a hang reports the command and signal.
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
 const work = temporaryDirectory("skill-scenarios-score");
@@ -19,15 +23,41 @@ const runs = path.join(work, "runs");
 // so a reservation made further down would be made after that drain had already run.
 const pushWork = temporaryDirectory("skill-scenarios-push");
 
+/** Time for Bun to reap a killed child and report the failure before the shared deadline. */
+const REAP_MARGIN_MS = 1_000;
+
+/**
+ * Runs `command` and sends SIGKILL `REAP_MARGIN_MS` before the shared deadline, which `timeLeft()`
+ * reads as the command starts. Bun 1.4.4 sends SIGTERM at the test guard. A child that ignores
+ * SIGTERM can leave `Bun.spawnSync` blocked. An earlier SIGKILL lets us report the command and
+ * signal, even when Bun labels the hook failure `(unnamed)`.
+ */
+function runToEnd(command: string[], env?: Record<string, string | undefined>) {
+  // Whole milliseconds, and at least one: `Bun.spawnSync` takes a `timeout` of 0 as none.
+  const timeout = Math.max(1, Math.floor(timeLeft() - REAP_MARGIN_MS));
+  const ran = Bun.spawnSync(command, { env, timeout, killSignal: "SIGKILL" });
+  if (ran.signalCode) {
+    const how = ran.exitedDueToTimeout
+      ? `was killed (${ran.signalCode}) at its limit of ${timeout} ms`
+      : `ended on ${ran.signalCode}`;
+    throw new Error(`\`${command.join(" ")}\` ${how}. Stderr: ${ran.stderr.toString().trim()}`);
+  }
+  return ran;
+}
+
 /**
  * Every run this file's body stages, as a function the `beforeAll` below calls rather than a
  * write at the call. `work` is reserved at module scope and made by the hook that reservation
  * registered, so nothing exists to write into until then — and a `bun test -t <pattern>` that
  * selects no row of this file runs no hook of it, where a module body that staged its world
- * would leave every file of it behind.
+ * would leave every file of it behind. A staging that runs a child runs it through `runToEnd`,
+ * which takes the child's kill time from `timeLeft()`.
  */
 const stagings: (() => void)[] = [];
 
+// The staging drain builds the pushed-code run's repository. Its seven git commands are the
+// only subprocess calls. Each is killed `REAP_MARGIN_MS` before the hook's deadline, which
+// `timeLeft()` reads as the command starts.
 beforeAll(() => {
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
@@ -36,7 +66,7 @@ beforeAll(() => {
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-}, 60_000);
+});
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -293,9 +323,9 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 // this file runs.
 stagings.push(() => {
   const git = (...args: string[]) => {
-    const result = Bun.spawnSync(
+    const result = runToEnd(
       ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
-      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
@@ -3133,11 +3163,12 @@ for (const [n, faults] of [2, 4, 3].entries())
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
+// The `score.ts runs` subprocess can hang while it scores the staged world.
 beforeAll(() => {
-  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
+  const scored = runToEnd(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-}, 60_000);
+});
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
@@ -3650,8 +3681,9 @@ beforeAll(() => {
   );
 });
 
+// The `score.ts live-read` subprocess can hang while it reads the staged skill files.
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
-  const read = Bun.spawnSync([
+  const read = runToEnd([
     "bun",
     path.join(import.meta.dir, "score.ts"),
     "live-read",

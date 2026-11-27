@@ -128,5 +128,5 @@ describe.skipIf(LEGION_E2E !== "1")("the replay answer under a session's own NAT
       runner.stop()
       mod.close()
     }
-  }, 60_000)
+  })
 })

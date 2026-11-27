@@ -1,4 +1,5 @@
-import { afterEach, beforeAll, describe, expect, jest, mock, test } from "bun:test";
+import { afterEach, beforeAll, test as bunTest, describe, expect, jest, mock } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
@@ -28,6 +29,7 @@ import {
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { temporaryTmpdir } from "@legion/test-fixtures/temporary-tmpdir";
+import { settled } from "@legion/test-fixtures/wait";
 import type { DispatchSession } from "../../src/dispatch-session";
 import * as core from "./askgate-core";
 import {
@@ -59,6 +61,22 @@ import askgateRules from "./rules.md" with { type: "text" };
 import type { RuleMatch } from "./rules-check";
 import { renderTemplate } from "./text";
 
+// The rule this file's limits follow is docs/testing.md's "A Bun test waits for its fact, and its
+// command sets its one guard": the package's `test` command sets the one guard, its `--timeout`,
+// and a row or hook sets none of its own, but for the rows that still name 30_000, which keep it
+// until each is carried to the shared wait. A wait for a fact goes through
+// `@legion/test-fixtures/wait`, which ends at the row's deadline under that guard, early enough
+// that its own failure prints first. A model call that only the call's stop or the gate's own 90 s
+// default deadline (`GATE_TIMEOUT_MS`) ends is ended by that deadline inside the package's guard,
+// so a row whose stop misses such a call fails on an assertion, at once or when the deadline ends
+// the call.
+
+// A rung is a load: that many busy loops on the pods where dispatch://INFRA-1580 first measured
+// its loads, and where `envoy.test.ts`'s row "session_shutdown resolves within its budget when
+// drain hangs on a dead connection" ran 20 times in about 10.4 min at 96. A slower pod runs the
+// same load as fewer loops, matched by that row's run time there, so a figure written "N busy
+// loops (the R rung)" is one pod's count at the time of its reading.
+
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
 
@@ -86,11 +104,78 @@ const SUITE_TMP = temporaryTmpdir("gate-suite");
 const snapshotDirs = () =>
   fs.readdirSync(SUITE_TMP).filter((name) => /^askgate-[A-Za-z0-9]{6}$/.test(name));
 /**
+ * Pidfiles a row's subprocess writes its pid to, each recorded before the row runs it: the
+ * afterEach below kills every pid it finds in them, so a process the code under test fails to kill
+ * is collected whether the row returns or the runner abandons it at its limit.
+ */
+const childPidFiles: string[] = [];
+/**
  * Ends every call a test's gates were handed, as the runner ends a call's tool, so the gate releases
  * the marker each one took: a test that never ends its call would otherwise leave it behind.
  */
 const callEnders: Array<() => Promise<void>> = [];
+/**
+ * The row whose body runs now, as its `rowGeneration`. Every row of this file is registered
+ * through `test` below, which runs its body in this scope, so what the body reaches after an
+ * await still names its row once bun has abandoned the row at its limit and started the next.
+ */
+const rowBody = new AsyncLocalStorage<number>();
+/**
+ * Advanced by the file's `afterEach` below and by the entry's (`askgate.ts, the entry`), each
+ * before it puts anything back.
+ */
+let rowGeneration = 0;
+/**
+ * A check of the caller's row: true while that row still runs, false once a hook has advanced
+ * `rowGeneration` past it. The row is the one whose body the caller runs in (`rowBody`), so a
+ * check first taken by a body its limit abandoned is false already; outside a row's body it is
+ * the row running now. A `finally` that puts back shared state its row set does so only while
+ * the check holds: once the row has ended, a hook has put that state back, and the row after it
+ * may have set its own.
+ */
+function rowCheck(): () => boolean {
+  const generation = rowBody.getStore() ?? rowGeneration;
+  return () => generation === rowGeneration;
+}
+/**
+ * Throws once the row `ownRow` checks has ended, saying what the caller was at. A row or a helper
+ * calls it before each write to shared state, and each move of the test's clock, that follows an
+ * await, so a body its limit abandoned stops there rather than write into the row after it.
+ */
+function stillOn(ownRow: () => boolean, what: string): void {
+  if (!ownRow()) throw new Error(`stopped ${what}: the row ended`);
+}
+/** Registers a row, as bun's `test` does, with its body run in its row's scope (`rowBody`). */
+function test(name: string, body: () => unknown, timeout?: number): void {
+  bunTest(name, () => Promise.resolve(rowBody.run(rowGeneration, body)), timeout);
+}
+// What can hang here is one call's end, which releases the marker that call took. The kills run
+// before the call ends, and in this same hook: bun skips the same scope's hooks registered after
+// one that fails, so a kill in a hook of its own could be skipped behind a call end that failed.
+// Its own work, beside the two lines it starts with, is a file read and a signal for each pidfile
+// a row registered.
 afterEach(async () => {
+  // First, before anything this hook awaits: from here on a body its limit abandoned stops at its
+  // next row check (`stillOn`) rather than write into the row after it.
+  rowGeneration += 1;
+  // A row abandoned while it held the test's clock would leave fake timers on for every row after
+  // it: its own `finally` puts the real clock back only while its row runs.
+  jest.useRealTimers();
+  for (const pidFile of childPidFiles.splice(0)) {
+    let pid = 0;
+    try {
+      pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+    } catch {
+      // The process was killed before it wrote its pid.
+    }
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // The expected path: the code under test killed it first.
+      }
+    }
+  }
   for (const end of callEnders.splice(0)) await end();
 });
 
@@ -147,6 +232,45 @@ const untilAborted = (req: CompleteRequest): Promise<Completion> => {
   );
   return promise;
 };
+/**
+ * Runs the session's shutdown on the test's clock (`jest.useFakeTimers`, on for the call) and
+ * answers how far that clock had moved when the handler returned. The handler's two timers, the
+ * grace it gives each waiting call (`SHUTDOWN_GRACE_MS`) and its own wait (`SHUTDOWN_WAIT_MS`),
+ * then fire in the order of their lengths whatever the host's load, where on the real clock a
+ * starved host can run the wait out before the grace's entry is written. The clock stops at
+ * 5_000, past both, so a handler that never returns answers undefined and fails the row's
+ * assertions on what this answers. A body its limit abandoned that calls this after its row ended
+ * throws before it turns the test's clock on, and before each move of it (`stillOn`).
+ */
+async function shutdownOnTestClock(g: BoundGate): Promise<number | undefined> {
+  const ownRow = rowCheck();
+  stillOn(ownRow, "the shutdown on the test's clock");
+  jest.useFakeTimers();
+  try {
+    let clock = 0;
+    let returnedAt: number | undefined;
+    let failure: { reason: unknown } | undefined;
+    Promise.resolve(g.event("session_shutdown")).then(
+      () => {
+        returnedAt = clock;
+      },
+      (reason: unknown) => {
+        failure = { reason };
+      }
+    );
+    while (returnedAt === undefined && failure === undefined && clock < 5_000) {
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      if (returnedAt !== undefined || failure !== undefined) break;
+      clock += 50;
+      stillOn(ownRow, "the shutdown on the test's clock");
+      jest.advanceTimersByTime(50);
+    }
+    if (failure !== undefined) throw failure.reason;
+    return returnedAt;
+  } finally {
+    if (ownRow()) jest.useRealTimers();
+  }
+}
 
 type Completion = { text: string; error?: string; usage?: GateEntry["usage"] };
 type Result =
@@ -232,6 +356,11 @@ interface BoundGate {
 }
 
 function bind(opts: BindOptions = {}): BoundGate {
+  // The row the gate is bound in (every gate is bound inside a row's body): once that row has
+  // ended, binding and every event handed to the gate throw (`stillOn`) rather than act beside
+  // the row after it. The afterEach's call ends (`callEnders`) use the handlers themselves.
+  const ownRow = rowCheck();
+  stillOn(ownRow, "binding a gate");
   const handlers = new Map<string, Handler>();
   const entries: GateEntry[] = [];
   /** The `advisor-gate-record` follow-ups of records that were never written. */
@@ -368,6 +497,7 @@ function bind(opts: BindOptions = {}): BoundGate {
       );
   });
   const emit = (event: Record<string, unknown>) => {
+    stillOn(ownRow, `handing the gate a ${String(event.toolName)} call`);
     if (!handler) throw new Error("no tool_call handler registered");
     if (typeof event.toolCallId === "string") emitted.add(event.toolCallId);
     return handler({ type: "tool_call", ...event }, ctx);
@@ -397,8 +527,10 @@ function bind(opts: BindOptions = {}): BoundGate {
     bash: (toolCallId: string, command: string, extra: Record<string, unknown> = {}) =>
       emit({ toolName: "bash", toolCallId, input: { command, ...extra } }),
     /** Any other event the extension listens to, such as session_switch. */
-    event: (name: string, payload: Record<string, unknown> = {}) =>
-      handlers.get(name)?.({ type: name, ...payload }, ctx),
+    event: (name: string, payload: Record<string, unknown> = {}) => {
+      stillOn(ownRow, `handing the gate ${name}`);
+      return handlers.get(name)?.({ type: name, ...payload }, ctx);
+    },
   };
 }
 
@@ -1156,13 +1288,13 @@ describe("fail-open", () => {
         return untilAborted(req);
       },
     });
-    const started = Date.now();
     const timedOut = await g.device("t1", "dispatch_comment", COMMENT);
     expect(timedOut?.block).toBeUndefined();
     expect(timedOut?.additionalContext).toContain("The call ran unreviewed.");
-    expect(Date.now() - started).toBeLessThan(1000);
     expect(signals[0].aborted).toBe(true);
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "timeout", usage: PARTIAL }]);
+    // What can hang is a gated call whose model call never answers and whose 50 ms deadline never
+    // fires.
   });
   test("three consecutive failures halt the gate for the session with one notice", async () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
@@ -1740,11 +1872,22 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    const began = Date.now();
-    await g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    const returnedAt = await shutdownOnTestClock(g);
+    // "Inside the runner's 2 s cap" is the budgets themselves: the runner gives a session_shutdown
+    // handler 2 s (SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS, beside `SHUTDOWN_GRACE_MS` and
+    // `SHUTDOWN_WAIT_MS` in askgate-core.ts), so the grace must
+    // end inside the handler's wait and that wait inside the cap. No elapsed time decides this.
+    expect(core.SHUTDOWN_GRACE_MS).toBeLessThan(core.SHUTDOWN_WAIT_MS);
+    expect(core.SHUTDOWN_WAIT_MS).toBeLessThan(2_000);
+    // On the test's clock the grace ended the call that never settles, and its entry was written,
+    // before the handler's wait ran out.
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "shutdown" }]);
+    expect(returnedAt).toBeGreaterThanOrEqual(core.SHUTDOWN_GRACE_MS);
+    expect(returnedAt).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     await gated;
+    // What can hang is a gate that never asks its model, which `started` waits for, or a call the
+    // grace ended whose promise never settles, which `gated` waits for; a grace that does not end
+    // the call fails the row at `g.entries` once the handler's wait runs out.
   });
 });
 
@@ -1827,9 +1970,43 @@ console.log(JSON.stringify(args, null, 2));
   const STUB = { PATH: `${bin}:${process.env.PATH}` };
   const QUESTION = "Should the release wait for the staging soak? Recommendation: wait one day.\n";
   const ASK = `dispatch ask --issue X-1 --question-file - <<'EOF'\n${QUESTION}EOF`;
+  // A clock that stands still, for the rows below that assert the budget the gate asks a dry run
+  // for. That budget is no constant the gate holds: it is
+  // `Math.min(DRY_RUN_TIMEOUT_MS, readsEnd - deps.now())` (the dry run's `firstMs` in
+  // askgate-core.ts), where `readsEnd` is the reads' half of the call's deadline, fixed when the
+  // handler is entered (`started` and `readsEnd` there). At the 90 s default deadline that half
+  // is 45 s, so on the
+  // real clock more than 25 s between the handler's entry and the dry run leaves the gate asking
+  // for less than DRY_RUN_TIMEOUT_MS, which a starved host alone can buy. Held, `readsEnd -
+  // now()` is 45_000 ms however long the host takes, and the gate asks for DRY_RUN_TIMEOUT_MS.
+  // 1_000_000 is the standing value the deadline rows further down use for their own clocks.
+  // What else it freezes: the gate reads this same clock when it mints a marker
+  // (its `mintMarker` call in askgate-core.ts), so the three rows that hold it mint at
+  // `createdAt: 1_000_000` and the mint's own sweep of stale markers cannot fire there. Nothing in
+  // these rows asserts either, and the budget clamp they gave up is still covered by the
+  // moving-clock rows "a dry-run cut at its limit runs once more within half the deadline, and
+  // the call is reviewed", "a dry-run cut twice runs the call unreviewed and tells the agent why
+  // and what to do" and "at a short deadline the reads keep to half of it, and a run cut there is
+  // not run again". A later assertion about an expired or swept marker belongs in one
+  // of those rows, not here, where the frozen clock and not the code would decide it.
+  const HELD_CLOCK = () => 1_000_000;
 
+  // The script, the working directory and the budget the gate asks for when it dry-runs a
+  // here-document `dispatch ask`. The budget it asks for is derived from the real clock: it is
+  // what is left of the reads' half of the call's deadline (the dry run's `firstMs` in
+  // askgate-core.ts, over its `started` and its `readsEnd`), so once more than 25 s of real time
+  // passes between the handler's entry and the dry run the gate asks for less than
+  // DRY_RUN_TIMEOUT_MS and this correct row fails. A starved host bought exactly that: one run
+  // in 105 at 240 busy loops failed at the assertion below, charged 35035.96 ms. Against the row
+  // as it stood, a clock held still for the handler's entry and 30 s on by the dry run makes that
+  // diff every time: `"timeoutMs": 20000` expected, `15000` received, and 15000 is also what 30 s
+  // of real time injected after the handler's `started` leaves (14987 there, the spare being the
+  // row's own cost). The row hands the gate HELD_CLOCK, so `readsEnd - now()` stays 45_000 ms
+  // however long the host takes and the number asserted below is the gate's own
+  // DRY_RUN_TIMEOUT_MS, which no host can lower. What load can still do to this row is the gate's
+  // own ceiling, recorded at its end.
   test("a dispatch ask fed a here-document is reviewed with the JSON its --dry-run printed", async () => {
-    const g = bind({ env: STUB, cwd: work });
+    const g = bind({ env: STUB, cwd: work, now: HELD_CLOCK });
     expect(await g.bash("b1", ASK)).toBeUndefined();
     expect(g.dryRuns).toEqual([
       {
@@ -1854,6 +2031,20 @@ console.log(JSON.stringify(args, null, 2));
         argsDigest: createHash("sha256").update(JSON.stringify(args)).digest("hex"),
       },
     ]);
+    // What can hang here is the dry run, a real `dispatch` subprocess the gate spawns through bash,
+    // or the charter and rules calls the harness answers.
+    // The row's load ceiling is the gate's own, not the command's guard, and not the budget
+    // asserted above either: at 240 busy loops, 120 per CPU, a real
+    // `dispatch` subprocess cannot finish inside the gate's own DRY_RUN_TIMEOUT_MS of 20 s, so the
+    // gate cuts it and runs it once more with what is left of the reads' half — a second entry in
+    // `g.dryRuns`, `timeoutMs: 45000`, which fails the `toEqual` above. Four runs in 20 at that
+    // rung went that way, the row charged 39109.57 / 58636.93 / 63615.03 / 69845.21 ms for them,
+    // and the 16 green there cost 54 s to 136 s of wall each; no guard can cover it, because what
+    // fires is the production budget and not this row running long. So this row's
+    // acceptance rung is 96 busy loops, 48 per CPU — 20 runs of 20 green there, 6 s to 23 s of wall
+    // each, and 20 of 20 again on the slower pod of 2026-11-16. The markdown-upload row meets the
+    // same ceiling and takes 80 on that pod ("a reviewed markdown upload by --path posts the bytes
+    // ..., once").
   });
   // The literal one-line grammar: one `dispatch ask`, its question a quoted word.
   const ONE_LINE_ASK = "dispatch ask --issue X-1 --question 'Ship the release today?'";
@@ -1914,9 +2105,13 @@ console.log(JSON.stringify(args, null, 2));
   test("a tool's end after the dry run, with the charter and rules calls both in flight, abandons both", async () => {
     const signals: AbortSignal[] = [];
     const both = Promise.withResolvers<void>();
+    // The gate's own default deadline: 90 s (`GATE_TIMEOUT_MS`), far past what this row takes, so
+    // a stop the tool's end misses shows at the `aborted` assertion and nothing the host's speed
+    // decides comes first. At the base the row set `OMP_ASKGATE_TIMEOUT_MS: "3000"`, which no floor
+    // raises (`deadlineAtBind` takes the lesser of it and the ceiling's), so on a loaded host the
+    // deadline fired before the tool's end and the row read `timeout` where it asserts `abandoned`.
     const g = bind({
-      // A deadline well past the test's own steps: a stop the tool's end missed shows as a timeout.
-      env: { ...STUB, OMP_ASKGATE_TIMEOUT_MS: "3000" },
+      env: STUB,
       cwd: work,
       complete: (req) => {
         signals.push(req.signal);
@@ -1942,6 +2137,8 @@ console.log(JSON.stringify(args, null, 2));
       { decision: "allow", outcome: "abandoned", ruleOutcome: "abandoned" },
     ]);
     expect(g.entries).toHaveLength(1);
+    // What can hang is the dry run, a real `dispatch` subprocess the gate spawns through bash, or a
+    // model call that only the call's stop ends.
   });
   test("dispatch search is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
@@ -2247,7 +2444,7 @@ console.log(JSON.stringify(args, null, 2));
         Array(quoted.length).fill(["dispatch_comment", "load-failed"])
       );
     }
-  }, 30_000);
+  });
   const STILL_REFUSED: Array<[string, string, string]> = [
     [
       "a program that may write the file the write reads",
@@ -2449,7 +2646,7 @@ console.log(JSON.stringify(args, null, 2));
       ["quoted", "dispatch_comment", "verdict", "allow"],
       ["cd", "dispatch_ask", "verdict", "allow"],
     ]);
-  }, 30_000);
+  });
   // A program word an expansion names or the shell expands, the old scan's "unreadable program".
   for (const command of [
     "$HOME/bin/dispatch comment --issue X-1 --body hi",
@@ -2564,7 +2761,7 @@ console.log(JSON.stringify(args, null, 2));
       ["dispatch_comment", "verdict"],
       ["dispatch_ask", "verdict"],
     ]);
-  }, 30_000);
+  });
   test("dispatch issue is reviewed with --spec or --spec-file and not without", async () => {
     const g = bind({ env: STUB, cwd: work });
     await g.bash("plain", "dispatch issue --project P --title 'A new issue'");
@@ -2879,7 +3076,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
               "so AskGate removed it before the call ran"
             );
           }
-        }, 30_000);
+        });
 
     // #2161, reviewer round 16: the call's own `cd` is continued over two lines, so the command's
     // line ends on the text's second line. Bash removes the continuation before it reads the
@@ -3101,12 +3298,24 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(g.dryRuns[0].cwd).toBe(path.join(work, "sub"));
     expect(g.calls[0].user).toContain('"body": "Body from the working directory."');
   });
+  // The dry runs' budgets asserted below are derived from the real clock as the here-document
+  // row's is (the dry run's `firstMs` in askgate-core.ts), so this row holds the clock too
+  // (HELD_CLOCK): what it reads is each script, the directory it ran in and DRY_RUN_TIMEOUT_MS,
+  // never the host's slowness. What a held clock cannot hold is the dry runs' own subprocesses: a
+  // real `dispatch` that does not finish inside the gate's DRY_RUN_TIMEOUT_MS (20 s, a production
+  // budget) is cut and run again (askgate-core.ts, `retryMs`), and the row then counts eight or
+  // nine dry runs. That happened in 5 of 20 runs at the 240 rung (Job infra-1580-r33lcd-c6cbb of
+  // the cluster's `builds` namespace, 595 busy loops for the 240 rung, row A 31.2 s, at
+  // ad82f821), and in none of 5 there with each run's output kept (-r34lcd240-l7kqr). So this
+  // row's acceptance rung is 96 busy loops, 48 per CPU: 20 of 20 there, at most 27 053 ms
+  // (-r34lcd96-l9xlr, 171 busy loops for the 96 rung, at 96f50466), as in the file's 20 whole
+  // runs at that rung (-r33aw-2qkfc).
   test("a leading cd and a trailing 2>&1 are reviewed, the dry-run in the cd's directory resolved against the call's", async () => {
     fs.mkdirSync(path.join(work, "sub", "inner"), { recursive: true });
     fs.writeFileSync(path.join(work, "sub", "note.txt"), "Body from the working directory.");
     fs.writeFileSync(path.join(work, "sub", "inner", "note.txt"), "Body from the inner directory.");
     for (const mode of ["warn", "block"]) {
-      const g = bind({ env: { ...STUB, OMP_ASKGATE: mode }, cwd: work });
+      const g = bind({ env: { ...STUB, OMP_ASKGATE: mode }, cwd: work, now: HELD_CLOCK });
       const first = await g.bash(
         "cd",
         "cd sub && dispatch message --issue X-1 --body-file note.txt"
@@ -3178,8 +3387,9 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         ["dispatch_ask", "verdict", "allow"],
       ]);
     }
-    // Ten real dry runs, each a bun process: past bun's 5 s default on a loaded host.
-  }, 30_000);
+    // What can hang here is one of the ten real dry runs this row makes, each a `dispatch`
+    // subprocess the gate spawns through bash, or the charter and rules calls the harness answers.
+  });
   test("a 2>&1 after the here-document opener runs as written and is left out of the dry-run", () => {
     const after = core.scopedCommand(
       "dispatch comment --issue X-1 --body-file - <<'EOF' 2>&1\nhi\nEOF"
@@ -3212,7 +3422,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     ]) {
       expect((await g.bash(command, command))?.reason).not.toContain(NOTE);
     }
-  }, 30_000);
+  });
   // Oh My Pi reads no CDPATH ("(c2)" below): from `bin`, its bash tool takes `cd sub &&` as the
   // directory `bin/sub`, which does not exist, and runs nothing. So the gate reads no file from
   // the directory CDPATH names, and says it cannot read the call.
@@ -3291,7 +3501,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(g.dryRuns.map((run) => run.timeoutMs)).toEqual([core.DRY_RUN_TIMEOUT_MS, 25_000]);
     expect(g.entries).toMatchObject([{ tool: "dispatch_ask", outcome: "verdict" }]);
     expect(g.calls.filter(isCharter)).toHaveLength(1);
-  }, 30_000);
+  });
   test("a dry-run cut twice runs the call unreviewed and tells the agent why and what to do", async () => {
     let clock = 1_000_000;
     const g = bind({
@@ -3339,14 +3549,30 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     );
   });
   test("the runner kills a dry-run that outlives its limit", async () => {
-    const began = Date.now();
-    const result = await core.spawnDryRun("sleep 5", {
-      cwd: work,
-      env: { PATH: process.env.PATH ?? "", HOME: work },
-      timeoutMs: 100,
-    });
+    // The script leaves two processes in the group, bash and the `sleep` that holds the child's
+    // pipes: a kill narrowed to bash alone leaves that `sleep` holding `child.stdout`, so the
+    // call cannot return before the row's deadline, and the wait for it (`settled`) fails there
+    // naming it. 600 s is past the command's guard, so a run that kills nothing cannot return
+    // either. The `sleep` records its own pid before it starts, in the subshell that `exec` turns
+    // into it, to a pidfile `childPidFiles` holds: a kill that reaches bash at any moment leaves no
+    // `sleep` unrecorded.
+    const pidFile = path.join(fs.mkdtempSync(path.join(tmpdir(), "dry-run-kill-")), "pid");
+    childPidFiles.push(pidFile);
+    const result = await settled(
+      "the dry run's end at its 100 ms limit",
+      core.spawnDryRun(`(echo $BASHPID > ${JSON.stringify(pidFile)} && exec sleep 600) & wait`, {
+        cwd: work,
+        env: { PATH: process.env.PATH ?? "", HOME: work },
+        timeoutMs: 100,
+      })
+    );
     expect(result.timedOut).toBe(true);
-    expect(Date.now() - began).toBeLessThan(2_000);
+    // Bun reports exitCode null (signalCode "SIGKILL") for a group killed at the limit, and a
+    // number for a child that exits on its own: this is the kill, not an exit of bash's own.
+    expect(result.exitCode).toBeNull();
+    // Its acceptance rung is 160 busy loops, 80 per CPU: the lowest load at which the base this
+    // change was cut from fails it (2 of 20 there in a testing round, at its own clock assertion),
+    // so a pass there shows something, where at 96 the base passes it 20 of 20 too.
   });
   test("the runner answers when the script ends, and a helper the script left running goes with it", async () => {
     const pidFile = path.join(work, "dry-run-helper.pid");
@@ -3903,6 +4129,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         const [minted] = markersIn(g.store);
         expect(minted?.outcome).toBe("rebuttal");
         // Real bash runs the command the gate handed back, with the consuming stand-in on PATH.
+        stillOn(rowCheck(), "running the command the gate handed back");
         const shell = Bun.spawnSync({
           cmd: ["bash", "-c", ran],
           env: { PATH: `${consumingBin}:${process.env.PATH}`, ASKGATE_STORE: g.store },
@@ -3918,7 +4145,8 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         expect(run.consumed).toEqual({ ok: true });
         expect(markersIn(g.store)).toEqual([]);
       }
-    }, 30_000);
+      // What can hang is a gate call or the real bash the row runs.
+    });
 
     // Design 2: `scopedCommand` reads the override comment the gate itself writes, so the command
     // the agent reads back and resends is the same rebuttal, with a marker bound to its arguments.
@@ -3960,7 +4188,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
           marker: { argv: argvDigest(argv), args: argsDigest(args) },
         });
       }
-    }, 30_000);
+    });
 
     // Design 9: the review is the one await a call's own end can fall in, and a marker lives for
     // hours. A call whose own tool ended there runs nothing more, so it is owed no marker.
@@ -3991,7 +4219,8 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect((await g.bash("ends-in-review", ASK))?.block).toBeUndefined();
       expect(markersIn(g.store)).toMatchObject([{ toolCallId: "ends-in-review" }]);
       expect(g.entries[1]?.mintSkipped).toBeUndefined();
-    }, 30_000);
+      // What can hang is the model call the row holds until its tool ends.
+    });
 
     // Design 9 names `tool_result` beside `tool_execution_end`: a result carrying the call's own
     // id ends that call just the same, and a write made from an eval cell reports only this one.
@@ -4119,8 +4348,12 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         },
       ]);
     });
+    // The clock is held (HELD_CLOCK) for the DRY_RUN_TIMEOUT_MS this row asserts: the gate
+    // derives that budget from the real clock (the dry run's `firstMs` in askgate-core.ts), and
+    // the row's subject is the directory each dry run ran in, not how long the host took to reach
+    // it.
     test("(c) after a leading cd, a relative --path is read from the directory the cd reached, which bash names", async () => {
-      const g = bind({ env: STUB, cwd: work });
+      const g = bind({ env: STUB, cwd: work, now: HELD_CLOCK });
       await g.bash(
         "u3",
         "cd docs && dispatch artifact --issue DSP-1 --name brief.md --path brief.md"
@@ -4132,6 +4365,16 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(
         g.dryRuns.every((run) => run.cwd === work && run.timeoutMs === core.DRY_RUN_TIMEOUT_MS)
       ).toBe(true);
+      // What can hang here is this row's dry runs, real `dispatch` subprocesses the gate spawns
+      // through bash, or the model call the harness answers. The row's load ceiling is the gate's
+      // own, not the command's guard: at 240 busy loops, 120 per CPU, a real `dispatch` subprocess
+      // cannot finish inside DRY_RUN_TIMEOUT_MS, so the gate cuts it and runs it once more with
+      // what is left of the reads' half. On the held clock that is the whole half, so that second
+      // `g.dryRuns` entry carries `timeoutMs: 45000`, not DRY_RUN_TIMEOUT_MS, which fails the
+      // `every` above — 2 runs in 20 went that way, charged 43534.88 ms and 53192.69 ms, so no
+      // guard can cover it. So this row's acceptance rung is 96 busy loops, 48 per CPU, the rung
+      // the here-document row takes for the same ceiling, where this row is 20 of 20 on the slower
+      // pod of 2026-11-16 as well.
     });
     // The second final review of #2159: Oh My Pi at its pin takes a leading `cd X &&` into the
     // call's directory with no CDPATH (`extractLeadingCdTarget`, then `resolveToCwd`), and its
@@ -4882,6 +5125,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
 
   /** What the CLI prints for a gated write with no marker, built on consumeMarker's own reason. */
   const unmarked = (mode: "block" | "warn") => {
+    stillOn(rowCheck(), "reading the CLI's refusal of an unmarked write");
     const spent = consumeMarker([], ["comment"], {}, [], Date.now());
     if (spent.ok) throw new Error("an empty store gave a marker");
     return mode === "block"
@@ -5037,6 +5281,7 @@ describe("eval cells that run the dispatch CLI (A1)", () => {
       expect(g.calls).toHaveLength(0);
       expect(g.entries).toHaveLength(0);
       expect(markersIn(g.store)).toEqual([]);
+      stillOn(rowCheck(), "handing cells to a gate that did not load");
       const refuse = core.loadFailureGate(
         new Error("a host module did not load"),
         { env: { OMP_ASKGATE: mode }, configFile: CONFIG_FILE },
@@ -5376,6 +5621,9 @@ describe("askgate.ts, the entry", () => {
       _context: unknown,
       options: Record<string, unknown> & { onAttempt?: (m: unknown) => void }
     ) => {
+      // A gate of a row its limit abandoned asks no model once that row has ended, so its call
+      // lands in no later row's `completions`.
+      stillOn(rowCheck(), "the stubbed model call");
       completions.push({ ...options, modelId: model.id });
       if (notFound.has(model.id))
         return {
@@ -5430,6 +5678,8 @@ describe("askgate.ts, the entry", () => {
         : projectSharedAccountSetting,
     grantAuthority: () => operatorSettings,
   };
+  /** The operator-only view, which a row deletes and the `afterEach` below puts back. */
+  const operatorAuthority = mergedSettings.grantAuthority;
   mock.module("@oh-my-pi/pi-coding-agent/config/settings", () => ({ settings: mergedSettings }));
   /** extensionHandlers.toolCallTimeoutMs as the stubbed settings answer it. */
   let toolCallCeilingMs = 120_000;
@@ -5479,15 +5729,32 @@ describe("askgate.ts, the entry", () => {
       model: { provider: string; id: string },
       roleHint?: string
     ) => {
+      // As the model call above: no later row's `roleHints` takes an ended row's lookup.
+      stillOn(rowCheck(), "the stubbed chain lookup");
       roleHints.push(roleHint);
       return CHAINS[`${model.provider}/${model.id}`] ? `${model.provider}/${model.id}` : undefined;
     },
     findRetryFallbackCandidates: (_context: unknown, key: string) =>
       CHAINS[key].map((raw) => ({ raw })),
   }));
-  const saved = { ...process.env };
+  /**
+   * The environment this describe's rows start with, which the `afterEach` puts back. It is taken
+   * in a `beforeAll`, after the file's `temporaryTmpdir` has pointed TMPDIR at the suite's
+   * directory in its own (bun runs the file's `beforeAll` hooks before a describe's), so putting
+   * it back leaves TMPDIR there rather than at the value the process started with.
+   */
+  let saved: Record<string, string | undefined> = {};
+  beforeAll(() => {
+    saved = { ...process.env };
+  });
+  /** The fetch and the umask this describe's rows start with, which the `afterEach` puts back. */
+  const startFetch = globalThis.fetch;
+  const startUmask = process.umask();
   const dirs: string[] = [];
   afterEach(() => {
+    // First: this hook runs before the file's own, and from here on a body its limit abandoned
+    // stops at its next row check (`stillOn`) rather than undo what this hook puts back.
+    rowGeneration += 1;
     completions.length = 0;
     roleHints.length = 0;
     attempts = [answer(ALLOW, 5, 7, 0.25)];
@@ -5496,6 +5763,12 @@ describe("askgate.ts, the entry", () => {
     modelFallback = true;
     sharedAccountSetting = undefined;
     projectSharedAccountSetting = undefined;
+    // What a row its limit abandoned set and only its own `finally` put back: that `finally`
+    // puts it back only while its row runs.
+    toolCallCeilingMs = 120_000;
+    mergedSettings.grantAuthority = operatorAuthority;
+    globalThis.fetch = startFetch;
+    process.umask(startUmask);
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
@@ -5523,10 +5796,15 @@ describe("askgate.ts, the entry", () => {
       primary?: GateModel;
     } = {}
   ) {
+    // Rows call this after an await of their own, so a body its limit abandoned can reach it late.
+    stillOn(rowCheck(), "gateOnce's environment");
     delete process.env.OMP_ASKGATE;
     Object.assign(process.env, { PI_CODING_AGENT_DIR: scratch("askgate-entry-") }, env);
     // Imported after mock.module so the entry binds the stubs; a static import would load it first.
     const { registerAskGate } = await import("./askgate");
+    // The registration reads the environment and, on the entry's first load in the process,
+    // registers its setting id, so a body its limit abandoned in the import stops here.
+    stillOn(rowCheck(), "gateOnce's registration");
     const handlers = new Map<string, Handler>();
     const entries: GateEntry[] = [];
     const warnings: string[] = [];
@@ -5561,6 +5839,7 @@ describe("askgate.ts, the entry", () => {
       },
       cwd: "/work",
     };
+    stillOn(rowCheck(), "gateOnce's call");
     if (opts.text !== undefined) attempts = [answer(opts.text, 5, 7, 0.25)];
     const result = await handlers.get("tool_call")?.(
       { type: "tool_call", toolName: "dispatch_comment", toolCallId: "t1", input: COMMENT },
@@ -5582,6 +5861,7 @@ describe("askgate.ts, the entry", () => {
   test("a session reviewed only because omp's config declares the two providers one account", async () => {
     const unset = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
     expect(unset.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    stillOn(rowCheck(), "the shared-account setting");
     sharedAccountSetting = ["anthropic", "model-gateway"];
     const declared = await gateOnce(
       {},
@@ -5593,6 +5873,7 @@ describe("askgate.ts, the entry", () => {
     const bound = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
     expect(bound.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
     // No new binding: the same handler, after the machine's config changed under it.
+    stillOn(rowCheck(), "the shared-account setting");
     sharedAccountSetting = ["anthropic", "model-gateway"];
     await bound.again("t2");
     expect(bound.entries[1]).toMatchObject({ decision: "allow", outcome: "verdict" });
@@ -5600,6 +5881,7 @@ describe("askgate.ts, the entry", () => {
   // A host build that offers no operator-only view offers nothing safe to read: the merged
   // settings carry the repository's own layer, which the agent under review can write.
   test("a host with no grant authority declares nothing, whatever the merged settings hold", async () => {
+    const ownRow = rowCheck();
     const authority = mergedSettings.grantAuthority;
     try {
       Reflect.deleteProperty(mergedSettings, "grantAuthority");
@@ -5607,13 +5889,14 @@ describe("askgate.ts, the entry", () => {
       const none = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
       expect(none.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
     } finally {
-      mergedSettings.grantAuthority = authority;
+      if (ownRow()) mergedSettings.grantAuthority = authority;
     }
   });
   test("a value that is not a list of provider ids declares nothing, a list with a non-string in it too", async () => {
     sharedAccountSetting = "anthropic,model-gateway";
     const text = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
     expect(text.entries).toMatchObject([{ outcome: "skipped" }]);
+    stillOn(rowCheck(), "the shared-account setting");
     sharedAccountSetting = ["anthropic", "model-gateway", 42];
     const mixed = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
     expect(mixed.entries).toMatchObject([{ outcome: "skipped" }]);
@@ -5673,9 +5956,13 @@ describe("askgate.ts, the entry", () => {
 
   /** Calls the entry's registration without awaiting it: what the factory does. */
   async function registerOnly(env: Record<string, string> = {}) {
+    // Rows call this after an await of their own, so a body its limit abandoned can reach it late.
+    stillOn(rowCheck(), "registerOnly's environment");
     delete process.env.OMP_ASKGATE;
     Object.assign(process.env, env);
     const { registerAskGate } = await import("./askgate");
+    // As in `gateOnce`: the registration reads the environment and registers the setting id.
+    stillOn(rowCheck(), "registerOnly's registration");
     const handlers = new Map<string, Handler>();
     /** Every handler an event has, in order: the entry's own run before the core's, as on a host. */
     const registered = new Map<string, Handler[]>();
@@ -5748,11 +6035,13 @@ describe("askgate.ts, the entry", () => {
         'OMP_ASKGATE_TIMEOUT_MS must be a positive integer, got "soon"'
       );
       const gate = handlers.get("tool_call");
-      const bash = (command: string, kind = "main") =>
-        gate?.(
+      const bash = (command: string, kind = "main") => {
+        stillOn(rowCheck(), "handing the unloaded gate a call");
+        return gate?.(
           { type: "tool_call", toolName: "bash", toolCallId: command, input: { command } },
           mainCtx(kind)
         );
+      };
       for (const command of [
         "dispatch ask --issue X-1 --question 'Ship it?'",
         "dispatch comment --issue X-1 --body b",
@@ -5765,6 +6054,7 @@ describe("askgate.ts, the entry", () => {
         );
         expect(result?.reason).toContain(`set askgate.enabled to false in ${CONFIG_FILE}`);
       }
+      stillOn(rowCheck(), "handing the unloaded gate a device call");
       const device = await gate?.(
         { type: "tool_call", toolName: "dispatch_comment", toolCallId: "d1", input: COMMENT },
         mainCtx()
@@ -5796,6 +6086,7 @@ describe("askgate.ts, the entry", () => {
   // and its delay on both paths; this is the path where the load failed, and the loaded one is
   // in the core's own suite.
   test("a gate that does not load gives its records the cut delay when the session shuts down", async () => {
+    const ownRow = rowCheck();
     const hangs = Promise.withResolvers<Response>();
     const otherFetch = globalThis.fetch;
     // A `fetch` that never answers: the whole of it, since Bun's carries `preconnect` too.
@@ -5828,6 +6119,7 @@ describe("askgate.ts, the entry", () => {
         id: "t1#0",
       });
       for (let i = 0; i < 50; i++) await Promise.resolve();
+      stillOn(ownRow, "the cut on the test's clock");
       jest.useFakeTimers();
       try {
         const shutdown = handlers.get("session_shutdown")?.(
@@ -5837,21 +6129,23 @@ describe("askgate.ts, the entry", () => {
         // Up to the delay the record is still running; the handler holds the session for it.
         for (let i = 0; i < 50; i++) await Promise.resolve();
         expect(await Promise.race([recorded, "still writing"])).toBe("still writing");
+        stillOn(ownRow, "the cut on the test's clock");
         jest.advanceTimersByTime(RECORD_CUT_DELAY_MS);
         await shutdown;
       } finally {
-        jest.useRealTimers();
+        if (ownRow()) jest.useRealTimers();
       }
       expect(await recorded).toBe("the session shut down before Dispatch answered the record");
       hangs.resolve(Response.json({}));
     } finally {
-      globalThis.fetch = otherFetch;
+      if (ownRow()) globalThis.fetch = otherFetch;
     }
   });
   // The other half of the one owner: a gate that loaded binds the core's own `session_shutdown`
   // after this one, and the core waits on the records rather than cutting them, so the cut and
   // its delay are the same on both paths.
   test("a gate that loaded takes the cut from that same handler, the core waiting for the records", async () => {
+    const ownRow = rowCheck();
     const hangs = Promise.withResolvers<Response>();
     const otherFetch = globalThis.fetch;
     globalThis.fetch = Object.assign(async () => await hangs.promise, {
@@ -5881,6 +6175,7 @@ describe("askgate.ts, the entry", () => {
         id: "t1#0",
       });
       for (let i = 0; i < 50; i++) await Promise.resolve();
+      stillOn(ownRow, "the cut on the test's clock");
       jest.useFakeTimers();
       try {
         const shutdown = handlers.get("session_shutdown")?.(
@@ -5889,18 +6184,20 @@ describe("askgate.ts, the entry", () => {
         );
         for (let i = 0; i < 50; i++) await Promise.resolve();
         expect(await Promise.race([recorded, "still writing"])).toBe("still writing");
+        stillOn(ownRow, "the cut on the test's clock");
         jest.advanceTimersByTime(RECORD_CUT_DELAY_MS);
         await shutdown;
       } finally {
-        jest.useRealTimers();
+        if (ownRow()) jest.useRealTimers();
       }
       expect(await recorded).toBe("the session shut down before Dispatch answered the record");
       hangs.resolve(Response.json({}));
     } finally {
-      globalThis.fetch = otherFetch;
+      if (ownRow()) globalThis.fetch = otherFetch;
     }
   });
   test("a handler ceiling too short for a verdict is a load failure too: the write is refused, naming why", async () => {
+    const ownRow = rowCheck();
     toolCallCeilingMs = 8_000;
     try {
       const { loaded, handlers, entries } = await registerOnly();
@@ -5913,10 +6210,11 @@ describe("askgate.ts, the entry", () => {
       expect(result?.reason).toContain("extensionHandlers.toolCallTimeoutMs is 8000 ms");
       expect(entries).toMatchObject([{ outcome: "load-failed", decision: "revise" }]);
     } finally {
-      toolCallCeilingMs = 120_000;
+      if (ownRow()) toolCallCeilingMs = 120_000;
     }
   });
   test("the default handler ceiling binds the gate, and its warning reaches the host's logger once", async () => {
+    const ownRow = rowCheck();
     toolCallCeilingMs = 30_000;
     try {
       const { result, entries, warnings } = await gateOnce();
@@ -5926,7 +6224,7 @@ describe("askgate.ts, the entry", () => {
         expect.stringContaining("extensionHandlers.toolCallTimeoutMs is 30000 ms"),
       ]);
     } finally {
-      toolCallCeilingMs = 120_000;
+      if (ownRow()) toolCallCeilingMs = 120_000;
     }
   });
 
@@ -6006,12 +6304,13 @@ describe("askgate.ts, the entry", () => {
     expect(entries).toMatchObject([{ outcome: "error", model: "anthropic/claude-fable-5-1" }]);
   });
   test("the prompt dump is created readable by its owner only, whatever the umask", async () => {
+    const ownRow = rowCheck();
     const dump = path.join(scratch("askgate-dump-"), "dump.txt");
     const umask = process.umask(0o022);
     try {
       await gateOnce({ OMP_ASKGATE_DUMP: dump });
     } finally {
-      process.umask(umask);
+      if (ownRow()) process.umask(umask);
     }
     expect(fs.readFileSync(dump, "utf8")).toContain(GATE_REQUEST);
     expect(fs.statSync(dump).mode & 0o777).toBe(0o600);
@@ -6144,7 +6443,20 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
     // The marker is spent: the same call again is refused.
     expect((await post(command, g.store)).code).toBe(1);
-  }, 30_000);
+    // What can hang here is the dry run or the post, each a real `dispatch` subprocess this
+    // describe stages and the gate spawns through bash, and the model calls the harness answers
+    // between them. The row's load ceiling is the gate's own: at 120 busy loops per CPU a real
+    // `dispatch` subprocess cannot finish inside the gate's DRY_RUN_TIMEOUT_MS of 20 s on a host
+    // that starved, the gate runs it again, and the row receives an `outcome="error"` block
+    // (`dispatch artifact --dry-run did not finish within 20000 ms, nor within 23325 ms when run
+    // again`) where it asserts undefined — 12 of 20 runs there on a two-CPU pod, charged
+    // 47494.61 ms to 52948.38 ms — which no guard can cover. On the pod of 2026-11-16, 1.6 times
+    // slower (another row's 20 runs took 49.3 s each against 30.5 s), that ceiling reached 96 busy
+    // loops: two campaigns of 20 there were 19 of 20 each, both reds that same block, charged
+    // 47391.11 and 46540.80 ms. So this row's acceptance rung is 80 busy loops, 40 per CPU: 40 of
+    // 40 there on that same pod. The here-document and `(c) … relative --path` rows meet the same
+    // ceiling and stay at 96, where each is 20 of 20 on that pod.
+  });
 
   // INFRA-4224: the CLI's own `dispatch artifact --dry-run` asks Dispatch how it would store inline
   // text (POST /api/v1/markdown/round-trip). The gate reads the arguments alone, and the call
@@ -6225,6 +6537,20 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     }
   }, 30_000);
 
+  // The seven rows below, before the warn-mode row, run the same real `dispatch` subprocesses as
+  // the row above: the gate's dry run, and the post. Each model call these rows make is answered at
+  // once, by `bind`'s default or by the first row's own REVISE, so the gate's 90 s deadline decides
+  // none of them. A run these rows fail under load is the gate's own ceiling: the dry run does not
+  // finish inside DRY_RUN_TIMEOUT_MS (20 s) nor when run again, and the gate answers an
+  // `outcome="error"` block, charged 46 to 48 s, where the row asserts a pass. That is a
+  // production budget that no guard can cover, and how far down it reaches depends on the pod. At
+  // the 80 rung they were 18 to 20 of 20 (infra-1580-k1-gvhwj, -k2-jwpck, -r26-ea80-8jqwq,
+  // -r26-eb80-dw9zn, -r26-ec80-785db); at the 64 rung 18 to 20 of 20 (-k7-8fc7c, -k8-2kz84); and
+  // at the 48 rung "a file a call earlier in the same message writes…" (which runs two dry runs)
+  // was 19 of 20 on a pod of 77 busy loops for the 48 rung (infra-1580-r37e48-lx6qj, row A
+  // 35.2 s, at 5e20dddc, the red charged 46 596 ms). Each red was that block. So these rows'
+  // acceptance rung is 32 busy loops, 16 per CPU.
+
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
   // first argument after the subcommand (`dispatch-command.ts`), so a dry run that put `--dry-run`
   // between the subcommand and that key failed, the gate read the failure as an error to let
@@ -6238,7 +6564,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     ]);
     expect(result?.block).toBe(true);
     expect(g.dryRuns[0]?.script).toBe(`${command} --dry-run`);
-  }, 30_000);
+  });
 
   test("a reviewed --body-file posts the text the model reviewed, once", async () => {
     fs.writeFileSync(path.join(work, "note.md"), NOTE);
@@ -6250,7 +6576,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toMatchObject([
       { path: "/api/v1/issues/DSP-1/comments", body: { body: NOTE } },
     ]);
-  }, 30_000);
+  });
 
   for (const [form, file, command] of [
     ["--body-file", "note.md", "dispatch comment --issue DSP-1 --body-file note.md"],
@@ -6269,7 +6595,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
         "Send the call again in a later message than the one that changes the file."
       );
       expect(posted.sent).toEqual([]);
-    }, 30_000);
+    });
 
   // A session on another provider than the gate's: the gate reviews nothing, so a file that a call
   // later in the same message changes posts as the CLI reads it, with no refusal naming a review.
@@ -6293,7 +6619,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       expect(posted.stdout).not.toContain(CHANGED);
       expect(posted.code).toBe(0);
       expect(posted.sent).toMatchObject([{ body: form === "--path" ? edited : { body: edited } }]);
-    }, 30_000);
+    });
 
   test("a file a call earlier in the same message writes is refused with what to do, then posts when sent again", async () => {
     const file = path.join(work, "later.md");
@@ -6311,7 +6637,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     const posted = await post(command, g.store);
     expect(posted.code).toBe(0);
     expect(posted.sent).toMatchObject([{ body: { body: NOTE } }]);
-  }, 30_000);
+  });
 
   test("in warn mode a file that is missing when the gate runs passes unreviewed, with the same text as its note", async () => {
     fs.rmSync(path.join(work, "missing.md"), { force: true });
@@ -7109,19 +7435,26 @@ describe("rules check", () => {
     ]);
 
     const shut = await bothPending({}, false);
-    const began = Date.now();
-    await shut.g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    // On the test's clock (`shutdownOnTestClock`) the grace ends both calls, whose model calls
+    // never settle, and their entry is written before the handler's wait runs out, whatever the
+    // host's load. That the wait sits inside the runner's 2 s cap is the constant assertion of the
+    // row "shutdown stays inside the runner's 2 s cap even when the aborted call never settles"
+    // (`SHUTDOWN_WAIT_MS` below 2_000), which this row does not repeat.
+    const returnedAt = await shutdownOnTestClock(shut.g);
     expect(shut.signals.map((s) => s.aborted)).toEqual([true, true]);
     expect(shut.g.entries).toMatchObject([
       { decision: "allow", outcome: "shutdown", ruleOutcome: "shutdown" },
     ]);
+    expect(returnedAt).toBeGreaterThanOrEqual(core.SHUTDOWN_GRACE_MS);
+    expect(returnedAt).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     await shut.gated;
     expect(shut.g.entries).toHaveLength(1);
+    // What can hang is a call whose model calls never settle, should a stop not end it.
   });
   test("at shutdown a decision record started as the handler returned is cut short, and its follow-up entry lands before the handler returns", async () => {
     // Fake timers, and a clock that moves with them: the shutdown grace and wait run their full
     // length without the test waiting for them.
+    const ownRow = rowCheck();
     jest.useFakeTimers();
     try {
       let clock = 0;
@@ -7173,6 +7506,7 @@ describe("rules check", () => {
         for (let i = 0; i < 50; i++) await Promise.resolve();
         if (returnedAt !== undefined) break;
         clock += 50;
+        stillOn(ownRow, "the shutdown's clock");
         jest.advanceTimersByTime(50);
       }
       await shutdown;
@@ -7198,12 +7532,13 @@ describe("rules check", () => {
       expect((await gated)?.block).toBeUndefined();
       expect(g.entries).toHaveLength(1);
     } finally {
-      jest.useRealTimers();
+      if (ownRow()) jest.useRealTimers();
     }
   });
   test("at shutdown a record pending from a call that already returned is cut short, and its follow-up entry lands before the handler returns", async () => {
     // Fake timers, and a clock that moves with them: the shutdown's cut and wait run their full
     // length without the test waiting for them.
+    const ownRow = rowCheck();
     jest.useFakeTimers();
     try {
       let clock = 0;
@@ -7258,6 +7593,7 @@ describe("rules check", () => {
         for (let i = 0; i < 50; i++) await Promise.resolve();
         if (returnedAt !== undefined) break;
         clock += 50;
+        stillOn(ownRow, "the shutdown's clock");
         jest.advanceTimersByTime(50);
       }
       await shutdown;
@@ -7273,7 +7609,7 @@ describe("rules check", () => {
       expect(recordSignal?.aborted).toBe(true);
       expect(g.entries).toHaveLength(1);
     } finally {
-      jest.useRealTimers();
+      if (ownRow()) jest.useRealTimers();
     }
   });
   for (const [mode, blocked] of [
@@ -8084,6 +8420,7 @@ describe("the Dispatch decision record (A5)", () => {
   test("a call whose model calls hang to the deadline returns inside the handler ceiling, and its record waits for Dispatch until the session shuts down", async () => {
     // Fake timers, and a clock that moves with them: the deadline, the abort grace and the
     // shutdown's cut all run their full length without the test waiting 30 s.
+    const ownRow = rowCheck();
     jest.useFakeTimers();
     try {
       let clock = 0;
@@ -8105,6 +8442,7 @@ describe("the Dispatch decision record (A5)", () => {
           for (let i = 0; i < 50; i++) await Promise.resolve();
           if (until()) break;
           clock += 100;
+          stillOn(ownRow, "the deadline's clock");
           jest.advanceTimersByTime(100);
         }
       };
@@ -8143,7 +8481,7 @@ describe("the Dispatch decision record (A5)", () => {
         },
       ]);
     } finally {
-      jest.useRealTimers();
+      if (ownRow()) jest.useRealTimers();
     }
   });
 

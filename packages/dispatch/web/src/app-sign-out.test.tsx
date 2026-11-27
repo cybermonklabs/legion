@@ -43,6 +43,23 @@ const about = (field: string, login: string) => expect.objectContaining({ [field
 /** A change a sign-out would discard, as a tab names it: by its key and label. */
 const change = (label: string, key = `key of ${label}`): UnsentChange => ({ key, label });
 
+/** How many answers to a sign-out's question `listener` has heard: a tab hears every word the
+ *  other tabs say, so a silent one hears each answer the answering tabs give. */
+function answersHeardBy(listener: OtherTab | undefined): number {
+  return (listener?.told ?? []).filter(
+    (message) => typeof message === "object" && message !== null && "answer" in message
+  ).length;
+}
+
+/** Holds the fake clock until `listener` has heard `count` answers, for at most the 1_000 real
+ *  turns `onRealTurns` gives a wait, then runs one more real turn, on which the app's own copy of
+ *  the last of them is delivered too. A row that then moves the clock through a question's answer
+ *  window moves it only once the answers are in, as long as they come within those turns. */
+async function answersIn(listener: OtherTab | undefined, count: number): Promise<void> {
+  await onRealTurns(() => answersHeardBy(listener) >= count);
+  await onRealTurns(() => false, 1);
+}
+
 // W48. A sign-out discards only once Dispatch has answered it. While it is out nothing more goes
 // out here - every write stops trying after the attempt in flight - and every other tab is told to
 // hold the person's writes too. Refused, it leaves the person signed in with every write, here and
@@ -533,6 +550,11 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
   }
 });
 
+// The two rows of the sign-out question below (W45 and W53) hold the fake clock and wait on real
+// turns: each of their waits ends by its own count of real turns or by `waitFor`'s limit. Under
+// load they cost more than the web lane's guard, so package.json's `test` runs this file in a
+// `bun test` command of its own, at a guard of its own.
+
 // W45. The sign-out question names every tab's unsent changes: it asks the other tabs of this
 // browser first, over the sign-in channel, and lists what each of them would discard beside this
 // tab's own. A tab it knows of that does not answer within 300 ms is named as such.
@@ -559,8 +581,12 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
 
+    // Every tab the app knows of answers, so this question comes without a timer: it is waited
+    // for on real turns, with the clock held, so the window cannot end before the other tab's
+    // answer is in, as long as it comes within the 1_000 turns `onRealTurns` gives a wait.
     await user.click(screen.getByRole("button", { name: "Sign out" }));
-    await waitFor(() => expect(app.asked).toHaveLength(1));
+    await onRealTurns(() => app.asked.length > 0);
+    expect(app.asked).toHaveLength(1);
     expect(app.asked[0]).toBe(
       "Sign out and discard 3 unsent changes?\n\n• CORE-1 set to done\n• CORE-4 set to backlog\n• Labels of CORE-4"
     );
@@ -606,8 +632,10 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
   // a timer, so it is waited for on real turns (`onRealTurns`), which carry the other tabs'
   // answers and move no clock. A question that waited out the window for the forgotten tab would
   // come only once the clock passed that window, and here only the click's own zero-delay waits
-  // move it, so it would not come at all (dispatch://INFRA-1505). The clock is installed before
-  // the user, which captures the timers it will advance.
+  // move it, so it would not come at all (dispatch://INFRA-1505). The first and third questions
+  // wait out the window for the silent tab, so the clock is held until the answering tabs'
+  // answers are in (`answersIn`), and only then does `waitFor` move it through the window. The
+  // clock is installed before the user, which captures the timers it will advance.
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const app = renderApp({
@@ -633,6 +661,7 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     const elsewhere = ", and any unsent changes in your other Dispatch tabs";
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await answersIn(tabs[2], 2);
     await waitFor(() => expect(app.asked).toHaveLength(1));
     expect(app.asked[0]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
 
@@ -651,7 +680,9 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
         expect.objectContaining({ here: true })
       )
     );
+    const heard = answersHeardBy(tabs[2]);
     await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await answersIn(tabs[2], heard + 2);
     await waitFor(() => expect(app.asked).toHaveLength(3));
     expect(app.asked[2]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
     expect(app.logout).not.toHaveBeenCalled();

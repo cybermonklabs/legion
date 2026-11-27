@@ -1,4 +1,5 @@
 import { expect } from "bun:test";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import { connect, type KV } from "nats";
 import { z } from "zod";
 import { deliverSubject } from "../src/consumer-delivery";
@@ -8,6 +9,15 @@ import type { StallProxy } from "./stall-proxy";
 
 /** The spec's bound: a session finds a path that answers within a minute of the freeze. */
 export const RECOVERY_BOUND_MS = 60_000;
+
+/**
+ * The session's `ENVOY_HEARTBEAT_MS` for this scenario: an hour between heartbeats, past the
+ * guard of each row that runs it and the 20-minute job that runs those rows. After the start's
+ * registration no heartbeat registers within a row, so the reconnect's registration is the only
+ * one that can carry a new epoch. `envoySettings` takes any finite number above zero and holds it
+ * under 2 147 483 647 ms (`resolvedInterval`, `src/envoy-settings.ts`), so the hour stands.
+ */
+export const FREEZE_HEARTBEAT_MS = "3600000";
 
 /** A session plugin under test, registered, whose NATS path `proxy` fronts. */
 export interface FreezeScenarioHost {
@@ -21,10 +31,13 @@ export interface FreezeScenarioHost {
   readonly proxy: StallProxy;
   /** The text of every message the host showed the session that holds `marker`, in order. */
   shown(marker: string): readonly string[];
-  /** Resolves once `condition` holds; throws, naming `what`, when `deadline` passes first. */
+  /** Resolves once `condition` holds; throws, naming `what`, when `deadline` passes first, when
+   *  a process of `stack` has exited (`EnvoyStack.exited`), checked on each poll, or once the
+   *  row has ended. A wait given no deadline ends at its row's guard: for a host that waits
+   *  through `until` (`@legion/test-fixtures/wait`), at the row's deadline, naming `what`. */
   waitFor(
     condition: () => boolean | Promise<boolean>,
-    deadline: number,
+    deadline: number | undefined,
     what: string
   ): Promise<void>;
 }
@@ -57,11 +70,13 @@ async function sessionEntry(
   return SessionEntrySchema.parse(entry.json());
 }
 
-/** Whether a connection natsd accepted at or after `since` (`Date.now()` time) subscribes `subject`. */
+/**
+ * Whether a connection natsd accepted at or after `since` (`Date.now()` time) subscribes `subject`.
+ * The read has no timeout of its own: how long natsd's monitor takes to answer is the host's
+ * speed, and a monitor that never answers holds the read to its row's guard.
+ */
 async function subscribedSince(monitorUrl: string, subject: string, since: number) {
-  const response = await fetch(`${monitorUrl}/connz?subs=1`, {
-    signal: AbortSignal.timeout(2_000),
-  });
+  const response = await fetch(`${monitorUrl}/connz?subs=1`);
   if (!response.ok) return false;
   const connz = ConnzSchema.parse(await response.json());
   return (connz.connections ?? []).some(
@@ -83,7 +98,10 @@ async function subscribedSince(monitorUrl: string, subject: string, since: numbe
  * session was told it had been away for: the relay delivers all three.
  *
  * The host runs on nats.js's real ping and dial timers against a real listener, so each wait is
- * real time.
+ * real time. Only the recovery's wait has a deadline: the message sent while the path was frozen
+ * must be shown within `RECOVERY_BOUND_MS` of the freeze, which the scenario asserts. Every other
+ * wait passes the host's `waitFor` no deadline, so it ends at its row's guard, naming what it
+ * waited for.
  */
 export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void> {
   const { label, stack, sessionID, proxy, shown, waitFor } = host;
@@ -99,10 +117,20 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
   };
   const run = crypto.randomUUID();
   // The scenario's own connection, straight to natsd, reads the listener's session entry.
-  const observer = await connect({ servers: [stack.natsUrl], name: `stall-observer-${run}` });
+  const observer = await connect({
+    servers: [stack.natsUrl],
+    name: `stall-observer-${run}`,
+    // The handshake may take until the row's deadline: nats.js's 20 s default could fail the row
+    // on a loaded host on the observer's own handshake.
+    timeout: timeLeft(),
+  });
   try {
-    const sessions = await observer.jetstream().views.kv("envoy_sessions", { bindOnly: true });
-    const started = Date.now();
+    const sessions = await observer
+      // Each JetStream request may take the time left before the row's deadline as read here, at
+      // least what is left when any later request is made: nats.js's 5 s default could fail the
+      // row on a loaded host on the bind's account check below or a read of the session entry.
+      .jetstream({ timeout: timeLeft() })
+      .views.kv("envoy_sessions", { bindOnly: true });
     let firstEpoch: string | undefined;
     await waitFor(
       async () => {
@@ -112,13 +140,13 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
         if (firstEpoch === undefined) return false;
         return await subscribedSince(stack.monitorUrl, sessionSubject, 0);
       },
-      started + 30_000,
+      undefined,
       "the session's registration answered consumer, with its relay subject subscribed"
     );
 
     const live = `stall-live-before-${run}`;
     await send(live);
-    await waitFor(() => shown(live).length > 0, Date.now() + 10_000, "the live message");
+    await waitFor(() => shown(live).length > 0, undefined, "the live message");
 
     const frozenAt = proxy.freeze();
     const missed = `stall-missed-${run}`;
@@ -142,20 +170,29 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     expect(shownAt - frozenAt).toBeLessThan(RECOVERY_BOUND_MS);
     // The connection that replaced the frozen one carries the session's relay subject.
     expect(await subscribedSince(stack.monitorUrl, sessionSubject, frozenAt)).toBe(true);
-    // The relay restarted only on a registration that named a new epoch, still on consumer
-    // delivery.
-    const renewed = await sessionEntry(sessions, sessionID);
+    // The session registers a new epoch on the new connection, still on consumer delivery. That
+    // registration is the session's own request to the listener, and the missed message's
+    // delivery is the listener's work: nothing orders the two. Under 120 busy loops (the 96 rung)
+    // claude-envoy's row once saw the message shown 1.8 s after the resubscribe while the entry
+    // still named the first epoch (Job infra-1580-krows-kc-g4zvc, run 10, at 39bc1254), so the
+    // scenario waits for the entry to name a new epoch rather than read it once. The wait has no
+    // deadline: a session that never registers one fails it at its row's guard.
+    let renewed: z.infer<typeof SessionEntrySchema> | undefined;
+    await waitFor(
+      async () => {
+        renewed = await sessionEntry(sessions, sessionID);
+        return renewed?.delivery === "consumer" && renewed.epoch !== firstEpoch;
+      },
+      undefined,
+      "the session's registration of a new epoch"
+    );
     expect(renewed?.delivery).toBe("consumer");
     expect(renewed?.epoch).toBeDefined();
     expect(renewed?.epoch).not.toBe(firstEpoch);
 
     const after = `stall-live-after-${run}`;
     await send(after);
-    await waitFor(
-      () => shown(after).length > 0,
-      Date.now() + 10_000,
-      "the message after the reconnect"
-    );
+    await waitFor(() => shown(after).length > 0, undefined, "the message after the reconnect");
 
     // Each shown once, and the relay delivered all three, so none carries the line a frame stored
     // while the session was away would carry.

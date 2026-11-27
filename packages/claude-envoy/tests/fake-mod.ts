@@ -3,6 +3,7 @@
  * process: it polls the socket the server bound, answers the calls the server makes, and sends
  * the events a real session would. What the real mod adds beyond this is Claude Code itself.
  */
+import { until } from "@legion/test-fixtures/wait"
 import {
   MOD_ROUTE_EVENTS,
   MOD_ROUTE_REQUESTS,
@@ -75,17 +76,31 @@ export async function startFakeMod(
     readonly answers?: ModAnswers
     /** Sent as the first event, as a real mod's `session.start` does; true by default. */
     readonly hello?: boolean
+    /** The server's exit, where the caller started it: the probe for its socket throws, naming
+     *  that exit and what the server wrote (`wrote`), once the server has exited. */
+    readonly exited?: Promise<unknown>
+    /** What the server has written so far, which the probe names once the server has exited. */
+    readonly wrote?: () => string
+    /** Aborted once the caller's row has ended, at its guard included: the probe for the socket
+     *  stops, naming that, and so does the polling after it, as `stop` stops it. A caller that
+     *  holds the server process passes `exited`; one that does not passes this, and one may pass
+     *  both. With neither, the probe runs until the socket answers or the row's deadline passes. */
+    readonly signal?: AbortSignal
   },
 ): Promise<FakeMod> {
   const calls: ModCall[] = []
   let stopped = false
+  // A call, not a test of `stopped` and `signal` in place: a test in place would narrow both
+  // for the code after it, which reads them again after each await.
+  const pollEnded = (): boolean => stopped || options.signal?.aborted === true
 
-  const post = async (route: string, body: unknown): Promise<unknown> => {
+  const post = async (route: string, body: unknown, signal?: AbortSignal): Promise<unknown> => {
     const answer = await fetch(`${MOD_URL_BASE}${route}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       unix: socketPath,
+      ...(signal === undefined ? {} : { signal }),
     })
     return answer.json()
   }
@@ -133,8 +148,10 @@ export async function startFakeMod(
     }
   }
 
+  // The poll stops once the mod is stopped or its caller's row has ended, at its next turn and
+  // after each await, so a row its guard abandoned answers nothing more of its server's.
   const poll = async (): Promise<void> => {
-    while (!stopped) {
+    while (!pollEnded()) {
       let requests: readonly ModRequest[] = []
       try {
         const body = (await post(MOD_ROUTE_REQUESTS, {})) as { requests?: readonly ModRequest[] }
@@ -144,11 +161,14 @@ export async function startFakeMod(
         return
       }
       for (const request of requests) {
+        if (pollEnded()) return
         calls.push({ call: request.call, args: request.args })
         try {
           const value = await answerOf(request)
+          if (pollEnded()) return
           await post(MOD_ROUTE_RESULTS, { results: [{ id: request.id, ok: true, value }] })
         } catch (error) {
+          if (pollEnded()) return
           await post(MOD_ROUTE_RESULTS, {
             results: [{ id: request.id, ok: false, error: String(error) }],
           }).catch(() => undefined)
@@ -157,27 +177,54 @@ export async function startFakeMod(
     }
   }
 
-  const send = async (event: ModEvent): Promise<void> => {
-    await post(MOD_ROUTE_EVENTS, { events: [event] })
+  const send = async (event: ModEvent, signal?: AbortSignal): Promise<void> => {
+    await post(MOD_ROUTE_EVENTS, { events: [event] }, signal)
   }
 
-  // The server binds its socket while its MCP transport starts, so a mod started beside it
-  // probes until the socket answers, as the real mod does.
-  const deadline = Date.now() + 20_000
-  for (;;) {
+  // The server binds its socket while its MCP transport starts. Retry the hello until the
+  // socket answers; an exit aborts even an in-flight hello, and the shared wait ends a probe
+  // that never gets an answer.
+  if (options.hello !== false) {
+    const probe = new AbortController()
+    const signal =
+      options.signal === undefined ? probe.signal : AbortSignal.any([options.signal, probe.signal])
+    void options.exited?.then(
+      (code) => {
+        const output = options.wrote === undefined ? "" : `; it wrote: ${options.wrote()}`
+        probe.abort(
+          new Error(`the server exited (${String(code)}) before its mod socket answered${output}`),
+        )
+      },
+      (error: unknown) => {
+        probe.abort(
+          new Error("could not read the server's exit while probing its mod socket", {
+            cause: error,
+          }),
+        )
+      },
+    )
     try {
-      if (options.hello !== false) {
-        await send({
-          kind: "hello",
-          sessionId: options.sessionId,
-          claudeVersion: "2.1.310",
-          interactive: true,
-        })
-      }
-      break
-    } catch (error) {
-      if (Date.now() > deadline) throw error
-      await Bun.sleep(50)
+      await until("the server's mod socket to answer the mod's hello", async () => {
+        signal.throwIfAborted()
+        try {
+          await send(
+            {
+              kind: "hello",
+              sessionId: options.sessionId,
+              claudeVersion: "2.1.310",
+              interactive: true,
+            },
+            signal,
+          )
+        } catch {
+          signal.throwIfAborted()
+          return false
+        }
+        signal.throwIfAborted()
+        return true
+      })
+    } finally {
+      probe.abort()
     }
   }
   void poll()

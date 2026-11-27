@@ -7,6 +7,12 @@
  * start-up, must end inside it: tests/open-asks-hook.test.ts holds their sum and a start-up
  * allowance below that timeout. A module of its own so that the test can import them:
  * session-hook.ts runs the hook when it is loaded.
+ *
+ * That sum is the route of a `!` token credential. A broker credential (envoy-client's
+ * `brokerCredential`) runs no token command: `DispatchClient` awaits the credential's headers, the
+ * broker's token trade among them, before the fetch, and gives them the client's own deadline,
+ * which is `OPEN_ASKS_TIMEOUT_MS` here, less the request's reserve (`credentialDeadline`). So on
+ * that route the trade and the read share the read's 3 s, and the sum covers both.
  */
 
 /** The bound on resolving jj's own user config chain for the overlay. Not

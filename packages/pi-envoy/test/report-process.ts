@@ -9,10 +9,15 @@ import { join } from "node:path";
  * after `marker`. With no `env`, the process gets the environment this one started with, as a
  * `Bun.spawn` that names no `env` hands it; with one, that environment, with Bun's runtime
  * transpiler cache off: a row's `env` names a HOME the row's temporary-directory hook removes, and
- * the cache would put about 360 files, 6 MB, under it, whose removal on a loaded box can outlast
- * Bun's 5 s bound on a hook (measured: a row's HOME held 359 files with the cache, the cache's
- * `@t@` directory all but 3 of them). It is killed at `timeoutMs`, so a hung run leaves no process
- * behind, and a run that reports nothing throws, naming `what` and giving its stderr.
+ * the cache would put about 360 files, 6 MB, under it, all of which that hook would remove too
+ * (measured: a row's HOME held 359 files with the cache, the cache's `@t@` directory all but 3 of
+ * them). That hook is the `afterEach` of `temporaryDirectories` (test-fixtures'
+ * temporary-directories.ts), which names no limit of its own, so the guard of the package's
+ * `test` command (package.json) bounds it, and bun's 5 s default does only in a run with no
+ * `--timeout`. It is killed at `timeoutMs`, and its stdin is held open, written nothing, for as
+ * long as this process runs, so a script that exits at that pipe's end (`session-pod-process.ts`)
+ * leaves no process behind when a test runner abandons the row that started it. A run that
+ * reports nothing throws, naming `what` and giving its stderr.
  */
 export async function runReportingProcess(options: {
   readonly script: string;
@@ -32,6 +37,8 @@ export async function runReportingProcess(options: {
       ...options.args,
     ],
     {
+      // Held open, and written nothing, for as long as this process runs.
+      stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
       timeout: options.timeoutMs,

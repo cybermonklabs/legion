@@ -817,6 +817,19 @@ const busUnansweredRemoval = (what: string): string =>
   "The registry may already be without them. " +
   "The session's next registration sets its consumer's filter to the topics the registry holds.";
 
+/** The whole of what a stop (`stopSession`) gives its role release, its deregistration and its
+ *  drain. Oh My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`),
+ *  and the second this leaves is for the synchronous work ahead of the race and for the host. A
+ *  SIGTERM gets no more: in a Legion pane the shim kills Oh My Pi 5 s after its SIGTERM
+ *  (`DefaultGrace`, `packages/daemon/internal/shim`), and the agent shares that grace. The
+ *  shared `SHUTDOWN_SETTLE_MS` is what the stop spends waiting on a registration still on the
+ *  wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower
+ *  than a second would mean no DELETE was sent at all and the record outlived this process by
+ *  the gone horizon, where a DELETE that races a slow registration only may lose. The release
+ *  of the session's role claims goes before both (`SHUTDOWN_RELEASE_MS`), so the two waits
+ *  leave at least 500 ms here (1.5 s of the host's 2 s) for the DELETE to reach the wire. */
+export const SHUTDOWN_DEADLINE_MS = 1_000;
+
 export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // Every notice, tool answer and tool error this extension gives the host passes the scrub of
   // the secrets this process holds, the backstop under the rules that name no peer's text.
@@ -3681,19 +3694,6 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     return registering;
   };
 
-  /** The whole of what a stop (`stopSession`) gives its role release, its deregistration and its
-   *  drain. Oh My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`),
-   *  and the second this leaves is for the synchronous work ahead of the race and for the host. A
-   *  SIGTERM gets no more: in a Legion pane the shim kills Oh My Pi 5 s after its SIGTERM
-   *  (`DefaultGrace`, `packages/daemon/internal/shim`), and the agent shares that grace. The
-   *  shared `SHUTDOWN_SETTLE_MS` is what the stop spends waiting on a registration still on the
-   *  wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower
-   *  than a second would mean no DELETE was sent at all and the record outlived this process by
-   *  the gone horizon, where a DELETE that races a slow registration only may lose. The release
-   *  of the session's role claims goes before both (`SHUTDOWN_RELEASE_MS`), so the two waits
-   *  leave at least 500 ms here (1.5 s of the host's 2 s) for the DELETE to reach the wire. */
-  const SHUTDOWN_DEADLINE_MS = 1_000;
-
   /** How long the DELETE of a stop waits for the release of the session's role claims, which goes
    *  first: a quarter of a second, as the wait on a registration still on the wire. A listener
    *  that answers at all answers a release in tens of milliseconds. A release that has not
@@ -3702,7 +3702,6 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
    *  stands until its last renewal is older than the listener's live window. The DELETE goes all
    *  the same, because it is what lets a message to the stopped session wake it. */
   const SHUTDOWN_RELEASE_MS = 250;
-
   /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one
    *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
    *  `settleMs` have passed. The DELETE carries this client instance's id

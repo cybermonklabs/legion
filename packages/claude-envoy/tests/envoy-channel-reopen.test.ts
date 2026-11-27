@@ -9,18 +9,21 @@
 import { expect, test } from "bun:test"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
+import { settled, until } from "@legion/test-fixtures/wait"
 import { nkeys } from "nats"
-import { modSocketPath } from "../hooks/mod-protocol"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { waitFor } from "./channel-session-harness"
-import { startFakeMod } from "./fake-mod"
+import type { FakeMod } from "./fake-mod"
 import {
   count,
   PROCESS_WAIT_MS,
   type ReopenServer,
+  type ReopenServerOptions,
   ROW_TIMEOUT_MS,
   sessionBroker,
   startReopenServer,
+  startSessionMod,
+  whileServing,
 } from "./reopen-server"
 
 const SESSION = "ses_reopen"
@@ -29,11 +32,14 @@ const DIRECT = legacyAgentSubject(SESSION)
 
 /** A Claude Code channel server for session `SESSION`; `env` adds the credential's variables. */
 function startServer(
-  options: { readonly nonce?: string; readonly env?: Readonly<Record<string, string>> } = {},
+  options: Pick<ReopenServerOptions, "nonce" | "waitForStart"> & {
+    readonly env?: Readonly<Record<string, string>>
+  } = {},
 ): Promise<ReopenServer> {
   return startReopenServer({
     sessionId: SESSION,
     ...(options.nonce === undefined ? {} : { nonce: options.nonce }),
+    ...(options.waitForStart === undefined ? {} : { waitForStart: options.waitForStart }),
     env: (stateDirectory) => ({
       CLAUDE_CODE_SESSION_ID: SESSION,
       CLAUDE_PLUGIN_DATA: stateDirectory,
@@ -42,12 +48,19 @@ function startServer(
   })
 }
 
-/** The fake mod of `run`'s session, and the notices this server wrote into it under `heading`: a
- *  notice is the one card that names no Envoy event. */
-async function sessionMod(run: { readonly stateDirectory: string }) {
-  const socketPath = modSocketPath(SESSION, { XDG_RUNTIME_DIR: run.stateDirectory })
-  if (socketPath === undefined) throw new Error("the session names no mod socket")
-  const mod = await startFakeMod(socketPath, { sessionId: SESSION })
+/** The fake mod of `run`'s session (`startSessionMod`), and the notices this server wrote into it
+ *  under `heading`: a notice is the one card that names no Envoy event. A mod that does not start
+ *  stops the server, since the row's `finally` comes after this call. */
+async function sessionMod(
+  run: Pick<ReopenServer, "stateDirectory" | "server" | "stderr" | "stop">,
+) {
+  let mod: FakeMod
+  try {
+    mod = await startSessionMod(run, SESSION)
+  } catch (error) {
+    await run.stop()
+    throw error
+  }
   const notices = (heading: string) =>
     mod
       .madeOf("session.message")
@@ -250,75 +263,85 @@ test.skipIf(process.platform !== "linux")(
   ROW_TIMEOUT_MS,
 )
 
-test(
-  "a reopen refused for good under an nkey seed is dialed again at the next heartbeat, and the relay reopens once the hub admits",
-  async () => {
-    const user = nkeys.createUser()
-    const run = await startServer({
-      nonce: "fake-nonce",
-      env: { NATS_NKEY_SEED: new TextDecoder().decode(user.getSeed()) },
+test("a reopen refused for good under an nkey seed is dialed again at the next heartbeat, and the relay reopens once the hub admits", async () => {
+  const user = nkeys.createUser()
+  const run = await startServer({
+    nonce: "fake-nonce",
+    waitForStart: until,
+    env: { NATS_NKEY_SEED: new TextDecoder().decode(user.getSeed()) },
+  })
+  const { broker, stderr } = run
+  const { mod, notices } = await sessionMod(run)
+  const gaveUp = "envoy-channel: gave up opening a new NATS connection"
+  const awaitServing = (what: string, condition: () => boolean): Promise<true> =>
+    until(what, whileServing(run, condition)).catch((error: unknown) => {
+      throw new Error(
+        `${String(error)}; unavailable=${notices("Envoy inbound unavailable").length} restored=${notices("Envoy inbound restored").length}; ${run.state()}`,
+        { cause: error },
+      )
     })
-    const { broker, stderr, state } = run
-    const { mod, notices } = await sessionMod(run)
-    const gaveUp = "envoy-channel: gave up opening a new NATS connection"
-    try {
-      await run.checkConnects(
-        broker.connects[0]?.["nkey"] === user.getPublicKey(),
-        "the start's CONNECT does not sign with the seed",
-      )
-      const firstEpoch = run.deliveries.at(-1)?.epoch
-      // Closed for good, and the hub refuses each dial after it: a seed refused is refused again, so
-      // no redial inside a dial cures it, and only a later dial can.
-      broker.refuseConnects = true
-      await broker.closeClients()
-      await waitFor(
-        async () => count(stderr(), gaveUp) >= 2 && notices("Envoy inbound unavailable").length > 0,
-        "a reopen refused for good, and another at a later heartbeat",
-        state,
-        PROCESS_WAIT_MS,
-      )
-      expect(stderr()).toContain(
-        `${gaveUp} (could not connect to NATS at the server ENVOY_NATS_URL names presenting an nkey seed: Authorization Violation); dialing again at the next heartbeat`,
-      )
-      expect(count(stderr(), "; dialing again in")).toBe(0)
-      // Told once over every refusal, naming the close.
-      expect(notices("Envoy inbound unavailable")).toHaveLength(1)
-      expect(notices("Envoy inbound unavailable")[0]?.message.text).toContain(
-        "because its relay subject could not be opened: Authorization Violation",
-      )
-      expect(count(stderr(), "this session receives nothing")).toBe(1)
+  try {
+    await run.checkConnects(
+      broker.connects[0]?.["nkey"] === user.getPublicKey(),
+      "the start's CONNECT does not sign with the seed",
+    )
+    const firstEpoch = run.deliveries.at(-1)?.epoch
+    // Closed for good, and the hub refuses each dial after it: a seed refused is refused again, so
+    // no redial inside a dial cures it, and only a later dial can.
+    broker.refuseConnects = true
+    await settled("the refused NATS clients to close", broker.closeClients())
+    await awaitServing(
+      "a reopen refused for good, and another at a later heartbeat",
+      () => count(stderr(), gaveUp) >= 2 && notices("Envoy inbound unavailable").length > 0,
+    )
+    expect(stderr()).toContain(
+      `${gaveUp} (could not connect to NATS at the server ENVOY_NATS_URL names presenting an nkey seed: Authorization Violation); dialing again at the next heartbeat`,
+    )
+    // The refusal is not dialed again inside its dial: its line names Authorization Violation.
+    // A dial that fails for a cause a redial cures (`redialCures`: a dial past its own bound,
+    // a socket's failure) is dialed again at once, which a correct run on a slow host can make:
+    // at the 96 rung one run in 20 printed such a line (the Job infra-1580-r30ce3-hqq47 of the
+    // cluster's `builds` namespace, at b96dcc3e, whose log kept no stderr to name the cause), so
+    // the row counts the refusal's own redials alone.
+    expect(
+      stderr()
+        .split("\n")
+        .filter((line) => line.includes("Authorization Violation; dialing again in")),
+    ).toEqual([])
+    // Told once over every refusal, naming the close.
+    expect(notices("Envoy inbound unavailable")).toHaveLength(1)
+    expect(notices("Envoy inbound unavailable")[0]?.message.text).toContain(
+      "because its relay subject could not be opened: Authorization Violation",
+    )
+    expect(count(stderr(), "this session receives nothing")).toBe(1)
 
-      // The hub admits again: a heartbeat's dial opens a connection, signed with the seed, and the
-      // relay reopens on it at a new epoch.
-      const refusedUntil = run.deliveries.length
-      broker.refuseConnects = false
-      await waitFor(
-        async () =>
-          run.relaySubscriptions() === 2 &&
-          broker.liveConnections === 1 &&
-          run.deliveries.slice(refusedUntil).some((asked) => asked.epoch !== firstEpoch) &&
-          notices("Envoy inbound restored").length > 0 &&
-          stderr().includes("envoy-channel: this session receives again"),
-        "the relay on a heartbeat's new connection, and the restored notice, in the session and on stderr",
-        state,
-        PROCESS_WAIT_MS,
-      )
-      await run.checkConnects(
-        broker.connects.at(-1)?.["nkey"] === user.getPublicKey(),
-        "the new connection's CONNECT does not sign with the seed",
-      )
-      expect(notices("Envoy inbound restored")).toHaveLength(1)
-      expect(
-        count(stderr(), "envoy-channel: this session receives again: a registration was accepted"),
-      ).toBe(1)
-      expect(notices("Envoy inbound unavailable")).toHaveLength(1)
-    } finally {
-      await mod.stop()
-      await run.stop()
-    }
-  },
-  ROW_TIMEOUT_MS,
-)
+    // The hub admits again: a heartbeat's dial opens a connection, signed with the seed, and the
+    // relay reopens on it at a new epoch.
+    const refusedUntil = run.deliveries.length
+    broker.refuseConnects = false
+    await awaitServing(
+      "the relay on a heartbeat's new connection, and the restored notice, in the session and on stderr",
+      () =>
+        run.relaySubscriptions() === 2 &&
+        broker.liveConnections === 1 &&
+        run.deliveries.slice(refusedUntil).some((asked) => asked.epoch !== firstEpoch) &&
+        notices("Envoy inbound restored").length > 0 &&
+        stderr().includes("envoy-channel: this session receives again"),
+    )
+    await run.checkConnects(
+      broker.connects.at(-1)?.["nkey"] === user.getPublicKey(),
+      "the new connection's CONNECT does not sign with the seed",
+    )
+    expect(notices("Envoy inbound restored")).toHaveLength(1)
+    expect(
+      count(stderr(), "envoy-channel: this session receives again: a registration was accepted"),
+    ).toBe(1)
+    expect(notices("Envoy inbound unavailable")).toHaveLength(1)
+  } finally {
+    await mod.stop()
+    await run.stop()
+  }
+})
 
 test(
   "under the session's broker token a connection closed for good is reopened presenting a token, and a /clear after it moves the new connection to the new id",

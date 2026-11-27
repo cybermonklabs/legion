@@ -34,6 +34,12 @@ const [sessionID = "", mode] = process.argv.slice(2);
 if (sessionID === "")
   throw new Error("session-pod-process.ts needs the id of the session it opens");
 
+// This process ends with the one that started it, which holds its stdin (`runReportingProcess`). A
+// test runner that abandons the row kills the process it started, that pipe closes, and each child
+// exits here rather than running on with nobody to report to.
+process.stdin.on("end", () => process.exit(1));
+process.stdin.resume();
+
 const lines: string[] = [];
 logger.registerLogSink((entry) => {
   if (entry.message.startsWith("envoy: ENVOY_SESSION_ROLE ")) lines.push(entry.message);
@@ -119,9 +125,10 @@ if (start === undefined) throw new Error("the extension registered no session_st
 await start({}, context);
 
 /**
- * This script for `session`, started the way `spawn` names, and what it reported. A child that
- * hangs is killed at 20 s, before the test's own bound on this process, so none is left running
- * and its stderr comes back in the error.
+ * This script for `session`, started the way `spawn` names, and what it reported. The row kills
+ * this process at its own deadline, and each child exits when the pipe this process holds open to
+ * it ends (`runReportingProcess`), so a child that hangs ends with this process. Its 420 s kill
+ * bounds only a child run by hand, outside such a row.
  */
 async function child(
   spawn: "no env" | "process.env",
@@ -129,7 +136,7 @@ async function child(
 ): Promise<Report & { readonly spawn: string }> {
   const report = await runSessionPod({
     session,
-    timeoutMs: 20_000,
+    timeoutMs: 420_000,
     ...(spawn === "process.env" ? { env: process.env } : {}),
   });
   return { spawn, ...report };

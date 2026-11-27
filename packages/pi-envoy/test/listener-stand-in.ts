@@ -1,10 +1,12 @@
 // The listener and the NATS connection the extension talks to in every test file that calls
 // `useExtensionHarness()` (`./extension-harness`): the fetch that records every registration, the
 // NATS connection the extension dials (`natsStandInConnect`), the relay of the session's consumer,
-// the row a session's work runs for, and the listener's answers a row's fetch gives. Bun evaluates
-// an imported module once per process, so every such file drives this one set of state.
-// `./extension-harness` hands the dial to the extension, and starts and resets this state around
-// each row (`startRow`, `resetNatsStandIn`).
+// the row a session's work runs for and the `test` that runs a row's body in it, and the
+// listener's answers a row's fetch gives. Bun evaluates an imported module once per process, so
+// every such file drives this one set of state. `./extension-harness` hands the dial to the
+// extension, and starts and resets this state around each row (`advanceRowGeneration`,
+// `resetNatsStandIn`).
+import { test as bunTest } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
@@ -68,7 +70,7 @@ function relayCarries(subject: string): boolean {
  * it grew one row's process to 118 GiB before anything stopped it.
  */
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
-/** The real fetch, as this module found it: what a row restores (`tearDownRow` in
+/** The real fetch, as this module found it: what a row restores (`resetFileState` in
  *  `./extension-harness`) and what the live stack uses. */
 export const originalFetch: typeof globalThis.fetch = installedFetch;
 /** How deep the calls of `recordingFetch` are nested in the current call's async context. */
@@ -76,6 +78,13 @@ const fetchDepth = new AsyncLocalStorage<number>();
 /** A row's fetch may hand a request on through `globalThis.fetch` this many times at most. */
 const MOST_NESTED_FETCHES = 8;
 const recordingFetch = (async (input, init) => {
+  // A request from a row that has already ended — a retry timer or a background pass that row
+  // left behind — must neither rewrite the new row's `registeredTopics` nor land in its
+  // `installedFetch` (which sent `ses_heartbeat`'s 250 ms retry into `ses_retry`'s stub under
+  // load at 5e20dddc).
+  if (fromEndedRow()) {
+    throw new Error("stopped fetch from an ended row");
+  }
   const depth = (fetchDepth.getStore() ?? 0) + 1;
   if (depth > MOST_NESTED_FETCHES) {
     throw new Error(
@@ -101,32 +110,90 @@ Object.defineProperty(globalThis, "fetch", {
   configurable: true,
   get: () => recordingFetch,
   set: (next: typeof globalThis.fetch) => {
+    // A row body its guard abandoned in an ordinary await (a handler, a boot, an `import`) runs
+    // on inside the row after it once that await settles, and the harness's `setUpRow` has set
+    // that row's fetch by then. Its write is dropped (`fromEndedRow`), so that row keeps its own.
+    if (fromEndedRow()) return;
     if (next !== recordingFetch) installedFetch = next;
   },
 });
 
 /**
- * The row a session's own work runs for. `bootDirectSession` (`extensions/envoy.test.ts`) starts
- * its session inside this scope, so what the session goes on to do (a delivery, a person's
- * `!command` and its answer) carries the row that booted it; `startRow` makes each row a new one.
- * Bun fails a row at its timeout and starts the next while that row's session still runs (bun
- * kills the row's dangling child, and the command it was running then answers), so what such a
- * session writes afterwards, a reply on Dispatch or a frame on NATS, is dropped rather than read
- * as the next row's.
+ * The row whose body runs now, as its `rowGeneration`. Every row of `extensions/envoy.test.ts` is
+ * registered through `test` below, which runs its body inside this scope, so what the body reaches
+ * after an await still names its row once bun has abandoned the row at its guard and started the
+ * next. `rowCheck` reads it: a clock helper that an abandoned body calls for the first time after
+ * its row ended throws, rather than take the next row's timers.
  */
-export const rowScope = new AsyncLocalStorage<symbol>();
-export let currentRow = Symbol("row");
-/** Whether the code running now is the work of a session whose row has ended. */
-export function fromEndedRow(): boolean {
-  const row = rowScope.getStore();
-  return row !== undefined && row !== currentRow;
+const rowBody = new AsyncLocalStorage<number>();
+
+/**
+ * Advanced by the harness's `setUpRow` and `tearDownRow` (`advanceRowGeneration`), so a poll a
+ * row started sees that its row has ended — at its guard included — and stops, rather than running
+ * on into the rows after it, whose stubs of `globalThis.fetch` it would then post through, and a
+ * session the row booted writes nothing more (`fromEndedRow`).
+ */
+export let rowGeneration = 0;
+
+/** Ends the row that ran until now (`rowGeneration`): `setUpRow` and `tearDownRow` in
+ *  `./extension-harness` call it, each first. */
+export function advanceRowGeneration(): void {
+  rowGeneration += 1;
 }
 
-/** Makes the row starting now the current one (`setUpRow` in `./extension-harness`), so the work
- *  of a session an earlier row booted reads as an ended row's. */
-export function startRow(): void {
-  currentRow = Symbol("row");
+/**
+ * A check of the caller's row: true while that row still runs, false once the harness's hooks
+ * have advanced `rowGeneration` past it, at its guard included. The row is the one whose body the
+ * caller runs in (`rowBody`), so a check first taken late, by a body its guard abandoned, is
+ * false already; outside a row's body, as in a row a file registers with bun's own `test`, it is
+ * the row running now. A `finally` that puts back shared state its row set (a variable, the fetch,
+ * the NATS dial, the timers) does so only while the check holds: once the row has ended, the
+ * harness's `setUpRow` has put that state back, and the row after it may have set its own, which
+ * a late restore from the abandoned body would overwrite.
+ */
+export function rowCheck(): () => boolean {
+  const generation = rowBody.getStore() ?? rowGeneration;
+  return () => generation === rowGeneration;
 }
+
+/**
+ * Throws once the row `ownRow` checks has ended (`rowCheck`), saying what the caller was at.
+ * This is what every helper a row's body awaits does on an ended row: the probe of each `until`
+ * (`rowProbe`), `heartbeatTicks`, the clock helpers (`onFakeTimers`, `onPassClock`),
+ * `withEnvoyTimings` and the live stack's `waitFor`. The throw ends the abandoned body there, and
+ * bun 1.4.4 reports it between the rows, beside the guard's failure of the row that already
+ * failed. The harness's `setUpRow` has put shared state back for the row after it, so a `finally`
+ * of the ended row skips its restore.
+ * The code under test drops what an ended row's session publishes or sets (`fromEndedRow`), and
+ * `recordingFetch` refuses its fetches; that refusal lands in the session as a failed request, not
+ * in the body.
+ */
+export function stillOn(ownRow: () => boolean, what: string): void {
+  if (!ownRow()) throw new Error(`stopped ${what}: the row ended`);
+}
+
+/**
+ * Whether the code running now is the work of a row that has ended (`rowBody`). A session a row
+ * boots runs in that row's scope, so what it goes on to do (a delivery, a person's `!command` and
+ * its answer) carries the row that booted it. Bun fails a row at its timeout and starts the next
+ * while that row's session still runs (bun kills the row's dangling child, and the command it was
+ * running then answers), so a frame such a session writes afterwards on NATS is dropped, and a
+ * request it sends through `globalThis.fetch` is refused (`recordingFetch`), rather than read as
+ * the next row's.
+ */
+export function fromEndedRow(): boolean {
+  return !rowCheck()();
+}
+
+/** Registers a row, as bun's `test` does, with its body run in its row's scope (`rowBody`). */
+export function test(name: string, body: () => Promise<unknown>, timeout?: number): void {
+  bunTest(name, () => rowBody.run(rowGeneration, body), timeout);
+}
+/** Registers a row as `test` does, or as skipped when `skip` holds: a skipped body never runs. */
+test.skipIf = (
+  skip: boolean
+): ((name: string, body: () => Promise<unknown>, timeout?: number) => void) =>
+  skip ? bunTest.skip : test;
 
 /**
  * Hands the session a frame published on `subject`, as the listener's relay of the session's
@@ -258,7 +325,7 @@ export function pushNatsStatus(type: string): void {
 }
 
 // The dial `extensions/envoy.ts` opens NATS with, handed to it through `setNatsConnectForTests`
-// (`useExtensionHarness` in `./extension-harness`). The `nats` module itself stays as it is: a row
+// (`resetFileState` in `./extension-harness`). The `nats` module itself stays as it is: a row
 // that sets `natsState.realConnect` gets nats.js's own connect from here, and every file in this
 // `bun test` process — `card-delivery-omp.test.ts` among them — reads the real module. A row that
 // hands the entry a plan of redials of its own hands it this stand-in again with that plan.
@@ -499,7 +566,7 @@ export function claimGranted(session: string, role: string): Response {
 
 /** Puts the stand-in back as no row has touched it: what each connection recorded, every
  *  subscription and the topics the relay carries, and each failure or hold a row set
- *  (`tearDownRow` in `./extension-harness`). */
+ *  (`resetFileState` in `./extension-harness`). */
 export function resetNatsStandIn(): void {
   natsState.connectedNames.length = 0;
   natsState.connects.length = 0;
