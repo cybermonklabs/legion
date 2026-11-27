@@ -30,7 +30,7 @@ import {
   putIssueState,
 } from "./api";
 import { seedSessionGroupsFixture } from "./delivery-seed";
-import { control, controlRow } from "./filters";
+import { control, controlRow, listTrigger } from "./filters";
 import {
   ACME,
   type BoardParts,
@@ -1695,7 +1695,10 @@ test("each count on the tabs, the pager, the bar, the Board's columns and the gr
     const pager = page.getByTestId("issues-table-pager");
     await expect(pager).toContainText(`Rows 1–${urgent.length}`);
     await expect(pager).toContainText("Page 1 of 1");
-    await expect(pager.getByRole("combobox")).toHaveValue("50");
+    // The page size is a single pick, named for its list and then for what it shows.
+    await expect(listTrigger(pager, "Rows per page")).toHaveAccessibleName(
+      "Rows per page 50 per page"
+    );
     // The range reads no total, and no line counts the issues: the tab counts them.
     await expect(pager).not.toContainText(/Rows 1–\d+ of \d+/);
     await expect(pager).not.toContainText(/\bissues?\b/);

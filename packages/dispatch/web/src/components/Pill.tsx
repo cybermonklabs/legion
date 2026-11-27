@@ -62,7 +62,8 @@ export function pillToneClassName(tone: PillTone): string {
  *  whole (a label, a claim's holder): it keeps `max-w-full`, wraps and breaks anywhere, and
  *  neither keeps its width nor holds its line. Every pill inside `NoTooltips` (the new issue
  *  page) is drawn so, and so is a claim in a table that wraps its titles (`ClaimChip`'s
- *  `wraps`). On one line it is a pill, its corners the full radius; on more than one (`wrapped`,
+ *  `wraps`) and a label in an issue table's Labels column (`LabelPill`'s `wraps`). On one line
+ *  it is a pill, its corners the full radius; on more than one (`wrapped`,
  *  `usePillWrapped`) its corners are 8 px (`rounded-lg`), since the full radius of a box several
  *  lines tall draws an oval, which leaves the words of its first and last lines outside its
  *  fill. */
@@ -119,20 +120,26 @@ export function usePillWrapped(wraps: boolean): {
   return { ref, wrapped: wraps && wrapped };
 }
 
+/** A pill. Inside `NoTooltips` it takes the shape that wraps (`pillClassName`), and so does one
+ *  whose host asks for it (`wraps`), in this page's colours: a value read whole in a column
+ *  narrower than its words, as a label in an issue table's Labels column. */
 export function Pill({
   children,
   className,
   tone = "label",
+  wraps = false,
 }: {
   children: ReactNode;
   className?: string;
   tone?: PillTone;
+  wraps?: boolean;
 }): ReactNode {
   const page = usePageWords();
-  const { ref, wrapped } = usePillWrapped(page !== null);
+  const wrapping = page !== null || wraps;
+  const { ref, wrapped } = usePillWrapped(wrapping);
   return (
     <span
-      className={`${pillClassName(tone, page !== null, page !== null, wrapped)} ${className ?? ""}`}
+      className={`${pillClassName(tone, page !== null, wrapping, wrapped)} ${className ?? ""}`}
       ref={ref}
     >
       {children}
@@ -143,11 +150,18 @@ export function Pill({
 export function LabelPill({
   children,
   selected = false,
+  wraps = false,
 }: {
   children: ReactNode;
   selected?: boolean;
+  /** Draw the label in the shape that wraps (`Pill`'s `wraps`). */
+  wraps?: boolean;
 }): ReactNode {
-  return <Pill tone={selected ? "selected-label" : "label"}>{children}</Pill>;
+  return (
+    <Pill tone={selected ? "selected-label" : "label"} wraps={wraps}>
+      {children}
+    </Pill>
+  );
 }
 
 export function StatusPill({ children }: { children: ReactNode }): ReactNode {

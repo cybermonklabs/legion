@@ -1356,7 +1356,9 @@ test("a window resize made while scrolled past the issues table keeps the table'
     const table = page.getByRole("region", { exact: true, name: "Work advancing this priority" });
     const box = table.getByTestId("issues-table-scroll");
     const pager = table.getByTestId("issues-table-pager");
-    await expect(pager).toContainText(`of ${PRIORITY_WORK_ISSUES}`);
+    // The priority pages' pager draws no total (R13): its range names every row once all load.
+    await expect(pager).toContainText(`Rows 1–${PRIORITY_WORK_ISSUES}`);
+    await expect(pager).not.toContainText(/Rows 1–\d+ of \d+/);
     await expect(box.locator("[data-issue-row]").first()).toBeVisible();
     await expect
       .poll(

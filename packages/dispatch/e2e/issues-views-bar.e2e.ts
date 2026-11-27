@@ -27,7 +27,7 @@ import {
   listIssuesWhere,
   patchIssue,
 } from "./api";
-import { control, controlRow } from "./filters";
+import { control, controlRow, listTrigger } from "./filters";
 import {
   ACME,
   boardAtRest,
@@ -500,7 +500,7 @@ async function seedK14(): Promise<K14Seed> {
   return { todo, queue, implementing: ["ACME-1", second], testing, unset };
 }
 
-// SLOW(>=2s): seven pages read for their display menus, on two projects and the priority pages.
+// SLOW(>=2s): eight pages read for their display menus, on two projects and the priority pages.
 test("the display menu reads Group by on the Issues tab in both layouts and on both priority pages, with the choices each offers, and the Board of a project with no daemon draws none", async ({
   browser,
 }) => {
@@ -552,8 +552,22 @@ test("the display menu reads Group by on the Issues tab in both layouts and on b
     await expect(page.locator('button[data-control="display-menu"]')).toHaveCount(0);
 
     // The priority pages: every display menu, and the priorities table's grouping control, read
-    // Group by.
-    for (const path of ["/priorities", `/priorities/${priority.id}`]) {
+    // Group by. `/priorities` opens on its Priorities tab, a table of priorities, and draws an
+    // issue table on each of its two fault tabs, so each fault tab is read, with an issue of its
+    // own: one active under no priority, and priority work in backlog.
+    const active = await createIssue({ project: PLAIN, title: "Plain work under way" });
+    await patchIssue(active.key, { status: "in_progress" });
+    const backlogged = await createIssue({
+      advances: [priority.id],
+      project: PLAIN,
+      title: "Plain priority work in backlog",
+    });
+    await patchIssue(backlogged.key, { status: "backlog" });
+    for (const path of [
+      "/priorities?tab=none",
+      "/priorities?tab=backlog",
+      `/priorities/${priority.id}`,
+    ]) {
       await page.goto(path);
       await expect(page.locator("tr[data-issue-row]").first()).toBeVisible();
       await expect(page.getByRole("status", { name: "Loading issues" })).toHaveCount(0);
@@ -643,12 +657,11 @@ test("the Board of a view draws the table's rows in the view's sort, its status 
     expect(statusBoard.find((column) => column.id === "done")?.count).toBeNaN();
     for (const column of statusBoard.filter((one) => !one.rail))
       expect(column.title).toBe(statusWord(column.id));
-    // Every card with no priority shows the Priority tag.
+    // Every card with no priority shows the Priority tag: its priority list, named for the list
+    // and then for what it shows, shows no priority.
     await expect(
-      page.locator(
-        `[data-board-card="${seed.unset}"] select[aria-label="Priority of ${seed.unset}"]`
-      )
-    ).toHaveValue("");
+      listTrigger(page.locator(`[data-board-card="${seed.unset}"]`), `Priority of ${seed.unset}`)
+    ).toHaveAccessibleName(`Priority of ${seed.unset} Priority`);
     await expect(page.locator(`[data-board-card="${seed.unset}"]`)).toContainText("Priority");
     for (const issue of open.filter((one) => one.priority === null))
       await expect(page.locator(`[data-board-card="${issue.key}"]`)).toContainText("Priority");

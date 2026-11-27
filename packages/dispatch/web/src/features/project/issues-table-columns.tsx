@@ -479,10 +479,14 @@ const renderings = ({
   labels: {
     header: "Labels",
     accessorFn: (item) => (item.issue.labels ?? []).join(", "),
+    // A label wider than the column wraps inside its own pill rather than run past the cell,
+    // which would cut it with no ellipsis: a label is a value, read whole.
     cell: ({ row }) => (
       <span className="flex flex-wrap gap-1">
         {(row.original.issue.labels ?? []).map((label) => (
-          <LabelPill key={label}>{label}</LabelPill>
+          <LabelPill key={label} wraps>
+            {label}
+          </LabelPill>
         ))}
       </span>
     ),
@@ -901,6 +905,14 @@ export function issueTableLayout(
   // header's words wrap there, and the column is never narrower than its header needs as drawn.
   const wrapped = set.flatMap(([id, { leaves }]) => (leaves === undefined ? [] : [id]));
   const registryPins = ISSUE_TABLE_COLUMNS.pins;
+  // A column as wide as what it holds is never narrower than that (`useTableLayout`), and no
+  // minimum of its own holds it wider.
+  const minimums = {
+    ...ISSUE_TABLE_COLUMNS.minimums,
+    ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
+    ...Object.fromEntries(set.map(([id, { min }]) => [id, min])),
+    ...Object.fromEntries(fitted.map(([id]) => [id, 0])),
+  };
   const layout: LayoutColumns = {
     ...ISSUE_TABLE_COLUMNS,
     ids,
@@ -921,14 +933,13 @@ export function issueTableLayout(
         fitted.flatMap(([id, { most }]) => (most === undefined ? [] : [[id, most]]))
       ),
     },
-    // A column as wide as what it holds is never narrower than that (`useTableLayout`), and no
-    // minimum of its own holds it wider.
-    minimums: {
-      ...ISSUE_TABLE_COLUMNS.minimums,
-      ...Object.fromEntries(listing.map(({ id, min }) => [id, min])),
-      ...Object.fromEntries(set.map(([id, { min }]) => [id, min])),
-      ...Object.fromEntries(fitted.map(([id]) => [id, 0])),
-    },
+    minimums,
+    // A sort widens no column of these tables, as on today's (R13): each minimum holds its header
+    // with the sort mark already (`ISSUE_TABLE_COLUMNS`), and a column as wide as what it holds
+    // (`fits`) or whose header's words wrap (`wrappedHeaders`) is measured with the mark it draws.
+    // So each column's sorted minimum is its minimum here, the one this layout names in place of
+    // the registry's too, and Title keeps the floor the others leave it (`yields`) in every sort.
+    sortedMinimums: minimums,
     ...(fitted.length === 0 ? {} : { fits: Object.fromEntries(fitted) }),
     ...(yielding.length === 0 ? {} : { yields: Object.fromEntries(yielding) }),
     ...(wrapped.length === 0 ? {} : { wrappedHeaders: wrapped }),

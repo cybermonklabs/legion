@@ -3796,8 +3796,14 @@ test("a priority's own page at 1280 and 390 px has no line of counts or of order
         ])
       );
 
-      // Title dragged 300 px wider and the page reloaded: the phone layout's Title takes what is
-      // left, so it ends where it ended before the drag.
+      // Title dragged 300 px wider, and the page reloaded: the reload draws Title where the drag
+      // left it, read off the stored layout. On a phone (390 px) the table stands in the phone
+      // layout, whose Title takes what Select and Key leave, so the drag moves nothing: Title ends
+      // where it ended before the drag. At 1280 px the table stands beside the page's margin in a
+      // box under 640 px that it fits with Title at its minimum, which #4316 draws as a desktop's
+      // box (`PHONE_BOX_BELOW` in `table-layout.ts`): there a Title the reader dragged keeps its
+      // width within the pinned columns' share of the box, 60%, and past it narrows to that share
+      // (`LayoutPins.wide`), so it ends at that share's edge, where the base draws it (R13, k17).
       const title = table
         .locator("thead th")
         .filter({ hasText: /^Title/ })
@@ -3806,21 +3812,36 @@ test("a priority's own page at 1280 and 390 px has no line of counts or of order
       // The wait above drew the Title header, and a drawn element has a box, so the box is there.
       const before = await title.boundingBox();
       if (before === null) throw new Error("the Title header has no box");
+      // Where Title ends, from the inner left edge of the table's box, and where the pinned
+      // columns' share of that box ends.
       const ends = async () =>
         title.evaluate((node) => {
-          const box = node.closest('[data-control="data-table"]')?.getBoundingClientRect();
-          return node.getBoundingClientRect().right - (box?.left ?? 0);
+          const box = node.closest<HTMLElement>('[data-control="data-table"]');
+          const left = (box?.getBoundingClientRect().left ?? 0) + (box?.clientLeft ?? 0);
+          return {
+            share: 0.6 * (box?.getBoundingClientRect().width ?? 0),
+            title: node.getBoundingClientRect().right - left,
+          };
         });
-      const end = await ends();
+      const end = (await ends()).title;
       await page.mouse.move(before.x + before.width - 2, before.y + before.height / 2);
       await page.mouse.down();
       await page.mouse.move(before.x + before.width + 300, before.y + before.height / 2, {
         steps: 12,
       });
       await page.mouse.up();
+      const dragged = await settledValue(`${where}: where Title ends after the drag`, ends);
       await page.reload();
       await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
-      expect(Math.abs((await ends()) - end), `${where}: where Title ends`).toBeLessThanOrEqual(1);
+      const reloaded = await settledValue(`${where}: where Title ends after the reload`, ends);
+      expect(
+        Math.abs(reloaded.title - dragged.title),
+        `${where}: where Title ends after the reload, against after the drag`
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(reloaded.title - (size === PHONE ? end : reloaded.share)),
+        `${where}: where Title ends`
+      ).toBeLessThanOrEqual(1);
     }
   } finally {
     await context.close();

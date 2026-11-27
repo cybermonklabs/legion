@@ -533,7 +533,11 @@ function Rail({ cell }: { cell: BoardCell }): ReactNode {
  *  mandatory snapping every scroll tick jumps a whole column. `relative` keeps a card's `sr-only`
  *  text, which is placed absolutely, inside the box rather than widening the page. The box turns
  *  the browser's own scroll anchoring off (`overflow-anchor: none`): the Board's anchor keeps the
- *  reader's card in place by scrolling the window, and the browser's would move it a second time. */
+ *  reader's card in place by scrolling the window, and the browser's would move it a second time.
+ *  The row of columns cuts what runs past its ends sideways (`overflow-x: clip`): a card in flight
+ *  follows the pointer by a transform, which takes in each step the box scrolls, so a card held
+ *  at the Board's last column or rail would widen the box by each step dnd-kit scrolls it, and
+ *  that scroll would never reach an end. */
 function BoardLineView({
   by,
   dragging,
@@ -552,7 +556,7 @@ function BoardLineView({
       className={`relative overflow-x-auto pb-3 [overflow-anchor:none] ${dragging ? "" : "snap-x snap-mandatory"}`}
       data-testid={testId}
     >
-      <div className="flex w-max items-stretch gap-4">
+      <div className="flex w-max items-stretch gap-4 overflow-x-clip">
         {line.cells.map((cell) =>
           cell.column.rail ? (
             <Rail cell={cell} key={cell.column.id} />

@@ -1,5 +1,6 @@
 import { type ReactNode, useId, useState } from "react";
 import type { LegionBoardHeader } from "../../api/types";
+import { toolbarHeight } from "../../components/control-names";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs, tabButtonId } from "../../components/Tabs";
 import { ViewPanel } from "../../components/ViewPanel";
@@ -39,13 +40,17 @@ export function viewTabButtonId(view: ActiveView): string {
   return tabButtonId(VIEW_TABS, viewTabId(view));
 }
 
-/** The face of the layout switch's options and of a Board toggle: filled while pressed. */
+/** The face of the layout switch's options and of a Board toggle: filled while pressed. From
+ *  1280 px up each option stands at the control row's height (`toolbarHeight`, 34 px), as every
+ *  control of that row does, and reaches over its box's top and bottom border, so the box keeps
+ *  that height too (`TOGGLE_BOX`). Below that each keeps its own: 44 px where a finger is the
+ *  pointer, 28 px in its 34 px box from `md`. */
 const toggleFace = (pressed: boolean) =>
-  `min-h-11 rounded-md px-2 text-xs font-medium whitespace-nowrap md:min-h-7 ${focusVisibleRing} ${
+  `min-h-11 rounded-md px-2 text-xs font-medium whitespace-nowrap md:min-h-7 xl:-my-px ${toolbarHeight} ${focusVisibleRing} ${
     pressed ? surfaceMutedStrongBg : ""
   } ${textSecondaryOnCanvas}`;
 
-const TOGGLE_BOX = `inline-flex shrink-0 rounded-lg border p-0.5 ${borderDefault} ${surfaceMutedBg}`;
+const TOGGLE_BOX = `inline-flex shrink-0 rounded-lg border p-0.5 xl:py-0 ${borderDefault} ${surfaceMutedBg}`;
 
 const panelButton = `inline-flex min-h-11 shrink-0 items-center rounded-md border px-2 text-xs font-medium md:min-h-8 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas} ${focusVisibleRing}`;
 
@@ -243,7 +248,7 @@ function SaveView({
         onOpenChange(next);
       }}
       open={open}
-      size="compact"
+      size="toolbar"
       title="Save view"
     >
       {(close) => (
@@ -372,7 +377,7 @@ export function DaemonHint({
       onOpenChange={setOpen}
       open={open}
       title="Legion daemon"
-      triggerClassName={`inline-flex size-11 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-8 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas} ${focusVisibleRing}`}
+      triggerClassName={`inline-flex size-11 shrink-0 items-center justify-center rounded-full border text-xs font-semibold italic md:size-8 xl:size-8.5 ${borderDefault} ${surfaceMutedHoverBg} ${textSecondaryOnCanvas} ${focusVisibleRing}`}
     >
       {() => (
         <div className={`p-2 text-xs ${textSecondaryOnCanvas}`}>

@@ -67,8 +67,10 @@ export function RouteReachUnknownMarker({
  *
  * `showRoute` names the route in the label, for the header, where the marker sits in the state
  * row rather than beside the route: a role as its address, a session by `AgentName`. A name can
- * be long, so only the route ellipsizes and the verdict stays whole, the rule `ClaimChip`
- * follows for a holder's name.
+ * be long, so only the route ellipsizes and the verdict stays whole on its line, the rule
+ * `ClaimChip` follows for a holder's name. Without the route, the verdict is all the marker says,
+ * so in a box narrower than it on one line - an issue table's Title on a phone - it wraps between
+ * its words inside the marker, whole, rather than run past the box.
  */
 export function UnreachableRouteMarker({
   issue,
@@ -165,7 +167,7 @@ function UnreachableRoute({
           :
         </span>
       ) : null}
-      <span className="shrink-0">
+      <span className={showRoute ? "shrink-0" : undefined}>
         {sessionId === undefined ? "Nobody holds it right now" : "Not running right now"}
       </span>
       <span className="sr-only">. {explanation}</span>
