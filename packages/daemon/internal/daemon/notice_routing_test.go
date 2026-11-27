@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
@@ -324,14 +325,16 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 	go func() { executed <- runner.execute(context.Background(), row) }()
 	select {
 	case err := <-executed:
-		if err != nil {
-			t.Fatalf("execute the notice: %v", err)
+		// The architect's launch is still unregistered (launching), so roleWaitGate waits without
+		// blocking on the launch in the runtime and publishes nothing before registration.
+		if !errors.Is(err, wait.ErrWaiting) {
+			t.Fatalf("execute the notice = %v, want a role wait for the launching architect", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the notice waited on its architect's launch in the runtime")
 	}
-	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != architectTopic(t, "LEGION-1") {
-		t.Fatalf("notice publishes = %+v, want one to the launching architect's role topic", delivered)
+	if attempts, _ := publisher.snapshot(); attempts != 0 {
+		t.Fatalf("notice publishes = %d, want 0 while the architect's launch has not registered", attempts)
 	}
 }
 
@@ -398,7 +401,7 @@ func TestANoticeHeldForAnAbsentArchitectArrivesInOrderOnceItReturns(t *testing.T
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateLaunching)
+	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	first := mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
 	second := mustOutboxRow(t, "LEGION-3", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now())
 	third := mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now())
@@ -632,7 +635,8 @@ func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *test
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	architect := architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	machine, _ := sup.Machine(architect)
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now()))
 	var logged bytes.Buffer
 	clock := time.Now()
@@ -650,6 +654,13 @@ func TestANoticeForAnOperatorSuspendedRootIsHeldUntilItHoldsItsRoleAgain(t *test
 	if _, delivered := publisher.snapshot(); len(delivered) != 0 || outboxRows(t, pool) != 1 || strings.Count(logged.String(), "msg=\"outbox row waits\" row=1 kind=notice ") != 1 {
 		t.Fatalf("while the suspended root holds no role: delivered %+v, %d rows, log %q; want the row held, logged once", delivered, outboxRows(t, pool), logged.String())
 	}
+	// The operator resumes the root architect and its new launch comes up ready.
+	sup.deps.Conns.(*fake.Conns).Register(architect, fake.NewConn())
+	if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: architect, By: supervise.SuspendedByOperator}); err != nil {
+		t.Fatalf("resume the suspended root architect: %v", err)
+	}
+	machine.Wait()
+	comesUp(t, machine, true)
 	publisher.setAbsent()
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run after the root holds its role again: %v", err)
@@ -669,7 +680,7 @@ func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateLaunching)
+	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	architectClaim(t, sup, "LEGION-2", supervise.StateWorking)
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}, time.Now()))
 	clock := time.Now()

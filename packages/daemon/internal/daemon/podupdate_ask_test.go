@@ -42,7 +42,8 @@ func askRunner(t *testing.T, publisher notify.Publisher, rounds map[claim.Role]s
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	for role, round := range rounds {
 		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", role), Project: "legion",
-			Tree: "LEGION-208", Issue: "LEGION-208", Role: role, State: supervise.StateQueued, UpdateRound: round}, ""); err != nil {
+			Tree: "LEGION-208", Issue: "LEGION-208", Role: role, Generation: 1, State: supervise.StateReady,
+			Session: "ses-" + string(role), SessionFile: t.TempDir() + "/session.jsonl", UpdateRound: round}, ""); err != nil {
 			t.Fatalf("create the %s's claim: %v", role, err)
 		}
 	}

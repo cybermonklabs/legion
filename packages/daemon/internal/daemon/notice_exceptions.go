@@ -189,7 +189,7 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // Any other failure, a publish that reached no answer of the listener's, is the row's, retried on
 // the outbox's backoff.
 func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, payload record.Notice,
-	tree treeSnapshot, architect claim.Token, published error,
+	tree treeSnapshot, architect claim.Token, view supervise.ClaimView, published error,
 ) error {
 	// The same pair the publish went out as (Notice.Published): the notice as it was sent and the
 	// dedupe key it was sent under, derived here rather than passed in, so no caller can hand this
@@ -240,7 +240,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "reason", denied.Message)
 		return nil
 	case errors.Is(published, notify.ErrHolderUnresponsive):
-		return r.roleWait(notify.RoleTopicPrefix+string(architect), r.supervisedClaim(architect), published,
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
 			wait.Errorf("the notice for %s waits for its architect %s, whose session the listener reports %s: %w",
 				row.Issue, architect, notify.StateUnresponsive, published))
 	case errors.As(published, &notDelivered):
@@ -248,25 +248,39 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		// forward to, a read that failed or ran out of time, a forward not shown to reach the
 		// server. It is no notice held for an architect that holds no role (errNoticeWaits), and the
 		// row keeps its own place: no copy is queued, as for `receipt_timeout`.
-		return r.roleWait(notify.RoleTopicPrefix+string(architect), r.supervisedClaim(architect), published,
+		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
 			wait.Errorf("the notice for %s waits for its architect %s, to whom the listener could not forward it: %w",
 				row.Issue, architect, published))
 	case !errors.Is(published, notify.ErrNoHolder):
 		return fmt.Errorf("publish notice for %s to its architect %s: %w", row.Issue, architect, published)
 	}
 	if ended := architectEnded(tree, r.claimState(architect)); ended != "" {
-		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
-			return err
-		}
-		if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, ended); err != nil {
-			return err
-		}
-		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
-		return nil
+		return r.noticeArchitectEnded(ctx, row, payload, tree, architect, r.claimState(architect))
 	}
-	return r.roleWait(notify.RoleTopicPrefix+string(architect), r.supervisedClaim(architect), published,
+	return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
 		fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published))
+}
+
+// noticeArchitectEnded ends a notice row undelivered because its owning architect will not hold
+// its role again (architectEnded): before the publish when roleWaitGate finds no machine or a
+// failed or retired claim (dispatch://INFRA-4131/spec#b-r-wait-ready, P4), or after a publish
+// refused notify.ErrNoHolder when the claim ended in between or the tree lingers. It relays any
+// person's spec decision to the controller (parkDecision) and any kept-pod disk notice
+// (tellControllerOfKeptPod), then logs the one Info line.
+func (r *outbox) noticeArchitectEnded(ctx context.Context, row record.OutboxRow, payload record.Notice,
+	tree treeSnapshot, architect claim.Token, state supervise.ClaimState,
+) error {
+	notice, key := payload.Published(row.ID)
+	ended := architectEnded(tree, state)
+	if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
+		return err
+	}
+	if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, ended); err != nil {
+		return err
+	}
+	r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
+		"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
+	return nil
 }
 
 // noticePublished is the one line a notice the listener took writes: its kind, its issue, its row

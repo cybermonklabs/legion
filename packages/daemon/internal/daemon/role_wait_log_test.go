@@ -162,12 +162,16 @@ func (r *roleWaitRig) endsAtItsNextRun() {
 // for a run that ended it, after the executor's own line saying how (ended, "" for none), and
 // "deleted" for a delete that took it out of the outbox.
 type waitLog struct {
-	level    slog.Level
-	attempts int
-	waitsFor []any
-	answer   bool
-	end      string
-	ended    string
+	level      slog.Level
+	attempts   int
+	waitsFor   []any
+	answer     bool
+	// longAnswer overrides answer for the 30-minute line alone when the start run and the 30-minute
+	// run differ in whether they published (for example, a registered not-ready claim publishes once
+	// on its first run and then waits without publishing through the 30-minute line). nil uses answer.
+	longAnswer *bool
+	end        string
+	ended      string
 }
 
 // rowLines is every line of logs that names row id: by its "row" field, or by its key where a line
@@ -219,17 +223,21 @@ func wantWaitLogged(t *testing.T, logs string, id int64, issue string, kind reco
 	if !slices.Equal(got, wanted) {
 		t.Fatalf("the lines above Debug naming row %d = %q, want exactly %q:\n%s", id, got, wanted, logs)
 	}
-	for _, line := range above[:2] {
+	for i, line := range above[:2] {
 		if line["issue"] != issue || line["kind"] != string(kind) {
 			t.Errorf("the wait line %v names issue %v and kind %v, want %s and %s", line, line["issue"], line["kind"], issue, kind)
 		}
-		for i := 0; i < len(want.waitsFor); i += 2 {
-			if key := want.waitsFor[i].(string); line[key] != want.waitsFor[i+1] {
-				t.Errorf("the wait line %v names %s %v, want %v", line, key, line[key], want.waitsFor[i+1])
+		for j := 0; j < len(want.waitsFor); j += 2 {
+			if key := want.waitsFor[j].(string); line[key] != want.waitsFor[j+1] {
+				t.Errorf("the wait line %v names %s %v, want %v", line, key, line[key], want.waitsFor[j+1])
 			}
 		}
-		if answer, _ := line["answer"].(string); (answer != "") != want.answer {
-			t.Errorf("the wait line %v names the listener's answer %q, want one named: %t", line, answer, want.answer)
+		wantAns := want.answer
+		if i == 1 && want.longAnswer != nil {
+			wantAns = *want.longAnswer
+		}
+		if answer, _ := line["answer"].(string); (answer != "") != wantAns {
+			t.Errorf("the wait line %v names the listener's answer %q, want one named: %t", line, answer, wantAns)
 		}
 	}
 	if above[1]["attempts"] != float64(want.attempts) {
@@ -355,17 +363,24 @@ func TestRoleWaitLoggedOnceAtWarnForAClaimThatIsNotReady(t *testing.T) {
 		runner, sup, pool, _ := mergeForwardRunner(t, publisher, &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing,
 			Why: record.ConflictCheckNotGreen, AskedAt: start})
 		sup.deps.Clock = clock
-		roleWaitClaim(t, sup, supervise.Claim{Token: token, Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
+		machine := roleWaitClaim(t, sup, supervise.Claim{Token: token, Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
 			Generation: 1, State: supervise.StateRegistered, Session: "ses-implementer", SessionFile: t.TempDir() + "/session.jsonl"})
 		id := queueRow(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, start))
 		rig := newRoleWaitRig(t, runner, pool, clock, id)
 
 		rig.runTo(roleWaitRuns)
+		// The first run published once to generation 1; runs 2..20 waited at the gate without
+		// publishing. Bringing the claim ready lets the next run publish and end the row.
+		if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: token, Generation: 1, Session: "ses-implementer"}); err != nil {
+			t.Fatalf("the implementer's ready: %v", err)
+		}
+		machine.Wait()
 		publisher.setAbsent()
 		publisher.holdBy(func() string { return "ses-implementer" })
 		rig.endsAtItsNextRun()
+		noAnswer := false
 		wantWaitLogged(t, rig.logs.String(), id, "LEGION-208", record.OutboxKindMergeForward, rig.runs, waitLog{level: slog.LevelWarn,
-			attempts: roleWaitLongAttempts, waitsFor: []any{"role", string(token)}, answer: true, end: "run",
+			attempts: roleWaitLongAttempts, waitsFor: []any{"role", string(token)}, answer: true, longAnswer: &noAnswer, end: "run",
 			ended: "outbox merge-forward message delivered"})
 	})
 	t.Run("a notice refused inside the ready session's 30 seconds to claim its role's name", func(t *testing.T) {

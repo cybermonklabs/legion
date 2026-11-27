@@ -168,25 +168,17 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // role_keep.go), and a row ends at its own, so no session is handed a message older than that,
 // and each message names its move back or its phases, so its reader judges which round it was for.
 //
-// Six other executors publish to a role's topic, each with its own rules for what the publisher
-// answers: updateAsk, through publishToRole, ends the row for a topic with no holder and waits for
-// its role on every other refusal of the listener's; deliverNotice, an architect's notice, holds
-// the row for a topic with no holder while the owning architect can hold its role again
-// (noticeAnswered); roleMessage ends the row for a topic with no holder, waits for a holder the
-// listener calls unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that
-// refuses the delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant
-// denies (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message
-// of a removal from the merge queue and of a change of the merge holds, hold the row for a topic
-// with no holder and for an unresponsive holder while the merger's claim has neither failed nor
-// retired, and wait on every other refusal of the listener's (merge_queue_removal.go,
-// merge_holds.go); and mergeForwardMessage, a message of a merge forward, holds its row the same
-// way while the role's claim has neither failed nor retired and the merge forward still stands at
-// the row's head (merge_forward.go). Those three publish through the deliverHeld they share. Each
-// of those six publishes with keep: false: deliverNotice and the three through deliverHeld hold
-// their own row, and a kept copy beside it would be a second keeper of one message; roleMessage's
-// message is stale by the time a role nobody holds is claimed; and updateAsk's round ends at its
-// bound whether or not the role answers. So whoever changes the rule for a topic with no holder
-// must read all eight executors, not this function alone.
+// Every executor that publishes to a role's topic, or to the controller topic held to a claim
+// (record.OutboxKind.WaitsForRole: notice, controller_notice, merge_queue_removal,
+// merge_holds_changed, merge_forward, hook_prompt, phase_ended, role_message and update_ask),
+// passes through the one gate roleWaitGate (daemon/role_wait.go,
+// dispatch://INFRA-4131/spec#b-r-wait-ready) before publishing, and turns every listener refusal
+// that keeps its row into a roleWait on the capped backoff (dispatch://INFRA-4131/spec#b-r-capped):
+// whoever changes the rule for waiting on a role changes roleWaitGate and role_wait.go rather than
+// chasing the nine executors apart. The executors still own their own non-claim ends and what each
+// listener refusal ends rather than keeps (notice's fence and architectEnded, roleMessage's
+// no-holder/capability/denied ends, updateAsk's round and no-holder end, keptRoleMessageEnded's
+// hour, and deliverHeld's design-gate and session checks).
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, token claim.Token, m keptRoleMessage) (*keptRoleMessageUndelivered, error) {
 	wake, err := r.claimWakeOf(ctx, token)
 	if err != nil {
@@ -204,6 +196,10 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 		return nil, wait.Errorf("%s waits for its %s's released pod to come back", m.subject, m.role)
 	}
 	topic := notify.RoleTopicPrefix + string(token)
+	gate := r.roleWaitGate(row, topic)
+	if gate.wait != nil {
+		return nil, gate.wait
+	}
 	keeps, err := r.publishKept(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case err == nil:
@@ -212,9 +208,9 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 		}
 		return nil, nil
 	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
-		return nil, r.roleWait(topic, wake.view, err, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.subject, m.role, err))
+		return nil, r.roleWait(topic, gate.view, err, wait.Errorf("%s waits for a session to hold its %s's role: %w", m.subject, m.role, err))
 	case listenerRefused(err):
-		return nil, r.roleWait(topic, wake.view, err, wait.Errorf("%s waits for its %s to take it: %w", m.subject, m.role, err))
+		return nil, r.roleWait(topic, gate.view, err, wait.Errorf("%s waits for its %s to take it: %w", m.subject, m.role, err))
 	}
 	return nil, fmt.Errorf("publish %s to its %s: %w", m.subject, m.role, err)
 }

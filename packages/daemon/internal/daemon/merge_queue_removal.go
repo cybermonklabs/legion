@@ -263,17 +263,24 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	} else if waits {
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
-	launch := r.supervisedClaim(m.token)
-	if supervise.Unregistered(launch.State) {
-		return wait.Errorf("%s waits for its %s's launch %d, which is %s, to register its session: a publish now would reach an earlier launch's session or none",
-			m.what, m.role, launch.Generation, launch.State)
-	}
 	topic := notify.RoleTopicPrefix + string(m.token)
+	gate := r.roleWaitGate(row, topic)
+	if gate.ended != "" {
+		if err := r.endUndelivered(ctx, row, m.end); err != nil {
+			return err
+		}
+		r.log.Info(m.claimEnded, append(m.attributes, "state", gate.view.State)...)
+		return nil
+	}
+	if gate.wait != nil {
+		return gate.wait
+	}
+	launch := gate.view
 	holder, published := r.publishTo(ctx, topic, m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil && holder != "" && launch.Session != "" && !launch.HoldsSession(holder):
-		return wait.Errorf("%s was stored for session %s, which is not %s, the session of its %s's launch %d: it waits for that session to hold the role",
-			m.what, holder, launch.Session, m.role, launch.Generation)
+		return r.roleWaitPublished(topic, launch, wait.Errorf("%s was stored for session %s, which is not %s, the session of its %s's launch %d: it waits for that session to hold the role",
+			m.what, holder, launch.Session, m.role, launch.Generation))
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)
 		if m.end != nil {

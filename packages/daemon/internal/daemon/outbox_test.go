@@ -1207,8 +1207,9 @@ func TestOutboxNoticeReturnsPublisherFailure(t *testing.T) {
 	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
 	publisher := &outboxPublisher{err: errors.New("listener unavailable")}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	readyOutboxClaim(t, sup, "LEGION-2", claim.RoleArchitect)
 
-	if err := (&outbox{pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup}).execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "listener unavailable") {
+	if err := (&outbox{pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion"}).execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "listener unavailable") {
 		t.Fatalf("notice failure = %v, want listener failure", err)
 	}
 }
@@ -1325,14 +1326,15 @@ func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Mac
 	return machine
 }
 
-// A role whose claim this daemon supervises and has not released is published to as before: the
-// claim read stops only the message to a released pod.
+// A role whose claim this daemon supervises and has not released (and is ready) is published to
+// as before: the claim read stops only the message to a released pod (and roleWaitGate holds back
+// an unregistered launch).
 func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
-	startedClaim(t, sup, claim.RoleImplementer)
+	readyOutboxClaim(t, sup, "LEGION-208", claim.RoleImplementer)
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
 		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))

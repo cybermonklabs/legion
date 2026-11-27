@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -65,9 +66,13 @@ type roleWaiting struct {
 	// published is whether this run's publish reached the listener, and answer the listener's
 	// refusal of it, nil where it did not refuse or the run did not publish. The gate's own
 	// refusal of a claim that records a session it does not hold (unheldSession) reached no
-	// listener, so it is neither.
+	// listener, so it is neither. launch is the claim's Generation when this run made the one
+	// publish a not-ready launch or a non-release suspension allows (roleWaitGate), stored into
+	// record.OutboxWait.WaitLaunch by roleWaitNext so a later run of the same launch publishes
+	// nothing; 0 keeps the row's stored WaitLaunch as it is.
 	published bool
 	answer    error
+	launch    uint64
 	// err is the wait itself, a wait.ErrWaiting, as the executor words it.
 	err error
 }
@@ -76,16 +81,126 @@ func (w roleWaiting) Error() string { return w.err.Error() }
 
 func (w roleWaiting) Unwrap() error { return w.err }
 
+// roleGate is what roleWaitGate decides before an executor of a kind that waits for its role
+// (record.OutboxKind.WaitsForRole) publishes to its topic:
+//   - view is the role's claim as this run read it (the zero view where this daemon supervises no
+//     machine for it or topic is held to no claim of this daemon);
+//   - ended is non-empty when the claim's state ends this row undelivered without publishing
+//     (no machine for an ending kind, or a failed or retired claim for any kind that ends on one);
+//   - wait is a roleWaiting when this run must publish nothing and wait instead (no machine for a
+//     waiting kind, a failed or retired controller claim under `controller: daemon`, an
+//     unregistered launch, or a not-ready registered launch or non-release suspension that this
+//     row has already published to in the claim's current Generation).
+//
+// When ended is empty and wait is nil, the executor may publish.
+type roleGate struct {
+	view  supervise.ClaimView
+	ended string
+	wait  error
+}
+
+// endsWithoutClaim is whether kind ends undelivered (without publishing) when this daemon holds
+// no supervising machine for its role's claim (dispatch://INFRA-4131/spec#b-r-wait-ready, P4):
+// notice (routed to a root architect with no machine), role_message (no pause holds a claim with
+// no machine), and update_ask. Every other role-waiting kind waits for the owed start.
+func endsWithoutClaim(kind record.OutboxKind) bool {
+	return kind == record.OutboxKindNotice || kind == record.OutboxKindRoleMessage || kind == record.OutboxKindUpdateAsk
+}
+
+// publishesOncePerLaunch is whether a claim in view's state allows at most one publish of a row
+// per Claim.Generation: a registered launch that has not said it is ready, or a claim suspended by
+// any source other than the idle release (operator, controller, daemon, exit, unknown).
+func publishesOncePerLaunch(view supervise.ClaimView) bool {
+	return view.State == supervise.StateRegistered || (view.State == supervise.StateSuspended && !view.Released())
+}
+
+// roleWaitGate decides whether row, of a kind that waits for its role, may publish to topic at
+// this run from the daemon's own claim record (dispatch://INFRA-4131/spec#b-r-wait-ready). Every
+// one of the nine executors calls it before publishing, after its own non-claim ends and waits
+// (a notice's fence, a merge forward that no longer stands, a kept message's hour, a released
+// role's deliveryWake, an update round check).
+//
+// By the claim's state:
+//   - topic held to no claim of this daemon (`controller: operator`), or an outbox built without
+//     a supervisor in a unit test: publish;
+//   - no machine for the token: ending kinds (notice, role_message, update_ask) end undelivered
+//     without publishing; the six waiting kinds wait (key claim:<token>);
+//   - failed or retired: every kind but controller_notice ends undelivered without publishing;
+//     controller_notice under `controller: daemon` waits (controllerKeeper retries a failed or
+//     retired controller);
+//   - unregistered launch (queued, launch_uncertain, launching, shim_connected): wait, publish
+//     nothing (key claim:<token>);
+//   - registered not ready, or suspended by any source other than the release: publish once for
+//     the claim's Generation (when row.Wait.WaitLaunch != view.Generation), otherwise wait and
+//     publish nothing (key claim:<token>);
+//   - released (no launch in progress): publish — callers that wake a released role themselves
+//     already ran wakeForDelivery / deliveryWake before reaching the gate, so only a role the
+//     daemon will not wake, a pause-held role_message, or a controller_notice reaches here;
+//   - said ready (ready, working, idle): publish.
+func (r *outbox) roleWaitGate(row record.OutboxRow, topic string) roleGate {
+	token, held := r.heldTopic(topic)
+	if !held || r.supervisor == nil {
+		return roleGate{}
+	}
+	machine, found := r.supervisor.Machine(token)
+	if !found {
+		if endsWithoutClaim(row.Kind) {
+			return roleGate{ended: "its role has no claim"}
+		}
+		return roleGate{wait: r.roleWait(topic, supervise.ClaimView{}, nil,
+			wait.Errorf("outbox row %d (%s) for %s waits for %s's claim, whose start is owed", row.ID, row.Kind, row.Issue, token))}
+	}
+	view := machine.View()
+	switch {
+	case supervise.FailedOrRetired(view.State):
+		if row.Kind == record.OutboxKindControllerNotice {
+			return roleGate{view: view, wait: r.roleWait(topic, view, nil,
+				wait.Errorf("outbox row %d (%s) for %s waits for %s, whose claim is %s, to start again",
+					row.ID, row.Kind, row.Issue, token, view.State))}
+		}
+		return roleGate{view: view, ended: fmt.Sprintf("its role's claim is %s", view.State)}
+	case supervise.Unregistered(view.State):
+		return roleGate{view: view, wait: r.roleWait(topic, view, nil,
+			wait.Errorf("outbox row %d (%s) for %s waits for %s's launch %d, which is %s, to register its session",
+				row.ID, row.Kind, row.Issue, token, view.Generation, view.State))}
+	case publishesOncePerLaunch(view) && view.Generation != 0 && row.Wait.WaitLaunch == view.Generation:
+		return roleGate{view: view, wait: r.roleWait(topic, view, nil,
+			wait.Errorf("outbox row %d (%s) for %s already published to %s's launch %d (%s) and waits for it to say it is ready",
+				row.ID, row.Kind, row.Issue, token, view.Generation, view.State))}
+	default:
+		return roleGate{view: view}
+	}
+}
+
 // roleWait is the role wait (roleWaiting) of a row that publishes to topic, whose role's claim the
 // run read as view, and whose publish answered answer: the publish's error, nil where the run made
 // no publish. waiting is the wait itself (a wait.ErrWaiting) as the executor words it, which the
-// role wait unwraps to, so settle and every reader of the error still read it as that wait.
+// role wait unwraps to, so settle and every reader of the error still read it as that wait. When
+// the run published to a not-ready registered launch or non-release suspension, launch records
+// view.Generation so roleWaitNext stores it into record.OutboxWait.WaitLaunch.
 func (r *outbox) roleWait(topic string, view supervise.ClaimView, answer, waiting error) error {
 	token, held := r.heldTopic(topic)
 	w := roleWaiting{topic: topic, token: token, held: held, view: view, err: waiting}
 	var unheld unheldSession
 	if answer != nil && !errors.As(answer, &unheld) {
 		w.published, w.answer = true, answer
+		if held && publishesOncePerLaunch(view) && view.Generation != 0 {
+			w.launch = view.Generation
+		}
+	}
+	return w
+}
+
+// roleWaitPublished is roleWait for a run whose publish reached the listener and was not refused
+// (for example, deliverHeld finding the listener stored the message for an earlier launch's
+// session rather than the current launch's): it records no refusal answer, and still marks
+// view.Generation when view is a once-per-launch state so a later run of the same launch does not
+// publish again.
+func (r *outbox) roleWaitPublished(topic string, view supervise.ClaimView, waiting error) error {
+	token, held := r.heldTopic(topic)
+	w := roleWaiting{topic: topic, token: token, held: held, view: view, published: true, err: waiting}
+	if held && publishesOncePerLaunch(view) && view.Generation != 0 {
+		w.launch = view.Generation
 	}
 	return w
 }
@@ -202,8 +317,9 @@ func roleWaitRun(kind record.OutboxKind, err error) bool {
 // roleNameBound after its ready, its step not raised (roleWaiting.awaitsName). The key of what the
 // row waits for is the wait's own (roleWaiting.waitsFor, eventWaiting's key), and none for any
 // other wait. The moment the wait started and its 30-minute line are settle's (logWait), and the
-// launch the row last published to is kept as the row holds it. A GitHub rate limit and a wait
-// that names its moment still decide over this moment (retry).
+// launch the row last published to (record.OutboxWait.WaitLaunch) is kept as the row holds it
+// unless this run published to a not-ready launch or non-release suspension (roleWaiting.launch).
+// A GitHub rate limit and a wait that names its moment still decide over this moment (retry).
 func roleWaitNext(row record.OutboxRow, cause error, now time.Time) (time.Time, record.OutboxWait) {
 	next := row.Wait
 	next.WaitFor = ""
@@ -217,6 +333,9 @@ func roleWaitNext(row record.OutboxRow, cause error, now time.Time) (time.Time, 
 			next.WaitStep, next.WaitReady = 0, role.view.LastReady
 		}
 		next.WaitFor = role.waitsFor(now)
+		if role.launch != 0 {
+			next.WaitLaunch = role.launch
+		}
 		if role.awaitsName(now) {
 			return role.view.LastReady.Add(roleNameBound), next
 		}

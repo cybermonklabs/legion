@@ -39,6 +39,7 @@ func TestAMergeHoldsChangeReachesTheArchitectInAcceptingAndTheMergerInMerging(t 
 		putOutboxIssue(t, pool, records, issue)
 	}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	readyOutboxClaim(t, sup, "LEGION-208", claim.RoleArchitect)
 	trees := outboxTreeStore(t, pool, "LEGION-208", "LEGION-209")
 	merger := releasedMergerOf(t, sup, trees, "LEGION-209")
 	publisher := &holderPublisher{}

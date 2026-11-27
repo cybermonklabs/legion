@@ -35,9 +35,25 @@ import (
 // The negative control is roleMessage without its wait on notify.ErrNoHolder for such a row: the
 // row ends undelivered at its first attempt, and the test fails where it reads the row after that
 // attempt.
+// newHeldRoleMessageRig is newPauseDaemonRig with the outbox reading the same test clock that
+// stamps each claim's LastReady (overrides.outboxNow) and a short outbox sweep, so the held
+// role-message tests advance through the role-wait backoff and P8's 30-second first-turn bound
+// (roleNameBound) on that one clock rather than waiting out 30+ seconds of wall time.
+func newHeldRoleMessageRig(t *testing.T) *pauseDaemonRig {
+	t.Helper()
+	r := newPauseDaemonRig(t, nil)
+	// Keep the shared test clock ahead of Postgres's wall-clock now() so rows inserted with
+	// SQL now() (such as pause_stop) are due immediately on the test clock while LastReady
+	// and outbox.now read the one clock.
+	r.clock.advance(time.Minute)
+	r.o.outboxNow = r.clock.Now
+	r.o.outboxSweep = 100 * time.Millisecond
+	return r
+}
+
 func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
@@ -78,6 +94,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(
 			r.envoy.hold(worker)
 		}
 	}, func(api.State) {})
+	r.clock.advance(roleNameBound + time.Second)
 	testwait.WithinPolling(t, 6*time.Minute, 200*time.Millisecond, "the held role message to reach the role after its launch", func() bool {
 		return len(r.envoy.publishedTo(worker)) > 0 && attempts() == -1
 	})
@@ -114,7 +131,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(
 // once the resume lets its row run, and launches nothing.
 func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.released(issue, claim.RoleImplementer))
@@ -156,7 +173,7 @@ func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t 
 // in the gap: the role ready, its topic not yet held.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyAndItsRoleClaim(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
@@ -179,11 +196,13 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyA
 		}
 	}, func(api.State) {})
 	atReady := attempts()
+	r.clock.advance(2 * time.Second)
 	testwait.WithinPolling(t, 3*time.Minute, 200*time.Millisecond, "the row's next attempt after the role's ready, its topic not yet claimed", func() bool {
 		n := attempts()
 		return n == -1 || n > atReady
 	})
 	r.envoy.hold(worker)
+	r.clock.advance(roleNameBound)
 	testwait.WithinPolling(t, 3*time.Minute, 200*time.Millisecond, "the held role message's row to end", func() bool { return attempts() == -1 })
 	time.Sleep(time.Second)
 	if sent := r.envoy.publishedTo(worker); len(sent) != 1 || sent[0].message != body {
@@ -205,7 +224,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyA
 // message.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheRoleIsBack(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
@@ -240,6 +259,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheR
 			r.envoy.hold(worker)
 		}
 	}, func(api.State) {})
+	r.clock.advance(roleNameBound + time.Second)
 	testwait.WithinPolling(t, 3*time.Minute, 200*time.Millisecond, "the held role message's row to end", func() bool { return attempts() == -1 })
 	time.Sleep(time.Second)
 	if sent := r.envoy.publishedTo(worker); len(sent) != 1 || sent[0].message != body {
@@ -262,7 +282,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheR
 // undelivered, and the test fails where it reads the row after that attempt.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseWhoseStopItsResumeCancels(t *testing.T) {
 	t.Parallel()
-	r := newPauseDaemonRig(t, nil)
+	r := newHeldRoleMessageRig(t)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)
 	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
@@ -315,6 +335,7 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseWhoseStopI
 	}
 	r.ready(worker)
 	r.envoy.hold(worker)
+	r.clock.advance(roleNameBound + time.Second)
 	testwait.WithinPolling(t, 3*time.Minute, 200*time.Millisecond, "the held role message's row to end", func() bool { return attempts() == -1 })
 	time.Sleep(time.Second)
 	if sent := r.envoy.publishedTo(worker); len(sent) != 1 || sent[0].message != body {

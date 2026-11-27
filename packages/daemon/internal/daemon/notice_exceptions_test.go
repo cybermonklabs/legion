@@ -18,6 +18,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -55,9 +57,16 @@ func (r laneReport) envelope(t *testing.T) []byte {
 // architectClaimOn creates issue's architect claim in state, registered as session.
 func architectClaimOn(t *testing.T, sup *supervisor, issue string, state supervise.ClaimState, session string) {
 	t.Helper()
-	if _, _, err := sup.Create(context.Background(), supervise.Claim{
-		Token: mustClaimToken(t, issue, claim.RoleArchitect), Project: "legion", Tree: "LEGION-1", Issue: issue, Role: claim.RoleArchitect, State: state, Session: session,
-	}, ""); err != nil {
+	token := mustClaimToken(t, issue, claim.RoleArchitect)
+	c := supervise.Claim{
+		Token: token, Project: "legion", Tree: "LEGION-1", Issue: issue, Role: claim.RoleArchitect,
+		State: state, Session: session,
+	}
+	if state == supervise.StateLaunching || state == supervise.StateShimConnected {
+		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "1:1",
+			Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}
+	}
+	if _, _, err := sup.Create(context.Background(), c, ""); err != nil {
 		t.Fatalf("create the architect claim of %s: %v", issue, err)
 	}
 }
@@ -112,6 +121,7 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaimOn(t, sup, "LEGION-1", tc.architect, tc.session)
+			architect := architectTopicToken(t, "LEGION-1")
 			clock := time.Now()
 			publisher := &holderPublisher{}
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion",
@@ -139,6 +149,13 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 					t.Fatalf("delivered %+v before the re-hold delay passed", delivered)
 				}
 				clock = clock.Add(tc.due)
+				if supervise.Unregistered(tc.architect) {
+					// The relaunch registers its session before the copy runs so roleWaitGate
+					// admits the publish.
+					machine, _ := sup.Machine(architect)
+					sup.deps.Conns.(*fake.Conns).Register(architect, fake.NewConn())
+					comesUp(t, machine, false)
+				}
 			}
 			if err := runner.RunOnce(context.Background()); err != nil {
 				t.Fatalf("run once due: %v", err)
@@ -174,6 +191,7 @@ func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
 			noticeTree(t, pool, record.NewStore(), false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaimOn(t, sup, "LEGION-1", tc.architect, tc.session)
+			architect := architectTopicToken(t, "LEGION-1")
 			clock := microClock()
 			publisher := &holderPublisher{}
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", notices: publisher, supervisor: sup, project: "legion"}
@@ -194,6 +212,11 @@ func TestAReheldNoticeIsPublishedByItsLaneWithoutASweep(t *testing.T) {
 				})
 				if _, delivered := publisher.snapshot(); len(delivered) != 0 || outboxRows(t, pool) != 1 {
 					t.Fatalf("delivered %+v with %d rows left before the re-send delay passed, want nothing and the copy held", delivered, outboxRows(t, pool))
+				}
+				if supervise.Unregistered(tc.architect) {
+					machine, _ := sup.Machine(architect)
+					sup.deps.Conns.(*fake.Conns).Register(architect, fake.NewConn())
+					comesUp(t, machine, false)
 				}
 				clock.advance(delay)
 				if fired := clock.fire(delay); fired == 0 {
@@ -426,7 +449,7 @@ func TestANoticeItsArchitectsSessionDidNotConfirmIsQueuedAgainOnTheReholdSchedul
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaimOn(t, sup, "LEGION-1", supervise.StateLaunching, "")
+	architectClaimOn(t, sup, "LEGION-1", supervise.StateRegistered, "ses_stopped")
 	clock := time.Now()
 	var logged bytes.Buffer
 	publisher := &outboxPublisher{err: confirmedAnswer(notify.ReasonReceiptTimeout, "ses_stopped")}
@@ -480,7 +503,7 @@ func TestOneNoticePublishIsQueuedAgainOnceFromAnswersAndExceptions(t *testing.T)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaimOn(t, sup, "LEGION-1", supervise.StateLaunching, "")
+	architectClaimOn(t, sup, "LEGION-1", supervise.StateRegistered, "ses_stopped")
 			publisher := &outboxPublisher{err: confirmedAnswer(notify.ReasonReceiptTimeout, "ses_stopped")}
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 			notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}
@@ -842,7 +865,8 @@ func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaimOn(t, sup, "LEGION-1", supervise.StateLaunching, tc.stopped)
+			architectClaimOn(t, sup, "LEGION-1", supervise.StateRegistered, tc.stopped)
+			architect := architectTopicToken(t, "LEGION-1")
 			start := time.Now()
 			clock := start
 			relaunched := start.Add(4 * time.Minute)
@@ -857,6 +881,11 @@ func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T)
 			for clock.Before(start.Add(15*time.Minute)) && arrivedB.IsZero() {
 				if !readyDone && !clock.Before(relaunched) {
 					// The relaunched agent takes the role back and says it is ready.
+					machine, _ := sup.Machine(architect)
+					if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: architect, Generation: machine.Claim().Generation, Session: machine.Claim().Session}); err != nil {
+						t.Fatalf("ready at %s: %v", clock.Sub(start), err)
+					}
+					machine.Wait()
 					if err := runner.releaseWaiting(context.Background(), architectTopicToken(t, "LEGION-1")); err != nil {
 						t.Fatalf("release at %s: %v", clock.Sub(start), err)
 					}
@@ -1259,7 +1288,7 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 		return err
 	}
 
-	kept := runner.noticeAnswered(context.Background(), row, notice, treeSnapshot{}, architect, refused())
+	kept := runner.noticeAnswered(context.Background(), row, notice, treeSnapshot{}, architect, supervise.ClaimView{}, refused())
 	if !errors.Is(kept, notify.ErrHolderUnresponsive) || errors.Is(kept, errNoticeWaits) {
 		t.Fatalf("answer to an unresponsive holder = %v, want the row kept and retried on its backoff", kept)
 	}
@@ -1271,7 +1300,7 @@ func TestANoticeIsKeptWhileItsArchitectsSessionIsUnresponsive(t *testing.T) {
 	}
 
 	state = "gone"
-	if dropped := runner.noticeAnswered(context.Background(), row, notice, treeSnapshot{}, architect, refused()); dropped != nil {
+	if dropped := runner.noticeAnswered(context.Background(), row, notice, treeSnapshot{}, architect, supervise.ClaimView{}, refused()); dropped != nil {
 		t.Fatalf("answer to a holder that is gone = %v, want the notice finished undelivered", dropped)
 	}
 }

@@ -23,9 +23,9 @@ import (
 // session claimed, so the outbox publishes nothing to the role of a claim that records a session
 // it does not hold (outbox.publish, reviews rounds 13 to 15 of #4220), whatever the claim's state:
 // a role message to a ready claim and to a retired one finishes undelivered with the publisher
-// never called. A message to a claim holding its own session, and to a topic of no claim this
-// daemon supervises, is published as before (R9).
-//
+// never called. A message to a claim holding its own session is published as before (R9), while a
+// role message to a token with no supervising machine ends without publishing (roleWaitGate,
+// dispatch://INFRA-4131/spec#b-r-wait-ready).
 // The controls (the pull request records the runs): publish handing every topic to the publisher
 // as it came publishes to both claims that do not hold their sessions.
 func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *testing.T) {
@@ -46,9 +46,9 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 			t.Fatalf("execute the role message to %s: %v", role, err)
 		}
 	}
-	want := []string{notify.RoleTopicPrefix + string(held), notify.RoleTopicPrefix + noClaim}
+	want := []string{notify.RoleTopicPrefix + string(held)}
 	if got := publisher.topics(); !slices.Equal(got, want) {
-		t.Fatalf("published to %v, want %v: %s and the retired %s record sessions another claim holds, so nothing goes to their roles", got, want, unheld, retired)
+		t.Fatalf("published to %v, want %v: %s and the retired %s record sessions another claim holds and %s has no claim, so nothing goes to their roles", got, want, unheld, retired, noClaim)
 	}
 }
 

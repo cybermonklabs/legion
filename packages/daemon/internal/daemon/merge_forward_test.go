@@ -100,6 +100,13 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 				attempts, delivered, outboxRows(t, pool))
 		}
 
+		// The woken launch says it is ready and its session claims the role: roleWaitGate now
+		// admits the publish and the session takes the ask.
+		if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: machine.Claim().Token,
+			Generation: machine.Claim().Generation, Session: machine.Claim().Session}); err != nil {
+			t.Fatalf("bring the woken implementer ready: %v", err)
+		}
+		machine.Wait()
 		publisher.setAbsent()
 		publisher.holdBy(func() string { return machine.View().Claim.Session })
 		drainAt(t, runner, 10*time.Minute, "the row's attempt once the session holds the role")
@@ -158,7 +165,8 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 
 	t.Run("a landed queued behind the merge's landing is told to the tester", func(t *testing.T) {
 		publisher := &holderPublisher{}
-		runner, _, pool, logs := mergeForwardRunner(t, publisher, landed)
+		runner, sup, pool, logs := mergeForwardRunner(t, publisher, landed)
+		readyOutboxClaim(t, sup, "LEGION-208", claim.RoleTester)
 		told := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
 			Base: "main", Phase: phase.Testing, PullRequest: 86}
 		tester := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleTester))
@@ -198,7 +206,8 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 			asked.Phase, asked.ReviewAsked = phase.Merging, tc.reviewAsked
 			// The issue stands in merging, since a message to the merger once the issue left merging
 			// ends with nothing published (cybermonklabs/legion#4979).
-			runner, _, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, &asked)
+			runner, sup, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, &asked)
+			readyOutboxClaim(t, sup, "LEGION-208", claim.RoleMerger)
 			told := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
 				Base: "main", Phase: phase.Merging, PullRequest: 86}
 			merger := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleMerger))
@@ -247,7 +256,8 @@ func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
 
 	t.Run("the merger's ask is told to the merger", func(t *testing.T) {
 		publisher := &holderPublisher{}
-		runner, _, pool, logs := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, asked)
+		runner, sup, pool, logs := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, asked)
+		readyOutboxClaim(t, sup, "LEGION-208", claim.RoleMerger)
 		merger := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleMerger))
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", toMerger, time.Now().Add(-time.Minute)))
 		id := noticeRowID(t, pool)

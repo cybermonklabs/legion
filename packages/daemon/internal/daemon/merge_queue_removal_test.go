@@ -203,12 +203,16 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		issue := woken
 		slots := rig.slots(t, issue.key)
 		reads := rig.publish(t, issue, issue.head)
-		rig.registerWoken(t, issue)
+		ready := rig.registerWoken(t, issue)
 		rig.await(t, "the listener's refusal of the merger's topic at the message's second try", func() bool {
 			return rig.listener.refused(issue.topic) >= 1
 		})
 		rig.wokenOnce(t, issue)
+		// The first post-registration publish to this launch was refused while not ready; under
+		// roleWaitGate (P3) the row does not publish a second time to the same launch until the
+		// woken merger says it is ready.
 		rig.listener.holds(issue.topic)
+		ready()
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
@@ -446,7 +450,7 @@ type dequeueRig struct {
 // one it registers; the daemon refuses any other (claim.SameAgentRefusal), and refuses a launch
 // that records no process yet (launchRecordsNoProcess), so the registration waits until the
 // launch's process is recorded. The removal still waits for the listener to name a holder (holds).
-func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) {
+func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) func() {
 	t.Helper()
 	r.await(t, "the runtime's resume of the woken merger", func() bool { return len(resumesOf(r.rt, issue.merger)) >= 1 })
 	resumes := resumesOf(r.rt, issue.merger)
@@ -460,6 +464,18 @@ func (r *dequeueRig) registerWoken(t *testing.T, issue dequeueIssue) {
 		SessionID: held.Session, OmpSessionFile: held.SessionFile, AgentID: "agent-" + issue.key, PluginContract: api.DaemonAPIVersion()}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the session %s of %s's woken merger = %d; body %s", held.Session, issue.key, status, body)
+	}
+	var registered claim.RegisterResponse
+	if err := json.Unmarshal(body, &registered); err != nil {
+		t.Fatalf("decode the registration of %s's woken merger: %v", issue.key, err)
+	}
+	return func() {
+		t.Helper()
+		if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+			ClaimToken: issue.merger, SessionID: held.Session, Secret: registered.Secret, Generation: launch.Generation,
+		}, false); status != http.StatusNoContent {
+			t.Fatalf("ready %s's woken merger = %d %s, want 204", issue.key, status, body)
+		}
 	}
 }
 

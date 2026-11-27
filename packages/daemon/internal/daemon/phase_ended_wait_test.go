@@ -61,9 +61,9 @@ func endedLines(logs *syncBuffer) []string {
 // the role a minute later gets nothing.
 func TestAPhaseEndedMessageToAnUnheldRoleWaitsAndReachesItsSessionInsideTheHour(t *testing.T) {
 	t.Parallel()
-	runner, _, pool, publisher, topic, logs := unheldTesterRunner(t)
+	runner, sup, pool, publisher, topic, logs := unheldTesterRunner(t)
+	readyOutboxClaim(t, sup, "LEGION-208", claim.RoleTester)
 	phaseEndedRowMadeAt(t, runner, pool, time.Now().Add(-time.Minute))
-
 	drainAt(t, runner, 0, "the row's first attempt, which the listener refuses")
 	if left := rowsOf(t, pool, record.OutboxKindPhaseEnded); left != 1 {
 		t.Fatalf("phase-ended rows left = %d after the refusal, want the row waiting for a session to hold the role", left)

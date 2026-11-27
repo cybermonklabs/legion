@@ -114,6 +114,7 @@ func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, p
 		if err := r.records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken); err != nil {
 			return err
 		}
+		r.waitEndedOnCommit(ctx, row)
 		launch = 0
 		if held := r.supervisedClaim(token); !claimEnded(held.State) {
 			launch = held.Generation

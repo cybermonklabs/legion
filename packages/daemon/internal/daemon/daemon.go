@@ -188,6 +188,10 @@ type overrides struct {
 	// outboxSweep is how often the outbox sweeps its lanes (outbox.sweepEvery, which attach hands
 	// it); zero is outboxLease.
 	outboxSweep time.Duration
+	// outboxNow is the clock the workflow's outbox reads for now (outbox.now, which attach hands
+	// it); nil is time.Now. A whole-daemon test whose claims stamp LastReady on overrides.clock
+	// sets this to that clock so role waits compare against the same clock.
+	outboxNow func() time.Time
 	// controllerRetry is the first wait before a failed daemon-launched controller is retried; zero
 	// is controllerRetryFirst.
 	controllerRetry time.Duration
@@ -1429,6 +1433,7 @@ type plan struct {
 	// holdOutbox, gateRegistrationRead and dropConsumedEvent are the overrides of those names;
 	// nil holds, tells and drops nothing.
 	holdOutbox           func(record.OutboxRow) bool
+	outboxNow            func() time.Time
 	gateRegistrationRead func(ctx context.Context, issue string)
 	dropConsumedEvent    func(intake.Fact) bool
 	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
@@ -1583,7 +1588,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
+		holdOutbox: o.holdOutbox, outboxNow: o.outboxNow, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
