@@ -30,7 +30,10 @@ const (
 	maxEventReplay = 1000
 )
 
-const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.project_key, i.project_key, ar.project_key, ''), e.seq, e.type, e.actor, e.notify, e.created_at, e.payload
+// eventSelect is the head of every read of event rows this server hands on: each event with the
+// project it belongs to, and its payload as this build answers it (model.EventPayloadSQL), so an
+// issue event the release before wrote answers needs beside its blocked_by.
+const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.project_key, i.project_key, ar.project_key, ''), e.seq, e.type, e.actor, e.notify, e.created_at, ` + model.EventPayloadSQL + `
 	from events e
 	left join issues i on i.key = e.issue_key
 	left join artifacts ar on ar.id = e.artifact_id`
