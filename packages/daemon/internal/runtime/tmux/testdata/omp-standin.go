@@ -126,8 +126,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// CONTROL ONLY: a control-noready file in the workspace has a resumed stand-in never declare
+	// itself ready.
+	_, noReady := os.Stat(filepath.Join(cwd, "control-noready"))
 	if err := writeWhole(filepath.Join(cwd, fmt.Sprintf("standin-%d.json", report.Pid)), encoded); err != nil {
 		return err
+	}
+	if noReady == nil && resume != "" {
+		return serve(os.Stdin, os.Stdout)
 	}
 	if err := post(daemon+"/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: registered.ClaimToken,

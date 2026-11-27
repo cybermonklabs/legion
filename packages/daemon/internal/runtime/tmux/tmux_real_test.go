@@ -1117,6 +1117,13 @@ func TestRealTmuxLifecycle(t *testing.T) {
 	awaitGone(t, r.rt, loc, "suspend")
 
 	// Resume: the same session, from the file it registered, in a new incarnation.
+	// CONTROL ONLY: LEGION_TEST_CONTROL_STALL=<name> leaves control-<name> in the workspace, which
+	// the resumed stand-in reads.
+	if name := os.Getenv("LEGION_TEST_CONTROL_STALL"); name != "" {
+		if err := os.WriteFile(filepath.Join(r.workspace(spec.Issue), "control-"+name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	resumed := r.spec("LEGION-1", "LEGION-1", claim.RoleArchitect)
 	resumed.ResumeSessionFile = registration.OmpSessionFile
 	loc2, err := r.rt.Resume(ctx, &loc, resumed)
