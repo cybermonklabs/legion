@@ -33,9 +33,10 @@ type PlanRegisterResponse struct {
 // the version adds over the version in force, in the plan's order, as the workflow's apply of the
 // plan answered them (intake.Result.Added): every task of a generation's first version, none for a
 // version that changes or keeps each task it gives, [] and never null; a task it removes is in no
-// list of the answer. A registration of a version the store holds already is answered what its
-// apply answered, which the store recorded on the version (intake.ApplyFact). A caller below
-// tasksContract, which added the field, is served none (shaping.go's withoutNeedsOrAdded).
+// list of the answer. A registration of the version in force, given again, is answered what its
+// first apply answered, which the store recorded on the version (workflow's planGiven); a version
+// below it is refused (intake.PlanVersionOld). A caller below tasksContract, which added the field,
+// is served none (shaping.go's withoutNeedsOrAdded).
 type RegisteredPlan struct {
 	Version int              `json:"version"`
 	Added   *[]string        `json:"added,omitempty"`
