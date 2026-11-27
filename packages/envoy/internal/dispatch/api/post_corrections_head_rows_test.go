@@ -44,9 +44,9 @@ func requirePostHeadsKept(t *testing.T, rig correctionRunRig, step string) {
 	}
 }
 
-// Main's #3512 lets the author of a comment or of an issue message correct it and delete it, and
-// 4db4676d has each correction or delete made for a run of the command bar name the post changed by
-// that run. The head rows of an issue's tree hold what a comment, each of its current blocks and a
+// The author of a comment or of an issue message may correct it and delete it, and each
+// correction or delete made for a run of the command bar names the post changed by that run. The
+// head rows of an issue's tree hold what a comment, each of its current blocks and a
 // message's node hold (graphstore.HeadRowsSQL: a comment's body, its times and its delete mark, a
 // block's position and text, a node's changed_by_run), so every one of those writers keeps the
 // issue's head rows in its own transaction. This drives each of them through its route on one issue

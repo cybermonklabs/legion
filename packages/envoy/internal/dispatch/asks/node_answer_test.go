@@ -12,7 +12,7 @@ import (
 // Every read of an answer decodes the facts of an ask's node through NodeAnswer.Read, so a value
 // that does not parse is refused by all of them alike: an answer state outside open, answered and
 // resolved, a selection that is no list of labels, a time that is none, and a resolution that is no
-// JSON of its shape. A kind the node does not state an answer with is not Read's.
+// JSON of its shape. A kind the node does not state an answer with is not Read's (IsAnswerKind).
 func TestReadRefusesEachValueOfTheNodeThatDoesNotParse(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct{ kind, value string }{
@@ -23,14 +23,14 @@ func TestReadRefusesEachValueOfTheNodeThatDoesNotParse(t *testing.T) {
 		{graphstore.TupleResolution, "declined"},
 	} {
 		var node NodeAnswer
-		held, err := node.Read(test.kind, test.value)
-		if !held || !errors.Is(err, ErrNodeAnswerUnreadable) {
-			t.Errorf("Read(%s, %q) = held %t, %v, want the kind held and ErrNodeAnswerUnreadable", test.kind, test.value, held, err)
+		err := node.Read(test.kind, test.value)
+		if !IsAnswerKind(test.kind) || !errors.Is(err, ErrNodeAnswerUnreadable) {
+			t.Errorf("Read(%s, %q) = %v (an answer kind %t), want the kind an answer kind and ErrNodeAnswerUnreadable", test.kind, test.value, err, IsAnswerKind(test.kind))
 		}
 	}
 	var node NodeAnswer
-	if held, err := node.Read(graphstore.TupleDecidedBy, "alice"); held || err != nil {
-		t.Errorf("Read(decided_by) = held %t, %v, want a kind it leaves to its caller", held, err)
+	if err := node.Read(graphstore.TupleDecidedBy, "alice"); IsAnswerKind(graphstore.TupleDecidedBy) || err != nil || node.AnsweredBy != "" || node.State != "" {
+		t.Errorf("Read(decided_by) = %v, leaving %+v (an answer kind %t), want a kind it leaves to its caller", err, node, IsAnswerKind(graphstore.TupleDecidedBy))
 	}
 }
 

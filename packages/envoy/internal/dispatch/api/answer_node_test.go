@@ -64,14 +64,17 @@ func TestEveryWriterOfAnAnswerWritesItOnTheNode(t *testing.T) {
 	t.Run("the approval carry", func(t *testing.T) {
 		// The carry that answers an open approval request here is the restore's: the agent's undo
 		// of its edit holds the approved text. (A person's answer writes one version, its block's
-		// kept state alone, which R10's case carries; this document holds no ask block.)
+		// kept state alone, which R5's case carries; this document holds no ask block.) The
+		// document is one no query covers (uncoveredDocument): R14 carries a spec's approval across
+		// an edit of its prose by the record carry, so a request on that spec opens no ask.
 		handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 		issue := createInteractionIssue(t, handler, "TEST", "The carry's answer on the node", "A spec\n")
-		reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
-		reviseDocument(t, handler, issue.PrimaryArtifactID, "A spec", "A revised spec", 2)
-		request := requestApproval(t, handler, issue.PrimaryArtifactID)
-		reviseDocument(t, handler, issue.PrimaryArtifactID, "A revised spec", "A spec", 3)
-		requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
+		notes := uncoveredDocument(t, handler, issue.Key, "A spec\n")
+		reviewDocument(t, handler, notes, "alice", "approved", "")
+		reviseDocument(t, handler, notes, "A spec", "A revised spec", 2)
+		request := requestApproval(t, handler, notes)
+		reviseDocument(t, handler, notes, "A revised spec", "A spec", 3)
+		requireReviewCarriedWith(t, handler, notes, 3, 1, restoreSentence(1), &request.ID)
 		requireTheAnswerOnTheNode(t, database, "the approval carry's answer", request.ID, "ask.answered")
 	})
 

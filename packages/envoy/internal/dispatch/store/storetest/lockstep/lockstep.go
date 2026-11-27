@@ -66,9 +66,10 @@ const (
 var fencedSteps = []string{StepHeld, StepNode, StepTuple, StepProjection, StepHead}
 
 // headAfter are the steps whose rows a writer takes before its head rows: every row of its write
-// but the owner's lock, which comes first anyway, and the project of an event, which the backfill's
-// writers take none of.
-var headAfter = []string{StepFence, StepHeld, StepNode, StepTuple, StepProjection}
+// but the owner's lock, which comes first anyway, the revision fence's row, which the fence's own
+// rule holds before the head rows (fencedSteps), and the project of an event, which the
+// backfill's writers take none of.
+var headAfter = []string{StepHeld, StepNode, StepTuple, StepProjection}
 
 // Hold is one row of a step of the store's lock order, held in a transaction of its own while a
 // writer runs, and what the test expects of the writer while it waits behind it.
@@ -191,8 +192,8 @@ func RequireStoppedAt(t testing.TB, ctx context.Context, database *store.Store, 
 //     before the rows it guards (fencedSteps);
 //   - a node's row before the projection row whose foreign key names it (Hold.Names);
 //   - the head rows after every row of the write's other steps but the owner's lock and the
-//     event (headAfter): its fence row, the rows it reads again under the fence, its node rows,
-//     its tuples and its projection rows;
+//     event: its fence row (fencedSteps), and the rows it reads again under the fence, its node
+//     rows, its tuples and its projection rows (headAfter);
 //   - the project of the event last;
 //   - several rows of one step in ascending order: node rows in ascending (kind, id), and owner
 //     locks in ascending owner key and fence rows in document id order, the order every writer of

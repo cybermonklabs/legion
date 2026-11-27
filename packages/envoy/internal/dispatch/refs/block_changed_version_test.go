@@ -3,8 +3,10 @@ package refs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,26 +16,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // windowServer is the server this file's references are read against.
 const windowServer = "https://dispatch.example"
 
-// writeStoredVersion writes version number of the document as the version write stores it: its
-// markdown, under the database's clock at the statement (clock_timestamp, so two versions one
-// transaction writes read two times), and answers that time.
+// writeStoredVersion writes version number of the document as the version write stores it, by
+// roomAuthor (writeAuthoredVersion): its markdown, under the database's clock at the statement
+// (clock_timestamp, so two versions one transaction writes read two times), and answers that time.
 func writeStoredVersion(t *testing.T, tx pgx.Tx, artifact string, number int, markdown string) time.Time {
 	t.Helper()
-	var at time.Time
-	if err := tx.QueryRow(context.Background(), `
-		insert into artifact_versions (artifact_id, number, markdown, authors, created_at)
-		values ($1::uuid, $2, $3, '[{"kind":"user","id":"alice"}]', clock_timestamp())
-		returning created_at
-	`, artifact, number, markdown).Scan(&at); err != nil {
-		t.Fatalf("write version %d: %v", number, err)
-	}
-	return at
+	return writeAuthoredVersion(t, tx, artifact, number, markdown, roomAuthor)
 }
 
 // blockChanges is every block row's changed_version and changed_at (blockChange), by block id,
@@ -126,24 +121,35 @@ func roomFixture(t *testing.T, tx pgx.Tx) (spec, specRef, verification, tree, tr
 		returning id::text`).Scan(&verification); err != nil {
 		t.Fatalf("create the Verification document: %v", err)
 	}
-	if err := tx.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('WIND-1', 'WIND', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
-		returning id::text, ref_key`).Scan(&tree, &treeRef); err != nil {
-		t.Fatalf("create the issue's tree: %v", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		with held as (insert into issue_trees (issue_key, artifact_id) values ('WIND-1', $1::uuid))
-		insert into document_rooms (artifact_id, room) values ($2::uuid, $1::uuid), ($3::uuid, $1::uuid)
-	`, tree, spec, verification); err != nil {
-		t.Fatalf("move the documents into the issue room: %v", err)
-	}
+	tree, treeRef = insertIssueRoom(t, tx, "WIND-1", "WIND", spec, verification)
 	return spec, specRef, verification, tree, treeRef
 }
 
+// insertIssueRoom writes, in the fixture's transaction, the room of issue issueKey of project as
+// a conversion records it: the issue's tree artifact, its issue_trees row, and a document_rooms
+// row naming the tree for each of documents. It answers the tree's id and ref_key.
+func insertIssueRoom(t *testing.T, tx pgx.Tx, issueKey, project string, documents ...string) (tree, treeRef string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := tx.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ($1, $2, 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key
+	`, issueKey, project).Scan(&tree, &treeRef); err != nil {
+		t.Fatalf("create the tree of %s: %v", issueKey, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		with held as (insert into issue_trees (issue_key, artifact_id) values ($1, $2::uuid))
+		insert into document_rooms (artifact_id, room) select document, $2::uuid from unnest($3::uuid[]) as document
+	`, issueKey, tree, documents); err != nil {
+		t.Fatalf("move the documents of %s into its room: %v", issueKey, err)
+	}
+	return tree, treeRef
+}
+
 // A block of an issue room cut from one fragment and pasted with the same text into another moves
-// into the other fragment's document (T12a of the issue-tree plan): its issue_room_blocks
-// row names that document, and it records that document's version as its changed_version and as
+// into the other fragment's document (T12a of the issue-tree plan): its issue_room_blocks row
+// names that document, and it records that document's version as its changed_version and as
 // its newest text row, so the text a reader asks of the block at that document's version is
 // there. Block x stands in the spec's fragment at the spec's version 4, then in the Verification
 // document's fragment at its version 2; a pass that kept x's row because its text did not change
@@ -201,9 +207,9 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 	}
 }
 
-// A block of an issue room reads, as a node, as a block of its own document (T12a of
-// the issue-tree plan, refs.BlockDocumentSQL): its document, its parent and the reference
-// it is cited by are the spec's, whose fragment holds it, its last change is the spec's version 4
+// A block of an issue room reads, as a node, as a block of its own document (T12a of the
+// issue-tree plan, refs.BlockDocumentSQL): its document, its parent and the reference it is cited
+// by are the spec's, whose fragment holds it, its last change is the spec's version 4
 // at that version's time and by that version's authors, and its node's own address stays the
 // tree's, which keys its row. A read that took the row's artifact as the block's document names
 // the tree and dates the change by a version the tree never had. The blocks a document's
@@ -219,15 +225,9 @@ func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 	verificationAt := writeStoredVersion(t, tx, verification, 1, "Check.")
 	markdown, blocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Room words."}})
 	blocks[0].Document, blocks[1].Document = verification, spec
-	_, won, write, _, err := IndexBlocks(ctx, tx, tree, Versions{
+	indexAndCause(t, tx, tree, Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 4, At: specAt}, verification: {Number: 1, At: verificationAt},
-	}, markdown, blocks, nil, nil, "", TypedFacts{})
-	if err != nil || !won {
-		t.Fatalf("index the room: won %t, %v", won, err)
-	}
-	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
-		t.Fatalf("append what the room's index stated: %v", err)
-	}
+	}, markdown, blocks)
 
 	address := treeRef + "#x"
 	node, found, err := Node(ctx, tx, model.Actor{}, BlockNodeKind, address, false)
@@ -252,10 +252,7 @@ func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 	// set as the one array the "in" arm of a document's references read tests each edge against
 	// (documentBlockIDArray): the spec's is x, the Verification document's y, and the tree's own
 	// fragment holds none.
-	var verificationRef string
-	if err := tx.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, verification).Scan(&verificationRef); err != nil {
-		t.Fatalf("read the Verification document's ref_key: %v", err)
-	}
+	verificationRef := storedAddress(t, tx, verification).RefKey
 	for document, want := range map[string][]string{specRef: {address}, verificationRef: {treeRef + "#y"}, treeRef: nil} {
 		rows, err := tx.Query(ctx, `select node_id from `+documentBlockIDs("$1")+` ids order by 1`, document)
 		if err != nil {
@@ -272,14 +269,14 @@ func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 		if err := tx.QueryRow(ctx, `select coalesce(array_agg(id order by id), '{}') from unnest(`+documentBlockIDArray("$1")+`) id`, document).Scan(&array); err != nil {
 			t.Fatalf("read the block array of %s: %v", document, err)
 		}
-		if !slices.Equal(array, want) && !(len(array) == 0 && len(want) == 0) {
+		if !slices.Equal(array, want) {
 			t.Errorf("the block array of %s is %v, want %v", document, array, want)
 		}
 	}
 }
 
 // A reference names `<document ref_key>#<block>`, and a block of an issue room is the node
-// `<tree ref_key>#<block>` (T12a of this branch's plan). Every reader and writer of a reference
+// `<tree ref_key>#<block>` (T12a of the issue-tree plan). Every reader and writer of a reference
 // resolves it in one order (T17): the address's current moved_to tuple first, followed hop by
 // hop; then the room its document's document_rooms row names; then the address itself. On issue
 // WIND-1, born converted, the Verification document's check k1 serves the spec's requirement r1,
@@ -296,10 +293,7 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 	ctx := context.Background()
 	tx := windowFixture(t)
 	spec, specRef, verification, tree, treeRef := roomFixture(t, tx)
-	var verificationRef string
-	if err := tx.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, verification).Scan(&verificationRef); err != nil {
-		t.Fatalf("read the Verification document's ref_key: %v", err)
-	}
+	verificationRef := storedAddress(t, tx, verification).RefKey
 	treeAt := writeStoredVersion(t, tx, tree, 1, "")
 	specAt := writeStoredVersion(t, tx, spec, 1, "One.")
 	verificationAt := writeStoredVersion(t, tx, verification, 1, "Checks one.")
@@ -326,13 +320,7 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 	// The pointer validation of the Verification document's write.
 	check := func(reference string) error {
 		t.Helper()
-		written, err := pmdoc.Parse(":::check{#k1 serves=\"" + reference + "\"}\nChecks one.\n:::\n")
-		if err != nil {
-			t.Fatalf("parse a check serving %s: %v", reference, err)
-		}
-		return pmdoc.CheckBlockPointers(written, nil, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
-			return BlockTargets(ctx, tx, verification, storedAddress(t, tx, verification), nil, targets)
-		})
+		return checkBlockPointers(t, tx, verification, ":::check{#k1 serves=\""+reference+"\"}\nChecks one.\n:::\n")
 	}
 	// The room's index, which the version write runs over every fragment of the room.
 	_, won, write, _, err := IndexBlocks(ctx, tx, tree, Versions{
@@ -444,5 +432,81 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 		if !slices.Equal(got, []string{want}) {
 			t.Errorf("the closure of %s, whose comment cites %s, holds %v, want the document %s", key, cited[key], got, want)
 		}
+	}
+}
+
+// A pass over an issue room never moves a document's row back (queueStand's arm over several
+// documents): the row of a document that stands past the version the pass covers of it is one the
+// room's statement leaves as it stands, its mark included, and the index the pass leaves for a
+// later indexing of the room in its transaction (BlockIndexing.Held) holds that row as the
+// database does once the pass is written, the version it covers among those indexed. The
+// Verification document's row stands at version 3 under a mark of this build's rule, as the tick's
+// marking leaves a row whose statement is behind it, and the pass covers its version 2. An index
+// that cleared the mark would read the document owed nothing at the next indexing of the room in
+// the transaction (PlanBlocks' marked) while the database holds it owed.
+func TestARoomPassLeavesTheRowOfADocumentPastTheVersionItCoversAsItStands(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	spec, _, verification, tree, _ := roomFixture(t, tx)
+	treeAt := writeStoredVersion(t, tx, tree, 1, "")
+	specAt := writeStoredVersion(t, tx, spec, 1, "Words.")
+	verificationAt := writeStoredVersion(t, tx, verification, 1, "Check.")
+	first, firstBlocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Words."}})
+	firstBlocks[0].Document, firstBlocks[1].Document = verification, spec
+	indexAndCause(t, tx, tree, Versions{
+		tree: {Number: 1, At: treeAt}, spec: {Number: 1, At: specAt}, verification: {Number: 1, At: verificationAt},
+	}, first, firstBlocks)
+	specNext := writeStoredVersion(t, tx, spec, 2, "Words, rewritten.")
+	verificationNext := writeStoredVersion(t, tx, verification, 2, "Check.")
+	// After the version rows, whose insert sets the row's version to null (migration 0122's
+	// trigger): the row then stands at version 3 under the mark.
+	if _, err := tx.Exec(ctx, `
+		update document_block_versions set version = 3, store_owed_at = now(), store_owed_rule = $2 where artifact_id = $1::uuid
+	`, verification, BlockIndexMarkingRule); err != nil {
+		t.Fatalf("stand the Verification document's row at version 3 under a mark: %v", err)
+	}
+	second, secondBlocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Words, rewritten."}})
+	secondBlocks[0].Document, secondBlocks[1].Document = verification, spec
+	index, err := ReadBlockIndex(ctx, tx, tree)
+	if err != nil {
+		t.Fatalf("read the room's block index: %v", err)
+	}
+	record, err := ReadIndexedVersion(ctx, tx, tree, spec, 2)
+	if err != nil {
+		t.Fatalf("read the record of the room's pass: %v", err)
+	}
+	indexing, err := PlanBlocks(ctx, tx, index, BlockIndexMarkingRule, record.At, VersionBlocks{
+		ArtifactID: tree, Record: record, Markdown: second, Blocks: secondBlocks,
+		Versions: Versions{tree: {Number: 1, At: treeAt}, spec: {Number: 2, At: specNext}, verification: {Number: 2, At: verificationNext}},
+	})
+	if err != nil || !indexing.Won() {
+		t.Fatalf("plan the room's pass: won %t, %v", indexing.Won(), err)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		indexing.Queue(b)
+		return nil
+	}); err != nil {
+		t.Fatalf("write the room's pass: %v", err)
+	}
+
+	stood, err := readBlockStands(ctx, tx, []string{verification})
+	if err != nil {
+		t.Fatalf("read the Verification document's row: %v", err)
+	}
+	number := func(n *int) string {
+		if n == nil {
+			return "null"
+		}
+		return strconv.Itoa(*n)
+	}
+	described := func(s blockStand) string {
+		return fmt.Sprintf("held %t, version %s, store_version %s, owed %t (rule %d), latest indexed %s",
+			s.held, number(s.version), number(s.storeVersion), s.owed, s.owedRule, number(s.latestIndexed))
+	}
+	if stand := stood[verification]; !stand.owed || number(stand.version) != "3" {
+		t.Fatalf("the Verification document's row reads %s after the pass, want it at version 3 under its mark, as the room's statement leaves it, or this test proves nothing", described(stand))
+	}
+	if held, want := described(indexing.Held().stands[verification]), described(stood[verification]); held != want {
+		t.Errorf("the index the pass leaves holds the Verification document's row as %s, want %s, as the database holds it", held, want)
 	}
 }

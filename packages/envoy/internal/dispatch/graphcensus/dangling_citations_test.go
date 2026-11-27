@@ -357,19 +357,8 @@ func TestTheDanglingCounterReadsAMoveIntoAnIssueRoom(t *testing.T) {
 	ctx := context.Background()
 	fixture := seedRestoreFixture(t, database)
 	var tree testDocument
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('CORE-1', 'CORE', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
-		returning id::text, ref_key
-	`).Scan(&tree.id, &tree.refKey); err != nil {
-		t.Fatalf("create the issue's tree: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, `
-		with held as (insert into issue_trees (issue_key, artifact_id) values ('CORE-1', $1::uuid))
-		insert into document_rooms (artifact_id, room) values ($2::uuid, $1::uuid)
-	`, tree.id, fixture.spec.id); err != nil {
-		t.Fatalf("move the spec into the issue room: %v", err)
-	}
+	tree.id, tree.refKey = censusDocument(t, database, "tree", "tree", false)
+	joinIssueRoom(t, database, tree.id, fixture.spec.id)
 	oldAddress := fixture.decisions.refKey + "#ask-b"
 	specAddress := fixture.spec.refKey + "#ask-b"
 	returningAddress := fixture.spec.refKey + "#ask-a"

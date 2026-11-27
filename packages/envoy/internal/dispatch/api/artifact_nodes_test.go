@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -94,11 +92,7 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 	// its spec, its tree and its decisions query - alone, before and after. The spec's top-level
 	// blocks hang under the issue too (refs.IndexBlocks), keyed by the room's tree, and are no part
 	// of what an upload could leave, so they are not counted.
-	var roomKey string
-	if err := database.Pool.QueryRow(ctx, `select room.ref_key from artifacts room where room.id = `+
-		refs.DocumentRoomSQL("$1::uuid"), issue.PrimaryArtifactID).Scan(&roomKey); err != nil {
-		t.Fatalf("read the ref_key of the spec's room: %v", err)
-	}
+	roomKey := blockKeyOf(t, database, issue.PrimaryArtifactID)
 	born := issueArtifactsBorn(t, database, key)
 	underTheIssue := func() int {
 		t.Helper()
@@ -166,12 +160,7 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 		t.Fatalf("the second upload of shot.png wrote version %d, want 2", number)
 	}
 	readPlacement(t, database, uploaded.Artifact.ID).require(t, "the image after its second version", []string{"issue:" + key}, shotCreated)
-	var shotVersion int64
-	if err := database.Pool.QueryRow(ctx, `
-		select id from events where type = 'artifact.version' and payload->>'artifact_id' = $1
-	`, uploaded.Artifact.ID).Scan(&shotVersion); err != nil {
-		t.Fatalf("read the artifact.version event of the image: %v", err)
-	}
+	shotVersion := versionEvent(t, database, uploaded.Artifact.ID, 2)
 	requireBytesHistory(t, database, shot.refKey, []statedBytes{
 		{mime: "image/png", content: first, event: shotCreated},
 		{mime: "image/png", content: second, event: shotVersion},
@@ -457,10 +446,10 @@ func requireNoBytes(t *testing.T, database *store.Store, refKey string) {
 // and the sha256 of content, which is what its node is held to below.
 func requireVersionBytes(t *testing.T, mime *string, size *int, sum *string, wantMIME string, content []byte) {
 	t.Helper()
-	digest := sha256.Sum256(content)
-	if deref(mime) != wantMIME || size == nil || *size != len(content) || deref(sum) != hex.EncodeToString(digest[:]) {
-		t.Errorf("the image's version holds mime %q, size %v, sha256 %q; want %q, %d, %x",
-			deref(mime), size, deref(sum), wantMIME, len(content), digest)
+	want := contentHash(string(content))
+	if deref(mime) != wantMIME || size == nil || *size != len(content) || deref(sum) != want {
+		t.Errorf("the image's version holds mime %q, size %v, sha256 %q; want %q, %d, %s",
+			deref(mime), size, deref(sum), wantMIME, len(content), want)
 	}
 }
 
@@ -487,11 +476,10 @@ func requireBytesHistory(t *testing.T, database *store.Store, refKey string, ver
 			continue
 		}
 		for index, version := range versions {
-			digest := sha256.Sum256(version.content)
 			want := map[string]string{
 				graphstore.AttributeMIME:   version.mime,
 				graphstore.AttributeSize:   strconv.Itoa(len(version.content)),
-				graphstore.AttributeSHA256: hex.EncodeToString(digest[:]),
+				graphstore.AttributeSHA256: contentHash(string(version.content)),
 			}[attribute]
 			if stated := history[index]; stated.ToID != want || stated.ToKind != graphstore.KindValue ||
 				!stated.Asserted || stated.SourceEvent != version.event {

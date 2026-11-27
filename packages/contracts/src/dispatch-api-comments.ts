@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { IssueTreeAnchorNode } from "./dispatch-api.generated";
 import { askFields } from "./dispatch-api-asks";
 import {
   ActorSchema,
@@ -115,7 +116,13 @@ export const CommentSchema = z.strictObject(commentFields).readonly();
 
 /** The states the node a comment's anchor names stands in, as the tree read answers a node's
  *  (`model.IssueTreeAnchorNode`): `gone` for a node deleted since the comment was written. */
-const ANCHORED_NODE_STATES = ["live", "gone", "proposed", "settled", "overtaken"] as const;
+const ANCHORED_NODE_STATES = [
+  "live",
+  "gone",
+  "proposed",
+  "settled",
+  "overtaken",
+] as const satisfies readonly IssueTreeAnchorNode["state"][];
 
 /**
  * The member `node_anchor` that `GET /api/v1/issues/{key}/comments` and `GET /api/v1/comments/{id}`

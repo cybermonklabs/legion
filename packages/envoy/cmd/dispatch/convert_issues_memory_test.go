@@ -75,6 +75,7 @@ func TestTheConversionPassesOverAnIssuePastTheRoomsBound(t *testing.T) {
 		}
 	}
 	var measured uint64
+	pastTheBound := fmt.Sprintf("past the %d", bound)
 	for _, dry := range []bool{true, false} {
 		args := []string{"--project", "CUT"}
 		if dry {
@@ -86,7 +87,7 @@ func TestTheConversionPassesOverAnIssuePastTheRoomsBound(t *testing.T) {
 		}
 		var count uint64
 		for line := range strings.Lines(output) {
-			if strings.HasPrefix(line, "CUT-1 passed over") && strings.Contains(line, "past the 1048576") {
+			if strings.HasPrefix(line, "CUT-1 passed over") && strings.Contains(line, pastTheBound) {
 				_, value, _ := strings.Cut(strings.TrimSpace(line), "items=")
 				count, _ = strconv.ParseUint(value, 10, 64)
 			}
@@ -112,7 +113,7 @@ func TestTheConversionPassesOverAnIssuePastTheRoomsBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	line := logged.Lines("passed over an issue")
-	if !strings.Contains(line, "issue=CUT-1 ") || !strings.Contains(line, "past the 1048576") || !strings.Contains(line, fmt.Sprintf("items=%d", measured)) {
+	if !strings.Contains(line, "issue=CUT-1 ") || !strings.Contains(line, pastTheBound) || !strings.Contains(line, fmt.Sprintf("items=%d", measured)) {
 		t.Fatalf("the step did not report the same reason and item count: %s", logged.String())
 	}
 	checkRows(1)

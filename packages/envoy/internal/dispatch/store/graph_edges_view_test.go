@@ -15,26 +15,30 @@ import (
 // file, with the arm set it states. A migration stating the view from this set on is one of them:
 // the first of them is where the function became the view's one source.
 var graphEdgesViewMigrations = map[string]GraphEdgesArms{
-	"20261117140000_issue_tree_relations.up.sql":                          GraphEdgesIssueRelations,
-	"20261118023219_issue_tree_components.up.sql":                         GraphEdgesComponents,
-	"20261119100000_issue_tree_artifact_refs.up.sql":                      GraphEdgesArtifactRefs,
-	"20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql": GraphEdgesTupleArmFilter,
-	"20261123180000_issue_tree_graph_edges_after_store_class_last.up.sql": GraphEdgesTupleArmFilter,
-	"20261125150001_issue_tree_graph_edges_block_node_listed.up.sql":      GraphEdgesBlockNodeListed,
+	"20261126050003_issue_tree_relations.up.sql":                          GraphEdgesIssueRelations,
+	"20261126050004_issue_tree_components.up.sql":                         GraphEdgesComponents,
+	"20261126050005_issue_tree_artifact_refs.up.sql":                      GraphEdgesArtifactRefs,
+	"20261126050006_issue_tree_graph_edges_after_tuple_arm_filter.up.sql": GraphEdgesTupleArmFilter,
+	"20261126050008_issue_tree_graph_edges_after_store_class_last.up.sql": GraphEdgesTupleArmFilter,
+	"20261126050009_issue_tree_graph_edges_block_node_listed.up.sql":      GraphEdgesBlockNodeListed,
 }
 
-// graphEdgesSiblingRestatements are the migrations of the sibling branch this branch merges that
-// state graph_edges by hand after the first of graphEdgesViewMigrations, each from the arms the
-// sibling's own view has: 20261120122700 filters the tuple arm of 20261109215947's arms,
-// 20261121034242 restates 20261116094101's arms with that filter, and 20261121104002 restates
-// 20261121034242's arms with 20261117020856's class `store` and `lens_block` arm. None holds this
-// branch's arms, and a database runs each version once, so the newest of
-// graphEdgesViewMigrations, dated after all three, states the view again from GraphEdgesView with
-// every arm of both branches.
+// graphEdgesViewRollbacks is every down file that states graph_edges back to the view a migration
+// of graphEdgesViewMigrations stated, by its file, with that migration's arm set. The runner never
+// runs a down file, so nothing but this list ties its text to GraphEdgesView.
+var graphEdgesViewRollbacks = map[string]GraphEdgesArms{
+	"20261126050009_issue_tree_graph_edges_block_node_listed.down.sql": GraphEdgesTupleArmFilter,
+}
+
+// graphEdgesSiblingRestatements are the migrations that state graph_edges by hand and sort after
+// the first of graphEdgesViewMigrations: 20261126050007 restates 20261125163554's arms with
+// 20261126050002's class `store` and `lens_block` arm. It holds none of the issue-tree spec's
+// arms, and a database runs each version once, so the next of graphEdgesViewMigrations,
+// 20261126050008, states the view again from GraphEdgesView with every arm of both. The
+// restatements by hand that sort before the first - 20261120122700, 20261125163554,
+// 20261126050001 and 20261126050002 - are no concern of this test.
 var graphEdgesSiblingRestatements = map[string]bool{
-	"20261120122700_graph_edges_tuple_arm_filter.up.sql":          true,
-	"20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql": true,
-	"20261121104002_graph_edges_store_class_last.up.sql":          true,
+	"20261126050007_graph_edges_store_class_last.up.sql": true,
 }
 
 // graphEdgesStatement is the head of the statement that states the view, as GraphEdgesView writes
@@ -44,11 +48,12 @@ const graphEdgesStatement = "create or replace view graph_edges "
 // TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives holds graph_edges to one source. A
 // migration is an embedded file that calls no Go, so each migration that states the view from
 // the issue-tree spec's split of the issue relations on holds the text GraphEdgesView gives for
-// its arm set, byte for byte after its header of comments, and nothing else. Every migration
-// that states the view and sorts after the first of them must be one of them, so a migration that
-// states the view by hand fails here by its name. Last, a database migrated to this head holds the
-// view the newest set states: stating GraphEdgesView of that set over it leaves the catalogue's
-// definition as it was.
+// its arm set, byte for byte after its header of comments, and nothing else, and so does each down
+// file that states the view back to one of theirs (graphEdgesViewRollbacks). Every migration and
+// every down file that states the view and sorts after the first of them must be one of them, so
+// one that states the view by hand fails here by its name. Last, a database migrated to this head
+// holds the view the newest set states: stating GraphEdgesView of that set over it leaves the
+// catalogue's definition as it was.
 func TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives(t *testing.T) {
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
@@ -57,36 +62,48 @@ func TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives(t *testing.T) {
 	first := slices.Min(slices.Collect(maps.Keys(graphEdgesViewMigrations)))
 	var newest string
 	var newestArms GraphEdgesArms
-	held := 0
+	held, rolledBack := 0, 0
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".up.sql") {
+		rollback := strings.HasSuffix(name, ".down.sql")
+		if !rollback && !strings.HasSuffix(name, ".up.sql") {
 			continue
 		}
 		body, err := fs.ReadFile(migrationFiles, path.Join("migrations", name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		arms, listed := graphEdgesViewMigrations[name]
+		listing, list := graphEdgesViewMigrations, "graphEdgesViewMigrations"
+		if rollback {
+			listing, list = graphEdgesViewRollbacks, "graphEdgesViewRollbacks"
+		}
+		arms, listed := listing[name]
 		states := strings.Contains(string(body), graphEdgesStatement)
 		switch {
 		case !listed && states && name > first && !graphEdgesSiblingRestatements[name]:
-			t.Errorf("%s states graph_edges and is not stated from GraphEdgesView: write its statement with that function's text for its arm set, and list it in graphEdgesViewMigrations", name)
+			t.Errorf("%s states graph_edges and is not stated from GraphEdgesView: write its statement with that function's text for its arm set, and list it in %s", name, list)
 			continue
 		case !listed:
 			continue
 		}
-		held++
 		statement := afterHeader(string(body))
 		if want := GraphEdgesView(arms); statement != want {
 			t.Errorf("%s holds a statement that is not GraphEdgesView(%d):\n%s", name, arms, firstDifference(statement, want))
 		}
+		if rollback {
+			rolledBack++
+			continue
+		}
+		held++
 		if name > newest {
 			newest, newestArms = name, arms
 		}
 	}
 	if held != len(graphEdgesViewMigrations) {
 		t.Fatalf("found %d of the %d migrations graphEdgesViewMigrations lists", held, len(graphEdgesViewMigrations))
+	}
+	if rolledBack != len(graphEdgesViewRollbacks) {
+		t.Fatalf("found %d of the %d down files graphEdgesViewRollbacks lists", rolledBack, len(graphEdgesViewRollbacks))
 	}
 
 	database := openEmptyTestStore(t)

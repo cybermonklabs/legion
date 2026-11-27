@@ -245,7 +245,7 @@ func xidWindowAskCreateAnchored(t *testing.T, f *xidFixture) {
 // the id of the ask settlement opened from it. A block ask's row is opened by settlement, so this
 // fixture settles twenty milliseconds after each write, as the default server does, and waits for
 // every settlement to finish before it answers, so the measured request runs alone. A block ask is
-// the one whose transitions write its block back into the document (SetBlockAttributes,
+// the one whose transitions write its block back into the document (KeepAskBlockInStep,
 // SetAskBlockText); an anchored ask's touch only its row.
 func newBlockAskFixture(t *testing.T) (*xidFixture, string) {
 	t.Helper()
@@ -469,7 +469,7 @@ func requireRestoreWindowStatements(t *testing.T, report *storetest.XidReport) {
 	for _, window := range report.Windows {
 		next := 0
 		for _, statement := range window.Statements {
-			if next < len(restoreWindowStatements) && strings.Contains(strings.ToLower(strings.TrimSpace(statement.SQL)), restoreWindowStatements[next]) {
+			if next < len(restoreWindowStatements) && strings.Contains(normalizedStatement(statement.SQL), restoreWindowStatements[next]) {
 				next++
 			}
 		}

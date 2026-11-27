@@ -34,3 +34,11 @@ func runDispatchCommand(t *testing.T, binary, databaseURL string, args ...string
 	}
 	return code, strings.TrimRight(string(out), "\n")
 }
+
+// stopProcess stops p in order (SIGTERM) and waits for it to exit. It is in this untagged file so
+// the untagged tests and every tag's tests share it.
+func stopProcess(t *testing.T, p *dispatchProcess) {
+	t.Helper()
+	p.Terminate(t)
+	p.WaitExit(t, "SIGTERM")
+}

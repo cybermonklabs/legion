@@ -382,7 +382,7 @@ func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
 		return newestEventPayload[issueEventFields](t, database, "issue.updated", dependent.Key)
 	}
 	// An issue's waits are one relation the issue read answers under both spellings, blocked_by
-	// and needs (model.Issue.Needs, this branch's plan), so a PATCH of either moves both fields,
+	// and needs (model.Issue.Needs, R10 of the issue-tree spec), so a PATCH of either moves both fields,
 	// and changed names each field whose value differs: both, and no other.
 	if updated := patch(map[string]any{"blocked_by": []string{kept.Key, added.Key}}); !slices.Equal(updated.Changed, []string{"blocked_by", "needs"}) {
 		t.Fatalf("a blocked_by-only PATCH's changed = %v, want [blocked_by needs]", updated.Changed)

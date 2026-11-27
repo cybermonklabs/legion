@@ -51,8 +51,8 @@ func citedDocumentOwed(address string) string {
 			  and (` + roomOwed("document.id") + ` or (joined.room is not null and ` + roomOwed("joined.room") + `)))`
 }
 
-// unresolvedRead is every block citation whose address resolves to no node (this issue's spec
-// R13), in one statement. A citation is the node whose text cites an address, read off the five
+// unresolvedRead is every block citation whose address resolves to no node (R13 of the issue-tree
+// spec), in one statement. A citation is the node whose text cites an address, read off the five
 // tables a citation of a block is stored in, as danglingRead reads them: refs, by its source, and
 // block_refs, ask_block_refs, comment_block_refs and message_block_refs, by the document, ask,
 // comment or message that holds the citing block. A node that cites one address from its own text
@@ -101,11 +101,7 @@ func UnresolvedCitations(ctx context.Context, q graphstore.Queryer) (UnresolvedC
 	if err != nil {
 		return UnresolvedCitationReport{}, fmt.Errorf("count the unresolved citations: %w", err)
 	}
-	citations, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (UnresolvedCitation, error) {
-		var citation UnresolvedCitation
-		err := row.Scan(&citation.SourceKind, &citation.SourceID, &citation.Target)
-		return citation, err
-	})
+	citations, err := pgx.CollectRows(rows, pgx.RowToStructByPos[UnresolvedCitation])
 	if err != nil {
 		return UnresolvedCitationReport{}, fmt.Errorf("count the unresolved citations: %w", err)
 	}

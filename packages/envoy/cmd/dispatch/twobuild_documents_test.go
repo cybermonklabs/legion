@@ -1262,8 +1262,8 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	time.Sleep(referencesSettle)
 	waitUntil(t, writerOnlyReferencesBack, "the "+writer.name+"'s documents to owe nothing",
 		func() bool { return !formsOwed(t, builds, twin) && !formsOwed(t, builds, issueTwice) })
-	stop(t, reader.process)
-	stop(t, writer.process)
+	stopProcess(t, reader.process)
+	stopProcess(t, writer.process)
 	if formsOwed(t, builds, twin) || formsOwed(t, builds, issueTwice) {
 		t.Fatalf("a document the %s wrote was owed once both processes stopped", writer.name)
 	}

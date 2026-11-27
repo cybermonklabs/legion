@@ -159,20 +159,25 @@ run() {
 
 q() { jq -rn --arg v "$1" '$v|@uri'; }
 
-# request AS METHOD PATH [JSON]: sends METHOD PATH as AS: `agent`, with the bearer in $work/auth,
-# or `person`, with the session cookie the dev sign-in left in $work/jar and the dashboard's origin,
-# which the server requires of every write a cookie authenticates. The answer's body goes to
-# $work/body and its HTTP status to $status.
+# request [-H HEADER]... AS METHOD PATH [JSON]: sends METHOD PATH as AS, with each HEADER beside the
+# headers AS sends: `agent`, with the bearer in $work/auth, or `person`, with the session cookie the
+# dev sign-in left in $work/jar and the dashboard's origin, which the server requires of every
+# write a cookie authenticates. The answer's body goes to $work/body and its HTTP status to
+# $status.
 request() {
-  local -a auth data=()
+  local -a headers=() auth data=()
+  while [[ "$1" == -H ]]; do
+    headers+=(-H "$2")
+    shift 2
+  done
   if [[ "$1" == person ]]; then
     auth=(-b "$work/jar" -H "Origin: $origin")
   else
     auth=(-H "@$work/auth")
   fi
   [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
-  status="$(curl -sS -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" \
-    "$server$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+  status="$(curl -sS -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${headers[@]}" \
+    "${data[@]}" "$server$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
 }
 
 # send METHOD PATH [JSON]: request as the agent.
@@ -182,6 +187,12 @@ person_send() { request person "$@"; }
 
 # get PATH: send GET PATH.
 get() { send GET "$1"; }
+# get_text PATH: send GET PATH, a text route, with `Dispatch-Asks: 1`, as every reader of this
+# build that reads the route's `asks` member sends it, `dispatch doc-read` among them: the route
+# then serves markdown with none of an ask block's server-owned attributes. A read without the
+# header is served the form kept for one release for the readers of the release before, whose ask
+# blocks keep their state, answerer and time.
+get_text() { request -H 'Dispatch-Asks: 1' agent GET "$1"; }
 body() { head -c 600 "$work/body"; }
 
 # want_status CODE SECTION WHAT: the last answer's status is CODE.
@@ -342,10 +353,11 @@ ask_settled() {
 }
 
 # block_answered ISSUE: the document's block, under the id the document gave it, is the person's
-# answered ask. The text route's markdown holds no server-owned ask attribute, so the answer is
-# read from the route's `asks` member, which answers each ask block from the ask's node.
+# answered ask. The text route's markdown, read with `Dispatch-Asks: 1` (get_text), holds no
+# server-owned ask attribute, so the answer is read from the route's `asks` member, which answers
+# each ask block from the ask's node.
 block_answered() {
-  get "/api/v1/issues/$1/artifacts/design-md/text"
+  get_text "/api/v1/issues/$1/artifacts/design-md/text"
   [[ "$status" == 200 ]] || return 1
   jq -e --arg who "$dev_login" \
     '[.asks[]? | select(.block_id == "transport" and .state == "answered" and .answered_by == $who)] | length == 1' \
@@ -426,7 +438,7 @@ expect identity "the row still asks the question the agent composed again" \
 expect identity "the row still carries the person's answer" \
   "[\"answered\",\"$dev_login\",[\"REST\"]]" '[.[0].state, .[0].answer.user, .[0].answer.selected]'
 
-get "/api/v1/issues/$carry/artifacts/design-md/text"
+get_text "/api/v1/issues/$carry/artifacts/design-md/text"
 want_status 200 identity "the document after the upload answers"
 expect identity "the uploaded block took the id the live block had, and its ask is still the person's answered one" \
   "[\"answered\",\"$dev_login\"]" \

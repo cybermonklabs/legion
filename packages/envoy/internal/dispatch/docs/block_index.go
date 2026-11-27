@@ -417,20 +417,12 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	// An issue room is reconciled whole, once a tick, whichever of its artifacts the batch lists
 	// (indexOwedRoom): rooms holds how each room this tick read fared, and a room is counted once.
 	rooms := map[string]owedOutcome{}
-	counted := map[string]struct{}{}
-	counts := func(document owedDocument) bool {
-		if document.room == "" {
-			return true
-		}
-		_, done := counted[document.room]
-		counted[document.room] = struct{}{}
-		return !done
-	}
+	counted := roomCounter{}
 	for _, document := range owed {
 		tick.Cursor.Documents = document.id
 		if remembered, still := s.stillLiveAhead(liveAhead, document); still {
 			switch {
-			case !counts(document):
+			case !counted.counts(document):
 			case remembered.unreadable:
 				tick.Unreadable++
 			default:
@@ -441,7 +433,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		delete(liveAhead, document.id)
 		cold := s.srv.GetDoc(document.resident()) == nil
 		outcome, read := rooms[document.room]
-		if !read || document.room == "" {
+		if !read {
 			outcome = s.indexOwed(ctx, document, nil)
 			if document.room != "" {
 				rooms[document.room] = outcome
@@ -459,14 +451,14 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 			slog.Error("dispatch: block index skipped a document it could not index",
 				"artifact", document.id, "error", err)
 		case outcome.ahead:
-			if counts(document) {
+			if counted.counts(document) {
 				tick.LiveAhead++
 			}
 			if cold && !document.markedAt.IsZero() && s.srv.GetDoc(document.resident()) == nil {
 				liveAhead[document.id] = document
 			}
 		case outcome.unreadable:
-			if counts(document) {
+			if counted.counts(document) {
 				tick.Unreadable++
 			}
 			if cold && s.srv.GetDoc(document.resident()) == nil {
@@ -474,7 +466,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 				liveAhead[document.id] = document
 			}
 		case outcome.indexed:
-			if counts(document) {
+			if counted.counts(document) {
 				tick.Documents++
 			}
 		}
@@ -1432,14 +1424,8 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 				return false, false, err
 			}
 		}
-		if err := ledger.runQueue(ctx, nil); err != nil {
+		if err := s.commitPass(ctx, tx, ledger, nil); err != nil {
 			return false, false, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return false, false, err
-		}
-		for _, event := range ledger.events {
-			s.events.Publish(event)
 		}
 		return false, false, nil
 	}
@@ -1896,12 +1882,13 @@ func (s *Service) stateRoom(ctx context.Context, tx pgx.Tx, owner artifactOwner,
 		}
 		// Each document's part under its own stored event, in id order, the room's references with
 		// the part of the document whose event the stamps below give their rows.
-		facts := roomFactsByDocument(index, roomReferencesDocument(room, versions, events, slices.Sorted(maps.Keys(versions))))
+		order := slices.Sorted(maps.Keys(versions))
+		facts := roomFactsByDocument(index, roomReferencesDocument(room, versions, events, order))
 		if err := causeRoomFacts(ctx, tx, room, facts, events, slices.Sorted(maps.Keys(facts))); err != nil {
 			return err
 		}
 		if err := write(ctx, tx, func(b *store.WriteBatch) error {
-			for _, indexed := range slices.Sorted(maps.Keys(versions)) {
+			for _, indexed := range order {
 				stampVersionEvent(b, room, indexed, versions[indexed].Number, versions[indexed].At, events[indexed])
 			}
 			return nil

@@ -119,7 +119,7 @@ func PlanAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reas
 	}
 	change := asks.Resolved(resolution)
 	change.Who, change.At, change.Held = actor, resolution.At, held
-	settled, err := planSettle(ctx, tx, ask.ID, change)
+	settled, err := planSettle(ctx, tx, ask, change)
 	if err != nil {
 		return asks.Settled{}, model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
 	}
@@ -154,7 +154,7 @@ func WriteRestoredAsks(ctx context.Context, tx pgx.Tx, restored []model.Ask, act
 		ids[index] = ask.ID
 		change := asks.Reopened()
 		change.Who, change.At, change.Held = actor, at, &held[index]
-		settled, err := planSettle(ctx, tx, ask.ID, change)
+		settled, err := planSettle(ctx, tx, ask, change)
 		if err != nil {
 			return fmt.Errorf("restore withdrawn ask: %w", err)
 		}

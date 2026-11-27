@@ -59,27 +59,15 @@ func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Acto
 	if err != nil {
 		return nil, false, fmt.Errorf("list the items of %s: %w", issueKey, err)
 	}
-	var listed []edgeRow
+	listed, askKinds, err := scanConversationItems(rows, issueKey)
+	if err != nil {
+		return nil, false, err
+	}
 	others := map[ItemKind][]string{}
-	askKinds := map[string]string{}
-	for rows.Next() {
-		var item edgeRow
-		var askKind string
-		if err := rows.Scan(&item.otherKind, &item.otherID, &askKind); err != nil {
-			rows.Close()
-			return nil, false, fmt.Errorf("scan an item of %s: %w", issueKey, err)
-		}
-		listed = append(listed, item)
+	for _, item := range listed {
 		if ItemKind(item.otherKind) != ItemComment {
 			others[ItemKind(item.otherKind)] = append(others[ItemKind(item.otherKind)], item.otherID)
 		}
-		if ItemKind(item.otherKind) == ItemAsk {
-			askKinds[item.otherID] = askKind
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("list the items of %s: %w", issueKey, err)
 	}
 	passing := map[ItemKind]map[string]bool{ItemComment: {}}
 	for _, id := range ids {
@@ -101,16 +89,15 @@ func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Acto
 		}
 	}
 	blocks := map[[2]string][]edgeRow{}
+	resolved := map[[2]string]resolvedNode{}
 	if len(loading) > 0 {
 		if blocks, err = conversationBlocks(ctx, q, loading); err != nil {
 			return nil, false, err
 		}
-		for _, item := range slices.Clone(loading) {
+		// range reads loading once, so the blocks appended here are not walked again.
+		for _, item := range loading {
 			loading = append(loading, blocks[[2]string{item.otherKind, item.otherID}]...)
 		}
-	}
-	resolved := map[[2]string]resolvedNode{}
-	if len(loading) > 0 {
 		if resolved, err = resolveNodes(ctx, q, who, false, loading); err != nil {
 			return nil, false, err
 		}
@@ -118,20 +105,7 @@ func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Acto
 	if err := resolveHeadComments(kept, heads, blocksOf, blocks, resolved); err != nil {
 		return nil, false, err
 	}
-	nodes := make([]ExcerptedNode, 0, len(kept))
-	for _, item := range kept {
-		node, found := resolved[[2]string{item.otherKind, item.otherID}]
-		if !found {
-			continue
-		}
-		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL), AskKind: askKindOf(item, askKinds)})
-		for _, block := range blocks[[2]string{item.otherKind, item.otherID}] {
-			if node, found := resolved[[2]string{block.otherKind, block.otherID}]; found {
-				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)})
-			}
-		}
-	}
-	return nodes, true, nil
+	return conversationAnswer(kept, blocks, resolved, askKinds, serverURL), true, nil
 }
 
 // headReserved is whether the store holds the node of head reserved for its author.

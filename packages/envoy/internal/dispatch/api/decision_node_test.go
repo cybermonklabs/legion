@@ -25,7 +25,7 @@ import (
 // its id and its ref_key, which a pointer at one of its blocks spells (`<ref_key>#<block>`, a
 // shaped tuple's far end), and the id and ref_key of the artifact its blocks' rows and nodes are
 // keyed under - the document itself, or for a document converted into its issue's room the room's
-// tree artifact (T12a of this branch's plan).
+// tree artifact (T12a of the issue-tree plan).
 type decisionDocument struct {
 	id, refKey, room, nodeKey string
 }
@@ -655,8 +655,8 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 	requireDecidedBy(t, database, "the browser's tied decision", address, "alice")
 }
 
-// connectPeerAs connects login's browser to artifactID's room, as connectBrowserPeer connects
-// alice's, binding the fragment the artifact read through handler answers.
+// connectPeerAs connects login's browser to artifactID's room, through a document server of its
+// own over documentService, binding the fragment the artifact read through handler answers.
 func connectPeerAs(t *testing.T, handler http.Handler, documentService *docs.Service, artifactID, login string) *syncedPeer {
 	t.Helper()
 	sockets := &servedSockets{finished: make(map[string]chan struct{})}

@@ -526,8 +526,14 @@ func TestSuggestionAcceptRewritesATypedBlockInPlaceBesideOtherBlocks(t *testing.
 				t.Fatalf("accept: status=%d body=%s", accepted.Code, accepted.Body.String())
 			}
 			settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-accept")
-			if got := documentMarkdown(t, handler, issue.PrimaryArtifactID); got != test.want {
-				t.Fatalf("document after the accept = %q, want %q", got, test.want)
+			// The text as an agent of this build reads it, under `Dispatch-Asks: 1` (textRead), with
+			// none of an ask block's server-owned attributes: an answered ask's state, answerer and
+			// time are read in the asks member below.
+			text := decodeBody[struct {
+				Markdown string `json:"markdown"`
+			}](t, textRead(t, handler, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", true))
+			if text.Markdown != test.want {
+				t.Fatalf("document after the accept = %q, want %q", text.Markdown, test.want)
 			}
 			if shown := agentText(t, handler, issue.PrimaryArtifactID); test.answered && !answeredA1.MatchString(shown) {
 				t.Fatalf("the answered ask after the accept reads in the text's asks:\n%s\nwant it answered by alice with Go.", shown)

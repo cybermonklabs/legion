@@ -300,7 +300,7 @@ func AsksOfDocumentSQL(alias, document string) string {
 // which a document that is its own room, and every result recorded before the issue room, holds;
 // or a row keyed by the room that document is edited in (DocumentRoomSQL), the tree artifact of an
 // issue room, whose block that document holds or last held (RoomBlockDocumentSQL). A result's row
-// is keyed by the artifact its check's document_blocks row is keyed by (T11 of this branch's plan),
+// is keyed by the artifact its check's document_blocks row is keyed by (T11 of the issue-tree plan),
 // so every read of a document's results by the document's id reads them so, never by the row's key
 // alone.
 func CheckResultsOfDocumentSQL(alias, document string) string {
@@ -328,7 +328,7 @@ func DocumentRoomSQL(document string) string {
 }
 
 // DecisionsQuerySQL is true of the artifacts row aliased alias while it is its issue's decisions
-// query node (api's createDecisionsQuery, D6 of this branch's plan): a document whose node is a
+// query node (api's createDecisionsQuery, D6 of the issue-tree plan): a document whose node is a
 // query node of query `decisions` (graphstore.QueryNode) and which no document_rooms row joins to
 // an issue room, whose versions render that query. No fragment of any room holds it, so no socket
 // opens on it (docs.Service.ServeHTTP), no upload or edit writes it (api's decisionsQueryRefusal),
@@ -348,7 +348,7 @@ func DecisionsQuerySQL(alias string) string {
 // ResolvedBlockSQL is the node a block far end of a reference resolves to, as SQL text answering a
 // node id, null where it resolves to none; address is the far end, a text SQL expression holding
 // a node id (text.TargetID). The one resolution is block_moved_to's (migration
-// 20261118165901_issue_tree_block_moved_to_room, T17 of this branch's plan): the address's current
+// 20261118165901_issue_tree_block_moved_to_room, T17 of the issue-tree plan): the address's current
 // moved_to tuple first, followed hop by hop, then the room its document's document_rooms row
 // names, then the address itself. A probe in front of it answers an address a document_blocks row
 // holds where no moved_to tuple runs from it and its document has no room, which is what the
@@ -747,8 +747,9 @@ func blockAuthors(ctx context.Context, q Queryer, artifactID string, record Inde
 				tuples = append(tuples, graphstore.UncausedTuple{Tuple: alias})
 			}
 			for _, authorNode := range authorNodes {
-				if _, again := made[blockFarEnd{kind: authorNode.Kind, id: authorNode.ID}]; !again {
-					made[blockFarEnd{kind: authorNode.Kind, id: authorNode.ID}] = struct{}{}
+				key := blockFarEnd{kind: authorNode.Kind, id: authorNode.ID}
+				if _, again := made[key]; !again {
+					made[key] = struct{}{}
 					nodes = append(nodes, authorNode)
 				}
 			}
@@ -1000,7 +1001,7 @@ func (b *BlockIndexing) planBlockParents(
 	// placement holds an authored node, the one block placeAuthored moves.
 	for _, block := range placed {
 		if authoredType(nodes[block].Type) {
-			placement.textParents = slices.Clone(parents)
+			placement.detachTextParents()
 			break
 		}
 	}
@@ -1061,10 +1062,7 @@ func (b *BlockIndexing) planBlockParents(
 	var versionIDs map[string]struct{}
 	removed := func(far blockFarEnd) bool {
 		if versionIDs == nil {
-			versionIDs = make(map[string]struct{}, len(nodes))
-			for _, node := range nodes {
-				versionIDs[node.ID] = struct{}{}
-			}
+			versionIDs = versionBlockIDs(nodes)
 		}
 		return removedParent(far, refKey, versionIDs)
 	}
@@ -1229,7 +1227,7 @@ func (b BlockIndexing) standingPlaced() ([]string, []*string) {
 const (
 	criterionType   = "criterion"
 	requirementType = "requirement"
-	checkType       = "check"
+	checkType       = graphstore.BlockTypeCheck
 	planTaskType    = "plan_task"
 
 	AuthoredTypesSQL = `('` + criterionType + `', '` + requirementType + `', '` + checkType + `', '` + planTaskType + `')`
@@ -1565,6 +1563,9 @@ func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed Bl
 	held := make([]heldAuthored, len(ids))
 	var unread []string
 	var unreadAt []int
+	// The parent attribute each block's links hold, the first one where a block holds more, read
+	// once for every held block rather than by a walk of the links for each.
+	var pointers map[string]blockFarEnd
 	for position, id := range ids {
 		far, placed := indexed.placed[id]
 		value, valued := indexed.values[id]
@@ -1572,13 +1573,15 @@ func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed Bl
 			unread, unreadAt = append(unread, id), append(unreadAt, position)
 			continue
 		}
-		held[position] = heldAuthored{placement: value.placement, parent: far}
-		for _, link := range indexed.links {
-			if link.blockID == id && link.kind == pmdoc.ParentAttribute {
-				held[position].pointer = blockFarEnd{kind: link.target.Kind, id: link.target.ID}
-				break
+		if pointers == nil {
+			pointers = make(map[string]blockFarEnd)
+			for _, link := range indexed.links {
+				if _, again := pointers[link.blockID]; link.kind == pmdoc.ParentAttribute && !again {
+					pointers[link.blockID] = blockFarEnd{kind: link.target.Kind, id: link.target.ID}
+				}
 			}
 		}
+		held[position] = heldAuthored{placement: value.placement, parent: far, pointer: pointers[id]}
 	}
 	if len(unread) > 0 {
 		read, err := heldAuthoredBlocks(ctx, q, document.RefKey, unread)
@@ -1620,10 +1623,7 @@ func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed Bl
 		}
 		if stored.placement == PlacementStored && stored.parent.kind != "" {
 			if versionIDs == nil {
-				versionIDs = make(map[string]struct{}, len(nodes))
-				for _, node := range nodes {
-					versionIDs[node.ID] = struct{}{}
-				}
+				versionIDs = versionBlockIDs(nodes)
 			}
 			if !removedParent(stored.parent, document.RefKey, versionIDs) &&
 				stored.pointer == writtenParent(sources, farEnds, ids[position]) {
@@ -1661,6 +1661,16 @@ func placeAuthored(ctx context.Context, q Queryer, artifactID string, indexed Bl
 		}
 	}
 	return kept, nil
+}
+
+// versionBlockIDs is the set of the ids of nodes, the blocks of the version a pass places, which a
+// placement reads a stored parent's block against (removedParent), built where it reads one.
+func versionBlockIDs(nodes []model.ArtifactBlock) map[string]struct{} {
+	ids := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		ids[node.ID] = struct{}{}
+	}
+	return ids
 }
 
 // authoredResolution is what the store says of the targets the authored nodes a pass places name
@@ -2193,12 +2203,8 @@ func planBlockValues(
 	}
 	textRanks := textRankBlocks(bands, document, nodes, placement, fragments, held)
 	var tuples []graphstore.UncausedTuple
-	value := func(id, attribute, to string) {
-		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-			FromKind: BlockNodeKind, FromID: blockNodeAddress(document.RefKey, id), Kind: attribute,
-			ToKind: graphstore.KindValue, ToID: to,
-			At: document.At, Who: document.Writer, Asserted: true,
-		}})
+	value := func(id, attribute, to string, asserted bool) {
+		tuples = append(tuples, graphstore.UncausedTuple{Tuple: valueTuple(blockNodeAddress(document.RefKey, id), attribute, to, document.At, document.Writer, asserted)})
 	}
 	textParent := func(id string, far blockFarEnd, asserted bool) {
 		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
@@ -2210,10 +2216,10 @@ func planBlockValues(
 	for index, id := range placement.ids {
 		block := nodes[placement.placed[index]]
 		if ranks[index] != held[index].rank {
-			value(id, AttributeRank, ranks[index])
+			value(id, AttributeRank, ranks[index], true)
 		}
 		if _, wrote := changed[id]; wrote || stale || !held[index].text {
-			value(id, graphstore.AttributeText, markdown[block.From:block.To])
+			value(id, graphstore.AttributeText, markdown[block.From:block.To], true)
 		}
 		placed := PlacementText
 		switch {
@@ -2223,7 +2229,7 @@ func planBlockValues(
 			placed = PlacementAuthored
 		}
 		if held[index].placement != placed {
-			value(id, AttributePlacement, placed)
+			value(id, AttributePlacement, placed, true)
 		}
 		// The text parent the block holds stands where it is the one the text gives it, which is
 		// read without building its address; only one that moved builds the address it states.
@@ -2243,7 +2249,7 @@ func planBlockValues(
 			textParent(id, standsUnder, true)
 		}
 		if textRanks[index] != held[index].textRank {
-			value(id, AttributeTextRank, textRanks[index])
+			value(id, AttributeTextRank, textRanks[index], true)
 		}
 		written, err := blockPlanValues(block)
 		if err != nil {
@@ -2255,13 +2261,9 @@ func planBlockValues(
 			switch {
 			case writes && holds && stated == holding:
 			case writes:
-				value(id, name, stated)
+				value(id, name, stated, true)
 			case holds:
-				tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-					FromKind: BlockNodeKind, FromID: blockNodeAddress(document.RefKey, id), Kind: name,
-					ToKind: graphstore.KindValue, ToID: holding,
-					At: document.At, Who: document.Writer, Asserted: false,
-				}})
+				value(id, name, holding, false)
 			}
 		}
 		standing[id] = heldBlockValue{
@@ -2483,6 +2485,9 @@ func spaceFromStoredRanks(ctx context.Context, q Queryer, indexed BlockIndex, do
 			others[parent] = append(others[parent], move.Rank)
 		}
 	}
+	// The parent of every placed block, built at the first new rank that collides, which is the
+	// first that walks its siblings, rather than at each walk.
+	var parents []blockFarEnd
 	for index := range placement.ids {
 		if keeps[index] || ranks[index] == held[index].rank {
 			continue
@@ -2490,6 +2495,12 @@ func spaceFromStoredRanks(ctx context.Context, q Queryer, indexed BlockIndex, do
 		parent := parentOf(index)
 		if !slices.Contains(others[parent], ranks[index]) {
 			continue
+		}
+		if parents == nil {
+			parents = make([]blockFarEnd, len(placement.ids))
+			for sibling := range placement.ids {
+				parents[sibling] = parentOf(sibling)
+			}
 		}
 		upper := string(bands[placement.placed[index]] + 1)
 		consider := func(candidate string) {
@@ -2501,7 +2512,7 @@ func spaceFromStoredRanks(ctx context.Context, q Queryer, indexed BlockIndex, do
 			consider(other)
 		}
 		for sibling := range placement.ids {
-			if sibling != index && !keeps[sibling] && parentOf(sibling) == parent {
+			if sibling != index && !keeps[sibling] && parents[sibling] == parent {
 				consider(ranks[sibling])
 			}
 		}
@@ -2523,6 +2534,19 @@ type parentChild struct {
 // the read names to_kind <> 'value', the index's predicate, which a far end bound to a column of
 // the probe does not prove), with the rank it holds now, read as heldBlockValues reads a value; a
 // child that holds no rank, or that is no block, is left out.
+//
+// Each parent's probe names the parent and the relation's kind alone, behind an offset 0 the
+// planner can neither flatten nor push a test through, and the test that a child is a block
+// stands outside it. Inside the probe that test bounds the first key of graph_tuples_current,
+// whose order is the probe's own, and a plan made on the statistics of a graph_tuples that held
+// no tuple out of a block - a store analyzed before its first block was indexed - counts that
+// key's range empty and walks it for each parent: every current tuple out of every block the
+// store holds, a cost that grows with the parents times the store. Measured on 2026-11-26 on the
+// build farm, over six rooms the reconciliation indexed one after another in one database whose
+// graph_tuples was analyzed before the first: the read of 12,625 parents hit 27,194,250 buffers
+// in 112.6 s of a pass of 129 s over 20,000 blocks, and that of 2,953 parents 12,772,954 buffers
+// in 52.0 s of a pass of 55.6 s over 4,682. A probe a parent costs the same whatever the
+// statistics say (TestTheParentChildRanksReadProbesEachParentByItsFarEnd).
 func parentChildRanks(ctx context.Context, q Queryer, parents []blockFarEnd) ([]parentChild, error) {
 	kinds, ids := make([]string, len(parents)), make([]string, len(parents))
 	for index, parent := range parents {
@@ -2534,10 +2558,11 @@ func parentChildRanks(ctx context.Context, q Queryer, parents []blockFarEnd) ([]
 		join lateral (
 			select held.from_id from (
 				`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-		`t.to_kind = parent.kind and t.to_id = parent.id and t.kind = $3 and t.from_kind = $4
+		`t.to_kind = parent.kind and t.to_id = parent.id and t.kind = $3
 				  and t.to_kind <> '`+graphstore.KindValue+`'`)+`
+				offset 0
 			) held
-			where held.asserted
+			where held.asserted and held.from_kind = $4
 		) child on true
 		join lateral (
 			select case when t.asserted then t.to_id end as held from graph_tuples t
@@ -2712,7 +2737,7 @@ func blockBands(document IndexedVersion, nodes []model.ArtifactBlock, fragments 
 }
 
 // planRoomBlocks plans issue_room_blocks, the projection of each in_document of an issue room's
-// blocks (D16 of this branch's plan) and the one record of the document whose fragment holds each
+// blocks (D16 of the issue-tree plan) and the one record of the document whose fragment holds each
 // block of the room, level with the version the pass indexes under the issue's tree artifact, the
 // indexing's own artifact; queueRoomBlocks writes it in the pass's write phase. The pass reads the
 // room whole, so the row of every block it does not hold goes: one the version dropped, whose

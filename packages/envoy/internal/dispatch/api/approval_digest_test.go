@@ -3,8 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +22,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -85,9 +82,8 @@ func (r *digestRig) recordAt(t *testing.T, key, query string, cut refs.TreeCut) 
 	if err != nil {
 		t.Fatalf("read the %s record of %s at %+v: %v", query, key, cut, err)
 	}
-	sum := sha256.Sum256(record.Record)
-	if record.Digest != hex.EncodeToString(sum[:]) {
-		t.Fatalf("the %s record of %s answers the digest %s, want the sha256 of its bytes, %x", query, key, record.Digest, sum)
+	if want := contentHash(string(record.Record)); record.Digest != want {
+		t.Fatalf("the %s record of %s answers the digest %s, want the sha256 of its bytes, %s", query, key, record.Digest, want)
 	}
 	return record
 }
@@ -99,25 +95,23 @@ func (r *digestRig) block(id string) string { return r.spec.address(id) }
 // no word of any node would.
 func (r *digestRig) state(t *testing.T, tuples ...graphstore.Tuple) {
 	t.Helper()
+	r.write(t, nil, tuples)
+}
+
+// write writes nodes and tuples straight into the store through its writer, in one transaction of
+// their own.
+func (r *digestRig) write(t *testing.T, nodes []graphstore.Node, tuples []graphstore.Tuple) {
+	t.Helper()
 	ctx := context.Background()
-	tx, err := r.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-		t.Fatalf("write %+v: %v", tuples, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit %+v: %v", tuples, err)
+	if err := pgx.BeginFunc(ctx, r.database.Pool, func(tx pgx.Tx) error { return graphstore.Write(ctx, tx, nodes, tuples) }); err != nil {
+		t.Fatalf("write the nodes %+v and the tuples %+v: %v", nodes, tuples, err)
 	}
 }
 
-// stateDrained appends tuples straight into the store as state does, marks the queries of the
-// issue key owed in the same batch (docs.QueueQueryMark), as every writer that moves a record does,
-// and runs the drain once the write has committed (docs.Service.DrainOwedQueries), which writes a
-// version of each query whose record moved: the version whose digest every gate reads.
-func (r *digestRig) stateDrained(t *testing.T, key string, tuples ...graphstore.Tuple) {
+// stateMarked appends tuples straight into the store as state does, and marks the queries of the
+// issue key owed in the same batch (docs.QueueQueryMark), as every writer that moves a record
+// does, failing unless the write committed and marked them.
+func (r *digestRig) stateMarked(t *testing.T, key string, tuples ...graphstore.Tuple) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := r.database.Pool.Begin(ctx)
@@ -140,6 +134,15 @@ func (r *digestRig) stateDrained(t *testing.T, key string, tuples ...graphstore.
 	if !marked {
 		t.Fatalf("the write of %+v marked no query of %s owed: %s is no converted issue", tuples, key, key)
 	}
+}
+
+// stateDrained is stateMarked, then the drain once the write has committed
+// (docs.Service.DrainOwedQueries), which writes a version of each query whose record moved: the
+// version whose digest every gate reads.
+func (r *digestRig) stateDrained(t *testing.T, key string, tuples ...graphstore.Tuple) {
+	t.Helper()
+	ctx := context.Background()
+	r.stateMarked(t, key, tuples...)
 	r.documents.DrainOwedQueries(ctx, key)
 	var owed bool
 	if err := r.database.Pool.QueryRow(ctx, `select exists (select 1 from issue_query_marks where issue_key = $1)`, key).Scan(&owed); err != nil || owed {
@@ -155,9 +158,18 @@ func blockTuple(address, kind, toKind, toID string, asserted bool) graphstore.Tu
 	}
 }
 
+// nodeValue is the value tuple of attribute on the node kind/id, as a write straight into the
+// store states one.
+func nodeValue(kind, id, attribute, value string) graphstore.Tuple {
+	return graphstore.Tuple{
+		FromKind: kind, FromID: id, Kind: attribute, ToKind: graphstore.KindValue, ToID: value,
+		At: time.Now().UTC(), Who: digestWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
+	}
+}
+
 // blockValue is the value tuple of attribute on the block node at address.
 func blockValue(address, attribute, value string) graphstore.Tuple {
-	return blockTuple(address, attribute, graphstore.KindValue, value, true)
+	return nodeValue(refs.BlockNodeKind, address, attribute, value)
 }
 
 // walkAddresses is each node's store address, `<kind>:<id>`, in order.
@@ -215,26 +227,16 @@ func createDigestIssue(t *testing.T, handler http.Handler, database *store.Store
 
 // createDigestChild creates, as alice, an issue of project with spec under the issue parent, a
 // root issue where parent is "", born converted unless unconverted, in which case a live process
-// of the release before is beside the server for the create alone (holdIssuesUnconverted, taken
-// back once the issue is written).
+// of the release before is beside the server for the create alone (holdUnconverted, taken back
+// once the issue is written).
 func createDigestChild(t *testing.T, handler http.Handler, database *store.Store, project, title, spec, parent string, unconverted bool) model.Issue {
 	t.Helper()
-	ctx := context.Background()
-	var held string
+	release := func() {}
 	if unconverted {
-		if err := database.Pool.QueryRow(ctx, `
-			insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-			values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day') returning instance::text`,
-			pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()).Scan(&held); err != nil {
-			t.Fatalf("add a live server process that lists no issue room: %v", err)
-		}
+		release = holdUnconverted(t, database)
 	}
 	issue, tree := createRoomIssue(t, handler, database, project, title, spec, parent)
-	if unconverted {
-		if _, err := database.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, held); err != nil {
-			t.Fatalf("take back the process of the release before: %v", err)
-		}
-	}
+	release()
 	if converted := tree != ""; converted == unconverted {
 		t.Fatalf("issue %s holds the tree %q, want it converted %t", issue.Key, tree, !unconverted)
 	}
@@ -456,9 +458,9 @@ func digestStepBornConvertedSpec(t *testing.T, rig *digestRig) {
 	issue := createDigestIssue(t, rig.handler, rig.database, "CORE", "A spec created converted",
 		":::requirement{#r1}\nThe second issue's list comes first.\n:::\n", false)
 	spec := readDecisionDocument(t, rig.database, issue.Key, "spec")
-	if supertag, held := versionDefinition(t, rig.database, spec.refKey, 1); supertag != graphstore.SupertagQueryVersion || definitionHeld(held) != want {
+	if supertag, held := versionDefinition(t, rig.database, spec.refKey, 1); supertag != graphstore.SupertagQueryVersion || valueOrNone(held) != want {
 		t.Errorf("the version 1 of %s, a spec created converted, is a %s holding definition_version %s, want a query version holding %s",
-			spec.refKey, supertag, definitionHeld(held), want)
+			spec.refKey, supertag, valueOrNone(held), want)
 	}
 	review := reviewDocument(t, rig.handler, spec.id, "alice", "approved", "")
 	if review.ArtifactID != spec.id || review.Version != 1 {
@@ -625,9 +627,7 @@ func digestStepValues(t *testing.T, rig *digestRig) {
 // them.
 func editThroughTheArtifactRoute(t *testing.T, handler http.Handler, artifactID string, ops []map[string]any) {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
-		"ops": ops, "summary": "edit",
-	}, "alice")
+	response := editDocument(t, handler, artifactID, map[string]any{"ops": ops, "summary": "edit"})
 	if response.Code != http.StatusOK {
 		t.Fatalf("edit %s: status=%d body=%s", artifactID, response.Code, response.Body.String())
 	}
@@ -923,15 +923,7 @@ func digestStepAnchoredComment(t *testing.T, rig *digestRig) {
 		issue := createDigestIssue(t, rig.handler, rig.database, "CORE", "A decided issue "+strconv.FormatBool(unconverted),
 			"An opening paragraph.\n\n:::decision{#d1}\n"+words+"\n:::\n", unconverted)
 		spec := readDecisionDocument(t, rig.database, issue.Key, "spec")
-		var paragraph string
-		for text, id := range blockIDsByText(t, rig.handler, issue.PrimaryArtifactID) {
-			if strings.TrimSpace(text) == words {
-				paragraph = id
-			}
-		}
-		if paragraph == "" {
-			t.Fatalf("the spec of %s lists no block of the decision's paragraph", issue.Key)
-		}
+		paragraph := blockIDOfText(t, rig.handler, issue.PrimaryArtifactID, words)
 		artifact := "spec"
 		if !unconverted {
 			artifact = issue.PrimaryArtifactID
@@ -1049,27 +1041,21 @@ func requireGate(t *testing.T, rig *digestRig, key, step string, document model.
 	digest := versionDigestOf(t, rig.database, document.ArtifactID, newest)
 	approved := func(state string) bool { return state == "approved" }
 
+	type gatedArtifact struct {
+		ID       string `json:"id"`
+		Approval *struct {
+			State string `json:"state"`
+		} `json:"approval"`
+	}
 	read := decodeBody[struct {
 		DesignGates []issueDesignGate `json:"design_gates"`
-		Artifacts   []struct {
-			ID       string `json:"id"`
-			Approval *struct {
-				State string `json:"state"`
-			} `json:"approval"`
-		} `json:"artifacts"`
+		Artifacts   []gatedArtifact   `json:"artifacts"`
 	}](t, dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice"))
 	gate := slices.IndexFunc(read.DesignGates, func(gate issueDesignGate) bool { return gate.Step == step })
 	if gate < 0 || read.DesignGates[gate].ArtifactID != document.ArtifactID {
 		t.Fatalf("%s: the design gates of %s read %+v, want the step %s on %s", when, key, read.DesignGates, step, document.ArtifactID)
 	}
-	held := slices.IndexFunc(read.Artifacts, func(artifact struct {
-		ID       string `json:"id"`
-		Approval *struct {
-			State string `json:"state"`
-		} `json:"approval"`
-	}) bool {
-		return artifact.ID == document.ArtifactID
-	})
+	held := slices.IndexFunc(read.Artifacts, func(artifact gatedArtifact) bool { return artifact.ID == document.ArtifactID })
 	if held < 0 || read.Artifacts[held].Approval == nil || approved(read.Artifacts[held].Approval.State) != want {
 		var state any = "no document"
 		if held >= 0 {
@@ -1117,17 +1103,13 @@ func digestStepGate(t *testing.T, rig *digestRig) {
 
 	// Version 2, written by SQL with version 1's text: no pass states it, so it answers the sha256
 	// of its stored markdown, which the person's approval of it pins.
-	var markdown string
-	if err := rig.database.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1::uuid and number = 1`, spec.id).Scan(&markdown); err != nil {
-		t.Fatalf("read version 1 of %s: %v", spec.refKey, err)
-	}
+	markdown := storedVersionMarkdown(t, rig.database, spec.id, 1)
 	if _, err := rig.database.Pool.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown, authors)
 		values ($1::uuid, 2, $2, '[{"kind":"user","id":"alice"}]')`, spec.id, markdown); err != nil {
 		t.Fatalf("write version 2 of %s as an older build writes one: %v", spec.refKey, err)
 	}
-	sum := sha256.Sum256([]byte(markdown))
-	stored := hex.EncodeToString(sum[:])
+	stored := contentHash(markdown)
 	if got := versionDigestOf(t, rig.database, spec.id, 2); got != stored {
 		t.Fatalf("version 2 of %s, which no pass has stated, answers the digest %s, want the sha256 of its stored markdown, %s", spec.refKey, got, stored)
 	}
@@ -1197,7 +1179,6 @@ func recordDigestResult(t *testing.T, rig *digestRig, issue, verification, check
 // the version answers, its row of artifact_review_carries names the version it carries from, and
 // alice's own review of the version before reads as her own act.
 func digestStepResultCarry(t *testing.T, rig *digestRig) {
-	ctx := context.Background()
 	issue, verification := digestVerifiedIssue(t, rig, "A carried verification")
 	own := reviewDocument(t, rig.handler, verification.id, "alice", "approved", "")
 	before := len(documentVersions(t, rig.handler, verification.id))
@@ -1227,9 +1208,8 @@ func digestStepResultCarry(t *testing.T, rig *digestRig) {
 	if want := versionDigestOf(t, rig.database, verification.id, latest); carried.ContentSHA256 == nil || *carried.ContentSHA256 != want {
 		t.Errorf("the carried review pins %v, want the digest %s version %d answers", carried.ContentSHA256, want, latest)
 	}
-	var from int
-	if err := rig.database.Pool.QueryRow(ctx, `select carried_from_version from artifact_review_carries where review_id = $1::uuid`, carried.ID).Scan(&from); err != nil || from != own.Version {
-		t.Errorf("the artifact_review_carries row of the carried review names version %d (%v), want version %d", from, err, own.Version)
+	if from, held := carriedFromRow(t, rig.database, carried.ID); !held || from != own.Version {
+		t.Errorf("the carried review %s holds %s, want the artifact_review_carries row naming version %d", carried.ID, carriedFromRowWords(from, held), own.Version)
 	}
 	if got := readApproval(t, rig.handler, verification.id); got.Approval == nil || got.Approval.State != "approved" || got.Approval.Version == nil || *got.Approval.Version != latest {
 		t.Errorf("the approval of %s reads %+v after the result, want approved at version %d", verification.refKey, got.Approval, latest)
@@ -1243,32 +1223,21 @@ func digestStepResultCarry(t *testing.T, rig *digestRig) {
 // holds definition_version 2, so no carry crosses the two definitions, no review is written, and the
 // approval reads stale.
 func digestStepDefinitionControl(t *testing.T, rig *digestRig) {
-	ctx := context.Background()
 	issue, verification := digestVerifiedIssue(t, rig, "A verification whose definition changes")
 	own := reviewDocument(t, rig.handler, verification.id, "alice", "approved", "")
-	if supertag, held := versionDefinition(t, rig.database, verification.refKey, own.Version); supertag != graphstore.SupertagQueryVersion || definitionHeld(held) != "1" {
-		t.Fatalf("the approved version %d of %s is a %s holding definition_version %s, want a query version holding 1", own.Version, verification.refKey, supertag, definitionHeld(held))
+	if supertag, held := versionDefinition(t, rig.database, verification.refKey, own.Version); supertag != graphstore.SupertagQueryVersion || valueOrNone(held) != "1" {
+		t.Fatalf("the approved version %d of %s is a %s holding definition_version %s, want a query version holding 1", own.Version, verification.refKey, supertag, valueOrNone(held))
 	}
 	node := graphstore.QueryNode(verification.refKey, "CORE", graphstore.QueryVerification, digestWriter, time.Now().UTC())
 	node.Attributes[graphstore.AttributeDefinitionVersion] = graphstore.QueryDefinitionVersion + 1
-	tx, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, graphstore.AttributeFacts(nil, node)); err != nil {
-		t.Fatalf("restate the query node %s with definition_version 2: %v", verification.refKey, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the restated query node %s: %v", verification.refKey, err)
-	}
+	rig.write(t, []graphstore.Node{node}, graphstore.AttributeFacts(nil, node))
 	before := len(documentVersions(t, rig.handler, verification.id))
 	if after := recordDigestResult(t, rig, issue.Key, verification.id, "c2"); after != before+1 {
 		t.Fatalf("a result of c2 left %d versions of the Verification document of %s, want %d", after, issue.Key, before+1)
 	}
 	latest := before + 1
-	if supertag, held := versionDefinition(t, rig.database, verification.refKey, latest); supertag != graphstore.SupertagQueryVersion || definitionHeld(held) != "2" {
-		t.Fatalf("version %d of %s, which the result wrote, is a %s holding definition_version %s, want a query version holding 2", latest, verification.refKey, supertag, definitionHeld(held))
+	if supertag, held := versionDefinition(t, rig.database, verification.refKey, latest); supertag != graphstore.SupertagQueryVersion || valueOrNone(held) != "2" {
+		t.Fatalf("version %d of %s, which the result wrote, is a %s holding definition_version %s, want a query version holding 2", latest, verification.refKey, supertag, valueOrNone(held))
 	}
 	if reviews := listReviews(t, rig.handler, verification.id); len(reviews) != 1 || reviews[0].ID != own.ID {
 		t.Errorf("the approval of verification at version %d carried to version %d, whose definition_version is 2, not 1: the reviews of %s read %+v", own.Version, latest, verification.refKey, reviews)
@@ -1474,7 +1443,6 @@ func awaitDigestsFilled(t *testing.T, database *store.Store, artifactID string) 
 // (docs.RecordCarryReason), its artifact.approved before the version's artifact.version, so every
 // gate reads approved at a version equal to latest_version, which the Legion daemon reads.
 func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
-	ctx := context.Background()
 	issue := createDigestIssue(t, rig.handler, rig.database, "CORE", "A spec whose paragraph moves",
 		":::criterion{#k1}\nI want the urgent list.\n:::\n\nA paragraph between.\n", false)
 	spec := readDecisionDocument(t, rig.database, issue.Key, "spec")
@@ -1483,30 +1451,14 @@ func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
 	awaitDigestsFilled(t, rig.database, spec.id)
 	publishDesignGates(t, rig.handler, issue.Key, []issueDesignGate{{Step: model.GatedStepSpec, ArtifactID: spec.id}})
 	gate := model.AskApprovalDocument{ArtifactID: spec.id}
-	newest := func() int {
-		t.Helper()
-		var number int
-		if err := rig.database.Pool.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1::uuid`, spec.id).Scan(&number); err != nil {
-			t.Fatalf("read the newest version of %s: %v", spec.refKey, err)
-		}
-		return number
-	}
-	var paragraph string
-	for text, id := range blockIDsByText(t, rig.handler, spec.id) {
-		if strings.TrimSpace(text) == "A paragraph between." {
-			paragraph = id
-		}
-	}
-	if paragraph == "" {
-		t.Fatalf("the spec of %s lists no block of its paragraph", issue.Key)
-	}
+	paragraph := blockIDOfText(t, rig.handler, spec.id, "A paragraph between.")
 
 	// The requirement moved before the paragraph: its text_rank moves, and so does the digest.
 	approveStanding(t, rig, issue.Key, model.GatedStepSpec, spec.id, "the requirement's move")
-	approved := newest()
+	approved := newestVersionOf(t, rig.database, spec.id)
 	editThroughTheArtifactRoute(t, rig.handler, spec.id, []map[string]any{{"op": "move", "block": "r1", "after": "block:k1"}})
 	awaitDigestsFilled(t, rig.database, spec.id)
-	if moved := newest(); moved != approved+1 || versionDigestOf(t, rig.database, spec.id, moved) == versionDigestOf(t, rig.database, spec.id, approved) {
+	if moved := newestVersionOf(t, rig.database, spec.id); moved != approved+1 || versionDigestOf(t, rig.database, spec.id, moved) == versionDigestOf(t, rig.database, spec.id, approved) {
 		t.Errorf("the move of r1 before the paragraph wrote version %d holding the digest %s, want version %d whose digest moved from %s",
 			moved, versionDigestOf(t, rig.database, spec.id, moved), approved+1, versionDigestOf(t, rig.database, spec.id, approved))
 	}
@@ -1518,11 +1470,11 @@ func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
 	// The paragraph moved before the requirement: the paragraph takes the new text_rank, the spec
 	// query's record does not move, and the write carries the approval to its version.
 	approveStanding(t, rig, issue.Key, model.GatedStepSpec, spec.id, "the paragraph's move")
-	approved = newest()
+	approved = newestVersionOf(t, rig.database, spec.id)
 	reviews := len(listReviews(t, rig.handler, spec.id))
 	editThroughTheArtifactRoute(t, rig.handler, spec.id, []map[string]any{{"op": "move", "block": paragraph, "after": "block:k1"}})
 	awaitDigestsFilled(t, rig.database, spec.id)
-	moved := newest()
+	moved := newestVersionOf(t, rig.database, spec.id)
 	if moved != approved+1 {
 		t.Fatalf("the move of the paragraph before r1 left version %d of %s newest, want %d", moved, spec.refKey, approved+1)
 	}
@@ -1540,15 +1492,11 @@ func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
 // row's record digest, failing where the row holds no time, no seq or no digest.
 func versionCut(t *testing.T, database *store.Store, artifactID string, number int) (refs.TreeCut, string) {
 	t.Helper()
-	var at *time.Time
-	var readSeq *int64
-	var digest *string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select at, read_seq, record_sha256 from version_renders where artifact_id = $1::uuid and number = $2`, artifactID, number).Scan(&at, &readSeq, &digest); err != nil ||
-		at == nil || readSeq == nil || digest == nil {
-		t.Fatalf("read the version_renders row of version %d of %s (at %v, read_seq %v, digest %v): %v", number, artifactID, at, readSeq, digest, err)
+	row := versionFillRowOf(t, database, artifactID, number)
+	if row.at == nil || row.readSeq == nil || row.digest == nil {
+		t.Fatalf("the version_renders row of version %d of %s holds at %v, read_seq %v and digest %v, want all three", number, artifactID, row.at, row.readSeq, row.digest)
 	}
-	return refs.TreeCut{At: *at, ReadSeq: *readSeq}, *digest
+	return refs.TreeCut{At: *row.at, ReadSeq: *row.readSeq}, *row.digest
 }
 
 // newestVersionOf is the newest version number of the document artifactID.
@@ -1591,25 +1539,22 @@ func digestStepResultOrder(t *testing.T, rig *digestRig) {
 	issue, verification := digestVerifiedIssue(t, rig, "Two results of one check")
 	const first, second = "ffffffff-0000-4000-8000-0000000000f1", "00000000-0000-4000-8000-0000000000f2"
 	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
-	tx, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	for index, id := range []string{first, second} {
-		nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
-			ID: id, Project: "CORE", Check: verification.address("c1"), Verdict: "pass", Surface: "cli", Commit: headCommit,
-			Role: "implementer", Recorder: digestWriter, At: at.Add(time.Duration(index) * time.Second), Event: graphstore.NoEvent,
-		})
-		if !ok {
-			t.Fatalf("the result %s states nothing", id)
+	if err := pgx.BeginFunc(ctx, rig.database.Pool, func(tx pgx.Tx) error {
+		for index, id := range []string{first, second} {
+			nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
+				ID: id, Project: "CORE", Check: verification.address("c1"), Verdict: "pass", Surface: "cli", Commit: headCommit,
+				Role: "implementer", Recorder: digestWriter, At: at.Add(time.Duration(index) * time.Second), Event: graphstore.NoEvent,
+			})
+			if !ok {
+				return fmt.Errorf("the result %s states nothing", id)
+			}
+			if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+				return fmt.Errorf("write the result %s: %w", id, err)
+			}
 		}
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-			t.Fatalf("write the result %s: %v", id, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the two results: %v", err)
+		return nil
+	}); err != nil {
+		t.Fatalf("write the two results: %v", err)
 	}
 	record := rig.record(t, issue.Key, graphstore.QueryVerification)
 	made, later := graphstore.KindResult+":"+first, graphstore.KindResult+":"+second
@@ -1659,12 +1604,12 @@ func digestStepRetype(t *testing.T, rig *digestRig) {
 	}
 }
 
-// digestMigrationName is the name every migration of this branch takes, as the store's own test of
-// the set finds it (store/issue_tree_migrations_test.go's issueTreeMigrationName).
+// digestMigrationName is the name every migration of the issue-tree set takes, as the store's own
+// test of the set finds it (store/issue_tree_migrations_test.go's issueTreeMigrationName).
 var digestMigrationName = regexp.MustCompile(`^[0-9]{14}_issue_tree_[a-z0-9_]+\.up\.sql$`)
 
 // digestStepMigrations pins the column's last sentence (R14): "The migration set runs no statement
-// against that table." It reads every migration of this branch's set from the store's migration
+// against that table." It reads every migration of the issue-tree set from the store's migration
 // directory and fails on any statement, its comments taken out, that names artifact_reviews.
 func digestStepMigrations(t *testing.T, _ *digestRig) {
 	directory := filepath.Join("..", "store", "migrations")
@@ -1692,7 +1637,7 @@ func digestStepMigrations(t *testing.T, _ *digestRig) {
 		}
 	}
 	if read == 0 {
-		t.Fatalf("no migration under %s is named as this branch's are (%s)", directory, digestMigrationName)
+		t.Fatalf("no migration under %s is named as the issue-tree set's are (%s)", directory, digestMigrationName)
 	}
 }
 
@@ -1726,8 +1671,8 @@ func digestStepDefinitionNodes(t *testing.T, rig *digestRig) {
 		t.Fatalf("the reviews of %s read %+v, want the approval that answers the request %s", spec.refKey, reviews, ask)
 	}
 	node := graphstore.VersionID(spec.refKey, reviews[0].Version)
-	if supertag, held := versionDefinition(t, rig.database, spec.refKey, reviews[0].Version); supertag != graphstore.SupertagQueryVersion || definitionHeld(held) != "1" {
-		t.Errorf("the query version %s that the review of %s names holds definition_version %s, want 1", node, ask, definitionHeld(held))
+	if supertag, held := versionDefinition(t, rig.database, spec.refKey, reviews[0].Version); supertag != graphstore.SupertagQueryVersion || valueOrNone(held) != "1" {
+		t.Errorf("the query version %s that the review of %s names holds definition_version %s, want 1", node, ask, valueOrNone(held))
 	}
 	approves, err := graphstore.CurrentOut(ctx, rig.database.Pool, graphstore.KindAsk, ask, []string{graphcensus.TupleApproves})
 	if err != nil {
@@ -1755,22 +1700,12 @@ func digestStepDefinitionNodes(t *testing.T, rig *digestRig) {
 		t.Fatalf("version %d of %s, written by SQL, holds a version node already (%t, %v), want none", written, refKey, noded, err)
 	}
 	restated := graphstore.QueryNode(refKey, "CORE", graphstore.QueryPlan, digestWriter, time.Now().UTC())
-	tx, err := rig.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{restated}, graphstore.AttributeFacts(nil, restated)); err != nil {
-		t.Fatalf("restate %s as a query node: %v", refKey, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the restated node %s: %v", refKey, err)
-	}
+	rig.write(t, []graphstore.Node{restated}, graphstore.AttributeFacts(nil, restated))
 	if _, err := graphcensus.Backfill(ctx, rig.database, io.Discard); err != nil {
 		t.Fatalf("run the backfill: %v", err)
 	}
 	if supertag, held := versionDefinition(t, rig.database, refKey, written); supertag != graphstore.SupertagQueryVersion || held != nil {
 		t.Errorf("the query version %s, which the backfill wrote for a version written before its document was a query, holds definition_version %s, want none (a %s node)",
-			graphstore.VersionID(refKey, written), definitionHeld(held), supertag)
+			graphstore.VersionID(refKey, written), valueOrNone(held), supertag)
 	}
 }

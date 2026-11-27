@@ -2,8 +2,8 @@
 
 package api
 
-// This branch's check c-node-anchor-roll: a comment on a node's text outlives a roll to this build
-// and a rollback to the release before it (this issue's spec R31).
+// The check c-node-anchor-roll: a comment on a node's text outlives a roll to this build and a
+// rollback to the release before it (R31 of the issue-tree spec).
 //
 // TestANodeAnchorOutlivesARollAndARollback boots this checkout's build and the build of
 // BASELINE_SHA, the release before, over one database of its own, in the order a roll and a
@@ -200,9 +200,9 @@ func requireRollAnchorCensus(t *testing.T, binary, databaseURL string) {
 	}
 }
 
-// TestANodeAnchorOutlivesARollAndARollback is c-node-anchor-roll (this issue's spec R31). It reads
-// BASELINE_SHA first and fails, never skips, where it is unset or names no 40-character commit
-// (skeletonBaseCommit), before it builds or boots anything.
+// TestANodeAnchorOutlivesARollAndARollback is c-node-anchor-roll (R31 of the issue-tree spec). It
+// reads BASELINE_SHA first and fails, never skips, where it is unset or names no 40-character
+// commit (skeletonBaseCommit), before it builds or boots anything.
 //
 // It boots this build over an empty database, where a person writes an issue whose spec holds the
 // requirement r1, a lens on r1 whose verdict holds bound twice, and a comment on the lens's text by

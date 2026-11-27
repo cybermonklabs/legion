@@ -10,13 +10,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // roomAuthor wrote every version of the issue room these tests index (writeStoredVersion), and
 // introduced each of its blocks (writerSources).
-var roomAuthor = model.Actor{Kind: "user", ID: "alice"}
+var roomAuthor = privateAuthor
 
 // roomFragment is one document's fragment of an issue room as a test writes it: the document and
 // the markdown of its fragment.
@@ -49,14 +48,16 @@ func renderRoomVersion(t *testing.T, tree string, fragments ...roomFragment) typ
 
 // roomFacts is what DecisionFacts reads of version, the text of the issue room whose tree artifact
 // is tree over versions, as a pass over the room reads it: against what the row of the newest of
-// those versions says (ReadIndexedVersion over Versions.Newest), every block roomAuthor's.
-func roomFacts(ctx context.Context, tx pgx.Tx, tree string, versions Versions, version typedVersion) (TypedFacts, error) {
+// those versions says (ReadIndexedVersion over Versions.Newest), which it answers too, every block
+// roomAuthor's.
+func roomFacts(ctx context.Context, tx pgx.Tx, tree string, versions Versions, version typedVersion) (IndexedVersion, TypedFacts, error) {
 	lead, newest := versions.Newest(tree)
 	record, err := ReadIndexedVersion(ctx, tx, tree, lead, newest.Number)
 	if err != nil {
-		return TypedFacts{}, err
+		return IndexedVersion{}, TypedFacts{}, err
 	}
-	return DecisionFacts(ctx, tx, tree, record, versions, version.blocks, version.tree, version.pointers, writerSources(tx, tree, roomAuthor))
+	facts, err := DecisionFacts(ctx, tx, tree, record, versions, version.blocks, version.tree, version.pointers, writerSources(tx, tree, roomAuthor))
+	return record, facts, err
 }
 
 // indexRoomWhole runs the block index over version, the room's text over versions, with its typed
@@ -64,7 +65,7 @@ func roomFacts(ctx context.Context, tx pgx.Tx, tree string, versions Versions, v
 func indexRoomWhole(t *testing.T, tx pgx.Tx, tree string, versions Versions, version typedVersion) {
 	t.Helper()
 	ctx := context.Background()
-	facts, err := roomFacts(ctx, tx, tree, versions, version)
+	_, facts, err := roomFacts(ctx, tx, tree, versions, version)
 	if err != nil {
 		t.Fatalf("read the typed facts of the room: %v", err)
 	}
@@ -80,7 +81,7 @@ func indexRoomWhole(t *testing.T, tx pgx.Tx, tree string, versions Versions, ver
 func planRoomTypedAlone(t *testing.T, tx pgx.Tx, tree string, versions Versions, version typedVersion, fragment string) DecisionIndexing {
 	t.Helper()
 	ctx := context.Background()
-	facts, err := roomFacts(ctx, tx, tree, versions, version)
+	_, facts, err := roomFacts(ctx, tx, tree, versions, version)
 	if err != nil {
 		t.Fatalf("read the typed facts of the room: %v", err)
 	}
@@ -94,6 +95,36 @@ func planRoomTypedAlone(t *testing.T, tx pgx.Tx, tree string, versions Versions,
 	}
 	if err := store.RunWrite(ctx, tx, plan.Queue); err != nil {
 		t.Fatalf("write the typed-node pass over the room: %v", err)
+	}
+	return plan
+}
+
+// planRoomDeferred runs, over version, the room's text over versions, the two passes a write that
+// leaves the room's blocks to the block-index reconciliation runs in its own transaction (docs'
+// planTypedPasses): the typed-node pass over the whole room, then, against the index it leaves,
+// the requirements, checks and plan tasks the write states at once (DecisionIndexing's
+// PlanAuthored). It writes both in the fixture's transaction and answers their plan.
+func planRoomDeferred(t *testing.T, tx pgx.Tx, tree string, versions Versions, version typedVersion) DecisionIndexing {
+	t.Helper()
+	ctx := context.Background()
+	record, facts, err := roomFacts(ctx, tx, tree, versions, version)
+	if err != nil {
+		t.Fatalf("read the typed facts of the room: %v", err)
+	}
+	index, err := ReadBlockIndex(ctx, tx, tree)
+	if err != nil {
+		t.Fatalf("read the room's block index: %v", err)
+	}
+	decisions, err := PlanDecisionNodes(ctx, tx, index, tree, facts, graphstore.Uncaused{}, "")
+	if err != nil {
+		t.Fatalf("plan the typed-node pass over the room: %v", err)
+	}
+	plan, err := decisions.PlanAuthored(ctx, tx, record, versions, version.markdown, version.blocks, version.located, version.pointers, windowServer, record.At)
+	if err != nil {
+		t.Fatalf("plan the requirements, checks and plan tasks of the room: %v", err)
+	}
+	if err := store.RunWrite(ctx, tx, plan.Queue); err != nil {
+		t.Fatalf("write the passes over the room: %v", err)
 	}
 	return plan
 }
@@ -180,9 +211,8 @@ func TestADeferredRoomPassKeepsTheTiesOfARetiredFragmentsDecision(t *testing.T) 
 	if after := blockTies(t, tx, tree, "d1"); !slices.Equal(after, ties) {
 		t.Errorf("the deferred pass over the room left the retired fragment's decision d1 the ties %v, want %v", after, ties)
 	}
-	var state string
-	if err := tx.QueryRow(ctx, `select state from graph_nodes where kind = $1 and id = $2`, BlockNodeKind, treeRef+"#d1").Scan(&state); err != nil || state != graphstore.StateLive {
-		t.Errorf("the retired fragment's decision d1 reads node state %q (%v), want live, as the retirement left it", state, err)
+	if node, found, err := graphstore.ReadNode(ctx, tx, BlockNodeKind, treeRef+"#d1"); err != nil || !found || node.State != graphstore.StateLive {
+		t.Errorf("the retired fragment's decision d1 reads node state %q (found %t, %v), want live, as the retirement left it", node.State, found, err)
 	}
 }
 

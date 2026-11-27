@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// c-carried-from (R27 of this issue's spec): a carried approval says that it is carried. A review
+// c-carried-from (R27 of the issue-tree spec): a carried approval says that it is carried. A review
 // Dispatch carries forward to a later version reads kind person with the person as its actor, as
 // the person's own approval does, so the review record (GET /api/v1/artifacts/{id}/reviews), the
 // artifact's approval (GET /api/v1/artifacts/{id}) and the artifact.approved payload carry
@@ -25,8 +25,8 @@ import (
 // and for a plan review's. writeCarriedReview writes it for every carry, as a row of
 // artifact_review_carries keyed by the review's id, in the transaction that writes the review. A
 // row the reads find is what they answer; a carried review that holds no row, one written before
-// this build, answers the version its reason's fixed sentence names (docs.CarriedFromVersion) until
-// the backfill's pass fills its row.
+// this build, answers the version its reason's fixed sentence names (model.CarriedFromVersion)
+// until the backfill's pass fills its row.
 //
 // The tests read the member off the JSON each route answers, where a member left out fails the
 // test: every review, approval and payload this build writes carries it, null for a person's own

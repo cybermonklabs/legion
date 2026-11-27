@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -79,14 +80,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	callerProject, _ := s.callerProject(r)
 	written, err := s.writeIssue(r.Context(), issueWriteCall{
-		writer:        writer,
-		key:           r.PathValue("key"),
-		fields:        input,
-		callerProject: callerProject,
-		outliving:     outlivingTheClient(r),
-		adviceRoute:   "PATCH /api/v1/issues/{key}",
+		writer:      writer,
+		key:         r.PathValue("key"),
+		fields:      input,
+		outliving:   outlivingTheClient(r),
+		adviceRoute: "PATCH /api/v1/issues/{key}",
 	})
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -104,9 +103,6 @@ type issueWriteCall struct {
 	// fields are the fields the write writes, as the PATCH's body decodes them. writeIssue
 	// parses and checks them as the PATCH does.
 	fields updateIssueInput
-	// callerProject is the one project the request's credential may write, or empty for a
-	// credential that names none (callerProject).
-	callerProject string
 	// outliving is a context that does not end when the client goes away (outlivingTheClient):
 	// the close's settlement before the transaction, and its ask sweep after the commit, run on
 	// it.
@@ -168,11 +164,7 @@ type issueWriteFence struct {
 // refuseForeignEvents is the fence of one step, which holds the named issue's owner lock: 409
 // ISSUE_CHANGED when an event on named after the fenced sequence is not one of the call's own.
 func (fence *issueWriteFence) refuseForeignEvents(ctx context.Context, tx pgx.Tx, named string) error {
-	rows, err := tx.Query(ctx, `select id from events where issue_key = $1 and seq > $2 order by id`, named, fence.sequence)
-	if err != nil {
-		return err
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	ids, err := fencedEventsAfter(ctx, tx, named, fence.sequence)
 	if err != nil {
 		return err
 	}
@@ -180,6 +172,56 @@ func (fence *issueWriteFence) refuseForeignEvents(ctx context.Context, tx pgx.Tx
 		if !fence.own[id] {
 			return errIssueChanged()
 		}
+	}
+	return nil
+}
+
+// decisionsQueryVersionSQL is whether the events row aliased e, an event of the issue $1, is an
+// artifact.version of that issue's decisions query. No route writes that document: a query drain
+// writes each of its versions once a write that moved the query's record has committed (R14),
+// naming the version after that write's writer, so such an event is neither a change a fence
+// guards against nor a person's own post.
+func decisionsQueryVersionSQL(e string) string {
+	return `(` + e + `.type = 'artifact.version' and exists (
+		select 1 from artifacts a
+		where a.id::text = ` + e + `.payload->>'artifact_id' and a.issue_key = $1 and ` + refs.DecisionsQuerySQL("a") + `))`
+}
+
+// fencedEventsStatement lists, oldest first, the events on the issue $1 after the sequence $2 that
+// a fence on the issue's sequence reads. It passes over the decisions query's versions
+// (decisionsQueryVersionSQL): the write that moved the query's record is a real change of the
+// issue, which the fence sees by the event it appends of its own, and before the drains an
+// expected_sequence never saw such a version at all.
+var fencedEventsStatement = `
+	select e.id from events e
+	where e.issue_key = $1 and e.seq > $2 and not ` + decisionsQueryVersionSQL("e") + `
+	order by e.id`
+
+// fencedEventsAfter is the events on issue after sequence that a fence reads (fencedEventsStatement).
+func fencedEventsAfter(ctx context.Context, q queryer, issue string, sequence int64) ([]int64, error) {
+	rows, err := q.Query(ctx, fencedEventsStatement, issue, sequence)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[int64])
+}
+
+// refuseChangedSince is the fence of a write that sent expected_sequence, read under the issue's
+// owner lock against last, the issue's last_seq: 409 ISSUE_CHANGED where the sequence is past
+// last, or where an event after it is one a fence reads (fencedEventsAfter).
+func refuseChangedSince(ctx context.Context, q queryer, issue string, expected int64, last int) error {
+	switch {
+	case expected == int64(last):
+		return nil
+	case expected > int64(last):
+		return errIssueChanged()
+	}
+	ids, err := fencedEventsAfter(ctx, q, issue, expected)
+	if err != nil {
+		return err
+	}
+	if len(ids) > 0 {
+		return errIssueChanged()
 	}
 	return nil
 }
@@ -321,16 +363,21 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if parent != nil {
 		parentKey = *parent
 	}
-	// A credential that names one project is refused a target or a parent outside it where its
-	// project is read, since this route's own address names neither (project_scope.go). It is read
-	// first here, with no lock held and before a close settles the issue's documents or the
-	// transaction begins, so a write the credential may not make settles nothing; the
-	// pre-handler check already held the issue to the credential's project, which is therefore
-	// the issue's own, and a status change holds each issue a step of it writes to that project
-	// before its first step (refuseStepsOutsideCallerProject). The lock step refuses it again
-	// before any lock, and writeIssueNeeds or validateIssueParent under them.
-	if call.callerProject != "" && (parentKey != "" || len(waits.targets) > 0) {
-		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, call.callerProject, call.callerProject, waits, parentKey); err != nil {
+	// A credential that names one project is asked about the parent and each target where their
+	// project is read, since this route's own address names neither (project_scope.go): a parent
+	// or a wait's target that no issue holds, or of a private project that the credential does
+	// not name, gets the 400 of a key that does not exist. They are read first here, with no lock
+	// held and before a close settles the issue's documents or the transaction begins, so a write
+	// the credential may not make settles nothing, and a key that does not exist and a private
+	// key are refused at the same step whatever else the body holds. The read takes the
+	// credential's own project as the issue's, which is not read yet: that project only decides
+	// which keys the answer calls foreign, and this call does not use the answer. The lock step
+	// asks again before any lock, against the issue's project, and writeIssueNeeds or
+	// validateIssueParent under them. A status change asks the same about each issue a step of it
+	// writes, before its first step (planStatusChangeUnderLocks).
+	callerProject := call.writer.callerProject
+	if callerProject != "" && (parentKey != "" || len(waits.targets) > 0) {
+		if _, err := foreignDependencyTargets(ctx, s.deps.Store.Pool, callerProject, callerProject, waits, parentKey); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -366,15 +413,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// check and the status it guards run under the deployment dependency lock that every create
 	// with a parent and every reparent takes, so no child is filed between the two.
 	dependencyWrite := waitsProvided || parentProvided || input.RefuseOpenForeignChildren
-	// The lock step below reads each target's project again and refuses a scoped caller one
-	// outside it before any lock is taken (lockIssueDependencyWrite).
+	// The lock step below reads each target's and the parent's project again, and asks
+	// access.CredentialCovers about each of another project before any lock is taken
+	// (lockIssueDependencyWrite).
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
 			return issueWriteResult{}, err
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(ctx, tx, project, call.callerProject, waits, parentKey); err != nil {
+			if err := lockIssueDependencyWrite(ctx, tx, project, callerProject, waits, parentKey); err != nil {
 				return issueWriteResult{}, err
 			}
 		}
@@ -428,8 +476,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err != nil {
 		return issueWriteResult{}, err
 	}
-	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
-		return issueWriteResult{}, errIssueChanged()
+	if input.ExpectedSeq != nil {
+		if err := refuseChangedSince(ctx, tx, key, *input.ExpectedSeq, before.LastSeq); err != nil {
+			return issueWriteResult{}, err
+		}
 	}
 	// A step of a status change decides here, from the issue as it reads it under its own lock,
 	// whether it writes at all. A step that leaves the issue as it stands rolls back.
@@ -466,7 +516,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		moved = &move
 	}
 	if parentProvided && parent != nil {
-		if err := validateIssueParent(ctx, tx, key, call.callerProject, *parent); err != nil {
+		if err := validateIssueParent(ctx, tx, key, callerProject, *parent); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -523,8 +573,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	if input.RefuseOpenForeignChildren {
 		// An open child of another project refuses the acceptance with 409 FOREIGN_CHILD_OPEN,
-		// which writeHandlerError answers with the children it names.
-		if err := refuseOpenForeignChildren(ctx, tx, key, before.Project); err != nil {
+		// which writeHandlerError answers with the children it names that the caller sees.
+		if err := refuseOpenForeignChildren(ctx, tx, key, before.Project, callerProject); err != nil {
 			return issueWriteResult{}, err
 		}
 	}
@@ -697,10 +747,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if labelsAfter != nil {
 		afterRow.labels = *labelsAfter
 	}
-	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
+	// An advice savepoint that could not be rolled back left tx aborted: the write answers that
+	// failure, rather than sending its write phase on tx (adviceTxError).
+	advice, err := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks.asks),
 		opened:   askIDs(reopened.asks),
 	})
+	if err != nil {
+		return issueWriteResult{}, err
+	}
 	// What the issue's waits stand at, read here in the read phase, under the owner lock, for the
 	// write below to move (readIssueNeeds).
 	var heldNeeds heldIssueNeeds
@@ -722,7 +777,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// The close's second read of R24 (openChildrenOfAClose): a create under this issue whose
 		// share lock of its row came first made the update above wait for its commit, and this
 		// read sees that new child.
-		conflict, err := openChildrenOfAClose(ctx, tx, key)
+		conflict, err := openChildrenOfAClose(ctx, tx, key, callerProject)
 		if err != nil {
 			return issueWriteResult{}, err
 		}
@@ -749,7 +804,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		relations.tuples = append(relations.tuples, affects...)
 	}
 	if waitsProvided {
-		needs, err := writeIssueNeeds(ctx, tx, key, before.Project, call.callerProject, waits, heldNeeds, relationsAt)
+		needs, err := writeIssueNeeds(ctx, tx, key, before.Project, callerProject, waits, heldNeeds, relationsAt)
 		if err != nil {
 			return issueWriteResult{}, err
 		}

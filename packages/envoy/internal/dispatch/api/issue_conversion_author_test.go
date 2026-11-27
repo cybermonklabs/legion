@@ -28,9 +28,7 @@ func TestAConvertedNodeKeepsItsAuthor(t *testing.T) {
 	service := deps.Docs.(*docs.Service)
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatalf("write the former release's rows: %v", err)
-		}
+		seedExec(t, database, "the former release's rows", sql, args...)
 	}
 	const key = "AUTHOR-1"
 	const spec = key + "/spec"

@@ -59,7 +59,10 @@ type blockIndexHold struct {
 // The locks belong to the session that took them, so one connection takes both, holds them until
 // they are given back and gives the last of them back with itself (duty.FreeSessionLock, which
 // destroys rather than returns a connection whose unlock failed, since what such a session holds
-// is unknown). A hold that fails after it took a lease gives back what it took the same way.
+// is unknown). A hold that fails after it took a lease gives back what it took the same way, and a
+// test that fails while it holds them gives them back as it ends (t.Cleanup), before the pool of
+// leases closes: pgxpool's Close waits for every connection it lent, so a connection still lent
+// would hold the test's end until go test's timeout.
 //
 // name is what every failure is about. wait bounds the wait for each take of the leases, a hang
 // guard on a wait nothing healthy reaches; past it the test fails with the server's output
@@ -71,6 +74,7 @@ func holdBlockIndexLease(t *testing.T, leases duty.Leases, name string, wait tim
 		t.Fatalf("%s: take a connection for the block-index leases: %v", name, err)
 	}
 	hold := &blockIndexHold{t: t, name: name, wait: wait, output: output, conn: conn}
+	t.Cleanup(hold.giveBack)
 	deadline := time.Now().Add(wait)
 	for _, lease := range heldBlockIndexLeases {
 		hold.take(lease, deadline)

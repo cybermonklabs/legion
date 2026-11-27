@@ -169,7 +169,7 @@ function waitsBody(blockedBy: readonly string[] | undefined): {
 
 /** The issues an issue answer says the issue waits on: its needs, where the answer holds it, and
  *  else its blocked_by, which a Dispatch of the release before answers alone. */
-export function waitsOf(issue: {
+function waitsOf(issue: {
   readonly needs?: readonly string[] | null;
   readonly blocked_by?: readonly string[] | null;
 }): readonly string[] {
@@ -189,8 +189,8 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   const assignee = optionalString(args, "assignee");
   const components = optionalComponents(args, "components");
   const repo = optionalString(args, "repo");
-  const labels = args.labels;
-  const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const labels = optionalStringArray(args, "labels");
+  const blockedBy = optionalStringArray(args, "blocked_by");
   const duplicateOf = optionalString(args, "duplicate_of");
   const filedFrom = optionalString(args, "filed_from");
   const advances = optionalStringArray(args, "advances");
@@ -210,7 +210,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       ...(assignee === undefined ? {} : { assignee }),
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo }),
-      ...(Array.isArray(labels) ? { labels: labels as string[] } : {}),
+      ...(labels === undefined ? {} : { labels }),
       actor,
     });
     refuseUnsavedRepository(created.created ? "created" : "already holds", created, repo);
@@ -298,9 +298,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const rankAfter = optionalString(args, "after");
   const priority = optionalPriority(args, "priority");
   const assignee = optionalNullableString(args, "assignee");
-  const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
+  const labels = optionalStringArray(args, "labels");
   const labelsAdd = optionalStringArray(args, "labels_add");
-  const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const blockedBy = optionalStringArray(args, "blocked_by");
   const duplicateOf = optionalString(args, "duplicate_of");
   const filedFrom = optionalString(args, "filed_from");
   const advances = optionalStringArray(args, "advances");
@@ -640,11 +640,49 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
+/** A Unicode format character (Cf), which `breaksRow` quotes. */
+const FORMAT_CHARACTER = /\p{Cf}/u;
+
+/** Whether a title, a label or a holder's name holds what can split an issue's one-line row or
+ *  forge a part of it: the ` · ` that parts the row, the `, ` that parts the labels, a `"` that
+ *  opens or closes a quoted part, any control or line-separating character (C0, DEL, C1 with
+ *  U+0085, U+2028, U+2029), and any Unicode format character (Cf: a zero-width or bidirectional
+ *  mark, which can hide or reorder what a row shows). Lookalikes of `·` are left out: the row
+ *  prints the parent as a part of its own. Dispatch trims only a title's ends (`issue_create.go`,
+ *  `issue_patch.go`) and a label's (`normalizeIssueLabels`), and an agent writes a session's
+ *  title, which names a claim's holder, so a part holding any of them is printed quoted
+ *  (`rowPart`), as a route's holder is: a title or a holder holding ` · child of ACME-9` then
+ *  cannot read as a child's row, and a reader that skips what is in quotes skips each quoted part
+ *  whole. */
+function breaksRow(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029) {
+      return true;
+    }
+    if (character === "·" || character === "," || character === '"') return true;
+    if (FORMAT_CHARACTER.test(character)) return true;
+  }
+  return false;
+}
+
+/** One part of a row as `breaksRow` says: as written, or quoted as JSON quotes it, with the three
+ *  separators JSON leaves raw (U+0085, U+2028, U+2029) escaped too, so no quoted part splits the
+ *  row for a reader that breaks lines on them. */
+function rowPart(value: string): string {
+  if (!breaksRow(value)) return value;
+  return JSON.stringify(value).replace(
+    /[\u0085\u2028\u2029]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
+  );
+}
+
 /** Whether the whole output of a call is one JSON object a program reads: `dispatch issues
  *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
  *  object is no JSON object, and prints its own notes on standard error. */
 export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_issues" && args["json"] === true;
+  const { json } = args;
+  return tool === "dispatch_issues" && json === true;
 }
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
@@ -725,17 +763,24 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
             ...rows.map((row) => {
               const progress = progressText(row.progress, " · ");
               return (
-                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ${row.title}` +
+                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ` +
+                rowPart(row.title) +
+                // The help says each row carries its parent and labels: a root names no parent, so
+                // a reader of the text tells the open roots from their children.
+                (row.parent ? ` · child of ${row.parent}` : "") +
+                (row.labels.length === 0 ? "" : ` · labels ${row.labels.map(rowPart).join(", ")}`) +
                 (row.open_asks === 0
                   ? ""
                   : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
-                (row.claim === null ? "" : ` · claimed by ${claimText(row.claim, agents)}`) +
+                (row.claim === null
+                  ? ""
+                  : ` · claimed by ${claimText(row.claim, agents, {}, rowPart)}`) +
                 (progress === "" ? "" : ` · ${progress}`) +
                 // A route that reaches a live session changes nothing about the row; one
                 // that reaches nobody, or cannot be judged, is what the owner audit reads.
                 (row.route === null || row.route_status === "live" || row.route_status === null
                   ? ""
-                  : ` · route ${routeText(row)}`)
+                  : ` · route ${routeText(row, undefined, rowPart)}`)
               );
             }),
           ].join("\n"),
@@ -750,7 +795,8 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
  *  one whose call asks Dispatch something before it writes asks that too, through its step in the
  *  command table (`DispatchCommand.dryRun`): `dispatch artifact`, how Dispatch would store its text. */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_result" && args["retract"] === undefined;
+  const { retract } = args;
+  return tool === "dispatch_result" && retract === undefined;
 }
 
 /** `dispatch result`: record one result of one check of an issue's Verification document, or, as
@@ -850,7 +896,8 @@ async function hasVerificationDocument(
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it. */
+ *  against it, and for an issue with no Verification query or role document, that it has none
+ *  rather than an empty list. */
 export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
   const issue = stringArg(args, "issue");
@@ -861,7 +908,9 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   const hasVerification =
     checks.length > 0 || (await hasVerificationDocument(client, issue, results));
   return {
-    text: formatCheckResults(results, hasVerification, brief),
+    text: hasVerification
+      ? formatCheckResults(results, brief)
+      : `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`,
     details: {
       issue,
       checks: checks.length,

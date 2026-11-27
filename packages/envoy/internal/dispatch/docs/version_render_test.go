@@ -3,8 +3,6 @@ package docs
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"slices"
 	"strconv"
@@ -28,7 +26,7 @@ import (
 var renderWho = model.Actor{Kind: "user", ID: "alice"}
 
 // The blocks of the render rig's spec, each as its text value holds it: the whole slice of the
-// block, its children included and the blank line after it left out (D9 of this branch's plan).
+// block, its children included and the blank line after it left out (D9 of the issue-tree plan).
 // The memo is the issue's first child; the two criteria are authored nodes at the top; the two
 // requirements are authored nodes under the first criterion in the tree, ranked 1a and 1B there,
 // and in the text they stand after the second criterion, at the text ranks 1na and 1nB, which byte
@@ -193,16 +191,10 @@ func (r *renderRig) versionDigest(t *testing.T, artifactID string, number int) s
 	return *digest
 }
 
-// renderSum is the lower-case hex sha256 of text.
-func renderSum(text string) string {
-	sum := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(sum[:])
-}
-
-// writeVersionFromTree writes version number of the spec in tx as this child's writer writes one:
-// the spec rendered as of the head's cut, stored as the version's markdown, and its version_renders
-// row holding the digest of the spec's record read at that cut. It answers the rendering and the
-// record.
+// writeVersionFromTree writes version number of the spec in tx as this build's version write
+// writes one: the spec rendered as of the head's cut, stored as the version's markdown, and its
+// version_renders row holding the digest of the spec's record read at that cut. It answers the
+// rendering and the record.
 func (r *renderRig) writeVersionFromTree(t *testing.T, tx pgx.Tx, number int) (Rendering, QueryRecord) {
 	t.Helper()
 	ctx := context.Background()
@@ -281,7 +273,7 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 			}
 			if _, err := tx.Exec(ctx, `
 				insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, node_kind, node_address)
-				values ($1, $2, $3, 'paragraph', $4, $5, 1, now(), 'block', $3)`, id, block, address, renderSum(text), text); err != nil {
+				values ($1, $2, $3, 'paragraph', $4, $5, 1, now(), 'block', $3)`, id, block, address, reviewTextHash(text), text); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `
@@ -337,29 +329,27 @@ func writeRoomQueryNodes(t *testing.T, database *store.Store, room issueRoom) {
 	writeQueryNode(t, database, "DOC", room.issue, model.ArtifactSlugPlan, graphstore.QueryPlan)
 }
 
-// A version this child's writer wrote renders again from the tree, in the text order its author
-// wrote. The test writes a
-// subtree of DOC-2's spec straight into the store, writes version 3 from it - its rendering and its
-// version_renders row, holding the digest of the spec's record, in one transaction - and then, one
-// change at a time, edits a requirement's text, re-parents another, re-orders the text of two
-// top-level siblings and the tree ranks of two others, and retracts a paragraph's in_document,
-// each dated after the version: the version renders its first bytes after each, the head renders
-// each change that moves the text and none that moves only the tree, and two renders of the
-// version at two times read one byte string. The render prints the document's text children, each
-// once, by its text value, in increasing text_rank, a text_rank of a and one of B taking B first,
-// byte for byte; it refuses to run where select 'a' < 'B' is false. A transaction rolled back
-// leaves neither the version nor its row. The digest of a version with a row is its record's, and
-// of one without its stored markdown's. A tuple dated before the version written before the
-// cutover moves nothing of it, though the tree at its time holds that tuple; it moves the version
-// that holds a row, which the census of the versions then reads as a difference; and with that row
-// deleted the version answers its stored bytes and says so. A version whose markdown is null
-// says it holds no bytes. The head of a
-// spec a real settlement wrote renders as that version's stored markdown, and that settlement's
-// room pass recorded the version's row, holding its record's digest, which the census reads beside
-// DOC-2's with no difference. The census of document_block_texts reads no difference in either
-// direction over the converted issues, and prints the rows of DOC-9 as the class of unstated rows
-// of an issue that has not converted, with their count; and document_block_texts keeps the columns
-// 0121_block_graph.up.sql creates.
+// A version this build's version write wrote renders again from the tree, in the text order its
+// author wrote. The test writes a subtree of DOC-2's spec straight into the store, writes version
+// 3 from it - its rendering and its version_renders row, holding the digest of the spec's record,
+// in one transaction - and then, one change at a time, edits a requirement's text, re-parents
+// another, re-orders the text of two top-level siblings and the tree ranks of two others, and
+// retracts a paragraph's in_document, each dated after the version: the version renders its first
+// bytes after each, the head renders each change that moves the text and none that moves only the
+// tree, and two renders of the version at two times read one byte string. The render prints the
+// document's text children, each once, by its text value, in increasing text_rank, a text_rank of
+// a and one of B taking B first, byte for byte; it refuses to run where select 'a' < 'B' is false.
+// A transaction rolled back leaves neither the version nor its row. The digest of a version with a
+// row is its record's, and of one without its stored markdown's. A tuple dated before the version
+// written before the cutover moves nothing of it, though the tree at its time holds that tuple; it
+// moves the version that holds a row, which the census of the versions then reads as a difference;
+// and with that row deleted the version answers its stored bytes and says so. A version whose
+// markdown is null says it holds no bytes. The head of a spec a real settlement wrote renders as
+// that version's stored markdown, and that settlement's room pass recorded the version's row,
+// holding its record's digest, which the census reads beside DOC-2's with no difference. The census
+// of document_block_texts reads no difference in either direction over the converted issues, and
+// prints the rows of DOC-9 as the class of unstated rows of an issue that has not converted, with
+// their count; and document_block_texts keeps the columns 0121_block_graph.up.sql creates.
 //
 // Then the versions the real version path writes, each holding the row its pass recorded with its
 // record's digest. Five versions of the spec of CORE-1 each render their stored bytes
@@ -395,34 +385,24 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	}
 	service, server := newTestServiceInstance(t, database)
 	rig := &renderRig{database: database, settled: createIssueRoom(t, database, 1), room: createIssueRoom(t, database, 2)}
-	if err := database.Pool.QueryRow(ctx, `
-		select (select ref_key from artifacts where id = $1), (select ref_key from artifacts where id = $2)`,
-		rig.room.tree, rig.room.spec).Scan(&rig.tree, &rig.spec); err != nil {
-		t.Fatalf("read DOC-2's ref_keys: %v", err)
-	}
+	rig.tree, rig.spec = refKeyOf(t, database, rig.room.tree), refKeyOf(t, database, rig.room.spec)
 
 	// DOC-1's spec, written by a real settlement of its room once the peer's update has landed. Its
 	// documents are query nodes, as a converted issue's are, so the version the settlement writes
 	// is a query version, which takes the row its room pass records.
 	writeRoomQueryNodes(t, database, rig.settled)
 	peer := connectPeer(t, server.URL, rig.settled.spec, "alice")
-	stored := roomUpdateCount(t, database, rig.settled.tree)
+	stored := storedUpdateCount(t, database, rig.settled.tree)
 	if _, err := peer.Send(writeParagraph(peer.Doc, rig.settled.spec, "Spec words.")); err != nil {
 		t.Fatalf("write into DOC-1's spec: %v", err)
 	}
 	if err := peer.WaitForText(fragmentMarkdown(rig.settled.spec), "Spec words.\n", roomWait(t)); err != nil {
 		t.Fatalf("a peer's copy of DOC-1's room: %v", err)
 	}
-	waitForStoredUpdates(t, database, rig.settled.tree, stored)
-	if err := service.waitForDurableAppends(ctx, rig.settled.tree); err != nil {
-		t.Fatalf("wait for DOC-1's appends: %v", err)
-	}
-	if err := service.settleOwedNow(ctx, rig.settled.tree, time.Now().Add(roomWait(t))); err != nil {
-		t.Fatalf("settle DOC-1's room: %v", err)
-	}
+	settleLandedWrite(t, ctx, database, service, rig.settled, stored)
 	// The room pass of DOC-1's settlement records the row of the newest version of each of its query
 	// documents, the spec's among them, and the census reads each as its stored bytes.
-	settledSpec := newestVersionNumber(t, database, rig.settled.spec)
+	settledSpec := savedVersion(t, database, rig.settled.spec)
 	requireStatedRow(t, database, rig.settled.issue, graphstore.QuerySpec, rig.settled.spec, settledSpec)
 	settledRenders := rig.readRenderCensus(t)
 	if settledRenders.Versions == 0 || settledRenders.Differences != 0 {
@@ -547,7 +527,7 @@ func renderStepVersionRow(t *testing.T, rig *renderRig) {
 		t.Errorf("version 3's row holds %s at %s and seq %d, want the record's %s at %s and seq %d",
 			digest, at, readSeq, record.Digest, record.Cut.At, record.Cut.ReadSeq)
 	}
-	if renderSum(renderFirst) == record.Digest {
+	if reviewTextHash(renderFirst) == record.Digest {
 		t.Errorf("the record's digest is the sha256 of the version's markdown, %s", record.Digest)
 	}
 
@@ -781,10 +761,14 @@ func renderStepHiddenHistory(t *testing.T, rig *renderRig) {
 	}
 	for _, node := range []struct {
 		block, visibility, state, author string
-		row                              bool
+		// text and version are the text and the changed_version of the block's row, which a
+		// block with no row (row false) leaves empty.
+		row     bool
+		text    string
+		version int
 	}{
-		{"u1", "project", "live", "alice", true}, {"u2", "author", "gone", "bob", false},
-		{"u4", "author", "live", "bob", true}, {"u5", "project", "live", "alice", true},
+		{"u1", "project", "live", "alice", true, first, 1}, {"u2", "author", "gone", "bob", false, "", 0},
+		{"u4", "author", "live", "bob", true, fourth, 5}, {"u5", "project", "live", "alice", true, fourth, 5},
 	} {
 		address := ref + "#" + node.block
 		if _, err := tx.Exec(ctx, `
@@ -796,17 +780,9 @@ func renderStepHiddenHistory(t *testing.T, rig *renderRig) {
 		if !node.row {
 			continue
 		}
-		text := first
-		if node.block != "u1" {
-			text = fourth
-		}
-		version := 5
-		if node.block == "u1" {
-			version = 1
-		}
 		if _, err := tx.Exec(ctx, `
 			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, node_kind, node_address)
-			values ($1, $2, $3, 'paragraph', $4, $5, $6, now(), 'block', $3)`, spec, node.block, address, renderSum(text), text, version); err != nil {
+			values ($1, $2, $3, 'paragraph', $4, $5, $6, now(), 'block', $3)`, spec, node.block, address, reviewTextHash(node.text), node.text, node.version); err != nil {
 			t.Fatalf("write the index's row of %s: %v", address, err)
 		}
 	}
@@ -1012,20 +988,11 @@ func renderStepTwoTimes(t *testing.T, rig *renderRig) {
 	if again := rig.renderVersion(t, rig.room.spec, 3).Markdown; again != rig.first || rig.first != renderFirst {
 		t.Errorf("version 3 rendered after every change reads %q, and first read %q, want one byte string, %q", again, rig.first, renderFirst)
 	}
-	var stored string
-	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select markdown from artifact_versions where artifact_id = $1 and number = 3`, rig.room.spec).Scan(&stored); err != nil {
-		t.Fatalf("read version 3's markdown: %v", err)
-	}
-	if stored != rig.first {
+	if stored := storedVersionMarkdown(t, rig.database, rig.room.spec, 3); stored != rig.first {
 		t.Errorf("version 3 stores %q, want its own render, %q", stored, rig.first)
 	}
 	// The head of DOC-1's spec, which a real settlement indexed, is that version's markdown.
-	var settled string
-	if err := rig.database.Pool.QueryRow(context.Background(), `
-		select markdown from artifact_versions where artifact_id = $1 order by number desc limit 1`, rig.settled.spec).Scan(&settled); err != nil {
-		t.Fatalf("read DOC-1's newest spec version: %v", err)
-	}
+	_, settled := newestStoredVersion(t, rig.database, rig.settled.spec)
 	if settled != "Spec words.\n" {
 		t.Fatalf("DOC-1's newest spec version holds %q, want the settlement's \"Spec words.\\n\"", settled)
 	}
@@ -1036,13 +1003,13 @@ func renderStepTwoTimes(t *testing.T, rig *renderRig) {
 
 func renderStepDigests(t *testing.T, rig *renderRig) {
 	ctx := context.Background()
-	if got := rig.versionDigest(t, rig.room.spec, 2); got != renderSum(renderBefore) {
-		t.Errorf("the version before the cutover digests to %s, want the sha256 of its stored markdown, %s", got, renderSum(renderBefore))
+	if got := rig.versionDigest(t, rig.room.spec, 2); got != reviewTextHash(renderBefore) {
+		t.Errorf("the version before the cutover digests to %s, want the sha256 of its stored markdown, %s", got, reviewTextHash(renderBefore))
 	}
 	if got := rig.versionDigest(t, rig.room.spec, 3); got != rig.digest {
 		t.Errorf("version 3 digests to %s, want its record's digest, %s", got, rig.digest)
 	}
-	for number, want := range map[int]string{2: renderSum(renderBefore), 3: rig.digest} {
+	for number, want := range map[int]string{2: reviewTextHash(renderBefore), 3: rig.digest} {
 		var pinned string
 		if err := rig.database.Pool.QueryRow(ctx, `
 			insert into artifact_reviews (artifact_id, version, state, actor)
@@ -1056,8 +1023,8 @@ func renderStepDigests(t *testing.T, rig *renderRig) {
 }
 
 func renderStepCensus(t *testing.T, rig *renderRig, unconverted int) {
-	census := treeCensus(t, rig.database)
-	texts := treeCensusKind(t, census, "block_text")
+	census := takeStoreCensus(t, rig.database)
+	texts := censusKind(t, census, "block_text")
 	for _, difference := range slices.Concat(texts.ReportedRows, texts.ReportedNodes) {
 		t.Errorf("the census reads a block_text difference at %s: %s", difference.At, difference.Cause)
 	}
@@ -1074,10 +1041,7 @@ func renderStepCensus(t *testing.T, rig *renderRig, unconverted int) {
 	if line := "census: store kind=block_text unstated_rows=" + strconv.Itoa(unconverted) + " "; !strings.Contains(printed.String(), line) {
 		t.Errorf("the census prints no line %q:\n%s", line, printed.String())
 	}
-	renders, err := ReadVersionRenderCensus(context.Background(), rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the census of the versions version_renders holds: %v", err)
-	}
+	renders := rig.readRenderCensus(t)
 	if renders.Versions != rig.settledRows+1 || renders.Differences != 0 {
 		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3 beside DOC-1's %d and none",
 			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
@@ -1085,7 +1049,6 @@ func renderStepCensus(t *testing.T, rig *renderRig, unconverted int) {
 }
 
 func renderStepBoundary(t *testing.T, rig *renderRig) {
-	ctx := context.Background()
 	rig.write(t, rig.block("intruder", rig.spec, rig.issue(), rig.document(), "1d", "1d", renderIntruder, refs.PlacementText, rig.before.Add(-time.Minute))...)
 	if tree := rig.renderAt(t, rig.room.spec, rig.before); !strings.Contains(tree.Markdown, renderIntruder) {
 		t.Fatalf("the tree as of the version before the cutover renders %q, without the paragraph dated before it, so this case proves nothing", tree.Markdown)
@@ -1098,10 +1061,7 @@ func renderStepBoundary(t *testing.T, rig *renderRig) {
 	if got := rig.renderVersion(t, rig.room.spec, 3); got.Source != RenderedFromTree || !strings.Contains(got.Markdown, renderIntruder) {
 		t.Errorf("version 3 renders %q from %q, want the tree's, with the paragraph dated before it", got.Markdown, got.Source)
 	}
-	renders, err := ReadVersionRenderCensus(ctx, rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the census of the versions version_renders holds: %v", err)
-	}
+	renders := rig.readRenderCensus(t)
 	if renders.Versions != rig.settledRows+1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v3") {
 		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3's beside DOC-1's %d versions", renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
 	}
@@ -1115,13 +1075,10 @@ func renderStepRowDeleted(t *testing.T, rig *renderRig) {
 	if got := rig.renderVersion(t, rig.room.spec, 3); got.Source != StoredBytes || got.Markdown != renderFirst {
 		t.Errorf("version 3 with no row renders %q from %q, want its stored %q, the stored bytes", got.Markdown, got.Source, renderFirst)
 	}
-	if got := rig.versionDigest(t, rig.room.spec, 3); got != renderSum(renderFirst) {
-		t.Errorf("version 3 with no row digests to %s, want the sha256 of its stored markdown, %s", got, renderSum(renderFirst))
+	if got := rig.versionDigest(t, rig.room.spec, 3); got != reviewTextHash(renderFirst) {
+		t.Errorf("version 3 with no row digests to %s, want the sha256 of its stored markdown, %s", got, reviewTextHash(renderFirst))
 	}
-	renders, err := ReadVersionRenderCensus(ctx, rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the census of the versions version_renders holds: %v", err)
-	}
+	renders := rig.readRenderCensus(t)
 	if renders.Versions != rig.settledRows || renders.Differences != 0 {
 		t.Errorf("the census of the rendered versions compares %d and reads %d differences, want DOC-1's %d and none: no version of DOC-2 holds a row", renders.Versions, renders.Differences, rig.settledRows)
 	}
@@ -1193,17 +1150,6 @@ func requireStatedRow(t *testing.T, database *store.Store, issue, query, artifac
 	if digest != record.Digest {
 		t.Errorf("the pass that stated version %d of %s recorded the digest %s, want its %s record's, %s", number, artifactID, digest, query, record.Digest)
 	}
-}
-
-// newestVersionNumber is the number of the newest version of the document artifactID.
-func newestVersionNumber(t *testing.T, database *store.Store, artifactID string) int {
-	t.Helper()
-	var number int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1`, artifactID).Scan(&number); err != nil {
-		t.Fatalf("read the newest version of %s: %v", artifactID, err)
-	}
-	return number
 }
 
 // requireRenderedAsStored fails, naming the first byte that differs, unless version number of the
@@ -1278,10 +1224,7 @@ func renderStepTextOrder(t *testing.T, rig *renderRig, service *Service) {
 		t.Fatalf("version 1 of the spec is %d bytes, want the 165 the case is written for", len(first))
 	}
 	spec, written := treeDocument(t, database, service, "CORE-1", "spec", true, "", first)
-	var refKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, spec).Scan(&refKey); err != nil {
-		t.Fatalf("read the spec's ref_key: %v", err)
-	}
+	refKey := refKeyOf(t, database, spec)
 	address := func(id string) string { return refKey + "#" + id }
 	version := func(markdown string) int {
 		t.Helper()
@@ -1410,7 +1353,7 @@ func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverU
 	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
 		t.Fatalf("a peer's copy of DOC-3's room: %v", err)
 	}
-	stored := roomUpdateCount(t, database, room.tree)
+	stored := storedUpdateCount(t, database, room.tree)
 	for _, document := range documents {
 		tree, err := pmdoc.Parse(document.text)
 		if err != nil {
@@ -1429,13 +1372,7 @@ func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverU
 			t.Fatalf("a peer's copy of DOC-3's room: %v", err)
 		}
 	}
-	waitForStoredUpdates(t, database, room.tree, stored)
-	if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-		t.Fatalf("wait for DOC-3's appends: %v", err)
-	}
-	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-		t.Fatalf("settle DOC-3's room: %v", err)
-	}
+	settleLandedWrite(t, ctx, database, service, room, stored)
 	for _, document := range documents {
 		var refKey string
 		var number int
@@ -1493,7 +1430,7 @@ func renderStepNoBytes(t *testing.T, rig *renderRig) {
 			insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors)
 			select id, 1, '\x0001'::bytea, 'application/octet-stream', 2, $2, '[{"kind":"user","id":"alice"}]' from file
 		)
-		select id::text from file`, rig.room.issue, renderSum("\x00\x01")).Scan(&file); err != nil {
+		select id::text from file`, rig.room.issue, reviewTextHash("\x00\x01")).Scan(&file); err != nil {
 		t.Fatalf("write a file: %v", err)
 	}
 	if got := rig.renderVersion(t, file, 1); got.Source != NoBytes || got.Markdown != "" {

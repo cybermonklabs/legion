@@ -59,7 +59,7 @@ const (
 // table unaliased. role is read beside its node's query value (graphstore.ArtifactQueryRoleSQL),
 // and scanArtifact takes the row's own where it holds one: model.Artifact carries it as "" when
 // the document plays no role, and a document of an issue born converted carries none in its row
-// but plays its node's query (decision 2 of this branch's plan; R8 keeps the read's role), the
+// but plays its node's query (R8 of the issue-tree spec keeps the read's role), the
 // issue's decisions query among them (model.Artifact.DecisionsQuery); retired_at as whether it is
 // set (model.Artifact.Retired); and last the room the document is edited in, its document_rooms
 // row's room or its own id (model.Artifact.Room, refs.DocumentRoomSQL).
@@ -661,9 +661,8 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 // (documentRole), read once by the caller, which refuses a blank create that takes one: the row
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
 // created see it as every later reader will. query is the query value of a role document of a
-// converted issue, which joins the issue's room and writes no role (decision 2 of this branch's
-// plan): its node is a query node of that name, which the read projects as its role, and "" for
-// every other document.
+// converted issue, which joins the issue's room and writes no role: its node is a query node of
+// that name, which the read projects as its role, and "" for every other document.
 //
 // The create's one time is read here, in the read phase, under the owner lock the caller holds: its
 // row's created_at and its node's statements are both dated with it (graphstore.StatementTime),
@@ -674,7 +673,7 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 // The node is written in the project of the issue or the project that owns the document, or
 // between the parties of the conversation that does, and it is the node this create makes
 // (graphstore.Created). It states beside it the facts the row projects: its part_of the issue that
-// owns it, and an image's or a file's bytes, input's under sha (R16 of this branch's spec); a
+// owns it, and an image's or a file's bytes, input's under sha (R16 of the issue-tree spec); a
 // project's document and a conversation's file hang under no issue. The row names the node
 // (node_kind, node_address). A ref_key past the store's address bound is no node of it
 // (graphstore.AddressFits), as every writer of the store leaves such an address out, and the write
@@ -870,7 +869,7 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 // statedVersionBytes plans, on the node an image's or a file's row names, the facts of the bytes a
 // later version of it holds (graphstore.ArtifactBytes), dated at, the version's own time, and held
 // for the event the upload queues (graphstore.QueueCaused appends them), so the node's current
-// values are its newest version's (R16 of this branch's spec). It writes no node, so nothing
+// values are its newest version's (R16 of the issue-tree spec). It writes no node, so nothing
 // is queued before the event. A row an older build wrote names no node and states nothing here:
 // the backfill gives it its node and its newest version's bytes in the transaction that names the
 // node on the row (graphcensus' writeObjectBatch), which holds the document's owner lock to its
@@ -1027,9 +1026,8 @@ func (s *server) storeArtifact(
 		}
 		// A role document of a converted issue - its Verification document or its plan - joins the
 		// issue's room (queueIssueRoomJoin below) and writes no role: the part it plays is the query
-		// value of its node, a query node of that name (decision 2 of this branch's plan), which the
-		// read projects as its role. Every other document keeps a room of its own
-		// (documentJoinsIssueRoom).
+		// value of its node, a query node of that name, which the read projects as its role. Every
+		// other document keeps a room of its own (documentJoinsIssueRoom).
 		joining := kind == "doc" && issueRoom != "" && documentJoinsIssueRoom(slug)
 		query := ""
 		if joining && role != nil {
@@ -1377,14 +1375,27 @@ func (s *server) storeArtifact(
 		// only it decides - is set over them once Commit has returned, with no statement, so a
 		// carry that answered the request reports nothing and a dropped one reports the moved
 		// request. A new document carries no request either.
-		superseded = s.supersededApprovalAdvice(r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number)
-		movedRead = s.movedApprovalRequestAdvice(r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID)
+		// A report whose savepoint could not be rolled back left tx aborted: the route answers
+		// that failure, rather than sending its write phase on tx (adviceTxError).
+		var err error
+		if superseded, err = s.supersededApprovalAdvice(r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if movedRead, err = s.movedApprovalRequestAdvice(r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	var advice *writeAdvice
 	if target.IssueKey != nil && issueStatus != nil {
-		advice = s.writeAdvice(
+		var err error
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, adviceAsks{}, *issueStatus, "", false,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
@@ -1458,10 +1469,11 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 
 // artifactText is the body GET /api/v1/artifacts/{id}/text,
 // GET /api/v1/issues/{key}/artifacts/{slug}/text and
-// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Markdown holds no server-owned attribute
-// on any ask block (docs.TextWithAsks), and Asks answers each ask block of it, in document order:
-// its state and answer, read from the ask. Blocks is absent unless the request asked for it with
-// ?blocks=true.
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. For a reader that sent `Dispatch-Asks:
+// 1` (asksHeader), Markdown holds no server-owned attribute on any ask block (docs.TextWithAsks);
+// for every other reader it holds the kept form of them (docs.KeptText). Asks answers each ask
+// block of it, in document order: its state and answer, read from the ask. Token is the same for
+// both. Blocks is absent unless the request asked for it with ?blocks=true.
 type artifactText struct {
 	// Asks comes first so the fields stand in the sorted order of their keys, as the map the
 	// handler wrote before the body was named did (TestResponseShapes). It is absent for a
@@ -1478,6 +1490,9 @@ type artifactText struct {
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
+	// The markdown depends on the request's Dispatch-Asks header, so no cache between a reader and
+	// Dispatch hands a reader that sent it the answer written for one that did not.
+	w.Header().Add("Vary", asksHeader)
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
@@ -1520,15 +1535,35 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// artifactTextBody is the document the three text routes answer (docs.TextWithAsks): its markdown,
-// with no server-owned attribute on any ask block, its token and its asks, with the blocks beside
-// them for a request that asked for them with ?blocks=true. The markdown, the token and the blocks
-// come from one rendering of one tree, so a write by another session cannot leave a listing's byte
-// ranges indexing markdown they were not computed over; nil blocks for a request that asked for
-// none, which pays for none of that rendering.
+// asksHeader is what a reader sends to say that it reads the asks member of the text routes'
+// answer: `Dispatch-Asks: 1` and nothing else. Such a reader is served markdown with none of the
+// eight server-owned attributes on any ask block (docs.TextWithAsks), which it uploads back
+// unchanged: every reader of this build that reads asks sends it, `dispatch doc-read` and the
+// dashboard among them. A request without it, which is every reader of a release before this one,
+// is served the kept form (docs.KeptText), from which that reader reads which asks are answered or
+// resolved, and by whom (R5). Both forms answer the same token.
+const asksHeader = "Dispatch-Asks"
+
+// readsAsks reports whether this request said that it reads the asks member (asksHeader).
+func readsAsks(r *http.Request) bool {
+	return r.Header.Get(asksHeader) == "1"
+}
+
+// artifactTextBody is the document the three text routes answer: its markdown, with no
+// server-owned attribute on any ask block for a reader that reads asks (docs.TextWithAsks) and the
+// kept form of them for every other reader (docs.KeptText), its token and its asks, with the blocks
+// beside them for a request that asked for them with ?blocks=true. The markdown, the token and the
+// blocks come from one rendering of one tree, so a write by another session cannot leave a
+// listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
+// that asked for none, which pays for none of that rendering.
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (docs.AskedText, *[]model.ArtifactBlock, error) {
 	withBlocks := r.URL.Query().Get("blocks") == "true"
-	text, err := s.deps.Docs.TextWithAsks(r.Context(), artifactID, withBlocks)
+	read := s.deps.Docs.TextWithAsks
+	if !readsAsks(r) {
+		// kept for one release: stored-ask-state
+		read = s.deps.Docs.KeptText
+	}
+	text, err := read(r.Context(), artifactID, withBlocks)
 	if err != nil || !withBlocks {
 		return text, nil, err
 	}
@@ -1713,7 +1748,7 @@ const maxIntegerColumn = math.MaxInt32
 // fitsIntegerColumn reports whether a number the caller named is no greater than
 // maxIntegerColumn. Each handler that takes such a number for an integer column holds it to this
 // bound before any query is made with it, each with its own lower bound and its own refusal: the
-// two of this file that read a version number from a path or a query (parseVersionNumber), the
+// three that read a version number from a path or a query (parseVersionNumber), the
 // read mark's body (putDocumentRead), the delivery accept's attempt in its path (acceptDelivery,
 // which answers it as the attempt it is not, 404 MESSAGE_NOT_FOUND), the attempt a reply names
 // in its body (replyComment and replyMessage, each answering it as the delivery it is not, 404),
@@ -1731,9 +1766,10 @@ func fitsIntegerColumn[N int | int64](number N) bool {
 
 // parseVersionNumber reads a version number the caller named in a path or a query: a positive
 // integer that fits the column (fitsIntegerColumn), and false for anything else, which is the
-// caller's input refused, 400 INVALID_VERSION, with no query made with it. Both routes that read
-// a version number from a path or a query read it here: GET …/versions/{number} and the change
-// set (getArtifactChanges), each answering the refusal in its own words.
+// caller's input refused, 400, with no query made with it. The three routes that read a version
+// number from a path or a query read it here: GET …/versions/{number} (400 INVALID_VERSION), the
+// change set (getArtifactChanges) and the tree read's v (serveIssueTree, 400 INVALID_QUERY), each
+// answering the refusal in its own words.
 func parseVersionNumber(text string) (int, bool) {
 	number, err := strconv.Atoi(text)
 	if err != nil || number < 1 || !fitsIntegerColumn(number) {
@@ -2277,8 +2313,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		// answers, which the write phase keeps or drops as only it decides (a restore's carry),
 		// are set over them once Commit has returned, with no statement, so an edit whose carry
 		// answered the request leaves it with the person and reports nothing.
-		superseded = s.supersededApprovalAdvice(r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number)
-		movedRead = s.movedApprovalRequestAdvice(r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID)
+		// A report whose savepoint could not be rolled back left tx aborted: the route answers
+		// that failure, rather than sending its write phase on tx (adviceTxError).
+		var err error
+		if superseded, err = s.supersededApprovalAdvice(r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if movedRead, err = s.movedApprovalRequestAdvice(r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// An edit hears about the asks of this issue a person declined to answer only where it added
 	// an ask block, which is the write R6 asks the reminder for: "an edit of one of the issue's
@@ -2286,9 +2331,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// such read.
 	var advice *writeAdvice
 	if artifact.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
+		var err error
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, adviceAsks{}, *status, "", len(edit.AddedAskBlocks) > 0,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
@@ -2483,7 +2532,7 @@ func readsAsDocument(artifact model.Artifact) bool {
 // the issue's tree artifact (createIssueTree): it is the issue's room, whose own fragment holds the
 // nodes written into the issue rather than into a document, and the tree read names it. Nor is
 // the issue's decisions query (refs.DecisionsQuerySQL): Decisions is a view over decision nodes
-// and not a document (R6 and R8 of this branch's spec), which its own address and id still read.
+// and not a document (R6 and R8 of the issue-tree spec), which its own address and id still read.
 var issueArtifactsStatement = `
 		select ` + artifactColumns + `
 		from artifacts where issue_key = $1 and ` + issueArtifactsListed("artifacts") + `
@@ -3669,7 +3718,7 @@ var nodesOfOtherIssuesStatement = `
 func refuseNodesOfOtherIssues(ctx context.Context, q queryer, artifact model.Artifact, ops []model.EditOp) error {
 	var addresses []string
 	for _, op := range ops {
-		for _, named := range []string{op.Block, blockAnchor(op.After), blockAnchor(op.Before)} {
+		for _, named := range []string{op.Block, blockAnchor(op.After), blockAnchor(op.Before), blockAnchor(op.Into)} {
 			if strings.Contains(named, "#") {
 				addresses = append(addresses, named)
 			}
@@ -3698,9 +3747,8 @@ func refuseNodesOfOtherIssues(ctx context.Context, q queryer, artifact model.Art
 // blockAnchor is the block id an insert's or a move's anchor names in its `block:<id>` form, "" for
 // an anchor written as a quote.
 func blockAnchor(anchor string) string {
-	id, _ := strings.CutPrefix(anchor, "block:")
-	if id == anchor {
-		return ""
+	if id, ok := strings.CutPrefix(anchor, "block:"); ok {
+		return id
 	}
-	return id
+	return ""
 }

@@ -23,9 +23,11 @@ package api
 // ends a proposal and counts a proposed check or plan task as serving its requirement as a settle
 // would, and a move into proposed takes a requirement's gaps out of the coverage read and the
 // approval request. Both routes share one body (writeNodeStateAs), which records one writer for
-// one person, and write through writeNodeState, at graphstore.NoEvent: no event is appended and no
-// delivery is sent, as for every node of these kinds (reasoning_write.go), and the reads answer
-// the new state at once, since every one of them reads the node's row.
+// one person, and write through writeNodeState, at graphstore.NoEvent: the write appends no event
+// and sends no delivery, as for every node of these kinds (reasoning_write.go), and the reads
+// answer the new state at once, since every one of them reads the node's row. A state is one of
+// the values a query's record holds, so the write marks the issue's queries owed, and the drain
+// after its COMMIT writes, and announces, a version of each query whose record moved (R14).
 //
 // On an issue Legion runs, only a person or an architect of the issue or of an issue above it
 // writes the state of a requirement, criterion or check node: each route holds such a write to the
@@ -67,7 +69,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -108,7 +109,7 @@ const (
 // gone is final. A block of a document a version dropped is gone too, and a later version that
 // holds the block again restores it, so its refusal says nothing of finality.
 func nodeGone(kind, address string) error {
-	if slices.Contains(refs.StandingKinds(), kind) {
+	if standingKind(kind) {
 		return errorf(http.StatusConflict, codeNodeGone, "the %s %s is gone, and gone is final: no write writes on it", kind, address)
 	}
 	return errorf(http.StatusConflict, codeNodeGone, "the %s %s is gone: no write writes on it", kind, address)
@@ -304,12 +305,7 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 	if !ok {
 		return
 	}
-	var writer model.Actor
-	if docs.CallerIsPerson(proving) {
-		writer, ok = s.actingPerson(w, resolved)
-	} else {
-		writer, ok = s.requireActor(w, resolved, supplied)
-	}
+	writer, person, ok := s.nodeRouteWriter(w, proving, resolved, supplied)
 	if !ok {
 		return
 	}
@@ -340,8 +336,8 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 		s.writeHandlerError(w, err)
 		return
 	}
-	checked := specWriter{actor: writer, person: docs.CallerIsPerson(proving)}
-	node, previous, err := writeNodeState(ctx, tx, nodeStateWrite{
+	checked := specWriter{actor: writer, person: person}
+	node, previous, marked, err := writeNodeState(ctx, tx, nodeStateWrite{
 		issue: key, target: target, state: asked, who: writer, at: at,
 		allowed: func(stored graphstore.Node) error {
 			if err := rule.refused(ctx, tx, target, stored, proving); err != nil {
@@ -360,6 +356,12 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 	if err := tx.Commit(ctx); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// A state is one of the values a query's record holds, so the write marked the issue's queries
+	// owed (writeNodeState), and their drain writes the version of each query whose record moved
+	// before the route answers, publishing the artifact.version of each (R14).
+	if marked {
+		s.publish(ctx, s.deps.Docs.DrainOwedQueries(ctx, key)...)
 	}
 	WriteJSON(w, http.StatusOK, stateWritten(target, node, previous))
 }
@@ -387,7 +389,7 @@ func stateRefusal(target stateTarget, held, asked string) error {
 	switch {
 	case asked == graphstore.StateSettled:
 		return refused("a proposed node is settled by POST /api/v1/issues/{key}/nodes/{id}/settle alone")
-	case asked == graphstore.StateGone && !slices.Contains(refs.StandingKinds(), target.kind):
+	case asked == graphstore.StateGone && !standingKind(target.kind):
 		return refused("a document's own write removes its block and its own routes take out an issue, a document, an ask, " +
 			"a comment or a message, so this route writes gone only on a lens, a finding, a risk or a constraint")
 	}

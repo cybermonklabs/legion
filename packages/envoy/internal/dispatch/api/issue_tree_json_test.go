@@ -136,6 +136,20 @@ func randomTreeRead(random *rand.Rand) model.IssueTreeRead {
 			made := when()
 			node.MadeAt = &made
 		}
+		if random.IntN(3) == 0 {
+			edited := when()
+			node.EditedAt = &edited
+		}
+		if random.IntN(3) == 0 {
+			deleted := when()
+			node.DeletedAt = &deleted
+			if random.IntN(2) == 0 {
+				node.DeletedBy = &model.Actor{Kind: text(), ID: text(), Proven: random.IntN(2) == 0}
+				if random.IntN(3) == 0 {
+					node.DeletedBy.Owner = held()
+				}
+			}
+		}
 		if random.IntN(3) > 0 {
 			node.Attributes = map[string]string{}
 			for range random.IntN(6) {

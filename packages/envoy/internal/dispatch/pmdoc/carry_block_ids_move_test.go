@@ -78,14 +78,14 @@ func carryMoveRequireFresh(t *testing.T, live, block *Node, why string) {
 }
 
 // A version that moves a block among its parent's children without changing it keeps the id of
-// that block and of every block the move passes (this issue's spec R13), so a pointer or an anchor
-// keyed on any of them still resolves: the carry aligns each parent's children in live with its
-// children in next (carryChildren), rather than pairing them by place alone, which gave the moved
-// block and every block it passed a fresh id. An unchanged ask the version moves keeps its id, and
-// so keeps the row holding its answer. A block the move changes, a block put under another parent
-// and a changed container moved out of its place still take a fresh id (carryKept). api's
-// TestAMoveOfOneParagraphKeepsEveryBlockID holds the same rule through the upload route, the
-// block index and the store, over 2,000 paragraphs.
+// that block and of every block the move passes (R13 of the issue-tree spec), so a pointer or an
+// anchor keyed on any of them still resolves: the carry aligns each parent's children in live with
+// its children in next (carryChildren), rather than pairing them by place alone, which gave the
+// moved block and every block it passed a fresh id. An unchanged ask the version moves keeps its
+// id, and so keeps the row holding its answer. A block the move changes, a block put under another
+// parent and a changed container moved out of its place still take a fresh id (carryKept). api's
+// TestAMoveOfOneParagraphKeepsEveryBlockID holds the same rule through the upload route, the block
+// index and the store, over 2,000 paragraphs.
 func TestAnUploadThatMovesABlockKeepsTheIDsOfTheBlocksItMovesAndPasses(t *testing.T) {
 	t.Parallel()
 	first := carryMoveOrder(0, 0)

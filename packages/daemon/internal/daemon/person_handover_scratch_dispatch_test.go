@@ -649,9 +649,14 @@ func requirementBlocks(ids ...string) string {
 	return text.String()
 }
 
-// requirementBlock is the requirement block id, with a sentence of its own.
+// requirementBlock is the requirement block id, with a sentence of its own (requirementSentence).
 func requirementBlock(id string) string {
-	return fmt.Sprintf(":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n", id, id, id)
+	return fmt.Sprintf(":::requirement{#%s}\n**%s.** %s\n:::\n", id, id, requirementSentence(id))
+}
+
+// requirementSentence is the sentence requirementBlock writes in the requirement block id.
+func requirementSentence(id string) string {
+	return fmt.Sprintf("The change delivers %s.", id)
 }
 
 // verificationCheck is one check of a Verification document: its id and the blocks its `serves` names, in
@@ -921,16 +926,23 @@ func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string)
 	return uploaded.Version.Number
 }
 
-// approvedLatest is the version at which artifactID reads approved as its latest version, through
-// the read the daemon's design gate makes (dispatch.HTTPClient.Approval, Approval.ApprovedLatest),
-// and 0 where its latest version is not approved.
-func (r *personHandoverRig) approvedLatest(artifactID string) int {
+// gateApproval is artifactID's approval as the daemon's design gate reads it
+// (dispatch.HTTPClient.Approval).
+func (r *personHandoverRig) gateApproval(artifactID string) dispatch.Approval {
 	r.t.Helper()
 	approval, err := dispatch.New(r.baseURL, dispatch.BearerTransport(scratchAgentToken, nil)).Approval(r.t.Context(), artifactID)
 	if err != nil {
 		r.t.Fatalf("read the approval of %s as the daemon's design gate reads it: %v", artifactID, err)
 	}
-	return approval.ApprovedLatest()
+	return approval
+}
+
+// approvedLatest is the version at which artifactID reads approved as its latest version, through
+// the read the daemon's design gate makes (gateApproval, Approval.ApprovedLatest), and 0 where its
+// latest version is not approved.
+func (r *personHandoverRig) approvedLatest(artifactID string) int {
+	r.t.Helper()
+	return r.gateApproval(artifactID).ApprovedLatest()
 }
 
 // carriedReview waits for Dispatch to record its carry of the person's approval of version from on

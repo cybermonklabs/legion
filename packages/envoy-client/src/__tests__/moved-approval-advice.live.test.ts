@@ -43,11 +43,12 @@ describe.skipIf(!dispatchStackEnabled)(
   () => {
     let stack: DispatchStack | undefined;
 
-    // Every row below inserts plain prose with no typed block, as the sibling file's rows insert
-    // one (design-gate-advice.live.test.ts), and here for a reason of this file's own: the
-    // settlement that follows a write stores a version of its own when the write leaves a typed
-    // block to settle, and that second version would move the request again under the row's feet
-    // and leave its version numbers at the mercy of a settlement that may or may not have landed.
+    // Every row below inserts plain prose with no typed block, for a reason of this file's own:
+    // the settlement that follows a write stores a version of its own when the write leaves a
+    // typed block to settle, and that second version would move the request again under the row's
+    // feet and leave its version numbers at the mercy of a settlement that may or may not have
+    // landed. The sibling file's rows (design-gate-advice.live.test.ts) insert typed blocks
+    // instead, since R14's record carry carries an approval across a write of prose alone.
     const { asPerson, asMachine, createIssue, upload, docEdit } = dispatchCliLive({
       stack: () => stack,
       session: SESSION,

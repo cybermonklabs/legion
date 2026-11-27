@@ -33,7 +33,7 @@ func newProjectDocument(t *testing.T, database *store.Store, name, slug string) 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the project document fixture: %v", err)
 	}
-	return parentDocument{database: database, artifact: id, refKey: refKey}
+	return parentDocument{database: database, artifact: id, refKey: refKey, topKind: graphstore.KindArtifact, topID: refKey}
 }
 
 // indexWhole records version number of the document, rendered as version and written whole by

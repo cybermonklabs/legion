@@ -43,36 +43,16 @@ func owedDocumentNames(t *testing.T, database *store.Store, owed []model.OwedDoc
 	return names
 }
 
-// queuedRowsOf is each row of refs_grammar_owed that names a document of the issue issueKey, its
-// tree artifact and its decisions query among them, as its kind, the document's name and its id.
-func queuedRowsOf(t *testing.T, database *store.Store, issueKey string) []string {
-	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `
-		select o.kind || ' ' || a.name || ' (' || a.id::text || ')'
-		from refs_grammar_owed o
-		join artifacts a on a.id = o.id
-		where a.issue_key = $1
-		order by a.name, o.kind`, issueKey)
-	if err != nil {
-		t.Fatalf("read the re-index queue of the documents of %s: %v", issueKey, err)
-	}
-	queued, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("read the re-index queue of the documents of %s: %v", issueKey, err)
-	}
-	return queued
-}
-
 // formsQueues are the forms re-index queues a document's text can be owed in: refs_forms_owed, and
 // the two halves of the Decisions page's queue, the live one the relay of a delete from
 // refs_forms_owed writes (refs_decisions_forms_owed) and the bootstrap one the seed writes
 // (refs_decisions_forms_seed_owed).
 var formsQueues = []refs.OwedQueue{refs.RefsFormsOwed, refs.RefsDecisionsFormsOwed, refs.RefsDecisionsFormsSeedOwed}
 
-// formsQueuedRowsOf is each row of the forms queue queue that names a document of the issue
-// issueKey, its tree artifact and its decisions query among them, as its kind, the document's name
-// and its id.
-func formsQueuedRowsOf(t *testing.T, database *store.Store, queue refs.OwedQueue, issueKey string) []string {
+// queueRowsOf is each row of the re-index queue queue that names a document of the issue issueKey,
+// its tree artifact and its decisions query among them, as its kind, the document's name and its
+// id.
+func queueRowsOf(t *testing.T, database *store.Store, queue refs.OwedQueue, issueKey string) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
 		select o.kind || ' ' || a.name || ' (' || a.id::text || ')'
@@ -90,35 +70,19 @@ func formsQueuedRowsOf(t *testing.T, database *store.Store, queue refs.OwedQueue
 	return queued
 }
 
-// queuedKindsOf is the kind of each row of the re-index queue that names the document artifactID,
-// in kind order: `artifact` for its own text, `scope` for its scope.
-func queuedKindsOf(t *testing.T, database *store.Store, artifactID string) []string {
-	t.Helper()
-	rows, err := database.Pool.Query(context.Background(),
-		`select kind from refs_grammar_owed where id = $1::uuid order by kind`, artifactID)
-	if err != nil {
-		t.Fatalf("read the re-index queue of %s: %v", artifactID, err)
-	}
-	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("read the re-index queue of %s: %v", artifactID, err)
-	}
-	return kinds
-}
-
 // settleReindexQueue runs passes of the block-index reconciliation until no document of the issue
 // issueKey owes its block index and the re-index queue holds no row of any of them, so a single
 // tick the test runs later reads only what the writes after this left.
 func settleReindexQueue(t *testing.T, handler http.Handler, database *store.Store, deps Deps, issueKey string) {
 	t.Helper()
 	for range 8 {
-		if len(readCoverage(t, handler, issueKey).OwedDocuments) == 0 && len(queuedRowsOf(t, database, issueKey)) == 0 {
+		if len(readCoverage(t, handler, issueKey).OwedDocuments) == 0 && len(queueRowsOf(t, database, refs.RefsGrammarOwed, issueKey)) == 0 {
 			return
 		}
 		reconcileBlockIndexPass(t, deps)
 	}
 	t.Fatalf("eight passes of the reconciliation left %s owing %+v, with the re-index queue holding %q",
-		issueKey, readCoverage(t, handler, issueKey).OwedDocuments, queuedRowsOf(t, database, issueKey))
+		issueKey, readCoverage(t, handler, issueKey).OwedDocuments, queueRowsOf(t, database, refs.RefsGrammarOwed, issueKey))
 }
 
 // TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex: a result an agent session
@@ -187,11 +151,11 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 	}
 	requireNothingQueued := func(what string) {
 		t.Helper()
-		if queued := queuedRowsOf(t, database, issue.Key); len(queued) > 0 {
+		if queued := queueRowsOf(t, database, refs.RefsGrammarOwed, issue.Key); len(queued) > 0 {
 			t.Errorf("%s: the re-index queue holds %q (%s), want no row of a document of %s", what, queued, documentsAt(), issue.Key)
 		}
 		for _, queue := range formsQueues {
-			if queued := formsQueuedRowsOf(t, database, queue, issue.Key); len(queued) > 0 {
+			if queued := queueRowsOf(t, database, queue, issue.Key); len(queued) > 0 {
 				t.Errorf("%s: %s holds %q (%s), want no row of a document of %s", what, queue.Table(), queued, documentsAt(), issue.Key)
 			}
 		}
@@ -260,7 +224,7 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 	waitForArtifactVersion(t, handler, verification.id, edited)
 	renderAtVersionQuiet(t, database, issue.Key, issue.PrimaryArtifactID)
 	requireDrawn("the edit of the check")
-	if kinds := queuedKindsOf(t, database, verification.id); !slices.Equal(kinds, []string{"scope"}) {
+	if kinds := queueKindsOf(t, database, refs.RefsGrammarOwed, verification.id); !slices.Equal(kinds, []string{"scope"}) {
 		t.Fatalf("the edit of the check leaves the re-index queue holding %q of verification.md (%s), want its scope row alone: "+
 			"the case this step reads is a scope row that stood before the drain's insert", kinds, documentsAt())
 	}
@@ -270,12 +234,12 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 		t.Errorf("the result after the edit leaves verification.md at version %d holding %q, want the drained version %d holding the bytes of the one before, %q",
 			held.number, held.markdown, before.number+1, before.markdown)
 	}
-	if kinds := queuedKindsOf(t, database, verification.id); !slices.Equal(kinds, []string{"scope"}) {
+	if kinds := queueKindsOf(t, database, refs.RefsGrammarOwed, verification.id); !slices.Equal(kinds, []string{"scope"}) {
 		t.Errorf("the drain of a result after the edit leaves the re-index queue holding %q of verification.md (%s), want the scope row that stood before its insert, and no artifact row",
 			kinds, documentsAt())
 	}
 	for _, queue := range formsQueues {
-		if forms := formsRowsOf(t, database, queue, verification.id); len(forms) > 0 {
+		if forms := queueKindsOf(t, database, queue, verification.id); len(forms) > 0 {
 			t.Errorf("the drain of a result after the edit leaves %s holding %q of verification.md (%s), want none",
 				queue.Table(), forms, documentsAt())
 		}
@@ -298,21 +262,21 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 		t.Errorf("the result over a standing forms row leaves verification.md at version %d holding %q, want the drained version %d holding the bytes of the one before, %q",
 			held.number, held.markdown, before.number+1, before.markdown)
 	}
-	if forms := formsRowsOf(t, database, refs.RefsFormsOwed, verification.id); !slices.Equal(forms, []string{"artifact"}) {
+	if forms := queueKindsOf(t, database, refs.RefsFormsOwed, verification.id); !slices.Equal(forms, []string{"artifact"}) {
 		t.Errorf("the drain of a result over a standing forms row leaves refs_forms_owed holding %q of verification.md (%s), want the artifact row that stood before its insert",
 			forms, documentsAt())
 	}
 	for _, queue := range []refs.OwedQueue{refs.RefsDecisionsFormsOwed, refs.RefsDecisionsFormsSeedOwed} {
-		if forms := formsRowsOf(t, database, queue, verification.id); len(forms) > 0 {
+		if forms := queueKindsOf(t, database, queue, verification.id); len(forms) > 0 {
 			t.Errorf("the drain of a result over a standing forms row leaves %s holding %q of verification.md (%s), want none",
 				queue.Table(), forms, documentsAt())
 		}
 	}
 }
 
-// formsRowsOf is the kind of each row of the forms queue queue that names the document artifactID,
-// in kind order.
-func formsRowsOf(t *testing.T, database *store.Store, queue refs.OwedQueue, artifactID string) []string {
+// queueKindsOf is the kind of each row of the re-index queue queue that names the document
+// artifactID, in kind order: `artifact` for its own text, `scope` for its scope.
+func queueKindsOf(t *testing.T, database *store.Store, queue refs.OwedQueue, artifactID string) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(),
 		`select kind from `+queue.Table()+` where id = $1::uuid order by kind`, artifactID)
@@ -354,11 +318,11 @@ func TestTheDecisionsQueryOwesNoReindexQueueOnCreateOrConversion(t *testing.T) {
 
 	requireDecisionsClean := func(t *testing.T, handler http.Handler, database *store.Store, what, issueKey, decisions string) {
 		t.Helper()
-		if kinds := queuedKindsOf(t, database, decisions); len(kinds) > 0 {
+		if kinds := queueKindsOf(t, database, refs.RefsGrammarOwed, decisions); len(kinds) > 0 {
 			t.Errorf("%s: refs_grammar_owed holds %q for the decisions query %s of %s, want none", what, kinds, decisions, issueKey)
 		}
 		for _, queue := range formsQueues {
-			if kinds := formsRowsOf(t, database, queue, decisions); len(kinds) > 0 {
+			if kinds := queueKindsOf(t, database, queue, decisions); len(kinds) > 0 {
 				t.Errorf("%s: %s holds %q for the decisions query %s of %s, want none", what, queue.Table(), kinds, decisions, issueKey)
 			}
 		}
@@ -391,8 +355,8 @@ func TestTheDecisionsQueryOwesNoReindexQueueOnCreateOrConversion(t *testing.T) {
 		reconcileBlockIndexPass(t, deps)
 		requireDecisionsClean(t, handler, database, "after create and one tick", issue.Key, decisions)
 
-		// Even if a scope row of the decisions query stood before a drain (from a database written
-		// before this fix), the drain deletes every row of the decisions query from both queues.
+		// Even if a scope row of the decisions query stood before a drain (from a database a release
+		// before wrote), the drain deletes every row of the decisions query from both queues.
 		if _, err := database.Pool.Exec(context.Background(),
 			`insert into refs_grammar_owed (kind, id) values ('scope', $1::uuid) on conflict (kind, id) do update set enqueued_at = now()`,
 			decisions); err != nil {

@@ -121,8 +121,9 @@ func (f *TypedFacts) setDecidedBy(id string, author Target) {
 // other one BlockSupertag - and every other block's is its type's (TypeSupertag): its type for a
 // typed block of the block schema, BlockSupertag for a paragraph, a heading, a list or any other
 // kind. Facts that read nothing tag every decision and reading by its type. So every writer of a
-// block node - the block index, the typed-node pass, the requirements, checks and plan tasks a
-// deferred version's write writes (PlanAuthored) - gives one block one supertag.
+// block node gives one block one supertag: the block index and the typed-node pass this one, and
+// the requirements, checks and plan tasks a deferred version's write writes (PlanAuthored) the one
+// TypeSupertag gives, which is this one for those types.
 func (f TypedFacts) supertag(id, typ string) string {
 	if f.read && (typ == decisionType || typ == readingType) {
 		if supertag, typed := f.supertags[id]; typed {
@@ -197,7 +198,7 @@ func (f TypedFacts) pairs(pairs []blockPair) []blockPair {
 // decided_by (pairs), each pointer's far end resolved, through q, to the node it resolves to now,
 // as PlanBlocks resolves the pairs it reconciles (resolvePointerPairs): a `dispatch://KEY/spec#b-…`
 // tie names the block of the spec's issue room once the spec is a fragment of that room (T17 of
-// this branch's plan), and the blocks the facts were read of, at their addresses under the
+// the issue-tree plan), and the blocks the facts were read of, at their addresses under the
 // document artifactID the pass indexes, are the ones a pass writes.
 func (f TypedFacts) typedPairs(ctx context.Context, q Queryer, artifactID string) ([]blockPair, error) {
 	paired, _ := pointerPairs(f.nodes, slices.Concat(f.shaped, f.ties))

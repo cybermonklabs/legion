@@ -83,15 +83,6 @@ func TestARequirementUnderACriterionInAListIsReachedAtOnce(t *testing.T) {
 			requireTwinListsRequirement(t, s.deps, s.database, issue, "r5")
 			requireInTheViews(t, s.handler, issue, s.specKey, deferral.converted, chain)
 			requireWrittenAtOnce(t, s.database, deferral.converted, chain)
-			t.Logf("before the reconciliation: %s", partOfChain(t, s.database, s.specKey+"#r5"))
-			t.Logf("before the reconciliation: %s", partOfChain(t, s.database, blockKeyOf(t, s.database, s.fixture.documentNamed(t, "verification.md"))+"#c9"))
-			report, err := graphcensus.StoreCensus(context.Background(), s.database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
-			if err != nil {
-				t.Fatalf("take the store census: %v", err)
-			}
-			var printed strings.Builder
-			report.Write(&printed)
-			t.Logf("the store census before the reconciliation reads %d differences:\n%s", report.Differences(), printed.String())
 			if t.Failed() {
 				return
 			}
@@ -169,7 +160,7 @@ func TestTheDeferredWriteStatesEachBlocksTextRowAndMembershipOnce(t *testing.T) 
 // leaves an issue room owed its block index, the whole typed-node pass runs on the fragment its
 // write wrote: through an upload of the Verification's second version, its decision, the reading it
 // closes with, its check and its plan task are nodes at once, and through an edit of the spec its
-// requirement is, each under its type's supertag (R26 of the issue tree's spec); and no block of the
+// requirement is, each under its type's supertag (R26 of the issue-tree spec); and no block of the
 // plan's fragment is, not even the plan task the browser's edit wrote, which waits for the room pass
 // that closes the case. Every document joins the room before the browser opens it: a join closes the
 // room at its commit (docs' Ledger.closeJoinedRooms), and the departing browser's settlement

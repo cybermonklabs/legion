@@ -134,31 +134,11 @@ tree_sign_in setup "$person_login"
 
 # --- the vocabulary of this driver ------------------------------------------------------------------
 
-# rp_send METHOD AS KEY NODE TAG BODY QUERY: METHOD /api/v1/issues/KEY/nodes/NODE as AS (agent or
-# person), NODE percent-encoded as one segment, with the JSON BODY and the query string QUERY
-# (dry_run=true, expected_count=<n>) where each is not empty, and `If-Match: "TAG"` where TAG is not
-# empty. The answer is in $work/body and `status`, as tree_request leaves them.
-rp_send() {
-  local method="$1" as="$2" key="$3" node="$4" tag="$5" body="$6" query="$7"
-  local -a auth match=() data=()
-  case "$as" in
-    agent) auth=(-H "@$work/auth") ;;
-    person) auth=(-b "$work/jar" -H "Origin: $(tree_origin)") ;;
-    *) tree_refuse "rp_send sends as agent or person, not '$as'" ;;
-  esac
-  [[ -z "$tag" ]] || match=(-H "If-Match: \"$tag\"")
-  [[ -z "$body" ]] || data=(-H 'Content-Type: application/json' --data-binary "$body")
-  tree_last_request="$method /api/v1/issues/$key/nodes/$node${query:+?$query}${tag:+ If-Match \"$tag\"}${body:+ $body}"
-  status="$(curl -sS -X "$method" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${match[@]}" "${data[@]}" \
-    "$base/api/v1/issues/$(q "$key")/nodes/$(q "$node")${query:+?$query}" 2>"$work/curl")" ||
-    status="curl failed: $(<"$work/curl")"
-}
+# rp_patch AS KEY NODE TAG BODY: the move, PATCH with BODY (lib-tree.sh's tree_node_send).
+rp_patch() { tree_node_send PATCH "$1" "$2" "$3" "$4" "$5" ""; }
 
-# rp_patch AS KEY NODE TAG BODY: the move, PATCH with BODY (rp_send).
-rp_patch() { rp_send PATCH "$1" "$2" "$3" "$4" "$5" ""; }
-
-# rp_delete AS KEY NODE TAG QUERY: the delete, DELETE with QUERY and no body (rp_send).
-rp_delete() { rp_send DELETE "$1" "$2" "$3" "$4" "" "$5"; }
+# rp_delete AS KEY NODE TAG QUERY: the delete, DELETE with QUERY and no body (tree_node_send).
+rp_delete() { tree_node_send DELETE "$1" "$2" "$3" "$4" "" "$5"; }
 
 # rp_answered SECTION WHAT STATUS CODE: the last answer is STATUS with the error code CODE.
 rp_answered() {
@@ -180,17 +160,6 @@ rp_wait_drained() {
   done
 }
 
-# rp_store ADDRESS: the store's kind and id of the node at ADDRESS, in rp_kind and rp_id: a block's
-# address (a document's block or a lens's finding) holds a `#` and is the block node's id; every
-# other address is `<kind>/<id>`.
-rp_store() {
-  if [[ "$1" == *"#"* ]]; then
-    rp_kind=block rp_id="$1"
-  else
-    rp_kind="${1%%/*}" rp_id="${1#*/}"
-  fi
-}
-
 # rp_seq: the newest seq of the tuple log, in rp_mark.
 rp_seq() {
   query "$1" "read the newest seq of the tuple log" "select coalesce(max(seq), 0) from graph_tuples"
@@ -200,52 +169,25 @@ rp_seq() {
 # rp_parents SECTION ADDRESS: the far ends of the current part_of of the node at ADDRESS -
 # `<kind>/<id>`, or a block's id - joined by commas, in rp_parent.
 rp_parents() {
-  rp_store "$2"
-  with_vars "$1" "read the part_of of $2" \
-    "select coalesce(string_agg(case when h.to_kind = 'block' then h.to_id else h.to_kind || '/' || h.to_id end, ',' order by h.to_kind, h.to_id), '')
-     from (select distinct on (to_kind, to_id) to_kind, to_id, asserted from graph_tuples
-           where from_kind = :'kind' and from_id = :'id' and kind = 'part_of' and to_kind <> 'value'
-           order by to_kind, to_id, seq desc) h where h.asserted" \
-    kind="$rp_kind" id="$rp_id"
+  tree_node_far "$1" "$2" part_of
   rp_parent="$answer"
 }
 
-# rp_tag SECTION ADDRESS [any]: the placement_seq of the node at ADDRESS, the seq of its current
-# part_of (as the tree read answers it), in rp_placed; with `any`, 0 for a node that holds none (a
-# comment of the issue), which a refusal that comes before the If-Match test is sent with.
+# rp_tag SECTION ADDRESS [any]: the placement_seq of the node at ADDRESS (lib-tree.sh's
+# tree_node_tag), in rp_placed.
 rp_tag() {
-  rp_store "$2"
-  with_vars "$1" "read the placement_seq of $2" \
-    "select coalesce((select h.seq from (select distinct on (to_kind, to_id) seq, asserted from graph_tuples
-       where from_kind = :'kind' and from_id = :'id' and kind = 'part_of' and to_kind <> 'value'
-       order by to_kind, to_id, seq desc) h where h.asserted order by h.seq desc limit 1)::text, '')" \
-    kind="$rp_kind" id="$rp_id"
-  if [[ -z "$answer" ]]; then
-    [[ "${3:-}" == any ]] || fail "$1" "read the placement_seq of $2" "it holds no part_of"
-    answer=0
-  fi
+  tree_node_tag "$@"
   rp_placed="$answer"
-}
-
-# rp_value SECTION ADDRESS ATTRIBUTE: the current value of ATTRIBUTE of the node at ADDRESS, empty
-# where it holds none, in answer.
-rp_value() {
-  rp_store "$2"
-  with_vars "$1" "read the $3 of $2" \
-    "select coalesce((select case when asserted then to_id end from graph_tuples
-       where from_kind = :'kind' and from_id = :'id' and kind = :'attribute' and to_kind = 'value'
-       order by seq desc limit 1), '')" \
-    kind="$rp_kind" id="$rp_id" attribute="$3"
 }
 
 # rp_since SECTION ADDRESS MARK: the tuples out of the node at ADDRESS appended after MARK, each
 # `<kind>:<far end>:<asserted>` in seq order, joined by commas, in answer.
 rp_since() {
-  rp_store "$2"
+  tree_node_store "$2"
   with_vars "$1" "read the tuples of $2 since $3" \
     "select coalesce(string_agg(kind || ':' || case when to_kind = 'block' then to_id else to_kind || '/' || to_id end || ':' || asserted::text, ',' order by seq), '')
      from graph_tuples where from_kind = :'kind' and from_id = :'id' and seq > :'mark'::bigint" \
-    kind="$rp_kind" id="$rp_id" mark="$3"
+    kind="$tree_node_kind" id="$tree_node_id" mark="$3"
 }
 
 # rp_untouched SECTION WHAT ADDRESS MARK: no tuple out of the node at ADDRESS was appended after
@@ -271,7 +213,7 @@ rp_moved_tuples() {
 # address (a block's node id, every other node `<kind>/<id>`), or `null` where it follows none or
 # holds no rank, in rp_before. It reads the store, as the move's answer must agree with it.
 rp_preceding() {
-  rp_store "$3"
+  tree_node_store "$3"
   with_vars "$1" "read the ranked child of $3 that $2 follows" \
     "select coalesce((select o.before from (
        select s.child, lag(s.child) over (order by s.rank collate \"C\") as before from (
@@ -285,7 +227,7 @@ rp_preceding() {
          order by t.from_kind, t.from_id, t.seq desc) s
        where s.asserted and s.rank is not null) o
      where o.child = :'node'), 'null')" \
-    kind="$rp_kind" id="$rp_id" node="$2"
+    kind="$tree_node_kind" id="$tree_node_id" node="$2"
   rp_before="$answer"
 }
 
@@ -386,11 +328,10 @@ rp_refused() {
   pass "$section" "the move of $address under $parent answers $want $code, naming $*, and stores nothing"
 }
 
-# rp_edit SECTION WHAT ARTIFACT OPS: the person applies the edit ops OPS to ARTIFACT; it must change it.
+# rp_edit SECTION WHAT ARTIFACT OPS: the person applies the edit ops OPS to ARTIFACT
+# (lib-tree.sh's tree_person_edit); it must change it.
 rp_edit() {
-  tree_person_send POST "/api/v1/artifacts/$3/edits" "$(jq -cn --argjson ops "$4" '{ops: $ops}')"
-  tree_want 200 "$1" "$2"
-  jq -e '.changed == true' "$work/body" >/dev/null || fail "$1" "$2" "the edit changed nothing: $(body)"
+  tree_person_edit "$@"
   pass "$1" "$2"
 }
 
@@ -466,13 +407,13 @@ rp_finding() {
 # rp_pointers SECTION ADDRESS KIND: the current far ends of the KIND tuples out of ADDRESS with the
 # seq of the tuple that holds each, joined by commas, in answer.
 rp_pointers() {
-  rp_store "$2"
+  tree_node_store "$2"
   with_vars "$1" "read the $3 tuples of $2" \
     "select coalesce(string_agg(h.to_kind || '/' || h.to_id || '@' || h.seq, ',' order by h.to_kind, h.to_id), '')
      from (select distinct on (to_kind, to_id) to_kind, to_id, seq, asserted from graph_tuples
            where from_kind = :'kind' and from_id = :'id' and kind = :'tuple' order by to_kind, to_id, seq desc) h
      where h.asserted" \
-    kind="$rp_kind" id="$rp_id" tuple="$3"
+    kind="$tree_node_kind" id="$tree_node_id" tuple="$3"
 }
 
 # rp_same_pointers SECTION ADDRESS KIND BEFORE: the KIND tuples of ADDRESS are BEFORE still, each the
@@ -716,7 +657,7 @@ readonly f4="$rp_finding"
 rp_finding "$section" "$key" "$l1" "The first lens finds the disk full."
 readonly f1="$rp_finding"
 rp_move "$section" person "$key" "$l4" "$u_node"
-rp_value "$section" "$l4" artifact_id
+tree_node_value "$section" "$l4" artifact_id
 [[ "$answer" == "$u_doc" ]] || fail "$section" "L4 records U's row as its artifact_id" "it records '$answer', want $u_doc"
 pass "$section" "L4 records U's row $u_doc as its artifact_id"
 rp_refused "$section" person "$key" "$f1" "$u_node" 409 PARENT_DOCUMENT_REMOVABLE "$f1" finding "$u_node" "$u_ref"
@@ -900,12 +841,12 @@ rp_chain() {
 rp_stored() {
   rp_parents "$1" "$2"
   [[ "$rp_parent" == "$3" ]] || fail "$1" "$2 stands under $3" "it stands under '$rp_parent'"
-  rp_value "$1" "$2" placement
+  tree_node_value "$1" "$2" placement
   [[ "$answer" == stored ]] || fail "$1" "$2 holds the placement stored" "it holds '$answer', part_of $rp_parent"
   pass "$1" "$2 stands under $3 with the placement stored"
 }
 # rp_rank SECTION NODE: NODE's rank, in answer.
-rp_rank() { rp_value "$1" "$2" rank; }
+rp_rank() { tree_node_value "$1" "$2" rank; }
 chain_tag="$p3_tag"
 rp_chain "$section" "$p3" "$p2" null null
 rp_stored "$section" "$p3" "$p2"
@@ -953,7 +894,7 @@ for node in "$p3" "$c1" "$k3" "$r4" "$t5"; do
   held_rank[$node]="$answer"
 done
 rp_edit "$section" "alice edits P1's words alone" "$tree_doc" '[{"op": "replace", "find": "The first prose block of the room, P1.", "with": "The first prose block of the room, P1, reworded."}]'
-corpus_wait_indexed() {
+rp_wait_indexed() {
   local deadline=$((SECONDS + 120))
   while true; do
     query "$1" "read whether a document of $key owes its index" \
@@ -963,13 +904,13 @@ corpus_wait_indexed() {
     sleep 1
   done
 }
-corpus_wait_indexed "$section"
+rp_wait_indexed "$section"
 for node in "$p3" "$c1" "$k3" "$r4" "$t5"; do
   rp_parents "$section" "$node"
   rp_rank "$section" "$node"
   [[ "$rp_parent" == "${held_parent[$node]}" && "$answer" == "${held_rank[$node]}" ]] ||
     fail "$section" "the next index pass keeps the place of $node" "it stands under $rp_parent at rank $answer, ${held_parent[$node]} at ${held_rank[$node]} before"
-  rp_value "$section" "$node" placement
+  tree_node_value "$section" "$node" placement
   [[ "$answer" == stored ]] || fail "$section" "$node keeps the placement stored" "it holds '$answer'"
 done
 pass "$section" "the next index pass keeps every stored place and rank"
@@ -979,7 +920,7 @@ rp_move "$section" person "$key" "$p4" "issue/$key" "$p1"
 rp_rank "$section" "$p4"
 p4_rank="$answer"
 rp_edit "$section" "alice inserts P5 between P1 and P2 in the text" "$tree_doc" '[{"op": "insert", "after": "The first prose block of the room, P1, reworded.", "markdown": "The fifth prose block of the room, P5."}]'
-corpus_wait_indexed "$section"
+rp_wait_indexed "$section"
 rp_paragraph "$section" "The fifth prose block"
 readonly p5="$answer"
 rp_rank "$section" "$p5"
@@ -996,9 +937,9 @@ pass "$section" "P5 takes the rank $p5_rank of its own, and the stored P4 keeps 
 # An edit naming another requirement in the moved check's parent attribute places it there.
 rp_edit "$section" "alice names R4 in C1's parent attribute" "$verification_doc" "$(jq -cn --arg s "dispatch://$key/spec#b-r1" --arg p "dispatch://$key/spec#b-r4" \
   '[{op: "retype", block: "c1", type: "check", attributes: {serves: $s, parent: $p, surface: "api", run: "true", negative_control: "Undo it."}}]')"
-corpus_wait_indexed "$section"
+rp_wait_indexed "$section"
 rp_parents "$section" "$c1"
-rp_value "$section" "$c1" placement
+tree_node_value "$section" "$c1" placement
 [[ "$rp_parent" == "$r4" && "$answer" == authored ]] ||
   fail "$section" "the edit places C1 under R4, authored" "the check $c1 still stands under $rp_parent with the placement '$answer' after the edit that names $r4"
 pass "$section" "the edit places C1 under R4 with the placement authored"
@@ -1030,11 +971,11 @@ rp_untouched "$section" "the refused inputs store nothing" "$c2" "$mark"
 pass "$section" "no If-Match 428, a stale one 412, an empty body 400 MOVE_INPUT, three bad afters 400 INVALID_POINTER naming after, each storing nothing"
 # The removal of P2 from the text places the stored P3 by its text again.
 rp_edit "$section" "alice deletes P2 from the room's text" "$tree_doc" "$(jq -cn --arg b "${p2#*#}" '[{op: "delete", block: $b}]')"
-corpus_wait_indexed "$section"
+rp_wait_indexed "$section"
 rp_tree "$section" "$key" spec
 p3_parent="$(jq -r --arg n "$p3" '.nodes[] | select(.id == $n) | .parent.id // ""' "$work/tree.json")"
 [[ -n "$p3_parent" ]] || fail "$section" "P3 stands in the tree read after P2's removal" "P3 is missing from the tree read after P2's deletion"
-rp_value "$section" "$p3" placement
+tree_node_value "$section" "$p3" placement
 [[ "$answer" == text ]] || fail "$section" "P3 takes the placement text" "it holds '$answer' under $p3_parent"
 pass "$section" "P3 stands under $p3_parent with the placement text"
 
@@ -1080,7 +1021,7 @@ rp_upload "$section" "$key" "Notes $stamp" "The notes hold one paragraph that mo
 
 A second paragraph of the notes."
 readonly notes_doc="$rp_doc"
-corpus_wait_indexed "$section"
+rp_wait_indexed "$section"
 # rp_notes_block SECTION WORDS: the node id of the block of the notes whose text begins with WORDS,
 # in answer, read in the room the notes are edited in.
 rp_notes_block() {
@@ -1133,7 +1074,7 @@ rp_lens "$section" "$key" "dispatch://$key/spec#b-kd" trade-off
 readonly ld="$rp_lens"
 rp_finding "$section" "$key" "$ld" "The delete takes this finding with its lens."
 readonly fd="$rp_finding"
-corpus_wait_indexed "$section"
+rp_wait_indexed "$section"
 rp_wait_drained "$section"
 rp_tree "$section" "$key"
 delete_nodes="$(jq -cn --arg a "$kd" --arg b "$rd" --arg c "${ld#lens/}" --arg d "$fd" '[$a, $b, $c, $d] | sort')"
@@ -1186,7 +1127,7 @@ with_vars "$section" "read the states of LD and its finding right after the dele
 [[ "$answer" == "gone|gone" ]] ||
   fail "$section" "the delete's own write states $ld and its finding $fd gone" "right after the delete answered, the lens and the finding read $answer"
 pass "$section" "the delete's own write states $ld and its finding $fd gone"
-corpus_wait_indexed "$section"
+rp_wait_indexed "$section"
 rp_wait_drained "$section"
 with_vars "$section" "count the nodes the delete marked gone" \
   "select count(*) from graph_nodes where state = 'gone' and

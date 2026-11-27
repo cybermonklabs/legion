@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    A basis registration that Dispatch shows approved at an older version than the document's latest
+    now names that version and the latest one as they are: "an approval of version N by X, which
+    Dispatch reads as standing at its latest version M". Under the issue-tree release's record carry,
+    Dispatch can read an approval of an older version as standing at the latest, and the refusal used
+    to call the approved version "its latest version".
+time: 2026-11-26T15:36:00Z
+custom:
+    Issue: INFRA-1253

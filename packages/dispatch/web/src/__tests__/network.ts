@@ -90,12 +90,14 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/projects/:key/artifacts/:slug/text", () =>
     Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
   ),
-  // Every page that draws an issue's document reads whether the issue is a view on its
-  // ancestor's spec before it makes the document's editor (`issueViewOfQuery`, which
-  // `ProofDocument.tsx`'s admission waits for), so every row that draws one makes this read
-  // without being about views. The answer is Dispatch's own for an issue that is no view:
-  // `view_of` null, under the view the read asked for, with no node. A row about a view answers
-  // this route itself.
+  // A page that draws an issue's document learns whether the issue is a view on its ancestor's
+  // spec before it makes the document's editor (`issueViewOfQuery`, which `ProofDocument.tsx`'s
+  // admission waits for). It reads this route, under the `spec` view, only for an issue that may
+  // be a view: one the page does not hold the read of, or holds under a parent. An issue it holds
+  // under no parent is no view and reads nothing. So a row that draws the document of such an
+  // issue makes this read without being about views. The answer is Dispatch's own for an issue
+  // that is no view: `view_of` null, under the view the read asked for, with no node. A row about
+  // a view answers this route itself.
   http.get("/api/v1/issues/:key/tree", ({ params, request }) =>
     Response.json({
       converted: false,

@@ -323,15 +323,11 @@ func TestSettlementRepairOfAnAskAPeerDeletedWritesNothing(t *testing.T) {
 	}
 }
 
+// latestVersionNumber is the number of artifactID's latest version, savedVersion of service's
+// store.
 func latestVersionNumber(t *testing.T, service *Service, artifactID string) int {
 	t.Helper()
-	var latest int
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
-	`, artifactID).Scan(&latest); err != nil {
-		t.Fatalf("read the latest document version: %v", err)
-	}
-	return latest
+	return savedVersion(t, service.store, artifactID)
 }
 
 // A settlement takes a suppression slot before it stamps block ids, and the stamp it then writes
