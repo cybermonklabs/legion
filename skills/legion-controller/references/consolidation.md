@@ -23,7 +23,7 @@ Skip a pair that the issues already settle: one closed as a duplicate of the oth
 
 Ask each agent also, for each issue of its shard that changed in the last 24 hours and fails, what it fails on (the broken tool, check, rule or component), its evidence, and the records read. Shard the issues closed in that time too (`dispatch issues --project <PROJECT> --status done --updated-since "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)" --all`). Group the issues that fail for one cause yourself. Keep a group of three or more whose issues each need their own change. A group that one fix clears is a set of duplicates.
 
-Root each cause once. Comment its evidence on the open issue that tracks it. Else write it to the architect of the running tree that owns the code, as `skill://legion-worker/references/findings.md#write-to-the-owner` says. Else take it as `skill://legion-controller/references/finding-asks.md#file-a-clear-defect-no-tree-owns` says, with `controller` as the role. Comment the result on each issue of the group, and close none of them.
+Root each cause once. Comment its evidence on the open issue that tracks it. Else take it as `skill://legion-controller/references/finding-asks.md#file-a-clear-defect` says, with `controller` as the role. Comment the result on each issue of the group, and close none of them.
 
 ## The record
 

@@ -28,8 +28,8 @@
  * again. The route is model-call.ts's: --key-file is a 0600 file that holds an Anthropic key, read
  * again for each call, and the call goes to https://api.anthropic.com; --key-command is a program
  * that prints the gateway key, run again for each call, and the call goes to
- * <gateway>/v1/messages. The key goes in the `x-api-key` header. A 429 or 5xx answer is tried
- * again after a wait.
+ * <gateway>/v1/messages. The key goes in the `x-api-key` header. An outage (`outage`: a 5xx, a 408
+ * or a 429) is tried again after a wait.
  *
  * It writes <out>/labels.jsonl: one row for each comment, oldest first. Stdout gets the counts.
  * Stdout names no person and quotes no comment, so a pull request can carry it as printed. The

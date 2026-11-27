@@ -238,6 +238,7 @@ type sessionsLive struct {
 // run that does not pass: one that failed its assertion, one that stopped before it, or one the
 // harness failed (run). A run that -test.run leaves out is none of these.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of PATH in newSessionsLive).
 	fixtureenv.Live(t)
 	pick, err := pickSessions(os.Getenv(sessionsStepEnv), os.Getenv(sessionsArmEnv), os.Getenv(sessionsRunsEnv))
 	if err != nil {

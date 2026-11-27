@@ -1,13 +1,13 @@
 # Finding asks
 
-A role sends you a finding with `envoy_publish`. Its first line is `Clear defect from <role>` or `Finding from <role>`, and it names the issue that it came from. Ask a person only for what needs that person's authority, on the issue the work is for. Never ask on the report issue.
+A role sends you a finding with `envoy_publish`. Its first line is `Clear defect from <role>` or `Finding from <role>`, and it names the issue that it came from. Ask a person only for what needs that person's authority.
 
 ## The `Filed for` line
 
 Every issue you file carries one line in its spec. Triage reads it to tell your filing from another session's label.
 
 - For a person: `Filed for <person> at their request: <request>`. The request is `dispatch://<KEY>/ask/<id>` for the person who answered that ask, or `Slack <channel_id> message <ts>` for the mention's `<@user_id>` (add `, adopting message <earlier ts>` when the mention asks for an earlier message's request), or `direct message <id>`, the id that its frame's `reply_with` names after `--in-reply-to` (for a message that came as your own user turn, `direct message to session <your session id>`).
-- For a clear defect that no running tree owns: `Filed for Legion from <role> on <issue>`.
+- For a clear defect: `Filed for Legion from <role> on <issue>`.
 
 ## The record lines
 
@@ -24,15 +24,13 @@ Dispatch cannot resolve an answered ask, so that reply is its record. Close an o
 
 ## Open a finding ask
 
-Open it with `dispatch ask` on the issue the work is for: the issue that the finding came from or names, while it is open. Follow it. Its question begins `Finding from <role>`. Then it states what went wrong, where and to whom, the evidence, where the fix belongs, the decision a person must make, and your recommendation. Give the options `File an issue`, `File it for Legion` and `Do not file`. Reply to a finder with `Asked dispatch://<KEY>/ask/<id>`, as `skill://legion-controller/references/finding-asks-steps.md` says.
+Open it with `dispatch ask`, and follow it. Its question begins `Finding from <role>`. Then it states what went wrong, where and to whom, the evidence, where the fix belongs, the decision a person must make, and your recommendation. Give the options `File an issue`, `File it for Legion` and `Do not file`. Reply to a finder with `Asked dispatch://<KEY>/ask/<id>`, as `skill://legion-controller/references/finding-asks-steps.md` says.
 
-Dispatch refuses an ask on a closed issue. When that issue is closed, ask nothing and file nothing: comment the finding on the open issue that tracks its subject, else name it with its evidence in the day's report.
+## File a clear defect
 
-## File a clear defect no tree owns
+A role sends you a clear defect in a repository that its token does not reach. A defect that stops its sender's work, in a repository the sender's token reaches, is the sender's to fix, unless an issue that tracks it is claimed, `in_progress` and its holder said on Envoy that it works on it now: reply `Not filed: it stops your work, so it is yours to fix`, and take none of the steps. Take a clear defect that you find yourself as below, with `controller` as the role, on the issue where you found it.
 
-A role sends a clear defect to you only when it found no tree that owns the code. A clear defect that you find yourself goes to its owner as `skill://legion-worker/references/findings.md#write-to-the-owner` says. When no tree owns it, take it as below yourself, with `controller` as the role, on the issue where you found it.
-
-Before each such defect, take the five steps of `skill://legion-controller/references/finding-asks-steps.md#file-a-clear-defect-no-tree-owns`. They say when you file it and how you reply to the finder.
+For each other clear defect, take the five steps of `skill://legion-controller/references/finding-asks-steps.md#file-a-clear-defect`. They say when you file it and how you reply to the finder.
 
 ## Act on its answer
 

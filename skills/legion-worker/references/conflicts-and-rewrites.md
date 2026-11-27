@@ -13,7 +13,17 @@ After the merge, build the branch, push it, and post one pull request comment th
 
 ## Reading a merge of the base
 
-`git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in. A `before_merge` check those files or the resolution can reach runs again; record each other `before_merge` check at the new head as carried from its earlier pass.
+`git show --remerge-diff <merge>` shows its resolution.
+`git diff --stat <merge>^1 <merge>` lists the files the base brought in.
+After the merge, run the checks of every affected package on the merged tree.
+Check the results of the needed CI lanes.
+A skipped lane ran nothing, even when `ci-ok` is green.
+The pull request's labels control which held-back lanes run on its next push.
+Record each unaffected `before_merge` check at the new head as carried from its earlier pass.
+
+For a check that fails on the base too, wait only when the tracking issue is claimed and `in_progress`.
+Its holder must also confirm on Envoy that they are working on it now.
+If no fix reaches the base in time, the merger sends the issue back to implementing with the failing check and its base result.
 
 ## The daemon's ask
 

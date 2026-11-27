@@ -4,12 +4,14 @@
  * file that holds an Anthropic key, read again for each try, the call going to
  * https://api.anthropic.com) or --gateway <url> with --key-command <file> (a program that prints the
  * gateway key, run again for each try, the call going to <gateway>/v1/messages). The key goes in
- * the `x-api-key` header and never into an error. A 429 or 5xx answer, and a call that fails before
- * its body has arrived, is tried again after a wait; any other answer that is not 200 fails at once.
+ * the `x-api-key` header and never into an error. An outage (`outage`: a 5xx, a 408 or a 429), and
+ * a call that fails before its body has arrived, is tried again after a wait; any other answer that
+ * is not 200 fails at once.
  */
 import { statSync } from "node:fs";
+import { outage } from "@legion/contracts/http-status";
 import { messageFor } from "@legion/envoy-client/errors";
-import { backoffMs, type Fetch, type Sleep, transient } from "./production-dispatch";
+import { backoffMs, type Fetch, type Sleep } from "./production-dispatch";
 
 /** Anthropic's own endpoint, for the --key-file route. */
 const ANTHROPIC_URL = "https://api.anthropic.com";
@@ -110,7 +112,7 @@ function retryAfterMs(response: Response): number {
 
 /**
  * Posts `body` to the route's `/v1/messages` and answers `read` of the 200 answer's text. A `read`
- * that throws asks again, as a 429, a 5xx or a failed connection does, up to `tries` tries in
+ * that throws asks again, as an outage or a failed connection does, up to `tries` tries in
  * all. Throws naming why the last try failed.
  */
 export async function askModel<T>(
@@ -145,7 +147,7 @@ export async function askModel<T>(
     }
     if (!response.ok) {
       last = modelError(response.status, text);
-      if (transient(response.status)) {
+      if (outage(response.status)) {
         wait = retryAfterMs(response);
         continue;
       }

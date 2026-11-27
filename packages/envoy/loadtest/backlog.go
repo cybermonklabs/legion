@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // The backlog publisher (`loadgen backlog`): it publishes envelopes to the simulated sessions'
@@ -190,7 +191,7 @@ func backlogTarget(stackPath, given string) (url, monURL, name string, err error
 func publishBacklog(url string, plans []backlogPlan, wait time.Duration) (backlogSummary, error) {
 	nc, err := nats.Connect(url, nats.Name("loadgen-backlog"), nats.MaxReconnects(-1))
 	if err != nil {
-		return backlogSummary{}, fmt.Errorf("nats connect: %w", err)
+		return backlogSummary{}, fmt.Errorf("nats connect: %w", natsconn.ConnectionError(err))
 	}
 	defer nc.Close()
 	js, err := nc.JetStream(nats.PublishAsyncMaxPending(1024))

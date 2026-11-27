@@ -108,6 +108,9 @@ type conflictMergerLive struct {
 // on the new head told to the merger and not the implementer, GitHub's merge closing the issue
 // with no move into implementing at any point, and the merger's prompt as its launch carries it.
 func TestAConflictPastTheReviewIsTheMergersLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newConflictMergerLive(t)
 	r.step("step1-a-conflict-in-accepting-is-recorded-and-asks-nobody", r.acceptingRecordsTheConflict)
 	r.step("step2-sign-off-and-retro-ask-nothing-and-merging-asks-the-merger", r.mergingAsksTheMerger)

@@ -66,7 +66,7 @@ Nothing after the close is yours.
 ## Escalation judgment
 
 - Tell the controller of a child that serves no requirement of the root, and of a need for more admission slots.
-- Two trees that change the same code: mention the other tree's architect on its issue (`skill://legion-worker/references/findings.md#write-to-the-owner`).
+- Two trees that change the same code: mention the other tree's architect on its issue (`skill://legion-worker/references/findings.md#write-by-a-mention`).
 - Carry a clear defect that another role writes to you in this tree: in an open pull request, or in a child.
   Reply under its evidence comment with the issue that carries it.
 - An action on an agent is the controller's. Ask for it with a `dispatch comment` on that agent's issue that mentions the controller's role, never with `envoy_publish`.

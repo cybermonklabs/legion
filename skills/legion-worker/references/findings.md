@@ -1,18 +1,19 @@
 # A finding outside your issue
 
-## Fix it yourself, else write to its owner or the controller
+## Fix it yourself, else send it to the controller
 
 File no issue for a problem you find. Take the first step that fits:
 
-1. A clear defect is your tree's to fix, in whichever repository it is: in your own pull request, or in a separate pull request of your tree. The implementer makes the fix. A tester or a reviewer sends it to the implementer with its evidence. A phase worker whose own pull request cannot carry the fix sends it to the architect that owns its issue with `envoy_publish`, and that architect adds it to an open pull request or files a child.
-2. Write a clear defect to its owner only when your fix would collide with another tree's open pull request, or when its repository is one that your token does not reach and a tree owns its code. How: [Write to the owner](#write-to-the-owner).
-3. A clear defect that no tree owns, a defect that needs a person's decision, a deploy window or work much larger than your own, and a finding that needs a person's authority, taste or risk appetite: send it to the controller with `envoy_publish`, with its evidence ([Send it to the controller](#send-it-to-the-controller)). Open no `dispatch ask` for it, and post it on no report issue.
+1. A defect that stops your work, and a clear defect, are your tree's to fix, in any repository your credentials reach: in your own pull request, or in a separate pull request of your tree. The implementer makes the fix. A tester or a reviewer sends it to the implementer with its evidence. A phase worker whose own pull request cannot carry the fix sends it to the architect that owns its issue with `envoy_publish`, and that architect adds it to an open pull request or files a child. If your fix touches files that another tree's open pull request changes, tell that tree's architect that your pull request makes the fix ([Write by a mention](#write-by-a-mention)). Do not wait for an answer.
+2. A clear defect in a repository that your token does not reach, a defect that needs a person's decision, a deploy window or work much larger than your own, and a finding that needs a person's authority, taste or risk appetite: send it to the controller with `envoy_publish`, with its evidence ([Send it to the controller](#send-it-to-the-controller)). Open no `dispatch ask` for it, and post it on no report issue.
 
-A to-do that only a person may do is a `dispatch ask` on your own issue. A fix you are not sure of is not step 1: take step 2 when it holds, else step 3. A problem inside your tree but outside your issue goes to your architect. A fault of Legion's own machinery that holds your phase is a finding too, never a request to another session to act on your agent or your session. A failed production check look is reported as `fail`, and the tester sends each defect that it found as above.
+An open issue that tracks the problem is no reason to wait. Wait only when it is claimed, it is `in_progress`, and its holder said on Envoy that it works on it now. Then tell that holder what you need and by when, and fix it yourself once that time has passed. Comment what you fixed on that issue.
 
-## Write to the owner
+A to-do that only a person may do is a `dispatch ask` on your own issue. A problem inside your tree but outside your issue goes to your architect. A fault of Legion's own machinery that holds your phase is a finding too, never a request to another session to act on your agent or your session. A failed production check look is reported as `fail`, and the tester sends each defect that it found as above.
 
-Write to the owner on Dispatch: a comment on the issue that owns the subject, which mentions the owner's role. Dispatch delivers the mention and retries it, so check no liveness first. Mention the root architect of the tree that owns the code, on its issue. Read the steps and the comment's form in `skill://legion-worker/references/findings-steps.md#write-to-the-owner` before you write.
+## Write by a mention
+
+Write on Dispatch: a comment on the other tree's issue that mentions the role of its root's architect. Dispatch delivers the mention and retries it, so check no liveness first. Read the steps and the comment's form in `skill://legion-worker/references/findings-steps.md#write-by-a-mention` before you write.
 
 ## Another agent that needs an action
 
@@ -20,4 +21,4 @@ The actions on an agent (stop, retry, suspend, resume the agent, compact, and st
 
 ## Send it to the controller
 
-Publish it to the controller's role topic: the one that your Legion addressing line names, or `notifications.role.legion-<project>-controller` for a clear defect whose repository Dispatch maps to another Legion project. Read the message's form and what to do with each reply of the controller in `skill://legion-worker/references/findings-steps.md#send-it-to-the-controller` before you send it. The controller files a clear defect. It asks a person, on the issue the work is for, only for what needs that person's authority.
+Publish it to the controller's role topic: the one that your Legion addressing line names, or `notifications.role.legion-<project>-controller` for a clear defect whose repository Dispatch maps to another Legion project. Read the message's form and what to do with each reply of the controller in `skill://legion-worker/references/findings-steps.md#send-it-to-the-controller` before you send it. The controller files a clear defect. It asks a person only for what needs that person's authority.

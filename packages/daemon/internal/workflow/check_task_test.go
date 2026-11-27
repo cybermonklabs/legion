@@ -290,19 +290,16 @@ func TestTheLastLooksPendingIsOnlyForAnIssueWithNoneOfThoseRequirements(t *testi
 }
 
 // A defect a look finds is routed as skill://legion-worker/references/findings.md says: a defect
-// no tree owns goes to the controller of the project its repository maps to, and to the tester's
-// own project's controller only where Dispatch maps the repository to none, and a defect that needs
-// a person's decision, a deploy window or work much larger than the tester's own, and any other
-// finding that needs a person's authority, taste or risk appetite, goes to the tester's own
-// project's controller too. The task is the text in front of the tester at every look, so a task
-// that sent a defect no tree owns to the tester's own controller where Dispatch maps its repository
-// to another project, or that routed a decision and no other finding, would overrule the skill it
-// points to.
+// goes to the controller of the project its repository maps to, and to the tester's own project's
+// controller only where Dispatch maps the repository to none, and a defect that needs a person's
+// decision, a deploy window or work much larger than the tester's own, and any other finding that
+// needs a person's authority, taste or risk appetite, goes to the tester's own project's controller
+// too. The task is the text in front of the tester at every look, so a task that routed a decision
+// and no other finding would overrule the skill it points to.
 func TestTheCheckTaskRoutesADefectAsTheTesterPromptDoes(t *testing.T) {
 	for _, last := range []bool{false, true} {
 		task := checkTaskFor(wakeMerge, "merge-43", last)
 		for _, want := range []string{
-			"when no tree owns that code, to the controller of the project that repository maps to, or to your own project's controller, the one your Legion addressing line names, when Dispatch maps it to none:",
 			"a defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a person's authority, taste or risk appetite, goes with its evidence to your own project's controller",
 		} {
 			if !strings.Contains(task, want) {

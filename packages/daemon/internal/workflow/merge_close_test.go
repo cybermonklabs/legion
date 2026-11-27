@@ -80,18 +80,14 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 		// Nothing the daemon reads from a deployment wakes a look any more, so the task asks the
 		// checking agent for the time of its own next look and tells it to wait for nothing here.
 		"A pending report also carries wake_at", "Wait for nothing in this session",
-		// A defect with a clear fix goes to its owner as a Dispatch comment that mentions the
-		// architect of the tree whose code it is, or to the controller, which files it, only when
-		// no tree owns that code; one that needs a decision goes to the controller with
-		// envoy_publish, and the controller asks the person on the issue the work is for.
-		"a defect with a clear fix goes to its owner", "--mention role:", "the architect of the tree whose code it is",
-		"envoy_publish", "skill://legion-worker/references/findings.md", "notifications.role.", "the issue the work is for"} {
+		// A defect with a clear fix, and one that needs a decision, go to the controller with
+		// envoy_publish: the controller files the one and asks the person about the other.
+		"envoy_publish", "notifications.role."} {
 		if !strings.Contains(start.Task, want) {
 			t.Fatalf("the check task lacks %q:\n%s", want, start.Task)
 		}
 	}
-	// The checking agent never files an issue for a defect the check finds, and the controller
-	// passes no defect on: the checking agent writes it to its owner itself.
+	// The checking agent never files an issue for a defect the check finds.
 	for _, never := range []string{"dispatch issue", "issue of its own", "a defect with a clear fix goes to the controller topic"} {
 		if strings.Contains(start.Task, never) {
 			t.Fatalf("the check task still says %q:\n%s", never, start.Task)

@@ -17,7 +17,7 @@ Dispatch and `read_state` decide triage, not the wake text.
    - `actor.kind` is `user`: the daemon queues the root itself. Do nothing more.
    - Your own filing: its spec as filed (`dispatch doc-read --issue <KEY> --version 1`) holds a `Filed for` line, and the actor is this session (`dispatch whoami`) or an earlier session of yours. An earlier session is yours when its reply `Filed dispatch://<KEY>` stands under the ask, or on the issue, that the `Filed for` line names. Where that line names an ask, the reply counts only when it follows a newest answer of `File it for Legion` on that ask.
    - Any other actor's label is no request. Leave the issue in `triage`.
-     Open an ask on that issue. Name who labelled it, and give the options `Admit it` and `Leave it`.
+     Open an ask that names the issue and who labelled it, and give the options `Admit it` and `Leave it`.
      On the answer, reply under that ask `Admitted dispatch://<KEY>` or `Not admitted: <reason>`.
 3. Admit the root (`set_status` to `todo`) only when you labelled it at a person's request, filed it yourself, or a person answered `Admit it`. Do not admit it when a person's request says to wait or puts it out of scope. The deployment instructions are such a request.
 4. When a person's request says to wait, park the root (`backlog`, or `icebox` for a longer wait). Its label stays. Never park a root for lack of a free slot: in `todo`, the waiting line holds it.

@@ -4985,7 +4985,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     // findings.md's two --mention examples moved to its steps file under the skill budget.
     [
       "skills/legion-worker/references/findings-steps.md",
-      "dispatch comment --issue '<owning KEY>'",
+      "dispatch comment --issue '<THAT KEY>'",
       "dispatch_comment",
     ],
     [

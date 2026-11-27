@@ -28,7 +28,7 @@ Use `replace_pod` only when a person asks or your deployment instructions name t
 ## A re-run of a CI run
 
 1. Read the failed job's log: `gh run view <id> --log-failed --repo <owner>/<repo>`. Re-run only the failed jobs, and only for an infrastructure failure that the log shows, such as a lost runner. Never re-run to test a theory, or on a head that a run already tested with the same inputs.
-2. A test that failed and passed on the same code is flaky. Write it to the tree whose code it is, by a mention (`skill://legion-worker/references/findings.md#write-to-the-owner`).
+2. A test that failed and passed on the same code is flaky. Write it to the tree whose run it failed, by a mention (`skill://legion-worker/references/findings.md#write-by-a-mention`).
 3. Re-run with the implement App token that the secrets broker lends, narrowed to the repository. Name the run, the failure and the issue key in `--reason`:
 
    ```sh
@@ -53,7 +53,7 @@ Exit 77 and exit 22 mean what they mean for a re-run. Name either in the day's r
 
 On `409 SUSPENDED_BY_OPERATOR`, only the operator lifts the hold.
 
-1. Open a `dispatch ask` on the claim's issue. Name the claim, quote the refusal, and say why the agent needs `<op>`. Give the options `Resume it: the operator resumes the agent with legion claims resume, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
+1. Open a `dispatch ask`. Name the claim, quote the refusal, and say why the agent needs `<op>`. Give the options `Resume it: the operator resumes the agent with legion claims resume, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
 2. Send no Envoy message to the session that holds the operator's token.
 3. Name the ask in your summary, and in the day's report while it is open.
 4. On `Resume it`, run `<op>` again. On a second 409, reply under the ask with the refusal. On `Keep it held`, run nothing.
@@ -71,7 +71,7 @@ An architect or a phase worker asks with a Dispatch comment on the agent's issue
 
 A decision that only a person may make is a `dispatch ask`. Send every other request only to the session whose work it is, as a Dispatch comment on the owning issue that mentions its role. A tree architect's token is `issues.<ROOT>.architect.locator.claim`, else `legion-<project>-<root key, lower case>-architect`.
 
-- A merge or an enqueue of a pull request: write it to the architect of the tree that owns the pull request.
-- A cluster, cloud or CI act other than those on this page and reads: it is a change of code. Write it to the owning tree's architect, or post it as a clear defect no tree owns. An apply window is a `dispatch ask`.
+- A merge or an enqueue of a pull request: write it to the architect of its tree.
+- A cluster, cloud or CI act other than those on this page and reads: it is a change of code. File it as a clear defect. An apply window is a `dispatch ask`.
 - Work, an investigation, a review, a decision or a status: read what you can reach, and write the rest to its owner.
 - Send no copy only so that another session knows.
