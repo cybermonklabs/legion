@@ -5646,18 +5646,25 @@ test("what references the focused row names a code block that quotes it by the f
         "the code block's row is no link named by its code's first line"
       ).toHaveCount(1);
       await expect(code.locator("a"), "an address in the code is drawn as a link").toHaveCount(0);
-      // The look of a code span in a node's words: the task's own row draws `make history` so.
+      // The look of a code span in a node's words: the task's own row draws `make history` so. Its
+      // font is a code span's; its colour is its link's ink, as the renderer draws a code span
+      // inside a link (`a code` takes the link's colour).
       const spanned = rowWords(nodeRow(page, seeded.task)).locator("code").first();
       await expect(spanned, "the task's row draws no code span of its words").toHaveCount(1);
-      const [drawn, span] = await Promise.all(
-        [code, spanned].map((element) =>
+      const link = quoting.getByRole("link", { exact: true, name: seeded.line });
+      const [drawn, span, ink] = await Promise.all(
+        [code, spanned, link].map((element) =>
           element.evaluate((node) => {
             const style = getComputedStyle(node);
             return { color: style.color, family: style.fontFamily, weight: style.fontWeight };
           })
         )
       );
-      expect(drawn, "the code block's line is not drawn in the look of a code span").toEqual(span);
+      expect(
+        { family: drawn.family, weight: drawn.weight },
+        "the code block's line is not drawn in the font of a code span"
+      ).toEqual({ family: span.family, weight: span.weight });
+      expect(drawn.color, "the code block's line is not drawn in its link's ink").toBe(ink.color);
       // The row is drawn and settled: its code was read whole above, so one read of its text is
       // the state the row means to check.
       const text = ((await quoting.textContent()) ?? "").replace(/\s+/gu, " ");
