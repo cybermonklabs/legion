@@ -3417,10 +3417,8 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.K8sOIDCIssuer = issuer
-	if issuer != "" {
-		if cfg.K8sOIDCAudiences, err = parseAudienceList("BROKER_K8S_OIDC_AUDIENCE", audience); err != nil {
-			return Config{}, err
-		}
+	if cfg.K8sOIDCAudiences, err = parseAudienceList("BROKER_K8S_OIDC_AUDIENCE", audience); err != nil {
+		return Config{}, err
 	}
 	if len(cfg.ServiceLogins) > 0 && cfg.K8sOIDCIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its accounts log in with")
