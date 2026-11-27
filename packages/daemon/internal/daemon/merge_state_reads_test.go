@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -617,10 +618,11 @@ func (rig *readRig) keptAfterTheFailures(t *testing.T, waits ...time.Duration) {
 // times in all.
 func (rig *readRig) confirmedAndAskedOnce(t *testing.T, reads int32) {
 	t.Helper()
-	testwait.Eventually(t, "GitHub's CONFLICTING to be recorded and the reader to end", func() bool {
+	_ = testwait.Until(t, "GitHub's CONFLICTING to be recorded and the reader to end", func() (string, bool) {
 		_, pr := capturePhase(t, rig.pool)
 		running, waiting := ladders(rig.w)
-		return pr.ConflictRead != nil && running == 0 && waiting == 0
+		return fmt.Sprintf("first read %+v, %d ladders running, %d waiting, GitHub read %d times",
+			pr.ConflictRead, running, waiting, rig.reads.Load()), pr.ConflictRead != nil && running == 0 && waiting == 0
 	})
 	if asks := mergeForwardAsks(t, rig.pool); len(asks) != 0 {
 		t.Fatalf("the first CONFLICTING read left the merge-forward asks %+v, want none before a second read confirms it", asks)
