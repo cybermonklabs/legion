@@ -287,7 +287,7 @@ test("Approve on the spec step of today's issue header approves the spec on the 
   browser,
 }) => {
   await createProject({ key: "GATEAPPR", name: "Approve a step" });
-  await setGatedSteps("GATEAPPR", ["decisions", "spec"]);
+  await setGatedSteps("GATEAPPR", ["criteria", "spec"]);
   const issue = await createIssue({
     project: "GATEAPPR",
     spec: "The plan.",
