@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -65,7 +66,7 @@ func aPushOf(t *testing.T, files map[string]string) aPush {
 func gitFirst(t *testing.T, script string) *Guard {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public,
@@ -497,33 +498,44 @@ func TestAReadThatFindsFewerBytesThanItCountedFails(t *testing.T) {
 // A read of a push's diff ends with the push's bound while git's diff has not exited, and a
 // process git started has left git's process group (setsid) and holds the diff's pipe until the
 // test ends: the read is refused as a setup failure naming the bound. The stand-in runs every
-// other git at once and, for the diff, marks that it started, runs the real git and then stays in
-// its foreground until the bound stops it. The escaped process holds standard output alone: one
-// that held standard error too would keep exec's copy of it running. The bound is due 4 s after
-// the call, and the guard must have started the diff by then (startedBeforeDue), as a bound of 4 s
-// requires of the guard's own work before it, the shared check and the gits before the diff among
-// it. It passes when due, but not before the diff has started (deadlinePassedOnceStarted): a diff
-// the guard started in time may, on a loaded machine, mark its start later, and a bound that
-// passed then stopped one of the gits before it, whose refusal names the bound too.
+// other git at once and, for the diff, writes its start mark, marks that it started, runs the
+// real git and then stays in its foreground until the bound stops it. The escaped process holds
+// standard output alone: one that held standard error too would keep exec's copy of it running.
+// The bound is due 4 s after the call, and the guard must have started the diff by then
+// (startedBeforeDue), as a bound of 4 s requires of the guard's own work before it, the shared
+// check and the gits before the diff among it. It passes when due, but not before the diff has
+// started (deadlinePassedOnceStarted): a diff the guard started in time may, on a loaded machine,
+// mark its start later, and a bound that passed then stopped one of the gits before it, whose
+// refusal names the bound too. The same 4 s also bounds the guard's work from the start it
+// counted to the kernel's fork of the diff (forkedWithin), read from the start mark the diff
+// writes as its first act: a guard that stalled after its own start spent the bound before the
+// diff existed, which the start it counted cannot show.
 func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
 		t.Skip("no setsid on this machine")
 	}
+	const theBound = 4 * time.Second
 	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing in particular\n"})
 	git := fixturegit.CompiledGit(t)
 	hold := holdUntilEnd(t)
 	started := filepath.Join(t.TempDir(), "started")
+	mark := filepath.Join(t.TempDir(), "mark")
+	// The mark is whole before started is there, so the bound, which passes no sooner than
+	// started, cannot stop the diff while it writes it.
 	guard := gitFirst(t, "case \" $* \" in\n"+
-		"*\" --unified=0 \"*) : > "+shQuote(started)+"\n  setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  "+shQuote(git)+" \"$@\"\n  "+hold+" ;;\n"+
+		"*\" --unified=0 \"*) "+testexec.MarkStart(shQuote(mark))+"\n  : > "+shQuote(started)+"\n  setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  "+shQuote(git)+" \"$@\"\n  "+hold+" ;;\n"+
 		"*) exec "+shQuote(git)+" \"$@\" ;;\nesac\n")
-	ctx := deadlinePassedOnceStarted(t, 4*time.Second, started)
+	ctx := deadlinePassedOnceStarted(t, theBound, started)
 	var err error
+	began := time.Now()
+	called := testexec.SinceBoot(t)
 	answered(t, "the push whose diff an escaped process holds", func() { err = guard.Push(ctx, push.req) })
 	if _, statErr := os.Stat(started); statErr != nil {
 		t.Fatalf("the push's diff never started (%v), so its bound stopped no diff: %v", statErr, err)
 	}
 	says(t, setupFailure(t, err), "was stopped by its bound")
 	startedBeforeDue(t, ctx, err, "git")
+	forkedWithin(t, ctx, err, "git", mark, began, called, theBound)
 }
 
 // A file renamed to a path the rules refuse is read as its new path, which is the path the
