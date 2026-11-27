@@ -12,15 +12,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/replay"
 )
 
-// `legion replay signals` prints R11's signals of a window at each moment --at names, each limit's
-// next crossing --limit gives, and the window's kills matched between the launcher's lines and the
-// daemon's. The window, from 09:00 to 12:00, holds a record of the kills alone: the launcher's
-// lines of kills in ACME-1's pod at 09:40, 09:50 and 10:35, and the daemon's line of the first.
-// At 09:50 two kills count and the limit 2 binds until 09:40's leaves the hour at 10:40; at 10:35
-// three count, 2 at 10:40 still binds, and the count falls below it at 10:50. Every other signal
-// is unrecorded, and the approvals change only at events. A limit that names no signal, and a
-// missing --at, are usage errors.
+// `legion replay signals` prints R11's five signals of a window at each moment --at names, each
+// limit's next crossing --limit gives, and the window's kills matched between the launcher's lines
+// and the daemon's. The window, from 09:00 to 12:00, holds a record of the kills alone: the
+// launcher's lines of kills in ACME-1's pod at 09:40, 09:50 and 10:35, and the daemon's line of the
+// first. At 09:50 two kills count and the limit 2 binds until 09:40's leaves the hour at 10:40; at
+// 10:35 three count, 2 at 10:40 still binds, and the count falls below it at 10:50. Every other
+// signal is unrecorded, the approvals change only at events, and no line counts the provider's
+// refusals, which are no signal. A limit that names no signal, and a missing --at, are usage errors.
 func TestReplaySignalsPrintsEachSignalAndItsNextCrossing(t *testing.T) {
+	t.Parallel()
 	at := func(hour, minute int) time.Time { return time.Date(2001, time.March, 5, hour, minute, 0, 0, time.UTC) }
 	kill := func(when time.Time, pid int) replay.LauncherLine {
 		return replay.LauncherLine{Time: when, Pod: "legion-acme-acme-1",
@@ -60,7 +61,7 @@ func TestReplaySignalsPrintsEachSignalAndItsNextCrossing(t *testing.T) {
 	code, stdout, stderr := legionRun(t, "replay", "signals", "--window", dir, "--at", "2001-03-05T09:50:00Z", "--at", "2001-03-05T10:35:00Z",
 		"--limit", "kills=2", "--limit", "approvals=1")
 	unrecorded := func(kills string) string {
-		return "  idle unrecorded\n  queue unrecorded\n  provider unrecorded\n  refusals unrecorded\n" + kills +
+		return "  idle unrecorded\n  queue unrecorded\n  provider unrecorded\n" + kills +
 			"  approvals unrecorded\n    limit 1: no crossing, it changes only at events\n"
 	}
 	want := "the signals of ACME, idle after 1h0m0s\n" +
@@ -78,6 +79,37 @@ func TestReplaySignalsPrintsEachSignalAndItsNextCrossing(t *testing.T) {
 	} {
 		if code, stdout, stderr := legionRun(t, args...); code != 2 || stdout != "" || !strings.Contains(stderr, "legion replay signals") {
 			t.Errorf("legion %s = %d, stdout %q, stderr %q; want a usage error, 2", strings.Join(args, " "), code, stdout, stderr)
+		}
+	}
+}
+
+// The provider's refusals are no signal of admission (spec R11, v52): `legion replay run` and
+// `legion replay signals` refuse a limit on them as a usage error that names the five signals a
+// limit can name, before they read a window, and neither command's help, nor that of `legion replay
+// limits`, says that a limit or a sweep rests on them.
+func TestAReplayLimitOnTheProvidersRefusalsIsRefused(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const five = "the signal one of idle, queue, provider, kills, approvals"
+	for _, args := range [][]string{
+		{"replay", "run", "--window", dir, "--rule", "signals", "--pg-dsn", "postgres://nobody@127.0.0.1:1/none", "--out", dir, "--limit", "refusals=1"},
+		{"replay", "signals", "--window", dir, "--at", "2001-03-05T09:50:00Z", "--limit", "refusals=1"},
+	} {
+		code, stdout, stderr := legionRun(t, args...)
+		if code != 2 || stdout != "" || !strings.Contains(stderr, `--limit "refusals=1" names no signal`) || !strings.Contains(stderr, five) {
+			t.Errorf("legion %s = %d, stdout %q, stderr %q; want a usage error, 2, naming no signal and %q", strings.Join(args, " "), code, stdout, stderr, five)
+		}
+	}
+	for _, command := range []string{"run", "signals", "limits"} {
+		code, stdout, stderr := legionRun(t, "replay", command, "--help")
+		help := strings.Join(strings.Fields(stdout), " ")
+		if code != 0 || stderr != "" {
+			t.Fatalf("legion replay %s --help = %d, stderr %q", command, code, stderr)
+		}
+		for _, old := range []string{"its refusals", "refusals, the refusals", "headroom and refusals", "headroom and its refusals"} {
+			if strings.Contains(help, old) {
+				t.Errorf("legion replay %s --help still says %q, as if the refusals were a signal:\n%s", command, old, stdout)
+			}
 		}
 	}
 }

@@ -573,8 +573,8 @@ is d, how long a slot holder has been idle before the idle signal counts it. --p
 for each moment, has run.json give each limited signal's value there. --token-limit is the
 project's token limit in uncached input tokens a minute, which the replay takes in each minute
 whose provider record holds no limit of the project's own (assumption 49); a limit the record
-holds stands. The tokens model then limits the provider's signal and its refusals where it passes
-R11's daily test or gives no test only because the window records no limit of the project's own.
+holds stands. The tokens model then limits the provider's headroom where it passes R11's daily
+test or gives no test only because the window records no limit of the project's own.
 Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 
 --out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
@@ -802,12 +802,11 @@ window's own record, and each one's next crossing of each limit --limit gives.
 
 idle is the share of the slot holders idle for at least --idle-after (d); queue the merge
 queue's wait in hours, the larger of the median wait of the pull requests that left it in the 6
-hours before and the wait so far of the one longest in it; provider the share of the project's
-limit of uncached input tokens the minute before used, with refusals, the refusals of the hour
-before, by the project's own limit and by the provider; kills the memory guard's kills of the
-hour before; approvals the asks open that wait on the project's default assignee. Lower is
-better for each. A signal the window holds no record of at a moment is unrecorded, never zero,
-and binds nothing.
+hours before and the wait so far of the one longest in it; provider the provider's headroom, the
+share of the project's limit of uncached input tokens the minute before used, which is the
+provider's one signal; kills the memory guard's kills of the hour before; approvals the asks open
+that wait on the project's default assignee. Lower is better for each. A signal the window holds
+no record of at a moment is unrecorded, never zero, and binds nothing.
 
 --limit <signal>=<value>, given once for each limit, adds the signal's next crossing of that
 limit: the next moment after --at at which it would start or stop binding, recorded and at or
@@ -887,14 +886,6 @@ func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
 					next = func(limit float64) (time.Time, bool) { return def.Next(signalRecord, at, limit) }
 				}
 				printReplaySignal(stdout, def.Name, replaySignalText(def.At(signalRecord, at)), limits[def.Name], next)
-				if def.Name != replay.SignalProvider {
-					continue
-				}
-				refusals, text := signalRecord.Refusals(at), "unrecorded"
-				if refusals.Recorded {
-					text = fmt.Sprintf("%d (own %d, provider %d)", refusals.Count(), refusals.Own, refusals.Provider)
-				}
-				printReplaySignal(stdout, "refusals", text, limits["refusals"], func(limit float64) (time.Time, bool) { return signalRecord.NextRefusals(at, limit) })
 			}
 		}
 		if window.Launcher == nil {
@@ -1432,13 +1423,12 @@ indexed Job runs one to an index, and the runs are read back from --runs.
 The list of limits of each signal is its 50th, 75th, 90th, 95th and 99th percentile over --window-one's
 record, read at each minute where the window records the signal, and off; a percentile outside the
 signal's range (the range legion replay run --limit checks) is left out of the list with the reason, never
-clamped into it. The provider's headroom and its refusals each have a list and a sweep of their own, and
-the table groups them under the provider. A signal that a load model gives (the provider's headroom and
-refusals, the kills, the merge queue's wait) has steps only where its model passed R11's tests, read from
-the two outputs of legion replay models --against --json: --models, window one against the other record,
-and --models-reverse, the other record against window one. The model must fail the daily test on neither
+clamped into it. The provider's signal is its headroom alone. A signal that a load model gives (the
+provider's headroom, the kills, the merge queue's wait) has steps only where its model passed R11's tests,
+read from the two outputs of legion replay models --against --json: --models, window one against the other
+record, and --models-reverse, the other record against window one. The model must fail the daily test on neither
 record, pass it on at least one, and pass the test across the two records in both outputs. Where the window
-records no token limit of the project's own the tokens model has no daily test, and it gives the provider's
+records no token limit of the project's own the tokens model has no daily test, and it gives the headroom's
 limits only under --token-limit, the project's token limit, which every run of the plan takes (legion replay
 run --token-limit, assumption 49). The idle share and the approvals have no model and always have steps.
 

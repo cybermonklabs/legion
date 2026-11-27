@@ -179,7 +179,7 @@ var Assumptions = []Assumption{
 			"Compare the rate each model rests on across two records whose work in flight differs, and read it in each range of 20 issues in flight."},
 	{Number: 46,
 		Text:      "A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says.",
-		Direction: "A provider refusal stays as recorded, and so do both kinds in a minute with no record of the project's limit. An unsplit refusal counts as the project's own and the result says so. This can overstate the project's own refusals if some came from the provider. Check against a record that separates the counts."},
+		Direction: "A provider refusal stays as recorded, and so do both kinds in a minute with no record of the project's limit. An unsplit refusal counts as the project's own and the result says so. No rule admits by a refusal: this can overstate the refused minutes of the project's own limit that the tokens model's daily test reads if some came from the provider, which can fail a model that keeps the record or pass one that does not, and the provider's headroom has a limit only where that model passes. Check against a record that separates the counts."},
 	{Number: 47,
 		Text:      "A signal with no record in a span does not bind there.",
 		Direction: "If an unrecorded signal would exceed its limit, the replay favours a rule that starts work in that span. Check the decision on a span where that signal is recorded."},

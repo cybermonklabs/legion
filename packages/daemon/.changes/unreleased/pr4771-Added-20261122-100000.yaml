@@ -66,13 +66,16 @@ body: |-
     arrival, `before-p0` starts no issue outside the cap, and `idle-return-1h` gives back the slot
     of a holder that waits on its children or on a person once none of its roles has had a turn for
     an hour. `signals` and `signals-backoff` admit below P0 by
-    signals, the second with an allowance that falls at each refusal and kill. `run --limit` sets
-    each signal's limit, `--idle-after` the idle time that the idle share counts, and `--probe`
-    each moment at which `run.json` gives each limited signal's value. `--token-limit` gives `run`,
-    `signals`, `validate`, `forecast` and `compare` the project's token limit, which a replay takes
-    in each minute whose provider record holds no limit of the project's own. A replay reads the idle
-    share and the approvals from its own course, and the provider's headroom, its refusals, the
-    kills and the merge queue from the load models, which move with the replay's work in flight.
+    signals, the second with an allowance that falls at each memory-guard kill. The signals are
+    five: the idle share, the merge queue's wait, the provider's headroom, the kills and the
+    approvals; the provider's refusals hold no start, and `run --limit` refuses a limit on them.
+    `run --limit` sets each signal's limit, `--idle-after` the idle time that the idle share
+    counts, and `--probe` each moment at which `run.json` gives each limited signal's value.
+    `--token-limit` gives `run`, `signals`, `validate`, `forecast` and `compare` the project's
+    token limit, which a replay takes in each minute whose provider record holds no limit of the
+    project's own. A replay reads the idle share and the approvals from its own course, and the
+    provider's headroom, the kills and the merge queue from the load models, which move with the
+    replay's work in flight.
     Under these two rules it runs an admission pass at each moment that a signal would cross its
     limit with no event, the deadline's pass, and `run.json` names the limits, the ceiling, each
     slot that each pass gave out or took back with the pass's kind, and each change of the
@@ -97,7 +100,8 @@ body: |-
     `signalSummaries`, `signals` and `suppliedRefused`: how each limited signal read over the window,
     its limit with the value it read at it, and the minutes by day that the tokens model refused
     under `--token-limit` where the record holds no limit. A directory of runs written before them
-    is refused, and `compare` gives each run's signals at their limits.
+    is refused, and so is a run whose `run.json` limits the provider's refusals, and `compare`
+    gives each run's signals at their limits.
 
     `legion state` prints a `slots:` line under its admission line. It gives the slots in use
     beside the cap, and after them how many of those holders are P0, as `(<n> P0)`, `(0 P0)` among

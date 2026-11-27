@@ -146,11 +146,10 @@ No cover is taken, so `cover` names no 14.
 
 The window holds no record of any of R11's signals: its `window.json` names no span under `signals`, and it holds no launcher's lines, no provider's record, no merge queue file and no settings events.
 So at 09:00, the window's start, the run under each rule that `expect.json` names writes each signal unrecorded (`null`) in `signalValues`.
-Each run limits all six signals (`limits`), and run.json echoes them; no rule here admits by signals, so the limits decide nothing.
+Each run limits all five signals (`limits`), and run.json echoes them; no rule here admits by signals, so the limits decide nothing.
 
 - `idle`: no span of the idle share's record, so the replay's own holders give no recorded share.
 - `queue`: no merge queue file and no span of its record, so the merge queue's model is not fitted.
 - `provider`: no minute of the provider's record, so the tokens model has no minute to read.
-- `refusals`: no minute of the provider's record before 09:00.
 - `kills`: no launcher's lines and no span of the kills' record, so the kill model is not fitted.
 - `approvals`: no span of the approvals' record, so the replay's copy of Dispatch gives no recorded count.

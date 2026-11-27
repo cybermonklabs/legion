@@ -909,7 +909,7 @@ Nothing that moves an issue's work reads what a holder took, but the merger's st
 | `--seed <n>` | The seed of every draw (1 by default). |
 | `--slowdown <f>` | The factor f for each 42 issues in flight above the record's number (1 by default). |
 | `--cap <n>` | The admission cap that the replay serves under from the window's start to its end, in place of the caps that its record shows (0, the default, keeps the record's), which `run.json` names as `cap`. |
-| `--limit <signal>=<value>` | A signal's limit, given once for each signal that has one: `idle`, `queue`, `provider`, `refusals`, `kills` or `approvals`, each in the range that its limit takes ([The signals](#the-signals)), under which `signals` and `signals-backoff` start an issue below P0 only while each signal that has a limit reads under it. |
+| `--limit <signal>=<value>` | A signal's limit, given once for each signal that has one: `idle`, `queue`, `provider`, `kills` or `approvals`, each in the range that its limit takes ([The signals](#the-signals)), under which `signals` and `signals-backoff` start an issue below P0 only while each signal that has a limit reads under it. |
 | `--idle-after <duration>` | d, how long a slot holder has been idle before the idle signal counts it (1h by default). |
 | `--probe <time>` | A moment, in RFC 3339, at which `run.json` gives the value of each signal that `--limit` names, given once for each moment. |
 | `--token-limit <tokens a minute>` | The project's token limit in uncached input tokens a minute, a whole number above zero, which the replay takes in each minute whose provider record holds no limit of the project's own, a limit that the record holds standing (assumption 49). |
@@ -1010,9 +1010,10 @@ legion replay signals --window windows/acme-2026-10-05 \
 ```
 
 `signals` reads each signal of [The signals](#the-signals) at each moment that `--at` names, from the window's record alone, with no replay and no database.
-It prints a block for each moment, with a line for each signal: `idle`, `queue`, `provider`, `refusals`, `kills` and `approvals`.
+It prints a block for each moment, with a line for each signal: `idle`, `queue`, `provider`, `kills` and `approvals`.
 Each line gives the signal's value, or `unrecorded` where the window holds no record of the signal at that moment.
-`idle` and `provider` are shares, `queue` is in hours, and `refusals`, `kills` and `approvals` are counts, with the refusals of the project's own limit and of the provider beside their count.
+`idle` and `provider` are shares, `queue` is in hours, and `kills` and `approvals` are counts.
+No line counts the provider's refusals, which are no signal.
 Under a signal, each `--limit <signal>=<value>` that names it adds a line with the next moment at which the signal would cross that limit if no new event came.
 That line says `no crossing due` where none would come, and, for `approvals`, that the signal changes only at events.
 `--token-limit` gives the project's token limit, which the provider's headroom reads in each minute whose record holds no limit of the project's own, as a replay that is given it reads it (assumption 49).
@@ -1022,7 +1023,7 @@ Where the window holds the launcher's lines, `signals` then prints how many of t
 | --- | --- |
 | `--window <dir>` | The window (required). |
 | `--at <time>` | A moment, in RFC 3339, given once for each (required). |
-| `--limit <signal>=<value>` | A limit of `idle`, `queue`, `provider`, `refusals`, `kills` or `approvals`, at or above zero, given once for each. |
+| `--limit <signal>=<value>` | A limit of `idle`, `queue`, `provider`, `kills` or `approvals`, at or above zero, given once for each. |
 | `--idle-after <duration>` | d, how long a holder has been idle before the idle signal counts it (1 hour by default). |
 | `--token-limit <tokens a minute>` | The project's token limit in uncached input tokens a minute, a whole number above zero, which the provider's headroom reads in each minute whose record holds no limit of the project's own (assumption 49). |
 
@@ -1097,7 +1098,7 @@ With `--against`, a last section gives each rate on each record, their ratio, th
 `--json` prints the same as JSON (`LoadModels` in `internal/replay/models.go`), which the limit test reads.
 
 A replay reads each model's signal from the replay's own timeline: its issues in flight at each moment, the stretches in flight of each issue whose work the record never ran, its start of each recorded work segment, and each pull request of work that the record never ran entering the queue.
-It gives the provider's headroom and refusals, the kills of the hour before and the queue's wait at a moment, each by the signal's own definition ([The signals](#the-signals)), and `LoadModels.RecordTimeline` gives the record's own timeline, at which the daily test reads the models.
+It gives the provider's headroom, the kills of the hour before and the queue's wait at a moment, each by the signal's own definition ([The signals](#the-signals)), and `LoadModels.RecordTimeline` gives the record's own timeline, at which the daily test reads the models.
 `LoadModels.Replay` (`internal/replay/model_replay.go`) reads a whole timeline at once.
 A run reads it as it goes through `LoadModels.Reader` (`internal/replay/model_reader.go`), which models each minute once it ends, each kill once its segment or its drawn issue's own hours bring it, and each pull request once it enters, and gives at each moment what `LoadModels.Replay` gives over the whole timeline.
 Each modelled value at a moment reads only the course up to that moment, so nothing that the reader has given changes later.
@@ -1403,8 +1404,8 @@ A percentile that repeats a lower percentile's limit is left out as its repeat.
 A signal that a load model gives has steps only where its model passed R11's tests.
 `--models` is the output of `legion replay models --against --json` for `--window-one` against the other record, and `--models-reverse` the output for the other record against `--window-one`.
 The model of a signal must fail the daily test on neither record, pass it on at least one, and pass the test across the two records in both outputs.
-A window that records no token limit of the project's own has no daily test for the tokens model, so the tokens model gives a limit for the provider's headroom and refusals only under `--token-limit`, the project's token limit, which every run of the plan takes (`legion replay run --token-limit`, [assumption 49](#assumption-49-the-projects-token-limit-is-the-one-that-the-replays-caller-gives-in-each-minute-whose-record-holds-none)).
-The provider's headroom and its refusals each have a limit and a sweep of their own, since each has its own range, and the table groups them under the provider.
+A window that records no token limit of the project's own has no daily test for the tokens model, so the tokens model gives a limit for the provider's headroom only under `--token-limit`, the project's token limit, which every run of the plan takes (`legion replay run --token-limit`, [assumption 49](#assumption-49-the-projects-token-limit-is-the-one-that-the-replays-caller-gives-in-each-minute-whose-record-holds-none)).
+The provider's signal is its headroom alone: the plan has no list, sweep or row for its refusals.
 The idle share and the approvals come from the replay itself, have no model and always have steps.
 A signal whose model failed has no step, and the output says why.
 
@@ -1443,7 +1444,7 @@ A named limit whose runs hold more issues in flight than the range's top is an e
 
 The output also says what each limit rests on.
 For a signal that a model gives, it lists each tested day of the daily test with the recorded and the modelled value and the record it is in, and the ratio of the test across the two records.
-For the provider's signals it also gives the token limit, the span of each window's provider record, and the refused minutes by day that the model gives under the token limit in minutes whose record holds no limit of the project's own, which the record cannot confirm (`run.json`'s `suppliedRefused`).
+For the provider's headroom it also gives the token limit, the span of each window's provider record, and the refused minutes by day that the model gives under the token limit in minutes whose record holds no limit of the project's own, which the record cannot confirm (`run.json`'s `suppliedRefused`).
 
 `limits` reads what the runs hold, so it is run again after each step.
 Step B waits for the runs of step A, and step C for the runs of step B, and the output says which step it waits for.
@@ -1648,7 +1649,7 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `before-p0` | `main` with no P0 issue started outside the cap, so that a P0 issue waits in the line as any issue does and the cap counts every holder, measured for reference. | `0d3786da` |
 | `idle-return-1h` | `main` with the slot of a holder that waits on its children or on a person given back once none of its roles had a turn for an hour, the holder keeping its place in the line, for the reason that an owner asked why a P0 issue cannot start at once; it now differs from `main` only for a holder that waits on a person, since under `main` a started parent already gives its slot back while it waits for its children (`awaiting_children`). | `0d3786da` |
 | `signals` | `main` with R10's start of a P0 issue outside the cap and admission by signals below P0: the next issue in the line's priority order starts while each signal that has a limit is under it and the holders below P0 are fewer than the ceiling, which the cap becomes, at the pass of an event or of a signal's deadline and never at the tick. | `0d3786da` |
-| `signals-backoff` | `signals` with an allowance that falls to 90% at each project-limit refusal or kill (rounded down, minimum 1) and rises by 1 each quiet hour up to the ceiling. | `0d3786da` |
+| `signals-backoff` | `signals` with an allowance that falls to 90% at each kill of the memory guard (rounded down, minimum 1) and rises by 1 each quiet hour up to the ceiling. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
 `main` is the daemon's rule at the tool's commit, which each run records, so since cybermonklabs/legion#4592 it moves a started parent with an open child into `awaiting_children`.
@@ -2144,16 +2145,18 @@ A replay supplies the signals to the passes of a run under either rule (`legion 
 The idle share comes from the replay's own slot holders: the states that its pass observer reads over the newest pass's view and the stub's claims, with the moment each holder has stood idle since.
 The replay's course up to the window's start is the record's, so a holder stands idle no earlier than the newest end of a turn of its issue that the record shows before the start.
 The approvals come from the replay's copy of Dispatch: each ask event, each comment on an ask and each change of an issue's assignee that it applies, and each move of the project's default assignee at its recorded moment.
-The provider's headroom and refusals, the kills and the merge queue come from the load models at the replay's own issues in flight, its starts of each recorded work segment and the pull requests of its drawn work ([`legion replay models`](#legion-replay-models)).
+The provider's headroom, the kills and the merge queue come from the load models at the replay's own issues in flight, its starts of each recorded work segment and the pull requests of its drawn work ([`legion replay models`](#legion-replay-models)).
 The models read the course as the run goes: each minute when it ends, each kill once its segment or its drawn issue's own hours bring it, and each pull request once it enters, so the cost of a pass does not grow with the window.
 A model that gives no limit for its signal leaves that signal with none in the run, and `run.json` names it under `unlimited`.
-Under `--token-limit`, the tokens model also limits the provider's headroom and its refusals where it gives no daily test only because the window records no limit of the project's own, and the run models each minute whose record holds no such limit against the token limit (assumption 49).
+Under `--token-limit`, the tokens model also limits the provider's headroom where it gives no daily test only because the window records no limit of the project's own, and the run models each minute whose record holds no such limit against the token limit (assumption 49).
+The models take the token limit only where the run limits the headroom, so a run that does not limit it, under `signals-backoff` too, models no minute against it and rests on no such minute.
 A model that fails its daily test gives no limit, with the token limit or without it.
 A signal with no record at a moment holds no start there (assumption 47).
-Under `signals-backoff` the pass also folds the setbacks: the project's own refusals of each minute, at the minute's end, and each kill, in time order, of a model that limits its signal in the run.
+Under `signals-backoff` the pass also folds the setbacks: each kill, in time order, where the memory model limits its signal in the run.
+No refusal is a setback, and no signal reads one.
 
 After every pass, the run computes the project's deadline: the earliest crossing of each signal that has a limit, with no event, and under `signals-backoff` the allowance's next rise (`signals.Earliest`).
-It does so again at each moment that a modelled input changes with no pass: a kill, a pull request entering or leaving the merge queue, and the end of a minute that may hold a refusal.
+It does so again at each moment that a modelled input changes with no pass: a kill, and a pull request entering or leaving the merge queue.
 It also does so at each turn that starts or ends with no pass, where the idle share has a limit.
 A kill runs no pass: the replay leaves the kill's fact out (assumption 31), and only computes the deadline again.
 The run keeps one deadline, as the daemon keeps one timer.
@@ -2164,9 +2167,14 @@ A boot drops the deadline that stands, and the boot's first pass computes it aga
 
 `signals-backoff` replaces the ceiling by an allowance.
 The allowance starts at the ceiling.
-At each refusal by the project's own limit and at each kill, it becomes 90% of itself in whole numbers, rounded down, and at least 1.
+At each kill of the memory guard, it becomes 90% of itself in whole numbers, rounded down, and at least 1.
 For each whole hour after the last of them, it rises by 1, up to the ceiling.
-The pass folds the history of refusals and kills up to the pass (`signals.Allowance`), so the same history gives the same allowance, and the moment of the next rise is one that a deadline can name (`signals.NextRise`).
+The pass folds the history of kills up to the pass (`signals.Allowance`), so the same history gives the same allowance, and the moment of the next rise is one that a deadline can name (`signals.NextRise`).
+
+A directory of runs written while the provider's refusals were a signal is refused by every report that reads it where a run's `run.json` limits them (`refusals` in `limits`), with an error that names the run and says to run it again.
+A `signals-backoff` run of that time that limited no refusal holds nothing that tells it apart, though its allowance also fell at each refusal by the project's own limit.
+Its `run.json`'s `buildCommit` names the binary that made it, and a report refuses it for that only where the caller asks for the same build, as `forecast` does.
+Run such runs again with a binary built after the change.
 
 ## The branches
 
@@ -2230,11 +2238,12 @@ A replay measures from the same states, so a reading of production and a replay 
 
 ## The signals
 
-The tool's spec names, in its R11, five signals that a rule can admit by: the idle share, the merge queue's wait, the model provider's headroom with its refusals, the memory guard's kills, and the approvals that wait on the project's default assignee.
+The tool's spec names, in its R11, five signals that a rule can admit by: the idle share, the merge queue's wait, the model provider's headroom, the memory guard's kills, and the approvals that wait on the project's default assignee.
+The provider's signal is its headroom alone: its refusals hold no start, and no limit can name them.
 Each has one definition in the tool's code (`internal/signals`), over plain values that its caller supplies at a moment: the replay reads them from a collected window's own record (`internal/replay/signals.go`), and the daemon's admission pass reads them from its own events.
 Package `signals` imports the standard library alone, so the daemon imports no replay code.
 It also holds the pairing of the merge queue's events into waits and the turn of each ask by its events (`signals.WaitsOf` and `signals.NextAsk`), for a caller that reads the events one at a time (`signals.MergeQueue` and `signals.ApprovalState`), and the legal limit of each signal (`signals.CheckLimit`).
-A limit is legal where it is above 0 and at most 1 for the idle share, at most 10 for the provider's headroom and at most 168 for the queue's hours, and where it is a whole number from 1 to 1,000,000 for the refusals, the kills and the approvals.
+A limit is legal where it is above 0 and at most 1 for the idle share, at most 10 for the provider's headroom and at most 168 for the queue's hours, and where it is a whole number from 1 to 1,000,000 for the kills and the approvals.
 `legion replay signals --limit` is not a setting: it reads any limit at or above zero, and prints where a signal would cross it.
 Lower is better for each.
 
@@ -2245,7 +2254,7 @@ The end of a signal's record is such a moment for a signal that binds there.
 It is the moment at which a rule that admits by the signals needs its next admission pass when no event comes first (R11), and each event moves it again.
 
 A replay keeps each work segment's recorded length, so it cannot show the load that more work in flight would cause.
-So a replay under another rule takes the merge queue's wait, the provider's headroom and refusals, and the kills from a model of the window that keeps what the window records and moves with the work in flight of the replay (assumption 45).
+So a replay under another rule takes the merge queue's wait, the provider's headroom and the kills from a model of the window that keeps what the window records and moves with the work in flight of the replay (assumption 45).
 [`legion replay models`](#legion-replay-models) fits the three models and tests each one by R11's daily test and by R11's test across two records.
 The idle share and the approvals come from the replay itself.
 The definitions below read the record, and [`legion replay signals`](#legion-replay-signals) prints them.
@@ -2290,17 +2299,14 @@ The headroom has no limit of the project's own in a minute before the limit's fi
 There it reads the project's token limit that the caller gives (`--token-limit`, assumption 49), and with none it has no record and binds nothing.
 A minute outside the record of the provider has no record, whatever the caller gives (assumption 47).
 
-**Refusals**: part of the provider's signal, the refusals of each minute of the record that ended in the hour before the moment, each by the limit that gave it, the project's own (`own`) or the provider's (`provider`), as the record splits them (assumption 46).
-A limit of the refusals reads their count (`--limit refusals=<n>`).
-The refusals have a record at a moment where the record holds the minute before it, whatever the limit.
+The record also splits the refusals of each minute into those of the project's own limit (`own`) and those of the provider (`provider`), as the record gives them (assumption 46).
+No signal reads them: the tokens model's daily test reads the project's own ([`legion replay models`](#legion-replay-models)).
 
-**Next crossing**: for the headroom, the first minute boundary at which the record's series starts or stops binding.
-For the refusals, with the refusals as they stand at the moment, the moment at which an old refusal leaves the hour.
+**Next crossing**: the first minute boundary at which the record's series starts or stops binding.
 
 **Inputs**: `signals/provider.jsonl`.
 
-**Source**: the tokens model fitted on the window, for the headroom and the refusals by the project's own limit.
-A refusal that the provider gives every project is kept as recorded.
+**Source**: the tokens model fitted on the window.
 
 ### Signal `kills`
 
@@ -3875,7 +3881,7 @@ Compare the first-slot errors on `main` and `main+conflicts=drawn`, and the spre
 ### Assumption 45: Each modelled signal moves with the work in flight only as its model's form says
 
 Doubtful.
-A replay under another rule takes the merge queue's wait, the provider's headroom with the refusals by the project's own limit, and the memory guard's kills from models of the window ([`legion replay models`](#legion-replay-models)).
+A replay under another rule takes the merge queue's wait, the provider's headroom and the memory guard's kills from models of the window ([`legion replay models`](#legion-replay-models)).
 Each model keeps what the window records, and moves with the replay's work in flight only as its form says.
 A minute's tokens are its recorded tokens for each issue in flight, times the replay's issues in flight.
 A kill moves with the work segment of its own issue, and work that the record never ran takes the day's recorded kills for each hour of an issue in flight.
@@ -3910,25 +3916,27 @@ A rate that moves between the records, or from one range of issues in flight to 
 ### Assumption 46: A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says
 
 The record splits the refusals of each minute into those of the project's own limit and those of the provider ([Signal `provider`](#signal-provider)).
-A replay under another rule takes the project's own refusals from the tokens model and keeps the provider's as recorded, since the provider gives them to every project.
+The tokens model takes the project's own refusals from its refused minutes and keeps the provider's as recorded, since the provider gives them to every project, and R11's daily test of the model reads the project's own.
 A refusal that the record does not split counts as the project's own, and the result says so.
 A minute in which the window holds no record of the project's limit keeps its recorded refusals of both kinds, since the model has no limit to read there.
+No signal reads a refusal, and no rule admits by one.
 
 **Evidence in a recorded window.** _Refusals of both kinds in one minute._
 In one deployment's record of 2026-11-23 from 16:28, the provider refused 70 calls in the first minute while the project's own limit refused none, and in the third minute the project's own limit refused 127 beside the provider's 53.
 
 **If it is wrong.**
-If some of the refusals counted as the project's own came from the provider, the replay moves the measures so under a rule that holds back starts on the project's own refusals.
+If some of the refusals counted as the project's own came from the provider, the record holds refused minutes of the project's own limit that the limit did not give, and R11's daily test of the tokens model reads them.
+That test can then fail a model that keeps the record, or pass one that does not, and the provider's headroom has a limit only where the model passes.
 
-- Issues finished: Down, because the rule holds back starts for refusals that more work in flight did not cause.
+- Issues finished: Unknown, because a headroom limit that the test wrongly gives or withholds holds back starts that the true record would let through, or lets through starts that it would hold back.
 
-- Started work that waits for a slot: Up, for the same reason.
+- Started work that waits for a slot: Unknown, for the same reason.
 
-- Priority taken by holders: None, because the refusals hold back starts below P0, not ranks.
+- Priority taken by holders: None, because the headroom holds back starts below P0, not ranks.
 
 - Other delays: None, because the refusals move no loop and no wait on another issue.
 
-- Slots: Down, because the starts held back hold no slot.
+- Slots: Unknown, for the same reason as the issues finished.
 
 **The reading that would test it.** _A record that separates the counts._
 Check the minutes whose refusals the record does not split against a record of the same minutes that separates the project's own refusals from the provider's.

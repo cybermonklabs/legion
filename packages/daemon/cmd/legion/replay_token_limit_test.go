@@ -95,7 +95,8 @@ func TestReplayTokenLimitIsAWholeNumberAboveZero(t *testing.T) {
 // at 10:00 the minute before, 09:59, holds 4,500 tokens: with no token limit the headroom there is
 // unrecorded, and with --token-limit 6000 it reads 4,500 / 6,000 = 0.75, which binds a limit of 0.75
 // until the record's last minute, 11:59, ends at 12:00, where the record stops holding the minute
-// before at 12:01. The refusals read 0 either way.
+// before at 12:01. The kills come next, unrecorded, and no line counts the provider's refusals,
+// which are no signal.
 func TestReplaySignalsReadsTheHeadroomAgainstTheTokenLimit(t *testing.T) {
 	t.Parallel()
 	dir := tokensWindowDir(t)
@@ -108,8 +109,8 @@ func TestReplaySignalsReadsTheHeadroomAgainstTheTokenLimit(t *testing.T) {
 	} {
 		call := append([]string{"replay", "signals", "--window", dir, "--at", "2001-03-05T10:00:00Z", "--limit", "provider=0.75"}, c.extra...)
 		code, stdout, stderr := legionRun(t, call...)
-		if code != 0 || stderr != "" || !strings.Contains(stdout, c.provider+"  refusals 0 (own 0, provider 0)\n") {
-			t.Errorf("legion %s = %d, stderr %q, stdout:\n%s\nwant 0 and the lines:\n%s  refusals 0 (own 0, provider 0)", strings.Join(call, " "), code, stderr, stdout, c.provider)
+		if code != 0 || stderr != "" || !strings.Contains(stdout, c.provider+"  kills unrecorded\n") || strings.Contains(stdout, "refusals") {
+			t.Errorf("legion %s = %d, stderr %q, stdout:\n%s\nwant 0 and the lines:\n%s  kills unrecorded\nand no refusals", strings.Join(call, " "), code, stderr, stdout, c.provider)
 		}
 	}
 }

@@ -683,8 +683,8 @@ func signalsRule() SlotRule {
 
 // signalsBackoffRule is signals with an allowance in place of the ceiling (signals.Backoff,
 // signals.Allowance): the allowance starts at the ceiling, is multiplied by 90% in integers,
-// rounded down and at least 1, at each refusal by the project's own limit and at each kill, and
-// rises by 1 for each hour with neither, up to the ceiling.
+// rounded down and at least 1, at each kill of the memory guard, and rises by 1 for each hour with
+// none, up to the ceiling.
 func signalsBackoffRule() SlotRule {
 	return mainRuleWith("signals-backoff", func(rule *SlotRule) {
 		rule.StartsNow = true

@@ -78,7 +78,7 @@ func TestAPassOfTheModelReaderCostsNoMoreOnALongerWindow(t *testing.T) {
 		step := w.To.Sub(w.From) / time.Duration(passes)
 		result := testing.Benchmark(func(b *testing.B) {
 			for range b.N {
-				reader, err := models.Reader(w.From, SetbackSources{Refusals: true, Kills: true}, 0)
+				reader, err := models.Reader(w.From, true, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -93,17 +93,14 @@ func TestAPassOfTheModelReaderCostsNoMoreOnALongerWindow(t *testing.T) {
 						}
 					}
 					reader.Headroom(at)
-					reader.Refusals(at)
 					reader.Kills(at)
 					reader.Queue(at)
 					reader.HeadroomNext(at, 1)
-					reader.RefusalsNext(at, 4)
 					reader.KillsNext(at, 2)
 					reader.QueueNext(at, 2)
 					signals.NextRise(30, reader.Setbacks(at, 30), at)
 					reader.NextKill(at)
 					reader.NextQueueChange(at)
-					reader.NextRefusal(at)
 				}
 			}
 		})

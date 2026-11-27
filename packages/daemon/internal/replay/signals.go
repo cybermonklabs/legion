@@ -78,10 +78,9 @@ type SignalRecord struct {
 	// waits is each wait of a pull request in the merge queue, by the moment it began.
 	waits []signals.Wait
 	// minutes is each minute of the provider's record, by its Unix time, and lastMinute the
-	// latest; covered is each moment the record begins or stops holding the minute before.
+	// latest.
 	minutes    map[int64]ProviderMinute
 	lastMinute time.Time
-	covered    []time.Time
 	// asks is each ask of an issue of the project, assignees each such issue's assignee from each
 	// issue event that names it, and defaults the project's default assignee from each settings
 	// event that moves it.
@@ -126,14 +125,6 @@ func ReadSignalRecord(w Window, idleAfter time.Duration, tokenLimit int64) (*Sig
 	for _, minute := range w.Provider {
 		r.minutes[minute.Minute.Unix()] = minute
 		r.lastMinute = maxTime(r.lastMinute, minute.Minute)
-	}
-	for _, minute := range w.Provider {
-		if _, held := r.minutes[minute.Minute.Add(-time.Minute).Unix()]; !held {
-			r.covered = append(r.covered, minute.Minute.Add(time.Minute))
-		}
-		if _, held := r.minutes[minute.Minute.Add(time.Minute).Unix()]; !held {
-			r.covered = append(r.covered, minute.Minute.Add(2*time.Minute))
-		}
 	}
 	if err := r.readAsks(); err != nil {
 		return nil, err
@@ -339,14 +330,13 @@ func queueNext(r *SignalRecord, at time.Time, limit float64) (time.Time, bool) {
 // one model's own (any scope but the project's, projectLimitScope) hold no limit of the project's
 // own: there the headroom reads the token limit the caller gives (assumption 49), and with none it
 // holds no record and binds nothing. A minute outside the record's span holds no record of the
-// headroom whatever the caller gives (assumption 47). The refusals of a minute are held wherever
-// the record holds the minute, whatever the limit.
+// headroom whatever the caller gives (assumption 47).
 func (r *SignalRecord) series(start time.Time) (signals.Minute, bool) {
 	line, held := r.minutes[start.Unix()]
 	if !held {
 		return signals.Minute{}, false
 	}
-	minute := signals.Minute{Uncached: line.Uncached, Own: line.Own, Provider: line.Provider}
+	minute := signals.Minute{Uncached: line.Uncached}
 	if limit, limited, _ := r.window.limitIn(line, r.tokenLimit); limited {
 		minute.Limit = limit
 	}
@@ -395,20 +385,6 @@ func tokenLimitBelowZero(limit int64) error {
 // boundary after the record's last minute.
 func providerNext(r *SignalRecord, at time.Time, limit float64) (time.Time, bool) {
 	return signals.ProviderNext(r.series, at, r.lastMinute.Add(2*time.Minute), limit)
-}
-
-// Refusals is the provider's refusals at at: those of each minute of the record that ended in the
-// hour before at, (at − 1h, at], since a minute's refusals are known at its end. The record holds
-// them where it holds the minute before at, whatever the limit.
-func (r *SignalRecord) Refusals(at time.Time) signals.RefusalCount {
-	return signals.RefusalsAt(r.series, at)
-}
-
-// NextRefusals is the next crossing after at of limit by the count of refusals, the refusals
-// standing as they do at at: the moment an old refusal leaves the hour, or the record begins or
-// stops holding the minute before. Refusals come only at events, so the count rises at none.
-func (r *SignalRecord) NextRefusals(at time.Time, limit float64) (time.Time, bool) {
-	return signals.RefusalsNext(r.series, at, limit, r.covered)
 }
 
 // killsAt is the kills signal at at: the count of the memory guard's kills of the project's issue

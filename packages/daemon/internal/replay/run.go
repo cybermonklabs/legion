@@ -83,9 +83,9 @@ type RunConfig struct {
 	// takes from its caller in each minute whose provider record holds no limit of the project's
 	// own, zero for none (assumption 49): the limit is a value of the deployment's configuration
 	// (spec R11). A limit the record holds stands, and a minute the record does not hold stays
-	// unrecorded (assumption 47). The tokens model then limits the provider's signal and its
-	// refusals where it passes R11's daily test, or gives no test only because the window records
-	// no limit of the project's own (givesSuppliedLimit). run.json names it (runRecord.TokenLimit).
+	// unrecorded (assumption 47). The tokens model then limits the provider's headroom where it
+	// passes R11's daily test, or gives no test only because the window records no limit of the
+	// project's own (givesSuppliedLimit). run.json names it (runRecord.TokenLimit).
 	TokenLimit int64
 
 	// afterFact, where set, runs after each fact the replay applies, with the replay's pool and

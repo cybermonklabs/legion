@@ -54,8 +54,8 @@ type Reading struct {
 // above the limit (Value.Binds).
 func (r Reading) Holds() bool { return r.Limit != nil && r.Value.Binds(*r.Limit) }
 
-// Setback is each refusal by the project's own limit and each kill the history holds at a moment:
-// the events the back-off folds, Count of them at At.
+// Setback is each kill of the memory guard the history holds at a moment, the one event the
+// back-off folds: Count of them at At.
 type Setback struct {
 	At    time.Time
 	Count int64

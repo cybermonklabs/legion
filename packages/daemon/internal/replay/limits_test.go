@@ -323,20 +323,23 @@ func TestAPercentileOutsideTheSharedRangeIsLeftOut(t *testing.T) {
 // named limit and the next tighter one on every branch of both windows that passes R5, and the
 // idle share's named limit also at d of 10 minutes and of 4 hours; step C runs signals and
 // signals-backoff with every named limit on every branch of both windows at both ceilings.
-// Counted by hand, over the six signals of 2 limits each, at the ceilings 0 (the recorded cap) and
-// 171, on window-2 (the main branch one seed, git's three) and window-1 (one seed on each of two):
+// Counted by hand, over the five signals of 2 limits each, at the ceilings 0 (the recorded cap) and
+// 171, on window-2 (the main branch one seed, git's three) and window-1 (one seed on each of two).
+// The input also gives a list for the provider's refusals, as a list of limits read before they
+// left the signals would (spec R11, v52): they are no signal, so the plan reads no list of them,
+// lists no entry for them and gives them no part of its result.
 //
 //   - The kills' model, memory, fails the daily test on window one's record, so the kills get no
-//     step, and the plan says so. The other five get steps: idle and the approvals come from the
-//     replay and have no model, the merge queue's model passes, and the provider's headroom and the
-//     refusals rest on the tokens model, which gives no daily test on window one's record and
-//     passes on the other, and passes the test across the two records, with a token limit given.
-//   - Step A: 5 signals × 2 ceilings × 2 limits × 2 windows' main branch = 40, and off 2 ceilings × 2
-//     windows = 4: 44.
-//   - Step B: each of the 5 signals × 2 ceilings runs its 2 limits on 6 runs (window-2's 1 + 3,
-//     window-1's 1 + 1) = 12, 4 × 2 × 12 = 96 with the idle share's 12 at 2 ceilings = 24 more at d
-//     of 10 minutes and 4 hours (6 runs each, 2 d, 2 ceilings) and its own 24: 144.
-//   - Step C: 2 rules × 2 ceilings × 6 runs = 24.
+//     step, and the plan says so. The other four get steps: idle and the approvals come from the
+//     replay and have no model, the merge queue's model passes, and the provider's headroom rests
+//     on the tokens model, which gives no daily test on window one's record and passes on the
+//     other, and passes the test across the two records, with a token limit given.
+//   - Step A: 4 signals × 2 ceilings × 2 limits × 2 windows' main branch = 32, and off 2 ceilings × 2
+//     windows = 4: 36.
+//   - Step B: each of the 4 signals × 2 ceilings runs its 2 limits on 6 runs (window-2's 1 + 3,
+//     window-1's 1 + 1) = 12, 3 × 2 × 12 = 72 with the idle share's 12 at 2 ceilings = 24 more at d
+//     of 10 minutes and 4 hours (6 runs each, 2 d, 2 ceilings) and its own 24: 120.
+//   - Step C: 2 rules × 2 ceilings × 6 runs = 24, each with the four named limits.
 //
 // Before any run the plan lists step A alone and says that B and C wait for the runs before them.
 func TestTheLimitPlanListsEveryStep(t *testing.T) {
@@ -353,8 +356,8 @@ func TestTheLimitPlanListsEveryStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := countSteps(first.Entries); got != "A=44" {
-		t.Errorf("the plan before any run lists %s, want A=44 alone", got)
+	if got := countSteps(first.Entries); got != "A=36" {
+		t.Errorf("the plan before any run lists %s, want A=36 alone", got)
 	}
 	var printed strings.Builder
 	if err := first.Write(&printed); err != nil {
@@ -382,12 +385,15 @@ func TestTheLimitPlanListsEveryStep(t *testing.T) {
 		}
 		return limitAnswer{done: 21, waitOnly: 10, peak: 8}
 	})
-	if got := countSteps(result.Entries); got != "A=44 B=144 C=24" {
-		t.Errorf("the settled plan lists %s, want A=44 B=144 C=24", got)
+	if got := countSteps(result.Entries); got != "A=36 B=120 C=24" {
+		t.Errorf("the settled plan lists %s, want A=36 B=120 C=24", got)
 	}
 	for _, e := range result.Entries {
 		if _, kills := e.Limits[SignalKills]; kills || e.Signal == SignalKills {
 			t.Errorf("the plan lists an entry for the kills, whose model failed: %+v", e)
+		}
+		if _, refusals := e.Limits["refusals"]; refusals || e.Signal == "refusals" {
+			t.Errorf("the plan lists an entry for the provider's refusals, which are no signal: %+v", e)
 		}
 		if e.TokenLimit != 6_000_000 {
 			t.Errorf("an entry carries the token limit %d, want 6000000 in every run: %+v", e.TokenLimit, e)
@@ -418,10 +424,18 @@ func TestTheLimitPlanListsEveryStep(t *testing.T) {
 		t.Errorf("step C runs the rules %v, want signals and signals-backoff", stepC)
 	}
 	for _, e := range result.Entries {
-		if e.Step == LimitStepC && len(e.Limits) != 5 {
-			t.Errorf("a run of step C has the limits %v, want each of the five signals that have a limit", e.Limits)
+		if e.Step == LimitStepC && len(e.Limits) != 4 {
+			t.Errorf("a run of step C has the limits %v, want each of the four signals that have a limit", e.Limits)
 			break
 		}
+	}
+	for _, s := range result.Signals {
+		if s.Signal == "refusals" {
+			t.Errorf("the result gives the provider's refusals a part, %+v, and they are no signal", s)
+		}
+	}
+	if strings.Contains(renderLimits(t, result), "`refusals`") {
+		t.Errorf("the table names the refusals:\n%s", renderLimits(t, result))
 	}
 	var killsGate *LimitGate
 	for i := range result.Signals {
@@ -577,5 +591,43 @@ func TestRunsWrittenBeforeTheSignalSummariesAreRefused(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A run written while the provider's refusals were a signal, whose run.json limits them, is refused
+// by every report read from runs (spec R11, v52), as a run written before its signals' summaries is:
+// its admissions rest on a limit no run takes any more, so the error names the run, the refusals,
+// and says it must be run again. A run that limits the five signals alone is read.
+func TestRunsThatLimitedTheRefusalsAreRefused(t *testing.T) {
+	t.Parallel()
+	const window, rule = "old-refusals", "legion-v20.42.5"
+	from := time.Date(2001, time.March, 5, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	issueTimesRuns(t, dir, window, rule, true, from, from.Add(24*time.Hour), from.Add(time.Hour), from.Add(time.Hour))
+	path := filepath.Join(runDir(dir, window, rule, MainBranchAt, 1), runFile)
+	var fields map[string]any
+	if err := readJSON(path, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["limits"] = map[string]any{SignalKills: 2.0}
+	if err := writeJSON(path, fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRuns(dir); err != nil {
+		t.Fatalf("a run that limits the kills alone is refused: %v", err)
+	}
+	fields["limits"] = map[string]any{SignalKills: 2.0, "refusals": 4.0}
+	fields["signalSummaries"] = map[string]any{"refusals": map[string]any{"mean": 1, "p95": 4, "max": 4, "recorded": 60, "minutes": 60, "heldShare": 0.25}}
+	if err := writeJSON(path, fields); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ReadRuns(dir)
+	if err == nil {
+		t.Fatal("a run.json that limits the refusals is read")
+	}
+	for _, want := range []string{filepath.Dir(path), "refusals", "again"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not say %q", err, want)
+		}
 	}
 }

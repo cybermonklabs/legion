@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
-// everyLimit is a limit on each of R11's signals, each legal (signals.CheckLimit). Under a rule
+// everyLimit is a limit on each of R11's five signals, each legal (signals.CheckLimit). Under a rule
 // that admits by no signal they decide nothing, and a run writes each signal's value at its probes.
-var everyLimit = map[string]float64{SignalIdle: 0.5, SignalQueue: 2, SignalProvider: 1, signals.Refusals: 4, SignalKills: 2, SignalApprovals: 3}
+var everyLimit = map[string]float64{SignalIdle: 0.5, SignalQueue: 2, SignalProvider: 1, SignalKills: 2, SignalApprovals: 3}
 
 // signalRun is the run of w under rule, at seed 1 with no slowdown, with limits, d and probes, which
 // must run.
@@ -116,21 +116,17 @@ func idleCourseWindow(t *testing.T) Window {
 
 // A replay reads each of R11's signals from its own course, never from the record (spec R11): the
 // idle share from its own slot holders and the stub's claims, the approvals from its copy of
-// Dispatch, and the provider's headroom and refusals, the kills and the merge queue from the load
-// models at its own work in flight. On the windows of TestEachSignalAtAMoment, each replayed under
-// main with a limit on every signal and a probe at each moment worked out there, the run writes
-// each signal's value: the record's for the kills, the queue and the approvals, whose models give
-// the record at the recorded course; the headroom's tokens as recorded, with no issue in flight in
-// either; and the project's own refusals as the tokens model gives them. Its one refused minute is
-// 10:01's, 6,600 tokens over the limit of 6,000. The record's own refusals per refused minute are
-// 2, its 3 and 1 of 10:01 and 10:30, so the model gives 10:01 two of the project's own, and 10:30,
-// under the limit, none. Beside them stand the provider's 2 of 09:10 and 1 of 10:01, kept as
-// recorded. The idle share is read on idleCourseWindow, whose course is the record's until 12:00:
-// each holder idle since the newest end of its turn before the start, ACME-1 at 09:30 and ACME-2
-// at 09:55, as the record has them, not since their slots. At 12:00 ACME-2's turn ends, and the
-// next pass, at 12:01, raises an entry for its architect, at admitted beside a phases row that
-// names none, and sends it work that no recorded turn takes, so it works in the replay where the
-// record has it idle.
+// Dispatch, and the provider's headroom, the kills and the merge queue from the load models at its
+// own work in flight. On the windows of TestEachSignalAtAMoment, each replayed under main with a
+// limit on every signal and a probe at each moment worked out there, the run writes each signal's
+// value: the record's for the kills, the queue and the approvals, whose models give the record at
+// the recorded course; and the headroom's tokens as recorded, with no issue in flight in either.
+// The idle share is read on idleCourseWindow, whose course is the record's until 12:00: each holder
+// idle since the newest end of its turn before the start, ACME-1 at 09:30 and ACME-2 at 09:55, as
+// the record has them, not since their slots. At 12:00 ACME-2's turn ends, and the next pass, at
+// 12:01, raises an entry for its architect, at admitted beside a phases row that names none, and
+// sends it work that no recorded turn takes, so it works in the replay where the record has it
+// idle.
 func TestTheReplayReadsEachSignalFromItsOwnCourse(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -159,13 +155,6 @@ func TestTheReplayReadsEachSignalFromItsOwnCourse(t *testing.T) {
 			valueAt(clock(10, 2), 1.1, "6,600 of 6,000"),
 			noValueAt(clock(11, 31), "the limit was taken away at 11:30"),
 			noValueAt(clock(11, 46), "the limit of 11:45 is one model's own"),
-		}},
-		{signals.Refusals, providerWindow, []probed{
-			noValueAt(clock(9, 0), "the record holds no minute before 09:00"),
-			valueAt(clock(9, 11), 2, "the provider's 2 of 09:10"),
-			valueAt(clock(10, 2), 5, "the provider's 2 of 09:10 and 1 of 10:01, and the model's 2 of the project's own in 10:01"),
-			valueAt(clock(10, 11), 3, "09:10's left the hour at 10:11"),
-			valueAt(clock(10, 31), 3, "10:01's 3, and none in 10:30, whose tokens the limit does not refuse in the model"),
 		}},
 		{SignalKills, killsWindow, []probed{
 			valueAt(clock(9, 39), 0, "no kill yet"),
@@ -355,9 +344,9 @@ func TestTheReplaysTicksAreTickPasses(t *testing.T) {
 	}
 }
 
-// Run refuses a limit that signals.CheckLimit refuses, a d below zero and a token limit below zero,
-// naming it, before it replays: each run is given the replay's own server, on which it would
-// otherwise run.
+// Run refuses a limit that signals.CheckLimit refuses, a limit on the provider's refusals among them,
+// which are no signal (spec R11, v52), a d below zero and a token limit below zero, naming it, before
+// it replays: each run is given the replay's own server, on which it would otherwise run.
 func TestARunRefusesAnIllegalLimit(t *testing.T) {
 	t.Parallel()
 	w, _ := readFixture(t, "no-crossing-due")
@@ -368,6 +357,7 @@ func TestARunRefusesAnIllegalLimit(t *testing.T) {
 	}{
 		{RunConfig{Limits: map[string]float64{SignalKills: 1.5}}, "no whole number"},
 		{RunConfig{Limits: map[string]float64{"memory": 1}}, "no signal a limit can name"},
+		{RunConfig{Limits: map[string]float64{"refusals": 4}}, "no signal a limit can name"},
 		{RunConfig{Limits: map[string]float64{SignalIdle: 0}}, "not above 0"},
 		{RunConfig{IdleAfter: -time.Minute}, "d is below zero"},
 		{RunConfig{TokenLimit: -6000}, "token limit is -6000"},
@@ -377,6 +367,86 @@ func TestARunRefusesAnIllegalLimit(t *testing.T) {
 		if _, err := Run(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("Run with the limits %v, d %s and the token limit %d answered %v, want a refusal naming %q", cfg.Limits, cfg.IdleAfter, cfg.TokenLimit, err, c.want)
 		}
+	}
+}
+
+// backoffWindow is providerWindow's record of the provider, whose project's own limit of 6,000
+// tokens a minute refuses 3 at 10:01 and 1 at 10:30, beside killsWindow's record of the kills, at
+// 09:40, 09:50 and 10:35: a window from 09:00 to 12:00 under a cap of 4, with no issue.
+func backoffWindow(t *testing.T) Window {
+	w := providerWindow(t)
+	kills := killsWindow(t)
+	w.Launcher = kills.Launcher
+	w.Signals[SignalKills] = kills.Signals[SignalKills]
+	return w
+}
+
+// The back-off rule backs off on a memory kill alone (spec R11, v52): a refusal of the provider's is
+// no setback. On backoffWindow, replayed under signals-backoff with no limit, the tokens model gives
+// the minute 10:01, 6,600 tokens over the project's own limit of 6,000, two refusals of the
+// project's own (the record's 4 over its 2 refused minutes), which ended at 10:02. Each pass's
+// setbacks are kills by the pass, one at each kill's moment, and nothing at 10:02. A pass after
+// 10:35 and before 11:35 folds all three: the allowance of the cap of 4 is 3 after 09:40's, 2 after
+// 09:50's and 1 after 10:35's, with no quiet hour between, so it stands below 4 there.
+func TestTheBackoffFoldsTheKillsAndNoRefusal(t *testing.T) {
+	t.Parallel()
+	var snapshots []signals.Snapshot
+	signalRunWith(t, RunConfig{Window: backoffWindow(t), Rule: replayedRule(t, "signals-backoff"),
+		onSnapshot: func(s signals.Snapshot) { snapshots = append(snapshots, s) }})
+	if len(snapshots) == 0 {
+		t.Fatal("no pass read the signals under signals-backoff")
+	}
+	kills := []time.Time{clock(9, 40), clock(9, 50), clock(10, 35)}
+	backedOff := false
+	for _, s := range snapshots {
+		for _, setback := range s.Setbacks {
+			if !slices.ContainsFunc(kills, setback.At.Equal) || setback.Count != 1 {
+				t.Errorf("the pass at %s folds the setback %+v, which is no kill", stamp(s.At), setback)
+			}
+		}
+		if s.At.After(clock(10, 35)) && s.At.Before(clock(11, 35)) {
+			backedOff = true
+			if got := signals.Allowance(4, s.Setbacks, s.At); got != 1 {
+				t.Errorf("the allowance at the pass at %s is %d, want 1 after the three kills", stamp(s.At), got)
+			}
+		}
+	}
+	if !backedOff {
+		t.Errorf("no pass read the signals between 10:35 and 11:35, where the back-off folds the three kills: %d passes", len(snapshots))
+	}
+}
+
+// A start below P0 is held by no refusal (spec R11, v52). signal-crosses-with-no-event, given a
+// record of the provider from 09:00 to 10:55 in which the project's own limit of 6,000 refuses 50
+// requests and the provider 50 in every minute, each of 7,000 tokens, and replayed under signals with
+// the limit of 2 kills and a limit of 10 on the headroom, moves its slots as it does with no record
+// of the provider (TestTheReplaysTicksAreTickPasses): the tick at 10:31 takes back ACME-1's slot and
+// gives ACME-2 its, and ACME-3 takes its slot at the deadline's pass at 10:40, once 09:40's kill
+// leaves the hour. Its 6,000 refusals of the hour before hold nothing, and the headroom, 7,000 of
+// 6,000 scaled by the replay's work in flight over the record's, reads far below 10. The tokens
+// model passes its daily test, each of the span's 35 minutes refused in the record and in the model,
+// so the limit on the headroom is in force.
+func TestAWindowWithManyRefusalsStillGivesOutItsSlots(t *testing.T) {
+	t.Parallel()
+	w, _ := readFixture(t, "signal-crosses-with-no-event")
+	limit, source, scope := int64(6000), "dispatch", projectLimitScope
+	w.Provider = nil
+	for minute := clock(9, 0); minute.Before(clock(10, 55)); minute = minute.Add(time.Minute) {
+		w.Provider = append(w.Provider, ProviderMinute{Minute: minute, Uncached: 7000, Limit: &limit, LimitSource: &source, LimitScope: &scope,
+			Own: 50, Provider: 50})
+	}
+	w.Signals[SignalProvider] = []Span{{From: clock(9, 0), To: clock(10, 55)}}
+	tick := clock(10, 31)
+	pass := func(issue string, at time.Time, action string, kind signals.PassKind) SlotPass {
+		return SlotPass{Issue: issue, At: at, Action: action, PassKind: kind}
+	}
+	result := signalRun(t, w, "signals", map[string]float64{SignalKills: 2, SignalProvider: 10}, 0)
+	if want := []SlotPass{pass("ACME-1", tick, slotTake, signals.PassTick), pass("ACME-2", tick, slotGive, signals.PassTick),
+		pass("ACME-3", clock(10, 40), slotGive, signals.PassDeadline)}; !reflect.DeepEqual(result.SlotPasses, want) {
+		t.Errorf("with the refusals recorded the slots moved %+v, want %+v", result.SlotPasses, want)
+	}
+	if len(result.Unlimited) != 0 {
+		t.Errorf("the run names %v with no limit, want the kills and the headroom both in force", result.Unlimited)
 	}
 }
 

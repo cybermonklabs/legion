@@ -21,21 +21,20 @@ import (
 	"time"
 )
 
-// The signals of R11 by name, the provider's refusals beside its headroom.
+// The signals of R11 by name. The provider's signal is its headroom alone.
 const (
 	Idle      = "idle"
 	Queue     = "queue"
 	Provider  = "provider"
-	Refusals  = "refusals"
 	Kills     = "kills"
 	Approvals = "approvals"
 )
 
 // order is every signal a limit can name, in R11's order.
-var order = []string{Idle, Queue, Provider, Refusals, Kills, Approvals}
+var order = []string{Idle, Queue, Provider, Kills, Approvals}
 
 // Names is every signal a limit can name, in R11's order: the idle share, the merge queue's wait,
-// the provider's headroom and its refusals, the memory guard's kills and the approvals.
+// the provider's headroom, the memory guard's kills and the approvals.
 func Names() []string { return slices.Clone(order) }
 
 // DefaultIdleAfter is d, how long a slot holder has been idle before the idle signal counts it: an
@@ -43,11 +42,10 @@ func Names() []string { return slices.Clone(order) }
 const DefaultIdleAfter = time.Hour
 
 // The spans a signal counts its events over: the merge queue's exits over the 6 hours before a
-// moment, and the memory guard's kills and the provider's refusals over the hour before it.
+// moment, and the memory guard's kills over the hour before it.
 const (
 	QueueExitSpan = 6 * time.Hour
 	KillSpan      = time.Hour
-	RefusalSpan   = time.Hour
 )
 
 // Value is one signal at a moment: its value, lower being better for every signal, and whether the

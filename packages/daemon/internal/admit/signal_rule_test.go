@@ -140,8 +140,8 @@ func signalRuleReaders() []slotRuleReader {
 			},
 			main:    "the trees open of [ACME-267] are [ACME-267]",
 			changed: "the trees open of [ACME-267] are []",
-			why: "two holders leave a row of the cap of 3 free; after a refusal by the project's own limit the back-off's allowance is " +
-				"2, which the two holders fill",
+			why: "two holders leave a row of the cap of 3 free; after a kill the back-off's allowance is 2, which the two holders " +
+				"fill",
 		},
 	}
 }
@@ -267,10 +267,10 @@ func TestAnUnrecordedSignalOrAnUnsetLimitHoldsNoStart(t *testing.T) {
 }
 
 // The back-off starts an issue below P0 only while the holders below P0 are fewer than its allowance,
-// which falls by 90% rounded down, at least 1, at each refusal by the project's own limit and each
-// kill, and rises by 1 for each hour with neither, up to the ceiling of 3.
+// which falls by 90% rounded down, at least 1, at each kill, and rises by 1 for each hour with none,
+// up to the ceiling of 3.
 func TestTheBackoffRuleStartsWithinItsAllowance(t *testing.T) {
-	refusal := func(ago time.Duration, count int64) signals.Setback {
+	kill := func(ago time.Duration, count int64) signals.Setback {
 		return signals.Setback{At: fixedNow.Add(-ago), Count: count}
 	}
 	for _, tc := range []struct {
@@ -280,11 +280,11 @@ func TestTheBackoffRuleStartsWithinItsAllowance(t *testing.T) {
 		pass     int
 		starts   bool
 	}{
-		{"allowance 2 after a refusal, two holders", 2, []signals.Setback{refusal(10*time.Minute, 1)}, 0, false},
-		{"allowance 2 after a refusal, one holder", 1, []signals.Setback{refusal(10*time.Minute, 1)}, 0, true},
-		{"an hour with no refusal or kill gives the allowance back at a deadline", 2, []signals.Setback{refusal(61*time.Minute, 1)}, 1, true},
-		{"allowance 1 and a kill stays 1, one holder", 1, []signals.Setback{refusal(20*time.Minute, 2), refusal(10*time.Minute, 1)}, 0, false},
-		{"allowance 1 and a kill stays 1, no holder", 0, []signals.Setback{refusal(20*time.Minute, 2), refusal(10*time.Minute, 1)}, 0, true},
+		{"allowance 2 after a kill, two holders", 2, []signals.Setback{kill(10*time.Minute, 1)}, 0, false},
+		{"allowance 2 after a kill, one holder", 1, []signals.Setback{kill(10*time.Minute, 1)}, 0, true},
+		{"an hour with no kill gives the allowance back at a deadline", 2, []signals.Setback{kill(61*time.Minute, 1)}, 1, true},
+		{"allowance 1 and a third kill stays 1, one holder", 1, []signals.Setback{kill(20*time.Minute, 2), kill(10*time.Minute, 1)}, 0, false},
+		{"allowance 1 and a third kill stays 1, no holder", 0, []signals.Setback{kill(20*time.Minute, 2), kill(10*time.Minute, 1)}, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

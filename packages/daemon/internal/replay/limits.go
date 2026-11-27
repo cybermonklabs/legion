@@ -262,7 +262,6 @@ func LimitCandidates(w Window, tokenLimit int64) (map[string][]LimitCandidate, e
 		{signals.Idle, func(at time.Time) signals.Value { return idleAt(r, at) }},
 		{signals.Queue, func(at time.Time) signals.Value { return queueAt(r, at) }},
 		{signals.Provider, func(at time.Time) signals.Value { return providerAt(r, at) }},
-		{signals.Refusals, func(at time.Time) signals.Value { return r.Refusals(at).Value() }},
 		{signals.Kills, func(at time.Time) signals.Value { return killsAt(r, at) }},
 		{signals.Approvals, func(at time.Time) signals.Value { return approvalsAt(r, at) }},
 	}
@@ -320,9 +319,9 @@ func modelOf(models LoadModels, name string) (LoadModel, bool) {
 // idle share and the approvals come from the replay itself, have no model and always have steps. A
 // signal that a model gives has them where the model passes R11's daily test on at least one of the
 // two records and fails it on neither, and passes the test across the two records on both; the
-// provider's headroom and refusals, which the tokens model gives, also where a token limit is
-// given and the model fails neither test, since the window records no limit of the project's own
-// to test it against (assumption 49). A signal without steps names why. What a limit rests on is
+// provider's headroom, which the tokens model gives, also where a token limit is given and the
+// model fails neither test, since the window records no limit of the project's own to test it
+// against (assumption 49). A signal without steps names why. What a limit rests on is
 // each tested day with the recorded and the modelled value and the record it is in, the test
 // across the two records, and, for the tokens model, the token limit given.
 func limitGate(signal string, models [2]LoadModels, tokenLimit int64) LimitGate {
@@ -818,7 +817,7 @@ func (p *limitPlanner) ceilingLimits(signal string, swept []LimitCandidate, c in
 		out.Status, out.Named, out.HasNamed, out.Percentile = LimitNamed, trials[i].cand.Limit, true, trials[i].cand.Percentile
 		out.Peak = trials[i].row.Peak
 		out.Extrapolates = float64(out.Peak) > p.high
-		if signal == signals.Provider || signal == signals.Refusals {
+		if signal == signals.Provider {
 			trials[i].row.Unconfirmed = p.unconfirmed(trials[i].a)
 		}
 		if signal == signals.Idle {
@@ -926,7 +925,7 @@ func PlanLimits(in LimitsInput) (LimitsResult, error) {
 			for _, c := range in.Ceilings {
 				s.Ceilings = append(s.Ceilings, p.ceilingLimits(name, swept, c))
 			}
-			if name == signals.Provider || name == signals.Refusals {
+			if name == signals.Provider {
 				s.Gate.Rests = append(s.Gate.Rests, p.providerRests(s.Ceilings)...)
 			}
 		}

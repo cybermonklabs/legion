@@ -20,14 +20,14 @@ import (
 // after it at which the signal would cross a limit if no new event came.
 //
 // Each modelled value at a moment reads only the course up to that moment. A minute's tokens read
-// the issues in flight in that minute, and a refused minute the refused minutes before it. A kill
-// reads the start of its own segment, or its drawn issue's own hours in flight before it. A pull
-// request's exit reads the entries before it in its own queue. A segment, a stretch or an entry
-// that the replay starts now lies at or after now. So what the reader has given stays given, and
-// it does each moment's work once: it models each minute once, when the minute ends, and each pull
-// request once, when it enters. A pass costs what the moments near it cost, not the window's
-// length. At each moment the reader gives what LoadModels.Replay gives over the replay's whole
-// timeline (TestTheModelReaderGivesWhatTheWholeTimelineGives).
+// the issues in flight in that minute. A kill reads the start of its own segment, or its drawn
+// issue's own hours in flight before it. A pull request's exit reads the entries before it in its
+// own queue. A segment, a stretch or an entry that the replay starts now lies at or after now. So
+// what the reader has given stays given, and it does each moment's work once: it models each
+// minute once, when the minute ends, and each pull request once, when it enters. A pass costs what
+// the moments near it cost, not the window's length. At each moment the reader gives what
+// LoadModels.Replay gives over the replay's whole timeline
+// (TestTheModelReaderGivesWhatTheWholeTimelineGives).
 //
 // A minute that has not ended, and the minutes after it, are read at the issues in flight now, as
 // they stand if no new event came. A Next function reads the course so: the provider's headroom
@@ -59,20 +59,15 @@ type ModelReader struct {
 	// The provider's record is held as a run of minutes from first, one for each minute up to the
 	// record's last minute. Each entry is the minute's line, where the record holds one, with the
 	// record's issue-hours in flight over it. made is each minute the model has given so far: every
-	// minute that ended by now, in order. refused is how many of them the project's own limit
-	// refused; the record's refusals per refused minute are rounded by that count. covered is each
-	// moment, in order, at which the record begins or stops holding the minute before.
+	// minute that ended by now, in order.
 	first   time.Time
 	minutes []readerMinute
 	made    []signals.Minute
-	refused int
 	// supplied is, by UTC day, the minutes of the window's span that the model refused against the
 	// caller's token limit, in a minute whose record holds no limit of the project's own: refused
 	// minutes that the record cannot confirm.
 	supplied map[string]int
-	covered  []time.Time
 	headroom map[float64]*minuteThresholds
-	refusing *minuteThresholds
 
 	// starts is the replay's start of each recorded segment it has run, and segmentKills each
 	// recorded kill's offset in its segment, by segment. kills is each modelled kill the reader
@@ -97,16 +92,10 @@ type ModelReader struct {
 	segmentPulls map[segmentKey][]queuedPull
 	waits        []signals.Wait
 
-	// sources says which setbacks the back-off folds. fold is how far the reader has folded them.
-	sources SetbackSources
-	fold    setbackFold
-}
-
-// SetbackSources is which events of the modelled signals the back-off folds as its setbacks: the
-// refusals by the project's own limit (Refusals) and the kills (Kills). A model that gives no limit
-// for its signal gives none.
-type SetbackSources struct {
-	Refusals, Kills bool
+	// foldKills says the back-off folds the modelled kills as its setbacks, which it does where the
+	// memory model gives a limit for its signal. fold is how far the reader has folded them.
+	foldKills bool
+	fold      setbackFold
 }
 
 // readerMinute is one minute of the provider's record as the reader holds it: whether the record
@@ -165,19 +154,20 @@ type setbackFold struct {
 // threshold reads past it.
 const minuteThreshold = 1 << 20
 
-// Reader is a reader of the modelled signals of a replay that starts at from (ModelReader), its
-// setbacks as sources lets them, tokenLimit being the project's token limit in uncached input
-// tokens a minute that it models a minute of the provider against where the record holds no limit
-// of the project's own, zero for none (assumption 49). Before from, the reader holds the record's
-// own course. It refuses models that hold no window's record.
-func (m LoadModels) Reader(from time.Time, sources SetbackSources, tokenLimit int64) (*ModelReader, error) {
+// Reader is a reader of the modelled signals of a replay that starts at from (ModelReader), whose
+// back-off folds the modelled kills as its setbacks where foldKills says so, tokenLimit being the
+// project's token limit in uncached input tokens a minute that it models a minute of the provider
+// against where the record holds no limit of the project's own, zero for none (assumption 49).
+// Before from, the reader holds the record's own course. It refuses models that hold no window's
+// record.
+func (m LoadModels) Reader(from time.Time, foldKills bool, tokenLimit int64) (*ModelReader, error) {
 	r := m.fit
 	if r == nil {
 		return nil, errNoModelRecord
 	}
 	x := &ModelReader{r: r, now: from, headroom: map[float64]*minuteThresholds{}, starts: map[segmentKey]time.Time{},
 		segmentKills: map[segmentKey][]time.Duration{}, parts: r.ratedParts(), drawn: map[string]*drawnAccrual{},
-		queues: map[string]*queueReader{}, segmentPulls: map[segmentKey][]queuedPull{}, sources: sources, supplied: map[string]int{}}
+		queues: map[string]*queueReader{}, segmentPulls: map[segmentKey][]queuedPull{}, foldKills: foldKills, supplied: map[string]int{}}
 	for i, at := range r.flight.from {
 		if !at.Before(from) {
 			break
@@ -222,9 +212,8 @@ func (m LoadModels) Reader(from time.Time, sources SetbackSources, tokenLimit in
 }
 
 // readMinutes reads the provider's record into the run of minutes, each with the limit in force in
-// it, the record's or else tokenLimit (Window.limitIn), and the moments at which the record begins
-// or stops holding the minute before (as SignalRecord reads them). A line whose moment is not the
-// start of a whole minute is no minute a definition reads, and the run holds none of it.
+// it, the record's or else tokenLimit (Window.limitIn). A line whose moment is not the start of a
+// whole minute is no minute a definition reads, and the run holds none of it.
 func (x *ModelReader) readMinutes(tokenLimit int64) {
 	r := x.r
 	var first, last time.Time
@@ -250,18 +239,6 @@ func (x *ModelReader) readMinutes(tokenLimit int64) {
 		limit, limited, assumed := r.w.limitIn(line, tokenLimit)
 		x.minutes[int(start.Sub(first)/time.Minute)] = readerMinute{held: true, line: line, recorded: r.flight.hours(start, start.Add(time.Minute)),
 			limit: limit, limited: limited, assumed: assumed}
-	}
-	for i, minute := range x.minutes {
-		if !minute.held {
-			continue
-		}
-		start := x.minuteStart(i)
-		if i == 0 || !x.minutes[i-1].held {
-			x.covered = append(x.covered, start.Add(time.Minute))
-		}
-		if i+1 == len(x.minutes) || !x.minutes[i+1].held {
-			x.covered = append(x.covered, start.Add(2*time.Minute))
-		}
 	}
 }
 
@@ -452,7 +429,7 @@ func (x *ModelReader) drawnDue() {
 
 // placeKill places a modelled kill at at, in order.
 func (x *ModelReader) placeKill(at time.Time) {
-	if x.sources.Kills && !at.After(x.fold.through) {
+	if x.foldKills && !at.After(x.fold.through) {
 		x.fold = setbackFold{}
 	}
 	insertTime(&x.kills, at)
@@ -474,11 +451,8 @@ func (x *ModelReader) advance(at time.Time) {
 	}
 	for i := len(x.made); i < len(x.minutes) && !x.minuteStart(i).Add(time.Minute).After(x.now); i++ {
 		minute, refuses := x.model(i)
-		if refuses {
-			x.refused++
-			if start := x.minuteStart(i); x.minutes[i].assumed && !start.Before(x.r.w.From) && start.Before(x.r.w.To) {
-				x.supplied[start.UTC().Format(time.DateOnly)]++
-			}
+		if start := x.minuteStart(i); refuses && x.minutes[i].assumed && !start.Before(x.r.w.From) && start.Before(x.r.w.To) {
+			x.supplied[start.UTC().Format(time.DateOnly)]++
 		}
 		if x.minutes[i].assumed {
 			x.SuppliedMinutes++
@@ -531,7 +505,7 @@ func (x *ModelReader) model(i int) (signals.Minute, bool) {
 		return signals.Minute{}, false
 	}
 	start := x.minuteStart(i)
-	return x.r.modelMinute(minute.line, minute.limit, minute.limited, minute.recorded, x.flight.hours(start, start.Add(time.Minute)), x.refused)
+	return x.r.modelMinute(minute.line, minute.limit, minute.limited, minute.recorded, x.flight.hours(start, start.Add(time.Minute)))
 }
 
 // series is the provider's minutes as the definitions read them: each minute that ended by now as
@@ -553,13 +527,6 @@ func (x *ModelReader) series(start time.Time) (signals.Minute, bool) {
 func (x *ModelReader) Headroom(at time.Time) signals.Value {
 	x.advance(at)
 	return signals.ProviderAt(x.series, at)
-}
-
-// Refusals is the provider's refusals at at (signals.RefusalsAt): the project's own as the model
-// gives them, the provider's as recorded.
-func (x *ModelReader) Refusals(at time.Time) signals.RefusalCount {
-	x.advance(at)
-	return signals.RefusalsAt(x.series, at)
 }
 
 // Kills is the kills signal at at (signals.KillsAt): the modelled kills of the hour before at.
@@ -586,15 +553,6 @@ func (x *ModelReader) KillsNext(at time.Time, limit float64) (time.Time, bool) {
 func (x *ModelReader) QueueNext(at time.Time, limit float64) (time.Time, bool) {
 	x.advance(at)
 	return signals.QueueNext(x.r.w.coverageOf(SignalQueue, at), x.waits, at, limit)
-}
-
-// RefusalsNext is the refusals' next crossing of limit after at (signals.RefusalsNext), the
-// refusals standing as they do at at, or a moment at which the record begins or stops holding the
-// minute before.
-func (x *ModelReader) RefusalsNext(at time.Time, limit float64) (time.Time, bool) {
-	x.advance(at)
-	i := sort.Search(len(x.covered), func(i int) bool { return x.covered[i].After(at) })
-	return signals.RefusalsNext(x.series, at, limit, x.covered[i:])
 }
 
 // HeadroomNext is the headroom's next crossing of limit after at, as signals.ProviderNext gives it
@@ -670,30 +628,11 @@ func (x *ModelReader) NextQueueChange(after time.Time) (time.Time, bool) {
 	return next, !next.IsZero()
 }
 
-// NextRefusal is the end of the first minute after after that may hold a refusal, the issues in
-// flight standing as they do: one of the provider's, one of the project's own in a minute with no
-// limit in force, or a minute whose modelled tokens pass the limit in force. It answers false where
-// none comes. A minute's refusals are known at its end.
-func (x *ModelReader) NextRefusal(after time.Time) (time.Time, bool) {
-	x.advance(after)
-	current := max(x.minuteIndex(after.Truncate(time.Minute)), len(x.made))
-	if current < len(x.minutes) && current >= 0 {
-		if minute, refuses := x.model(current); refuses || minute.Own+minute.Provider > 0 {
-			return x.minuteStart(current).Add(time.Minute), true
-		}
-	}
-	index := x.refusalThresholds().first(max(current+1, 0), true, x.inFlight())
-	if index < 0 || index >= len(x.minutes) {
-		return time.Time{}, false
-	}
-	return x.minuteStart(index).Add(time.Minute), true
-}
-
 // Setbacks is the setbacks the back-off folds at at, under ceiling, in time order (signals.Setback):
-// the refusals by the project's own limit of each minute that ended by at, at the minute's end, and
-// each modelled kill by at, each as SetbackSources lets them. It leaves out each setback before the
-// last one ahead of which the allowance stood at the ceiling again, which the allowance no longer
-// reads (signals.Allowance): the setbacks it answers fold to the same allowance as all of them.
+// each modelled kill by at, where the reader folds the kills (foldKills). It leaves out each setback
+// before the last one ahead of which the allowance stood at the ceiling again, which the allowance
+// no longer reads (signals.Allowance): the setbacks it answers fold to the same allowance as all of
+// them.
 func (x *ModelReader) Setbacks(at time.Time, ceiling int) []signals.Setback {
 	x.advance(at)
 	if !x.fold.begun || x.fold.ceiling != ceiling {
@@ -718,39 +657,19 @@ func (x *ModelReader) Setbacks(at time.Time, ceiling int) []signals.Setback {
 	return slices.Clip(x.fold.kept)
 }
 
-// setbacksIn is each setback in (from, at], or [from, at] where open is false, in time order: a
-// minute's own refusals at its end before a kill of the same moment.
+// setbacksIn is each kill in (from, at], or [from, at] where open is false, in time order, as a
+// setback of one, where the reader folds the kills (foldKills).
 func (x *ModelReader) setbacksIn(from, at time.Time, open bool) []signals.Setback {
-	after := func(t time.Time) bool { return t.After(from) || !open && t.Equal(from) }
-	var minutes, kills []signals.Setback
-	if x.sources.Refusals && len(x.made) > 0 {
-		begin := max(x.minuteIndex(from.Add(-time.Minute)), 0)
-		for i := begin; i < len(x.made); i++ {
-			end := x.minuteStart(i).Add(time.Minute)
-			if end.After(at) {
-				break
-			}
-			if own := x.made[i].Own; own > 0 && after(end) {
-				minutes = append(minutes, signals.Setback{At: end, Count: own})
-			}
+	if !x.foldKills {
+		return nil
+	}
+	var setbacks []signals.Setback
+	for i := sort.Search(len(x.kills), func(i int) bool { return !x.kills[i].Before(from) }); i < len(x.kills) && !x.kills[i].After(at); i++ {
+		if x.kills[i].After(from) || !open && x.kills[i].Equal(from) {
+			setbacks = append(setbacks, signals.Setback{At: x.kills[i], Count: 1})
 		}
 	}
-	if x.sources.Kills {
-		for i := sort.Search(len(x.kills), func(i int) bool { return !x.kills[i].Before(from) }); i < len(x.kills) && !x.kills[i].After(at); i++ {
-			if after(x.kills[i]) {
-				kills = append(kills, signals.Setback{At: x.kills[i], Count: 1})
-			}
-		}
-	}
-	merged := make([]signals.Setback, 0, len(minutes)+len(kills))
-	for len(minutes) > 0 || len(kills) > 0 {
-		if len(kills) == 0 || len(minutes) > 0 && !minutes[0].At.After(kills[0].At) {
-			merged, minutes = append(merged, minutes[0]), minutes[1:]
-			continue
-		}
-		merged, kills = append(merged, kills[0]), kills[1:]
-	}
-	return merged
+	return setbacks
 }
 
 // headroomThresholds is the threshold of each minute of the run for the headroom's limit: the
@@ -760,35 +679,25 @@ func (x *ModelReader) headroomThresholds(limit float64) *minuteThresholds {
 	if t, built := x.headroom[limit]; built {
 		return t
 	}
-	t := x.thresholds(func(minute signals.Minute, _ bool) bool {
+	t := x.thresholds(func(minute signals.Minute) bool {
 		return signals.ProviderAt(func(time.Time) (signals.Minute, bool) { return minute, true }, time.Time{}).Binds(limit)
 	})
 	x.headroom[limit] = t
 	return t
 }
 
-// refusalThresholds is the threshold of each minute of the run for a refusal: the fewest issues in
-// flight at which the minute, modelled whole at that count, may hold a refusal (NextRefusal), 0 for
-// a minute whose recorded refusals the model keeps.
-func (x *ModelReader) refusalThresholds() *minuteThresholds {
-	if x.refusing == nil {
-		x.refusing = x.thresholds(func(minute signals.Minute, refuses bool) bool { return refuses || minute.Own+minute.Provider > 0 })
-	}
-	return x.refusing
-}
-
 // thresholds is, for each minute of the run, the fewest issues in flight at which holds answers true
 // of the minute modelled whole at that count, as a search tree (minuteThresholds). The modelled
 // tokens do not fall as the count rises, and holds does not turn false as they rise, so each
 // threshold is found by bisection. A minute that holds at no count up to minuteThreshold has none.
-func (x *ModelReader) thresholds(holds func(signals.Minute, bool) bool) *minuteThresholds {
+func (x *ModelReader) thresholds(holds func(signals.Minute) bool) *minuteThresholds {
 	at := func(i, issues int) bool {
 		minute := x.minutes[i]
 		if !minute.held {
 			return false
 		}
-		modelled, refuses := x.r.modelMinute(minute.line, minute.limit, minute.limited, minute.recorded, float64(issues)*time.Minute.Hours(), 0)
-		return holds(modelled, refuses)
+		modelled, _ := x.r.modelMinute(minute.line, minute.limit, minute.limited, minute.recorded, float64(issues)*time.Minute.Hours())
+		return holds(modelled)
 	}
 	counts := make([]int, len(x.minutes))
 	for i := range x.minutes {

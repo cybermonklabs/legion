@@ -50,8 +50,7 @@ const (
 const unreadMemoryFile = "signals/memory.jsonl"
 
 // The signals of R11 a window's signals map holds a record of, each by the name the map gives its
-// record under: the names package signals defines. The provider's refusals ride on the provider's
-// record, so the map names no record of them.
+// record under: the names package signals defines.
 const (
 	SignalIdle      = signals.Idle
 	SignalQueue     = signals.Queue

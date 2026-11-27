@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -573,12 +574,11 @@ func tokensWindow(t *testing.T) Window {
 // replay's issues in flight (spec R11), on tokensWindow replayed with 4 issues in flight from its
 // start. The minute from 01:00 held 5,000 tokens at 2 issues in flight in the record, 2,500 for
 // each, so the replay gives it 10,000: past the limit of 8,000, where the record's 5,000 was not, a
-// headroom of 1.25 at 01:01 against the record's 0.625, and one refused minute, which counts the
-// record's own refusals per refused minute, 1 where the record holds none, so the project's own
-// refusals of the hour to 01:31 are 1 in the replay and 0 in the record. The next minute's 1,000
-// at 2 issues becomes 2,000, a headroom of 0.25. The minute from 00:05, with no issue in flight in
-// the record, keeps its 7,000 recorded tokens, 0.875 at 00:06 in both. The provider's 3 refusals of
-// the minute from 01:30 stay as recorded in the replay.
+// headroom of 1.25 at 01:01 against the record's 0.625, and one refused minute, to which the model
+// gives the record's own refusals per refused minute, 1 where the record holds none, against none
+// in the record, as R11's daily test of the model reads them. The next minute's 1,000 at 2 issues
+// becomes 2,000, a headroom of 0.25. The minute from 00:05, with no issue in flight in the record,
+// keeps its 7,000 recorded tokens, 0.875 at 00:06 in both. No signal reads a refusal.
 func TestTheTokensModelScalesEachMinuteByTheReplaysWorkInFlight(t *testing.T) {
 	t.Parallel()
 	models := fittedModels(t, tokensWindow(t))
@@ -590,23 +590,26 @@ func TestTheTokensModelScalesEachMinuteByTheReplaysWorkInFlight(t *testing.T) {
 	assertSignal(t, "the replay's headroom at 01:02", replay.Headroom(minuteOf(62)), 0.25)
 	assertSignal(t, "the replay's headroom at 00:06", replay.Headroom(minuteOf(6)), 0.875)
 	assertSignal(t, "the record's headroom at 00:06", record.Headroom(minuteOf(6)), 0.875)
-	if got := len(replay.refused); got != 1 || !replay.refused[minuteOf(60).Unix()] {
-		t.Errorf("the replay's refused minutes are %v, want the one from 01:00", replay.refused)
-	}
-	if len(record.refused) != 0 {
-		t.Errorf("the record's refused minutes are %v, want none", record.refused)
-	}
-	for _, c := range []struct {
-		name          string
-		got           signals.RefusalCount
-		own, provider int64
-	}{
-		{"the replay's", replay.Refusals(minuteOf(91)), 1, 3},
-		{"the record's", record.Refusals(minuteOf(91)), 0, 3},
-	} {
-		if !c.got.Recorded || c.got.Own != c.own || c.got.Provider != c.provider {
-			t.Errorf("%s refusals at 01:31 are %+v, want %d of the project's own and %d of the provider's", c.name, c.got, c.own, c.provider)
+	refused := func(s *ModelledSignals) []time.Time {
+		var minutes []time.Time
+		for _, key := range slices.Sorted(maps.Keys(s.minutes)) {
+			if s.minutes[key].refused {
+				minutes = append(minutes, time.Unix(key, 0).UTC())
+			}
 		}
+		return minutes
+	}
+	if got := refused(replay); len(got) != 1 || !got[0].Equal(minuteOf(60)) {
+		t.Errorf("the replay's refused minutes are %v, want the one from 01:00", got)
+	}
+	if got := refused(record); len(got) != 0 {
+		t.Errorf("the record's refused minutes are %v, want none", got)
+	}
+	if got, want := replay.minutes[minuteOf(60).Unix()].own, int64(1); got != want {
+		t.Errorf("the replay gives the minute from 01:00 %d refusals of the project's own, want %d", got, want)
+	}
+	if got := record.minutes[minuteOf(60).Unix()].own; got != 0 {
+		t.Errorf("the record's model gives the minute from 01:00 %d refusals of the project's own, want none", got)
 	}
 }
 

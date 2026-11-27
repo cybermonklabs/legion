@@ -3,6 +3,7 @@ package signals
 import (
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,10 +60,11 @@ func TestASignalWithNoRecordOrNoLimitHoldsNoStart(t *testing.T) {
 	}
 }
 
-// Names is R11's signals in its order, a fresh list each time.
+// Names is R11's five signals in its order, a fresh list each time: the provider's signal is its
+// headroom alone, and its refusals are none.
 func TestNamesAreR11sSignalsInItsOrder(t *testing.T) {
 	t.Parallel()
-	want := []string{"idle", "queue", "provider", "refusals", "kills", "approvals"}
+	want := []string{"idle", "queue", "provider", "kills", "approvals"}
 	got := Names()
 	if !slices.Equal(got, want) {
 		t.Fatalf("Names() = %v, want %v", got, want)
@@ -70,6 +72,36 @@ func TestNamesAreR11sSignalsInItsOrder(t *testing.T) {
 	got[0] = "changed"
 	if again := Names(); !slices.Equal(again, want) {
 		t.Errorf("a change to a list Names answered reached the next answer: %v", again)
+	}
+}
+
+// The provider's refusals hold no start (spec R11, v52): a reading a caller names "refusals", far
+// above any limit the refusals ever had, holds nothing at any kind of pass that admits by signals,
+// under the cap as a ceiling or under the back-off, beside kills under their limit; the kills at
+// their limit still hold the start.
+func TestRecordedRefusalsHoldNoStart(t *testing.T) {
+	t.Parallel()
+	snapshot := func(kills float64) Snapshot {
+		return Snapshot{At: clock(10, 30), Readings: map[string]Reading{
+			"refusals": {Value: Value{Recorded: true, Value: 1_000_000}, Limit: new(1.0)},
+			Kills:      {Value: Value{Recorded: true, Value: kills}, Limit: new(2.0)},
+		}}
+	}
+	if held := snapshot(1).Holding(); len(held) != 0 {
+		t.Errorf("the signals that hold a start = %v, want none: the refusals are no signal, and the kills are under their limit", held)
+	}
+	for _, mode := range []Mode{Ceiling, Backoff} {
+		for _, kind := range []PassKind{PassEvent, PassDeadline} {
+			if got := Decide(mode, kind, snapshot(1), 1, 3); got != Starts {
+				t.Errorf("under %q at a pass of %q, a million refusals and kills under their limit decide %q, want %q", mode, kind, got, Starts)
+			}
+			if got := Decide(mode, kind, snapshot(2), 1, 3); got != HeldBySignal {
+				t.Errorf("under %q at a pass of %q, the kills at their limit decide %q, want %q", mode, kind, got, HeldBySignal)
+			}
+		}
+	}
+	if err := CheckLimit("refusals", 4); err == nil || !strings.Contains(err.Error(), "no signal a limit can name") {
+		t.Errorf("a limit of 4 on the refusals answered %v, want the refusal of a name that is no signal", err)
 	}
 }
 
@@ -270,52 +302,6 @@ func TestTheProviderHeadroomReadsTheMinuteBeforeOverItsLimit(t *testing.T) {
 	}
 }
 
-// The refusals count the minutes that ended in the hour before the moment, each by the limit that
-// gave it, wherever the record holds the minute before, and an old minute's refusals leave the hour
-// an hour after it ends.
-func TestTheRefusalsCountTheHourBeforeByTheLimitThatGaveThem(t *testing.T) {
-	t.Parallel()
-	refused := map[int64]Minute{
-		clock(9, 10).Unix(): {Own: 3, Provider: 2},
-		clock(10, 1).Unix(): {Own: 1},
-	}
-	read := Series(func(start time.Time) (Minute, bool) {
-		if start.Before(clock(9, 0)) || !start.Before(clock(11, 0)) {
-			return Minute{}, false
-		}
-		return refused[start.Unix()], true
-	})
-	for _, tc := range []struct {
-		at   time.Time
-		want RefusalCount
-	}{
-		{clock(9, 0), RefusalCount{}},
-		{clock(9, 11), RefusalCount{Recorded: true, Own: 3, Provider: 2}},
-		{clock(10, 2), RefusalCount{Recorded: true, Own: 4, Provider: 2}},
-		{clock(10, 11), RefusalCount{Recorded: true, Own: 1}},
-	} {
-		if got := RefusalsAt(read, tc.at); got != tc.want {
-			t.Errorf("the refusals at %s = %+v, want %+v", tc.at.Format("15:04"), got, tc.want)
-		}
-	}
-	if got := RefusalsAt(read, clock(10, 2)); got.Count() != 6 || got.Value() != (Value{Recorded: true, Value: 6}) {
-		t.Errorf("the count at 10:02 = %d as %+v, want 6 as a recorded 6", got.Count(), got.Value())
-	}
-	for _, tc := range []struct {
-		at    time.Time
-		limit float64
-		want  time.Time
-	}{
-		{clock(10, 2), 5, clock(10, 11)},
-		{clock(10, 11), 5, time.Time{}},
-	} {
-		got, due := RefusalsNext(read, tc.at, tc.limit, nil)
-		if due != !tc.want.IsZero() || !got.Equal(tc.want) {
-			t.Errorf("the next crossing of %v refusals from %s = %v, %t, want %v", tc.limit, tc.at.Format("15:04"), got, due, tc.want)
-		}
-	}
-}
-
 // An ask waits on its asked_of person, else its issue's assignee, else the project's default
 // assignee, and counts for the approvals where that person is the default assignee.
 func TestAnAskCountsWhereItWaitsOnTheDefaultAssignee(t *testing.T) {
@@ -338,7 +324,7 @@ func TestAnAskCountsWhereItWaitsOnTheDefaultAssignee(t *testing.T) {
 	}
 }
 
-// The back-off folds each setback at 90% in integers, rounded down and at least 1, and the
+// The back-off folds each setback, a kill, at 90% in integers, rounded down and at least 1, and the
 // allowance rises by 1 for each whole quiet hour since the last, up to the ceiling.
 func TestTheBackoffAllowanceFoldsEachSetbackAndRisesOnQuietHours(t *testing.T) {
 	t.Parallel()
@@ -351,9 +337,9 @@ func TestTheBackoffAllowanceFoldsEachSetbackAndRisesOnQuietHours(t *testing.T) {
 		want     int
 	}{
 		{"no setback: the ceiling", 3, nil, clock(10, 0), 3},
-		{"allowance 3 and a refusal gives 2", 3, []Setback{setback(10, 0, 1)}, clock(10, 0), 2},
+		{"allowance 3 and a kill gives 2", 3, []Setback{setback(10, 0, 1)}, clock(10, 0), 2},
 		{"allowance 2 and another gives 1", 3, []Setback{setback(10, 0, 1), setback(10, 5, 1)}, clock(10, 5), 1},
-		{"allowance 1 and a kill stays 1", 3, []Setback{setback(10, 0, 2), setback(10, 1, 1)}, clock(10, 1), 1},
+		{"allowance 1 and a third kill stays 1", 3, []Setback{setback(10, 0, 2), setback(10, 1, 1)}, clock(10, 1), 1},
 		{"a count is that many setbacks at one moment", 3, []Setback{setback(10, 0, 2)}, clock(10, 0), 1},
 		{"90% rounded down: 10 gives 9", 10, []Setback{setback(10, 0, 1)}, clock(10, 0), 9},
 		{"90% rounded down: 9 gives 8", 10, []Setback{setback(10, 0, 2)}, clock(10, 0), 8},
@@ -406,7 +392,7 @@ func TestTheDecisionForAnEntryBelowP0ByModeAndPassKind(t *testing.T) {
 		s.Setbacks = setbacks
 		return s
 	}
-	refusal := Setback{At: clock(10, 0), Count: 1}
+	kill := Setback{At: clock(10, 0), Count: 1}
 	for _, tc := range []struct {
 		name   string
 		mode   Mode
@@ -429,8 +415,8 @@ func TestTheDecisionForAnEntryBelowP0ByModeAndPassKind(t *testing.T) {
 		{"a signal with no limit", Ceiling, PassEvent, unlimited, 2, Starts},
 		{"a limit of zero on a recorded signal", Ceiling, PassEvent, zero, 0, HeldBySignal},
 		{"a snapshot with no reading", Ceiling, PassEvent, Snapshot{}, 2, Starts},
-		{"back-off after a refusal, the holders at the allowance of 2", Backoff, PassEvent, backed(under, refusal), 2, HeldByCap},
-		{"back-off after a refusal, one holder below the allowance", Backoff, PassEvent, backed(under, refusal), 1, Starts},
+		{"back-off after a kill, the holders at the allowance of 2", Backoff, PassEvent, backed(under, kill), 2, HeldByCap},
+		{"back-off after a kill, one holder below the allowance", Backoff, PassEvent, backed(under, kill), 1, Starts},
 		{"back-off a quiet hour later, the allowance back at 3", Backoff, PassDeadline, backed(under, Setback{At: clock(9, 30), Count: 1}), 2, Starts},
 		{"back-off with a signal over its limit", Backoff, PassEvent, binding, 0, HeldBySignal},
 		{"back-off at a tick", Backoff, PassTick, under, 0, HeldByTick},
