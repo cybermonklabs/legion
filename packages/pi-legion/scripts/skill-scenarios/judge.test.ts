@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { answerTurn, judgeRun } from "./judge";
 import { FAULT_ROWS } from "./judge-prompts";
 import { sharedRuns } from "./score";
@@ -696,19 +697,35 @@ test("answer refuses a label the ask does not offer, and writes an empty file wh
   expect(readFileSync(path.join(dir, "answers-3.jsonl"), "utf8")).toBe("");
 });
 
-// fetch-spec-sources.ts writes `>` lines for an anchored comment's quote alone, at the start of the
-// comment's text, and marks that comment's header `anchored`. Any other `>` line, such as a block
-// quote in a message or one an unanchored comment starts with, is the person's words.
-test("each prompt that reads messages.md says only an anchored comment's leading `>` lines quote the spec", async () => {
+// fetch-spec-sources.ts heads each entry of messages.md with a line ENTRY_HEADER reads: a message,
+// a comment, or a comment anchored to the spec, whose quote follows it as `>` lines (its own test
+// holds the file). Each prompt whose judge reads messages.md names the file and each of those three
+// headers, each in a form ENTRY_HEADER reads, and no other. A prompt writes each header as a code
+// span, so the headers are the spans that open with `<!-- ` and close with ` -->`, and every
+// `<!-- ` of the prompt opens one of them. What a prompt
+// tells the judge to do with them is its instructions: the runner here is a stand-in, so no test of
+// this file holds them.
+test("each prompt that reads messages.md names the file and its three entry headers, as ENTRY_HEADER reads them", async () => {
   const asked: Seen[] = [];
   await answerTurn(runDir("spec-writing-head-5"), 1, { runner: fakeRunner(asked) });
-  const prompts = [...asked, only("questions"), only("preamble")].map((judge) => judge.prompt);
-  expect(prompts).toHaveLength(4);
-  for (const prompt of prompts) {
-    expect(prompt).toContain(
-      "The `>` lines directly after a `<!-- comment <time> anchored -->` line quote the spec that the comment is about. They are not the person's words. Every other line is the person's words."
-    );
-    expect(prompt).not.toContain("A line that starts with `>` quotes the spec");
-    expect(prompt).not.toContain("directly after a `<!-- comment <time> -->` line");
+  const readers = [...asked, ...seen].filter((judge) => judge.files.includes("messages.md"));
+  expect(readers.map((judge) => path.basename(judge.dir)).sort()).toEqual([
+    "answer-1-1",
+    "answer-1-2",
+    "preamble",
+    "questions",
+  ]);
+  for (const judge of readers) {
+    expect(judge.prompt).toContain("messages.md");
+    const parts = judge.prompt.split("`");
+    const spans = parts.filter((part) => part.startsWith("<!-- ") && part.endsWith(" -->"));
+    // Every header the prompt names is such a span: one written as plain text or in a fenced
+    // block is counted here and fails, since it is no span the headers below are read from.
+    expect(judge.prompt.split("<!-- ").length - 1).toBe(spans.length);
+    const headers = spans.map((span) => {
+      const header = ENTRY_HEADER.exec(span);
+      return header === null ? span : `${header[1]}${header[3] ?? ""}`;
+    });
+    expect([...new Set(headers)].sort()).toEqual(["comment", "comment anchored", "message"]);
   }
 });

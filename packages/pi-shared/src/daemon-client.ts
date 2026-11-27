@@ -313,8 +313,9 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
-   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason in the sentence,
-   * and a plan of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
+   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason it names in the
+   * sentence (the first reasons of each kind of cause and a count of the rest of that kind), and a plan
+   * of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;

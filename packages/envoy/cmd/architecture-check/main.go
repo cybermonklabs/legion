@@ -101,7 +101,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	set, err := notes.ReadSet(os.DirFS(dir), dir)
+	set, err := notes.ReadSet(os.DirFS(dir), dir, notes.IsNote)
 	for _, entry := range set.Rejected {
 		runnerlog.Say(stderr, prefix, "warning: %s: not a note (%s); the importer passes over it", entry.Path, entry.Kind)
 	}

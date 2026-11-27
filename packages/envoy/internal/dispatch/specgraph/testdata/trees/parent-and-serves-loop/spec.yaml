@@ -1,0 +1,26 @@
+---
+type: requirement
+id: a-claim-survives-a-restart
+kind: behavior
+serves:
+  - legion-keeps-each-claim
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.
+---
+type: requirement
+id: legion-keeps-each-claim
+kind: behavior
+parent: a-claim-survives-a-restart
+text:
+  - Legion keeps the claim of each issue in Dispatch.
+---
+type: check
+id: a-claim-is-in-dispatch
+serves: legion-keeps-each-claim
+subject: code
+procedure: agent
+claim: Dispatch holds the claim of an issue that Legion claims.
+procedure_text:
+  - An agent claims one issue and reads the issue in Dispatch.
+failing_example:
+  - A daemon that keeps its claims in memory only.
