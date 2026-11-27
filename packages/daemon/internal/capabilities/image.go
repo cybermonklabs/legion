@@ -635,7 +635,15 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	killed := procgroup.Configure(cmd)
-	err := cmd.Run()
+	var err error
+	if procgroup.ControlLateWait() { // CONTROL ONLY (r63 latewait): 1.5 s between the start and the Wait
+		if err = cmd.Start(); err == nil {
+			time.Sleep(1500 * time.Millisecond)
+			err = cmd.Wait()
+		}
+	} else {
+		err = cmd.Run()
+	}
 	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
