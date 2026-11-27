@@ -17,6 +17,7 @@ import {
   checkResultRecordedBody,
   commentBody,
   coverageBody,
+  deployBody,
   handoffBody,
   ISSUE,
   issueBody,
@@ -142,6 +143,10 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       return response({ kind: "agent", owner: "person@example.com", session: SESSION });
     case "GET /api/v1/agents":
       return response([]);
+    case "POST /api/v1/deploys":
+      return response({ deploy: deployBody() }, 201);
+    case "GET /api/v1/deploys":
+      return response({ repo: "acme/widgets", deploys: [deployBody()] });
     // The bounds the server's own `GET /api/v1/limits` answers (`api/limits.go`), fixed here so
     // the recorded lines are the server's numbers rather than this client's.
     case "GET /api/v1/limits":

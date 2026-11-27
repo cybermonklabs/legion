@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  A scored Job keeps each run after its pod: with the runner's `RT_STORE`, `rig.sh` stores each run
+  as it ends, its pack and then its row, and a restarted pod restores the runs whose row is stored
+  (`rig.sh restore-stored`), so each cell counts them and keeps its bound. `rig.sh check-stored`
+  checks a download of the store against the sha256 the Job's log names, and makes a run whose
+  object differs or is missing a rig error naming it.
+time: 2026-11-27T07:12:44Z
+custom:
+    Issue: pr5809

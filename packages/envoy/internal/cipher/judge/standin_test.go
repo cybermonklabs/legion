@@ -822,7 +822,7 @@ func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeReque
 	t.Helper()
 	return Options{
 		Policy:   testPolicy(t),
-		Dispatch: Dispatch{BaseURL: d.server.URL, Account: ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), HTTP: d.server.Client()},
+		Dispatch: Dispatch{BaseURL: d.server.URL, Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, "projected-token")), HTTP: d.server.Client()},
 		Model: Model{
 			ID: testModel,
 			Endpoint: agentloop.Endpoint{

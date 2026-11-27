@@ -217,9 +217,15 @@ type crashPublished struct {
 	Kept      bool   `json:"kept"`
 }
 
+// crashSender is the session every publish of the crash rig names as its sender.
+const crashSender = "ses_crash_sender"
+
+// publish publishes message to role's topic through the publish route from crashSender, a session
+// that holds no role here: a publish that names no session is refused, not kept, when no live
+// session holds the role (roleSend.noHolder), and the rows read a kept copy.
 func (rig *crashRig) publish(role, message string) crashPublished {
 	rig.t.Helper()
-	body, err := json.Marshal(roleMessage(role, "", message))
+	body, err := json.Marshal(roleMessage(role, crashSender, message))
 	if err != nil {
 		rig.t.Fatal(err)
 	}

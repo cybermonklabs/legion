@@ -4,8 +4,9 @@ package api
 // the caller's own plugin read? It holds the contract header a caller states, the reading of the
 // pod a caller that states none is in, the shape of every answer at every contract this daemon
 // serves, and the one writer each answer goes through. The table it reads is answers.go's, beside
-// it; server.go routes the requests and calls writeAnswer and writeAnswerFrom for every body it
-// answers, and reads lowestPluginContract for the number the state carries.
+// it. server.go routes the requests, and the handlers, in server.go and in the files beside it,
+// call writeAnswer and writeAnswerFrom for every body they answer. state_route.go reads
+// lowestPluginContract for the number the state carries.
 
 import (
 	"encoding/json"
@@ -247,6 +248,11 @@ func recordedContractAtOrBelow(n int) int {
 // reaches the caller of a pod as the state's do. A plain refusal, a claim.Refusal or a Failure,
 // carries no key of either contract and is the identity at every contract.
 //
+// The two registration rows take off `replaces`, the one key the replaces entry
+// (contract_20261125170509_replaces.go) added to a role's registration answer and to the
+// controller's, below that entry's number (entryNumber(replacesContract)). They follow strip too,
+// and placedByPod places the caller of a registration that carries the key by its pod.
+//
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in, the one row of the numbered entries' stand-ins (standIns). A
 // settings key no reader types is owed neither a stand-in nor a band, whatever a contract did to
@@ -256,8 +262,8 @@ func recordedContractAtOrBelow(n int) int {
 //
 // It reports what it took off the body beside the body itself. The state's row fills it on the
 // one application it makes, and every other row reports nothing, the record's, the release
-// records' and the refusal's included: the log holds a line for the state alone
-// (recordShaping), so those routes record nothing.
+// records', the refusal's and the two registrations' included: the log holds a line for the state
+// alone (recordShaping), so those routes record nothing.
 func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	var took tookOff
 	switch id {
@@ -273,6 +279,12 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
 		return shapeIssue(issue, restore, strip, nil), took
+	case AnswerObservedState:
+		observed, isObserved := body.(State)
+		if !isObserved {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		return observedFor(observed, restore, strip), took
 	case AnswerReleaseRecords:
 		records, isRecords := body.(ReleaseRecordsResponse)
 		if !isRecords {
@@ -299,6 +311,24 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+	case AnswerRegister:
+		registration, isRegistration := body.(claim.RegisterResponse)
+		if !isRegistration {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < entryNumber(replacesContract) {
+			registration.Replaces = ""
+		}
+		return registration, took
+	case AnswerRegisterController:
+		registration, isRegistration := body.(ControllerRegisterResponse)
+		if !isRegistration {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < entryNumber(replacesContract) {
+			registration.Replaces = ""
+		}
+		return registration, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
 		// contract describes a shape for them (writeUnparsedAnswer).
@@ -324,8 +354,10 @@ func identityAnswer(id AnswerID) bool { return registry().identityAnswers[id] }
 // stateMachineContract, AnswerProjectPause and AnswerProjectResume arrived whole at
 // pauseContract, AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerIntakeReplay and
 // AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records any of
-// the six at all.
-var frozenIdentityAnswers = []AnswerID{AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
+// the six at all. The two registration answers, a role's and the controller's, were identity
+// answers of the numbered entries too, until the replaces entry added `replaces` to both: they
+// have rows of their own in shapeAnswer now.
+var frozenIdentityAnswers = []AnswerID{AnswerHealth, AnswerNoContent,
 	AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 	AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
 	AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard}
@@ -483,6 +515,24 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 		}
 	}
 	return issue
+}
+
+// observedFor is the observed view's row of shapeAnswer (AnswerObservedState): the observed view
+// of state, the part of a whole state the observed read answers (StateSource.ObservedState), as a
+// caller at restore and strip reads it, whose wire shape is the contract's
+// LegionObservedStateResponse (packages/contracts/src/legion-api.ts). The state is shaped by the
+// very bands and value strips stateFor applies to the whole state and then read as the observed
+// view (observedOf), so at every contract each member of the view is the whole state's member at
+// that contract, and a band a later contract adds to a member the view carries reaches the view
+// with no line here. The whole state's mark (ContractView) is no member of the view and is left
+// out with the rest of the whole state's keys.
+//
+// A caller at this daemon's own contract takes no band and no value strip, and stateFor copies no
+// issue map for it. That is every read Dispatch makes, since it states no contract and asks from
+// no pod. The shaping records nothing in the log, where recordShaping writes the whole state's
+// lines alone.
+func observedFor(state State, restore, strip int) ObservedState {
+	return observedOf(stateFor(state, restore, strip, nil))
 }
 
 // narrowedTheState is the message of the line the daemon writes for each band it serves the
@@ -1076,8 +1126,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with its own change's number, and answers.go's SupportedContracts names the constant rather
-// than its number for that reason.
+// with dispatch://INFRA-4401's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const repositoriesLiveContract = 202
 
 // cachesSourceContract is the daemon contract dispatch://INFRA-4036 landed under (version.go's
@@ -1357,6 +1407,21 @@ func withoutAssignmentPlans(issue Issue) (Issue, bool) {
 		issue.Assignments[i].Plan = ""
 	}
 	return issue, true
+}
+
+// withoutRepositoryCorrection is the issue with no `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added to
+// the state; nothing else of that contract is a key of this route. `repo` is left as it is: it
+// names the repository the issue works, which every contract since 31 carries. Each pair is
+// written from one value of the record, a correction (record.Issue.RepoCorrection) or a change
+// still to be made (record.Issue.RepoChange), and only where there is one, so the band reports a
+// move only for an issue that carries one of the four.
+func withoutRepositoryCorrection(issue Issue) (Issue, bool) {
+	moved := issue.RepoBefore != "" || issue.RepoCorrectedAt != nil ||
+		issue.RepoChangePending != "" || issue.RepoChangeReason != ""
+	issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+	issue.RepoChangePending, issue.RepoChangeReason = "", ""
+	return issue, moved
 }
 
 // withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or
@@ -2015,6 +2080,21 @@ func withoutPause(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutStateSeq is state with no `daemon.stateSeq`, no `daemon.stateId` and no
+// `daemon.stateRun`, the three keys stateSeqContract's entry added to this route; nothing else of
+// that entry is a key of the state. The sequence is left off rather than zeroed, because the
+// strict reader before the entry's number refuses it when it is 0 as surely as when it names a
+// sequence, and a 0 would tell a reader of this contract that the project has no state event.
+// The daemon's own source sets the sequence on every body it answers, 0 included, so the band
+// reports a move for every such body; a state built without any of the three carries nothing to
+// strip. The daemon block is a value of the state's own, so the state the source answered is left
+// as it was.
+func withoutStateSeq(state State) (State, bool) {
+	moved := state.Daemon.StateSeq != nil || state.Daemon.StateID != "" || state.Daemon.StateRun != ""
+	state.Daemon.StateSeq, state.Daemon.StateID, state.Daemon.StateRun = nil, "", ""
+	return state, moved
+}
+
 // withoutDispatchCredential is state with no `dispatchCredential`, the one key
 // dispatchCredentialContract added to the state; nothing else of that contract is a key of an
 // answer a plugin parses, since the settings block's `dispatch_token_broker` is a key no reader
@@ -2209,6 +2289,14 @@ func stripTurnRecord(view ClaimView) ClaimView {
 // a body no plugin reads (writeUnparsedAnswer).
 const answerUnparsed AnswerID = "unparsed"
 
+// AnswerObservedState names the observed view of the state route, the body of
+// `GET /legion/v1/state?view=observed` (ObservedState), which Dispatch reads. It is no row of
+// Answers, which is the plugin's table alone: no plugin parses the view, and pi-shared's census of
+// that table holds every row to a parse site of the plugin's client. It is shaped all the same,
+// unlike answerUnparsed (observedFor). The route writes it the State that the observed read
+// answers (StateSource.ObservedState), and observedFor shapes that State to the view.
+const AnswerObservedState AnswerID = "observed-state"
+
 // answerWritten is told the pattern of the route and the id of the answer of every body this
 // package writes (writeAnswerFrom). It is nil in a daemon and set by one test of this package,
 // which holds each pair to the table: an answer's Routes say which doors write it, and a door
@@ -2236,14 +2324,17 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 }
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
-// by the claims of its pod: true for the release records and for a refusal whose body is a
-// PauseFailure or a PlanRefusal, and false for every other answer. Those answers' shapes moved at
-// pauseContract and at OwnerPlanContract, and their writers answer from no snapshot of their own,
-// so writeAnswer reads the claims for them (placingClaims). Every other answer writeAnswer writes
-// is the identity at every contract, and so is a plain refusal (a claim.Refusal or a Failure), so
-// a read of the claims for one of them would decide nothing. A serving-down added to one of them
-// reaches the caller of a pod only once this answers true for it. The state and the record are no
-// question for it: their routes hand in their own snapshot's claims (writeAnswerFrom).
+// by the claims of its pod: true for the release records, for a refusal whose body is a
+// PauseFailure or a PlanRefusal, and for a registration, a role's or the controller's, that
+// carries `replaces`, and false for every other answer. Those answers' shapes moved at
+// pauseContract, at OwnerPlanContract and at the replaces entry, and their writers answer from no
+// snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
+// that replaces no session is the same body at every contract, so it reads none. Every other
+// answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
+// claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing. A
+// serving-down added to one of them reaches the caller of a pod only once this answers true for
+// it. The state and the record are no question for it: their routes hand in their own snapshot's
+// claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
 	case AnswerReleaseRecords:
@@ -2255,6 +2346,12 @@ func placedByPod(id AnswerID, body any) bool {
 		default:
 			return false
 		}
+	case AnswerRegister:
+		registration, isRegistration := body.(claim.RegisterResponse)
+		return isRegistration && registration.Replaces != ""
+	case AnswerRegisterController:
+		registration, isRegistration := body.(ControllerRegisterResponse)
+		return isRegistration && registration.Replaces != ""
 	default:
 		return false
 	}

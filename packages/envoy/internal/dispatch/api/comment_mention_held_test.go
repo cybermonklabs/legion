@@ -59,6 +59,7 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // ticks once an hour here (withMentionClaimRefresh), so it writes nothing in a window, and the
 // held gauges are registered again on that sender.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	database := storetest.Open(t)

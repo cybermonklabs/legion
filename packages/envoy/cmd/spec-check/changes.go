@@ -45,7 +45,7 @@ func runChanges(args []string, stdout, stderr io.Writer) int {
 		say(stdout, "no statement changed")
 	}
 	for _, c := range changes {
-		say(stdout, "%s: %s", c.ID, strings.Join(c.What, ", "))
+		say(stdout, "%s: %s", specgraph.Cut(c.ID), strings.Join(c.What, ", "))
 	}
 	return 0
 }

@@ -135,13 +135,14 @@ const (
 // step here and does not restate it:
 //
 //  1. The files do not hold C's current approved text: unknown, not_built. That text names no
-//     failing example, a text with no letter and no digit by the rule that Validate reads it with
-//     (hasWord): unknown, no_failing_example, whatever C's results (R9: "No setting makes the
-//     failing example optional"; "a check whose current text has no failing example that failed
-//     when it should" reads unknown). Validate refuses such a text in the files, and the pilot
-//     builds the approved spec from the store, with no reader. A problem that Validate finds in
-//     the files and that refuses C (refusals): unknown, refused, Detail its rule, since the
-//     derivation gives no clean state for a tree that the rules refuse.
+//     failing example, a text with no letter and no digit (hasWord): unknown, no_failing_example,
+//     whatever C's results (R9: "No setting makes the failing example optional"; "a check whose
+//     current text has no failing example that failed when it should" reads unknown). The tree
+//     rules refuse such a text in the files, the schema an empty one and Validate one of no letter
+//     and no digit (missing), so the derivation and tree never read one text two ways; and the
+//     pilot builds the approved spec from the store, with no reader. A problem that the schema or
+//     Validate finds in the files and that refuses C (refusals): unknown, refused, Detail its rule,
+//     since the derivation gives no clean state for a tree that the rules refuse.
 //  2. CI refused C at S.Commit (R48: "At that commit, such a check reads unknown, and no earlier
 //     result of it counts"): unknown, uncited, Detail the rule, whatever else holds there: C's
 //     results at S.Commit before or after the refusal, a result carried from another commit, or
@@ -181,22 +182,23 @@ const (
 //     Input.check refuses one that names none.
 //     For a program check of production or the graph, only a run whose test is the test at
 //     S.Commit: its TestCommit is S.Commit, or C's tie is known at TestCommit and at S.Commit and no
-//     path that changed between them is covered by the tie at either commit (carries; R18: "At each
-//     commit, Dispatch derives four ties"; R7: "The procedure is the text of the check and the code
-//     that runs it, so a change to either ends the standing of earlier results"); Input.check
-//     refuses a result of such a check that names no TestCommit, as it refuses one that names no
-//     subject of its check's kind. A run of C's job counts at S at each commit where a run of C
-//     would count at S, S.Commit among them, whether or not that commit holds a result of C: it is
-//     the newest answer of its commit (R9: "When a check has no result that counts after a run of
-//     its job ends, it reads unknown, and Dispatch reports a fault of CI"; R7: "silence is not a
-//     pass"), unlike a refusal of step 2. No run counts: unknown, ci_fault when a run of C's job
-//     that counts at S ended (R9), else subject_moved when C has a run, else no_result, since a run
-//     of the job that has not ended is no fault of CI. A code check, or a program check of
-//     production or the graph, with a run of its job that counts at S in a leg with no run that
-//     counts: unknown, ci_fault, Detail the first such leg by name whose run ended (R7: "silence is
-//     not a pass"; R12: "Each leg of a matrix reports its own result, and no leg replaces the
-//     result of another"), else unknown, no_result, Detail the first such leg by name, since a leg
-//     whose run has not ended is no silent leg and no pass (legWithNoResult).
+//     path that changed between them reaches the tie at either commit, which covers it or holds a
+//     path under it (carries; R18: "At each commit, Dispatch derives four ties"; R7: "The procedure
+//     is the text of the check and the code that runs it, so a change to either ends the standing
+//     of earlier results"); Input.check refuses a result of such a check that names no TestCommit,
+//     as it refuses one that names no subject of its check's kind. A run of C's job counts at S at
+//     each commit where a run of C would count at S, S.Commit among them, whether or not that
+//     commit holds a result of C: it is the newest answer of its commit (R9: "When a check has no
+//     result that counts after a run of its job ends, it reads unknown, and Dispatch reports a
+//     fault of CI"; R7: "silence is not a pass"), unlike a refusal of step 2. No run counts:
+//     unknown, ci_fault when a run of C's job that counts at S ended (R9), else subject_moved when
+//     C has a run, else no_result, since a run of the job that has not ended is no fault of CI. A
+//     code check, or a program check of production or the graph, with a run of its job that counts
+//     at S in a leg with no run that counts: unknown, ci_fault, Detail the first such leg by name
+//     whose run ended (R7: "silence is not a pass"; R12: "Each leg of a matrix reports its own
+//     result, and no leg replaces the result of another"), else unknown, no_result, Detail the
+//     first such leg by name, since a leg whose run has not ended is no silent leg and no pass
+//     (legWithNoResult).
 //  5. For a code check, at S.Commit, and for a graph check, at S.GraphTx (R13: a query "reads the
 //     graph at one transaction"): a pass and a failure that count, or a pass recorded after a
 //     failure that counts: unknown, disagree (R7: "A pass and a failure on one such subject and one
@@ -213,25 +215,26 @@ const (
 //     more (FaultPaths), each a source file and no file of a test (isFaultPath) and each covered by
 //     C's tie at PlantedOn where that tie is known, and that counts at S from PlantedOn: PlantedOn is
 //     S.Commit, or C's tie is known at PlantedOn and at S.Commit and no path that changed between
-//     them is covered by the tie at either commit (carries; the rule that replaces The Spec's R8: "A
-//     failing example that a check's test caught (The Spec R9) counts at another commit only while
-//     no file that the test reads changed"); never at a subject at its Commit, the commit that CI
-//     tested, whatever its PlantedOn names (R9: "For a check that a program runs, the failing
-//     example is a fault that a step plants in the code"; faultCommit, faultCountsAt). Beside
-//     those, each failing example of such a check whose record does not say where the step planted
-//     its fault (unplanted), or whose PlantedOn names no commit of the history (unplaced), which
-//     counts nowhere: when it is the newest, unknown, with the reason that names what the record
-//     lacks, no_planted_on, no_fault_paths for no path or only paths of only white space, which are
-//     no paths, blank_fault_path for such a path beside a real one, planted_on_tested_commit for a
-//     PlantedOn that is its own Commit, or planted_on_outside_history with the unknown commit as
-//     Detail, since a later answer of the step decides (R7: "the latest counts"), and such a record
-//     says nothing of the code where its fault was planted. For a query or an agent of the code, one
-//     that counts at S from its commit by the same rule; for a program check of production or the
-//     graph, one whose TestCommit counts at S.Commit by the same rule (R9: "its test, as it is
-//     now"); for a query or an agent of production or the graph, the newest. A failing example
-//     whose test missed its fault counts only at the commit that it counts from, never at another
-//     by the rule on files, which carries a caught one alone (faultCountsAt); where it counts, as
-//     the newest it keeps C from true (failing_example_missed).
+//     them reaches the tie at either commit, which covers it or holds a path under it (carries; the
+//     rule that replaces The Spec's R8: "A failing example that a check's test caught (The Spec R9)
+//     counts at another commit only while no file that the test reads changed"); never at a subject
+//     at its Commit, the commit that CI tested, whatever its PlantedOn names (R9: "For a check that
+//     a program runs, the failing example is a fault that a step plants in the code"; faultCommit,
+//     faultCountsAt). Beside those, each failing example of such a check whose record does not say
+//     where the step planted its fault (unplanted), or whose PlantedOn names no commit of the
+//     history (unplaced), which counts nowhere: when it is the newest, unknown, with the reason
+//     that names what the record lacks, no_planted_on, no_fault_paths for no path or only paths of
+//     only white space, which are no paths, blank_fault_path for such a path beside a real one,
+//     planted_on_tested_commit for a PlantedOn that is its own Commit, or
+//     planted_on_outside_history with the unknown commit as Detail, since a later answer of the
+//     step decides (R7: "the latest counts"), and such a record says nothing of the code where its
+//     fault was planted. For a query or an agent of the code, one that counts at S from its commit
+//     by the same rule; for a program check of production or the graph, one whose TestCommit counts
+//     at S.Commit by the same rule (R9: "its test, as it is now"); for a query or an agent of
+//     production or the graph, the newest. A failing example whose test missed its fault counts
+//     only at the commit that it counts from, never at another by the rule on files, which carries
+//     a caught one alone (faultCountsAt); where it counts, as the newest it keeps C from true
+//     (failing_example_missed).
 //     None: unknown, no_failing_example; it did not fail: unknown, failing_example_missed; for a
 //     program check, its record does not show that an agent that did not write the test wrote the
 //     fault (R9): it names no author of the fault, no author of the test, or the author of the
@@ -263,7 +266,7 @@ func deriveChecks(in Input) (*checkJudge, []CheckState, error) {
 func newCheckJudge(in Input) (*checkJudge, error) {
 	// Current leaves out a node that the approved spec removed, and Input.check refuses each other
 	// node that it would leave out: one under another key than its id, one with no version, and one
-	// whose block is not its one block.
+	// whose document is not its one document.
 	current, _ := in.Approved.Current()
 	if err := in.check(current); err != nil {
 		return nil, err
@@ -312,17 +315,18 @@ type checkJudge struct {
 	historyErr error                   // the first error of History.Changed; states then gives no state
 }
 
-// refusals is the first rule, in Validate's order, that refuses each check and statement of files
-// (the derivation gives no clean state for a tree that the rules refuse, since the pilot calls it
-// with no reader). A problem that names a check or a statement refuses that node. Any other
-// problem, of a component, an interface, a term or no node, refuses each check and statement of
-// files: a file is no relation of The Spec, so the split of the tree into files changes no state.
-// Validate runs with no Options, as the scenario reader runs it: the files may still hold a node
-// that the approved spec removed (Compare). Each problem is read once, by sets of the ids, and none
-// after each check and statement is refused, so the time grows with the tree and not with its
-// square.
+// refusals is the first rule, in the order of SortProblems, that refuses each check and statement
+// of files (the derivation gives no clean state for a tree that the rules refuse, since the pilot
+// calls it with no reader): the schema's rules over the data of each node (schemaProblems), then
+// Validate's. A problem that names a check or a statement refuses that node. Any other problem, of
+// a component, an interface, a term or no node, refuses each check and statement of files: a file
+// is no relation of The Spec, so the split of the tree into files changes no state. Validate runs
+// with no Options, as the scenario reader runs it: the files may still hold a node that the
+// approved spec removed (Compare). Each problem is read once, by sets of the ids, and none after
+// each check and statement is refused, so the time grows with the tree and not with its square.
 func refusals(files Tree) map[string]string {
-	problems := Validate(files, Options{})
+	problems := append(schemaProblems(files), Validate(files, Options{})...)
+	SortProblems(problems)
 	if len(problems) == 0 {
 		return nil
 	}
@@ -703,11 +707,11 @@ func isFaultPath(path string) bool {
 // subject's commit (steps 4 and 7; the rule that replaces The Spec's R8, which keeps a rule on files
 // for a caught failing example alone and never makes a pass of the code count at another commit): the
 // two are one commit, or the check's tie is known at both commits and no path that differs between
-// their trees is covered by the tie at either commit, since a tie is a fact of a commit (R18: "At
-// each commit, Dispatch derives four ties"), and a file that the test read at one commit and that
-// the other deleted or added changed the code that the check runs. A History that gives an error is
-// kept in historyErr, and the derivation then gives no state, so the false that carries answers
-// with it is read by no state.
+// their trees reaches the tie at either commit, which covers it or holds a path under it
+// (changeBetween), since a tie is a fact of a commit (R18: "At each commit, Dispatch derives four
+// ties"), and a file that the test read at one commit and that the other deleted or added changed
+// the code that the check runs. A History that gives an error is kept in historyErr, and the
+// derivation then gives no state, so the false that carries answers with it is read by no state.
 func (j *checkJudge) carries(check, commit string) bool {
 	switch {
 	case commit == "":
@@ -728,7 +732,7 @@ func (j *checkJudge) carries(check, commit string) bool {
 		}
 		j.changed[commit] = changed
 	}
-	return changed.ok && !slices.ContainsFunc(changed.paths, func(path string) bool { return from.Covers(path) || to.Covers(path) })
+	return changeBetween(func() ([]string, bool) { return changed.paths, changed.ok }, to, from).kind == noChange
 }
 
 // withoutRefused takes out of runs and faults, the candidates of c, each result of a commit where

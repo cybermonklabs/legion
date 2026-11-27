@@ -1,0 +1,15 @@
+{
+  "answers": [
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "daemon.stateId",
+        "daemon.stateRun",
+        "daemon.stateSeq"
+      ]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

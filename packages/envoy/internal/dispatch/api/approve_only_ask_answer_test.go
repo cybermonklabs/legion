@@ -17,6 +17,7 @@ import (
 // token's answer of an approval ask of the same issue is recorded, which is the control that the
 // token and the route work.
 func TestAnApproveOnlyTokenAnswersAnApprovalAskAndNoOtherAsk(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const approveOnly = "an-approve-only-token-answering-asks"

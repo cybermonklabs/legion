@@ -1551,12 +1551,13 @@ func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 // malformed entry of the list — one without exactly one "=", an account that is no ServiceAccount
 // subject (a google: one included), a namespace's default account on either side — and a pair
 // given twice are refused naming the setting and the entry, and the list is refused with no
-// cluster issuer. The audience is refused naming it and the other setting when it equals the
-// broker's own audience, the token exchange's or the NATS auth service's, each set beside it, and
-// refused with no cluster issuer. A registrar with two pod accounts, a pod account with two
-// registrars and an account paired with itself load as exactly those pairs beside an audience of
-// its own, with no BROKER_SERVICE_LOGINS at all: a registrar the logins do not list is not
-// refused, since it can register nothing and the boot names it instead.
+// cluster issuer. The audience is refused naming it and the other setting when it equals an
+// audience the broker's own BROKER_K8S_OIDC_AUDIENCE lists, the first or a later one, the token
+// exchange's or the NATS auth service's, each set beside it, and refused with no cluster issuer.
+// A registrar with two pod accounts, a pod account with two registrars and an account paired
+// with itself load as exactly those pairs beside an audience of its own, with no
+// BROKER_SERVICE_LOGINS at all: a registrar the logins do not list is not refused, since it can
+// register nothing and the boot names it instead.
 func TestRegistrarSettings(t *testing.T) {
 	const (
 		daemonA = "system:serviceaccount:legion-system:legion-daemon-a"
@@ -1643,6 +1644,14 @@ func TestRegistrarSettings(t *testing.T) {
 			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_AUDIENCE"},
 		},
 		{
+			name: "the audience equal to the second listed audience",
+			env: withAudiences(map[string]string{
+				"BROKER_K8S_OIDC_AUDIENCE":         "agent-secrets example-pod-new",
+				"BROKER_POD_REGISTRATION_AUDIENCE": "example-pod-new",
+			}),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
 			name: "the audience equal to the token exchange's", env: withAudiences(audience("dispatch-exchange")),
 			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
 		},
@@ -1679,6 +1688,121 @@ func TestRegistrarSettings(t *testing.T) {
 			}
 			if !maps.Equal(cfg.PodRegistrars, row.registrars) || cfg.PodRegistrationAudience != row.audience {
 				t.Fatalf("Load read the pairs %v and the audience %q, want exactly %v and %q", cfg.PodRegistrars, cfg.PodRegistrationAudience, row.registrars, row.audience)
+			}
+		})
+	}
+}
+
+// TestThePodTokenAudienceSettingIsAList pins BROKER_K8S_OIDC_AUDIENCE as a list: one or more
+// audiences, separated by white space of any kind, read in the order given, one alone read as it
+// is today. With the issuer set, white space alone is refused naming the setting, and an
+// audience listed twice is refused naming the setting, the audience and the word "twice". With
+// neither setting the broker reads no issuer and no audience; the audience with no issuer is
+// refused naming the issuer. A listed audience equal to BROKER_EXCHANGE_K8S_AUDIENCE or
+// BROKER_NATS_K8S_AUDIENCE is refused naming both settings, the second listed one and one listed
+// alone alike. The exchange's, the registration route's and the NATS auth service's audiences,
+// each set and each different from every listed audience, load beside the list as one value each.
+func TestThePodTokenAudienceSettingIsAList(t *testing.T) {
+	user, account, curve, _ := natsSeeds(t)
+	// issuer is the cluster issuer withK8sIssuer sets, which pod's rows read.
+	issuer := withK8sIssuer()["BROKER_K8S_OIDC_ISSUER"]
+	// pod is withK8sIssuer with BROKER_K8S_OIDC_AUDIENCE as audiences, and set.
+	pod := func(audiences string, set map[string]string) map[string]string {
+		e := withK8sIssuer()
+		e["BROKER_K8S_OIDC_AUDIENCE"] = audiences
+		maps.Copy(e, set)
+		return e
+	}
+	// natsAudience is the NATS auth service on, as TestNATSCalloutSettings's full sets it, with
+	// its audience for the cluster's tokens.
+	natsAudience := map[string]string{
+		"BROKER_NATS_URLS":             "nats://hub-a:4222, nats://hub-b:4222",
+		"BROKER_NATS_SEED_FILE":        user,
+		"BROKER_NATS_ISSUER_SEED_FILE": account,
+		"BROKER_NATS_XKEY_SEED_FILE":   curve,
+		"BROKER_NATS_SERVICES":         "listener/dev-stack/*=system:serviceaccount:example-ns:example-listener",
+		"BROKER_NATS_K8S_AUDIENCE":     "example-envoy-nats",
+	}
+	everyOther := maps.Clone(natsAudience)
+	everyOther["BROKER_EXCHANGE_K8S_AUDIENCE"] = "example-exchange"
+	everyOther["BROKER_POD_REGISTRATION_AUDIENCE"] = "example-pod-registration"
+	withNeither := validEnv()
+	withoutIssuer := validEnv()
+	withoutIssuer["BROKER_K8S_OIDC_AUDIENCE"] = "example-pod-new example-pod-old"
+	for _, row := range []struct {
+		name string
+		env  map[string]string
+		// refused is every text the refusal must name; none for an environment that loads.
+		refused []string
+		// issuer and audiences are what an environment that loads reads for the pair, and
+		// exchange, registration and nats each other audience of the cluster's tokens.
+		issuer                       string
+		audiences                    []string
+		exchange, registration, nats string
+	}{
+		{
+			name: "C1 two audiences", env: pod("example-pod-new example-pod-old", nil),
+			issuer: issuer, audiences: []string{"example-pod-new", "example-pod-old"},
+		},
+		{
+			name: "C2 three audiences between spaces, a tab and a line feed", env: pod(" example-a\texample-b\nexample-c ", nil),
+			issuer: issuer, audiences: []string{"example-a", "example-b", "example-c"},
+		},
+		{
+			name: "C3 one audience", env: pod("example-pod-new", nil),
+			issuer: issuer, audiences: []string{"example-pod-new"},
+		},
+		{
+			name: "C4 white space alone", env: pod(" \t\n ", nil),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
+			name: "C5 an audience listed twice", env: pod("example-pod-new example-pod-new", nil),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", strconv.Quote("example-pod-new"), "twice"},
+		},
+		{name: "C6 neither setting", env: withNeither},
+		{
+			name: "C7 the audience with no issuer", env: withoutIssuer,
+			refused: []string{"BROKER_K8S_OIDC_ISSUER"},
+		},
+		{
+			name: "C8 the second listed audience equal to the exchange's", env: pod("example-pod-new example-exchange", map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "example-exchange"}),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name: "C9 one listed audience equal to the exchange's", env: pod("example-exchange", map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "example-exchange"}),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name: "C10 the second listed audience equal to the NATS auth service's", env: pod("example-pod-new example-envoy-nats", natsAudience),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_NATS_K8S_AUDIENCE"},
+		},
+		{
+			name: "C11 every other audience set and different from both listed", env: pod("example-pod-new example-pod-old", everyOther),
+			issuer: issuer, audiences: []string{"example-pod-new", "example-pod-old"},
+			exchange: "example-exchange", registration: "example-pod-registration", nats: "example-envoy-nats",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg, err := Load(env(row.env))
+			for _, name := range row.refused {
+				if err == nil || !strings.Contains(err.Error(), name) {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, strings.Join(row.refused, " and "))
+				}
+			}
+			if len(row.refused) > 0 {
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load = %v, want no refusal", err)
+			}
+			// reflect.DeepEqual tells a nil list from an empty one: with neither setting the
+			// broker holds no list at all.
+			if cfg.K8sOIDCIssuer != row.issuer || !reflect.DeepEqual(cfg.K8sOIDCAudiences, row.audiences) {
+				t.Fatalf("Load read the issuer %q and the audiences %#v, want exactly %q and %#v", cfg.K8sOIDCIssuer, cfg.K8sOIDCAudiences, row.issuer, row.audiences)
+			}
+			if cfg.ExchangeK8sAudience != row.exchange || cfg.PodRegistrationAudience != row.registration || cfg.NATS.K8sAudience != row.nats {
+				t.Fatalf("Load read the exchange audience %q, the registration audience %q and the NATS audience %q, want %q, %q and %q", cfg.ExchangeK8sAudience, cfg.PodRegistrationAudience, cfg.NATS.K8sAudience, row.exchange, row.registration, row.nats)
 			}
 		})
 	}
@@ -1885,6 +2009,90 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 	aws["BROKER_SECRETS_KMS_KEY_NAME"] = gcp()["BROKER_SECRETS_KMS_KEY_NAME"]
 	if _, err := Load(env(aws)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_SECRETS_KMS_KEY_NAME is not read with BROKER_SECRETS_STORE=aws-secrets-manager; set BROKER_SECRETS_KMS_KEY_ARN instead") {
 		t.Fatalf("Load(aws with the key name set) = %v, want a refusal naming both", err)
+	}
+}
+
+// TestSecondPrefixSetting pins BROKER_SECRETS_SECOND_PREFIX, the prefix a store move leaves or
+// reaches. Unset or empty, Load reads none, on either store, and the broker is the one it was. A
+// Secret Manager prefix beside gcp-secret-manager, in another project or the same one, is read as
+// it is. Load refuses to start, naming the setting and the rule it breaks: any value under
+// aws-secrets-manager, saying that an AWS source is an ARN a move always changes; a value
+// secrets.ValidGCPPrefix refuses; a value equal to BROKER_SECRETS_PREFIX; and a value that starts
+// with BROKER_SECRETS_PREFIX, or that BROKER_SECRETS_PREFIX starts with, since a secret under the
+// longer of two such prefixes is under both.
+//
+// The named reverts: drop the store check, and the aws-secrets-manager row starts; drop the nesting
+// check, and the two nested rows start; check only that the two differ, and the nested rows start
+// too.
+func TestSecondPrefixSetting(t *testing.T) {
+	const (
+		prefix  = "projects/000000000000/secrets/agent-secrets-"
+		keyName = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	)
+	gcp := func() map[string]string {
+		e := validEnv()
+		e["BROKER_SECRETS_STORE"] = secrets.StoreGCP
+		e["BROKER_SECRETS_PREFIX"] = prefix
+		delete(e, "BROKER_SECRETS_KMS_KEY_ARN")
+		e["BROKER_SECRETS_KMS_KEY_NAME"] = keyName
+		return e
+	}
+	with := func(e map[string]string, second string) map[string]string {
+		e["BROKER_SECRETS_SECOND_PREFIX"] = second
+		return e
+	}
+
+	for name, e := range map[string]map[string]string{
+		"gcp, unset":  gcp(),
+		"gcp, empty":  with(gcp(), ""),
+		"aws, unset":  validEnv(),
+		"aws, empty":  with(validEnv(), ""),
+		"gcp, absent": func() map[string]string { e := gcp(); delete(e, "BROKER_SECRETS_SECOND_PREFIX"); return e }(),
+	} {
+		cfg, err := Load(env(e))
+		if err != nil || cfg.SecretsSecondPrefix != "" {
+			t.Fatalf("Load(%s) = second prefix %q, %v; want none, and the broker it was", name, cfg.SecretsSecondPrefix, err)
+		}
+	}
+	for _, second := range []string{
+		"projects/111111111111/secrets/cipher-",
+		"projects/000000000000/secrets/cipher-",
+	} {
+		cfg, err := Load(env(with(gcp(), second)))
+		if err != nil || cfg.SecretsSecondPrefix != second || cfg.SecretsPrefix != prefix {
+			t.Fatalf("Load(gcp, second prefix %q) = second prefix %q, prefix %q, %v; want both read as given", second, cfg.SecretsSecondPrefix, cfg.SecretsPrefix, err)
+		}
+	}
+
+	for name, row := range map[string]struct {
+		env  map[string]string
+		says []string
+	}{
+		"under aws-secrets-manager": {with(validEnv(), "projects/111111111111/secrets/cipher-"),
+			[]string{"BROKER_SECRETS_STORE=gcp-secret-manager", "aws-secrets-manager", "an AWS Secrets Manager source is an ARN", "a move to another name always changes"}},
+		"equal to BROKER_SECRETS_PREFIX": {with(gcp(), prefix),
+			[]string{"is BROKER_SECRETS_PREFIX itself", prefix}},
+		"starting with BROKER_SECRETS_PREFIX": {with(gcp(), prefix+"old-"),
+			[]string{"BROKER_SECRETS_PREFIX", "one starts with the other", prefix + "old-"}},
+		"that BROKER_SECRETS_PREFIX starts with": {with(gcp(), "projects/000000000000/secrets/agent-"),
+			[]string{"BROKER_SECRETS_PREFIX", "one starts with the other", "projects/000000000000/secrets/agent-"}},
+		"that secrets.ValidGCPPrefix refuses": {with(gcp(), "projects/example-project/secrets/cipher-"),
+			[]string{"a Google Secret Manager prefix is projects/<project number>/secrets/", "projects/example-project/secrets/cipher-"}},
+		"with no trailing dash": {with(gcp(), "projects/111111111111/secrets/cipher"),
+			[]string{"a Google Secret Manager prefix is projects/<project number>/secrets/"}},
+	} {
+		cfg, err := Load(env(row.env))
+		if err == nil {
+			t.Fatalf("Load(a second prefix %s) accepted it as %q; want a refusal naming BROKER_SECRETS_SECOND_PREFIX", name, cfg.SecretsSecondPrefix)
+		}
+		if !strings.HasPrefix(err.Error(), "BROKER_SECRETS_SECOND_PREFIX") {
+			t.Fatalf("Load(a second prefix %s) = %v; want a refusal opening with BROKER_SECRETS_SECOND_PREFIX", name, err)
+		}
+		for _, said := range row.says {
+			if !strings.Contains(err.Error(), said) {
+				t.Fatalf("Load(a second prefix %s) = %v; want the refusal to say %q", name, err, said)
+			}
+		}
 	}
 }
 
@@ -2933,13 +3141,48 @@ func TestLoadRefusesThePlainSignInSecret(t *testing.T) {
 
 // TestLoadRefusesASignInIssuerThatIsNotHTTPS pins that the issuer, which a sign-in's code
 // exchange sends the client secret to, is an absolute https URL, with http allowed only to a
-// loopback host.
+// loopback host. The refusal names the setting and never the value.
 func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 	for _, bad := range []string{"http://accounts.example.com", "http://10.0.0.1:5556", "http://127.0.0.1.example.com", "accounts.example.com", "ftp://accounts.example.com", "https://"} {
 		e := validEnv()
 		e["BROKER_SIGNIN_ISSUER"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") || strings.Contains(err.Error(), signInSecret) {
-			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want a refusal naming it", bad, err)
+		_, err := Load(env(e))
+		if want := "BROKER_SIGNIN_ISSUER must be an absolute https URL, or http to a loopback host"; err == nil || err.Error() != want {
+			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want %q", bad, err, want)
+		}
+	}
+}
+
+// Every issuer setting the broker reads refuses a value holding a credential, naming the setting
+// alone (oidc.IssuerRefusal): a made-up user name and password, a made-up token holding a "/"
+// written as the user, its "@" past the host, and a made-up token in the query or the fragment.
+// No issuer identifier holds any of them, and each is printed in the broker's boot lines,
+// discovery errors and sign-in page.
+func TestLoadRefusesAnIssuerHoldingACredential(t *testing.T) {
+	const user, secret = "madeUpIssuerUser0123", "madeUpIssuerSecret0123"
+	userinfo := user + ":" + secret + "@"
+	pairs := map[string]string{
+		"BROKER_K8S_OIDC_ISSUER":        "BROKER_K8S_OIDC_AUDIENCE",
+		"BROKER_EXCHANGE_GITHUB_ISSUER": "BROKER_EXCHANGE_GITHUB_AUDIENCE",
+	}
+	for _, setting := range []string{"BROKER_SIGNIN_ISSUER", "BROKER_GOOGLE_OIDC_ISSUER", "BROKER_K8S_OIDC_ISSUER", "BROKER_EXCHANGE_GITHUB_ISSUER"} {
+		for shape, value := range map[string]string{
+			"userinfo":                "https://" + userinfo + "issuer.example",
+			"an @ past the host":      "https://" + user + "/" + secret + "@issuer.example",
+			"a token in the query":    "https://issuer.example/?token=" + secret,
+			"a token in the fragment": "https://issuer.example/#" + secret,
+		} {
+			t.Run(setting+"/"+shape, func(t *testing.T) {
+				e := validEnv()
+				e[setting] = value
+				if audience, paired := pairs[setting]; paired {
+					e[audience] = "agent-secrets"
+				}
+				_, err := Load(env(e))
+				if err == nil || !strings.HasPrefix(err.Error(), setting+" cannot be read: ") || strings.Contains(err.Error(), user[:10]) || strings.Contains(err.Error(), secret[:10]) {
+					t.Fatalf("Load = %v, want a refusal naming %s and no part of the credential", err, setting)
+				}
+			})
 		}
 	}
 }

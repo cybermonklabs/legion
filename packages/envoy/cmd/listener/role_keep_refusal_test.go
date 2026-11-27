@@ -24,6 +24,8 @@ import (
 // forward again however often it is sent. The lane keeps its copy for the role's next claim and
 // for the sweep.
 func TestAHandoverEndsAtAForwardTheGrantRefuses(t *testing.T) {
+	// Not parallel: it requires the handover (handOverKeptRole) to make its one refused forward
+	// and end inside roleKeepDrainRetryPause (1 s).
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-denied"
@@ -64,6 +66,8 @@ func TestAHandoverEndsAtAForwardTheGrantRefuses(t *testing.T) {
 // cursor to end it, and the grant refuses that write. A handover that walked again would resolve
 // the holder a second time, a second read of the session bucket.
 func TestAHandoverEndsAtAWalkTheGrantRefusesWhileItsHolderReadFailed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// NATS_NKEY_SEED in deniedGrantClient).
 	const (
 		role   = "kept-handover-denied-unresolved"
 		holder = "ses_kept_handover_denied_unresolved"

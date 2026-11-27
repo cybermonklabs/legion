@@ -41,6 +41,8 @@ var cutRewatchCaches = []string{
 // branch a rewatch replaced is pinned by the unit test of internal/kvwatch. What this test holds
 // is the whole cut path, every cache's replacement included, to no ERROR at all.
 func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
+	// Not parallel: it requires the listener's client to report the cut within silentCutBound
+	// (5 s) of a freeze it detects in two to three seconds (freezeUntilTheClientReportsTheCut).
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "cut-rewatch")
 	listener.waitHealthy(t)

@@ -188,7 +188,7 @@ published still gets it when it reconnects
 | Topic | What it is |
 | --- | --- |
 | `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
-| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. |
+| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. A publish through the API that names no session of yours is not kept: it is refused `404`, since nothing could tell you if the copy expired. A message published straight onto NATS that names no session is still kept, and dropped at the end of its hour with no word to anyone. |
 | `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |
 | `notifications.legion.<project>.controller` | A Legion project's controller. |
@@ -232,9 +232,24 @@ While a kept message has at least 20 minutes of its hour left and no live sessio
 role, the listener raises the role's wake report again every five minutes, so a released Legion
 role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
 publish is then refused `404` with the reason `unclaimed` or `holder_lapsed`, as it is when the
-keep itself fails. If the holder does not take the message's delivery mode, the refusal is
+keep itself fails. A publish that names no `source_session` is refused the same way, since the
+dead letter of an expired copy goes to that session and there is none: its `error` names the role
+and says that nothing was kept and why. Whether a live session holds the role is then read from
+the role bucket's and the session bucket's stream leaders, so a copy of either bucket that is
+behind refuses no message a live holder can take. If the holder does not take the message's delivery mode, the refusal is
 `403`; and if the stream has not stored the forward to a live holder within four seconds, it is
-`504` naming the holder, with the reason `delivery_failed`, and that message is not kept. A role
+`504` naming the holder, with the reason `delivery_failed`, and that message is not kept: send it
+again, and the listener reads the holder again. A forward stored so long after the listener read
+the role's holder that the holder may have lost the role meanwhile is answered by what the
+listener finds: `200` when the role's claim still names that holder, which reads the forward
+itself; `504` when the claim names another session or none and the listener withdrew the
+forward, so send it again; `200` when the role's next holder already has a copy on its way; and
+`503` with `code: "maybe_stored"` when the listener could not read the claim or make the
+withdrawal, where a retry may give the holder the message twice under two event ids. One case is
+still lost: a retry under the same key after a `504` that resolves the forward's first holder
+again meets the withdrawn forward as a duplicate and is answered `200`, and if the listener took
+the forward off that holder's subject while another session, or none, held the role, nobody
+receives the message. A later release of the listener closes that case. A role
 message published straight onto NATS, not through the API, is kept the same way when no live
 session holds the role, and also when the listener could not read the role's claim, in which
 case it is forwarded once a later read finds a `live` holder inside the message's hour, with no
@@ -251,13 +266,36 @@ holder is no longer live and nothing was kept. That exception is only a bus sign
 re-sends a refused publish except the Legion daemon's own outbox notice, whose row retries by
 itself.
 
+An event Dispatch routes to a role that no live session holds is kept on the role for one hour,
+as a role message is. When that hour ends with no session taking it, Dispatch keeps the event
+for the role again, up to three times in all; a session that holds the role by then is sent it
+instead. If the third keep also ends with no session taking it, Dispatch stops and appends a
+`role.undelivered` event to the event's own issue, document or project. That event names the
+event, the role and how many times it was kept, and it shows in that issue's history. It
+notifies no route, so it is never itself sent to the role. Dispatch also posts a message on the
+issue, or on the issue of the document the event is about: one message for each role in each
+hour, posted when that hour ends, naming every event the role did not take on that issue in the
+hour. Dispatch writes the message itself, so it is not sent to the role either.
+
 ### What a restored session gets
 
 A released Legion role gets the messages kept for it when it comes back. The release ends the
-role's process and leaves its claim standing. The session's record is gone at most about five
-minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
-the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
-the claim at its next pass. Either way it is kept and wakes the role. When the role comes
+role's process. A pi-envoy stop that finishes gives back each role claim the process holds, and
+then deletes the session's record. Once the claims are given back the role has no claim, so a
+message to it is kept as `unclaimed` at once. A stop that gives back nothing leaves the claim
+standing. claude-envoy's stop gives back nothing and only deletes the record, an older pi-envoy's
+stop gives back nothing, and so may a pi-envoy stop whose request to give the claims back is not
+answered in time, since the stop goes on without the answer. Such a stop still
+deletes the record when its request reaches the listener, and the holder then reads `gone`. A
+message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim
+reaper releases the claim, at its first pass after the claim's last renewal is older than the
+live window. When such a stop deletes nothing either, the record stays. The holder then reads
+`live` for the live window after its last heartbeat, and a message to the role is forwarded to
+it, not kept. Past the live window the holder reads `unresponsive`, and a message to the role is
+kept as `holder_lapsed`. The record reads `gone` at the gone horizon, or at its 5-minute age in a
+session bucket an older listener created, about when the live window ends. The role claim reaper
+releases the claim at its first pass after that, and a message to the role is kept as
+`unclaimed` from then. Each kept message wakes the role. When the role comes
 back, its session registers again or claims the role, and either one hands it each message kept
 for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
 kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists
@@ -282,6 +320,11 @@ keep, and marks each one delivered only when the session answers that it has it.
 its messages from a NATS subscription of its own, so a message published while the session was not
 running, was restarting or had lost its connection, or while its listener restarted, reaches the
 session once when it is back, up to 72 hours later.
+The one exception is a message so close to the NATS payload limit (1 MiB by default) that its
+delivery, the message with the listener's headers, is past that limit. The listener marks such a
+message delivered without sending it, logs a warning that names the session and the event, and
+goes on to the session's next message: the session does not receive that message, and it does not
+hold back the messages after it.
 A session registers no port of its own, and the listener opens no connection to a session: a
 registration naming a port above 0 is refused `400` naming the `port` field, and the answer's
 `port` is always 0.
@@ -413,9 +456,9 @@ session holds (`409` naming the session), and its hand-back of the role's topic 
 while the process holding the claim keeps the role through both. Such a hand-back does not take
 the lane topic out of the record either, because one interest record serves every process under
 one session id and that topic is the interest half of a claim that still stands, written there
-by the claim itself: `POST /v1/interests/unsubscribe`
-answers in `removed` the topics that actually left the record, which is not always the list the
-request named. The second process is granted
+by the claim itself: `POST /v1/interests/unsubscribe` answers in `removed` each topic the request
+named that the record no longer holds, one it never held included, which is not always the list
+the request named. The second process is granted
 the role once the first stops answering for the claim and the live window passes, and only while
 the listener can tell that the first process stopped, and not that the listener itself failed to
 renew the claim: the claim reads the same either way. So the listener refuses that one grant and
@@ -549,8 +592,8 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 
 | Setting | What it is |
 | --- | --- |
-| `ENVOY_MACHINE_ID` | Required. Names this listener; its durable consumer is `listener-<machine id>`. |
-| `NATS_URLS` | Required. Comma-separated NATS addresses, such as `nats://<nats-host>:4222`. |
+| `ENVOY_MACHINE_ID` | Required. Names this listener; its durable consumer is `listener-<machine id>`. A space in the id is a hyphen in the name, and a `.`, `*`, `>`, `/` or `\` is `%` and two hex digits, so `host.example.internal` names `listener-host%2Eexample%2Einternal`. The listener refuses to start with an id that holds `%`, since that id can name another machine's durable. |
+| `NATS_URLS` | Required. Comma-separated NATS addresses, such as `nats://<nats-host>:4222`. A URL after the first that carries a user name or password names its scheme (`nats://`, `tls://`, `ws://` or `wss://`), and a comma in a credential is written `%2C`. |
 | `NATS_NKEY_SEED_FILE` | The NATS user to connect as, as a file holding its seed. |
 | `ENVOY_ALLOW_REMOTE_NATS` | Set to `1` when NATS runs on another machine; otherwise the listener refuses it. |
 | `ENVOY_NATS_SOCKS5_PROXY` | A SOCKS5 proxy, as `host:port` (for example `127.0.0.1:1055`), that every NATS connection goes through, each server's host name handed to the proxy unresolved. Needs `ENVOY_ALLOW_REMOTE_NATS=1`, since the proxy decides which server a connection reaches. |
@@ -566,12 +609,12 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_SENDER_MESSAGES_PER_MINUTE` | How many messages one agent session may send through this listener in a minute, sends and publishes together: a whole number from 0 to 60000. Unset, blank or `0` sets no limit. A message past the limit is answered `429` with a sentence that says when the session can send it again ([The sender limit](#the-sender-limit)). Any other value refuses startup with an error that names the variable. |
 | `ENVOY_SENDER_MESSAGE_BURST` | How many of those messages one session may send at once: a whole number of 1 or more. Unset, it equals the rate. Set with no rate, or with a rate of `0`, it refuses startup, and so does any other value. |
 | `ENVOY_SESSION_LIVE_WINDOW` | How long after its last registration a session reads `live`, as a Go duration; default `5m`. Past it the session reads `unresponsive`, which is not dead ([Live, unresponsive, gone](#live-unresponsive-gone)). It is also how long a role claim stands renewed after its holder's last registration: a claim renewed inside it is kept, and the process that holds it keeps the role. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value. |
-| `ENVOY_SESSION_GONE_HORIZON` | How long after its last registration a session reads `unresponsive` before it reads `gone`, as a Go duration; default `1h`. Only a `gone` session loses its role claim, and then only when nobody renewed that claim inside the live window; the one claim released while its holder's session still answers is one a hand-back marked. Keep it at or below `ENVOY_SESSION_MAX_AGE`, or a record the bucket expires first reads `gone` before the horizon. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value: a horizon only the listener carries has Dispatch count an event sent to a holder the listener still calls `unresponsive`, with nothing sent ([Live, unresponsive, gone](#live-unresponsive-gone)). |
+| `ENVOY_SESSION_GONE_HORIZON` | How long after its last registration a session reads `unresponsive` before it reads `gone`, as a Go duration; default `1h`. Only a `gone` session loses its role claim, and then only when nobody renewed that claim inside the live window; the one claim released while its holder's session still answers is one a hand-back marked. Keep it below the session bucket's maximum age (`ENVOY_SESSION_MAX_AGE`), or a record the bucket expires first reads `gone` before the horizon. A listener whose bucket's age is at or below the horizon logs a warning at its start. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value: a horizon only the listener carries has Dispatch count an event sent to a holder the listener still calls `unresponsive`, with nothing sent ([Live, unresponsive, gone](#live-unresponsive-gone)). |
 | `ENVOY_SESSION_REAP_INTERVAL` | How often the session reaper deletes the records of `gone` sessions, and settles the session bucket's maximum age, as a Go duration; default `1m`. |
 | `ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL` | How often the listener deletes the stream consumers of sessions that read `gone`, as a Go duration; default `5m`. A session that deregisters has its consumer deleted with its registration, and one that simply ended — its pane closed, its box rebooted — deregisters nothing, so this sweep is what frees the slot it holds, within one pass of the session's record leaving the `envoy_sessions` bucket ([Messages a session missed](#messages-a-session-missed)). A pass deletes at most 256 consumers, each checked against the `envoy_sessions` bucket before it goes, and runs only on the listener task that holds its machine's durable binding; the rest wait for the next pass. |
 | `ENVOY_ROLE_CLAIM_REAP_INTERVAL` | How often the role claim reaper looks for role claims nobody has renewed inside the live window whose holder is `gone`, or which a hand-back marked, and releases them, as a Go duration; default `5m`. Nothing else releases a claim, and a claim its holder still renews is kept whatever that holder's session record says. While `ENVOY_SESSION_MAX_AGE` is below `ENVOY_SESSION_GONE_HORIZON`, keep it at or above that age: a record the bucket expires reads `gone` before the horizon, so a shorter period takes a merely stalled holder's role that much sooner. Once the maximum age covers the horizon no record goes early, and the period only says how long past the horizon a `gone` holder keeps its role: keep it well inside the horizon instead. |
-| `ENVOY_SESSION_MAX_AGE` | The `envoy_sessions` bucket's `MaxAge`, as a Go duration: how long a registration record survives in NATS. Unset, the listener leaves the bucket as it is. `/healthz` reports the age in use as `session_max_age`. |
-| `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. |
+| `ENVOY_SESSION_MAX_AGE` | The `envoy_sessions` bucket's `MaxAge`, as a Go duration: how long a registration record survives in NATS. Unset, the listener leaves an existing bucket as it is, and creates a missing one at `2h`, an hour past the default gone horizon. A bucket an older listener created keeps its `5m` until this setting raises it. A listener whose bucket's age is at or below `ENVOY_SESSION_GONE_HORIZON` logs a warning at its start that names both values. `/healthz` reports the age in use as `session_max_age` and the gone horizon as `session_gone_horizon`. |
+| `ENVOY_WEBHOOKS` | Which webhook routes to mount, for example `github,slack`. With `github` the listener publishes GitHub's lane (`notifications.github.>`). Two kinds of NATS user may publish on it directly: on a NATS whose users envoy-infra renders, a `listenerMachineId` user with `githubWebhook: true`; on a hub whose NATS auth service admits the listener, a `webhook-listener` entry of `BROKER_NATS_SERVICES`. Under any other user those publishes are refused. A session on a host user that it shares with the host's listener can still have a message stored under that lane, by a stream update that adds a subject transform, since that user keeps the stream's update. A session the auth service admits holds no stream update. For the host's sessions the gap stays open until dispatch://INFRA-840. |
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | Required with `github`: the webhook secret. |
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
 | `ENVOY_VERDICT_APP_ID` | Optional with `github`: the id of the GitHub App that writes `legion-verdict`. The listener leaves that App's own check suites out of the CI record, in every action, and logs `ci: left out the verdict App's own check suite` for each, so a head settles beside the suite GitHub makes the App on each push. Unset or blank leaves no suite out; a value that is not a whole number above 0 with no leading zero refuses startup. Give Dispatch the same value as `DISPATCH_VERDICT_APP_ID`, or its CI reconcile pass writes the App's completed suite back and the head is published a second time. |
@@ -797,7 +840,7 @@ install it, what each component deploys and which settings it sets.
 | Answer | Meaning |
 | --- | --- |
 | `200` `starting` | The listener is still binding its durable consumer. |
-| `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
+| `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"2h0m0s"`; `session_gone_horizon`, the gone horizon the listener judges a session record by, in the same form; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
 | `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
 | `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. While that lasts, the listener's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the listener for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. `nats credential refused: …`, naming the refusal, while the listener's start waits for NATS to admit its credential (below). |
 
@@ -929,7 +972,7 @@ candidates. The 2.15.1 this file pins is past all of them; a machine still on an
    cp -n single-node.env.example .env
    ```
 
-   Set `ENVOY_MACHINE_ID` in `.env` to what `hostname -s` prints, with no `.` in it; the file says
+   Set `ENVOY_MACHINE_ID` in `.env` to what `hostname -s` prints; the file says
    what its other settings do. The other compose files here read the same `.env`, so `cp -n` leaves
    one that already exists alone (it may print `not replacing`): add to it the template's settings
    it lacks.

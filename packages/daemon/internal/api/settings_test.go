@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // settingsConfigTypes is config.Config and every struct type of its package reachable from it
@@ -329,7 +331,7 @@ func TestTheMemoryGuardSettingsShowEachPodKindsOwnBlock(t *testing.T) {
 var settingsFixturePlanted = []string{
 	"BEGIN", "PRIVATE KEY",
 	"postgres://", "fixture-dsn-password",
-	"legion:fixture-", "fixture-envoy-password", "fixture-nats-password",
+	"legion:fixture-", "fixture-envoy-password", "fixture-nats-user",
 	"legion:fixture-plugin-", "fixture-plugin-password", "fixture-plugin-token",
 	"/var/run/legion/OPERATOR_TOKEN", "/var/run/legion/ENVOY_TOKEN", "/var/run/legion/NATS_NKEY_SEED",
 	"/var/run/legion/NATS_DAEMON_NKEY_SEED", "/var/run/legion/DISPATCH_TOKEN", "/var/run/secrets/agent-secrets/token",
@@ -494,8 +496,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := map[string]string{"tester": "omp"}; !maps.Equal(settings.WorkerBackends, want) {
 		t.Errorf("worker_backends = %q, want %q", settings.WorkerBackends, want)
 	}
-	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}}; !slices.Equal(settings.RepositoryRenames, want) {
-		t.Errorf("repository_renames = %+v, want the file's pair %+v", settings.RepositoryRenames, want)
+	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}, {From: "sjawhar/legion", To: "cybermonklabs/legion"}}; !slices.Equal(settings.RepositoryRenames, want) {
+		t.Errorf("repository_renames = %+v, want the file's pairs %+v", settings.RepositoryRenames, want)
 	}
 	if want := []string{"/bin/sh", "-c", "echo fixture-setup"}; !slices.Equal(settings.Runtime.Kubernetes.Setup, want) {
 		t.Errorf("runtime.kubernetes.setup = %q, want %q", settings.Runtime.Kubernetes.Setup, want)
@@ -520,16 +522,17 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := map[string]string{"pool-capacity": "the pool is sized by hand for the admission cap"}; !maps.Equal(settings.Capabilities.Decided, want) {
 		t.Errorf("capabilities.decided = %q, want %q", settings.Capabilities.Decided, want)
 	}
-	// The two addresses the file gives userinfo ride masked; the one it gives none rides as written.
-	if want := "http://xxxxx@envoy-listener.internal.example:9020"; settings.EnvoyURL != want {
+	// The two addresses the file gives userinfo ride as their scheme and the mark of a URL with
+	// credentials; the one it gives none rides as written.
+	if want := "http://" + redact.URLWithCredentials; settings.EnvoyURL != want {
 		t.Errorf("envoy_url = %q, want %q", settings.EnvoyURL, want)
 	}
-	if want := []string{"nats://xxxxx@nats.internal.example:4222", "nats://nats-2.internal.example:4222"}; !slices.Equal(settings.NatsURLs, want) {
-		t.Errorf("nats_urls = %q, want %q: the first entry's userinfo masked, the second unchanged", settings.NatsURLs, want)
+	if want := []string{"nats://" + redact.URLWithCredentials, "nats://nats-2.internal.example:4222"}; !slices.Equal(settings.NatsURLs, want) {
+		t.Errorf("nats_urls = %q, want %q: the first entry's authority marked, the second unchanged", settings.NatsURLs, want)
 	}
-	// The plugin source in URL form rides with its userinfo masked and its query dropped; the one in
-	// version form rides as written.
-	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"}
+	// The plugin source in URL form rides with its authority marked and its query dropped; the one
+	// in version form rides as written.
+	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://" + redact.URLWithCredentials + "/pi-envoy-10.4.0.tgz"}
 	if plugins := settings.Runtime.Kubernetes.Plugins; plugins == nil || *plugins != want {
 		t.Errorf("runtime.kubernetes.plugins = %+v, want %+v", plugins, want)
 	}
@@ -584,7 +587,7 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block))
+			settings := SettingsOf(apifixture.LoadSettings(t, settingsFixtureFile+tc.block))
 			if got := settings.Runtime.Kubernetes.Sandbox; !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("runtime.kubernetes.sandbox = %+v, want %+v", got, tc.want)
 			}
@@ -600,17 +603,24 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 	}
 }
 
-// endpointOf keeps an address's scheme, host and path and masks its userinfo, a user alone or a
-// user and password, as xxxxx@; "" stays "", and an address that yields no scheme and host is xxxxx
-// whole.
+// endpointOf keeps an address's scheme, host and path, and shows one with userinfo, a user alone or
+// a user and password, by its scheme, `[a URL with credentials]` and its path: nothing after the
+// last "@", a password holding an "@" with a host after it or none included. "" stays "", and an
+// address that yields no scheme and host is xxxxx whole.
 func TestEndpointOfMasksUserinfoAndKeepsThePath(t *testing.T) {
+	const marked = "://" + redact.URLWithCredentials
 	for _, tc := range []struct{ address, want string }{
 		{"http://envoy-listener.internal.example:9020", "http://envoy-listener.internal.example:9020"},
-		{"http://legion@envoy-listener.internal.example:9020", "http://xxxxx@envoy-listener.internal.example:9020"},
-		{"http://legion:fixture-envoy-password@envoy-listener.internal.example:9020", "http://xxxxx@envoy-listener.internal.example:9020"},
+		{"http://legion@envoy-listener.internal.example:9020", "http" + marked},
+		{"http://legion:fixture-envoy-password" + "@envoy-listener.internal.example:9020", "http" + marked},
 		{"https://dispatch.internal.example/legion", "https://dispatch.internal.example/legion"},
-		{"https://legion:fixture-dispatch-password@dispatch.internal.example/legion", "https://xxxxx@dispatch.internal.example/legion"},
-		{"nats://legion:fixture-nats-password@nats.internal.example:4222", "nats://xxxxx@nats.internal.example:4222"},
+		{"https://legion:fixture-dispatch-password" + "@dispatch.internal.example/legion", "https" + marked + "/legion"},
+		{"nats://legion:fixture-nats-password" + "@nats.internal.example:4222", "nats" + marked},
+		{"http://user:p" + "@ssword@envoy-listener.internal.example:9020", "http" + marked},
+		{"http://user:p" + "@ssword", "http" + marked},
+		{"https://madeUpHead0123?madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
+		{"https://madeUpHead0123#madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
+		{"https://madeUpHead0123/madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
 		{"", ""},
 		{"not a url", "xxxxx"},
 		{"//host-only", "xxxxx"},
@@ -621,18 +631,23 @@ func TestEndpointOfMasksUserinfoAndKeepsThePath(t *testing.T) {
 	}
 }
 
-// pluginSourceOf leaves a version and an absolute tarball path as written and rides the URL form
-// through endpointOf, masking its userinfo as xxxxx@ and dropping its query and fragment.
+// PluginSourceOf leaves a version and an absolute tarball path as written and rides the URL form
+// through endpointOf, marking an authority with userinfo and dropping its query and fragment.
 func TestPluginSourceOfMasksOnlyTheURLForm(t *testing.T) {
 	for _, tc := range []struct{ source, want string }{
 		{"10.4.0", "10.4.0"},
 		{"/opt/plugins/pi-legion-10.4.0.tgz", "/opt/plugins/pi-legion-10.4.0.tgz"},
 		{"https://plugins.internal.example/pi-legion-10.4.0.tgz", "https://plugins.internal.example/pi-legion-10.4.0.tgz"},
-		{"https://legion:secret@plugins.internal.example/pi-legion-10.4.0.tgz?X-Amz-Signature=abc#frag", "https://xxxxx@plugins.internal.example/pi-legion-10.4.0.tgz"},
+		{"https://legion:secret@plugins.internal.example/pi-legion-10.4.0.tgz?X-Amz-Signature=abc#frag", "https://" + redact.URLWithCredentials + "/pi-legion-10.4.0.tgz"},
 		{"http://plugins.internal.example/x.tgz?token=t", "http://plugins.internal.example/x.tgz"},
+		// A plugin's scoped registry tarball URL keeps its path; any other "@" past the host, here a
+		// made-up credential ending in "/" written as the user, is the mark alone.
+		{"https://registry.example/@sjawhar/pi-legion/-/pi-legion-10.4.0.tgz", "https://registry.example/@sjawhar/pi-legion/-/pi-legion-10.4.0.tgz"},
+		{"https://madeUpPluginHead0123/@registry.example/pi-legion-10.4.0.tgz", "https://" + redact.URLWithCredentials},
+		{"https://madeUpPluginHead0123?madeUpTail0123@registry.example/@sjawhar/pi-legion/-/x.tgz", "https://" + redact.URLWithCredentials},
 	} {
-		if got := pluginSourceOf(tc.source); got != tc.want {
-			t.Errorf("pluginSourceOf(%q) = %q, want %q", tc.source, got, tc.want)
+		if got := PluginSourceOf(tc.source); got != tc.want {
+			t.Errorf("PluginSourceOf(%q) = %q, want %q", tc.source, got, tc.want)
 		}
 	}
 }
@@ -679,9 +694,27 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("settings carry the DSN: %s", encoded)
 	}
 
-	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
+	set := SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+"review_round_cap: 5\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+}
+
+// The settings show omp_launch_prefix as its program and how many arguments follow
+// (omplaunch.PrefixShown), never an argument: here a made-up token an `env` prefix sets.
+func TestSettingsShowTheLaunchPrefixWithoutItsArguments(t *testing.T) {
+	const token = "madeUpLaunchToken0123456789"
+	cfg := minimalSettingsConfig(t)
+	cfg.OmpLaunchPrefix = []string{"/usr/bin/env", "OMP_TOKEN=" + token, "secrets"}
+	encoded, err := json.Marshal(SettingsOf(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(keysOf(t, encoded)["omp_launch_prefix"]), `["env","(2 arguments, not shown)"]`; got != want {
+		t.Fatalf("omp_launch_prefix = %s, want %s", got, want)
+	}
+	if strings.Contains(string(encoded), token[:10]) {
+		t.Fatalf("the settings hold the launch prefix's token: %s", encoded)
 	}
 }
 
@@ -691,7 +724,7 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 // file that names none carries no key at all, so the shapes the state golden pins do not move.
 func TestSettingsOfNamesThePrivateNameRuleFileByItsPathAlone(t *testing.T) {
 	const path = "/etc/legion/private-names.toml"
-	encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
+	encoded, err := json.Marshal(SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -718,7 +751,7 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	cfg := loadSettingsFile(t, body)
+	cfg := apifixture.LoadSettings(t, body)
 	if got := cfg.Projects["WIDGETS"].CommitIssueTrailerRepos; len(got) != 1 || got[0].String() != stamped {
 		t.Fatalf("the fixture's project carries %v, want %s: the assertions below would prove nothing", got, stamped)
 	}
@@ -767,7 +800,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	settings := SettingsOf(loadSettingsFile(t, body))
+	settings := SettingsOf(apifixture.LoadSettings(t, body))
 	want := []ExperimentSettings{
 		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue, Variants: []VariantSettings{
 			{Name: "short", Weight: 3, ConfigFiles: []string{}},
@@ -821,7 +854,7 @@ func TestTheSettingsCarryThePlanOfAVariant(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	settings := SettingsOf(loadSettingsFile(t, body))
+	settings := SettingsOf(apifixture.LoadSettings(t, body))
 	variants := settings.Projects["WIDGETS"].Experiments[0].Variants
 	if variants[0].Plan != "owner" || variants[1].Plan != "default" {
 		t.Fatalf("the arms' plans = %q and %q, want owner and default", variants[0].Plan, variants[1].Plan)
@@ -909,7 +942,7 @@ func TestSettingsOfTheHooksNamesEachHookAndNoWords(t *testing.T) {
 
 	const promptFile = "/etc/legion/hooks/back-to-implementing.md"
 	const inline = "Read the reviewer's thread before you write anything."
-	named := SettingsOf(loadSettingsFile(t, minimalSettingsFile+`hooks:
+	named := SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+`hooks:
   - name: back-to-implementing
     on: work_back
     moves: [reviewing-implementing, testing-implementing]

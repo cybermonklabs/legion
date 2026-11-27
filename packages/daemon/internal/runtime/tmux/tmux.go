@@ -297,7 +297,8 @@ func New(opts Options) (*Runtime, error) {
 	case (opts.DispatchURL == "") != (opts.DispatchTokenFile == ""):
 		return nil, errors.New("tmux runtime: the Dispatch URL and token file must be configured together")
 	case opts.DispatchTokenFile != "" && !filepath.IsAbs(opts.DispatchTokenFile):
-		return nil, fmt.Errorf("tmux runtime: Dispatch token file %q is not an absolute path", opts.DispatchTokenFile)
+		// The path is not quoted: a token pasted where dispatch_token_file's path goes would print.
+		return nil, errors.New("tmux runtime: the Dispatch token file's path is not absolute")
 	case opts.GitHubCredential != nil && !filepath.IsAbs(opts.GH):
 		return nil, fmt.Errorf("tmux runtime: the real gh a pane's `legion gh` runs is %q, not an absolute path", opts.GH)
 	case opts.GitHubCredential != nil && opts.ClaimRepository == nil:
@@ -439,6 +440,21 @@ func (r *Runtime) LaunchBound() time.Duration { return 0 }
 // no template — so no process of this runtime ever drifts from one, and no update round is ever
 // opened over a pane.
 func (r *Runtime) PodDrift(context.Context, runtime.Known) ([]string, error) { return nil, nil }
+
+// PodRepository is "": a pane shares no place with the other processes of its issue — there is
+// no pod here, and nothing a repository was cloned into once and for all — so this runtime
+// states nothing about what any process of it was built from.
+//
+// So a correction of an issue's repository replaces nothing under this runtime and opens no
+// update round: the daemon reads no drift it could open one over, and ReplacePod below would do
+// nothing if it did. What a correction reaches a pane through is its next launch, which
+// provisions a workspace of the new repository under the daemon's state directory, that
+// directory being the repository's own (workspace.Location), and tells the worker both
+// repositories (daemon's addressingFragment). docs/deployment.md says that ("How workspaces are
+// provisioned on the host"), as do the running and troubleshooting guides under
+// docs/site/src/content/docs/legion; docs/kubernetes.md says the pod replacement is its own
+// runtime's.
+func (r *Runtime) PodRepository(context.Context, runtime.Known) (string, error) { return "", nil }
 
 // ReplacePod does nothing and returns nil: this runtime has no pod to replace, and a pane is
 // ended by the claim's own Suspend and Release. due is never asked, because nothing here waits

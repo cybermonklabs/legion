@@ -1180,8 +1180,12 @@ const priorityLineAtCap: Mount = {
       />
     );
   },
-  settle: async (view) => {
+  settle: async (view, user) => {
     await within(view.container).findByRole("alert");
+    // Outside `NoTooltips` the chips show ten, then a "+N" that shows the rest (INFRA-5200's
+    // `CappedGroup`); each of the twenty sets its title once shown.
+    const more = within(view.container).queryByRole("button", { name: /^\+10, show all/ });
+    if (more !== null) await user.click(more);
   },
 };
 
@@ -1463,8 +1467,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
     [
       "alice",
       localTime("2026-10-08T00:00:00Z"),
-      "Copy reference dispatch://CORE-1/ask/ask-2",
+      // The card's reference stands under the ask body, after its submit (INFRA-5702 R16).
       "Add a reason to send Request changes",
+      "Copy reference dispatch://CORE-1/ask/ask-2",
     ],
   ],
   // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
@@ -1538,7 +1543,12 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   ],
   [
     mountNamed("GitHubLink, a pull request, a plain link and an unsafe one"),
-    ["owner/repository#7: Ship it", "https://example.com/notes", "Unsafe external link"],
+    [
+      "owner/repository#7: Ship it",
+      "https://example.com/notes",
+      // The whole address, and why it is no link (INFRA-5200, c-review F4).
+      "Unsafe external link, not opened: javascript:alert(1)",
+    ],
   ],
   [
     githubUnread,
@@ -2113,6 +2123,7 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
+  "features/ask-body/AskBody.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
   "features/inbox/AskThread.tsx",

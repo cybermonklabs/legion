@@ -46,6 +46,7 @@ import { inboundOffChannelSession } from "../envoy-off"
 import { channelConnectionName, installedPluginVersion } from "../installed-build"
 import { SessionIdentity } from "../session-identity"
 import { sessionTitle } from "../session-title"
+import { gatedStderr } from "../stop-gates"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
 import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } from "./codex-cli"
 import { createCodexDelivery } from "./codex-delivery"
@@ -281,12 +282,16 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const endedNow = (sessionId: string): Promise<boolean> =>
     sessionEnded(codexEndedFile(stateDirectory, codexPid, sessionId))
   const configFile = sessionConfigFile("codex", process.env)
-  const warn = (text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`)
   const bundlePath = resolve(pluginRoot, process.argv[1] ?? "")
 
   let legacy: CodexThreadRuntime | undefined
   let notReady = "this session's Envoy side starts at its first prompt"
   const stopping = new AbortController()
+  // The server's tell gate over its stop (`stop`, R24 of dispatch://INFRA-3589): once the stop
+  // has begun, a warning of its own is written nowhere. The session reads the same stop from
+  // `startSignal`, and the client's stop gate from `stopping.signal` too.
+  const serverStderr = gatedStderr(() => stopping.signal.aborted)
+  const warn = (text: string): void => serverStderr(`envoy-channel: ${text}\n`)
 
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {} },
@@ -382,6 +387,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
       (entry) => {
         self = entry
       },
+      undefined,
+      undefined,
+      // The tell gate: a look that fails once the stop has begun writes no warning.
+      warn,
     )
     if (owning === undefined) return
     notReady =
@@ -823,6 +832,9 @@ function startCodexThreadRuntime(
       baseUrl: envoy.url,
       credential: envoy.credential,
       fetch: globalThis.fetch,
+      // The stop gate: once `stop` has begun, no call of the session's registration or role
+      // state is sent, the DELETE of the stop apart.
+      stopping: () => stopping.signal.aborted,
     })
     const clientInstanceID = newClientInstanceID()
     /** The session the `codex` process runs now, as its record names it: what `codex queue` and the
@@ -900,7 +912,12 @@ function startCodexThreadRuntime(
     await requireActive()
     const { inbound } = envoy
     if ("off" in inbound) {
-      session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
+      session = inboundOffChannelSession({
+        identity: id,
+        stateDirectory,
+        why: inbound.off,
+        stopping: () => stopping.signal.aborted,
+      })
     } else {
       // Dialled as the Claude Code session's connection is (`dialChannelInbound`): NATS with a
       // seed, no credential, or the session's broker token, which is then kept renewed and, at a
@@ -923,6 +940,8 @@ function startCodexThreadRuntime(
         warn,
         connect,
         stopping.signal,
+        // The relay socket opens no socket again once the server's stop has begun.
+        () => stopping.signal.aborted,
       )
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
@@ -939,6 +958,8 @@ function startCodexThreadRuntime(
         session: () => id.id,
         name: natsName,
         signal: stopping.signal,
+        stopping: () => stopping.signal.aborted,
+        warn,
         swapKeeper: (stop) => {
           stopNatsKeeper()
           stopNatsKeeper = stop
