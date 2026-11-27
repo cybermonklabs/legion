@@ -4497,15 +4497,12 @@ test("the answer keys act on the selected decision block, not the first one in t
       (within(firstCard).getByRole("radio", { name: "Ship" }) as HTMLInputElement).checked
     ).toBe(false);
 
-    // One Enter opens the selected card's own note disclosure - the first block's stays shut -
-    // and leaves the reader in the box it reveals, because the card focuses the field its own
-    // render draws (`AskCard.tsx`). `fireEvent` flushes that render inside the press, as a
-    // browser does not, so this row cannot prove the browser case: the proof is the e2e row
-    // `Enter opens the selected decision block's note field and puts the focus in it`.
+    // One Enter puts the caret in the selected card's own answer box, which stands in place -
+    // not in the first block's, which stands in place too.
     await user.keyboard("{Enter}");
     const answerBox = selectedCard.querySelector("[data-ask-answer]");
     expect(answerBox).not.toBeNull();
-    expect(firstCard.querySelector("[data-ask-answer]")).toBeNull();
+    expect(firstCard.querySelector("[data-ask-answer]")).not.toHaveFocus();
     expect(answerBox).toHaveFocus();
   } finally {
     unmount();

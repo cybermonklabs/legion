@@ -1,0 +1,50 @@
+[
+  {
+    "id": "0cbfdbdb-4ecd-4d3b-9ef7-a74d34a5315e",
+    "issue_key": "ACME-1",
+    "artifact_id": null,
+    "author": {
+      "kind": "user",
+      "id": "alice",
+      "proven": true
+    },
+    "body": "Count the threads apart.",
+    "anchor": {
+      "artifact_id": "cffcd0c6-4a91-4ffc-9e1f-02f0789e37e4",
+      "block_id": "2d0a9ef6-aa1d-4831-844f-8cfec1f1f481",
+      "mark_id": "0cbfdbdb-4ecd-4d3b-9ef7-a74d34a5315e",
+      "version": 2,
+      "quote": "Chosen so the count and the list agree.",
+      "orphaned": false
+    },
+    "reply_to": null,
+    "answers": null,
+    "ask_id": null,
+    "turn": null,
+    "resolved": false,
+    "resolved_by": null,
+    "resolved_at": null,
+    "edited_at": null,
+    "deleted_at": null,
+    "deleted_by": null,
+    "suggestion": null,
+    "created_at": "2026-11-25T22:25:24.661822Z",
+    "mentions": [],
+    "deliveries": [],
+    "body_tree": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Count the threads apart."
+            }
+          ]
+        }
+      ]
+    },
+    "reply_block": null
+  }
+]

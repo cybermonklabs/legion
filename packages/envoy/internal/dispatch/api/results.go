@@ -539,8 +539,9 @@ type issueCheckResults struct {
 // The checks of the issue's Verification document as the block index holds each, each with what its
 // results are compared with and whether a pass of it stands, and every result recorded
 // against it from any issue, newest first, each with where its commit stands and whether the
-// check's words moved since. An issue with no Verification document has no checks and no
-// error.
+// check's words moved since. Each check names the statements its block serves, as its `serves`
+// attribute writes them (docs.CheckBlockOf). An issue with no Verification document has no checks
+// and no error.
 //
 // A check CI proves carries `ci` too, read from GitHub at each open pull request head, or where
 // none is open at the final head of the merged one that merged last, and a role's result of it

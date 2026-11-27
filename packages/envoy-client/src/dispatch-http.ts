@@ -1032,12 +1032,10 @@ function isStoredKeyStatus(status: number): boolean {
 
 /**
  * The table's event for an answer (`WriteEvent`, write-outcome.ts).
- * - An answer Cipher's proxy wrote itself (`answer.proxy`, `proxyOwnAnswer`) is read by its headers
- *   alone, whatever its status or body (`proxyEvent`): one it wrote before any byte left it
- *   (`Cipher-Proxy-Forwarded: false`) is `proxy-failed` for an outage (`outage`: a 408, a 429 or a
- *   5xx) and `proxy-refused` for any other status, and one it wrote after the write may have
- *   reached Dispatch is `proxy-unsettled`. A service's answer it carried names no code, and is
- *   read as Dispatch's below.
+ * - An answer Cipher's proxy wrote itself, which `proxyOwnAnswer` reads once for every write
+ *   (`Cipher-Proxy-Code`), is read before anything else, by the rule `proxyEvent` states, which
+ *   reads its headers and its status. A service's answer it carried names no code, and is read
+ *   as Dispatch's.
  * - A 2xx is `applied` once its body was read whole, except where it is no answer of Dispatch's
  *   (`foreign-2xx`): its body is empty or not JSON-typed where its status carries one (`notJson`),
  *   a captive portal's 200 page for one; or it names no key back, or another request's, though
@@ -1072,14 +1070,6 @@ function isStoredKeyStatus(status: number): boolean {
  * name no key back. Each rule holds only once every replica runs `b1c42d1d7d`: before it, an
  * attempt could land unkeyed. The key decides only how a final answer reads; every retry goes
  * regardless.
- *
- * An answer Cipher's proxy wrote itself, which `proxyOwnAnswer` reads once for every write
- * (`Cipher-Proxy-Code`), is read before anything else. One it wrote before any byte left it
- * (`Cipher-Proxy-Forwarded: false`) is `proxy-failed` for an outage (`outage`: a 408, a 429 or a
- * 5xx), which is asked again under the key, and `proxy-refused` for any other status, which the
- * same placeholder would get again. One it wrote after the write may have reached Dispatch
- * (`unknown`, or no such header) is `proxy-unsettled`. A service's answer it carried has no code,
- * and is read as Dispatch's.
  */
 function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent {
   const { status } = answer.response;
@@ -1353,11 +1343,11 @@ const PROXY_TUNNEL_REFUSED = /: (\d{3}) ?(.*)$/;
  * since a refusal at the CONNECT reaches the caller as its status and headers and no body. `status`
  * is that status, 0 where the message names none, `reason` its reason phrase, and `proxyCode` the
  * answer's `Cipher-Proxy-Code` where it is of the proxy's form (`PROXY_CODE_FORM`). The write reads
- * it as every answer the proxy wrote before anything left it (`proxyEvent`): a 5xx, a grant it could
- * not read among them, is a connection that never opened and is asked again within the write's
- * bound; every other status ends the write at once, a 407 among them, which names a grant that
- * ended or a proxy password that names none. A review sent through the proxy (`via`) ends with
- * `DispatchProxyRefusalError` in its place (`#endWrite`).
+ * it by the rule `proxyEvent` states for every answer the proxy wrote before anything left it:
+ * which statuses are asked again within the write's bound and which end the write at once are
+ * that function's, not this comment's.
+ * A review sent through the proxy (`via`) ends with `DispatchProxyRefusalError` in its place
+ * (`#endWrite`).
  */
 export class AirlockTunnelRefusedError extends Error {
   override readonly name = "AirlockTunnelRefusedError";
@@ -1400,8 +1390,8 @@ function tunnelRefusal(error: unknown): AirlockTunnelRefusedError | undefined {
  * review (`via`): a refusal of the request, a grant it could not read, or a dial to Dispatch that
  * failed, each before any byte of the request left it, so the request reached no service and
  * stored nothing. `code` is its `Cipher-Proxy-Code`, or `HTTP_<status>` where it names none, and
- * `body` its text as the client's excerpt quotes it (`#airlockAnswer`). A 5xx is asked again
- * within the write's bound before the write ends with it (`proxyEvent`). It is no
+ * `body` its text as the client's excerpt quotes it (`#airlockAnswer`). `proxyEvent` states which
+ * of these answers is asked again within the write's bound and which ends the write. It is no
  * `DispatchServiceError`, which a caller reads as a refusal Dispatch decided, and no rule reads it
  * as a write whose outcome is unknown (`writeOutcomeUnknown`). The proxy's answer after the write
  * may have left it is `AirlockOutcomeUnknownError`.

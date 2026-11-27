@@ -1,0 +1,17 @@
+{
+  "issue": "ACME-14",
+  "project": "ACME",
+  "configured": true,
+  "state": {
+    "phase": "merging",
+    "phase_since": "2026-11-25T14:04:55.484528Z",
+    "phase_start_seen": false,
+    "roles": [{ "role": "architect", "state": "working" }, { "role": "planner", "state": "idle" }],
+    "slot": null,
+    "waiting_line": null,
+    "blocked_by": [],
+    "waiting_on": null
+  },
+  "read": { "at": "2026-11-25T14:04:55.484528Z", "ok": true, "error": null },
+  "runs_revision": 0
+}

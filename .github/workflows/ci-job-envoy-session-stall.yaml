@@ -109,6 +109,14 @@ jobs:
       - name: Stall test of pi-envoy
         run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
+      # The topics a deployment names for a role (ENVOY_ROLE_TOPICS), with real Oh My Pi client
+      # processes against the listener and natsd this job sets Go up for: a mention-free post to a
+      # private Slack channel, through the listener's own signed webhook, reaches the session that
+      # holds the role after its pod is killed and its session relaunched, and after a new session
+      # claims the role, and never reaches a session holding another role.
+      - name: Role topics across a relaunch
+        run: bun run test extensions/role-topics.test.ts
+        working-directory: packages/pi-envoy
       - name: Stall test of claude-envoy
         run: bun test tests/envoy-channel-stall.test.ts
         working-directory: packages/claude-envoy

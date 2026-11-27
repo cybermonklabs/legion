@@ -105,7 +105,11 @@ export function legionStateUrl(raw: string): { readonly url: string; readonly re
 }
 
 /** Each project's Legion daemon, one row per project that names one, and - for a signed-in
- *  person - the field that names one and the Remove that stops reading it. */
+ *  person - the field that names one and the Remove that stops reading it.
+ *
+ *  Its form's groups, in this order: Project, Legion daemon state URL and Save Legion daemon,
+ *  three columns from `sm` and one below it; each field shrinks with its column, and a URL longer
+ *  than its field ends in an ellipsis with the whole URL as its title. */
 export function LegionDaemonsSection(): ReactNode {
   const queryClient = useQueryClient();
   const human = useIsHuman();
@@ -350,6 +354,7 @@ export function LegionDaemonsSection(): ReactNode {
                   onChange={(event) => setStateUrl(event.target.value)}
                   placeholder="https://daemon.example"
                   required
+                  title={stateUrl === "" ? undefined : stateUrl}
                   value={stateUrl}
                 />
               </label>

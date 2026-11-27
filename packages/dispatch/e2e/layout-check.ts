@@ -2,8 +2,12 @@ import { readFileSync } from "node:fs";
 
 import { expect, type Page } from "@playwright/test";
 
-import { type KnownLayoutBreach, type LayoutBreachKind, layoutBreaches } from "./layout-breaches";
-import { LAYOUT_WIDTHS, type LayoutReading, measureLayout } from "./layout-measure";
+import {
+  LAYOUT_WIDTHS,
+  type LayoutBreachKind,
+  type LayoutReading,
+  measureLayout,
+} from "./layout-measure";
 import type { LayoutRoute, LayoutSeed, LayoutState } from "./layout-routes";
 import { type InFlightRequests, trackDocumentRequests, waitForRouteSettled } from "./review-routes";
 
@@ -165,14 +169,6 @@ export interface ReadingPlace {
   readonly width: number;
 }
 
-function placeKey(place: ReadingPlace): string {
-  return `${place.route}${place.state === undefined ? "" : `#${place.state}`} ${place.width}`;
-}
-
-function entryKey(entry: KnownLayoutBreach): string {
-  return `${placeKey(entry)} ${entry.kind} ${entry.element}`;
-}
-
 /** One failure of a reading, with the fields that name it and the message a row prints. */
 export type LayoutFailure = { readonly message: string } & (
   | {
@@ -181,27 +177,15 @@ export type LayoutFailure = { readonly message: string } & (
       readonly place: ReadingPlace;
     }
   | {
-      /** A breach no entry accepts, or one past its entry's count: the entry that would list it. */
-      readonly type: "unaccepted";
+      /** A breach of the rule, or a group the route must mark and the page does not: `count`
+       *  of them of one kind on one element. */
+      readonly type: "breach";
       readonly place: ReadingPlace;
       readonly kind: LayoutBreachKind;
       readonly element: string;
       readonly count: number;
     }
-  | {
-      /** An entry at the place whose reading matched fewer breaches than its count. */
-      readonly type: "entry-mismatch";
-      readonly entry: KnownLayoutBreach;
-      readonly matched: number;
-    }
 );
-
-function entriesAt(
-  place: ReadingPlace,
-  entries: readonly KnownLayoutBreach[]
-): KnownLayoutBreach[] {
-  return entries.filter((entry) => placeKey(entry) === placeKey(place));
-}
 
 /** What a reading must hold beyond its breaches: the groups the page must mark, and the fewest
  *  elements its own region holds (`MIN_ELEMENTS` unless the route says why it draws fewer). */
@@ -210,21 +194,13 @@ export interface ReadingNeeds {
   readonly minElements?: number;
 }
 
-interface Found {
-  readonly kind: LayoutBreachKind;
-  readonly locator: string;
-  readonly said: string;
-}
-
 /** Judges one reading of `place`. Failures, in this order: a viewport of another width, a page
- *  whose own region drew too little, a breach no entry of `entries` accepts or one past its
- *  entry's count - each written as the entry that would list it - and an entry at `place` that
- *  matched fewer breaches than its count. */
+ *  whose own region drew too little, and each breach and each missing required group, those of
+ *  one kind on one element counted as one failure. Nothing is accepted: every breach fails. */
 export function judgeReading(
   place: ReadingPlace,
   reading: LayoutReading,
-  { groups = [], minElements = MIN_ELEMENTS }: ReadingNeeds = {},
-  entries: readonly KnownLayoutBreach[] = layoutBreaches
+  { groups = [], minElements = MIN_ELEMENTS }: ReadingNeeds = {}
 ): LayoutFailure[] {
   const where = `${place.route}${place.state === undefined ? "" : ` in ${place.state}`} at ${place.width}`;
   const failures: LayoutFailure[] = [];
@@ -244,7 +220,7 @@ export function judgeReading(
       type: "too-few-elements",
     });
   }
-  const found: Found[] = [
+  const found = [
     ...reading.breaches.map((breach) => ({
       kind: breach.kind,
       locator: breach.locator,
@@ -258,59 +234,33 @@ export function judgeReading(
         said: `no element shows an entry of a data-layout-group="${group}"`,
       })),
   ];
-  const listed = entriesAt(place, entries);
-  const taken = new Map<KnownLayoutBreach, number>();
-  const room = (entry: KnownLayoutBreach) => (taken.get(entry) ?? 0) < (entry.count ?? 1);
-  const unlisted = new Map<
+  const byElement = new Map<
     string,
     { count: number; kind: LayoutBreachKind; element: string; said: string }
   >();
   for (const breach of found) {
-    const entry = listed.find(
-      (candidate) =>
-        candidate.kind === breach.kind && candidate.element === breach.locator && room(candidate)
-    );
-    if (entry !== undefined) {
-      taken.set(entry, (taken.get(entry) ?? 0) + 1);
-      continue;
-    }
-    const key =
-      `{ route: "${place.route}", ${place.state === undefined ? "" : `state: "${place.state}", `}` +
-      `width: ${place.width}, kind: "${breach.kind}", element: ${JSON.stringify(breach.locator)}`;
-    const held = unlisted.get(key);
-    unlisted.set(key, {
+    const key = `${breach.kind} ${breach.locator}`;
+    const held = byElement.get(key);
+    byElement.set(key, {
       count: (held?.count ?? 0) + 1,
       element: breach.locator,
       kind: breach.kind,
       said: held?.said ?? breach.said,
     });
   }
-  for (const [key, { count, element, kind, said }] of unlisted) {
+  for (const { count, element, kind, said } of byElement.values()) {
     failures.push({
       count,
       element,
       kind,
-      message: `${key}${count === 1 ? "" : `, count: ${count}`} } ${said}`,
+      message: `${where}: ${kind} ${element}${count === 1 ? "" : ` (${count} of them)`} ${said}`,
       place,
-      type: "unaccepted",
+      type: "breach",
     });
-  }
-  for (const entry of listed) {
-    const matched = taken.get(entry) ?? 0;
-    const count = entry.count ?? 1;
-    if (matched !== count) {
-      failures.push({
-        entry,
-        matched,
-        message: `${entryKey(entry)}: the entry accepts ${count}, and this reading had ${matched}`,
-        type: "entry-mismatch",
-      });
-    }
   }
   console.log(
     `LAYOUT route=${place.route} state=${place.state ?? "-"} width=${place.width} ` +
-      `elements=${reading.elements} content=${reading.contentElements} ` +
-      `breaches=${found.length} listed=${[...taken.values()].reduce((sum, n) => sum + n, 0)}`
+      `elements=${reading.elements} content=${reading.contentElements} breaches=${found.length}`
   );
   return failures;
 }
@@ -438,6 +388,6 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
   }
   expect(
     failures.map((failure) => failure.message),
-    "layout breaches no entry of e2e/layout-breaches.ts accepts, entries their readings did not match, and pages that drew too little"
+    "layout breaches, missing required groups, and pages that drew too little"
   ).toEqual([]);
 }

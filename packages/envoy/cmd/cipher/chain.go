@@ -77,9 +77,10 @@ type signerSource struct {
 // signerChain is the chain for a process whose key directory is dir, in R4's order. passOver is
 // whether its sign-in source passes over a sign-in this machine cannot renew (signInPassedOver):
 // every walk but renew's, whose contract is to report the enrollment the broker no longer holds
-// (exit 76) and never to act as another session in its place.
-func signerChain(dir string, passOver bool) []signerSource {
-	return []signerSource{keyDirSource(dir), signInSource(passOver), helperSource(), machineChainSource()}
+// (exit 76) and never to act as another session in its place. The same walks keep a sign-in they
+// sign as renewed (keepSignIn), saying on stderr, unless it is nil, where they cannot.
+func signerChain(dir string, passOver bool, stderr io.Writer) []signerSource {
+	return []signerSource{keyDirSource(dir), signInSource(passOver, stderr), helperSource(), machineChainSource()}
 }
 
 // selectSigner is this process's signer: the first source of the chain that has one, after a
@@ -93,7 +94,7 @@ func selectSigner(dir string, stderr io.Writer, passOver bool) (string, Signer, 
 		id     string
 		signer Signer
 	}
-	_, got, err := walkChain(signerChain(dir, passOver), stderr, func(source signerSource) (built, error) {
+	_, got, err := walkChain(signerChain(dir, passOver, stderr), stderr, func(source signerSource) (built, error) {
 		id, signer, err := source.build(context.Background())
 		return built{id, signer}, err
 	})
@@ -107,7 +108,7 @@ func describeSource(dir string, stderr io.Writer) (name, detail string, err erro
 	if err := migrateKeyDirMachineSession(dir); err != nil {
 		return "", "", err
 	}
-	return walkChain(signerChain(dir, true), stderr, func(source signerSource) (string, error) {
+	return walkChain(signerChain(dir, true, stderr), stderr, func(source signerSource) (string, error) {
 		return source.describe(context.Background())
 	})
 }
@@ -126,14 +127,15 @@ func describeSource(dir string, stderr io.Writer) (name, detail string, err erro
 // why.
 //
 // A person's sign-in is the one held signer that may register again: its lease lapses after
-// BROKER_LEASE_SECONDS and nothing renews it, so its signer keeps signInSigner's register, and the
-// reread's call (doProofBuilt) registers the session again once when the broker says the
-// enrollment is not live. That costs one trade of the person's own sign-in, with this machine's
-// identity as its actor, and one enrollment; it waits on nothing and registers no machine session.
+// BROKER_LEASE_SECONDS once nothing keeps it renewed (signin_renewer.go), so its signer keeps
+// signInSigner's register, and the reread's call (doProofBuilt) registers the session again once
+// when the broker says the enrollment is not live. That costs one trade of the person's own
+// sign-in, with this machine's identity as its actor, and one enrollment; it waits on nothing and
+// registers no machine session.
 // A sign-in this machine cannot renew is passed over as the chain passes it over
 // (signInPassedOver), and says nothing on stderr: the reread signs only to read more.
 func heldSigner() (proofSigner, error) {
-	name, signer, err := walkChain(signerChain(keyDir(), true), nil, func(source signerSource) (proofSigner, error) {
+	name, signer, err := walkChain(signerChain(keyDir(), true, nil), nil, func(source signerSource) (proofSigner, error) {
 		return source.held()
 	})
 	if err != nil && !errors.Is(err, errNoBrokerIdentity) {
@@ -245,8 +247,18 @@ func readEnrollment(path, file string) (string, error) {
 // signInSource is the sign-in of the person this process acts for (signInSigner). A box with
 // sign-ins but no way to say which one this session is refuses here, naming them: a command must
 // never read one colleague's secrets under another's name. A sign-in this machine cannot renew
-// that holds no live enrollment has nothing for the caller (signInPassedOver).
-func signInSource(passOver bool) signerSource {
+// that holds no live enrollment has nothing for the caller (signInPassedOver). Where passOver is
+// set, the signer it builds keeps the sign-in renewed, and a renewal it cannot keep is said on
+// stderr where stderr is not nil (notKept); describe builds nothing and keeps nothing.
+func signInSource(passOver bool, stderr io.Writer) signerSource {
+	var keep func(person string)
+	if passOver {
+		keep = func(person string) {
+			if err := keepSignIn(person); err != nil && stderr != nil {
+				fmt.Fprintf(stderr, "agent-secrets: %s\n", notKept(person, err))
+			}
+		}
+	}
 	find := func(ctx context.Context) (cipherclient.SignInRecord, *ecdsa.PrivateKey, error) {
 		store := cipherclient.SignIns(homeGetenv)
 		records, err := store.List()
@@ -274,7 +286,7 @@ func signInSource(passOver bool) signerSource {
 		if err != nil {
 			return "", nil, err
 		}
-		signer, err := signInSigner(record, key)
+		signer, err := signInSigner(record, key, keep)
 		if err != nil {
 			return "", nil, err
 		}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,16 +31,17 @@ import (
 
 // A planner whose launches run out holds its issue, and the hold is its architect's alone: the
 // architect's role topic takes the held and worker-died notices once each, the held one carrying
-// the failure that held the issue, and the controller's topic takes nothing, because the
+// the failure that held the issue, and the controller's role topic takes neither, because the
 // controller's skill does nothing for a hold its architect has not escalated
 // (#4065).
 //
 // A tree architect whose own launches run out is the case the controller still hears, from an
-// outbox row of its own (workflow's noticeWithController). Here the listener refuses the
-// controller's topic twice first, as a stream outage answers: only the controller's row retries,
-// so the architect's topic is sent the worker-died once however long the controller's topic keeps
-// failing, and every try carries the one key the controller's subscriber dedupes on. The
-// controller reads the notice the architect is sent, without the row's routing.
+// outbox row of its own (workflow's noticeWithController), once the registered controller session
+// holds the controller's role live. Here the listener refuses the controller's role topic twice
+// first, as a stream outage answers: only the controller's row retries, so the architect's topic
+// is sent the worker-died once however long the controller's topic keeps failing, and every try
+// carries the one key the controller's subscriber dedupes on. The controller reads the notice the
+// architect is sent, without the row's routing.
 func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects(t *testing.T) {
 	t.Parallel()
 	listener := newNoticeListener()
@@ -58,7 +60,20 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	if err != nil {
 		t.Fatal(err)
 	}
-	controllerTopic := notify.ControllerTopic(token)
+	controllerTopic := notify.RoleTopicPrefix + string(claim.ControllerToken(token))
+	registerProjectControllerAs(t, cfg.PostgresDSN, token, "ses-controller")
+	listener.holds(string(claim.ControllerToken(token)), "ses-controller")
+	// The registered controller is told the project's own wakes too (a tick, a free slot), so the
+	// refusals and the reads of its topic below are of the notices they name alone.
+	named := func(published []listenerPublish, messages ...string) []listenerPublish {
+		var matched []listenerPublish
+		for _, p := range published {
+			if slices.Contains(messages, p.Message) {
+				matched = append(matched, p)
+			}
+		}
+		return matched
+	}
 	architectTopic := func(issue string) string {
 		t.Helper()
 		architect, err := claim.NewToken(token, issue, claim.RoleArchitect)
@@ -130,8 +145,9 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	if onArchitect[0].Message != "held on "+held || onArchitect[1].Message != "worker-died on "+held {
 		t.Fatalf("the architect's role topic took %+v, want held then worker-died, once each", onArchitect)
 	}
-	if told, tried := listener.acceptedOn(controllerTopic), listener.refusedOn(controllerTopic); len(told) != 0 || len(tried) != 0 {
-		t.Fatalf("the controller's topic took %+v and refused %+v, want nothing published to it: a hold its architect has not escalated is the architect's", told, tried)
+	heldNotices := []string{"held on " + held, "worker-died on " + held}
+	if told, tried := named(listener.acceptedOn(controllerTopic), heldNotices...), named(listener.refusedOn(controllerTopic), heldNotices...); len(told) != 0 || len(tried) != 0 {
+		t.Fatalf("the controller's role topic took %+v and refused %+v, want nothing of %s published to it: a hold its architect has not escalated is the architect's", told, tried, held)
 	}
 	// The held notice the architect reads carries the failure that held the issue: the one word for
 	// what failed the claim, the sentence beside it and each count against the limit it ran out at
@@ -162,17 +178,18 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	// controller is told from a row of its own, and its topic refuses the first two tries.
 	failed := cfg.Project + "-2"
 	runningTree(failed, treelifecycle.AuthorityOperator)
-	listener.refuseFirst(controllerTopic, 2)
+	died := "worker-died on " + failed
+	listener.refuseFirstOf(controllerTopic, died, 2)
 	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims", api.SpawnRequest{Tree: failed, Issue: failed, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."}, true); status != http.StatusInternalServerError || !strings.Contains(string(body), "pane launch failed") {
 		t.Fatalf("spawn the architect = %d %s, want its one launch refused", status, body)
 	}
 	testwait.Eventually(t, "every notice row of the failed architect finished and the controller's copy taken", func() bool {
-		return rowsOf(failed) == 0 && len(listener.acceptedOn(controllerTopic)) == 1
+		return rowsOf(failed) == 0 && len(named(listener.acceptedOn(controllerTopic), died)) == 1
 	})
 	if onArchitect := listener.acceptedOn(architectTopic(failed)); len(onArchitect) != 1 || onArchitect[0].Message != "worker-died on "+failed {
 		t.Fatalf("the architect's role topic took %+v, want the worker-died once however often the controller's topic refused", onArchitect)
 	}
-	refused, taken := listener.refusedOn(controllerTopic), listener.acceptedOn(controllerTopic)[0]
+	refused, taken := named(listener.refusedOn(controllerTopic), died), named(listener.acceptedOn(controllerTopic), died)[0]
 	if len(refused) != 2 {
 		t.Fatalf("the controller's topic refused %d publishes, want the 2 it was set to refuse", len(refused))
 	}
@@ -198,13 +215,20 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 }
 
 // noticeListener is the Envoy listener's publish route as the outbox uses it: it takes every
-// publish, but for the first refusals on a topic, which it answers 500 as a stream outage does
-// (packages/envoy/cmd/listener/api.go publishHandler).
+// publish, but for the first refusals of one message on a topic (refuseFirstOf), which it answers
+// 500 as a stream outage does
+// (packages/envoy/cmd/listener/api.go publishHandler). Its role lookup (GET /v1/roles/<role>)
+// names the live holder a test gave a role (holds), and answers every other role as one no claim
+// names, as the listener's 404 does (writeRoleHolderError).
 type noticeListener struct {
-	mu       sync.Mutex
-	refuse   map[string]int
-	accepted []listenerPublish
-	refused  []listenerPublish
+	mu      sync.Mutex
+	refuse  map[string]int
+	holders map[string]string
+	// refuseOnly is the message the refusals of a topic are kept for (refuseFirstOf): a publish
+	// to the topic with another message is taken.
+	refuseOnly map[string]string
+	accepted   []listenerPublish
+	refused    []listenerPublish
 }
 
 type listenerPublish struct {
@@ -215,13 +239,31 @@ type listenerPublish struct {
 }
 
 func newNoticeListener() *noticeListener {
-	return &noticeListener{refuse: map[string]int{}}
+	return &noticeListener{refuse: map[string]int{}, holders: map[string]string{}, refuseOnly: map[string]string{}}
+}
+
+// holds makes session the live holder the listener names for role.
+func (l *noticeListener) holds(role, session string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.holders[role] = session
 }
 
 func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if role, ok := strings.CutPrefix(r.URL.Path, "/v1/roles/"); ok && r.Method == http.MethodGet {
+		holder, held := l.holders[role]
+		if !held {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "role " + role + " is unclaimed", "reason": "unclaimed"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"role": role, "holder": holder, "holder_state": "live",
+			"last_seen": time.Now().UnixMilli(), "capabilities": []string{}})
+		return
+	}
 	if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
@@ -232,7 +274,7 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if l.refuse[published.Topic] > 0 {
+	if l.refuse[published.Topic] > 0 && l.refuseOnly[published.Topic] == published.Message {
 		l.refuse[published.Topic]--
 		l.refused = append(l.refused, published)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -243,11 +285,11 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{})
 }
 
-// refuseFirst makes the listener refuse the next n publishes to topic.
-func (l *noticeListener) refuseFirst(topic string, n int) {
+// refuseFirstOf makes the listener refuse the next n publishes to topic that carry message.
+func (l *noticeListener) refuseFirstOf(topic, message string, n int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.refuse[topic] = n
+	l.refuse[topic], l.refuseOnly[topic] = n, message
 }
 
 func (l *noticeListener) acceptedOn(topic string) []listenerPublish {

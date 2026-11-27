@@ -325,7 +325,12 @@ DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5
 ```
 
 It builds the dashboard twice (`web/dist`, and `web/dist-b` under another build id), then runs
-Playwright with `DISPATCH_E2E_PROCESSES=2`: Dispatch A on
+Playwright with `DISPATCH_E2E_PROCESSES=2`.
+Each half is a script you can call on its own: `bun run build:web-b` writes the second bundle,
+and `bun run e2e:multiprocess:run` runs Playwright over bundles that are already built, which
+is what CI's `dispatch-two-builds` job does after one `bun run build:web`, since its B is a
+previous build that brings its own web dist.
+The run is: Dispatch A on
 `DISPATCH_E2E_PORT_A` serving `web/dist`, Dispatch B on `DISPATCH_E2E_PORT_B` serving
 `DISPATCH_E2E_WEB_DIST_B` (here `web/dist-b`; default A's), and `e2e/round-robin-proxy.ts` on
 `DISPATCH_E2E_PORT`, which alternates requests and websockets between them. As every harness
@@ -378,8 +383,8 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
   DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess
 ```
 
-It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
-or unset is refused.
+It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess:run` sets and `e2e:multiprocess`
+reaches through it; any value other than `oidc` or unset is refused.
 
 The rules a row follows:
 
@@ -723,8 +728,12 @@ the form passes at 200 ms or under.
 Before it sends a read, the fleet must have served a commit carrying `MERGE_SHA` for three hours:
 `/healthz`'s `fleet_commit`, the commit every live server process serves, must carry it by
 GitHub's compare (`identical` or `ahead`).
-A look that has to wait ends on the line `read again at or after <time> with ...`, which names the
-values the next look takes, and exits 3.
+A look that has to wait for the fleet's three hours or for the probe's lines ends on the line
+`read again at or after <time> with ...`, which names the values the next look takes, and exits 3.
+A look that has to wait for the fleet to carry `MERGE_SHA` ends on a line of its own, and exits 3:
+the fleet serves no one commit, it does not carry the merge (or, with `BEFORE_DEPLOY=1`, it does),
+GitHub did not answer, or GitHub's compare says neither way.
+That line names no value: the next look takes the inputs this one took.
 
 Its inputs are `DISPATCH_URL`, the deployed Dispatch; the bearer, in `DISPATCH_TOKEN` or
 `DISPATCH_TOKEN_FILE`; `MERGE_SHA`, the merge commit's 40 hex digits; and `LOGGING_PROJECT`, the
@@ -753,6 +762,65 @@ DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding
 
 `cd packages/dispatch && bun test e2e/__tests__/priority-list-production.test.ts` runs it against
 stand-ins of `curl`, `gh`, `gcloud` and `sleep` that reach nothing past the host.
+
+`e2e/acceptance/priorities-production.sh` is the driver of the check `c-both-forms-production`: it
+measures how long production's server takes to answer the priorities read in each of its two
+forms, as the p90 of the access log's `elapsed_ms` over three hours of production's own reads of
+`GET /api/v1/priorities`.
+It sends no read of the priorities itself: it reads the lines of that route back from the
+deployment's container logs with `gcloud logging read`, and keeps those of `method=GET` and
+`status=200`.
+A line carries no query string, so its `bytes`, the bytes sent after compression, tell the two
+forms apart: a line below 2,048 bytes is the summary (`?summary=true`, two counts and no row), and
+one at or above it is the full read.
+A form's p90 is the value at rank ceil(0.9 n) of its lines' `elapsed_ms` in ascending order, and
+the form passes at 200 ms or under.
+Before it reads the log, `/healthz`'s `fleet_commit`, the commit every live server process serves,
+must carry `MERGE_SHA` by GitHub's compare (`identical` or `ahead`), and the three hours from
+`FLEET_SINCE` must have passed.
+It prints how many lines of the route the log holds in those hours, and how many of them are a
+`GET` answered 200.
+For each form the three hours hold a read of, `the full read` or `the summary`, it then prints
+`<form>: p90 N ms over M reads, at most 200 ms` or `..., over 200 ms`, and
+`<form>: smallest S bytes, largest L bytes`.
+A form the three hours hold fewer than 200 reads of adds `<form>: M reads, fewer than 200`.
+A look that has to wait for the three hours to pass, or for a form's 200 reads, ends on the line
+`read again at or after <time> with FLEET_SINCE=<time>`, which names the value the next look takes,
+and exits 3.
+A look that has to wait for the fleet ends on a line of its own, and exits 3: the fleet serves no
+one commit, it does not carry `MERGE_SHA`, GitHub did not answer, or GitHub's compare says neither
+way.
+That line names no value: the next look takes the inputs this one took.
+
+Its inputs are `DISPATCH_URL`, the deployed Dispatch; `MERGE_SHA`, the merge commit's 40 hex
+digits; and `LOGGING_PROJECT`, the Google Cloud project that holds the deployment's container
+logs.
+This public repository names no such project, so the driver refuses to start without it (exit 2).
+It takes no bearer: `/healthz` is the one request it sends to Dispatch.
+Each time it takes or prints is UTC to the second, `YYYY-MM-DDTHH:MM:SSZ`.
+A later look also takes `FLEET_SINCE`, the start of the three hours, as the line of an earlier
+look names it: the first look names the time it ran, and a look that found fewer than 200 reads
+of a form names the end of the three hours it read, where the next three start.
+`WINDOW_START=<time>` is for the check's negative control alone: the look then reads the three
+hours from that time, skips the test of the fleet's commit, and names `WINDOW_START` in the line
+it ends on when it waits; it refuses `WINDOW_START` beside `FLEET_SINCE`.
+`gh` and `gcloud` run as the accounts they are signed in with.
+It exits 0 when both forms are at most 200 ms over at least 200 reads each; 1 when a form's p90 is
+over 200 ms; 2 when the look cannot measure (an input unset or malformed, no answer from
+`/healthz`, a log read that failed, or a line of the route without its `status`, `elapsed_ms` and
+`bytes`); and 3 for a look that waits (a fleet that does not carry the merge or serves no one
+commit, a compare GitHub does not answer, three hours still to come, or a form with fewer than
+200 reads).
+A look that finds a failure exits 1 even where it would also wait.
+The first look, from the repository root; each later one adds the value the last one named:
+
+```bash
+DISPATCH_URL=https://dispatch.internal.example MERGE_SHA=<merge commit> \
+  LOGGING_PROJECT=<project> bash packages/dispatch/e2e/acceptance/priorities-production.sh
+```
+
+`cd packages/dispatch && bun test e2e/__tests__/priorities-production.test.ts` runs it against
+stand-ins of `curl`, `gh`, `gcloud` and `date` that reach nothing past the host.
 
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
@@ -822,11 +890,17 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All ten drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
-share: it refuses an unset input or a missing command with exit 2, reads the bearer from
-`DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
-script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
-`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
+Twelve drivers source `e2e/acceptance/lib.sh`: the eleven above, and
+`e2e/acceptance/node-projects.sh`, the driver of the check `c-a-node-projects`.
+It holds the preamble they share: it refuses an unset input or a missing command with exit 2, and
+reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting
+both so no process the script starts inherits it.
+It holds the check vocabulary, `pass`, `fail`, `skip`, `want_status`, `expect` and `query`.
+It also holds the steps the two looks at production share: `cannot_measure`, which ends a look
+that cannot measure with exit 2; `stamp` and `epoch`, a time as a look prints one and back again;
+`p90`; `fleet_commit`, the commit `/healthz` says the fleet serves; `carries`, GitHub's compare of
+`MERGE_SHA` with a commit; and `access_log`, the `gcloud logging read` of the access log's lines.
+`with-harness.sh` is no driver and sources none of it.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
 measures which of our listed addresses a machine reaches over the path given to a person from
@@ -1032,7 +1106,10 @@ Each open part of the new issue page adds its words in `page-words-<letter>.ts`,
 beside `web/src/features/issue-page/page-words.ts`. A part's `page-words-<letter>.ts` holds the
 tables that the part adds, each a named export that it lists in `unasked` or `answers`. Under
 `add`, it holds the part's new keys for a table that `page-words.ts` declares. The open parts are
-J, L, M, N, S, T, U, W, X, Y and Z.
+J, L, M, N, S, T, U, W, X, Y and Z. Dashboard keeps its words the same way in
+`page-words-dashboard.ts`, which also takes in the ask body's list
+(`web/src/features/ask-body/ask-body-words.ts`) and the decision card's
+(`web/src/features/decision-card/decision-card-words.ts`).
 
 A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
 from any pull request. TypeScript reads the keys of a table where the table is declared. The tables
@@ -1158,11 +1235,13 @@ machine with no container.
 A third layer holds every page to the layout rule of `web/src/AGENTS.md` ("Layout"), and
 `bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every
 reviewed route, the excluded ones whose reason argues only against a shot or a scan, two pages a
-reader's choice in this browser draws another way (the new issue page, the project's board), and
-the project page and its Architecture tab, which a project with an architecture source draws -
+reader's choice in this browser draws another way (the new issue page, the project's board),
+today's issue page on its Dashboard tab, which no review route opens, and the project page and its
+Architecture tab, which a project with an architecture source draws -
 over the review corpus and a stress layer that writes
 production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px, and again in
-each state a route names (the Peek drawer open, rows or agents selected). At each width
+each state a route names (the Peek drawer open, rows or agents selected, the issues table searched
+for the stress issue, whose row the plain load's window does not draw). At each width
 `e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
 `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
 does for anything but a code block, one picture wider than the box, a data table or a board's
@@ -1186,19 +1265,16 @@ in `en-US` and UTC, so a run on any machine measures the text CI measures.
 `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
 case, and holds the instrument to reporting the one and not the other.
 `e2e/issue-header-layout.stub.e2e.ts` holds today's issue header below its title to a height at
-360 and 1280 px, and each issue tab whole inside its list and the viewport. A row fails on each
-breach no entry of `e2e/layout-breaches.ts` accepts - an entry names the locator the row prints
-for its breach (for a page that scrolls sideways, that of the deepest element past the viewport),
-matches only a breach of that locator, and accepts exactly its `count` of them, so the count is
-the bound of what it lets through - on a page whose own region drew fewer than 100 elements (or
-the route's own `minElements`), and on an entry whose route, state and width it measured and
-which its reading did not match exactly; and
-`e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route or a state the rows
-never read; the type `LayoutWidth` holds its width to the five the rows read. That list holds the
-breaches main still has, in one array per INFRA-5200 fix pull request (the issue page's, the
-Inbox's and the other pages'); each fix pull request deletes every entry of its own array and
-leaves it empty, so the three merge in any order, and the list and its use go once all three are
-empty.
+360 and 1280 px, and each issue tab whole inside its list and the viewport. A row fails on every
+breach a reading finds, each named by the locator the row prints (for a page that scrolls
+sideways, that of the deepest element past the viewport), on a group the route must mark and the
+page does not, and on a page whose own region drew fewer than 100 elements (or the route's own
+`minElements`). Nothing lets a breach through: a page that breaks the rule is fixed in the change
+that finds it. `e2e/__tests__/layout-routes.test.ts` holds the routes to every reviewed page.
+
+Point 5 of the layout rule in `web/src/AGENTS.md` moves a header's properties into Details; a list
+row, a card, a table cell, a settings row and a status bar keep the marks they show, because a
+reader chooses an item by them (dispatch://INFRA-5200/artifact/decisions-md).
 
 ## Phone check
 

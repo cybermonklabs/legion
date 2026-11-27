@@ -183,7 +183,7 @@ async function expectRefusalControlsLeast(
         : route.fallback()
     );
     await refusing.clock.install();
-    await gotoIssue(refusing, `/issues/${key}`);
+    await gotoIssue(refusing, `/issues/${key}/conversation`);
     await expectIssuePageDrawn(refusing);
     const field = composerField(refusing);
     await field.fill(`A comment Dispatch never takes ${at}.`);
@@ -396,7 +396,7 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
       seeded.first
     );
 
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     // From 1024 px up the outline draws three levels and a branch deeper than them as one line
     // saying how many nodes it holds, which opens them in place: the reply that answers `second`
@@ -484,7 +484,7 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
     // thread's head draws what it holds as one line saying how many nodes that is, and pressing
     // the line draws them in its place, under the head.
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await nodeRow(page, seeded.head)
       .first()
@@ -513,7 +513,7 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
 // Dispatch holds it, and every branch opened press by press to read where it is drawn.
 test("a reply on a resolved ask is drawn under the ask", async ({ browser }) => {
   await phase(browser, seedReplyNesting, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(nodeRow(page, seeded.resolvedAsk).first()).toHaveAttribute(
       "data-node-state",
@@ -552,7 +552,7 @@ test("a reply typed at once after the mention the box writes for an agent is sto
       { body: "An agent's answer to the first entry.", reply_to: seeded.head },
       { actor: { id: "e2e-nesting-asker", kind: "session" }, as: "agent" }
     );
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
@@ -597,7 +597,7 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(nodeRow(page, seeded.head).first()).toBeVisible();
     /** The row drawing `words`, which the reader has just sent: drawn, focused, and on screen
@@ -683,7 +683,7 @@ test("a send with the keyboard leaves the focus on the reader's row of the outli
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     // The answered question is the outline's second row: the thread's head is its first.
     const words = "A reply sent with the keys alone.";
@@ -722,7 +722,7 @@ test.skip("what the reader sends from the box past the first 50 rows is drawn, i
   },
 }, async ({ browser }) => {
   await phase(browser, seedPastFifty, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(
       branchMoreRows(page),
@@ -761,7 +761,7 @@ test.skip("what the reader sends from the box as a reply to a turn of the daemon
   },
 }, async ({ browser }) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await openDetails(page);
     const turn = panelEntry(page, seeded.daemon.words);
@@ -804,7 +804,7 @@ test.skip("what the reader sends from the box as a reply to an agent's comment i
   },
 }, async ({ browser }) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(
       nodeRow(page, seeded.agent.id),
@@ -848,7 +848,7 @@ test.skip("what the reader sends from the box as a reply written in Graph is dra
   },
 }, async ({ browser }) => {
   await phase(browser, seedReplyNesting, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await pickPreset(page, GRAPH);
     await expectActivePreset(page, GRAPH);
@@ -895,7 +895,7 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
       const at = `${size.width}x${size.height}`;
       const phone = size.width <= PHONE_FORM_MAX;
       await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectIssuePageDrawn(page);
       await expect(composerField(page), `the box is not drawn at ${at}`).toBeVisible();
       // At rest: no caret in it. The page opens with the focus on a row of the outline.
@@ -1012,7 +1012,7 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
       const at = `at ${size.width}x${size.height}`;
       const phone = size.width <= PHONE_FORM_MAX;
       await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectIssuePageDrawn(page);
       await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
       await expect(nodeRow(page, last), `the outline does not draw its last row ${at}`).toHaveCount(
@@ -1242,14 +1242,14 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
     // Decision 72: 760 px is the phone's form - 10 px from each side, the kinds drawn only once
     // the box has the focus - and 761 px the desktop's.
     await page.setViewportSize({ height: 900, width: PHONE_FORM_MAX });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(composerField(page)).toBeVisible();
     await expectFormInset(page, "at 760x900");
     await expect(composerKind(page, "comment"), "a kind is drawn at rest at 760x900").toBeHidden();
     await expect(composerKind(page, "ask"), "a kind is drawn at rest at 760x900").toBeHidden();
     await page.setViewportSize({ height: 900, width: PHONE_FORM_MAX + 1 });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(composerField(page)).toBeVisible();
     await expectFormOnOutline(page, "at 761x900");
@@ -1271,7 +1271,7 @@ test("the box that shrinks at the outline's end stands 8 px above the foot again
   await phase(browser, seedFortyComments, async (page, seeded) => {
     const at = `at ${DESKTOP.width}x${DESKTOP.height}`;
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
     const last = (await drawnRows(page)).at(-1)?.id ?? "";
@@ -1345,7 +1345,7 @@ test.skip("the box at the foot is never drawn in Threads, and the panel's Reply 
     for (const size of [DESKTOP, PHONE]) {
       const at = `at ${size.width}x${size.height}`;
       await page.setViewportSize({ height: size.height, width: size.width });
-      await gotoIssue(page, `/issues/${seeded.key}`);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectIssuePageDrawn(page);
       await pickPreset(page, THREADS);
       await expectActivePreset(page, THREADS);
@@ -1405,7 +1405,7 @@ test("the box's picker keeps the page one screen wide when a row's detail is lon
     // whole in the row's tooltip.
     const detail = `${seeded.key} ${name}-md`;
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await composerField(page).click();
     await page.keyboard.type("#zebrafish");
@@ -1473,7 +1473,7 @@ test("the end of the outline on screen for a second marks the issue read", async
     const last = seeded.forty.comments.at(-1) ?? "";
     const head = await newest(key);
     expect(await mark(key), "the seed left the issue read for the reader").toBeLessThan(head);
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(composerField(page)).toBeVisible();
     await expect(nodeRow(page, last), "the outline does not draw its last row").toHaveCount(1);
@@ -1530,7 +1530,7 @@ test("the end of the outline on screen for a second marks the issue read", async
     expect(await mark(short), "the seed left the short issue read for the reader").toBeLessThan(
       shortHead
     );
-    await gotoIssue(page, `/issues/${short}`);
+    await gotoIssue(page, `/issues/${short}/conversation`);
     await expectIssuePageDrawn(page);
     await expect
       .poll(() => mark(short), {
@@ -1592,7 +1592,7 @@ test.skip("the end of the outline on screen for a second marks the issue read, a
     const head = (await getIssueEvents(key, { limit: 1, order: "desc" }))[0]?.seq ?? 0;
     const mark = async () => (await getMyState())[key]?.last_read_seq ?? 0;
     expect(await mark(), "the seed left the issue read for the reader").toBeLessThan(head);
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect(composerField(page)).toBeVisible();
     const more = branchMoreRows(page);
@@ -1782,7 +1782,7 @@ async function commentOnStatement(
 test("r on a statement writes a comment on its text", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedStatements, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     const { cites, two } = statementCases(seeded);
     const blocks = await getArtifactBlocks(seeded.specArtifactId);
@@ -1866,7 +1866,7 @@ test.skip("r on a statement writes a comment on its text, and its target line na
   },
 }, async ({ browser }) => {
   await phase(browser, seedStatements, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     const statement = blockNode(seeded.specSlug, STATEMENT_BLOCKS.two);
     await expect(nodeRow(page, statement), "the outline draws no row of the statement").toHaveCount(
@@ -2018,7 +2018,7 @@ test("the outline marks the current point of the conversation on one row, and th
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     // At load: the one question waiting on the reader, if the server says it waits on alice, and
     // else the newest act on the issue, which is that question too, asked after every other node.
@@ -2208,7 +2208,7 @@ test.skip("the current point stays on the newest act past a result recorded afte
   },
 }, async ({ browser }) => {
   await phase(browser, seedResultAfterAct, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expectPointOn(
       page,
@@ -2218,7 +2218,7 @@ test.skip("the current point stays on the newest act past a result recorded afte
     );
   });
   await phase(browser, seedPastFifty, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     const more = branchMoreRows(page);
     await expect(
@@ -2256,7 +2256,7 @@ test("a key of the reader's that drops the focused row from the view hands the f
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await focusRow(page, seeded.head);
     // The cycle's last state draws every branch, the thread's fourth level among them.

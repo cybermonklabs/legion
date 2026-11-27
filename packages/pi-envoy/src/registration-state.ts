@@ -13,6 +13,8 @@ import {
 } from "@legion/envoy-client/transport";
 import type { RoleRegainReason } from "@legion/pi-shared/role-claim-bridge";
 import { createHandBackLedger } from "./hand-back-ledger";
+import { createListenerReads, type InterestRead, type RoleHolderRead } from "./listener-reads";
+import type { RoleTopicFollows } from "./role-topics";
 import type { SessionInbound } from "./session-inbound";
 import { createQueue, type RunningTask, refuseStep, type TaskQueue } from "./task-queue";
 
@@ -150,11 +152,14 @@ export interface RegistrationStateDeps {
    * staying with the extension, and takes them out of the listener's registry under
    * `sessionID` — the session the hold was under, empty when the module holds none, which the
    * host reads as its own open session. A role's end closes every notice subject a plugin
-   * opened while it was held, and those were registered while the role stood: a notice lane
-   * reaches a session from its own consumer alone, so they leave the session's consumer filter
-   * only by leaving the registry. Best-effort, and never awaited here.
+   * opened while it was held and every topic `roleTopics` followed for it, which were registered
+   * while the role stood: they reach a session from its own consumer alone, so they leave the
+   * session's consumer filter only by leaving the registry. Best-effort, and never awaited here.
    */
   readonly closeSubjects: (sessionID: string, subjects: readonly string[]) => void;
+  /** The topics the deployment names for the held role (`ENVOY_ROLE_TOPICS`): opened each time a
+   *  hold lands here, whichever path took it, and closed when the role ends. */
+  readonly roleTopics: RoleTopicFollows;
 }
 
 /** The role this process gave up locally while the listener may still name it. */
@@ -258,11 +263,15 @@ export interface TaskHandle {
   readonly noteNoticesClosed: (role: string) => void;
 
   // — listener reads and writes —
-  /** The session the listener names as `role`'s holder; `undefined` when it names none or the
-   *  read failed. */
-  readonly readRoleHolder: (role: string) => Promise<string | undefined>;
-  /** The listener's registered interests for a session; `undefined` when the read failed. */
-  readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
+  /** The session the listener names as `role`'s holder (`RoleHolderRead`): a read that failed
+   *  knows nothing and names nobody, which a caller tells from "nobody holds it". A 404 that
+   *  names a lapsed holder (one unresponsive or gone and not reaped) is a known answer naming
+   *  that holder: it was shown what the stream stored for the role, so a resumed session must not
+   *  read it again. */
+  readonly readRoleHolder: (role: string) => Promise<RoleHolderRead>;
+  /** The listener's registered interests for a session, and whether the read answered at all
+   *  (`InterestRead`): a row that could not be read is not a session without one. */
+  readonly readInterest: (sessionID: string) => Promise<InterestRead>;
   /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned in the
    *  caller's own words and swallowed: the next pass reads
    *  the registry afresh. The warning is `busUnanswered` when the listener's message bus did not
@@ -380,10 +389,13 @@ export interface RegistrationState {
   readonly holdsRoleTopic: (topic: string) => boolean;
   /** The session id the listener names for the role this session holds. */
   readonly holdSessionID: () => string | undefined;
-  /** Whether `subject` is taken only while this session holds its role. */
+  /** Whether the session follows `subject` only while it holds its role: a notice subject a plugin
+   *  marked (`markRoleBoundSubjects`), or one only the held role's topics want (`roleTopics`). The
+   *  ledger records no such subject as the session's own. */
   readonly isRoleBound: (subject: string) => boolean;
-  /** Every role-bound subject, in the order they were marked. */
-  readonly roleBoundSubjects: () => readonly string[];
+  /** Every notice subject a plugin marked for the held role, in the order they were marked. The
+   *  deployment's role topics are not among them: no plugin owns those. */
+  readonly pluginRoleSubjects: () => readonly string[];
   /** Whether `topic` serves the role this session holds, and how many roles had ended, at once. */
   readonly roleSnapshot: (topic: string) => RoleSnapshot;
   /** The role the listener refused to this session's automatic claim, if any. */
@@ -449,14 +461,28 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   let inboundOpenFor = "";
 
   const heldRole = (): string | undefined => claimedRoleTopic?.slice(ROLE_TOPIC_PREFIX.length);
-  const isRoleBound = (subject: string): boolean => roleNoticeSubjects.has(subject);
+  const isRoleBound = (subject: string): boolean =>
+    roleNoticeSubjects.has(subject) || deps.roleTopics.roleOnly(subject);
+
+  // A hold of `topic` under `sessionID` lands here, whichever path took it: the topics the
+  // deployment names for its role are opened with it, so no path that lands a hold can miss them.
+  const landHold = (topic: string, sessionID: string): void => {
+    claimedRoleTopic = topic;
+    claimedRoleSessionID = sessionID;
+    const role = heldRole();
+    if (role === undefined) return;
+    // Topics opened for another role than this hold's (a resumed session's wanted role, whose
+    // claim decided nothing) are that role's to close, not this one's to keep.
+    const dropped = deps.roleTopics.open(role, sessionID);
+    if (dropped.length > 0) deps.closeSubjects(sessionID, dropped);
+  };
 
   // The session stops holding its role: close the notice subjects it took for it, so a holder
   // another session replaced stops taking the role's wakes, and take them out of the listener's
   // registry with them.
   const endRole = (): void => {
     const held = claimedRoleSessionID ?? "";
-    const closed = [...roleNoticeSubjects];
+    const closed = [...new Set([...roleNoticeSubjects, ...deps.roleTopics.close()])];
     claimedRoleTopic = undefined;
     claimedRoleSessionID = undefined;
     roleEnds += 1;
@@ -469,6 +495,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     // even when its answer is lost: a hold of that session this process abandoned is its own
     // again, and the pass behind this registration sends the release.
     holds.adoptFor(input.sessionID);
+    deps.roleTopics.registered(input.topics);
     return deps
       .client()
       .subscribe({ ...input, clientInstanceID })
@@ -497,8 +524,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   ): Promise<void> => {
     const movedOff = previousTopic === topic ? undefined : previousTopic;
     if (movedOff !== undefined) endRole();
-    claimedRoleTopic = topic;
-    claimedRoleSessionID = sessionID;
+    landHold(topic, sessionID);
     recordClaim?.();
     if (movedOff !== undefined && previousHoldID) {
       await holds.handBackOrAbandon(movedOff, previousHoldID, {
@@ -605,8 +631,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         ) {
           return false;
         }
-        claimedRoleTopic = hold.topic;
-        claimedRoleSessionID = hold.id;
+        landHold(hold.topic, hold.id);
         holdUnconfirmed = true;
         return true;
       });
@@ -671,15 +696,18 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         refuse(`the session moved on while its claim of role ${role} was in flight`);
       }
       if (!result.claimed) {
-        endRole();
         // A refusal naming this task's own session id is the standing claim of another process
         // under that id, which the listener grants the moment that process stops renewing it.
-        // Nothing says another session took the role, so no refusal is latched and nothing is
-        // said — the rule `reassertRole` keeps for the same state. A latch would make
+        // Nothing says another session took the role, so nothing ends here, no refusal is latched
+        // and nothing is said: the rule `reassertRole` keeps for the same state. Ending the role
+        // would close the topics the deployment names for it, and a resumed session opened those
+        // before its claim so that the stamps its transcript restored carry over: closed until the
+        // claim lands, every post stored meanwhile would be answered done. A latch would make
         // `desiredRole` want no role until a session event landed, and the line would be written
         // out again on every heartbeat for as long as that other process lived; the next pass
         // claims again instead.
         if (result.holder === id) return { claimed: false };
+        endRole();
         // Only a soft claim is refused. A holder that is this process's own abandoned hold is
         // waited out, since the listener reaps it; any other is the newer holder.
         const waitingOnReap = await holds.observeAbandonedHold(topic, role, result.holder, live);
@@ -875,36 +903,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
           "warning"
         );
       },
-      readRoleHolder: async (role) => {
-        guard();
-        return deps
-          .client()
-          .getRole(role)
-          .then(
-            (info) => info.holder,
-            () => undefined
-          );
-      },
-      readInterest: async (sessionID) => {
-        guard();
-        return deps
-          .client()
-          .getInterest(sessionID)
-          .catch(() => undefined);
-      },
-      unregisterTopics: async (sessionID, topics, warnings) => {
-        guard();
-        await deps
-          .client()
-          .unsubscribe({ sessionID, topics: [...topics] })
-          .catch((error: unknown) =>
-            deps.log.warn(isBusUnanswered(error) ? warnings.busUnanswered : warnings.failed, {
-              sessionID,
-              topics,
-              error: messageFor(error),
-            })
-          );
-      },
+      ...createListenerReads({ guard, client: deps.client, log: deps.log }),
       connect,
       subscribe: async (topic) => {
         guard();
@@ -981,7 +980,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     holdsRoleTopic: (topic) => claimedRoleTopic === topic,
     holdSessionID: () => claimedRoleSessionID,
     isRoleBound,
-    roleBoundSubjects: () => [...roleNoticeSubjects],
+    pluginRoleSubjects: () => [...roleNoticeSubjects],
     roleSnapshot: (topic) => ({
       roleBound: expandSubscriptionTopics([topic]).some(isRoleBound),
       endsBefore: roleEnds,

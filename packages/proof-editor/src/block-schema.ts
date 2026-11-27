@@ -7,6 +7,7 @@ import type {
   BlockSchemaElement,
   BlockTypeSchema,
 } from '@legion/contracts';
+import { PARENT_ATTRIBUTE } from '@legion/contracts';
 import { $nodeSchema } from '@milkdown/kit/utils';
 import { DOMParser, type DOMOutputSpec, type Fragment, type Node as ProseMirrorNode, type Schema } from '@milkdown/kit/prose/model';
 import type { MarkdownNode as ParsedMarkdownNode, NodeSchema } from '@milkdown/kit/transformer';
@@ -142,6 +143,9 @@ export function validateBlockSchema(schema: BlockSchema): void {
       }
       if (attribute.targets !== undefined && attribute.kind !== 'block[]') {
         throw new Error(`typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} has targets, which only a block[] attribute may carry`);
+      }
+      if (name === PARENT_ATTRIBUTE && attribute.kind !== 'block[]') {
+        throw new Error(`typed block ${JSON.stringify(type.name)} attribute ${JSON.stringify(name)} places a block in its tree, so it must be a block[] attribute`);
       }
     }
   }

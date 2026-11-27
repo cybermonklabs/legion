@@ -717,8 +717,8 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       content: VERIFICATION,
     });
 
-    // One workflow run for each push of a ref at a commit, as GitHub numbers them: the attempts
-    // and the legs of one push share its run.
+    // One workflow run for each push of a ref at a commit, as GitHub numbers them: every attempt
+    // of one push shares its run.
     const runIds = new Map<string, number>();
     return {
       agentSecrets,

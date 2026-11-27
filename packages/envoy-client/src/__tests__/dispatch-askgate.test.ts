@@ -12,6 +12,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { keyedLayer } from "../../test/keyed-layer";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
@@ -25,6 +26,14 @@ import { pruneSessions } from "../dispatch-session-state";
 // CLI consumes a marker before it posts a gated write, and refuses one with no marker, whatever
 // form ran it. These tests write the record and the markers by hand, in the format the gate
 // writes, so they hold the CLI to that format and to nothing of the gate's.
+
+// The programs themselves, never a mise shim of them, read here at module scope as docs/testing.md
+// says: the row below gives each child a HOME of its own, where a shim reads the real home's
+// config as untrusted, or finds no version, and exits 1 before the program runs. That row calls
+// requireHostTools first, which fails it by name on a host that lacks either program, so the bare
+// name each fallback holds is never what runs.
+const node = hostTool("node") ?? "node";
+const python3 = hostTool("python3") ?? "python3";
 
 interface Recorded {
   readonly method: string;
@@ -844,6 +853,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
   // whole-suite run and 56.71 s with this file alone, which left its old 60 s limit 1.03x in hand.
   // It fires only if a child never exits.
   test("a gated write from xargs, python3 -c, node -e, bun -e, an alias or a script is refused; with no record it posts", async () => {
+    requireHostTools("node", "python3");
     const bin = join(stateDir, "bin");
     mkdirSync(bin);
     writeFileSync(
@@ -856,11 +866,11 @@ describe("AskGate at the dispatch entry, across processes", () => {
     const argv = '"message", "--issue", "DSP-1", "--body", "hi"';
     const forms: Array<[string, string[]]> = [
       ["xargs", ["bash", "-c", "printf '%s\\n' message --issue DSP-1 --body hi | xargs dispatch"]],
-      ["python3 -c", ["python3", "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
+      ["python3 -c", [python3, "-c", `import subprocess; subprocess.run(["dispatch", ${argv}])`]],
       [
         "node -e",
         [
-          "node",
+          node,
           "-e",
           `require("node:child_process").spawnSync("dispatch", [${argv}], { stdio: "inherit" })`,
         ],

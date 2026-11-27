@@ -156,7 +156,6 @@ test("ProofDocument hands its decision blocks the indexed ask; the hosted card a
     expect(within(hosted).getByText("Architect for CORE-1")).toBeDefined();
     await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-1"));
     await user.click(await block.findByRole("radio", { name: "Ship Release it" }));
-    await user.click(block.getByRole("button", { name: "Add a note or answer in your own words" }));
     await user.click(block.getByLabelText("Your answer"));
     await user.paste("Go.");
     const getArtifactText = spyOn(api, "getArtifactText");
@@ -246,7 +245,6 @@ test("after Ask back on a decision block, the hosted card's turn label follows t
     if (section === null) throw new Error("the ask block shell was not mounted");
     const block = within(section as HTMLElement);
     expect((await block.findByTestId("turn-ask-1")).textContent).toBe("Waiting on you");
-    await user.click(block.getByRole("button", { name: "Add a note or answer in your own words" }));
     await user.click(block.getByLabelText("Your answer"));
     await user.paste("Ship where?");
     await user.click(block.getByRole("button", { name: "Ask back" }));

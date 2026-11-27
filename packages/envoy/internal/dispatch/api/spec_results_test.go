@@ -807,7 +807,7 @@ func (r *specResultsRig) workflowsAsked() []string {
 // name, and a name may end in parentheses with no matrix behind them: the job foo is named
 // `foo (bar)` and has no matrix. Its check run writes the check that names the job `foo (bar)`,
 // with no leg. GitHub is asked for the run's workflow file once, which says that one job is named
-// `foo (bar)` and that no matrix job makes that name for a leg.
+// `foo (bar)` and that no matrix job can make that name for a leg.
 func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(31, "foo (bar)"), passOf(parenthesizedCheck)))
@@ -835,8 +835,8 @@ func TestAnExactNameThatALegOfAMatrixJobMakesSaysNoJob(t *testing.T) {
 		"failing_example:\n  - A unit probe test that fails.\n"
 	workflow := func(matrixJob string) string {
 		return "jobs:\n" +
-			"  " + matrixJob + ":\n    strategy:\n      matrix:\n        suite: [unit]\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n" +
-			"  other:\n    name: test (unit)\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
+			job(matrixJob, "    strategy:\n      matrix:\n        suite: [unit]\n") +
+			job("other", "    name: test (unit)\n")
 	}
 	rigWith := func(t *testing.T, matrixJob string) *specResultsRig {
 		rig := newSpecResultsRig(t)
@@ -881,13 +881,24 @@ func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
 	})
 	t.Run("a matrix written as an expression", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
-		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n  build:\n    strategy:\n      matrix: ${{ fromJSON(needs.setup.outputs.legs) }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
+		rig.github.workflows[specResultsCommit][specResultsWorkflowPath] = "jobs:\n" + job("build", "    strategy:\n      matrix: ${{ fromJSON(needs.setup.outputs.legs) }}\n")
 		result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(41, "build (linux)"), passOf(buildCheck)))
 		if p := result.Attestation.Predicate; p.Job != "build" || p.Leg != "linux" {
 			t.Fatalf("the result is of job %q, leg %q; want the job build and the leg linux", p.Job, p.Leg)
 		}
 	})
 }
+
+// job is one job of a workflow file, as the rows of this file write one: its id, whatever body
+// the row gives it (a name, a matrix, or neither), and the runner and the one step every such
+// job has.
+func job(id, body string) string {
+	return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
+}
+
+// linuxMatrix is the matrix body the rows below give a job: one value of one name, which is all a
+// job needs to be a matrix job, the one thing the route reads of a matrix.
+const linuxMatrix = "    strategy:\n      matrix:\n        os: [linux]\n"
 
 // TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt: GitHub does not keep a name that ends in
 // parentheses for the legs of a matrix. A check run named `build (linux)` is a leg of the job
@@ -898,25 +909,21 @@ func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
 // the file is over notes.MaxFileSize or does not read as a workflow file.
 func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit + " "
-	job := func(id, body string) string {
-		return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
-	}
-	matrix := "    strategy:\n      matrix:\n        os: [linux]\n"
 	for _, row := range []struct {
 		name, workflow, says string
 	}{
 		{name: "the job build has no matrix", workflow: "jobs:\n" + job("build", ""), says: `no job named "build"` + at + "has a matrix"},
 		{name: "the job build has an empty matrix", workflow: "jobs:\n" + job("build", "    strategy:\n      matrix: {}\n"), says: `no job named "build"` + at + "has a matrix"},
-		{name: "no job is named build", workflow: "jobs:\n" + job("test", matrix), says: `no job named "build"` + at + "has a matrix"},
-		{name: "the job's name is an expression", workflow: "jobs:\n" + job("build", "    name: ${{ 'build' }}\n"+matrix), says: "a job" + at + "is named by an expression"},
+		{name: "no job is named build", workflow: "jobs:\n" + job("test", linuxMatrix), says: `no job named "build"` + at + "has a matrix"},
+		{name: "the job's name is an expression", workflow: "jobs:\n" + job("build", "    name: ${{ 'build' }}\n"+linuxMatrix), says: "a job" + at + "is named by an expression"},
 		{
 			name:     "a job named build (linux) with no matrix beside the matrix job build",
-			workflow: "jobs:\n" + job("build", matrix) + job("other", "    name: build (linux)\n"),
+			workflow: "jobs:\n" + job("build", linuxMatrix) + job("other", "    name: build (linux)\n"),
 			says:     `the job named "build (linux)"` + at + "has no matrix",
 		},
 		{
 			name:     "a workflow file over the size bound",
-			workflow: "jobs:\n" + job("build", matrix) + strings.Repeat("#", notes.MaxFileSize+1-len("jobs:\n"+job("build", matrix))),
+			workflow: "jobs:\n" + job("build", linuxMatrix) + strings.Repeat("#", notes.MaxFileSize+1-len("jobs:\n"+job("build", linuxMatrix))),
 			says:     "file too large: " + specResultsWorkflowPath + " is 1048577 bytes (limit 1048576)",
 		},
 		{name: "a file that does not read as a workflow file", workflow: "jobs: [\n", says: "does not read as a workflow file"},
@@ -941,10 +948,7 @@ func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 // that can make it: the leg writes build's check.
 func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
 	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit
-	job := func(id, body string) string {
-		return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
-	}
-	build := job("build", "    strategy:\n      matrix:\n        os: [linux]\n")
+	build := job("build", linuxMatrix)
 	for _, row := range []struct {
 		name, workflow, checkRun, says string
 	}{

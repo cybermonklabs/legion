@@ -9,6 +9,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
+import { callOf } from "@legion/envoy-client/test/fake-dispatch";
 import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { leastAnswerFor } from "@legion/envoy-client/test/route-answers";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -207,7 +208,6 @@ export const natsState = {
   controlsByTopic: new Map<string, SubscriptionControls[]>(),
   published: [] as { readonly subject: string; readonly data: Uint8Array | undefined }[],
   onPublish: undefined as ((subject: string) => void) | undefined,
-  failPublishes: 0,
   failSubscribes: 0,
   connectedNames: [] as string[],
   /** What each connect was given: its servers, and whether it carried an nkey authenticator. */
@@ -259,8 +259,10 @@ export const natsState = {
   failFlushClosesConnection: false,
 };
 
-/** Reports `{ type }` to every reader of a mocked connection's `status()`. */
+/** Reports `{ type }` to every reader of a mocked connection's `status()`; a push from a session
+ *  whose row has ended reaches nobody, including the one `reconnect` leaves on a timer. */
 export function pushNatsStatus(type: string): void {
+  if (fromEndedRow()) return;
   for (const read of natsState.statusReaders) read({ type, data: "" });
 }
 
@@ -275,12 +277,6 @@ export const natsStandInConnect = async (options: {
   readonly authenticator?: unknown;
 }) => {
   const { name, servers, authenticator } = options;
-  if (natsState.failConnects > 0) {
-    natsState.failConnects -= 1;
-    throw natsState.failError();
-  }
-  natsState.connectedNames.push(name);
-  natsState.connects.push({ servers, authenticated: authenticator !== undefined });
   // A CONNECT asks the authenticator for its credential over the server's nonce, as nats.js does
   // at every connect and reconnect.
   const connectWith = (nonce: string) => {
@@ -290,11 +286,27 @@ export const natsStandInConnect = async (options: {
       natsState.presented.push(String(credential.auth_token));
     }
   };
-  connectWith("stand-in-nonce");
-  // Parked only where a test asks for it: every other connect answers at once.
-  if (natsState.heldConnect !== undefined) await natsState.heldConnect;
-  if (natsState.realConnect) {
-    return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
+  // An ended row's late connect takes nothing the running row armed (a refusal, a parked dial, a
+  // real server) and is not counted among that row's connections. A dial parked by `heldConnect`
+  // is asked again when it comes back: the row that started it can have ended while it waited, and
+  // what it does from here is the new row's state.
+  let late = fromEndedRow();
+  if (!late) {
+    if (natsState.failConnects > 0) {
+      natsState.failConnects -= 1;
+      throw natsState.failError();
+    }
+    natsState.connectedNames.push(name);
+    natsState.connects.push({ servers, authenticated: authenticator !== undefined });
+    connectWith("stand-in-nonce");
+    // Parked only where a test asks for it: every other connect answers at once.
+    if (natsState.heldConnect !== undefined) {
+      await natsState.heldConnect;
+      late = fromEndedRow();
+    }
+    if (!late && natsState.realConnect) {
+      return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
+    }
   }
   let closed = false;
   // nats.js's `closed()`: settles once the connection is closed for good, with the close's error.
@@ -304,16 +316,22 @@ export const natsStandInConnect = async (options: {
     closed: () => ended.promise,
     close: async () => {
       closed = true;
+      if (fromEndedRow()) {
+        ended.resolve(undefined);
+        return;
+      }
       natsState.closedNames.push(name);
       ended.resolve(natsState.closeError);
     },
     drain: async () => {
+      if (fromEndedRow()) return;
       natsState.drainStarted = true;
       if (natsState.drainHangs) await Promise.withResolvers<never>().promise;
     },
     // nats.js's client-initiated reconnect: the connection drops and comes back with a CONNECT of
     // its own, which every reader of its status hears of once it is back.
     reconnect: async () => {
+      if (fromEndedRow()) return;
       natsState.timeline.push("reconnect");
       connectWith("stand-in-nonce-again");
       setTimeout(() => pushNatsStatus("reconnect"), 0);
@@ -328,7 +346,8 @@ export const natsStandInConnect = async (options: {
         wake?.();
         wake = undefined;
       };
-      natsState.statusReaders.push(reader);
+      // An ended row's reader hears nothing of the running row's status pushes.
+      if (!fromEndedRow()) natsState.statusReaders.push(reader);
       return {
         [Symbol.asyncIterator]: () => ({
           next: async (): Promise<
@@ -350,8 +369,15 @@ export const natsStandInConnect = async (options: {
     // every pending one of them rejects when the connection drops. A rejection is transient
     // unless the connection is closed with it, which is the one case the extension gives up on.
     flush: async () => {
+      // An ended row's late flush takes nothing the running row armed: no failure, no hold. A
+      // flush parked by `heldFlush` is asked again when it comes back, because the row that
+      // started it can have ended while it waited.
+      if (fromEndedRow()) return;
       natsState.flushes.push([...natsState.subscriptions.keys()]);
-      if (natsState.heldFlush !== undefined) await natsState.heldFlush;
+      if (natsState.heldFlush !== undefined) {
+        await natsState.heldFlush;
+        if (fromEndedRow()) return;
+      }
       const failing = natsState.failFlushOnSubject;
       if (failing !== undefined && natsState.controls.has(failing)) {
         natsState.failFlushOnSubject = undefined;
@@ -360,15 +386,14 @@ export const natsStandInConnect = async (options: {
       }
     },
     publish: (subject: string, data?: Uint8Array) => {
-      if (natsState.failPublishes > 0) {
-        natsState.failPublishes -= 1;
-        throw new Error("PUBLISH_FAILED");
-      }
       if (fromEndedRow()) return;
       natsState.published.push({ subject, data });
       natsState.onPublish?.(subject);
     },
     subscribe: (topic: string) => {
+      // An ended row's late subscribe takes nothing: not the failure the row running now armed,
+      // and no place in that row's timeline or subscriptions.
+      if (fromEndedRow()) return endedRowSubscription();
       natsState.timeline.push(`subscribe ${topic}`);
       if (natsState.failSubscribes > 0) {
         natsState.failSubscribes -= 1;
@@ -448,9 +473,24 @@ export const natsStandInConnect = async (options: {
       return subscription;
     },
   };
-  natsState.connections.push(made);
+  if (!late) natsState.connections.push(made);
   return made;
 };
+
+/** What an ended row's late subscribe is given: a subscription that delivers nothing and ends
+ *  when it is unsubscribed, as a subscription the server never answers would. */
+function endedRowSubscription(): Subscription {
+  const unsubscribed = Promise.withResolvers<void>();
+  return {
+    unsubscribe: () => unsubscribed.resolve(),
+    [Symbol.asyncIterator]: () => ({
+      next: async () => {
+        await unsubscribed.promise;
+        return { done: true, value: undefined };
+      },
+    }),
+  };
+}
 
 /** The stream id every registration answer and relay frame of these suites names. */
 export const TEST_STREAM_ID = "stream-test";
@@ -485,12 +525,10 @@ export function responseWithRegistration(
   init: RequestInit | undefined,
   fallback: unknown
 ): Response {
-  // The URL and the method are read off the call rather than from a `new Request(input, init)`,
-  // which TypeScript refuses for an input this wide: a Request names its own, and a string or a
-  // URL carries the method in `init` alone, defaulting to GET as fetch does.
-  const asRequest = typeof input === "string" || input instanceof URL ? undefined : input;
-  const path = new URL(asRequest?.url ?? input.toString()).pathname;
-  const method = (init?.method ?? asRequest?.method ?? "GET").toUpperCase();
+  // What the call asked for, read as envoy-client's fake Dispatch reads it (callOf): a Request
+  // names its own URL and method, and a string or a URL carries the method in `init` alone.
+  const { url, method } = callOf(input, init);
+  const path = url.pathname;
   const written =
     (method === "POST" || method === "PATCH") && path.startsWith("/api/v1/")
       ? leastAnswerFor(method, path)
@@ -541,7 +579,6 @@ export function resetNatsStandIn(): void {
   natsState.heldConnect = undefined;
   natsState.published.length = 0;
   natsState.onPublish = undefined;
-  natsState.failPublishes = 0;
   natsState.subscriptions.clear();
   natsState.controls.clear();
   registeredTopics.clear();
