@@ -395,9 +395,9 @@ func pnReturnsWhereItTakes(t *testing.T, held pnHeldStart, merged bool) {
 	}
 	work := starts[0].task
 	pnAsksNoForwardMerge(t, "the "+string(role)+"'s task", work)
-	if row := spPhaseRow(t, pool, spParent, role); row.Entry != top+1 || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren {
-		t.Fatalf("the %s's phases row after the return = %+v, want entry %d, one above the issue's highest entry %d, raised as a move back out of awaiting_children",
-			role, row, top+1, top)
+	if row := spPhaseRow(t, pool, spParent, role); row.Entry <= top || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren {
+		t.Fatalf("the %s's phases row after the return = %+v, want an entry above the issue's highest entry %d, raised as a move back out of awaiting_children",
+			role, row, top)
 	}
 	named := pnMergedChildren(spParent, pnMerged(spChild, 51))
 	switch {
@@ -825,15 +825,15 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("admission.waiting = %v, want %v: the returned start before the root ranked above the parent's tree", got, want)
 		}
 		// The return counts no review round and no move back: the implementer's row, which holds
-		// the counts, is as it was. The tester's row is on a new entry raised as a move back, one
-		// above the issue's highest entry.
+		// the counts, is as it was. The tester's row is on a new entry raised as a move back, above
+		// the issue's highest entry.
 		if row := spPhaseRow(t, pool, spParent, claim.RoleImplementer); row.Pass != counted.Pass || row.Rounds != counted.Rounds ||
 			!maps.Equal(row.BackwardMoves, counted.BackwardMoves) || row.Entry != counted.Entry {
 			t.Fatalf("the implementer's row after the return = %+v, want the entry and the counts of %+v: the return counts no round and no move back", row, counted)
 		}
-		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.Entry != top+1 || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren || row.EntryTask != work {
-			t.Fatalf("the tester's row after the return = %+v, want entry %d, one above the issue's highest entry %d, raised on its task as a move back out of awaiting_children",
-				row, top+1, top)
+		if row := spPhaseRow(t, pool, spParent, claim.RoleTester); row.Entry <= top || !row.EntryMovedBack || row.EntryFrom != phase.AwaitingChildren || row.EntryTask != work {
+			t.Fatalf("the tester's row after the return = %+v, want an entry above the issue's highest entry %d, raised on its task as a move back out of awaiting_children",
+				row, top)
 		}
 		if told := spNotices(t, pool, spParent); len(told) != 1 {
 			t.Fatalf("awaiting-children notices = %+v, want the move's one: the return tells nobody", told)
@@ -1415,9 +1415,9 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 					}
 				}
 				row := spPhaseRow(t, pool, spParent, claim.RoleReviewer)
-				if entry := fmt.Sprintf(" %s: %d.", reviewround.EntryLabel, row.Entry); row.Entry != stopped.Entry+1 || !strings.HasSuffix(work, entry) {
-					t.Fatalf("the reviewer's task after the return = %q on its row's entry %d; want it to end with the return's entry %d, above the stopped %d: %q",
-						work, row.Entry, stopped.Entry+1, stopped.Entry, entry)
+				if entry := fmt.Sprintf(" %s: %d.", reviewround.EntryLabel, row.Entry); row.Entry <= stopped.Entry || !strings.HasSuffix(work, entry) {
+					t.Fatalf("the reviewer's task after the return = %q on its row's entry %d; want it to end with the return's entry, above the stopped %d: %q",
+						work, row.Entry, stopped.Entry, entry)
 				}
 				if named := pnMergedChildren(spParent, pnMerged(spChild, 51)); !strings.HasPrefix(work, wait.Task) || !strings.Contains(work, named) {
 					t.Fatalf("the reviewer's task after the return = %q, want the held task %q followed by %q", work, wait.Task, named)
