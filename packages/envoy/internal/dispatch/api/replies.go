@@ -38,8 +38,9 @@ import (
 // state=unread, the default, answers the unread rows the Inbox's count reads.
 //
 // The Agent half - the statements each state reads those rows through, the row read and the
-// session names the page shows - is api/replies_agent.go's. This file holds the /api/v1 route
-// (v2_logs.go holds the /api/v2 one), the Reply half and what the two share.
+// session names the page shows - is api/replies_agent.go's. This file holds the /api/v1 route's
+// handler, listMyReplies (v2_logs.go holds the /api/v2 one's, listMyThreadsV2), the Reply half and
+// what the two share.
 
 // myRepliesOwner is the filter every Reply read shares: the caller's rows ($1, their canonical
 // login), narrowed to one issue ($2, empty for any) or one project document ($3, null for any),

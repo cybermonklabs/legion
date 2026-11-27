@@ -320,12 +320,12 @@ type createHandoffV2Input struct {
 }
 
 // requireHeldV2 answers whether the object a /api/v2 path names by the uuid id exists, and where
-// it does not writes its 404, code with message, the code of the object the path names
-// (dispatch://INFRA-4071/spec R7). exists is the select exists that finds it, over $1, the id, and
-// more after it; what names the object in the error of a read that fails. An id that is no uuid
-// names no object and is not read. The prefix layer has already read an id written short into
-// the whole one it names (resolveIDPrefixes).
-func (s *server) requireHeldV2(w http.ResponseWriter, r *http.Request, id, what, exists string, code apicode.Code, message string, more ...any) bool {
+// it does not writes missing, its 404 with the code of the object the path names
+// (dispatch://INFRA-4071/spec R7), whole, as writeHandlerError writes a refusal. exists is the select
+// exists that finds it, over $1, the id, and more after it; what names the object in the error of a
+// read that fails. An id that is no uuid names no object and is not read. The prefix layer has
+// already read an id written short into the whole one it names (resolveIDPrefixes).
+func (s *server) requireHeldV2(w http.ResponseWriter, r *http.Request, id, what, exists string, missing error, more ...any) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), exists, append([]any{id}, more...)...).Scan(&held); err != nil {
@@ -334,7 +334,7 @@ func (s *server) requireHeldV2(w http.ResponseWriter, r *http.Request, id, what,
 		}
 	}
 	if !held {
-		writeError(w, r, code, message)
+		s.writeHandlerError(w, r, missing)
 	}
 	return held
 }
@@ -343,14 +343,14 @@ func (s *server) requireHeldV2(w http.ResponseWriter, r *http.Request, id, what,
 // COMMENT_NOT_FOUND (requireHeldV2).
 func (s *server) requireCommentV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	return s.requireHeldV2(w, r, id, "comment", `select exists (select 1 from comments where id = $1)`,
-		apicode.CommentNotFound, "no comment has the id "+id)
+		errorf(apicode.CommentNotFound, "no comment has the id %s", id))
 }
 
 // requireMessageV2 answers whether the message id names exists, and where it does not writes 404
 // MESSAGE_NOT_FOUND (requireHeldV2).
 func (s *server) requireMessageV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	return s.requireHeldV2(w, r, id, "message", `select exists (select 1 from messages where id = $1)`,
-		apicode.MessageNotFound, "no message has the id "+id)
+		errorf(apicode.MessageNotFound, "no message has the id %s", id))
 }
 
 // requireBearerCaller answers whether the request carries a bearer credential, and where it does

@@ -413,7 +413,7 @@ func (s *server) answerArtifactList(w http.ResponseWriter, r *http.Request, list
 // ARTIFACT_NOT_FOUND (requireHeldV2).
 func (s *server) requireArtifactV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	return s.requireHeldV2(w, r, id, "artifact", `select exists (select 1 from artifacts where id = $1)`,
-		apicode.ArtifactNotFound, "artifact not found")
+		errorf(apicode.ArtifactNotFound, "artifact not found"))
 }
 
 // agentArtifactListAuthority is the authority of GET /api/v2/agents/{session_id}/artifacts's list

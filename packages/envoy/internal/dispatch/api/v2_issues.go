@@ -1162,7 +1162,7 @@ func (s *server) unsubscribeIssueSessionV2(w http.ResponseWriter, r *http.Reques
 // 404 RESULT_NOT_FOUND (requireHeldV2).
 func (s *server) requireResultV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	return s.requireHeldV2(w, r, id, "check result", `select exists (select 1 from check_results where id = $1)`,
-		apicode.ResultNotFound, "no check result has the id "+id)
+		errorf(apicode.ResultNotFound, "no check result has the id %s", id))
 }
 
 // putResultStateV2 answers PUT /api/v2/results/{id}/state: the retraction POST

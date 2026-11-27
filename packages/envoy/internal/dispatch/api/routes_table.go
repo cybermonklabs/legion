@@ -341,14 +341,15 @@ func declareRoute(route routeDecl) routeDecl {
 	return route
 }
 
-// rowRegistry is every routeRow a /api/v2 row file declares, in the order the files were
-// initialized. Nothing appends to it once the package is initialized: routes() reads it.
+// rowRegistry is the constructor of every routeRow a /api/v2 row file declares, in the order the
+// files were initialized. Nothing appends to it once the package is initialized: routeRows reads
+// it.
 var rowRegistry []func(*server) routeRow
 
 // declareRow adds one /api/v2 routeRow constructor to rowRegistry and returns true. Each /api/v2
 // row file calls it once, from a package-level declaration, so the registry is whole before any
-// function of the package runs, in the order Go's package initialization decides; routes() builds
-// each row with s and sorts them by pattern and then method.
+// function of the package runs, in the order Go's package initialization decides; routeRows builds
+// each row with a server and sorts them by pattern and then method.
 func declareRow(row func(*server) routeRow) bool {
 	rowRegistry = append(rowRegistry, row)
 	return true
@@ -472,13 +473,13 @@ func threadPageDescription(entries, filters string) string {
 }
 
 // routes is every route the server serves, one apiRoute per (version, route): each route file's
-// declaration at its /api/v1 pattern (v1Route), each routeRow of rowRegistry at /api/v2 and, unless
-// it says otherwise, at /api/v1 (mountRow), and with Deps.TestHooksEnabled each test hook's
-// declaration at its two paths (testHookRoutes). Both declarations and rows are walked by pattern
-// and then method (byPatternThenMethod, byRowPatternThenMethod), so every reader walks one table in
-// one order, whichever order the route files were initialized in. Add a route as a routeRow in a
-// row file route_api_v2_<path>+<method>.go holding one declareRow, never as a routeDecl file and
-// never as a mux.HandleFunc line: /api/v1 alone serves a routeDecl file, and
+// declaration at its /api/v1 pattern (v1Route), each routeRow of rowRegistry (routeRows) at /api/v2
+// and, unless it says otherwise, at /api/v1 (mountRow), and with Deps.TestHooksEnabled each test
+// hook's declaration at its two paths (testHookRoutes). Both declarations and rows are walked by
+// pattern and then method (byPatternThenMethod, byRowPatternThenMethod), so every reader walks one
+// table in one order, whichever order the route files were initialized in. Add a route as a
+// routeRow in a row file route_api_v2_<path>+<method>.go holding one declareRow, never as a
+// routeDecl file and never as a mux.HandleFunc line: /api/v1 alone serves a routeDecl file, and
 // TestAV1OnlyRowOutsideTheFrozenListFails refuses one testdata/v1-only-routes.txt does not hold. A
 // routeRow served in both versions is decoded and gated at both paths, its Query, its Body and its
 // Authorities included (apiRoute.decoded); one that answers for /api/v1 routes which keep their own
@@ -499,12 +500,7 @@ func (s *server) routes() []apiRoute {
 			routes = append(routes, testHookRoutes(s, declaration)...)
 		}
 	}
-	rows := make([]routeRow, 0, len(rowRegistry))
-	for _, build := range rowRegistry {
-		rows = append(rows, build(s))
-	}
-	slices.SortFunc(rows, byRowPatternThenMethod)
-	for _, row := range rows {
+	for _, row := range s.routeRows() {
 		routes = append(routes, mountRow(row)...)
 	}
 	stampV2ReadClasses(routes)
@@ -516,18 +512,36 @@ func (s *server) routes() []apiRoute {
 	return routes
 }
 
-// byPatternThenMethod is the one order every reader of the declarations walks them in: by pattern,
-// and by method where one pattern has more than one. routes() sorts what it mounts with it, and so
-// does the approve-only refusal, whose message promises the order routes() mounts them in
-// (approveOnlyRefusal).
-func byPatternThenMethod(left, right routeDecl) int {
-	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
+// routeRows is every routeRow of rowRegistry, each built with s, by pattern and then method
+// (byRowPatternThenMethod), whichever order the row files were initialized in. routes() mounts
+// them, and a test that reads the rows themselves reads them here.
+func (s *server) routeRows() []routeRow {
+	rows := make([]routeRow, 0, len(rowRegistry))
+	for _, build := range rowRegistry {
+		rows = append(rows, build(s))
+	}
+	slices.SortFunc(rows, byRowPatternThenMethod)
+	return rows
 }
 
-// byRowPatternThenMethod is the same order for routeRow values, so routes() mounts them in one
-// order whichever order the row files were initialized in.
+// patternThenMethod is the one order of the table, which its declarations and its rows are each
+// walked in (byPatternThenMethod, byRowPatternThenMethod): by pattern, and by method where one
+// pattern has more than one.
+func patternThenMethod(leftPattern, leftMethod, rightPattern, rightMethod string) int {
+	return cmp.Or(strings.Compare(leftPattern, rightPattern), strings.Compare(leftMethod, rightMethod))
+}
+
+// byPatternThenMethod is the one order (patternThenMethod) for the declarations. routes() sorts
+// what it mounts with it, and so does the approve-only refusal, whose message promises the order
+// routes() mounts them in (approveOnlyRefusal).
+func byPatternThenMethod(left, right routeDecl) int {
+	return patternThenMethod(left.Pattern, left.Method, right.Pattern, right.Method)
+}
+
+// byRowPatternThenMethod is the one order (patternThenMethod) for routeRow values, which routeRows
+// answers them in.
 func byRowPatternThenMethod(left, right routeRow) int {
-	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
+	return patternThenMethod(left.Pattern, left.Method, right.Pattern, right.Method)
 }
 
 // bound is handler, a method of the server, served by s.

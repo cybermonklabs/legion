@@ -3081,9 +3081,10 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 // and each of them holds only its own refusals after it.
 //
 // Both writes are mounted on an artifact's id alone, /api/v1/artifacts/{id} (their route files)
-// and /api/v2/artifacts/{id} (v2_documents.go), so the id the request names is what each read
-// takes, and each takes the row alone (loadArtifactRowByID): the versions and the approval an
-// artifact read carries cost a second round trip, which neither read here needs. The removal reads
+// and /api/v2/artifacts/{id} (route_api_v2_artifacts_{id}+patch.go and
+// route_api_v2_artifacts_{id}+delete.go), so the id the request names is what each read takes, and
+// each takes the row alone (loadArtifactRowByID): the versions and the approval an artifact read
+// carries cost a second round trip, which neither read here needs. The removal reads
 // them nowhere, and the correction reads them once, of the row it wrote, for its answer
 // (loadArtifactDetails in renameArtifactTo).
 //

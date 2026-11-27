@@ -593,8 +593,8 @@ func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 		}
 	}
 	rows := 0
-	for _, build := range rowRegistry {
-		if build(served).OfINFRA979 {
+	for _, row := range served.routeRows() {
+		if row.OfINFRA979 {
 			rows++
 		}
 	}

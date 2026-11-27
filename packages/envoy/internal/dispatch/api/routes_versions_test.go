@@ -158,8 +158,8 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 	}
 	var infra979 []routeRow
 	ofINFRA979 := map[string]bool{}
-	for _, build := range rowRegistry {
-		if row := build(served); row.OfINFRA979 {
+	for _, row := range served.routeRows() {
+		if row.OfINFRA979 {
 			infra979 = append(infra979, row)
 			ofINFRA979[row.Method+" "+versionPrefix(apiV1)+row.Pattern] = true
 		}

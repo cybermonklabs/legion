@@ -558,9 +558,7 @@ func (written *writtenAskV2) writeUnchanged(w http.ResponseWriter, r *http.Reque
 // requireAskV2 answers whether the ask id names exists, and where it does not writes 404
 // ASK_NOT_FOUND (askNotFoundV2, requireHeldV2).
 func (s *server) requireAskV2(w http.ResponseWriter, r *http.Request, id string) bool {
-	missing := askNotFoundV2(id)
-	return s.requireHeldV2(w, r, id, "ask", `select exists (select 1 from asks where id = $1)`,
-		missing.code, missing.message)
+	return s.requireHeldV2(w, r, id, "ask", `select exists (select 1 from asks where id = $1)`, askNotFoundV2(id))
 }
 
 // requireIssueV2 answers whether the issue key names exists, and where it does not writes 404

@@ -163,11 +163,12 @@ func TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse(t *testing.T) {
 // the change of a personal token - a token they make or widen would be an approve credential on the
 // box - and with the answer of an ask, which checks approve in its handler for an approval request.
 // The list is read against the table, so a row added later that needs approve is on it unless it is
-// named here. It is written once, for /api/v1 (approveScopeRoutes), with the /api/v2 state of each
-// entry beside it; the /api/v2 routes are the successors the table gives them, which the table's
-// build stamps on its rows once (applyApprovePolicy), and this test names them from the rows that
-// need approve, so the two lists drifting apart fails it. The list holds 11 /api/v1 routes and 9
-// /api/v2 routes. The three /api/v2 routes that take several operations by state are listed with
+// named here. It is written once, for /api/v1 (approveList, over the route files that state
+// ApproveOnly), with the /api/v2 state of each entry beside it; the /api/v2 routes are the
+// successors the table gives them, which the table's build stamps on its rows once
+// (applyApprovePolicy), and this test names them from the rows that need approve, so the two lists
+// drifting apart fails it. The list holds 11 /api/v1 routes and 9 /api/v2 routes. The three
+// /api/v2 routes that take several operations by state are listed with
 // the states the token may send them: the others (a credential request's dismissal, an ask's
 // resolve and decline) stay closed to it as they are on /api/v1, held by the state check
 // (gateApproveOnlyStates).

@@ -27,9 +27,9 @@ const (
 	// maxEventReplay is the most events one page of the global event log holds: the relay's read
 	// (readEventsAfterIDOnLog) and GET /api/v1/events/log (readEventsAfterID) page through the log
 	// at it, GET /api/v2/events through a read of its own (listEventLogV2), and it is both routes'
-	// default and largest limit (parseEventLimit, v2_logs.go). An events subscription's catch-up
-	// pages readEventsAfterID at maxLiveReplay instead, the bound its resume is replayed within
-	// (replayThrough in live_events.go).
+	// default and largest limit (parseEventLimit, and the List of route_api_v2_events+get.go). An
+	// events subscription's catch-up pages readEventsAfterID at maxLiveReplay instead, the bound its
+	// resume is replayed within (replayThrough in live_events.go).
 	maxEventReplay = 1000
 )
 

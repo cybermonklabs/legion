@@ -198,7 +198,7 @@ func (s *server) requireAgentTokenV2(w http.ResponseWriter, r *http.Request, own
 		union all
 		select 1 from agent_read_tokens where id = $1 and owner = $2
 	)`,
-		apicode.AgentTokenNotFound, "you hold no agent token "+id, owner)
+		errorf(apicode.AgentTokenNotFound, "you hold no agent token %s", id), owner)
 }
 
 // revokeAgentTokenV2 answers DELETE /api/v2/me/agent-tokens/{id}: the revoke DELETE
@@ -443,7 +443,7 @@ func (s *server) requireThreadV2(w http.ResponseWriter, r *http.Request, id stri
 		select exists (select 1 from asks where id = $1)
 		    or exists (select 1 from comments where id = $1 and ask_id is null and reply_to is null)
 		    or exists (select 1 from messages where id = $1 and in_reply_to is null)
-	`, apicode.ThreadNotFound, "no ask, root comment or root message has the id "+id)
+	`, errorf(apicode.ThreadNotFound, "no ask, root comment or root message has the id %s", id))
 }
 
 // requireMarkTarget answers whether a mark's target exists, and where it does not writes its

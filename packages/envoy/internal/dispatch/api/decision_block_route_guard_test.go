@@ -41,8 +41,8 @@ const (
 // such prose unrefused, and nothing derives that list or fails when a later route joins it.
 var decisionBlockExempt = map[string]string{
 	"POST /api/v1/issues/{key}/handoffs/{phase}": handoffRouteExemption,
-	// Its /api/v2 route, the same write with the phase in the body (v2_threads.go), for the
-	// same reason.
+	// Its /api/v2 route, the same write with the phase in the body
+	// (route_api_v2_issues_{key}_handoffs+post.go), for the same reason.
 	"POST /api/v2/issues/{key}/handoffs": handoffRouteExemption,
 
 	// The five ask writes. The reason is one decision, recorded as "An ask's own question, its

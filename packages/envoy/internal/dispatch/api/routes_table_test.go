@@ -61,7 +61,7 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	if !found {
 		t.Fatalf("GET /api/v1/issues/{key} missing from the index: %+v", index.Routes)
 	}
-	// GET /api/v1 lists the routes /api/v1 serves, and testdata/routes.txt both versions'.
+	// GET /api/v1 lists the routes /api/v1 serves.
 	if served := servedAt(apiV1, (&server{}).routes()); len(index.Routes) != len(served) {
 		t.Fatalf("index lists %d routes, /api/v1 serves %d", len(index.Routes), len(served))
 	}
@@ -153,11 +153,9 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 // that adds a route updates it, and the base that added one first then makes that branch's
 // merge red for a reason that is not the branch's change
 // (docs/solutions/github/a-base-gate-arrives-in-the-merge-and-the-job-your-branch-alone-adds-is-the-line-it-refuses-pr2517.md:63-67
-// records that failure: "routes() has 147 rows, want 146: the base had added a route").
-// What catches a route added or removed by accident is the committed index
-// TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the table against
-// (testdata/routes.txt), which two branches that each add a route merge into the union of their
-// two lines.
+// records that failure: "routes() has 147 rows, want 146: the base had added a route"). A route
+// added or removed is a file added or removed, which a diff shows by its name, and two branches
+// that each add one merge two new files.
 func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 	t.Parallel()
 	routes := (&server{}).routes()
@@ -271,9 +269,7 @@ func TestEachRouteIsDeclaredInTheFileItsNameNames(t *testing.T) {
 	for _, route := range routeRegistry {
 		check(route.Method, route.Pattern)
 	}
-	probe := &server{}
-	for _, build := range rowRegistry {
-		row := build(probe)
+	for _, row := range (&server{}).routeRows() {
 		check(row.Method, "/api/v2"+row.Pattern)
 	}
 }

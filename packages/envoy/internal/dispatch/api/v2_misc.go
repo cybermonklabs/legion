@@ -470,7 +470,7 @@ func (s *server) createSessionGroupV2(w http.ResponseWriter, r *http.Request) {
 // SESSION_GROUP_NOT_FOUND (requireHeldV2).
 func (s *server) requireSessionGroupV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	return s.requireHeldV2(w, r, id, "session group", `select exists (select 1 from delivery_session_groups where id = $1::uuid)`,
-		apicode.SessionGroupNotFound, "no session group "+id)
+		errorf(apicode.SessionGroupNotFound, "no session group %s", id))
 }
 
 // deleteSessionGroupV2 answers DELETE /api/v2/session-groups/{id}: the delete DELETE
