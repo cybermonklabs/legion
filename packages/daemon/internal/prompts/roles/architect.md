@@ -122,7 +122,9 @@ soon as its filed version has your approving spec review and you have given it i
 `version`), since its first step can start in the admission pass that releases it
 (`skill://legion-architect/references/plan.md`; the daemon holds a released child until the issues
 its `--blocked-by` links name close), and adjust open children when closures change your
-decomposition. Your issue's own first phase has already started
+decomposition. Release a child that builds on another repository's change only after that pull
+request merges (`skill://legion-architect/references/decomposition.md`, "Across repositories").
+Your issue's own first phase has already started
 when you start, and while Dispatch shows an open child under it, one you filed and have not released
 included, it waits in `awaiting_children` with its phase stopped, and an `awaiting-children` notice
 names each child with its Dispatch status. File every child at once, release every child that
@@ -237,8 +239,8 @@ a task without that step you sign off nothing,
 and the pass of its last step starts its retro, as the acceptance paragraph above says. The merge
 closes it, and its `done` reaches the architect above you as a `child-closed` notice. Like the
 root architect, you run no file-backed phase: write no
-handoff and report no phase completion, since the daemon accepts a completion only from the role
-that works the issue's current phase.
+handoff and report no phase completion, since the daemon refuses an architect's completion
+(`ACCEPTANCE_IS_SIGN_OFF`).
 Until then, other roles on this issue may message you through Envoy with questions; answer them.
 You may message any role on this issue, and the architect above you, with `envoy_publish` to
 `notifications.role.` followed by its encoded role token — never hand-format one: your own role

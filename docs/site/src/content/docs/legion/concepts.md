@@ -192,6 +192,7 @@ working copy and no bookmark reaches, such as a side head, is not kept.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
+| `step` | the role of the deployment the step names | Runs each step of a role the deployment defines (`roles` in `legion.yaml`, below). Its agent does what its `prompt_file` asks, writes no handoff, and reports `pass` or `fail` with the commit its workspace stands on. The issue's Dispatch status is `in_progress`. | the App its `github_app` names, the review App by default |
 | `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow, and an open child moves it to `awaiting_children`. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
@@ -260,6 +261,19 @@ a plan its owner or an earlier owner gave before is deleted at its first step, l
 version as `workflow: a plan is not taken: the issue's group runs the project's default steps`,
 never as an earlier owner's line above, and told in the same `plan-not-taken` notice, which names
 each version and the group and offers no `register_plan`.
+
+A deployment adds roles of its own in `legion.yaml`: `roles` names each one with its `type` (one
+of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds)
+and its `prompt_file`. A role may also name its `model`, and its `github_app`, `implement` or
+`review`, the review App by default.
+A role of the type `review` works as the review App, and the loader refuses one that names
+`implement`.
+A step of such a role reads no pull request, so a plan may put it at any place, except that a role
+of the type implementation stands before the `implementer` step, since Legion's retro is done by
+the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work back as a
+failed test does, and a fail of a step of the type review counts a review round. A role the
+deployment no longer defines stops each task that still has a step of it to run, and its owner is
+told (`docs/deployment.md`, "Roles the deployment defines").
 
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, beside whatever a step of a role of the deployment
@@ -626,7 +640,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   The implementer answers such a round with a forward merge, which no reviewer asked for.
   The cap's message names both numbers, the rounds counted and the conflict rounds left out.
 - Each move back is counted by its kind, as the pair `<from>-<to>` of the phase it leaves
-  and the phase it goes to, beside the round count, and a move made while the head conflicts
+  and the phase it goes to, `testing-implementing` or any other of the 41 moves back a task's line
+  can make, beside the round count, and a move made while the head conflicts
   with its base raises no pair. A move back goes to an earlier phase of the task's line: from a
   step to any step before it in the task's order (`testing-implementing`,
   `reviewing-implementing`, or `testing-reviewing` on a task whose reviewer step comes before its

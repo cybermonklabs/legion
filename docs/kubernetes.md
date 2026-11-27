@@ -1014,7 +1014,8 @@ Every refusal is exit 1 with the message on stderr, and none falls back to file 
 
 Only the transcript and the images it names move, and only they survive the pod.
 Tool artifacts, image blobs and `models.db` stay under the agent directory on local disk (`~/.omp/profiles/legion/agent/…`), and handoffs are records on each Dispatch issue.
-A pod that dies loses those local files — the conversation it does not.
+The session store also keeps each image blob the transcript names and cannot draw again (`omp_session_files_blobs`), and the next pod's resume writes it back to that pod's disk.
+A pod that dies loses the other local files, but not the conversation or its images.
 OMP's logs are under the agent's state home (`/legion/scratch/state/<agent>/omp/profiles/legion/logs`, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), which is on the pod's own disk, the one directory of the issue's scratch named for the claim's agent, whatever role its step is on (every role of the issue can still write it):
 those logs, Chromium's `browser-profiles`, the plugin generation a stale-plugin relaunch installs and the workspace's CodeGraph index (`.codegraph/` in the workspace, 185 MB for this repository, built by a role's shim after its Oh My Pi starts) all live as long as the pod and no longer ([The disk dies with its pod](#the-disk-dies-with-its-pod)), except on a kept volume, where they live as long as the issue's Sandbox ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 Read a role's log from its pod's container while its pod is there; the pod that replaces it starts with none of it, unless the volume is kept.
@@ -1763,6 +1764,7 @@ the operator's claims and pod carry the root's tokens and names, so the workflow
 `todo` with the label queues it again.
 
 A workflow close or withdrawal queues a separate `issue_suspend` effect for each affected issue, after its stops: one for each stored claim of the issue, and one by the role alone for each role whose worker claim is none of those.
+Where a child's merge closes it and opens a production check, that effect is queued only when the check's first look ends (`endLookPending`, `closeCheck`, `internal/workflow/check.go`).
 The effect checks both workflow generations, later starts, unfinished stop effects and every claim those stops reach, including a launch not yet present in the runtime's watch.
 A held turn, unfinished or uncertain launch, or Kubernetes error keeps the effect pending; a superseded close finishes without acting.
 Once the roles have stopped, the daemon sets that issue's Sandbox to `Suspended` and waits for its pod to disappear, which takes the disk that pod owns.

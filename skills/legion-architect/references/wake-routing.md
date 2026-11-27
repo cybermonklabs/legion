@@ -13,7 +13,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
 | `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in design-gate.md) and end your turn. A late one for an older version: answer its reason if the latest does not. |
 | `carried-gate-opened` | Start and release nothing. |
-| `phase-finished` | The next phase started, or `retro-held` came too. Read `dispatch results`, the pull request and its review; tell the working role of any gap. A departure in `plan.md` under `## Departures from the spec`: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
+| `phase-finished` | The next phase started, or `retro-held` came too. Read `dispatch results`, the pull request and its review, or the notice's `verdict`; tell the working role of any gap. A departure in `plan.md` under `## Departures from the spec`: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
 | `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in plan-changes.md says. |
 | `pr-blocked` | Decide in this turn, as "A capped pull request" below says. |
 | `checks-red` | The daemon asked the implementer, or in `merging` the merger, to merge the base forward; the issue stays in the phase the notice names. Start nothing ("A conflicting head" in acceptance.md). |
@@ -42,7 +42,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 ## A capped pull request
 
 A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
-Only requests for changes count: no tester's fail, no move back.
+Changes requested and review steps' fails count: no tester's fail, no move back.
 Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
 
 - **Narrow**: the change is sound but each round finds more around it.

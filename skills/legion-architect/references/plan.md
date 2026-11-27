@@ -9,7 +9,7 @@ A plan of several tasks, a task's `needs`, and the base of each task's pull requ
 
 ## The task block
 
-You choose which of Legion's steps each issue of your tree runs.
+You choose which steps each issue of your tree runs.
 An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 It holds one `plan_task` block for each task:
@@ -42,7 +42,7 @@ The table lists Legion's steps in the order of the default steps:
 | Step | Type | Phase | What leaving it out means |
 | --- | --- | --- | --- |
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
-| `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
+| `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step that names no earlier one returns to the first step of the type implementation before it: the implementer, or a role of this deployment of that type standing before it. |
 | `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: you, or a subagent you dispatch, then run and record them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
 | `reviewer` | review | `reviewing` | No reviewer step, so no approval of the reviewer's: on a base whose rules require an approving review, the merger waits and tells you. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
@@ -51,7 +51,7 @@ A step of a role of this deployment runs the checks only where its prompt file a
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.
-And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read.
+And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, or whose derived result is a fail, which is the merger's.
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 A step of a role of this deployment holds the checks only as its prompt file asks.
 

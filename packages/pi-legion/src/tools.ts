@@ -439,7 +439,7 @@ function stateSummary(state: LegionState): string {
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
     // Each worker of the issue's map: Legion's six in the order of the default steps, then each role of the
-    // deployment (contract 258) in the map's order.
+    // deployment (entry 20261125180539 (deployment-roles)) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
@@ -584,9 +584,9 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    // A claim's role, one of Legion's six or a role of the deployment (contract 221): the role
-    // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
-    // controller, whose claim holds no issue.
+    // A claim's role, one of Legion's six or a role of the deployment (entry 20261125180539
+    // (deployment-roles)): the role grammar of Dispatch's step record. The operation's own check
+    // (`isStepRole`) also refuses the controller, whose claim holds no issue.
     role: z
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
@@ -870,11 +870,9 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's register_gate
     // basis, its retry_or_escalate, its register_plan and stop_task, its sign_off and the
-    // controller's operations: the text tools.test.ts pins, stop_task's and sign_off's by their
-    // terms and the rest exactly, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule, and
-    // the sentence after them is the daemon's record.StatusNotTakenYet (both in
-    // packages/daemon/internal/record/project.go). These tests hold the copies together: the
+    // controller's operations. The rules for ending a child are the words of the daemon's
+    // record.EndChildRule, and the sentence after them is the daemon's record.StatusNotTakenYet
+    // (both in packages/daemon/internal/record/project.go). These tests hold the copies together: the
     // daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
     // description to that file.
@@ -896,9 +894,10 @@ export function createLegionTool(deps: {
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
-        "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
-        "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
+        "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Each `plan_task` block names in `steps` the " +
+        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
+        "the deployment defines, each named once, with `implementer` in it, before each `tester`, `reviewer` or `acceptance:owner` " +
+        "step and after each other step of the type implementation; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Its `added` names each task the version added over the plan in force, every task of a first " +

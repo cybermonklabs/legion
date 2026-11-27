@@ -6,6 +6,7 @@ GATE = gate("pi_shared", "pi-shared", reads=reads(
     (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
     (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
     (f"{FIX}/daemon-api/**", "`packages/pi-shared/src/daemon-client.test.ts#daemonFixture`, `packages/pi-shared/src/legion-claim-core.test.ts#daemonFixture`, `packages/pi-shared/src/legion-phase-ops.test.ts#daemonFixture`; "
+                             "`packages/pi-shared/src/handoff-record.test.ts#task-dirs.json` and `packages/pi-shared/src/handoff-record.test.ts#issue-record.json` read those two fixtures; "
                              "and `packages/contracts/src/daemon-contract.ts#lastReleased` reads released-contracts.json and `packages/contracts/src/daemon-contract.ts#entryFixtures` lists contracts/*.json "
                              "for `packages/contracts/src/daemon-contract.ts#daemonContract` of a manifest that names no contract, as `packages/pi-shared/src/daemon-client.test.ts#declaredSettings` takes this tree's contract"),
     ("packages/pi-legion/src/**", "`packages/pi-shared/src/daemon-client.test.ts#CONSUMER_SOURCES` and `packages/pi-shared/src/daemon-client.test.ts#consumerFiles` walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields a read in it names"),

@@ -259,6 +259,8 @@ Then
 step) or send it back with `request_backward_move` (`issue`, `to` the phase of an earlier step of
 the task, and `reason`), a parent whose pass names an older base commit,
 or none, to `testing` (`implementing` where no tester step comes before acceptance); a parent's code fix goes to a child.
+`request_backward_move` to `step` works where one earlier step of the task runs as `step`. Where
+two do, name `return_to`.
 Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which

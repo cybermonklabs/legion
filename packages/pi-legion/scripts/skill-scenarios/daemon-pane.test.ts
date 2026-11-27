@@ -5,7 +5,14 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptAssignments } from "../../../../scripts/e2e/lib/script-functions";
-import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import {
+  composeRolePrompt,
+  composeStepPrompt,
+  DAEMON_MODULE,
+  goInDaemonModule,
+  RIG_GH_TOKEN,
+  workerPane,
+} from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
 // `go run` compiles and runs, so a host with no go runs none of them.
@@ -289,6 +296,81 @@ test.skipIf(skip)(
     }
     const repository = `Your issue's repository is ${rigWorld("worker_repo")} (default branch ${rigWorld("worker_default_branch")}); `;
     for (const prompt of [root, child, reviewer]) expect(prompt).toContain(repository);
+  },
+  600_000
+);
+
+// A step of a role the deployment defines is told the headless part every phase worker is told,
+// then the role's own prompt file, then the part every phase worker ends with, and its addressing
+// after a blank line, as the daemon composes such a launch.
+test.skipIf(skip)(
+  "composes the prompt of a step of a role of the deployment: the headless part, the role's own prompt and the part every worker ends with, then its addressing",
+  () => {
+    const promptFile = path.join(rig, "checker.md");
+    writeFileSync(promptFile, "You check doc comments.\n");
+    const parts = `${promptPart("roles/mechanics/headless.md")}\nYou check doc comments.\n${promptPart("go/worker-common.md")}`;
+
+    const checker = composeStepPrompt(DAEMON_MODULE, promptFile);
+    expect(checker.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
+    expect(checker).toMatch(/^Legion addressing: your role topic is `[^`]*-checker`;[^\n]*\.$/m);
+
+    const critic = composeStepPrompt(DAEMON_MODULE, promptFile, "critic");
+    expect(critic.startsWith(`${parts}\n\nLegion addressing: your role topic is `)).toBe(true);
+    expect(critic).toMatch(/^Legion addressing: your role topic is `[^`]*-critic`;[^\n]*\.$/m);
+  },
+  600_000
+);
+
+// Every architect owns a plan, whose steps name the roles of the deployment, so its addressing
+// goes on with them: Legion's five, then the rig's checker and critic, each with its type. Its
+// production check line comes after them (the row below).
+test.skipIf(skip)(
+  "tells an architect the roles of the rig's deployment after its addressing",
+  () => {
+    const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
+    expect(child).toMatch(
+      /\n\nLegion addressing: [^\n]* The roles of this deployment, each with the type of its step: [^\n]*, checker \(testing\), critic \(review\)\. Production check: [^\n]+\.$/
+    );
+  },
+  600_000
+);
+
+// Every architect's addressing ends with the project's production check line, after the roles of
+// the deployment and, for a root's architect, after the design gate steps, as a launch's does
+// (workerSpawnSpec). The rig's deployment leaves `production_check` unset, so the line names the
+// tester.
+test.skipIf(skip)(
+  "ends an architect's addressing with the production check line of a deployment that leaves it unset",
+  () => {
+    const root = composeRolePrompt(DAEMON_MODULE, "architect", true);
+    expect(root).toMatch(
+      /\n\nLegion addressing: [^\n]* critic \(review\)\. Design gate steps: [^\n]+\. Production check: tester\.$/
+    );
+    const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
+    expect(child).toMatch(
+      /\n\nLegion addressing: [^\n]* critic \(review\)\. Production check: tester\.$/
+    );
+  },
+  600_000
+);
+
+// daemon-pane.go restates three of the daemon's functions, the parts of a step of a role of the
+// deployment, the sentence of the deployment's roles and the sentence of its production check, and
+// daemon-pane_test.go holds each to the daemon's own in this checkout's module. `go test` exits 0
+// on a run that holds no test, so the row asks for the test's own PASS line.
+test.skipIf(skip)(
+  "holds the rig's restatements of the daemon to the daemon's own functions in this checkout",
+  () => {
+    const output = goInDaemonModule(
+      DAEMON_MODULE,
+      {
+        "main.go": path.join(import.meta.dir, "daemon-pane.go"),
+        "main_test.go": path.join(import.meta.dir, "daemon-pane_test.go"),
+      },
+      "test",
+      ["-run", "^TestTheRigsRestatementsAreTheDaemons$", "-count=1", "-v"]
+    );
+    expect(output).toMatch(/^--- PASS: TestTheRigsRestatementsAreTheDaemons \(/m);
   },
   600_000
 );
