@@ -3,7 +3,7 @@
  *  last held a deleted node (`last_held`) and when the block index places a new block, so these
  *  rows read Graph's editing against the real stack (decision 427). */
 
-import type { IssueTreeRead } from "../web/src/api/types";
+import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { CONTROL_LABELS, LENS_WORDS } from "../web/src/features/issue-page/page-words";
 import { createComment, editArtifact, getComment } from "./api";
@@ -2073,6 +2073,259 @@ test("Graph sends no request of its editing until the reader acts", async ({ bro
     expect(
       readRoutesOfWrite(traffic, from, seed.tree).filter((route) => ownReads[route] !== true),
       "a retype is followed by a read beside the outline's and the approval's"
+    ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The tester's red rows of the round at b0aa52ce: each pins one defect that the round found on the
+// real stack, or in the preview of the copies of INFRA-1196 and INFRA-3570, and that no row above
+// reads. No check of the Verification document names them yet; each fails at that head on the
+// message its own assertion names.
+// ---------------------------------------------------------------------------------------------
+
+/** Whether `node` is a block of the issue's own fragment in issue `key`'s read: a block the read
+ *  names no document for, of this issue, and no context. */
+function ownFragmentBlock(node: IssueTreeNode, key: string): boolean {
+  return (
+    node.kind === "block" &&
+    node.document == null &&
+    node.role !== "context" &&
+    (node.issue == null || node.issue === key)
+  );
+}
+
+// SLOW(>=2s): a seed, a comment on the child, a new row typed and placed through the block index,
+// and a reload.
+test("a first new row in an issue whose own fragment holds no block leaves no empty block", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await roomWriteGate(page, seed.key));
+    const child = seed.child;
+    expect(
+      ((await requestedTreeRead(page, child)).nodes ?? [])
+        .filter((node) => ownFragmentBlock(node, child))
+        .map((node) => node.id),
+      "the child's own fragment holds a block before the row writes its first"
+    ).toEqual([]);
+    const sent = watchNodeRequests(page, child);
+    const comment = await createComment(child, { body: SEED_WORDS.childComment });
+    const commentRead = nodeWhere(
+      await requestedTreeRead(page, child),
+      "person's comment on the child",
+      (node) => node.kind === "comment" && node.id === comment.id
+    );
+    await landOn(page, child, commentRead.id, "the child's comment");
+    const made = await newRowUnder(page, sent, SEED_WORDS.childParagraph, "the child's comment");
+    const after = await treeAfterReload(page, child);
+    expect(nodeOf(after, made)?.text, "the new row holds the words typed").toContain(
+      SEED_WORDS.childParagraph
+    );
+    expect(
+      (after.nodes ?? [])
+        .filter((node) => ownFragmentBlock(node, child) && node.text.trim() === "")
+        .map((node) => node.id),
+      "the child's first new row leaves an empty block in its own fragment"
+    ).toEqual([]);
+  });
+});
+
+/** About 27,000 characters. The tree read cuts a page at 2,000,000 bytes of JSON
+ *  (`issueTreePageBytes` in `api/issue_tree_json.go`), and a node's own fields take about 1,600 of
+ *  them, so 96 nodes of these words, at about 2,600,000 bytes, page the read. */
+const LONG_WORDS = "A long statement fills the page of the tree read. ".repeat(540);
+
+// SLOW(>=2s): a seed grown past one page of the tree read, a new row typed, and the wait for the
+// PATCH that places it.
+test("a new row under a row of the first page of a paged tree read is placed under that row", async ({
+  browser,
+}) => {
+  test.setTimeout(480_000);
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await roomWriteGate(page, seed.key));
+    const ids = await graphEditIds(page, seed);
+    const key = seed.key;
+    const asked = nodeOf(await treeOf(key), ids.criterion)?.parent?.id;
+    expect(asked, "the criterion stands under no question").toBeDefined();
+    // A second criterion under the question, after the first, holds long statements with a long
+    // check and a long plan task under each, so the read pages inside its subtree while the first
+    // criterion's subtree stands whole on the first page, and the issue's own blocks stand on the
+    // last.
+    const plan = nodeOf(await treeOf(key), ids.planTask)?.document?.artifact_id;
+    expect(plan, "the seed's plan task names no document").toBeDefined();
+    const second = specBlockRef(key, "k2");
+    await insertInto(
+      seed.spec,
+      "end",
+      `:::criterion{#k2 parent="dispatch://${key}/ask/${asked}"}\nThe second criterion.\n:::\n`
+    );
+    for (let batch = 0; batch < 6; batch += 1) {
+      const statements = Array.from({ length: 6 }, (_, at) => {
+        const id = `long${batch * 6 + at}`;
+        return `:::requirement{#${id} serves="${second}"}\nStatement ${id}. ${LONG_WORDS}\n:::\n`;
+      });
+      await insertInto(seed.spec, "end", statements.join("\n"));
+      const checks = Array.from({ length: 5 }, (_, at) => {
+        const id = `long${batch * 6 + at}`;
+        return `:::check{#check-${id} serves="${specBlockRef(key, id)}"}\nCheck ${id}. ${LONG_WORDS}\n:::\n`;
+      });
+      await insertInto(seed.verification, "end", checks.join("\n"));
+      const tasks = Array.from({ length: 5 }, (_, at) => {
+        const id = `long${batch * 6 + at}`;
+        return `:::plan_task{#task-${id} serves="${specBlockRef(key, id)}"}\nTask ${id}. ${LONG_WORDS}\n:::\n`;
+      });
+      await insertInto(plan ?? "", "end", tasks.join("\n"));
+    }
+    // `treeOf` merges every page, so the first page is read alone for its cursor.
+    await expect
+      .poll(
+        async () => {
+          const first = await page.request.get(`/api/v1/issues/${encodeURIComponent(key)}/tree`);
+          return member(await first.json(), "cursor") ?? null;
+        },
+        { message: "the tree read holds every node on one page", timeout: 120_000 }
+      )
+      .not.toBeNull();
+    const sent = watchNodeRequests(page, key);
+    await landOn(page, key, ids.criterion, "the criterion");
+    const made = await newRowUnder(
+      page,
+      sent,
+      "A new row under the criterion of a paged read.",
+      "the criterion"
+    );
+    expect(
+      nodeOf(await treeAfterReload(page, key), made)?.parent?.id,
+      "the new row stands under the criterion after the reload"
+    ).toBe(ids.criterion);
+  });
+});
+
+// SLOW(>=2s): a seed, a delete through the node route, a comment written and its row read.
+test("a reference to a deleted node draws its Deleted link with no title", async ({ browser }) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await deleteRouteGate(page));
+    const ids = await graphEditIds(page, seed);
+    const key = seed.key;
+    const statement3 = ids.statements[2];
+    const held = nodeOf(await requestedTreeRead(page, key), statement3);
+    const expected = countOf(
+      await deleteNode(key, statement3, "alice"),
+      "the dry run of the third statement"
+    );
+    const taken = await deleteNode(key, statement3, "alice", {
+      expected,
+      placementSeq: held?.placement_seq ?? 0,
+    });
+    expect(taken.status, `the delete of the third statement: ${JSON.stringify(taken.body)}`).toBe(
+      200
+    );
+    const citing = await createComment(key, {
+      body: `The delete took ${specBlockRef(key, "s3")} with it.`,
+    });
+    const citingRead = nodeWhere(
+      await requestedTreeRead(page, key),
+      "the comment that cites the third statement",
+      (node) => node.kind === "comment" && node.id === citing.id
+    );
+    const row = await landOn(page, key, citingRead.id, "the citing comment");
+    await expect(
+      rowWords(row)
+        .getByRole("link", { exact: true, name: CONTROL_LABELS.target_gone })
+        .and(row.locator("a[data-row-reference]")),
+      "the reference to the deleted statement draws no Deleted link"
+    ).toBeVisible();
+    await expect(
+      row.locator("[title]"),
+      "an element of the row carries a title, which a pointer raises as a tooltip"
+    ).toHaveCount(0);
+  });
+});
+
+// SLOW(>=2s): a seed, two move keys and the wait for both moves' answers, and a reload.
+test("two move keys pressed with no pause each move the node from where the key before left it @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await roomWriteGate(page, seed.key));
+    const ids = await graphEditIds(page, seed);
+    const key = seed.key;
+    const statement3 = ids.statements[2];
+    await page.setViewportSize(rowSize());
+    const before = childIds(await requestedTreeRead(page, key), ids.criterion);
+    const sent = watchNodeRequests(page, key);
+    await landOn(page, key, statement3, "the third statement");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretRowReadId(page), { message: "Enter puts no caret in the third statement" })
+      .toBe(statement3);
+    await page.keyboard.press("End");
+    // The third statement is the last of its document under the criterion. The second key is
+    // pressed before the first key's answer comes: the statement is to move up and back down.
+    await page.keyboard.press("Alt+Shift+ArrowUp");
+    await page.keyboard.press("Alt+Shift+ArrowDown");
+    const up = await nthWrite(sent, 1, "Alt+Shift+Up sends no PATCH");
+    expect((await up.answer)?.status, "the move up is refused").toBe(200);
+    const down = await nthWrite(
+      sent,
+      2,
+      "Alt+Shift+Down, pressed before Alt+Shift+Up's answer came, sends no PATCH",
+      30_000
+    );
+    expect((await down.answer)?.status, "the move down is refused").toBe(200);
+    expect(down.ifMatch, "the move down goes under the placement_seq the move up answered").toBe(
+      nextTag(await up.answer)
+    );
+    await expect(
+      readRow(page, statement3).first(),
+      "the row says the statement is already the last"
+    ).not.toContainText(EDIT_LINES.grey_last);
+    expect(
+      childIds(await treeAfterReload(page, key), ids.criterion),
+      "after Up and Down the criterion's children stand as before"
+    ).toEqual(before);
+  });
+});
+
+// SLOW(>=2s): a seed, a new row typed and placed, a retype written through the room, and the
+// wait for the index to owe nothing.
+test("a retype leaves no row under the retyped block that repeats its words", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  await phase(browser, seedGraphEdit, async (page, seed) => {
+    owedUnless(await roomWriteGate(page, seed.key));
+    const ids = await graphEditIds(page, seed);
+    const key = seed.key;
+    const sent = watchNodeRequests(page, key);
+    await landOn(page, key, ids.criterion, "the criterion");
+    const made = await newRowUnder(page, sent, TYPED.retypedStatement, "the criterion");
+    await landOn(page, key, made, "the new prose block under the criterion");
+    await openRowMenu(page, "m", "the new prose block under the criterion");
+    await openRetype(page, "the new prose block under the criterion");
+    await submenuEntry(page, EDIT_LABELS.retype_statement).click();
+    await expect
+      .poll(
+        async () => {
+          const read = await requestedTreeRead(page, key);
+          return {
+            owed: (read.owed_documents ?? []).length,
+            supertag: nodeOf(read, made)?.supertag,
+          };
+        },
+        { message: "the retype is never stored and indexed", timeout: 60_000 }
+      )
+      .toEqual({ owed: 0, supertag: "requirement" });
+    const after = await treeAfterReload(page, key);
+    expect(
+      (after.nodes ?? [])
+        .filter((node) => node.parent?.id === made)
+        .map((node) => ({ id: node.id, text: node.text })),
+      "the retyped statement holds a block under it that repeats its words"
     ).toEqual([]);
   });
 });
