@@ -68,8 +68,9 @@ const (
 var reviewerAppID = strconv.Itoa(reviewerApp)
 
 // harness is one test's whole stack: the GitHub stand-in, a Postgres of this test's own with no
-// delivery_settings row, a NATS of its own carrying the listener's real CI store and its real
-// summary loop, the listener's real webhook handler over them, and the reconcile pass.
+// delivery_settings row, the package's shared NATS under a JetStream account of this test's own
+// (testnats.URL) carrying the listener's real CI store and its real summary loop, the listener's
+// real webhook handler over them, and the reconcile pass.
 type harness struct {
 	t          *testing.T
 	ctx        context.Context
@@ -134,7 +135,7 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 	t.Helper()
 	ctx := t.Context()
 	database := storetest.Open(t)
-	_, uri := testnats.Start(t)
+	uri := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
