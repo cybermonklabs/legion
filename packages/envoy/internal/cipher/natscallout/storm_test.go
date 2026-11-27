@@ -85,8 +85,7 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // session connections has been refused once, every one of them is admitted again, each presenting
 // a proof over its new connection's nonce, every decision the service makes is inside its budget,
 // the service answers every request the server sends it, and each connection it admits is the one
-// its client holds, unless the server had given up on that request before it read the service's
-// answer to it (decidedNonces.unheld, hubRecord).
+// its client holds: the server gives up on none of them (decidedNonces.unheld, hubRecord).
 //
 // The service is held off for that fact, not for a span: the service is a client of the same
 // server, so a restart drops its own connection too, and every client that comes back before it is
@@ -108,16 +107,12 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // service subscribed is a request the server sent that service: one it never decided is one it
 // dropped without a word, which neither the server's log nor its decided nonces could show.
 //
-// An admission the server gave up on is not one the row counts when the service's answer to it
-// reached the server. The server waits two seconds for an answer from the moment it queues the
-// request, and the hub, the service and the five hundred clients share this one process: in one
-// run on two CPUs with eight busy loops on them, the server gave up on 27 requests the service had
-// decided 0.39 to 1.04 s after their sending. Which requests the server gave up on, and which
-// answers reached it, is the server's to say, so the row reads both from the server's own record
-// (hubRecord), and fails on every other admission no client holds: an answer the server refused, a
-// connection it admitted and then lost, and an admission the service decided whose answer never
-// reached the server. A decision, or its wait for a slot, past the service's budget fails the row
-// too (backLog, slowest), and a hold-up in the delivery of requests to the service fails
+// Every admission no client holds fails the row, and the server's own record (hubRecord) names
+// what became of each: a request the server gave up on although the service's answer to it reached
+// the server, an answer the server refused, a connection it admitted and then lost, and an
+// admission the service decided whose answer never reached the server. A decision, or its wait for
+// a slot, past the service's budget fails the row too (backLog, slowest), and a hold-up in the
+// delivery of requests to the service fails
 // TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout.
 func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	connections := 500
@@ -229,7 +224,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	gaveUp, lost := verdicts.gaveUpOn(unheld)
 	t.Logf("reconnects=%d decided=%d slowest-decision=%s; back's admissions the server gave up on and whose answer reached it, by its record: %d",
 		reconnected.Load(), decided.Load(), time.Duration(slowest.Load()), len(gaveUp))
-	require.Empty(t, lost, "back admitted %d requests that no client is connected on, other than ones the server gave up on whose answer reached it", len(lost))
+	require.Empty(t, unheld, "back admitted %d requests that no client is connected on; the server gave up on %v although back's answer to each reached it, and of the others the record says %v", len(unheld), gaveUp, lost)
 	undecided := backDecided.undecidedSince(clients, backUp)
 	require.Empty(t, undecided, "back did not decide %d requests the server sent it after it subscribed: it dropped them without answering, refusing or counting them", len(undecided))
 
@@ -277,7 +272,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		require.Equal(t, control, held, "the control clients are not connected on requests the service decided")
 		require.Len(t, unheld, control, "the check above cannot see an admission the server stopped waiting for")
 		gaveUp, other := verdicts.gaveUpOn(unheld)
-		require.Len(t, gaveUp, control, "the server's record does not show the give-ups the row leaves out: %v", other)
+		require.Len(t, gaveUp, control, "the server's record does not name the give-ups whose answer reached it: %v", other)
 	})
 
 	t.Run("control: admissions no client holds that the server did not give up on", func(t *testing.T) {
@@ -286,7 +281,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		// other half one that expires within three seconds, which the server takes and then closes
 		// the connection of as the user expires. Each client is admitted again on a later nonce,
 		// decided as usual. The row's check names every one of those first requests, with what the
-		// server did with it, but one the server gave up on, which a loaded machine can make it do.
+		// server did with it, as one the server gave up on if a loaded machine made it do that.
 		keys := testnats.NewCalloutKeys(t)
 		recordUser, recordSeed := newHubRecordUser(t)
 		server, url := testnats.StartWithCalloutServer(t, keys, recordUser)
@@ -344,7 +339,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		// first request at its timeout, refusing with no reason as it does for an answer it read
 		// late, and the client is admitted on a later nonce. No answer to a first request ever
 		// reached the server, so the row's check names each one as unanswered, and none as a
-		// give-up it excuses.
+		// give-up whose answer reached the server.
 		keys := testnats.NewCalloutKeys(t)
 		recordUser, recordSeed := newHubRecordUser(t)
 		server, url := testnats.StartWithCalloutServer(t, keys, recordUser)
@@ -394,7 +389,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		require.Equal(t, control, held, "the control clients are not connected on requests the stand-in decided")
 		require.Len(t, unheld, control, "the nonces do not show the admissions the stand-in never answered")
 		gaveUp, other := verdicts.gaveUpOn(unheld)
-		require.Empty(t, gaveUp, "the row's check excuses admissions the service never answered as ones the server gave up on")
+		require.Empty(t, gaveUp, "the row's check names admissions the service never answered as ones the server gave up on although the answer reached it")
 		for _, each := range other {
 			require.Equal(t, hubUnanswered, each.outcome, "the row's check does not name an admission the service never answered as one: %v", each)
 		}
