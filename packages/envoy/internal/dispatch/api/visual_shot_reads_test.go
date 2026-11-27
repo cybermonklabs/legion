@@ -234,6 +234,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/settings/delivery":                   "/api/v1/settings/delivery",
 		"/api/v1/settings/project-default-assignees":  "/api/v1/settings/project-default-assignees",
 		"/api/v1/signins":                             "/api/v1/signins",
+		"/api/v1/whoami":                              "/api/v1/whoami",
 	}
 }
 

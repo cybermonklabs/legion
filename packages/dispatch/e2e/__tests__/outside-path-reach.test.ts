@@ -146,12 +146,13 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A holding target's port once nothing listens there: the port a closed target names is one this
+  // process holds bound and never listening (`closedPort`), not the port of a listener it stopped,
+  // which any other process may take and answer on.
   probingRow(withoutTools)(
-    "reads the same holding target as unreachable once it is closed, and passes",
+    "reads a target nothing listens on as unreachable, and passes",
     async () => {
-      const holding = holdingTarget(await closedPort());
-      const { port } = holding;
-      holding.stop(true);
+      const port = await closedPort();
       const origin = await fakeDispatch();
       try {
         const run = await drive({

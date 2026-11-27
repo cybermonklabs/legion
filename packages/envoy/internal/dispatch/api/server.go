@@ -1014,11 +1014,11 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// a row the results list does not name, or an approve-only token on a row the approve list
 	// does not name, is refused before anything the row does: before the row's own scopes, which
 	// would name a scope to ask for where no scope makes the row its to call, or which an
-	// approve-only token would pass with both of its person's scopes; before the sign-in check,
-	// which would tell it to sign a person in; and before a Dispatch-Login check, an id prefix's
-	// lookup, the project and session checks and the Idempotency-Key, none of which it reaches, so
-	// it claims no key. It is inside the drain, as the scope gate is, so a client that asked to be
-	// told to continue is handled as for every other early answer.
+	// approve-only token would pass with its person's scopes person and approve; before the
+	// sign-in check, which would tell it to sign a person in; and before a Dispatch-Login check,
+	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of which
+	// it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a client
+	// that asked to be told to continue is handled as for every other early answer.
 	handler = s.refuseLimitedToken(route.Method+" "+route.Pattern, route.Read, route.ResultsScope, route.ApproveOnly, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
@@ -1404,11 +1404,11 @@ func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
-// rather than of one request — a browser's cookie holds both scopes, and the shared token and a
-// service-account token hold none — and the cookie's is on the dashboard's hottest path, so
-// allocating either per request would be waste. Nothing writes a Credential or appends to its
-// Scopes: Holds reads, actScopes copies the slice header onto the act it records, and
-// tokenScopes builds a set of its own.
+// rather than of one request — a browser's cookie holds every scope (model.Scopes: person,
+// approve and p0), and the shared token and a service-account token hold none — and the cookie's
+// is on the dashboard's hottest path, so allocating either per request would be waste. Nothing
+// writes a Credential or appends to its Scopes: Holds reads, actScopes copies the slice header
+// onto the act it records, and tokenScopes builds a set of its own.
 var (
 	scopelessCredential = &model.Credential{}
 	personCredential    = &model.Credential{Scopes: model.Scopes}
@@ -1484,6 +1484,8 @@ func actorNamesWriter(supplied *model.Actor) bool {
 
 // actScopes is the scopes an act records of credential: the ones of model.Scopes, which an act's
 // reader may ask about (ActorAct.Holds; DISPATCH_SCOPES and ActorActSchema in @legion/contracts).
+// An act records the credential's whole set, so the act of a personal token that holds p0 records
+// p0, though no reader of a recorded act asks for it: they ask for approve alone.
 // legion-status, which a Legion daemon's own broker token holds and holds alone, is the
 // credential's leave to write a Legion issue's status (legion_status_scope.go), not a grant an act
 // carries, so such a credential's act records no scope. No credential holds it beside another
@@ -1750,6 +1752,15 @@ func (s *server) refuseLimitedToken(name string, entry readEntry, resultsListed,
 func approveOnlyRequest(r *http.Request) bool {
 	credential := resolvedCredential(r.Context())
 	return credential != nil && credential.ApproveOnly
+}
+
+// resultsOnlyRequest reports whether decideBrokerToken resolved r's caller to a results
+// credential (model.Credential.ResultsOnly), read as approveOnlyRequest reads an approve-only
+// one. The project check reads it to hold such a caller to the one project its run writes the
+// results of (withinProjectScope).
+func resultsOnlyRequest(r *http.Request) bool {
+	credential := resolvedCredential(r.Context())
+	return credential != nil && credential.ResultsOnly
 }
 
 // resultsOnlyRefusal and approveOnlyRefusal are the messages of every 403 RESULTS_ONLY_TOKEN and
