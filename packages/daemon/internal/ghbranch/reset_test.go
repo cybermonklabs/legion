@@ -88,8 +88,8 @@ func TestResetNamesTheMoveOfTheBranchGitHubRefused(t *testing.T) {
 
 // An answer to the move with no errors and no update moved nothing, and Reset says so: it reads the
 // branch again, and a branch still at the merged head is an error naming the ref and both commits,
-// never a move reported for having done nothing. The control is the same answer where the branch
-// did reach the base's head by then, which is the move.
+// never a move reported for having done nothing. Its control is
+// TestResetMovesABranchAtTheMergedHeadToTheBase, a move GitHub answers with its update.
 func TestResetReportsNoMoveForAnAnswerThatUpdatedNothing(t *testing.T) {
 	g := &github{refs: map[string]string{"main": baseHead, resetBranch: mergedCommit}, empty: true}
 	got, err := g.reset(t, "main", "main")

@@ -137,7 +137,10 @@ const updateRefsMutation = `mutation($repositoryId: ID!, $name: GitRefname!, $be
 // scratch branch), so the refusal is judged by the branch rather than by its words. Where the
 // branch no longer points at from, it moved after the caller's read, and moveFrom answers false
 // and the branch's tip now. Where it still does, or GitHub no longer has it, the refusal is an
-// error naming GitHub's words. A rate limit or any other failure is an error.
+// error naming GitHub's words. An answer with no errors and no update (a null updateRefs) moved
+// nothing GitHub says it moved, so it is judged by the branch the same way, and a branch that
+// points at to is the move: no answer that updated nothing is reported as a move. A rate limit or
+// any other failure is an error.
 func moveFrom(ctx context.Context, github, graphql githubrest.Client, repo ghrepo.Repository, branch, from, to string) (bool, string, error) {
 	ref := "refs/heads/" + branch
 	var repository struct {
@@ -156,15 +159,28 @@ func moveFrom(ctx context.Context, github, graphql githubrest.Client, repo ghrep
 		"repositoryId": repository.NodeID, "name": ref, "beforeOid": from, "afterOid": to, "force": true,
 	}, &moved)
 	var refused githubrest.GraphQLErrors
-	if !errors.As(err, &refused) {
+	wasRefused := errors.As(err, &refused)
+	if !wasRefused {
 		if err != nil {
 			return false, "", fmt.Errorf("move %s on %s from %s to %s: %w", ref, repo, from, to, err)
 		}
-		return true, "", nil
+		if moved.UpdateRefs != nil {
+			return true, "", nil
+		}
 	}
 	now, found, readErr := refCommit(ctx, github, repo, branch)
 	if readErr != nil {
 		return false, "", readErr
+	}
+	if !wasRefused {
+		switch {
+		case found && now == to:
+			return true, "", nil
+		case !found || now == from:
+			return false, "", fmt.Errorf("move %s on %s from %s to %s: GitHub answered with no update, and the branch still points at %s",
+				ref, repo, from, to, from)
+		}
+		return false, now, nil
 	}
 	if !found || now == from {
 		return false, "", fmt.Errorf("move %s on %s from %s to %s: %w", ref, repo, from, to, err)
