@@ -103,10 +103,7 @@ export function resetViews(queryClient: QueryClient, key: string): () => void {
     treePagesOf.delete(view);
     void queryClient.resetQueries({ exact: true, queryKey });
   }
-  let ended = false;
   return () => {
-    if (ended) return;
-    ended = true;
     hold.loads -= 1;
     if (hold.loads > 0) return;
     hold.ended = true;
@@ -122,11 +119,12 @@ export function resetViews(queryClient: QueryClient, key: string): () => void {
  *  issue is out, which holds it, is a refresh: held as an answered one and read once as the last
  *  write settles (`droppedWhileHeld`, `mayReadNow`). One never read reads at once. The answer the
  *  decisions view holds as it is dropped is kept for the read the drop starts (`LoadHold.kept`),
- *  and the Decisions view draws it until that read's answer lands (`useDecisionsView`): only where
- *  that read is out, as a view whose filter is on is read at once, or owed to the last write's
- *  settle. A drop of a view nothing reads - the decisions view on any other view - keeps nothing,
- *  so the Decisions view opened later draws no answer from before the write while its read is
- *  out. */
+ *  and the Decisions view draws it until that read's answer lands (`useDecisionsView`): only
+ *  where the view's own read is mounted - an observer that may read it, which only the Decisions
+ *  filter's own (`ViewRead`) is - so its read is out now, or owed to the last write's settle and
+ *  sent then. Every other reader of the view only watches it, so a drop on any other view keeps
+ *  nothing, whether or not another write of the issue holds the view, and the Decisions view
+ *  opened later draws no answer from before the write while its read is out. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const name of TREE_VIEWS) {
     const queryKey = viewKey(key, name);
@@ -139,11 +137,12 @@ export function dropViews(queryClient: QueryClient, key: string): void {
     const answer = view.state.data;
     void queryClient.resetQueries({ exact: true, queryKey });
     if (name !== "decisions") continue;
-    // The reset sends the read of an observed view at once, so it is out now, or owes it to the
-    // last write's settle; either way the answer it drops is the one that read replaces.
+    // Only an observer that may read the view sends the read the drop starts, at once or as the
+    // last write settles; the answer the drop takes is the one that read replaces.
     const hold = loadHoldOf(queryClient, key);
-    if (view.state.fetchStatus === "idle" && !droppedWhileHeld.has(view)) hold.kept = undefined;
-    else if (answer !== undefined && !hold.ended) hold.kept = answer;
+    if (!view.observers.some((observer) => observer.options.enabled !== false)) {
+      hold.kept = undefined;
+    } else if (answer !== undefined && !hold.ended) hold.kept = answer;
   }
 }
 
@@ -675,9 +674,9 @@ interface LoadHold {
    *  and the refusals the cache keeps of them are an earlier visit's (`loadEnded`). */
   ended: boolean;
   /** The decisions view's own: the answer it held as a write's own callback dropped it
-   *  (`dropViews`), for the read that drop starts, during a load or with none ever mounted; none
-   *  where the drop starts no read and owes none, and once a load resets the view or the last one
-   *  ends. */
+   *  (`dropViews`), for the read that drop starts, during a load or with none ever mounted, where
+   *  the view's own read is mounted (an observer that may read it, the Decisions filter's); none
+   *  where only watchers observe it, and once a load resets the view or the last one ends. */
   kept: TreeAnswer | undefined;
 }
 

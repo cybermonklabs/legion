@@ -338,9 +338,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // filter another's answer, and none while the issue's last load has ended (`loadEnded`): what
   // the cache keeps then is an earlier visit's, which the next load's reset drops after its first
   // render, so neither a view's answer nor the tree it builds (`trees`) is drawn from it. The
-  // decisions view is the answer the page holds of it, read by the one rule every reader of it
-  // reads (`useDecisionsView`): this load's alone, and on the Decisions view, while a Keep or a
-  // Change has dropped it, the answer the drop took until the next one lands.
+  // decisions view is read through `useDecisionsView`, the page's one rule for that answer.
   const viewReads = useQueries({
     queries: TREE_FILTERS.map((filter) => treeRead(viewQuery(key, filter))),
   });

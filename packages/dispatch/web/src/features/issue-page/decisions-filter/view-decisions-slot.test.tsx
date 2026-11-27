@@ -21,6 +21,7 @@ import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildDispatchReference, parseIssuePath } from "../../refs/routes";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
+import { plainWrite, writesOf } from "../../writes/write-store";
 import { rowActionSelector } from "../DecisionActions";
 import { presetPath } from "../issue-address";
 import { framesByHand, TWO_THREADS, waitInAct } from "../outline-fixtures";
@@ -349,12 +350,7 @@ test("a refused Keep of a decision only the decisions view read holds keeps its 
         `the later decision's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
       ).toBe(later)
     );
-    const press = await waitFor(() => {
-      const button = row()?.querySelector<HTMLElement>(rowActionSelector("keep"));
-      if (button == null) throw new Error("the later decision's row draws no Keep");
-      return button;
-    });
-    await user.click(press);
+    await user.click(await keepOf(later));
     await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(viewReads, "the refused Keep did not read the decisions view again").toBeGreaterThan(1)
@@ -514,14 +510,13 @@ test("coming back to the issue, the Decisions control, its flag and an address r
       ? Promise.resolve(decisionsView([tied("first"), tied("removed")]))
       : thisLoad.promise;
   });
-  const flagOf = (count: number) => ` · ${count} ${FILTER_SIGNAL_WORDS.to_review}`;
   try {
     const earlier = drawPage(client, "");
     await waitFor(() =>
       expect(
         waitingCounts(earlier),
         "the earlier visit's count of its decisions view read"
-      ).toMatchObject({ count: "2", flag: flagOf(2) })
+      ).toMatchObject({ count: "2", flag: waitingFor(2).flag })
     );
     earlier.unmount();
     earlierVisit = false;
@@ -531,14 +526,14 @@ test("coming back to the issue, the Decisions control, its flag and an address r
     await waitFor(() =>
       expect(waitingCounts(view), "the count over Conversation's read").toMatchObject({
         count: "1",
-        flag: flagOf(1),
+        flag: waitingFor(1).flag,
       })
     );
     await waitInAct(20);
     expect(
       waitingCounts(view),
       "the Decisions control counted the earlier visit's decisions view read"
-    ).toMatchObject({ count: "1", flag: flagOf(1) });
+    ).toMatchObject({ count: "1", flag: waitingFor(1).flag });
     expect(
       drawnSlot(view),
       "the stage drew the outline in place of the view before this load's decisions view read answered"
@@ -554,7 +549,7 @@ test("coming back to the issue, the Decisions control, its flag and an address r
     expect(
       waitingCounts(view),
       "the count once this load's decisions view read answered"
-    ).toMatchObject({ count: "2", flag: flagOf(2) });
+    ).toMatchObject({ count: "2", flag: waitingFor(2).flag });
     await waitInAct(20);
     expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
   } finally {
@@ -641,11 +636,7 @@ test("while a Keep's read of the decisions view is out, the header's count of wh
       ? Promise.resolve(decisionsView([tied("first"), tied("later")]))
       : again.promise;
   });
-  const counted = {
-    count: "2",
-    flag: ` · 2 ${FILTER_SIGNAL_WORDS.to_review}`,
-    header: `${PROPERTY_LABELS.waiting_on_you} (2)`,
-  };
+  const counted = { count: "2", ...waitingFor(2) };
   const user = userEvent.setup();
   try {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -795,6 +786,103 @@ test("the Decisions view opened after a Keep on Conversation draws no decision a
     expect(
       row()?.querySelector(rowActionSelector("keep")),
       "while its read is out, the Decisions view draws Keep on the later decision, as before the Keep"
+    ).toBeNull();
+  } finally {
+    keep.mockRestore();
+  }
+});
+
+// The same story with another write of the issue out as the Keep settles - a comment the reader
+// posts, which the write store tells the page's subscription of as it goes out
+// (`subscribeTreeFreshness`), so it holds the issue's views (`heldByWrites`) and the Keep's drop
+// owes the decisions view a read at that write's settle (`droppedWhileHeld`). On Conversation
+// nothing reads that view, so the settle only marks it stale, and the drop keeps nothing
+// (`dropViews`: only the Decisions filter's own read keeps). The other write settles,
+// Conversation's read answers again with the later decision kept, and the reader opens the
+// Decisions view, whose read is out: it draws the later decision as Conversation's read has it,
+// and never as the answer before the Keep had it, waiting with Keep.
+test("the Decisions view opened after a Keep on Conversation made while another write of the issue was out draws no decision as it stood before the Keep while its read is out", async () => {
+  coverS1();
+  let kept = false;
+  const keep = spyOn(api, "keepDecision").mockImplementation(async () => {
+    kept = true;
+    return KEPT_LATER;
+  });
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") {
+      return Promise.resolve(treeOf([S1, tied("first"), kept ? keptLater() : tied("later")]));
+    }
+    viewReads += 1;
+    return Promise.withResolvers<TreeAnswer>().promise;
+  });
+  const later = decisionNode("later").id;
+  const held: { navigate?: NavigateFunction } = {};
+  const user = userEvent.setup();
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawPage(client, "", { held, preset: "conversation" });
+    const keepOnConversation = await keepOf(later, "[data-issue-body]");
+    // This load's answer of the decisions view, as the page holds it once the Decisions view was
+    // on earlier in the load.
+    await act(async () => {
+      client.setQueryData(viewKey(KEY, "decisions"), decisionsView([tied("first"), tied("later")]));
+    });
+    // The other write of the issue, sent through the page's write store as the page sends a
+    // comment, and answered when the case says.
+    const otherAnswer = Promise.withResolvers<void>();
+    let otherSettled: Promise<unknown> = Promise.resolve();
+    act(() => {
+      otherSettled = writesOf(client).run({
+        detail: null,
+        inline: true,
+        issue: KEY,
+        kind: plainWrite,
+        label: "A comment",
+        method: "POST",
+        presentation: "indicator",
+        write: () => otherAnswer.promise,
+      });
+    });
+    expect(
+      writesOf(client).writesOutOf(KEY),
+      "the other write of the issue is not out"
+    ).toHaveLength(1);
+    await user.click(keepOnConversation);
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitInAct(20);
+    await act(async () => {
+      otherAnswer.resolve();
+      await otherSettled;
+    });
+    await waitFor(() =>
+      expect(
+        view.container.querySelector(
+          `[data-issue-body] [data-node-row][data-node-id="${later}"] ${rowActionSelector("keep")}`
+        ),
+        "Conversation's read did not answer again with the later decision kept"
+      ).toBeNull()
+    );
+
+    act(() => held.navigate?.(presetPath(KEY, "decisions")));
+    const row = () =>
+      view.container.querySelector<HTMLElement>(
+        `[data-decisions-body] [data-node-row][data-node-id="${later}"]`
+      );
+    await waitFor(() =>
+      expect(row(), "the Decisions view drew no row of the later decision").not.toBeNull()
+    );
+    await waitFor(() =>
+      expect(viewReads, "opening the Decisions view did not read it").toBeGreaterThan(0)
+    );
+    await waitInAct(20);
+    expect(
+      row()?.getAttribute("data-node-state"),
+      "while its read is out, the Decisions view draws the later decision waiting, as it stood before the Keep made while another write was out"
+    ).not.toBe("waiting_review");
+    expect(
+      row()?.querySelector(rowActionSelector("keep")),
+      "while its read is out, the Decisions view draws Keep on the later decision, as before the Keep made while another write was out"
     ).toBeNull();
   } finally {
     keep.mockRestore();

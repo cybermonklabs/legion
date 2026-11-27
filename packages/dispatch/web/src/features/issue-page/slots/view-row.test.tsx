@@ -471,8 +471,9 @@ test("with no filter the view row draws the real counts while the names read is 
 });
 
 /** The reads `answerReads` answers, the coverage read holding the spec's statement `r1`, and how
- *  the tree read answers a decision of the spec at `position` tied to `r1` that waits for the
- *  reader's review (`waiting`), which the Decisions control's count and its flag both count. */
+ *  the tree read (`waiting`) and the decisions view read (`waitingInView`, `role: "query"`)
+ *  answer a decision of the spec at `position` tied to `r1` that waits for the reader's review,
+ *  which the Decisions control's count and its flag both count. */
 function reviewReads() {
   const reads = answerReads();
   const statement = buildDispatchReference({ block: { id: "r1" }, key: KEY, kind: "spec" });
@@ -490,7 +491,11 @@ function reviewReads() {
       decision: { links: [shaped(statement)], text_sha256: `sum-${block}`, waiting_review: true },
       document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
     });
-  return { reads, waiting };
+  const waitingInView = (block: string, position: number): TreeAnswerNode => ({
+    ...waiting(block, position),
+    role: "query",
+  });
+  return { reads, waiting, waitingInView };
 }
 
 /** What the Decisions control draws: its count, and its flag of what waits for review. */
@@ -510,7 +515,7 @@ function decisionsSignal(container: HTMLElement) {
 test("the Decisions control counts Conversation's paged read with + until the decisions view read is held, and that read whole after", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
-  const { reads, waiting } = reviewReads();
+  const { reads, waiting, waitingInView } = reviewReads();
   reads.tree.mockResolvedValue(
     treeAnswer(
       [treeNode(KEY, "issue", null), specBlock("r1", "requirement", 0), waiting("d1", 1)],
@@ -532,11 +537,7 @@ test("the Decisions control counts Conversation's paged read with + until the de
     await act(async () => {
       client.setQueryData(
         viewKey(KEY, "decisions"),
-        treeAnswer([
-          treeNode(KEY, "issue", null),
-          { ...waiting("d1", 1), role: "query" },
-          { ...waiting("d2", 2), role: "query" },
-        ])
+        treeAnswer([treeNode(KEY, "issue", null), waitingInView("d1", 1), waitingInView("d2", 2)])
       );
     });
     await waitFor(() =>
@@ -567,7 +568,7 @@ test("the Decisions control counts Conversation's paged read with + until the de
 test("the Decisions control's to-review flag carries + while the decisions view read it is read from names a next page", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
-  const { reads, waiting } = reviewReads();
+  const { reads, waiting, waitingInView } = reviewReads();
   reads.tree.mockResolvedValue(
     treeAnswer([treeNode(KEY, "issue", null), specBlock("r1", "requirement", 0), waiting("d1", 1)])
   );
@@ -581,8 +582,8 @@ test("the Decisions control's to-review flag carries + while the decisions view 
     );
     const decisions = [
       treeNode(KEY, "issue", null),
-      { ...waiting("d1", 1), role: "query" as const },
-      { ...waiting("d2", 2), role: "query" as const },
+      waitingInView("d1", 1),
+      waitingInView("d2", 2),
     ];
     await act(async () => {
       client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(decisions, [], { cursor: "next" }));
@@ -617,7 +618,7 @@ test("the Decisions control's to-review flag carries + while the decisions view 
 test("the Decisions control counts no decision Conversation's pages hold and the decisions view read's page does not", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
-  const { reads, waiting } = reviewReads();
+  const { reads, waiting, waitingInView } = reviewReads();
   reads.tree.mockResolvedValue(
     treeAnswer([
       treeNode(KEY, "issue", null),
@@ -637,7 +638,7 @@ test("the Decisions control counts no decision Conversation's pages hold and the
     await act(async () => {
       client.setQueryData(
         viewKey(KEY, "decisions"),
-        treeAnswer([treeNode(KEY, "issue", null), { ...waiting("d1", 1), role: "query" }], [], {
+        treeAnswer([treeNode(KEY, "issue", null), waitingInView("d1", 1)], [], {
           cursor: "next",
         })
       );
@@ -665,7 +666,7 @@ test("the Decisions control counts no decision Conversation's pages hold and the
 test("a decision past Conversation's first page with a Change in the decisions view read does not count to review", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
-  const { reads, waiting } = reviewReads();
+  const { reads, waiting, waitingInView } = reviewReads();
   reads.tree.mockResolvedValue(
     treeAnswer(
       [treeNode(KEY, "issue", null), specBlock("r1", "requirement", 0), waiting("d1", 1)],
@@ -700,8 +701,8 @@ test("a decision past Conversation's first page with a Change in the decisions v
         viewKey(KEY, "decisions"),
         treeAnswer([
           treeNode(KEY, "issue", null),
-          { ...waiting("d1", 1), role: "query" },
-          { ...waiting("d2", 2), role: "query" },
+          waitingInView("d1", 1),
+          waitingInView("d2", 2),
           asked,
         ])
       );

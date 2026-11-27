@@ -52,17 +52,16 @@ import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./deci
  * own address.
  *
  * The page reads the view the first time the filter is on in a load (`ViewReadProvider`), and
- * holds this load's answer of it alone (`tree-read.ts`' `useDecisionsView`). A Keep or a Change
- * drops every view the page holds (`DecisionActions.tsx`), and the page draws the answer the
- * drop took until the view's next answer lands, and after that read is refused, with its failed
- * line over it; every change of the issue marks the view stale and reads it again while the
- * answer stays drawn (`subscribeTreeFreshness`). Until the view answers in a load, and where its
- * read then fails, Conversation's read stands in (`tree-read.ts`' `outlineOf`): the decisions and
- * their Changes are the decision nodes of the tree read the page holds beside the view, which
- * has the same nodes with the same members, and the comments it hangs under them, and the nodes
- * the parts stand on are the page's tree, built from the pages of that read held so far. So
- * every decision that read holds stands in its part with its state, never in the folded foot for
- * want of a row, and the focus stays with it.
+ * every reader takes its answer through `tree-read.ts`' `useDecisionsView`: while a Keep or a
+ * Change has dropped the view (`DecisionActions.tsx`), the view draws the answer the drop took,
+ * with its failed line over it where that read is refused, and every change of the issue marks
+ * it stale and reads it again while the answer stays drawn (`subscribeTreeFreshness`). Until
+ * the view holds an answer, Conversation's read stands in (`tree-read.ts`' `outlineOf`): the
+ * decisions and their Changes are the decision nodes of the tree read the page holds beside the
+ * view, which has the same nodes with the same members, and the comments it hangs under them,
+ * and the nodes the parts stand on are the page's tree, built from the pages of that read held
+ * so far. So every decision that read holds stands in its part with its state, never in the
+ * folded foot for want of a row, and the focus stays with it.
  *
  * The reads are the page's own, under the keys it reads them by (`useIssueTree.ts`,
  * `ViewReadProvider`): Conversation's read, the decisions view, the issue's asks and its
@@ -352,11 +351,9 @@ export function useDecisionsEntries({
  * Conversation's read has answered, the tree that answer builds by the page's one tree rule, as
  * each filter's view read builds its own (`useIssueTree.ts`' `viewTree`, `TreeViews.trees`),
  * carrying the issue's node's views; until then `root` itself, Conversation's tree standing in.
- * The answer is the one the page holds (`tree-read.ts`' `useDecisionsView`), which the page's
- * tree carries: this load's alone, and on the Decisions view, while a Keep or a Change has
- * dropped the view, the answer the drop took until the next one lands, so a question or a
- * decision only that read holds keeps its row meanwhile, its row the focus, and a refused Keep
- * the refusal it draws.
+ * The answer is the one the page holds (`tree-read.ts`' `useDecisionsView`), so a question or a
+ * decision only that read holds keeps its row while a Keep's read is out, its row the focus,
+ * and a refused Keep the refusal it draws.
  *
  * The view read holds every question and every decision of the issue, whatever page of
  * Conversation's read the page has read so far, and each comment on the text of a node it holds,

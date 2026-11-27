@@ -92,10 +92,8 @@ export function IssuePropertiesRow({
   // The decisions, and each Change that read hangs under its decision, are the decisions view
   // read's wherever the page holds it, which holds each of them however many pages of the tree
   // read the page holds, watched under the key the page reads it by and never sent, so the count
-  // sends no view read of its own; Conversation's read stands in until then. That answer is the
-  // one every reader of the view takes (`useDecisionsView`): this load's alone, and on the
-  // Decisions view, while a Keep or a Change has dropped the view, the answer the drop took until
-  // the next lands, so the count and the Decisions control count the same answer meanwhile.
+  // sends no view read of its own; Conversation's read stands in until then. It is read through
+  // `useDecisionsView`, so the header's count and the Decisions control count the same answer.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
