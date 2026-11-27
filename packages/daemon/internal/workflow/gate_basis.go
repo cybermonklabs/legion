@@ -142,26 +142,44 @@ func sameBasis(a, b *record.GateBasis) bool {
 }
 
 // ancestorOpenedStep is the opening of each text that tells a step an ancestor's approval opened, a
-// format of the step and the root: the design-approved notice's reason (openedNotice) and the
+// format of the step and the root: the design-approved notice's reason (tellOpened) and the
 // resting-root notice of the opening (tellRegisteredBasis).
 const ancestorOpenedStep = "An ancestor's approval opened the %s step of %s."
 
-// openedNotice is the design-approved notice of a registration that opened gate on root. For a
-// step a person's approval of the root's own document opened, it names the version registered and
-// reviewer, the person whose approval the read carried, as it always has. For a step an ancestor's
+// tellOpened queues the design-approved notice of a registration, or of the opening of a step that
+// waited on an ancestor's request, that opened gate on root. For a step a person's approval of the
+// root's own document opened, the notice names the version registered and reviewer, the person
+// whose approval the read carried, as it always has, with Dispatch's mark of that approval and the
+// document approved (record.Notice.Review and Artifact), so a decision kept from it is asked by
+// Dispatch's order and of its own document (SupersedingApproval). For a step an ancestor's
 // approval opened it names that basis: the ancestor's document for the step as its reference, the
 // version a person approved and that person, with a reason that names the root's version and says
 // that no person approved it (R1, R2).
-func openedNotice(root string, gate record.DesignGate, reviewer string) record.Notice {
+//
+// The notice tells a person's decision, so it is asked first whether that decision is still the
+// person's word, as every sender of one asks and as the relay of this notice asks it again
+// (NoticeSuperseded, the outbox's parkDecision): of gate as the opening leaves it, under the steps
+// the deployment gates. One that is no longer their word is told to nobody. A basis names the
+// ancestor's document, which no gate of root holds, so it is asked of no gate and stands
+// (RefSuperseded).
+func (e *Engine) tellOpened(ctx context.Context, tx pgx.Tx, root string, gate record.DesignGate, reviewer string) error {
 	step := gate.Step.OrSpec()
-	if !gate.OnBasis() {
-		return record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(root, step)}
+	notice := record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(root, step),
+		Review: gate.ApprovedMark, Artifact: gate.ArtifactID}
+	if gate.OnBasis() {
+		basis := gate.Basis
+		notice = record.Notice{Kind: "design-approved", Version: basis.Version, Actor: basis.Approver, Ref: stepRef(basis.Issue, step),
+			Reason: fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of the %s of %s. "+
+				"%s registered version %d of its own %s on that approval. No person approved that version.",
+				step, root, basis.Version, step.Document(), basis.Issue, root, gate.LatestVersion, step.Document())}
 	}
-	basis := gate.Basis
-	return record.Notice{Kind: "design-approved", Version: basis.Version, Actor: basis.Approver, Ref: stepRef(basis.Issue, step),
-		Reason: fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of the %s of %s. "+
-			"%s registered version %d of its own %s on that approval. No person approved that version.",
-			step, root, basis.Version, step.Document(), basis.Issue, root, gate.LatestVersion, step.Document())}
+	gates := map[record.DesignStep]record.DesignGate{step: gate}
+	if superseded := NoticeSuperseded(gates, e.cfg.Steps, root, notice, record.DecisionDesignApproved); superseded != nil {
+		e.logOnCommit(ctx, "workflow: an opening whose approval is no longer the person's word is not told", "issue", root,
+			"step", step, "version", notice.Version)
+		return nil
+	}
+	return e.notice(ctx, tx, root, notice)
 }
 
 // tellRegisteredBasis tells what a registration on a basis does beyond a person's approval of the
@@ -903,7 +921,7 @@ func (e *Engine) openPendingBasis(ctx context.Context, tx pgx.Tx, root record.Is
 		_, err := e.answerOpenGates(ctx, tx, []record.Issue{*current}, nil)
 		return opened, err
 	}
-	return opened, e.notice(ctx, tx, root.Key, openedNotice(root.Key, opened, ""))
+	return opened, e.tellOpened(ctx, tx, root.Key, opened, "")
 }
 
 // pendingEnd is what ended a step's wait on an ancestor's request, as tellPendingEnded tells the
@@ -1000,7 +1018,9 @@ func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, st
 	case root.AwaitingPerson() && root.Awaiting.AnsweredAt == nil:
 		e.logOnCommit(ctx, "workflow: the end of a step's wait on an ancestor's request answers the root's wait on a person", "issue", key,
 			"step", step, "ask", basis.Pending.Ask)
-		return e.answerWait(ctx, tx, *root, record.AnsweredByChanges, basisEndedAnswer+what)
+		// The act is of the ancestor's document and no review of the root's own, so the answer
+		// records no document (waitAnswer): the resume asks no person's word of it (answeredDecision).
+		return e.answerWait(ctx, tx, *root, waitAnswer{by: record.AnsweredByChanges, detail: basisEndedAnswer + what})
 	case root.AwaitingPerson() && by == endedByOwnDocument:
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told by its resume of the act on its own document that ended its step's wait", "issue", key,
 			"step", step, "ask", basis.Pending.Ask)
@@ -1021,6 +1041,19 @@ func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, st
 // whatever order: the told-once mark is keyed by the review's place in the ancestor's event log
 // (reviewPlace), as tellChanges marks a changes request on the root's own document, so a second
 // changes request on the same version is told as well.
+//
+// Each copy carries Dispatch's mark of the review and the document reviewed (record.Notice.Review
+// and Artifact), so the one predicate orders it against a person's approval by Dispatch's order
+// and asks it of its own document (SupersedingApproval) wherever it is asked: here, of the
+// ancestor's copy, and of either copy at its delivery and at a clear of its generation
+// (record.ChangesRequest). The copy keyed by the ancestor names the ancestor's own document, so it
+// is a person's decision that the ancestor's gates can answer (dispatch://INFRA-3136/spec R2): it
+// is asked first, as tellOpened asks, of the ancestor's gates under the steps the deployment gates
+// (NoticeSuperseded), and one the person's approval already followed, as where a seed's read or a
+// late event carries the review after the person approved a later version of the ancestor's
+// document, is queued for nobody and only logged. The root's copy names another issue's document
+// than the root's own, which no gate of the root holds, so asked there it stands (RefSuperseded),
+// and it is queued as before.
 func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate, review intake.BasisReview) error {
 	basis := *gate.Basis
 	step := gate.Step.OrSpec()
@@ -1042,7 +1075,7 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 	e.logOnCommit(ctx, "workflow: a person requested changes on the ancestor's version a step stands open on; the step stays open", "issue", root.Key,
 		"step", step, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "review_seq", review.Mark.Seq)
 	told := record.Notice{Kind: "basis-changes-requested", Role: claim.RoleArchitect, Version: basis.Version, Actor: review.Actor.Name(),
-		Ref: stepRef(basis.Issue, step), Reason: asked + " The step stays open. " + reason}
+		Ref: stepRef(basis.Issue, step), Review: review.Mark, Artifact: basis.ArtifactID, Reason: asked + " The step stays open. " + reason}
 	if err := e.notice(ctx, tx, root.Key, told); err != nil {
 		return err
 	}
@@ -1053,6 +1086,16 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 				"ancestor", basis.Issue)
 		}
 		return err
+	}
+	gates, err := e.store.GatesOf(ctx, tx, basis.Issue)
+	if err != nil {
+		return err
+	}
+	if superseded := NoticeSuperseded(gates, e.cfg.Steps, basis.Issue, told, record.DecisionDesignChangesRequested); superseded != nil {
+		e.logOnCommit(ctx, "workflow: the person's approval followed the changes request on the ancestor's document, so its architect is not told it",
+			"issue", root.Key, "step", step, "ancestor", basis.Issue, "basis", basis.ArtifactID, "version", basis.Version,
+			"approved", superseded.By.Version)
+		return nil
 	}
 	told.Reason = asked + " The step of " + root.Key + " stays open. " + reason + " " + servesSentence(root.Key, basis.Issue, basis.Serves)
 	return e.notice(ctx, tx, basis.Issue, told)
