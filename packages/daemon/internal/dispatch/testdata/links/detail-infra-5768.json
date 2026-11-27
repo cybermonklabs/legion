@@ -1,0 +1,42 @@
+{
+  "key": "INFRA-5768",
+  "project": "INFRA",
+  "number": 5768,
+  "title": "An open issue or another tree is no reason to wait: the agent a blocker stops fixes it in any repository, and an issue may have several pull requests",
+  "status": "in_progress",
+  "priority": 1,
+  "rank": "sEY",
+  "labels": [
+    "legion"
+  ],
+  "parent": null,
+  "blocked_by": [],
+  "claim": {
+    "actor": {
+      "kind": "session",
+      "id": "01a2149b-f199-7417-87e7-1b157992c33e",
+      "origin": {
+        "host": "omp",
+        "machine": "legion-infra-daemon",
+        "cwd": "/legion/workspaces/cybermonklabs/legion/infra-5768",
+        "session_title": "Legion architect · INFRA-5768"
+      }
+    },
+    "at": "2026-11-25T21:30:17.660814Z"
+  },
+  "external_links": [
+    {
+      "url": "https://github.com/cybermonklabs/legion/pull/5481",
+      "kind": "url"
+    },
+    {
+      "url": "https://github.com/theorem-labs/agent-infra/pull/6990",
+      "kind": "url"
+    }
+  ],
+  "resolved_repo": "cybermonklabs/legion",
+  "primary_artifact_id": "fdd72448-e884-4d40-9172-57d98fa88b15",
+  "verification_artifact_id": "8e21be22-16fd-43b6-bb53-f5f43878fe68",
+  "decisions_artifact_id": "",
+  "last_seq": 142
+}
