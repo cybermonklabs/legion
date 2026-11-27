@@ -6,9 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -31,22 +29,14 @@ import (
 // straight into the store moves the Spec record's digest again, and no version is written, so the
 // approval of the version standing reads current on every gate.
 func TestACriterionTheEditRouteWritesStalesTheSpecsApproval(t *testing.T) {
-	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
-	ctx := context.Background()
-	createReferenceAPIProject(t, handler, "CORE")
-	rig := &digestRig{handler: handler, database: database, documents: deps.Docs.(*docs.Service)}
-	rig.issue = createDigestIssue(t, handler, database, "CORE", "A criterion written into the issue's room",
-		":::requirement{#r1}\nAn urgent ask comes first.\n:::\n", false)
-	key := rig.issue.Key
-	rig.spec = readDecisionDocument(t, database, key, "spec")
-	tree, err := issueTreeOf(ctx, database.Pool, key)
+	t.Parallel()
+	rig := newQueryMarkRig(t)
+	handler, database, key := rig.handler, rig.database, rig.issue.Key
+	tree, err := issueTreeOf(context.Background(), database.Pool, key)
 	if err != nil || tree == "" {
 		t.Fatalf("read the tree artifact of %s: %q, %v", key, tree, err)
 	}
-	var treeKey string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, tree).Scan(&treeKey); err != nil {
-		t.Fatalf("read the ref_key of the tree artifact %s: %v", tree, err)
-	}
+	treeKey := refKeyOf(t, database, tree)
 	_, block := personComment(t, handler, database, key, "We want the urgent asks first.\n\nAnd we want them quickly.")
 	awaitDigestsFilled(t, database, rig.spec.id)
 	publishDesignGates(t, handler, key, []issueDesignGate{{Step: model.GatedStepSpec, ArtifactID: rig.spec.id}})
@@ -57,9 +47,7 @@ func TestACriterionTheEditRouteWritesStalesTheSpecsApproval(t *testing.T) {
 	reviews := len(listReviews(t, handler, rig.spec.id))
 
 	const words = "I want the urgent asks first."
-	edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+tree+"/edits", map[string]any{
-		"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": ":::criterion{#k1 parent=\"" + block + "\"}\n" + words + "\n:::\n"}},
-	}, "alice")
+	edited := editDocument(t, handler, tree, insertAtEnd(":::criterion{#k1 parent=\""+block+"\"}\n"+words+"\n:::\n"))
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write the criterion into the tree of %s: status=%d body=%s", key, edited.Code, edited.Body.String())
 	}

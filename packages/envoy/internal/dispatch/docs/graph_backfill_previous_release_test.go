@@ -389,7 +389,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
 // statement moved a row in or out of what a pass owes. Rule 2's was re-recorded with it, the
 // fence of rule 2 writing stated_version and stated_rule beside store_version. The digest of rule
-// 1 recorded then on this change, 2f925616f2b946b6c37e9949f50a72ff2ced0050ac34426c0b14efe0b7a0e3cb,
+// 1 recorded then by INFRA-1253, 2f925616f2b946b6c37e9949f50a72ff2ced0050ac34426c0b14efe0b7a0e3cb,
 // holds that change and the supertag read above together: the statements are the folded ones with
 // that read added before the node write of refs.CommentWrite.Queue, and nothing else.
 //
@@ -398,7 +398,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // once so, from 127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea, main's before
 // #5491, from 62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954, #5491's own
 // before the hint below, whose statements also read the project columns above, and from the
-// digest above on this change, whose statements also hold the supertag read: the backfill's block
+// digest above by INFRA-1253, whose statements also hold the supertag read: the backfill's block
 // selection (graphcensus.BlockRowsStatement) wrote its version lookups `caused as materialized (`,
 // a planner hint that runs them once per batch, which changes the statement's plan and not its
 // rows (graphcensus' TestTheBlockBatchAnswersTheSameRowsWithItsLookupsMaterializedOrNot walks a
@@ -411,7 +411,7 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // c5a0294efa51da0e1fa6da286c3ec33c8020b2a7e807acd39bdb064022f72af3, with the supertag read added,
 // and nothing else.
 //
-// Rule 2's statements are this branch's: a pass records the rule and the version it stated a
+// Rule 2's statements are INFRA-1253's: a pass records the rule and the version it stated a
 // document by (stated_rule, stated_version), and the backfill and the tick mark a document no
 // pass of their rule has stated at its version (refs.UnstatedBlockIndexSQL) beside rule 1's test
 // of a mark (refs.OwedMarkAbsent), and the backfill's block mark keeps the time of a mark already

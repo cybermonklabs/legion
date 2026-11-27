@@ -30,8 +30,8 @@ const (
 // does not list, so graph_edges answers nothing under it.
 //
 // A comment that answers nothing - no answers, no reply_to and no ask_id - holds beside it a
-// part_of to the same node (AnchorPartOf), which places it under the node it quotes in the issue's
-// tree, and every writer of its anchored_in states or retracts that part_of in the same write
+// part_of to the same node, which places it under the node it quotes in the issue's tree, and
+// every writer of its anchored_in states or retracts that part_of in the same write
 // (AnchorTuples). A comment that answers something takes its part_of from what it answers, never
 // from its anchor.
 const TupleAnchoredIn = "anchored_in"
@@ -43,13 +43,6 @@ func AnchoredIn(id, block string, asserted bool, who model.Actor, at time.Time, 
 	return AnchorRelation(TupleAnchoredIn, id, blockKind, block, asserted, who, at, event)
 }
 
-// AnchorPartOf is the part_of tuple of comment id, one that answers nothing, to the node its
-// anchor quotes, kind and address as the store keys it, stating it where asserted and retracting
-// it otherwise, dated at at, written by who and caused by event.
-func AnchorPartOf(id, kind, address string, asserted bool, who model.Actor, at time.Time, event int64) Tuple {
-	return AnchorRelation(TuplePartOf, id, kind, address, asserted, who, at, event)
-}
-
 // AnchorTuples appends to tuples what one write states or retracts of comment id's anchor on the
 // node kind and address name: its anchored_in to that node and, where the comment answers
 // nothing (answersNothing), its part_of to the same node (R31), each asserted or retracted alike,
@@ -58,7 +51,7 @@ func AnchorPartOf(id, kind, address string, asserted bool, who model.Actor, at t
 func AnchorTuples(tuples []Tuple, id, kind, address string, answersNothing, asserted bool, who model.Actor, at time.Time, event int64) []Tuple {
 	tuples = append(tuples, AnchorRelation(TupleAnchoredIn, id, kind, address, asserted, who, at, event))
 	if answersNothing {
-		tuples = append(tuples, AnchorPartOf(id, kind, address, asserted, who, at, event))
+		tuples = append(tuples, AnchorRelation(TuplePartOf, id, kind, address, asserted, who, at, event))
 	}
 	return tuples
 }

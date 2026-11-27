@@ -62,8 +62,8 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 		names[index] = typ.Name
 	}
 	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading", "criterion"}
-	if served.Version != 7 || !slices.Equal(names, want) {
-		t.Fatalf("schema = version %d, types %v; want version 7 and %v", served.Version, names, want)
+	if served.Version != 8 || !slices.Equal(names, want) {
+		t.Fatalf("schema = version %d, types %v; want version 8 and %v", served.Version, names, want)
 	}
 	if parent, declared := served.Types[7].Attributes.Lookup(pmdoc.ParentAttribute); !declared || parent.Kind != pmdoc.BlockAttributeBlockList ||
 		!slices.Equal(parent.Items, []pmdoc.BlockItemKind{pmdoc.BlockItemAsk, pmdoc.BlockItemComment, pmdoc.BlockItemMessage}) {
@@ -75,13 +75,19 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	if parents := served.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
 		t.Fatalf("reading parents = %v, want decision and ask", parents)
 	}
+	// decision and reading are read from version 6 and created from version 7: a build of version 6
+	// reads a store this build wrote and refuses to create them (readers_first_test.go), and version
+	// 7, the slice that gives them nodes, creates them.
 	for _, typ := range served.Types[5:7] {
-		if typ.Since != 6 || typ.CreatableSince != 6 {
-			t.Fatalf("typed block %s = since %d, creatable_since %d; want it read and created from version 6", typ.Name, typ.Since, typ.CreatableSince)
+		if typ.Since != 6 || typ.CreatableSince != 7 {
+			t.Fatalf("typed block %s = since %d, creatable_since %d; want it read from version 6 and created from version 7", typ.Name, typ.Since, typ.CreatableSince)
 		}
 	}
-	if criterion := served.Types[7]; criterion.Since != 7 || criterion.CreatableSince != 7 {
-		t.Fatalf("typed block criterion = since %d, creatable_since %d; want it read and created from version 7", criterion.Since, criterion.CreatableSince)
+	if criterion := served.Types[7]; criterion.Since != 8 || criterion.CreatableSince != 8 {
+		t.Fatalf("typed block criterion = since %d, creatable_since %d; want it read and created from version 8", criterion.Since, criterion.CreatableSince)
+	}
+	if shaped, declared := served.Types[1].Attributes.Lookup("shaped"); !declared || shaped.Since != 6 || shaped.CreatableSince != 7 {
+		t.Fatalf("ask attribute shaped = %+v (declared %v), want it read from version 6 and created from version 7", shaped, declared)
 	}
 	if steps, declared := served.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)

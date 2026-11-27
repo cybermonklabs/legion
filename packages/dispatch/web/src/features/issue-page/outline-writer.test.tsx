@@ -15,16 +15,7 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { nodesInOrder } from "./tree-keys";
-import {
-  commentNode,
-  markedCommentNode,
-  skipWithoutTreeNodeMarks,
-  treeAnswer,
-  treeNode,
-} from "./tree-read/tree-fixtures";
-
-/** Skips the cases that need the tree read to answer a post's marks on its node. */
-const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
+import { commentNode, markedCommentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -210,10 +201,10 @@ test("a Reply whose comment's read answers after a later press sets nothing", as
   }
 });
 
-// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// With the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
 // `deleted_by`): a comment the read answers deleted takes no Reply, since Dispatch refuses a reply
 // to it (409 `POST_DELETED`); the same comment the read answers with no delete takes one.
-test.skipIf(withoutTreeNodeMarks)("a comment the tree read answers deleted takes no Reply", () => {
+test("a comment the tree read answers deleted takes no Reply", () => {
   const comment = personsComment("c-deleted", []);
   const deleted = {
     ...comment,

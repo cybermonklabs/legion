@@ -130,3 +130,37 @@ func TestBackfillDocumentSearchRepairsTheVector(t *testing.T) {
 		t.Fatalf("second backfill: %+v, %v; want no work", again, err)
 	}
 }
+
+// TestBackfillDocumentSearchTakesOffTheRowOfARemovedDocument: a document search row whose ref_key
+// no artifacts row holds, the row of a document removed while a process of the release before held
+// it, is the census's row difference, and the backfill takes it off through its walk of the rows
+// naming no document (documentSearchOrphanRowsStatement), beside writing the live document's own
+// row; after it the census reads no difference and the pass owes nothing.
+func TestBackfillDocumentSearchTakesOffTheRowOfARemovedDocument(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	key := seedDocumentSearch(t, database)
+	ctx := t.Context()
+	const removed = "DSR/removed-md"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into node_search (node_kind, node_address, text, text_seq, search)
+		values ('artifact', $1, '', 1, to_tsvector('english', 'removed'))`, removed); err != nil {
+		t.Fatal(err)
+	}
+	if kind := readDocumentSearchCensus(t, database); kind.RowDifferences != 1 || len(kind.ReportedRows) != 1 ||
+		!strings.Contains(kind.ReportedRows[0].At, removed) || kind.NodeDifferences != 1 {
+		t.Fatalf("before the backfill the census reads %+v; want the row of %s and the missing row of %s", kind, removed, key)
+	}
+	filled, err := backfillDocumentSearch(ctx, database)
+	if err != nil || !filled.Complete || filled.Remaining != 0 || filled.Rows != 1 {
+		t.Fatalf("backfill: %+v, %v; want the live document's row written and nothing owed after it", filled, err)
+	}
+	var held int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from node_search where node_kind = 'artifact' and node_address = $1`,
+		removed).Scan(&held); err != nil || held != 0 {
+		t.Fatalf("the row of %s after the backfill: %d rows, %v; want none", removed, held, err)
+	}
+	if kind := readDocumentSearchCensus(t, database); kind.Rows != 1 || kind.Nodes != 1 || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+		t.Fatalf("after the backfill the census reads %+v; want one document and no differences", kind)
+	}
+}

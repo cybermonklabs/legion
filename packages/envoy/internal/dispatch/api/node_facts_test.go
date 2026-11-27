@@ -691,9 +691,9 @@ func TestAnEditedPostsNodeAndItsBlocksCarryTheEditTime(t *testing.T) {
 // names that version's author as its maker.
 //
 // Its subject is the unconverted path itself: a document written before blocks shipped is no
-// fragment of an issue room, since every room is this branch's and each block of one records its
-// authors from its first write (refs.RecordsAuthorsSQL), so no room block is ever first seen
-// without its maker. The issue is held unconverted (holdIssuesUnconverted).
+// fragment of an issue room, since every issue room came after blocks did and each block of one
+// records its authors from its first write (refs.RecordsAuthorsSQL), so no room block is ever
+// first seen without its maker. The issue is held unconverted (holdIssuesUnconverted).
 func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -824,7 +824,7 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	}
 	askRef := "dispatch://" + issue.Key + "/ask/" + askID
 	// The block is a node of the issue's room, keyed under its tree artifact, which the spec's own
-	// reference reaches (T17 of this branch's plan: an address resolves through its document's
+	// reference reaches (T17 of the issue-tree plan: an address resolves through its document's
 	// room).
 	blockRef := "dispatch://" + issue.Key + "/spec#b-decide"
 	want := func(what string) {

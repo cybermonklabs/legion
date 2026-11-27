@@ -818,7 +818,7 @@ func (i *Importer) project(
 // it drops is retracted, and a re-import of an unchanged model appends nothing. Each of previous,
 // the source's components before the import, that parsed no longer holds is stated gone, with
 // each relation it held retracted (retiredComponents). It reads graph_tuples to state only what
-// moved, as an issue's relations are read before they are written (api's stateIssueRelations),
+// moved, as an issue's relations are read before they are written (api's queueIssueRelations),
 // and writes nothing it read into the rows: those are the model's.
 //
 // A component whose address, or whose parent's, is past the store's bound

@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"io"
 	"net/http"
 	"strconv"
@@ -126,11 +124,10 @@ func TestALaterVersionStatesItsBytesInTheStoreLockOrder(t *testing.T) {
 				}
 			}
 
-			secondSum := sha256.Sum256(race.second)
 			for attribute, value := range map[string]string{
 				graphstore.AttributeMIME:   race.mime,
 				graphstore.AttributeSize:   strconv.Itoa(len(race.second)),
-				graphstore.AttributeSHA256: hex.EncodeToString(secondSum[:]),
+				graphstore.AttributeSHA256: contentHash(string(race.second)),
 			} {
 				history, err := graphstore.History(ctx, rig.database.Pool, graphstore.KindArtifact, refKey, attribute)
 				if err != nil {
@@ -207,7 +204,6 @@ func seedOlderVersionedFile(t *testing.T, rig *storeWriterRig, owner, session, n
 		sessionID = &session
 	}
 	var refKey string
-	sum := sha256.Sum256(content)
 	if err := rig.database.Pool.QueryRow(ctx, `
 		with made as (
 			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, created_by)
@@ -218,7 +214,7 @@ func seedOlderVersionedFile(t *testing.T, rig *storeWriterRig, owner, session, n
 		select made.id, 1, $7, $8, $9, $10, '[{"kind":"user","id":"alice"}]' from made
 		returning (select ref_key from made)
 	`, issueKey, project, sessionID, artifactSlug(name), name, kind, content, mime, len(content),
-		hex.EncodeToString(sum[:])).Scan(&refKey); err != nil {
+		contentHash(string(content))).Scan(&refKey); err != nil {
 		t.Fatalf("seed %s as an older build wrote it: %v", name, err)
 	}
 	return refKey

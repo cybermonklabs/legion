@@ -36,6 +36,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
+import "github.com/sjawhar/envoy/internal/clock"
+
 var (
 	// ErrIssueClosed rejects a document mutation after its issue is closed.
 	ErrIssueClosed = errors.New("issue is closed")
@@ -94,6 +96,10 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// Clock is the clock Shutdown's drain budget (ShutdownDrainBudget) runs on; nil means the real
+	// clock. A test hands a clocktest fake and moves it past the moments it means, so how long a
+	// loaded machine takes between them does not spend the budget.
+	Clock clock.Clock
 	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
 	// the empty string for an unstamped build. The block-index tick keys its build's event cursor
 	// on it, and compares it with the commit of every live server process to report whether
@@ -172,6 +178,8 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// clock is Deps.Clock, the real clock when that is nil: the clock of Shutdown's drain budget.
+	clock clock.Clock
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
 	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
@@ -939,6 +947,10 @@ func New(deps Deps) *Service {
 	if editNoticeQuiet <= 0 {
 		editNoticeQuiet = defaultEditNoticeQuiet
 	}
+	serviceClock := deps.Clock
+	if serviceClock == nil {
+		serviceClock = clock.Real()
+	}
 	if deps.Events == nil {
 		deps.Events = events.NewBroker()
 	}
@@ -977,6 +989,7 @@ func New(deps Deps) *Service {
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
+		clock:             serviceClock,
 		buildCommit:       deps.BuildCommit,
 		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
@@ -1216,7 +1229,8 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // ones already queued - has room to finish: the live durableAppends counter waits for every append
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
-// is left of the caller's deadline, so a caller's deadline has to exceed it.
+// is left of the caller's deadline, so a caller's deadline has to exceed it. The budget runs on
+// Deps.Clock, the real clock in production.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1279,7 +1293,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.clock.WithTimeout(ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {
@@ -2097,10 +2111,11 @@ const (
 	settleRoomFailed
 	// settleReloaded is a settlement whose room instance was replaced under it: it holds a stored
 	// history that was replaced, which no catch-up can bring to the durable head
-	// (ErrRoomBehindHead), or it is an issue room loaded over documents the room no longer holds
-	// (errRoomLayoutMoved). The room has been closed for a reload or the settlement armed again
-	// (reloadReplacedRoom), which logs the refusal, and the pending-settlement row, which the
-	// refusal's rollback kept, still says the settlement is owed.
+	// (ErrRoomBehindHead), it is an issue room loaded over documents the room no longer holds
+	// (errRoomLayoutMoved), or its document moved into its issue's room (ErrRoomMoved). The room
+	// has been closed for a reload or the settlement armed again (reloadReplacedRoom), which logs
+	// the refusal, and the pending-settlement row, which the refusal's rollback kept, still says
+	// the settlement is owed.
 	settleReloaded
 )
 
@@ -2184,7 +2199,8 @@ func (s *Service) commitSettlement(ctx context.Context, tx pgx.Tx, ledger *Ledge
 // no longer holds - a document joined it, and the notice that closes the room on every process
 // (AnnounceDocumentRooms) did not reach this one (errRoomLayoutMoved) - so a settlement of it would
 // version and index the room over fragments that are not the room's, and only a load reads the
-// room's layout. The settlement has written nothing, and its caller has rolled its transaction
+// room's layout; or live's document moved into its issue's room, so the room takes nothing more
+// (ErrRoomMoved). The settlement has written nothing, and its caller has rolled its transaction
 // back, which releases the document's advisory lock that the close below needs. It closes the room
 // as the catch-up does for the same case (roomCatchUps.closeReplaced) and arms the settlement
 // again: its timer loads the document at the head, over the room's layout, and settles every
@@ -2659,7 +2675,8 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 	var cursor *roomCursor
 	slot, update, err := s.applySuppressed(backfillCtx, artifactID, nil, func(doc *crdt.Doc, origin any) error {
 		cursor = s.cursorOf(doc)
-		read, _, err := s.liveFragmentsTree(artifactID, doc, s.layoutOf(doc).fragments())
+		layout := s.layoutOf(doc)
+		read, _, err := s.liveFragmentsTree(artifactID, doc, layout.fragments())
 		if err != nil {
 			return err
 		}
@@ -2669,7 +2686,7 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 		if s.afterBackfillRead != nil {
 			s.afterBackfillRead(artifactID)
 		}
-		_, _, minted, stampRenamed, err := stampBlockIDs(doc, s.layoutOf(doc), origin)
+		_, _, minted, stampRenamed, err := stampBlockIDs(doc, layout, origin)
 		report.Stamped = minted
 		renamed = stampRenamed
 		return err
@@ -2857,10 +2874,7 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 // read; it is lost by this close, and it could not have been stored anyway, since its append
 // would meet an artifacts row that has gone.
 func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
-	if s.srv.GetDoc(artifactID) == nil {
-		return
-	}
-	if err := s.Evict(ctx, artifactID); err != nil && ctx.Err() == nil {
+	if err := s.evictResident(ctx, artifactID); err != nil {
 		// The room stays open until this process's next close of it. The removal is
 		// announced once and the row it names is gone, so nothing notifies it again; what
 		// reads it again is the lane's pass after the next LISTEN (recheckRemovedRooms),

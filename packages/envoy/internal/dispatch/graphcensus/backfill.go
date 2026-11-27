@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -149,6 +150,23 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 		return BackfillReport{}, err
 	}
 	return run.Passes(ctx, out)
+}
+
+// BackfillBeforeAskNodes runs the passes of backfill-graph-store that precede the ask node
+// migration (20261125163550), as Backfill begins and runs them: every pass backfillPasses orders
+// before the asks' (decisionBackfills), which are the blocks and the links out of them, the
+// comments, the runs, the preventions, the roles and the sessions, and the project passes, and no
+// pass of the asks or of a topic after them. The migration census uses it to reproduce a store
+// already filled by the earlier release, before it judges the migrations still pending on that
+// store.
+func BackfillBeforeAskNodes(ctx context.Context, database *store.Store, out io.Writer) (BackfillReport, error) {
+	run, err := startBackfillAt(ctx, database, out, 0, refs.BlockIndexMarkingRule)
+	if err != nil {
+		return BackfillReport{}, err
+	}
+	return run.passes(ctx, out, slices.Concat(
+		blockBackfills(run.rule), commentBackfills, runBackfills, preventionBackfills, actorBackfills, projectBackfills,
+	))
 }
 
 // OnlyProjectMoved answers whether err holds failures and every one is graphstore.ErrProjectMoved
@@ -313,6 +331,12 @@ func startBackfillAt(ctx context.Context, database *store.Store, out io.Writer, 
 // the columns the walks read their rows by (analyzeWalkedColumns), on the passes' own path, so a
 // boot, which runs them on a goroutine of their own, waits on no analysis.
 func (run BackfillRun) Passes(ctx context.Context, out io.Writer) (BackfillReport, error) {
+	return run.passes(ctx, out, backfillPasses(run.rule))
+}
+
+// passes runs passes in the order given, as Passes runs every pass of backfillPasses and
+// BackfillBeforeAskNodes those before the ask nodes.
+func (run BackfillRun) passes(ctx context.Context, out io.Writer, passes []backfillPass) (BackfillReport, error) {
 	report := BackfillReport{}
 	if err := analyzeWalkedColumns(ctx, run.database); err != nil {
 		return report, err
@@ -323,7 +347,7 @@ func (run BackfillRun) Passes(ctx context.Context, out io.Writer) (BackfillRepor
 	// it - the rest of that pass, the fill, the asks and their followers, and every later topic's:
 	// the run answers it after them all.
 	var moved error
-	for _, write := range backfillPasses(run.rule) {
+	for _, write := range passes {
 		done, err := write(ctx, run.database)
 		report.Kinds = append(report.Kinds, done...)
 		for _, kind := range done {

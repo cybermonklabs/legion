@@ -285,7 +285,6 @@ func TestANodeAtALaterReleasesStateIsPresentAndTheBackfillKeepsIt(t *testing.T) 
 		issueNode.State, askNode.State = laterObjectState, laterObjectState
 		issueNode.Restates, askNode.Restates = false, false
 		issueNode.MadeAt, askNode.MadeAt = at.Add(time.Minute), at.Add(time.Minute)
-		issueNode.Restates, askNode.Restates = false, false
 		return graphstore.Write(ctx, tx, []graphstore.Node{issueNode, askNode}, nil)
 	}); err != nil {
 		t.Fatalf("write the two nodes and mark them %s: %v", laterObjectState, err)

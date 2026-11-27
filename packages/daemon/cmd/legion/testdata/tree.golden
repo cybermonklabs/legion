@@ -42,8 +42,10 @@ legion model-token	hidden	--client-id string	--endpoint string	--region string	-
 legion probe-boot	--config string
 legion probe-image	hidden	--claude-code-pin string	--claude-root string	--daemon-api-version string	--envoy-plugin-root string	--omp string	--plugin-root string	--pod-safety bool	--probe-budget duration	--provider-env-dir string	--role-config-files role=files	--role-namespaces string	--role-references string	--skip-agent-models bool	--skip-browser bool	--test-postgres string
 legion project
+legion project clear-p0-bound	--config string	--json bool	--operator-token-file string	--port int	--reason string
 legion project pause	--config string	--json bool	--operator-token-file string	--port int	--reason string
 legion project resume	--config string	--json bool	--operator-token-file string	--port int
+legion project set-p0-bound	--bound int	--config string	--json bool	--none bool	--operator-token-file string	--port int	--reason string
 legion restart
 legion sessions
 legion sessions import	--claims string	--dsn-file string	--tree string	--tree-volume string

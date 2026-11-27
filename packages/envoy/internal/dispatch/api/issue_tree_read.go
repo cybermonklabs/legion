@@ -122,9 +122,9 @@ func (s *server) serveIssueTree(w http.ResponseWriter, r *http.Request, read iss
 			writeError(w, "INVALID_QUERY", http.StatusBadRequest, "v names a version of a view's query node: give view beside it")
 			return
 		}
-		number, err := strconv.Atoi(query.Get("v"))
-		if err != nil || number < 1 {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, "v must be a version number, 1 or above")
+		number, valid := parseVersionNumber(query.Get("v"))
+		if !valid {
+			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("v must be a version number, from 1 to %d", maxIntegerColumn))
 			return
 		}
 		version = number
@@ -210,12 +210,8 @@ func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view s
 
 // treeEntry is what the tree read holds of one node while it builds its answer.
 type treeEntry struct {
-	// target is the node as the store keys it.
-	target refs.Target
 	// walk is the node's index in the walk, -1 for a node the walk does not take.
 	walk int
-	// order is where a node the walk does not take was added among the others.
-	order int
 	// parent is the node it stands under in the store: the walk's parent, or the node a part_of
 	// of its own names for a node the walk does not take.
 	parent refs.Target
@@ -298,6 +294,8 @@ type issueTreeBuilder struct {
 	effective map[refs.Target]refs.Target
 	order     []refs.Target
 	descend   []string
+	// descended is descend as a set (readDescendants), nil where descend is empty.
+	descended map[string]bool
 	ancestors []string
 
 	// taken is each node of the walk the view's query takes (queryTakes), requirements each
@@ -418,7 +416,7 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 		return err
 	}
 	b.enterWalk()
-	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
+	if err := b.readDescendants(); err != nil {
 		return err
 	}
 	if err := b.readOthers(); err != nil {
@@ -430,9 +428,7 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 	if err := b.readFacts(b.candidates()); err != nil {
 		return err
 	}
-	if err := b.placeOthers(); err != nil {
-		return err
-	}
+	b.placeOthers()
 	b.keep()
 	if err := b.readContext(); err != nil {
 		return err
@@ -451,7 +447,7 @@ func (b *issueTreeBuilder) enterWalk() {
 	for index, node := range b.tree.Nodes {
 		target := refs.Target{Kind: node.Kind, ID: node.ID}
 		b.entries[target] = &treeEntry{
-			target: target, walk: index, parent: node.Parent, typ: node.Type,
+			walk: index, parent: node.Parent, typ: node.Type,
 			rank: node.Rank, ranked: node.Ranked, madeAt: node.MadeAt, above: node.Above,
 		}
 		b.walked = append(b.walked, target)
@@ -630,15 +626,37 @@ func issueTreeCut(ctx context.Context, q pgx.Tx, key, view string, version int) 
 	return cut, nil
 }
 
-// add adds a node the walk does not take to the answer's candidates, once.
-func (b *issueTreeBuilder) add(target refs.Target, parent refs.Target, issue, role string) *treeEntry {
+// add adds a node the walk does not take to the answer's candidates, once, as a node of the tree.
+func (b *issueTreeBuilder) add(target refs.Target, parent refs.Target, issue string) *treeEntry {
 	if entry, held := b.entries[target]; held {
 		return entry
 	}
-	entry := &treeEntry{target: target, walk: -1, order: len(b.extras), parent: parent, issue: issue, role: role}
+	entry := &treeEntry{walk: -1, parent: parent, issue: issue, role: treeRoleTree}
 	b.entries[target] = entry
 	b.extras = append(b.extras, target)
 	return entry
+}
+
+// readDescendants reads the issues under the issue read that the reader may see, in order
+// (descend), and as a set (descended).
+func (b *issueTreeBuilder) readDescendants() error {
+	var err error
+	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
+		return err
+	}
+	if len(b.descend) > 0 {
+		b.descended = make(map[string]bool, len(b.descend))
+		for _, key := range b.descend {
+			b.descended[key] = true
+		}
+	}
+	return nil
+}
+
+// descends reports whether issue is one of the issues under the issue read that the reader may
+// see (descend).
+func (b *issueTreeBuilder) descends(issue string) bool {
+	return b.descended[issue]
 }
 
 // treeIssueOf is the issue a node's address names - a document block's, `<KEY>/<slug>#<id>`, and an
@@ -679,20 +697,20 @@ func (b *issueTreeBuilder) readOthers() error {
 		return fmt.Errorf("read the children of %s: %w", b.key, err)
 	}
 	for _, child := range children {
-		if slices.Contains(b.descend, child) {
-			b.add(refs.Target{Kind: graphstore.KindIssue, ID: child}, b.root(), child, treeRoleTree)
+		if b.descends(child) {
+			b.add(refs.Target{Kind: graphstore.KindIssue, ID: child}, b.root(), child)
 		}
 	}
 	for _, parent := range slices.Concat(b.walked, b.tree.Hidden) {
 		for _, child := range b.tree.Children[parent] {
-			if _, walked := b.entries[child.Node]; walked && b.entries[child.Node].walk >= 0 {
+			if entry, held := b.entries[child.Node]; held && entry.walk >= 0 {
 				continue
 			}
 			owner := treeIssueOf(child.Node)
-			if owner == "" || owner == b.key || !slices.Contains(b.descend, owner) {
+			if owner == "" || owner == b.key || !b.descends(owner) {
 				continue
 			}
-			entry := b.add(child.Node, child.Parent, owner, treeRoleTree)
+			entry := b.add(child.Node, child.Parent, owner)
 			entry.parent, entry.typ, entry.rank, entry.ranked, entry.madeAt = child.Parent, child.Type, child.Rank, child.Ranked, child.MadeAt
 		}
 	}
@@ -727,13 +745,13 @@ func (b *issueTreeBuilder) readServing() error {
 	for _, requirement := range requirements {
 		for _, from := range serving[requirement] {
 			owner := treeIssueOf(from)
-			if owner == "" || owner == b.key || !slices.Contains(b.descend, owner) {
+			if owner == "" || owner == b.key || !b.descends(owner) {
 				continue
 			}
 			if _, held := b.entries[from]; held {
 				continue
 			}
-			b.add(from, refs.Target{}, owner, treeRoleTree).served = refs.Target{Kind: refs.BlockNodeKind, ID: requirement}
+			b.add(from, refs.Target{}, owner).served = refs.Target{Kind: refs.BlockNodeKind, ID: requirement}
 			checks = append(checks, from)
 		}
 	}
@@ -748,7 +766,7 @@ func (b *issueTreeBuilder) readServing() error {
 		if child.Node.Kind != graphstore.KindResult {
 			continue
 		}
-		entry := b.add(child.Node, child.Parent, b.entries[child.Parent].issue, treeRoleTree)
+		entry := b.add(child.Node, child.Parent, b.entries[child.Parent].issue)
 		entry.typ, entry.madeAt = graphstore.SupertagResult, child.MadeAt
 	}
 	return nil
@@ -816,18 +834,12 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 			cycles[node.OrderNode] = true
 		}
 	}
-	nonNil := func(items []string) []string {
-		if items == nil {
-			return []string{}
-		}
-		return items
-	}
 	place := func(node refs.OrderedNode, position *int) {
 		plan := &model.IssueTreePlan{
 			Position: position,
 			Needs:    []model.IssueTreeHalfEnd{},
-			Skills:   nonNil(node.Skills),
-			Docs:     nonNil(node.Docs),
+			Skills:   nonNilStrings(node.Skills),
+			Docs:     nonNilStrings(node.Docs),
 			Cycle:    cycles[node.OrderNode],
 		}
 		for _, need := range node.Needs {
@@ -854,14 +866,14 @@ func (b *issueTreeBuilder) readPlanOrder() error {
 				halves.Start = plan
 			}
 			if node.ID != b.key {
-				b.add(target, refs.Target{}, node.ID, treeRoleTree)
+				b.add(target, refs.Target{}, node.ID)
 			}
 			return
 		}
 		target := refs.Target{Kind: node.Kind, ID: node.ID}
 		b.plans[target] = plan
 		if node.Issue != b.key {
-			b.add(target, refs.Target{}, node.Issue, treeRoleTree)
+			b.add(target, refs.Target{}, node.Issue)
 		}
 	}
 	for index, node := range order.Order {
@@ -922,9 +934,7 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	if err != nil {
 		return err
 	}
-	for target, held := range facts {
-		b.facts[target] = held
-	}
+	maps.Copy(b.facts, facts)
 	var unrowed []refs.Target
 	for _, target := range unread {
 		if entry, held := b.entries[target]; held && entry.walk >= 0 && b.tree.Nodes[entry.walk].Row {
@@ -995,11 +1005,12 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 		}
 	}
 	for _, target := range unread {
-		if _, held := b.headRow(target); held && loaderKind(target) == refs.BlockNodeKind {
+		kind := loaderKind(target)
+		if _, held := b.headRow(target); held && kind == refs.BlockNodeKind {
 			continue
 		}
-		node, held := loaded[refs.Target{Kind: loaderKind(target), ID: target.ID}]
-		if loaderKind(target) == refs.BlockNodeKind {
+		node, held := loaded[refs.Target{Kind: kind, ID: target.ID}]
+		if kind == refs.BlockNodeKind {
 			node, held = blockNodes[target.ID]
 		}
 		if held {
@@ -1035,7 +1046,7 @@ func (b *issueTreeBuilder) readHistoricalBlocks(blocks []string, nodes map[strin
 		select n.id, n.made_at, n.made_by, coalesce(d.id::text, ''), coalesce(d.slug, ''),
 		       coalesce(`+refs.DocumentBandSQL("d")+`, '')
 		from unnest($1::text[], $2::text[]) as historic (id, document)
-		join graph_nodes n on n.kind = 'block' and n.id = historic.id
+		join graph_nodes n on n.kind = '`+refs.BlockNodeKind+`' and n.id = historic.id
 		left join artifacts d on d.ref_key = historic.document
 		where `+refs.VisibleKindRow(refs.BlockNodeKind, "n", "$3"),
 		ids, documents, refs.VisibilityArg(b.who))
@@ -1094,12 +1105,31 @@ func loaderKind(target refs.Target) string {
 	return graphstore.AddressKind(target.Kind, target.ID)
 }
 
+// nodeType is the type the node target is taken by (refs.TreeNodeType): the typed block its text
+// opens at the read's cut, else its row's supertag.
+func (b *issueTreeBuilder) nodeType(target refs.Target) string {
+	opening, _, _ := strings.Cut(b.facts[target].Values[graphstore.AttributeText], "\n")
+	return refs.TreeNodeType(target.Kind, target.ID, b.rows[target].Supertag, opening)
+}
+
+// lastPartOf is the far end of the last part_of of relations, the zero target where they hold
+// none.
+func lastPartOf(relations []refs.TreeRelation) refs.Target {
+	var parent refs.Target
+	for _, relation := range relations {
+		if relation.Kind == graphstore.TuplePartOf {
+			parent = relation.To
+		}
+	}
+	return parent
+}
+
 // placeOthers gives each node the walk does not take what its facts and its row say: a child
 // issue its placement, where its current part_of names a node of the walk or a block of a
 // document the skeleton does not open (hiddenBlock), a check reached through serves the
 // requirement it serves (served), and every such node its type, its rank and when it was made,
 // where nothing read so far gave them.
-func (b *issueTreeBuilder) placeOthers() error {
+func (b *issueTreeBuilder) placeOthers() {
 	for _, target := range b.extras {
 		entry := b.entries[target]
 		held := b.facts[target]
@@ -1114,8 +1144,7 @@ func (b *issueTreeBuilder) placeOthers() error {
 			}
 		}
 		if entry.typ == "" {
-			opening, _, _ := strings.Cut(held.Values[graphstore.AttributeText], "\n")
-			entry.typ = refs.TreeNodeType(target.Kind, b.rows[target].Supertag, opening)
+			entry.typ = b.nodeType(target)
 		}
 		if rank, ranked := held.Values[refs.AttributeRank]; ranked && !entry.ranked {
 			entry.rank, entry.ranked = rank, true
@@ -1127,17 +1156,12 @@ func (b *issueTreeBuilder) placeOthers() error {
 			entry.parent = entry.served
 		}
 		if entry.parent == (refs.Target{}) && entry.role != treeRoleContext {
-			for _, relation := range held.Relations {
-				if relation.Kind == graphstore.TuplePartOf {
-					entry.parent = relation.To
-				}
-			}
+			entry.parent = lastPartOf(held.Relations)
 			if entry.parent == (refs.Target{}) && entry.issue != "" && target.Kind != graphstore.KindIssue {
 				entry.parent = refs.Target{Kind: graphstore.KindIssue, ID: entry.issue}
 			}
 		}
 	}
-	return nil
 }
 
 // visible reports whether the reader may see the node: the registry's loader of its kind answered
@@ -1281,6 +1305,7 @@ func (b *issueTreeBuilder) readContext() error {
 		return nil
 	}
 	var wanted []refs.Target
+	seen := map[refs.Target]bool{}
 	for _, target := range b.candidates() {
 		if !b.kept[target] {
 			continue
@@ -1299,7 +1324,8 @@ func (b *issueTreeBuilder) readContext() error {
 			default:
 				continue
 			}
-			if !slices.Contains(wanted, relation.To) {
+			if !seen[relation.To] {
+				seen[relation.To] = true
 				wanted = append(wanted, relation.To)
 			}
 		}
@@ -1323,7 +1349,8 @@ func (b *issueTreeBuilder) readContext() error {
 			return err
 		}
 	}
-	return b.placeContext()
+	b.placeContext()
+	return nil
 }
 
 // addContext reads what each of wanted states and whether the reader may see it, and adds each
@@ -1342,7 +1369,7 @@ func (b *issueTreeBuilder) addContext(wanted []refs.Target) error {
 				continue
 			}
 		} else {
-			entry := &treeEntry{target: target, walk: -1, issue: treeIssueOf(target), role: treeRoleContext}
+			entry := &treeEntry{walk: -1, issue: treeIssueOf(target), role: treeRoleContext}
 			if entry.issue == b.key {
 				entry.issue = ""
 			}
@@ -1469,30 +1496,24 @@ func (b *issueTreeBuilder) viewContext() []refs.Target {
 // placeContext gives each context node its type, its rank and its time, and a context node of a
 // view its own parent, which every node a view answers carries; a catalogue node, an interaction
 // and a person stand under none.
-func (b *issueTreeBuilder) placeContext() error {
+func (b *issueTreeBuilder) placeContext() {
 	for _, target := range b.context {
 		entry := b.entries[target]
 		held := b.facts[target]
 		if entry.typ == "" {
-			opening, _, _ := strings.Cut(held.Values[graphstore.AttributeText], "\n")
-			entry.typ = refs.TreeNodeType(target.Kind, b.rows[target].Supertag, opening)
+			entry.typ = b.nodeType(target)
 		}
 		if rank, ranked := held.Values[refs.AttributeRank]; ranked {
 			entry.rank, entry.ranked = rank, true
 		}
 		entry.madeAt = b.rows[target].MadeAt
 		if b.view != "" && entry.parent == (refs.Target{}) && target.Kind == refs.BlockNodeKind {
-			for _, relation := range held.Relations {
-				if relation.Kind == graphstore.TuplePartOf {
-					entry.parent = relation.To
-				}
-			}
+			entry.parent = lastPartOf(held.Relations)
 		}
 		if entry.parent != (refs.Target{}) {
 			b.effective[target] = entry.parent
 		}
 	}
-	return nil
 }
 
 // servesTupleKind is the relation a check and a plan node serve a requirement by, and a
@@ -1785,7 +1806,7 @@ func (b *issueTreeBuilder) readDecisions(answer []refs.Target) error {
 		switch {
 		case target.Kind == refs.BlockNodeKind && b.entries[target].typ == refs.DecisionSupertag:
 			nodes = append(nodes, decisionread.Node{Kind: refs.BlockNodeKind, ID: target.ID})
-		case target.Kind == graphstore.KindAsk && b.asks[target.ID].state == "answered":
+		case target.Kind == graphstore.KindAsk && b.asks[target.ID].state == asks.StateAnswered:
 			nodes = append(nodes, decisionread.Node{Kind: graphstore.KindAsk, ID: target.ID})
 		}
 	}
@@ -1938,10 +1959,16 @@ func (b *issueTreeBuilder) leadClass(target refs.Target) int {
 	switch {
 	case isItemBlockKind(target.Kind):
 		return leadItemBlock
-	case b.tree.Memo >= 0 && b.entries[target].walk == b.tree.Memo:
+	case b.isMemo(target):
 		return leadMemo
 	}
 	return leadNone
+}
+
+// isMemo reports whether target is the issue's memo: the walk's memo, its first child where that
+// child is a callout (docs' IssueTree.Memo).
+func (b *issueTreeBuilder) isMemo(target refs.Target) bool {
+	return b.tree.Memo >= 0 && b.entries[target].walk == b.tree.Memo
 }
 
 // compareSiblings orders two children of one parent as the walk does (docs' treeWalk.ordered): a
@@ -2119,6 +2146,9 @@ func (b *issueTreeBuilder) contextOrder() []refs.Target {
 			}
 		}
 	}
+	// ordered is b.order as a set, built the first time a context node of the answer is tested
+	// against it, so a read whose context holds none builds none.
+	var ordered map[refs.Target]bool
 	var context []refs.Target
 	for _, target := range b.context {
 		if len(b.kinds) > 0 && !b.kindContext[target] {
@@ -2127,7 +2157,16 @@ func (b *issueTreeBuilder) contextOrder() []refs.Target {
 		if deciders != nil && (target.Kind == graphstore.KindPerson || target.Kind == graphstore.KindSession) && !deciders[target] {
 			continue
 		}
-		if b.kept[target] && b.entries[target].role == treeRoleContext && !slices.Contains(b.order, target) {
+		if !b.kept[target] || b.entries[target].role != treeRoleContext {
+			continue
+		}
+		if ordered == nil {
+			ordered = make(map[refs.Target]bool, len(b.order))
+			for _, held := range b.order {
+				ordered[held] = true
+			}
+		}
+		if !ordered[target] {
 			context = append(context, target)
 		}
 	}
@@ -2351,7 +2390,7 @@ func (b *issueTreeBuilder) answer(version int, trees *displayTreeReader) (model.
 	issue := b.issues[b.key]
 	read := model.IssueTreeRead{
 		Issue: b.key, View: b.view, Converted: issue.Converted, Tree: issue.Tree, ViewOf: issue.ViewOf, Documents: issue.Documents,
-		Nodes: []model.IssueTreeNode{}, Tuples: []model.IssueTreeTuple{}, OwedDocuments: b.owed,
+		Tuples: []model.IssueTreeTuple{}, OwedDocuments: b.owed,
 	}
 	if version > 0 {
 		read.Version = &version
@@ -2390,6 +2429,9 @@ func (b *issueTreeBuilder) answer(version int, trees *displayTreeReader) (model.
 		node := &read.Nodes[index]
 		if node.Decision != nil {
 			trees.text(&node.Decision.TextTree, node.Decision.Text)
+		}
+		if node.Ask != nil {
+			trees.textOf(&node.Ask.AnswerTree, node.Ask.Answer)
 		}
 		trees.text(&node.TextTree, node.Text)
 	}
@@ -2447,6 +2489,7 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 			node.Author = loaded.Node.MadeBy
 		}
 		node.MadeAt = loaded.Node.MadeAt
+		node.EditedAt, node.DeletedAt, node.DeletedBy = loaded.Node.EditedAt, loaded.Node.DeletedAt, loaded.Node.DeletedBy
 		node.State, node.Visibility = cmp.Or(loaded.Node.State, node.State), cmp.Or(loaded.Node.Visibility, node.Visibility)
 	} else {
 		node.State = cmp.Or(held.Values[graphstore.AttributeState], node.State)
@@ -2466,9 +2509,7 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 		}
 		node.Parent = b.parentOf(parent)
 	}
-	if b.noConversation(target) {
-		node.NoConversation = true
-	}
+	node.NoConversation = b.noConversation(target)
 	if row, documented := b.roleBlock(target); documented {
 		if position, held := b.positions[target]; held {
 			node.Document = &model.IssueTreeDocument{ArtifactID: row.Document, Slug: row.Slug, Position: position}
@@ -2526,7 +2567,9 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 
 // text is the node's words: a block's and a finding's text value at the read's cut, a comment's or
 // a message's body, an ask's question, the text of an item's block, a result's observed text, an
-// issue's title, and for any other node the words an edge at it shows.
+// issue's title, a run's whole words, which the tree read answers as a node and so uncut, as a read
+// of the run's own address answers them (refs.ExcerptedNode's Whole, spec requirement
+// r-interaction), and for any other node the words an edge at it shows.
 func (b *issueTreeBuilder) text(target refs.Target) string {
 	if text, held := b.texts[target]; held {
 		return text
@@ -2538,8 +2581,12 @@ func (b *issueTreeBuilder) text(target refs.Target) string {
 	case graphstore.KindResult:
 		return held.Values[graphstore.AttributeObserved]
 	}
-	if excerpt := b.loaded[target].Excerpt; excerpt != nil {
-		return excerpt.Text
+	loaded := b.loaded[target]
+	if loaded.Whole != "" {
+		return loaded.Whole
+	}
+	if loaded.Excerpt != nil {
+		return loaded.Excerpt.Text
 	}
 	return ""
 }
@@ -2555,9 +2602,7 @@ func (b *issueTreeBuilder) parentOf(parent refs.Target) *model.IssueTreeParent {
 		}
 		return named
 	}
-	held := b.facts[parent]
-	opening, _, _ := strings.Cut(held.Values[graphstore.AttributeText], "\n")
-	named.Supertag = refs.TreeNodeType(parent.Kind, b.rows[parent].Supertag, opening)
+	named.Supertag = b.nodeType(parent)
 	named.FirstLine = treeFirstLine(b.text(parent))
 	switch loaded := b.loaded[parent].Node; {
 	case loaded.IssueKey != nil && *loaded.IssueKey != b.key:
@@ -2635,7 +2680,7 @@ func (b *issueTreeBuilder) treeAskAnswer(ask *model.IssueTreeAsk, target refs.Ta
 	held := b.facts[target]
 	var answer asks.NodeAnswer
 	read := func(kind, value string) {
-		if _, err := answer.Read(kind, value); err != nil {
+		if err := answer.Read(kind, value); err != nil {
 			slog.Warn("dispatch: an ask's stored answer does not parse, and the tree read answers it null",
 				"issue", b.key, "ask", target.ID, "err", err)
 		}
@@ -2653,7 +2698,13 @@ func (b *issueTreeBuilder) treeAskAnswer(ask *model.IssueTreeAsk, target refs.Ta
 	if answer.Resolution != nil && answer.Resolution.Kind == model.AskResolutionDeclined {
 		return
 	}
-	ask.Answer, ask.Selected, ask.AnsweredBy, ask.AnsweredAt = answer.Answer, answer.Selected, answer.AnsweredBy, answer.AnsweredAt
+	// NodeAnswer names who answered as a string, "" for nobody, where the tree's member is null for
+	// nobody.
+	var answeredBy *string
+	if answer.AnsweredBy != "" {
+		answeredBy = &answer.AnsweredBy
+	}
+	ask.Answer, ask.Selected, ask.AnsweredBy, ask.AnsweredAt = answer.Answer, answer.Selected, answeredBy, answer.AnsweredAt
 }
 
 // treeUncertainty is the decision node target's uncertainty, low, medium or high, and the reason

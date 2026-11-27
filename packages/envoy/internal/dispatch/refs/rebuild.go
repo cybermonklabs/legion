@@ -90,6 +90,10 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 	if err := pool.QueryRow(ctx, `select now()`).Scan(&started); err != nil {
 		return report, fmt.Errorf("read the database's clock: %w", err)
 	}
+	// The decisions query is no document a rebuild re-reads: its versions render the questions and
+	// decisions whose own sources hold their references, and no live write indexes it (docs'
+	// writeRevisions stands its index with no pass), so the rebuild leaves it out, as the live
+	// index does.
 	sources := []struct {
 		kind  string
 		query string
@@ -98,6 +102,7 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 		{"artifact", `
 			select a.id::text from artifacts a
 			where exists (select 1 from artifact_versions v where v.artifact_id = a.id and v.markdown is not null)
+			  and not ` + DecisionsQuerySQL("a") + `
 			order by a.id`, &report.Documents},
 		{"ask", `select id::text from asks order by id`, &report.Asks},
 		{"comment", `select id::text from comments order by id`, &report.Comments},
@@ -269,12 +274,11 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 // lock is taken before the read and the read is a statement after it, so a write committed while
 // the rebuild waited is the text it indexes; it is an advisory lock, so it assigns no transaction
 // id, and the edges are planned under it and written last as one batch (PlanReplace,
-// Replacement.Queue). The
-// re-index paths beside this one take the same lock through the same read, for the same reason
-// (ReindexOwed and ReindexScopeSource below). The lock is one owner at a time, held for the
-// length of that source's own transaction, so a rebuild still never holds every owner: making the
-// rebuild one transaction instead would order it against every writer at once and hold every
-// owner for the length of the pass, which is minutes on a large database.
+// Replacement.Queue). The re-index paths beside this one take the same lock through the same
+// read, for the same reason (ReindexOwed and ReindexScopeSource below). The lock is one owner at a
+// time, held for the length of that source's own transaction, so a rebuild still never holds every
+// owner: making the rebuild one transaction instead would order it against every writer at once
+// and hold every owner for the length of the pass, which is minutes on a large database.
 //
 // A document's reconcile states the edges it moves in the node and tuple store in the same
 // transaction, right after the batch that writes its refs rows (Replacement.ArtifactMentions): a
@@ -330,12 +334,7 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 	}); err != nil {
 		return false, err
 	}
-	stated := graphstore.Uncaused{Tuples: mentions}
-	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		graphstore.QueueCaused(b, stated, graphstore.NoEvent)
-		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
-		return nil
-	}); err != nil {
+	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
 		return false, fmt.Errorf("state the references of document %s: %w", fromID, err)
 	}
 	return true, tx.Commit(ctx)

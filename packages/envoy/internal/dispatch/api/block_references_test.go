@@ -565,10 +565,7 @@ func TestReferencesFromADocumentNameTheBlockHoldingEachLink(t *testing.T) {
 	if len(edges) != 1 || edges[0].Node.Kind != "issue" || edges[0].Node.ID != target.Key {
 		t.Fatalf("links of the spec = %#v, want its one mention of %s", edges, target.Key)
 	}
-	spec := readDecisionDocument(t, database, issue.Key, "spec")
-	if spec.room == spec.id {
-		t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
-	}
+	spec := requireIssueRoomFragment(t, database, issue.Key, "spec")
 	if block := edges[0].Block; paragraphID == "" || block == nil || block.Kind != "block" || block.BlockID != paragraphID ||
 		block.ID != spec.address(paragraphID) || block.Document != "dispatch://"+issue.Key+"/spec" {
 		t.Fatalf("block holding the link = %#v, want the paragraph %q", block, paragraphID)
@@ -710,9 +707,7 @@ func TestAnOutgoingMentionOfABlockOfAnIssueRoomCarriesItsDocument(t *testing.T) 
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue, blockRef := createShipItSpec(t, handler, "CORE")
-	if spec := readDecisionDocument(t, database, issue.Key, "spec"); spec.room == spec.id {
-		t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
-	}
+	requireIssueRoomFragment(t, database, issue.Key, "spec")
 	notes := createProjectDocument(t, handler, "CORE", "Notes", "Decision: "+blockRef+"\n")
 
 	outgoing := decodeBody[model.ArtifactReferences](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+notes.ID+"/references", nil, "alice")).Outgoing
@@ -737,9 +732,7 @@ func TestAConvertedDocumentsReferencesAreItsBlocksNotItsRoomsTree(t *testing.T) 
 	cited, blockRef := createShipItSpec(t, handler, "CORE")
 	citing := createSpecIssue(t, handler, "CORE", "Built on dispatch://"+cited.Key+"/spec.\n\nAs decided in "+blockRef+".\n")
 	for _, issue := range []model.Issue{cited, citing} {
-		if spec := readDecisionDocument(t, database, issue.Key, "spec"); spec.room == spec.id {
-			t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
-		}
+		requireIssueRoomFragment(t, database, issue.Key, "spec")
 	}
 	referencesOf := func(artifactID string) model.ArtifactReferences {
 		t.Helper()

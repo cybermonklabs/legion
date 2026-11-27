@@ -75,8 +75,7 @@ func seedDaemonThreadFixture(t *testing.T, database *store.Store, databaseURL st
 	fixture.reply = posted("alice's reply in the daemon's thread", seeder.send(t, http.MethodPost, messages, encodedBody(t, map[string]any{
 		"body": "Hold it until Friday.", "in_reply_to": root,
 	}), asUser(dispatchTestLogin)))
-	seeder.Terminate(t)
-	seeder.WaitExit(t, "SIGTERM")
+	stopProcess(t, seeder)
 
 	if err := database.Pool.QueryRow(ctx, `
 		select node_id from message_blocks where message_id = $1::uuid and position is not null order by position limit 1
@@ -104,6 +103,16 @@ func daemonThreadPlacement(t *testing.T, database *store.Store, node string) gra
 		t.Fatalf("the block %s stands on %v (%v), want one parent", node, held, err)
 	}
 	return held[0]
+}
+
+// requireUnderTheIssue fails the test unless the fixture's block id stands under the fixture's
+// issue by a part_of the daemon-thread step wrote.
+func requireUnderTheIssue(t *testing.T, database *store.Store, fixture daemonThreadFixture, id string) {
+	t.Helper()
+	if now := daemonThreadPlacement(t, database, fixture.blocks[id]); now.ToKind != graphstore.KindIssue || now.ToID != fixture.issue || now.Who.ID != docs.DaemonThreadStepActor.ID {
+		t.Errorf("the block %s stands under %s %s by a part_of %s %s wrote, want it under the issue %s by the step's",
+			fixture.blocks[id], now.ToKind, now.ToID, now.Who.Kind, now.Who.ID, fixture.issue)
+	}
 }
 
 // placeUnderDaemonThread moves the block node under the node toKind and toID name, through the
@@ -263,11 +272,7 @@ func TestDaemonThreadReplacementRunsAfterListenAndOnReconciliation(t *testing.T)
 		t.Fatalf("daemon_thread_parent=%d after the run that follows the listen, want 0:\n%s", owed, process.Output.String())
 	}
 	for _, id := range []string{"crit", "req"} {
-		now := daemonThreadPlacement(t, database, fixture.blocks[id])
-		if now.ToKind != graphstore.KindIssue || now.ToID != fixture.issue || now.Who.ID != docs.DaemonThreadStepActor.ID {
-			t.Errorf("the block %s stands under %s %s by a part_of %s %s wrote, want it under the issue %s by the step's",
-				fixture.blocks[id], now.ToKind, now.ToID, now.Who.Kind, now.Who.ID, fixture.issue)
-		}
+		requireUnderTheIssue(t, database, fixture, id)
 	}
 
 	placeUnderDaemonThread(t, database, fixture.blocks["late"], string(refs.ItemMessage), fixture.reply)
@@ -275,13 +280,9 @@ func TestDaemonThreadReplacementRunsAfterListenAndOnReconciliation(t *testing.T)
 		t.Fatalf("daemon_thread_parent=%d after reconciliation tick, want 0: the server placed nothing in %s, three intervals of the block-index reconciliation:\n%s",
 			owed, 3*docs.BlockIndexReconcileInterval, process.Output.String())
 	}
-	if now := daemonThreadPlacement(t, database, fixture.blocks["late"]); now.ToKind != graphstore.KindIssue || now.ToID != fixture.issue || now.Who.ID != docs.DaemonThreadStepActor.ID {
-		t.Errorf("the block %s stands under %s %s by a part_of %s %s wrote, want it under the issue %s by the step's",
-			fixture.blocks["late"], now.ToKind, now.ToID, now.Who.Kind, now.Who.ID, fixture.issue)
-	}
+	requireUnderTheIssue(t, database, fixture, "late")
 	if starts := process.logLines(daemonThreadStartedMatch); len(starts) != 1 {
 		t.Errorf("the server logged %d first runs of the step, want the one after its listen: the tick placed the third node with no restart", len(starts))
 	}
-	process.Terminate(t)
-	process.WaitExit(t, "SIGTERM")
+	stopProcess(t, process)
 }

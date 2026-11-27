@@ -545,8 +545,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// document's lock, taken here as the transaction-level form of the session lock that
 		// batch's opening pipeline takes (docs/room_appends.go), and the doc_updates row it has
 		// written and not committed. Such a writer takes no owner lock, so the issue's owner lock the
-		// removal holds does not order it: the room's lock is what does. The document plays no
-		// role of its converted issue, so it is a room of its own (requireOwnRoom).
+		// removal holds does not order it: the room's lock is what does.
 		requireOwnRoom(t, document)
 		appending, err := database.Pool.Begin(ctx)
 		if err != nil {
@@ -646,8 +645,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("the settlement pass over the untouched document wrote %#v (%v); want nothing written", version, err)
 		}
 		// The room is read live before the removal, so what is said of it after is said of a room
-		// that existed. The document plays no role of its converted issue, so it is a room of its
-		// own (requireOwnRoom).
+		// that existed.
 		requireOwnRoom(t, document)
 		if rooms := documents.ResidentRooms(); !slices.Contains(rooms, document.ID) {
 			t.Fatalf("this process holds the rooms %v, and not %s, whose room the removal must close", rooms, document.ID)
@@ -816,8 +814,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 
 	// Each process is read holding a room of the document, so what is said of the two rooms
 	// after the removal is said of rooms that existed. The removing process loaded its own when
-	// the document was made. The document plays no role of its converted issue, so it is a room of
-	// its own (requireOwnRoom).
+	// the document was made.
 	requireOwnRoom(t, document)
 	for _, process := range []struct {
 		what    string
@@ -933,13 +930,25 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 
 // requireOwnRoom fails unless the document's read names it a room of its own: its own id as its
 // room and that room's own fragment, as every document of an issue is but the issue's spec,
-// Verification document and plan, which join a converted issue's room (R5 of this branch's spec).
+// Verification document and plan, which join a converted issue's room (R5 of the issue-tree spec).
 func requireOwnRoom(t *testing.T, document model.Artifact) {
 	t.Helper()
 	if document.Room != document.ID || document.Fragment != model.ArtifactFragmentOwn {
 		t.Fatalf("%s (%s) reads room %q fragment %q, want a room of its own: room %s and fragment %s",
 			document.Name, document.ID, document.Room, document.Fragment, document.ID, model.ArtifactFragmentOwn)
 	}
+}
+
+// requireIssueRoomFragment reads the document slug of the issue key (readDecisionDocument) and
+// fails unless it is a fragment of its issue's room, as the spec, Verification document and plan of
+// an issue born converted are (R5 of the issue-tree spec).
+func requireIssueRoomFragment(t *testing.T, database *store.Store, key, slug string) decisionDocument {
+	t.Helper()
+	document := readDecisionDocument(t, database, key, slug)
+	if document.room == document.id {
+		t.Fatalf("the document %s of %s is a room of its own, want a fragment of its issue's room", slug, key)
+	}
+	return document
 }
 
 // documentAppendCount is how many stored appends the database holds of a document's room. After

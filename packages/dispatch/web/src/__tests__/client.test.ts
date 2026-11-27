@@ -755,6 +755,30 @@ test("API client sends inline artifacts as JSON", async () => {
   });
 });
 
+test("API client reads the text routes under Dispatch-Asks and no other route", async () => {
+  const stub = stubFetch(() => Response.json({ markdown: "", token: "t", version: 1 }));
+  const api = createApiClient(stub.fetch);
+
+  await api.getArtifactText("artifact-1");
+  await api.ownerArtifactText({ issue: "CORE-1" }, "spec");
+  await api.ownerArtifactText({ project: "CORE" }, "guide-md");
+  await api.getArtifact("artifact-1");
+
+  // The page reads each ask's state and answer from a text route's `asks`, so its reads of those
+  // routes send `Dispatch-Asks: 1` and are served markdown with none of an ask block's
+  // server-owned attributes (`api/artifacts.go`'s asksHeader); no other read sends it.
+  const readsAsks: [string, string][] = [
+    ["Dispatch-Asks", "1"],
+    ["Dispatch-Trees", "1"],
+  ];
+  expect(stub.requests.map(({ init, path }) => [path, init?.headers])).toEqual([
+    ["/api/v1/artifacts/artifact-1/text", readsAsks],
+    ["/api/v1/issues/CORE-1/artifacts/spec/text", readsAsks],
+    ["/api/v1/projects/CORE/artifacts/guide-md/text", readsAsks],
+    ["/api/v1/artifacts/artifact-1", [["Dispatch-Trees", "1"]]],
+  ]);
+});
+
 test("API client encodes list filters and artifact version query parameters", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);

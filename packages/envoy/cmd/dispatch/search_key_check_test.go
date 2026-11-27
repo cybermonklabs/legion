@@ -85,13 +85,7 @@ func searchKeySend(t *testing.T, p *dispatchProcess, cookies []*http.Cookie, met
 // searchKeyLogLines is every line of p's output that names document_search: where a statement
 // that reads or writes the dropped table failed, the server's log names it.
 func searchKeyLogLines(p *dispatchProcess) string {
-	var lines []string
-	for _, line := range strings.Split(p.Output.String(), "\n") {
-		if strings.Contains(line, "document_search") {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "\n")
+	return strings.Join(p.logLines("document_search"), "\n")
 }
 
 // This build boots, removes a document, writes a version and searches over a database where the

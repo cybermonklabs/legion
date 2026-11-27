@@ -67,6 +67,7 @@ import { treeRows } from "./tree-fold";
 import { decisionBehind, nodesInOrder } from "./tree-keys";
 import {
   treeNode as answerNode,
+  postMarks,
   treeAnchor,
   treeAnswer,
   treeParent,
@@ -718,10 +719,7 @@ function answered(fixture: Fixture): IssueTreeReads {
         made_at: comment.created_at,
         text: comment.body,
         ...(comment.body_tree === undefined ? {} : { text_tree: comment.body_tree }),
-        ...(comment.edited_at === null ? {} : { edited_at: comment.edited_at }),
-        ...(comment.deleted_at === null
-          ? {}
-          : { deleted_at: comment.deleted_at, deleted_by: comment.deleted_by }),
+        ...postMarks(comment),
       }),
     });
   }
@@ -1213,6 +1211,38 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
     { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: ruled },
     { answered: true, gone: false, label: "needs", name: "", ref: foreign },
     { answered: false, gone: false, label: "needs", name: "", ref: unread },
+  ]);
+});
+
+// R10: a plan task's `needs` names an issue beside the tasks it waits on, an item kind the
+// attribute declares (`items: ["issue"]` in `pmdoc/schema/blocks.json`). The tree read's node
+// attributes are read under the item kinds a pointer of the page names, an issue among them
+// (`tree-nodes.ts`' `POINTER_ITEMS`), as the Plan tab and the document's drawing read them: read
+// under none, a value naming an issue is no value the server holds, it parses to nothing, and
+// the task drew no needs chip at all, the task's as well as the issue's.
+test("a needs that names an issue draws a needs chip of the issue beside the task's", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const task = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const issue = "dispatch://CORE-2";
+  const root = treeOf({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [block("t0", "plan_task"), block("t1", "plan_task", { needs: `${task} ${issue}` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+  });
+
+  expect(
+    nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map((chip) => ({
+      label: chip.label,
+      ref: chip.ref,
+    }))
+  ).toEqual([
+    { label: "needs", ref: task },
+    { label: "needs", ref: issue },
   ]);
 });
 

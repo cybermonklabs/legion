@@ -10,10 +10,51 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// convertIssuesUsage is what `envoy-dispatch convert-issues` prints for a usage error.
-const convertIssuesUsage = "usage: envoy-dispatch convert-issues --project <KEY> [--dry-run]"
+// openProjectRun reads the flags of a run by hand over the issues of one project,
+// `envoy-dispatch <name> --project <KEY> [--dry-run]`, projectHelp and dryRunHelp the help of its
+// two flags, and opens the database as the run takes it: migrated, as every database subcommand
+// does (openMigrated), or for --dry-run with no migration applied and refused while one is owed
+// (openUnmigrated). It answers the database, the project's key and whether the run is dry, or the
+// exit code of a run that ends here: 2 on a usage error or a --project the projects table holds no
+// row of under that exact key, 1 where the database does not open or the project cannot be read.
+// The caller closes the database it answers.
+func openProjectRun(ctx context.Context, name, projectHelp, dryRunHelp string, args []string, env settingValues, stdout, stderr io.Writer) (database *store.Store, key string, dryRun bool, code int) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	project := flags.String("project", "", projectHelp)
+	dry := flags.Bool("dry-run", false, dryRunHelp)
+	if err := flags.Parse(args); err != nil {
+		return nil, "", false, 2
+	}
+	key = strings.TrimSpace(*project)
+	if flags.NArg() > 0 || key == "" {
+		fmt.Fprintf(stderr, "%s: usage: envoy-dispatch %s --project <KEY> [--dry-run]\n", name, name)
+		return nil, "", false, 2
+	}
+	open := openMigrated
+	if *dry {
+		open = openUnmigrated
+	}
+	database, ok := open(ctx, name, env.get("DATABASE_URL"), stdout)
+	if !ok {
+		return nil, "", false, 1
+	}
+	var known bool
+	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, key).Scan(&known); err != nil {
+		database.Pool.Close()
+		fmt.Fprintf(stdout, "%s: read the project %q: %v\n", name, key, err)
+		return nil, "", false, 1
+	}
+	if !known {
+		database.Pool.Close()
+		fmt.Fprintf(stderr, "%s: the database holds no project %q; --project takes a project's key as the projects table holds it\n", name, key)
+		return nil, "", false, 2
+	}
+	return database, key, *dry, 0
+}
 
 // convertIssues runs `envoy-dispatch convert-issues --project <KEY> [--dry-run]`: the conversion
 // of each issue of one project into its issue room (R6 of the issue tree's spec), by hand, which
@@ -40,36 +81,14 @@ const convertIssuesUsage = "usage: envoy-dispatch convert-issues --project <KEY>
 // projects table holds no row of, and 0 otherwise.
 func convertIssues(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 	const name = "convert-issues"
-	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	project := flags.String("project", "", "the key of the project whose issues the conversion runs over (required)")
-	dryRun := flags.Bool("dry-run", false, "convert each issue in its transaction and roll it back, writing nothing; refused while a migration is owed")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	key := strings.TrimSpace(*project)
-	if flags.NArg() > 0 || key == "" {
-		fmt.Fprintf(stderr, "%s: %s\n", name, convertIssuesUsage)
-		return 2
-	}
-	open := openMigrated
-	if *dryRun {
-		open = openUnmigrated
-	}
-	database, ok := open(ctx, name, env.get("DATABASE_URL"), stdout)
-	if !ok {
-		return 1
+	database, key, dryRun, code := openProjectRun(ctx, name,
+		"the key of the project whose issues the conversion runs over (required)",
+		"convert each issue in its transaction and roll it back, writing nothing; refused while a migration is owed",
+		args, env, stdout, stderr)
+	if code != 0 {
+		return code
 	}
 	defer database.Pool.Close()
-	var known bool
-	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, key).Scan(&known); err != nil {
-		fmt.Fprintf(stdout, "%s: read the project %q: %v\n", name, key, err)
-		return 1
-	}
-	if !known {
-		fmt.Fprintf(stderr, "%s: the database holds no project %q; --project takes a project's key as the projects table holds it\n", name, key)
-		return 2
-	}
 	documents := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: loadServerURL(env), BuildCommit: buildCommit})
 	defer documents.Shutdown(context.Background())
 	fmt.Fprintf(stdout, "%s: %s\n", name, docs.ConversionRollbackCost)
@@ -81,7 +100,7 @@ func convertIssues(ctx context.Context, args []string, env settingValues, stdout
 	began := time.Now()
 	counts := map[docs.ConversionOutcome]int{}
 	failed := 0
-	err := documents.ConvertProject(ctx, key, gate, *dryRun, func(issue docs.ConvertedIssue, err error) {
+	err := documents.ConvertProject(ctx, key, gate, dryRun, func(issue docs.ConvertedIssue, err error) {
 		if err != nil {
 			failed++
 			fmt.Fprintf(stdout, "%s failed in %s: %v\n", issue.Issue, issue.Took.Round(time.Microsecond), err)
@@ -92,7 +111,7 @@ func convertIssues(ctx context.Context, args []string, env settingValues, stdout
 	})
 	fmt.Fprintf(stdout, "%s: project=%s converted=%d passed_over=%d deferred=%d failed=%d total=%s dry_run=%t\n",
 		name, key, counts[docs.IssueConverted], counts[docs.IssuePassedOver], counts[docs.IssueDeferred], failed,
-		time.Since(began).Round(time.Microsecond), *dryRun)
+		time.Since(began).Round(time.Microsecond), dryRun)
 	if err != nil {
 		fmt.Fprintf(stdout, "%s: %v\n", name, err)
 		return 1

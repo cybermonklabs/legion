@@ -15,7 +15,7 @@ import (
 )
 
 // readBackSpec is a document holding a callout inside a list item, the tree a browser edit turns
-// into one the renderer may render as markdown the parser refuses (R25 of this change).
+// into one the renderer may render as markdown the parser refuses (R25 of the issue-tree spec).
 const readBackSpec = "# Spec\n\n- Lead.\n\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n  Gone.\n  :::\n"
 
 // readBackCallout is the first callout of tree in document order, nil where it holds none.
@@ -50,7 +50,7 @@ func readBackFootnote(callout *pmdoc.Node) (string, bool) {
 	return readBackText(callout.Children[0]), true
 }
 
-// R25 of this change, on a document that is its own room (the api test
+// R25 of the issue-tree spec, on a document that is its own room (the api test
 // TestABrowserEditThatDoesNotReadBackStoresNoVersion drives an issue room): no version the
 // settlement writes is one the parser refuses. A browser moves the text of a callout inside a list
 // item into a footnote definition inside the callout, and the room's settlement runs. Unless the

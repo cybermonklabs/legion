@@ -98,8 +98,14 @@ const versionAddress = `a.ref_key || '@v' || v.number`
 // reads it: the newest value tuple under that name, null where it retracts the value or the node
 // never carried it. It binds to_kind = 'value', so it reads through graph_tuples_values.
 func currentValue(attribute string) string {
+	return currentValueOf(`n.kind`, `n.id`, attribute)
+}
+
+// currentValueOf is currentValue of the node whose kind and id the SQL expressions fromKind and
+// fromID name.
+func currentValueOf(fromKind, fromID, attribute string) string {
 	return `(select case when t.asserted then t.to_id end from graph_tuples t
-		where t.from_kind = n.kind and t.from_id = n.id and t.kind = '` + attribute + `'
+		where t.from_kind = ` + fromKind + ` and t.from_id = ` + fromID + ` and t.kind = '` + attribute + `'
 		  and t.to_kind = '` + graphstore.KindValue + `'
 		order by t.seq desc limit 1)`
 }
@@ -499,7 +505,7 @@ type versionRenderRow struct {
 // no difference. It reads them in batches of versionRenderBatch.
 func CompareVersionRenders(ctx context.Context, q graphstore.Queryer, render VersionMarkdownAt) (VersionRenderCensus, error) {
 	var census VersionRenderCensus
-	after := versionRenderRow{artifactID: "00000000-0000-0000-0000-000000000000"}
+	after := versionRenderRow{artifactID: zeroUUID}
 	for {
 		rows, err := q.Query(ctx, versionRendersStatement, after.artifactID, after.number, versionRenderBatch)
 		if err != nil {

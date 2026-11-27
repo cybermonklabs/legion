@@ -211,7 +211,7 @@ a reader that trusts only a session the server saw proved reads that mark, and a
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, or the project scope `none` or a narrowed one in any shape but a read-only token's)
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, the project scope `none` or a narrowed one in any shape but a read-only token's, or the scope `approve` in any shape but an approve-only token's; `ciphertoken.ErrNotASession` holds the whole list)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
@@ -219,13 +219,14 @@ The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
-No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
+No broker-issued token a machine holds has the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, a Legion daemon's own token holds `legion-status` alone (below), and every other holds none (`brokerTokenActor`).
 Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
-So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses every broker-issued token at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
+So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses each of those tokens at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
 `403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
+The one broker-issued token that approves is an approve-only token (below), which no machine holds.
 The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
 a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
-The person makes those calls from their browser session, or with a personal token they gave `approve`.
+The person makes those calls from their browser session, with a personal token they gave `approve`, or from an agent session on a box where they signed in, through the secrets broker's proxy with an approve-only token (below), which no file on the box holds.
 A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
 
 A read-only token is any token that holds `read`, and it may only read.
@@ -280,13 +281,21 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
+An approve-only token is the token the secrets broker mints for a person's approve grant: a session on a box where the person signed in trades that sign-in for the grant, holds only a placeholder, and sends each approval through the broker's proxy, which puts in the token, bound to the broker pod's own key, and never releases it.
+It holds the OAuth scope `approve` alone and the project scope `person`, and names a person and a session and no service and no project.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesApproveOnly` set, so Dispatch accepts such a token as its person with both of the person's scopes and marks its credential approve-only (`model.Credential.ApproveOnly`).
+Dispatch serves it on the routes its approve list names (`approveScopeRoutes` in `internal/dispatch/api/routes_table.go`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
+Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseApproveOnlyToken`), before the route's scopes and everything else it does.
+The answer route serves every kind of ask, so `answerAsk` refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written: a question's answer, its free text among it, is no approval.
+A service whose verifier does not set the switch answers such a token `401`, and the NATS auth service refuses it as `not_a_session`.
+
 A job's token is the token the broker mints from a job entry: `BROKER_EXCHANGE_JOB_ACCOUNTS` for a pod, `BROKER_EXCHANGE_JOB_WORKFLOWS` for a GitHub Actions workflow, and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` for a machine.
 The entry names an identity, its projects and, where it fixes one, a session, and it names no person.
 The token names that identity as its service (a pod's `system:serviceaccount:<namespace>:<name>`, a workflow's `<repository>/<workflow path>@<ref>`, or a Google account's address), names no person and holds no OAuth scope.
 Its project scope is one of two:
 `named` with the one project its entry names, or `public` with the private projects its entry lists, 0 to 16 of them, beside which it reaches every public project.
 `brokerTokenActor` resolves it to the session it names, with `Service` set to that identity, no `Owner` and no scope, and carries its project scope and its list on the credential (`model.Credential.ProjectScope` and `Projects`).
-A `named` job's token sets `Actor.Project`, so the project check below judges its writes as it judges a person's named token for the same project: for both, a write to another project is `403 PROJECT_SCOPE` until dispatch://INFRA-4799 changes that.
+A `named` job's token sets `Actor.Project`, so the project check below judges its writes as it judges a person's named token for the same project: both write another project's objects as a credential that names no project does, except an object of a private project that the token does not name, which gets the answer of a target that does not exist, and both are refused a write that belongs to the deployment with `403 PROJECT_SCOPE_DEPLOYMENT`.
 A `public` job's token names no one project, so the project check holds it to none: it writes wherever Dispatch's own rules let a token that names no project write, a write that belongs to the deployment included.
 The private projects of its list limit no write at this release.
 It holds no OAuth scope, so every route whose `scopes` name `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED` at its scope gate.
@@ -305,28 +314,58 @@ The shared token, a personal token without `person`, a project's other broker to
 An architect of an issue above writes a Legion issue's status `done`, `backlog`, `icebox` or `triage` once its claim is ready: its broker token proves its session, and the daemon's own token has published that session as the architect of an issue above the Legion issue, of the Legion issue's own project, before the call and after it (`internal/dispatch/api/legion_status_scope.go`).
 With `include_children` it writes `backlog`, `icebox` or `triage` only, with `unlink_children` or `include_parent` nothing, and its removal of the `legion` label and its move out from under every labelled issue stay refused.
 
-A credential that names one project may write that project and nothing else.
+A credential that names one project writes every project's objects that a credential naming no project may write.
+The one exception is a private project that the credential does not name.
+One function holds that test: `access.CredentialCovers` (`internal/dispatch/access/credential.go`).
+Each caller passes it the visibility of the target's project (`projects.visibility`), which it reads in the statement or the transaction that reads that project, before the route writes anything.
+A write to a private project that the credential does not name writes nothing.
+The caller gets exactly the answer, in status, code and message, that it gets at the same check for a target that does not exist, so it cannot tell the two apart.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
 a `GET` row declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
-*a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
+*a project the body names* — the issue create and the question of an answer run (`POST /api/v1/going/requests`), whose project the address does not name, so `createIssue` and `createGoingRequest` each make the same check once that project is settled;
 *the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
 and *the deployment's* — the project create, a project's default repository, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
 `Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
 
 The project check resolves the project the addressed object belongs to
 — an issue key, a project key, an artifact id, an ask id, a comment id or a message id, each by one read
-— and lets through only a target that resolves to the caller's own project.
-It fails closed, so a target that resolves to another project, to no project at all (an object belonging to none), or to nothing at all (no such row, or an id Postgres will not read as a uuid) is `403 PROJECT_SCOPE`, naming the project the credential covers and the project the write belongs to where one resolved, and nothing of the credential.
-The two refusals still read differently — a target of another project names that project, one that resolved to nothing says the write resolves to no project of that credential's
-— so failing closed does not close an existence oracle and does not claim to.
-Nothing is read out that way: no GET route is project-scoped, so every answer this check can colour is a refusal of the caller's own write.
+— and lets through a target of every project that `access.CredentialCovers` covers.
+It fails closed, so a target that resolves to no project at all (an object belonging to none) or to nothing at all (no such row, or an id Postgres will not read as a uuid) is still `403 PROJECT_SCOPE`.
+That refusal names the project the credential names, and nothing of the credential.
+An object of a private project that the credential does not name gets the same `403 PROJECT_SCOPE`, with the same message.
+So a scoped caller can tell an object that it may write from an id nobody holds: a write to the one reaches its handler, and a write to the other is refused.
+It cannot tell an id nobody holds from an object of a private project that it does not name.
+Failing closed does not close that existence oracle and does not claim to.
+Nothing is read out that way: no GET route is project-scoped.
 Each resolver sends the raw path value to Postgres, as the handler behind it does, so the check reads a path exactly as the handler then addresses its row by it
 — Postgres's uuid parser takes a hyphen after any group of four digits, and a check that parsed ids in Go admitted those spellings unjudged.
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming the credential's project and the route:
-a credential that may write one project may not create another or change a setting that is not any project's.
-`POST /api/v1/issues` takes its project from the body rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
+a credential that names one project may not create another or change a setting that is not any project's.
+`POST /api/v1/issues` takes its project from the body rather than from its address, so its handler makes the same check the moment that project is settled
 — before the ref is resolved to an issue already imported, and before anything is written.
+The checks before it read no project, so a credential that names one project gets one answer for a private project that it does not name and for a project that does not exist, whatever else the body holds: at that check, `404 NOT_FOUND`, and a create with no title gets it too.
+A project key that is empty or is not a project key keeps its `400`, and a credential that names no project is answered as before.
+`POST /api/v1/going/requests` takes its project from the body too, and its handler makes the same check before it records the question.
+A credential that names one project may ask of any project, and of every project at once.
+Such a credential gets `404 PROJECT_NOT_FOUND` for a private project that it does not name and for a project that does not exist, with one body for both.
+A credential that names no project is answered as before: its question of a project that does not exist is recorded.
+A `blocked_by` target and a parent may each be an issue of any project.
+The issue create and `PATCH /api/v1/issues/{key}` make the same check for the parent and for each `blocked_by` target, before any lock is taken (`foreignDependencyTargets`) and again under the locks (`writeBlockedBy` for a target, and `validateIssueParent` or the create's own read of its parent for the parent).
+For a credential that names one project, the first check reads every key in one statement and refuses the first key that no issue holds or that is of a private project the credential does not name, in the order that the reads under the locks ask: the parent, then the targets in key order.
+Such a parent is `400 PARENT_INPUT` and such a target `400 BLOCKED_BY_INPUT`, each with the message of a key that does not exist.
+The check comes before a create's near-copy gate and its other checks of the body, and before a `PATCH` settles the documents of an issue it closes, so a key that does not exist and a private key get one answer whatever else the body holds.
+A result and its retraction are appended to the check's issue, which a parent of another project can put in another project, and which the path does not name.
+The two results routes, `POST /api/v1/issues/{key}/results` and its dry run (`POST /api/v1/issues/{key}/results/dry-run`), leave out each check of a private project that the credential does not name when they resolve the body's `check`.
+So such a check alone is `400 UNKNOWN_CHECK`, the answer for a check that does not exist, and a `409 CHECK_AMBIGUOUS` names no issue of that project.
+Then they make the same check for the check's issue once, before anything is written.
+`POST /api/v1/results/{id}/retract` makes it in the project check, beside the check of the result's own issue, before the request's `Idempotency-Key` is read and before the body is read, and again before it takes that issue's owner lock.
+For a check of a private project that the credential does not name, it answers `403 PROJECT_SCOPE` with the message of a result that does not exist, whatever the request holds.
+A status change's cascade can write an issue of another project, since a parent may be one: an ancestor that `include_parent` moves, and an issue under the issue that `include_children` moves or `unlink_children` unlinks.
+`POST /api/v1/issues/{key}/status-change` and its dry run make the same check for each issue a step of the call writes, under the issues' owner locks and before the first step (`planStatusChangeUnderLocks`).
+The call leaves out each issue of a private project that the credential does not name, and each issue that it reaches only through such an issue (a descendant below it, or an ancestor above it): it does not move or unlink those issues, and neither its answer nor its dry run names them.
+The parent status rule still judges an issue of such a project, and the `issues` of a `409 PARENT_STATUS_CONFLICT` leave it out.
+An acceptance write of `PATCH /api/v1/issues/{key}` (`refuse_open_foreign_children`) is still refused while such an issue is an open child of the issue, and the `issues` and `error` of its `409 FOREIGN_CHILD_OPEN` leave that child out.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
@@ -849,7 +888,7 @@ The database retains the migrated schema; tests only truncate rows they create.
 `go run ./cmd/dispatch-seed` fills an empty database with the data set a statement measurement is taken on:
 ten times production's row counts at `--scale 1` — 10 projects, 20,000 issues over parent chains and `blocked_by` links, 40,000 documents with 200,000 versions, 80,000 asks, 370,000 comments, 60,000 messages, 1,250,000 events beside the `ask.opened` event every ask is written with, and a vector for half the issues, documents, asks, comments and messages
 — and the same shape times the scale at any other.
-It is deterministic: one fixed base time, one fixed random seed, and a fixed block id generator (`pmdoc.SetBlockIDGenerator`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
+It is deterministic: one fixed base time, one fixed random seed, and block ids from a counter each version's render holds, b1, b2, … in document order (`renderVersion`, `pmdoc.ParseWithBlockIDs`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
 The text is drawn from a Zipf list of 20,000 words, so the `tsvector` columns carry real lexemes at known frequencies.
 
 ```sh
@@ -1707,8 +1746,9 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4.
   Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5 (#4611).
   It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
-  Migration `20261123174700` is the second, written the same way: it makes `decision` and `reading` block types, adds their attribute nodes and `ask`'s `shaped`, and moves every block type to version 6.
-  Migration `20261123174800` is the third, written the same way: it makes `criterion` a block type, adds the `parent` attribute nodes of `criterion`, `requirement`, `plan_task` and `check`, `requirement`'s `serves` and `plan_task`'s `size` (kind `minutes`), `skills` and `docs`, widens `plan_task`'s `needs` to take an issue, and moves every block type to version 7, the version `pmdoc/schema/blocks.json` declares.
+  Migration `20261125163555` is the second, written the same way: it makes `decision` and `reading` block types, adds their attribute nodes and `ask`'s `shaped`, each read from version 6 and created from version 7, and moves every block type to version 6.
+  Migration `20261126040700` is the third: it moves every block type to version 7 and changes no element, so from this release a build creates `decision`, `reading` and `ask`'s `shaped`.
+  Migration `20261126050010` is the fourth, written the same way: it makes `criterion` a block type, adds the `parent` attribute nodes of `criterion`, `requirement`, `plan_task` and `check`, `requirement`'s `serves` and `plan_task`'s `size` (kind `minutes`), `skills` and `docs`, widens `plan_task`'s `needs` to take an issue, each read and created from version 8, and moves every block type to version 8, the version `pmdoc/schema/blocks.json` declares.
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
@@ -3029,7 +3069,8 @@ The `role` check names the six Legion roles, and a row goes with its issue.
 A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
 A new table: the foreign key holds `issues` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so an issue write waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
-Migration `20261125002856_issue_role_holders_daemon_proven` adds `issue_role_holders.daemon_proven`, `boolean not null default false`: whether the credential that wrote a pair proved the session `legion-daemon:<project>` of the issue's project and held `legion-status`, which only the daemon's own broker token does.
+Migration `20261125002856_issue_role_holders_daemon_proven` adds `issue_role_holders.daemon_proven`, `boolean not null default false`: whether the credential that wrote a pair held `legion-status` and proved a daemon's session, which only a daemon's own broker token does.
+That session is `legion-daemon:<project>` of the issue's project, or `legion-daemon:<P>` of another project's daemon whose token names `P`.
 `PUT /api/v1/issues/{key}/role-holders` writes it on each pair that a publication stores, a pair that it keeps unchanged included, with `DISPATCH_LEGION_STATUS_SCOPE` on or off (Routes below).
 A row stored before the migration reads unmarked (`false`), and the next publication of its issue from the daemon's own token marks it.
 With `DISPATCH_LEGION_STATUS_SCOPE` on, R26 lets the write of a Legion issue's status by the architect that owns the issue through only where a marked pair names that architect.
@@ -3806,6 +3847,16 @@ It prints `census: block_ids issues=<n> shared=<n>`, followed by one `census: sh
 The command exits 0 when it prints the report, even when `shared` is nonzero, and 2 on a usage, read or output error.
 It is separate from the migration and store censuses and takes none of the store census flags.
 
+### Converting a project's issues by hand
+
+`envoy-dispatch convert-issues --project <KEY> [--dry-run]` converts each issue of one project into its issue room (R6 of the issue-tree spec) by hand, as the server's issue-room step does on its own once every live process announces the room: the step's one function (`docs.Service.ConvertIssue`) over the project's issues by number, each in a transaction of its own.
+It runs only on a fleet of this binary's own commit (`docs.BuildGate`): it refuses while any live process serves another build, and unless the newest `server_build_announcements` row names the commit this binary was stamped with; an unstamped binary is refused.
+The gate is checked once before the first issue, so a run is refused while another build is live even where every issue it reaches would be passed over, and again inside each issue's transaction.
+A done issue, and one whose room stands already, is passed over; an issue one of whose documents still owes its block index is deferred, and the run goes on to the next.
+`--dry-run` converts each issue in its transaction and rolls it back: it applies no migration, refuses a database with a migration of this build still to apply, and prints the same lines.
+It prints the cost of a rollback first (`convert-issues: a rollback to a build before the issue room reads each converted document as it stood before its conversion, and loses every edit written into its issue's room since`), then one line for each issue - `<KEY> converted in <time>: items=<n>` (`<KEY> would be converted in <time>, rolled back: items=<n>` in a dry run), `<KEY> passed over in <time>: <reason>` or `<KEY> deferred in <time>: <reason>`, `items=` being the item count of the room's first update where the conversion measured it - and `<KEY> failed in <time>: <error>` for each issue whose transaction failed, then `convert-issues: project=<KEY> converted=<n> passed_over=<n> deferred=<n> failed=<n> total=<time> dry_run=<bool>`.
+It exits 1 on a refusal, a failed issue or any other error, 2 on a usage error or a `--project` the `projects` table holds no row of under that exact key, and 0 otherwise.
+
 ### The node and tuple store census
 
 `envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
@@ -4199,20 +4250,22 @@ It renders a block's `in_document` as the `part_of` to its document the view has
 the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
 No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
 
-Migration `20261117020856_graph_edges_asks_and_store_class` (cybermonklabs/legion#4193) is that child's one statement of the view.
-It re-states the arm list of `20261116094101_graph_edges_asks` (cybermonklabs/legion#4173) with one class more in the tuple arm, `store`, which joins no projection row: `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of` and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`, the relations the store holds with no table behind them.
+Migration `20261126050002_graph_edges_asks_and_store_class` (cybermonklabs/legion#4193) is that child's one statement of the view.
+It re-states the arm list of `20261125163553_graph_edges_asks` (cybermonklabs/legion#4173) with one class more in the tuple arm, `store`, which joins no projection row: `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of` and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`, the relations the store holds with no table behind them.
 The class is tested before the block-reference class, so a requirement block's `constrained_by` is not looked for in `block_refs`; every other row keeps its class, a comment's `authored_by` and a session's, a page's or a block's `part_of` stay out of the view, and `refs.TupleKinds`, which the announcer writes, lists the seven kinds beside the earlier ones.
 
 It also adds one arm over the current tuples: every relation of the class `store` out of a finding of a lens — a block node whose id names its lens, `lens/<uuid>#<block id>` — answered with the literal from_kind `lens_block`, the kind the read registry and every reference know a finding by, at the finding's own id, by the tuple arm's own rules.
 The tuple arm's class `store` leaves out a tuple out of such a block, so no relation is answered twice; no finding exists before this release writes one, so the arm drops no row a build of the release before reads, and the read registry maps the predicate of `lens_block` onto the store's `block` row at that id.
-Migration `20261116094101_graph_edges_asks` (the decisions-tree spec) re-states the view from the text before both of these for an ask's relations, and `20261117020856` keeps every one of its arms;
-`20261116184707_issue_tree_graph_edges_both_arms` (the issue-tree spec), which sorts between the two, states the same view `20261117020856` states, the class `store` and its guard against a finding tested where `20261117020856` tests them and the finding arm last, so a database that applied either holds the view the other states.
+Migration `20261125163553_graph_edges_asks` (the decisions-tree spec) re-states the view from the text before both of these for an ask's relations, and `20261126050002` keeps every one of its arms;
+`20261126050001_issue_tree_graph_edges_both_arms` (the issue-tree spec), which sorts between the two, states the same view `20261126050002` states, the class `store` and its guard against a finding tested where `20261126050002` tests them and the finding arm last, so a database that applied either holds the view the other states.
+The ask-node migration `20261125163550` adds the marker columns both definitions read, so both run after it.
 
-The two changes are one migration because a migrate pass applies each file in its own transaction, in version order, and applies a file below a version the database already holds: a re-statement from an arm list without `20261116094101`'s would leave a database already at `20261116094101` without the `node_kind is null` tests on the two `asks` arms and the `ask_followers` arm and the tuple arm's cases for an ask's relations, which a live build reads, until a later file put them back.
+The two changes are one migration because a migrate pass applies each file in its own transaction, in version order, and applies a file below a version the database already holds: a re-statement from an arm list without `20261125163553`'s would leave a database already at `20261125163553` without the `node_kind is null` tests on the two `asks` arms and the `ask_followers` arm and the tuple arm's cases for an ask's relations, which a live build reads, until a later file put them back.
 
-Migration `20261121104002_graph_edges_store_class_last` re-states the view from the arm list of `20261121034242_graph_edges_asks_and_tuple_arm_filter`, whose tuple arm keeps only the kinds it renders before its `distinct on` sorts them, with `20261117020856`'s class `store` and its `lens_block` arm.
-From empty a database runs `20261117020856` before `20261121034242`, and a database that ran `20261121034242` first runs `20261117020856` after it, but each runs `20261121104002` after both.
-That arm list holds none of the issue tree's arms, so `20261123180000_issue_tree_graph_edges_after_store_class_last`, the view's last restatement, states again the view `20261121090000_issue_tree_graph_edges_after_tuple_arm_filter` states (`store.GraphEdgesView`), with every arm of both and the tuple arm's filter, and every database ends on its definition, the arm list a later migration re-states from.
+Migration `20261126050007_graph_edges_store_class_last` re-states the view from the arm list of `20261125163554_graph_edges_asks_and_tuple_arm_filter`, whose tuple arm keeps only the kinds it renders before its `distinct on` sorts them, with `20261126050002`'s class `store` and its `lens_block` arm.
+From empty a database runs `20261120122700_graph_edges_tuple_arm_filter`, then `20261125163553` and `20261125163554`, and then `20261126050001` to `20261126050009` in that order, so it runs `20261126050007` after both `20261125163554` and `20261126050002`.
+That arm list holds none of the issue tree's arms, so `20261126050008_issue_tree_graph_edges_after_store_class_last` states again the view `20261126050006_issue_tree_graph_edges_after_tuple_arm_filter` states (`store.GraphEdgesView`), with every arm of both and the tuple arm's filter.
+`20261126050009_issue_tree_graph_edges_block_node_listed`, the view's last restatement, keeps every arm of it and tests a stored pointer's target through `block_node_listed`, and every database ends on its definition, the arm list a later migration re-states from.
 
 While the four old arms stand, each row decides which arm answers it: each of them answers only the rows of its own table whose `node_kind` is null, and the tuple arm answers an edge of those kinds only while the projection row that names it carries its node — the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for a pointer or a mention, and the `comments` row of the comment for `anchored_to` and `owned_by`.
 One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and while the old arms stand a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
@@ -5325,10 +5378,12 @@ Each item below names a path with its method and identity, then its purpose.
 
   Turn the project's proven-sessions setting (`projects.proven_sessions`) on with `PUT` or off with `DELETE`; a new project has it off.
   While it is on, an architect's write of an issue's spec or Verification document, and the Legion daemon's close, reopen or write that takes an issue out of Legion, pass only on a credential that proves the writer's session, a broker token of that session (`403 DOCUMENT_WRITER_NOT_ARCHITECT`, Document errors below).
-  A role-holder publication then passes only on a credential that proves `legion-daemon:<project>`, and any other is `403 ROLE_HOLDER_NOT_PROVEN` (`/api/v1/issues/{key}/role-holders`, below).
+  A role-holder publication then passes only on a credential that proves `legion-daemon:<project>`, or `legion-daemon:<P>` of another project's daemon on a broker token that names `P`, and any other is `403 ROLE_HOLDER_NOT_PROVEN` (`/api/v1/issues/{key}/role-holders`, below).
   Turning it on makes a check stronger, so any credential that may write the project's issues may send the `PUT`, which declares no OAuth scope, and the project's daemon can send it with its own project-scoped token; a bearer names its session in `actor`.
   Turning it off makes a check weaker, so the `DELETE` needs the `person` scope and records the person: a credential the deployment configured, the shared token or a pod's, holds none and is `403 OAUTH_SCOPE_REQUIRED`, so no machine turns the setting off.
-  A token scoped to another project is `403 PROJECT_SCOPE`, and an unknown project `404 PROJECT_NOT_FOUND`.
+  A token scoped to another project turns the setting on with the `PUT`, as the shared token does, and its `DELETE` needs the `person` scope, as every caller's does.
+  A token scoped to one project gets `403 PROJECT_SCOPE` for a project that does not exist and for a private project that it does not name, with one message for both (the project check, above).
+  Any other caller gets `404 PROJECT_NOT_FOUND` for a project that does not exist.
   A write that finds the setting as it asks changes nothing and appends no event; a change appends `project.updated`, with the project row and its writer.
   The answer is the project as `GET /api/v1/projects` lists it.
   `dispatch project-update --project <KEY> --proven-sessions on|off` sends the `PUT` or the `DELETE`.
@@ -5472,10 +5527,11 @@ Each item below names a path with its method and identity, then its purpose.
   Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, project_scope, scopes, cut, sign_in_required}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
   `service` is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists (an exchange entry's account token), or a job's identity as its job entry lists it (a pod's `system:serviceaccount:<namespace>:<name>`, a workflow's `<repository>/<workflow path>@<ref>`, or a Google account's address), null for every other credential;
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
-  `project` is the one project key that credential may write, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names `public`, which names no one project, answers null;
+  `project` is the project key that credential's token names, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names `public`, which names no one project, answers null;
   `project_scope` is a broker-issued token's project scope (`model.Credential.ProjectScope`), left out for every other credential: `named` for a token an operator's or a job's entry mapped to its project, and for an exchange entry's account token, `public` for a job's token, `person` for a person's own token and for a machine's, and `none` for a read entry's token, while a token narrowed to reading answers the word it narrows;
   `cut` is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut;
   `sign_in_required` is true where Dispatch refuses every write of the credential `403 SIGN_IN_REQUIRED` until a person signs in on its machine, which is a machine's broker-issued token, and false for every other credential, a job's token and an exchange entry's account token and every read-only credential among them; it is the decision the sign-in check makes, and an older Dispatch omits it).
+  A token that names a project also writes other projects' objects, as a credential that names none does, except in a private project it does not name.
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, with `read` after them for a read-only credential, and every caller is answered it.
   A read-only token that carries a cut is answered here, and refused `403 AS_OF_TOKEN_NOT_SERVED` on every other read.
   A Legion daemon's own broker token answers `["legion-status"]`: with `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential make the three writes of a Legion issue that `/api/v1/issues/{key}` (PATCH) and `/api/v1/issues/{key}/status-change` (POST) refuse to any other, but for the owning architect's status write (`/api/v1/issues/{key}` (PATCH), below).
@@ -5710,7 +5766,8 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, which may be any repository at all:
   `400 INVALID_ISSUE` when it is not `owner/name`.
-  `parent` may be an issue of any project: `400 PARENT_INPUT` when no such issue exists, `409 PARENT_INPUT` when the new issue would sit more than 32 links below its root, counting the links in every project, and `403 PROJECT_SCOPE` when a credential that may write one project names a parent outside it.
+  `parent` may be an issue of any project: `400 PARENT_INPUT` when no such issue exists, and `409 PARENT_INPUT` when the new issue would sit more than 32 links below its root, counting the links in every project.
+  A credential that names one project gets the same `400 PARENT_INPUT` for a parent of a private project that it does not name, with the message of a parent that does not exist.
   A parent of another project passes on no repository, components, `legion` label or assignee:
   `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository, and a create that names no assignee and acts for no person lands on its own project's default assignee rather than the parent's.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
@@ -5745,10 +5802,16 @@ Each item below names a path with its method and identity, then its purpose.
     A refused close (`status: done`) can still settle the issue's documents: the `PATCH` settles them before its transaction (`settleIssueBeforeClose`), and Dispatch judges the write after that.
     A Legion daemon's own broker token holds `legion-status`, and the shared token, a personal token without `person` and a project's other broker tokens hold neither scope.
 
-  - With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it.
+  - With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it, `issues` and `error` leaving out an issue of a private project that the request's credential does not name.
     The `PATCH` judges only the pairs it changes: a new status judges the issue with its parent and with each direct child, and a new parent judges the issue with that parent.
     A status the issue already has changes no pair, so it is not judged.
     The `PATCH` takes none of that route's options: it ignores them as members it does not declare.
+
+  - `refuse_open_foreign_children: true`, beside a `status` of `retro` or `done`, asks for the check of an acceptance write, which the Legion daemon's `sign_off` and `close_root` send.
+    While the issue has a child of another project in any status but `done` and `icebox`, the write is `409 FOREIGN_CHILD_OPEN` `{code, error, issues}`, each entry of `issues` `{key, project, status}`, in key order.
+    `issues` and `error` leave out a child of a private project that the request's credential does not name, so `issues` can be empty, and the write is refused while such a child is open.
+    With `DISPATCH_PARENT_STATUS_RULE` on, the rule judges the write first.
+    With any other status, or with no status, the field is `400 INVALID_ISSUE`.
 
   - On an issue Legion runs, a close, a reopen and a `labels` or `parent` write that takes the issue out of Legion are each `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
 
@@ -5800,6 +5863,10 @@ Each item below names a path with its method and identity, then its purpose.
     A keyed call leaves it once, in the transaction that marks its recovery point finished, and a repeat that finishes the call lists the changes of the attempts before it too.
 
   Before the first write, the call reads its plan again under the owner locks of each issue it writes and of each one's current and new parent, and checks the whole plan.
+  When the request's credential names one project, the call leaves out of the plan each issue of a private project that the credential does not name: an ancestor that `include_parent` would move, or an issue under the issue that `include_children` would move or `unlink_children` would remove.
+  It also leaves out each issue that it reaches only through such an issue: a descendant below it, or an ancestor above it.
+  The call does not move or unlink those issues, and neither its answer nor its dry run names them.
+  The rule still judges an issue of such a project with its parent and its children, so a call that leaves it out of line is `409 PARENT_STATUS_CONFLICT`, as below.
   Then it writes one issue at a time, each through the `PATCH`'s own write in a transaction of its own, in an order where each write keeps the rule.
   That order is the ancestors that `include_parent` moves, highest first, then the children that `unlink_children` removes, then the issue itself.
   `include_children` moves the issues under it before the issue itself, deepest first, for a status that is `done` or not started, and after it, highest first, for a status in work.
@@ -5826,6 +5893,7 @@ Each item below names a path with its method and identity, then its purpose.
   - `409 PARENT_STATUS_CONFLICT` `{code, error, issues, changed}`: the call breaks the rule.
     Each entry of `issues` is `{key, title, status, relation}`: an issue that holds the rule against the write, with its status as the write would leave it, and `relation` `parent` or `child`.
     `error` names each of them with its status, so a client that reads no `issues` still shows them.
+    `issues` and `error` leave out an issue of a private project that the request's credential does not name, so `issues` can be empty.
     The route refuses this with `DISPATCH_PARENT_STATUS_RULE` on, and refuses a dry run of it whatever the setting.
 
   - `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`: with `DISPATCH_LEGION_STATUS_SCOPE` on, a step writes the status of a Legion issue or moves one out from under every labelled issue, and the request's credential holds neither the `person` scope nor `legion-status`.
@@ -5837,10 +5905,6 @@ Each item below names a path with its method and identity, then its purpose.
     Only a person who is signed in at a browser closes the open issues under an issue together with it.
 
   - `403 DOCUMENT_WRITER_NOT_ARCHITECT`: a write of the call closes, reopens or takes out of Legion an issue that Legion runs, from a writer that is no person, no architect of that issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
-
-  - `403 PROJECT_SCOPE`: the request's credential may write one project, and a write of the call is of an issue of another project: an ancestor that `include_parent` moves, or an issue under the issue that `include_children` moves or `unlink_children` removes, since a parent may be an issue of another project.
-    The route checks every write of the plan before the first one, so it refuses the whole call before any write, a dry run too; it decides this after `ISSUE_CLOSED` and before `BROWSER_SIGN_IN_REQUIRED` and `PARENT_STATUS_CONFLICT`.
-    A credential that names no project is refused nothing here.
 
   - `400 STATUS_CHANGE_INPUT`: no status, or `include_children` with `unlink_children`.
 
@@ -6255,7 +6319,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   The phase's newest handoff with its body, byte for byte as written; `404 HANDOFF_NOT_FOUND` when it has none.
 
-- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only the Legion daemon's own broker token; with it off, the actor must be the Legion daemon's session)
+- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only a Legion daemon's own broker token; with it off, the actor must be a Legion daemon's session)
 
   Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
   The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
@@ -6264,12 +6328,15 @@ Each item below names a path with its method and identity, then its purpose.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
   A pair that did not change keeps its `recorded_at`.
   The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
-  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that proves this session and holds `legion-status` can publish.
-  Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon.
-  With the setting off, any actor other than the daemon's session is `403 ROLE_HOLDER_FORBIDDEN`.
-  A bearer with no proven session can name the daemon in its body, but the project's `proven_sessions` setting can refuse it.
-  With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove the daemon's session is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
-  Each stored pair carries a mark that says whether the daemon's own token wrote it (`issue_role_holders.daemon_proven`, Database migrations above).
+  With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that holds `legion-status` can publish, and it must prove this session.
+  The daemon of another project can publish too: its broker token holds `legion-status`, names its project `P` and proves its session `legion-daemon:<P>`.
+  Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon and a broker token whose session is no daemon's.
+  With the setting off, any actor other than the daemon's session is `403 ROLE_HOLDER_FORBIDDEN`, but for the daemon of another project.
+  That daemon writes the set too when its broker token names its project `P` and proves its session `legion-daemon:<P>`.
+  A daemon that runs a claim on another project's issue publishes that issue's set this way.
+  A bearer with no proven session can name the session of the issue's project's daemon in its body, but the project's `proven_sessions` setting can refuse it.
+  With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove its session, the session of the issue's project's daemon or of another project's daemon, is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
+  Each stored pair carries a mark that says whether a daemon's own token wrote it, the issue's project's daemon's or another project's daemon's (`issue_role_holders.daemon_proven`, Database migrations above).
   Each publication sets the mark on every pair it stores or keeps, regardless of either setting.
   Only a marked pair identifies an architect who can write a Legion issue's status under the status guard.
   The answer does not carry the mark.
@@ -6364,6 +6431,7 @@ Each item below names a path with its method and identity, then its purpose.
   It writes `proposed`, `overtaken` and `live` on any node the store holds that is not `gone`, but not on the block of an `:::ask` block of a document, and `gone` only on a lens, a finding, a risk or a constraint, since a document's own write removes its block.
   The write appends one `state` tuple on each node it moves, written by the caller - a person's as the person it acts for (`actingPerson`), whichever of her credentials made it, as the settle's is - through `graphstore.Write` and at no event, so every read of the node answers the new state at once; a write of the state the node holds appends nothing.
   The node's row keeps the `source_event` it held (`graphstore.Node.KeepsCause`): a write of the state is no cause of the node's other facts, so the next index pass of a block's document does not stamp its event on a block that version did not change.
+  Where the write changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed, each with its `artifact.version`, before the route answers (`docs.DrainOwedQueries`, R7 and R14 of the issue-tree spec).
   Answers `200 {node: {address, kind, state, visibility}, previous}`, `previous` the state it held before.
 
   - `gone` is final: every write on a gone node is `409 NODE_GONE`, naming the node (`nodeGone`), because `proposed`, `overtaken` or `live` would bring it back, and a block of a document a version dropped would then read as a present block no version holds; the settle and the reasoning routes' writes on a gone node answer the same (`findWrittenNode`).
@@ -6396,6 +6464,7 @@ Each item below names a path with its method and identity, then its purpose.
   A person settles any proposal - a browser's cookie, or a token holding the `person` scope, whose settle is written as the person it acts for (`actingPerson`) - and any other caller only a proposal whose recorded author, its `made_by`, is the author its credential proves, by the one author rule (`maySettle`, `graphstore.SameAuthor`, the Go half of `graphstore.AuthorIsSQL`): the same person for a personal token or a broker session that names a person, the same session for a broker session that names none (`model.Actor.Proven`), and the same workload for a pod's service-account token; any other caller is `403 SETTLE_NOT_PERMITTED`, naming the node.
   A block's author is the writer of the version that first held the block, never whoever marked it proposed; the deployment's shared agent token proves no author, so it settles nothing.
   On an issue Legion runs, a settle of a requirement, criterion or check block from a writer that is no person and no architect of the issue or of an issue above it, its own proposal among them, is then `403 DOCUMENT_WRITER_NOT_ARCHITECT` (`refuseSpecWriterOfNode`, Document errors below), and nothing is stored.
+  Where the settle changes a query of a converted issue, the issue's queries are marked owed in the write and their versions written once it has committed, as the state route's are.
   Answers `200 {node: {address, kind, state, visibility}, previous}`.
 
 - `/api/v1/issues/{key}/proposed` (GET; cookie, trusted header, or bearer)
@@ -6449,7 +6518,7 @@ Each item below names a path with its method and identity, then its purpose.
   an upload under an existing artifact's name, one stored longer included, is never refused for its length.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
-  A new version that is not a person's own and leaves out the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A new version that is not a person's own and changes a person's decision - leaves out, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   On an issue Legion runs, an upload of its spec or Verification document, a file under the name `verification.md` among them, from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
@@ -6465,7 +6534,7 @@ Each item below names a path with its method and identity, then its purpose.
   List non-primary project artifacts (or only unlinked documents with `?unlinked=true`), or create an unlinked project artifact, its kind read, and a new artifact's name held to 2692 bytes, as an issue upload's are.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
-  A new version that is not a person's own and leaves out the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A new version that is not a person's own and changes a person's decision - leaves out, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
   a document or version whose markdown as stored (what `.../text` answers) would be longer than 1 MiB and longer than the document's was, or make more than 65,536 elements and more than the document's did, or that would leave a live state ygo could not decode as one update;
@@ -6528,7 +6597,7 @@ Each item below names a path with its method and identity, then its purpose.
   `{id}` must be a UUID.
   An edit is `400 INVALID_ASK_BLOCK` when an ask it writes or changes breaks its content rule (`paragraph+ bullet_list?`) or holds what settlement cannot read;
   an ask it carries through unchanged is not its to refuse.
-  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A batch that is not a person's own whose result changes a person's decision - drops, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block it adds or changes that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   On an issue Legion runs, an edit of its spec or Verification document from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
   So is such a writer's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, naming the first such block (`refuseSpecWriterOfTreeEdit`): the route reads the artifact's blocks before and after the batch, inside the transaction's own write of the artifact, and refuses before any version, so nothing is stored.
@@ -6621,7 +6690,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/artifacts/{slug}/edits` (POST; cookie, trusted header, or bearer)
 
   Apply issue-document edit operations.
-  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A batch that is not a person's own whose result changes a person's decision - drops, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   On an issue Legion runs, an edit of its spec or Verification document from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
   So is such a writer's edit of the issue's tree artifact whose batch creates, changes, removes or moves a requirement, criterion or check block, as `/api/v1/artifacts/{id}/edits` answers it.
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
@@ -6652,7 +6721,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/projects/{key}/artifacts/{slug}/edits` (POST; cookie, trusted header, or bearer)
 
   Apply project-document edit operations.
-  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
+  A batch that is not a person's own whose result changes a person's decision - drops, retypes or rewords the block of an answered ask, or a decision a person decided - is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
 
@@ -6982,11 +7051,11 @@ Each item below names a status and code, then its meaning.
 
 - `409 ANSWERED_ASK_KEPT`
 
-  A document write that is not a person's own would take the block of an answered ask out of its document, or retype that block (`docs.ErrAnsweredAskKept`).
+  A write that is not a person's own would change a person's decision (`docs.ErrAnsweredAskKept`): the block of an answered ask, or a decision a person decided, taken out of its document (which is also the one way a text write moves it out of the document that holds it), retyped, or given other words.
   A person's own write is one at a browser, or one through a credential of theirs that holds the `person` scope;
   any other - an agent's session, a pod's service account, the deployment's shared token - is refused, and nothing of it is written.
-  The message names each such ask's node (`dispatch://KEY/ask/<id>`), quotes its question, and names its block's address and, for a retype, the type the write gave it.
-  An edit (`POST /edits` and its slug variants) is held to it for the blocks its batch drops or retypes itself, and an upload of a new version for every answered ask whose block the version leaves out or retypes.
+  The message names each such ask's node (`dispatch://KEY/ask/<id>`), quotes its question, and names its block's address and, for a retype, the type the write gave it; and each such decision by its block's address, quoting its words.
+  Every write path is held to it: an edit (`POST /edits` and its slug variants) for the blocks its batch changes itself, an upload of a new version for every such block the version leaves out or changes, the node state route, and a node move or delete through the node route.
   A write that also drops the block of an open ask is `400 INVALID_ASK_BLOCK` first.
 
 - `409 DOC_SCHEMA`

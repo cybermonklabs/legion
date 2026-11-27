@@ -1,5 +1,5 @@
 import type { TextAsk } from "@legion/contracts";
-import { askOpenerAttributes, askOpenerBlockId, askOpenerLines } from "@legion/contracts";
+import { askOpenerAttributes, askOpenerLines } from "@legion/contracts";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -30,54 +30,14 @@ export function liveTextAsks(text: LiveText): readonly TextAsk[] {
 }
 
 /** The asks that `lines`, opening lines of ask blocks as `askOpenerLines` gives them, carry on
- *  them, as the release before writes them: one per line that names a block id. */
+ *  them, as the release before writes them (`askOpenerAttributes` in packages/contracts, which the
+ *  web reads them by too): one per line that names a block id. */
 // kept for one release: release-before-text
 export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
   return lines.flatMap((line) => {
-    const opener = openerOf(line);
+    const opener = askOpenerAttributes(line);
     return opener === undefined ? [] : [opener];
   });
-}
-
-/** The ask block `line`, a line past its containers' markers that opens the directive, opens, its
- *  attributes read as the release before wrote them, or undefined where it names no block id. Its
- *  id is read as `askOpeners` reads it (`askOpenerBlockId`). */
-// kept for one release: release-before-text
-function openerOf(line: string): TextAsk | undefined {
-  const id = askOpenerBlockId(line);
-  if (id === undefined) return undefined;
-  const values = askOpenerAttributes(line);
-  return {
-    block_id: id,
-    ...optional("state", values.get("state") as TextAsk["state"] | undefined),
-    ...optional("answered_by", values.get("answered_by")),
-    ...optional("answered_at", values.get("answered_at")),
-    ...optional("selected", selectionOf(values.get("selected"))),
-    ...optional("answer", values.get("answer")),
-    ...optional("copied_from", values.get("copied_from")),
-    ...optional("copied_from_document", values.get("copied_from_document")),
-  };
-}
-
-/** `{ [name]: value }`, or nothing where value is undefined. */
-// kept for one release: release-before-text
-function optional<K extends string, V>(name: K, value: V | undefined): { [key in K]?: V } {
-  return value === undefined ? {} : ({ [name]: value } as { [key in K]?: V });
-}
-
-/** The options a `selected` attribute names, a JSON list of strings, or undefined where it holds
- *  none or no such list. */
-// kept for one release: release-before-text
-function selectionOf(value: string | undefined): string[] | undefined {
-  if (value === undefined) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string")
-      ? parsed
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

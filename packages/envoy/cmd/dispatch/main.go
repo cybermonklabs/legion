@@ -2529,7 +2529,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
 // service that asks for it, because its route table classes the GET rows such a token may call
 // (the read class, readClasses in internal/dispatch/api), and every other route answers it
-// 403 READ_ONLY_TOKEN before anything of the route runs.
+// 403 READ_ONLY_TOKEN before anything of the route runs. It serves an approve-only token too
+// (ciphertoken.Options.ServesApproveOnly): the scope approve alone, which the broker mints for a
+// person's approve grant and spends through its proxy, never released. Dispatch's approve list
+// (approveScopeRoutes) names the routes such a token may call, and every other route answers it
+// 403 APPROVE_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2547,9 +2551,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read class and its gate are Dispatch's own (internal/dispatch/api), so a read-only
-		// token reaches the reads of that class and no other route.
-		ServesReadOnly: true,
+		// The read class, the approve list and their gates are Dispatch's own
+		// (internal/dispatch/api), so a read-only token reaches the reads of that class and an
+		// approve-only token the routes the approve list names, and no other route.
+		ServesReadOnly:    true,
+		ServesApproveOnly: true,
 	})
 }
 
@@ -2798,7 +2804,7 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 	recorded, ended := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(ended)
-		_ = runBootBackfill(ctx, slog.Default(), record, func(ctx context.Context) error {
+		runBootBackfill(ctx, slog.Default(), record, func(ctx context.Context) error {
 			close(recorded)
 			if boot.HoldBootBackfill {
 				<-ctx.Done()
@@ -2827,7 +2833,7 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 
 // runBootBackfill is the boot's run of the graph store's backfill: record, which records the run's
 // horizon of the event log (graphcensus.StartBackfill), then run, its passes
-// (graphcensus.BackfillRun.Passes). It logs what came of them and answers nil whatever that was, so
+// (graphcensus.BackfillRun.Passes). It logs what came of them and answers its caller nothing, so
 // the process serves on whatever the backfill answered:
 //   - a record that reached its bound (graphcensus.HorizonBoundError): the skip line, naming the
 //     oldest writer of the event log by its pid and its age (bootBackfillSkipped), and no run;
@@ -2840,15 +2846,15 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 //     what waits for the backfill's end waits for the next boot's run.
 //
 // afterDone, where it is not nil, runs right after each done line, on the same goroutine.
-func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error, afterDone func(context.Context)) error {
+func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error, afterDone func(context.Context)) {
 	if err := record(ctx); err != nil {
 		var bound *graphcensus.HorizonBoundError
 		if errors.As(err, &bound) {
 			logger.Warn(bootBackfillSkippedLine, bootBackfillSkipped(bound.Pid, bound.Age)...)
-			return nil
+			return
 		}
 		logger.Error("dispatch: boot backfill failed to record its horizon of the event log", "error", err)
-		return nil
+		return
 	}
 	err := run(ctx)
 	if err == nil {
@@ -2856,7 +2862,7 @@ func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(conte
 		if afterDone != nil {
 			afterDone(ctx)
 		}
-		return nil
+		return
 	}
 	if moved, only := graphcensus.OnlyProjectMoved(err); only {
 		logger.Warn(bootBackfillDoneLine, "project_moved", moved,
@@ -2864,10 +2870,9 @@ func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(conte
 		if afterDone != nil {
 			afterDone(ctx)
 		}
-		return nil
+		return
 	}
 	logger.Error("dispatch: boot backfill failed", "error", err)
-	return nil
 }
 
 // bootBackfillSkipped is the skip line's attributes (runBootBackfill): the oldest writer of the

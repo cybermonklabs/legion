@@ -7,10 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/reearth/ygo/crdt"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -238,42 +234,13 @@ func requireApprovalFirst(t *testing.T, row string, order carriedOrder) {
 	}
 }
 
-// recordResult records a result of the check c1 of the issue room room, as the results route
-// states one (graphstore.ResultFacts), with the mark of the room issue's queries in the same
-// transaction (QueueQueryMark), and drains that mark (DrainOwedQueries), whose version of the
+// recordResult records a result of the check c1 of the issue room room with the mark of the room
+// issue's queries (leaveResultOwed), and drains that mark (DrainOwedQueries), whose version of the
 // Verification document carries an approval across the appended result.
 func recordResult(t *testing.T, database *store.Store, service *Service, room issueRoom) {
 	t.Helper()
-	ctx := context.Background()
-	var treeRef string
-	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, room.tree).Scan(&treeRef); err != nil {
-		t.Fatalf("read the ref_key of %s's tree: %v", room.issue, err)
-	}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		var at time.Time
-		if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
-			return err
-		}
-		nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
-			ID: uuid.NewString(), Project: "DOC", Check: treeRef + "#c1",
-			Verdict: "pass", Surface: "cli", Run: "go test ./...", Observed: "The first check holds.",
-			Recorder: model.Actor{Kind: "user", ID: "alice"}, At: at, Event: graphstore.NoEvent,
-		})
-		if !ok {
-			return fmt.Errorf("the result of %s#c1 is past the store's bound", treeRef)
-		}
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-			return err
-		}
-		var marked bool
-		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			QueueQueryMark(b, room.issue, graphstore.NoEvent, &marked)
-			return nil
-		})
-	}); err != nil {
-		t.Fatalf("record a result of %s#c1: %v", treeRef, err)
-	}
-	service.DrainOwedQueries(ctx, room.issue)
+	leaveResultOwed(t, database, room)
+	service.DrainOwedQueries(context.Background(), room.issue)
 }
 
 // TestEachCarryKindIsWrittenBeforeItsVersion holds each kind of carry to R14's order, one row for
@@ -330,40 +297,12 @@ func TestEachCarryKindIsWrittenBeforeItsVersion(t *testing.T) {
 		service, server := newTestServiceInstance(t, database)
 		room := createIssueRoom(t, database, 4)
 		writeRoomQueryNodes(t, database, room)
-		peer := connectPeer(t, server.URL, room.verification, "alice")
-		if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
-			t.Fatalf("a peer's copy of DOC-4's room: %v", err)
-		}
-		stored := roomUpdateCount(t, database, room.tree)
-		const verification = ":::check{#c1}\nThe first check holds.\n:::\n"
-		tree, err := pmdoc.Parse(verification)
-		if err != nil {
-			t.Fatalf("parse the Verification document: %v", err)
-		}
-		want, err := pmdoc.Render(tree)
-		if err != nil {
-			t.Fatalf("render the Verification document: %v", err)
-		}
-		fragment := peer.Doc.GetXmlFragment(room.verification)
-		var updated error
-		if _, err := peer.Send(func(txn *crdt.Transaction) { updated = pmdoc.Update(txn, fragment, tree) }); err != nil || updated != nil {
-			t.Fatalf("write the Verification document of DOC-4: %v, %v", err, updated)
-		}
-		if err := peer.WaitForText(fragmentMarkdown(room.verification), want, roomWait(t)); err != nil {
-			t.Fatalf("a peer's copy of DOC-4's room: %v", err)
-		}
-		waitForStoredUpdates(t, database, room.tree, stored)
-		if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
-			t.Fatalf("wait for DOC-4's appends: %v", err)
-		}
-		if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
-			t.Fatalf("settle DOC-4's room: %v", err)
-		}
-		approved := newestVersionNumber(t, database, room.verification)
+		settleVerification(t, ctx, database, service, server.URL, room)
+		approved := savedVersion(t, database, room.verification)
 		requireStatedRow(t, database, room.issue, graphstore.QueryVerification, room.verification, approved)
 		approveStoredVersion(t, database, room.verification, approved, "alice")
 		recordResult(t, database, service, room)
-		number := newestVersionNumber(t, database, room.verification)
+		number := savedVersion(t, database, room.verification)
 		if number != approved+1 {
 			t.Fatalf("the drain of the result wrote version %d of DOC-4's Verification document, want %d", number, approved+1)
 		}
@@ -372,7 +311,7 @@ func TestEachCarryKindIsWrittenBeforeItsVersion(t *testing.T) {
 	t.Run("record", func(t *testing.T) {
 		written := approvedRecordRoom(t, 5)
 		written.settleSpecEdit(t, context.Background(), moveParagraphBeforeRequirement)
-		number := newestVersionNumber(t, written.database, written.room.spec)
+		number := savedVersion(t, written.database, written.room.spec)
 		if number != written.approved+1 {
 			t.Fatalf("the settlement of the paragraph's move wrote version %d of DOC-5's spec, want %d", number, written.approved+1)
 		}
@@ -386,7 +325,7 @@ func TestEachCarryKindIsWrittenBeforeItsVersion(t *testing.T) {
 		criterion, requirement := blockAddressByText(t, written.database, ":::criterion{#k1}"), blockAddressByText(t, written.database, ":::requirement{#r1}")
 		statePlacedParagraph(t, written, rank.Between(textRankOf(t, written.database, criterion), textRankOf(t, written.database, requirement)))
 		written.service.DrainOwedQueries(context.Background(), written.room.issue)
-		number := newestVersionNumber(t, written.database, written.room.spec)
+		number := savedVersion(t, written.database, written.room.spec)
 		if number != written.approved+1 {
 			t.Fatalf("the drain of the paragraph's text_rank wrote version %d of DOC-6's spec, want %d: its rendering moved", number, written.approved+1)
 		}
@@ -491,8 +430,8 @@ func TestAPreCutoverRestoreCarriesOnce(t *testing.T) {
 	}
 	order := readCarriedOrder(t, database, "the restore's carry", spec, restored)
 	requireApprovalFirst(t, "restore", order)
-	if order.reviewDigest == nil || *order.reviewDigest != renderSum(approvedText) {
-		t.Errorf("the carry to version %d pins %v, want the sha256 of its stored markdown, %s", restored, order.reviewDigest, renderSum(approvedText))
+	if order.reviewDigest == nil || *order.reviewDigest != reviewTextHash(approvedText) {
+		t.Errorf("the carry to version %d pins %v, want the sha256 of its stored markdown, %s", restored, order.reviewDigest, reviewTextHash(approvedText))
 	}
 	var record, repinned *string
 	var owed bool
@@ -507,11 +446,11 @@ func TestAPreCutoverRestoreCarriesOnce(t *testing.T) {
 	case repinned == nil || *repinned != *record:
 		t.Errorf("the carry %s holds record_sha256 %v on its row of artifact_review_carries, want version %d's record digest %s: the fill did not repin it",
 			order.review, repinned, restored, *record)
-	case *record == renderSum(approvedText):
+	case *record == reviewTextHash(approvedText):
 		t.Errorf("version %d's record digest is the sha256 of its stored markdown, %s, want its record's", restored, *record)
 	}
 	if after := readCarriedOrder(t, database, "the restore's carry after the fill", spec, restored); after.review != order.review ||
-		after.reviewDigest == nil || *after.reviewDigest != renderSum(approvedText) {
-		t.Errorf("after the fill the carry to version %d is %s pinning %v, want %s still pinning %s", restored, after.review, after.reviewDigest, order.review, renderSum(approvedText))
+		after.reviewDigest == nil || *after.reviewDigest != reviewTextHash(approvedText) {
+		t.Errorf("after the fill the carry to version %d is %s pinning %v, want %s still pinning %s", restored, after.review, after.reviewDigest, order.review, reviewTextHash(approvedText))
 	}
 }

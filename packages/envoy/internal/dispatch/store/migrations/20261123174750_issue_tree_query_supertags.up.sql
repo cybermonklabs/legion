@@ -17,7 +17,7 @@
 -- its node, carrying no attribute, and its two base attributes as the tuples they are.
 --
 -- It is a type migration written after the store's backfill, as
--- 20261123174700_graph_supertags_decision_reading is: no release that may have run
+-- 20261125163555_graph_supertags_decision_reading is: no release that may have run
 -- `backfill-graph-store` carries it, so it is numbered above backfillVersion
 -- (cmd/dispatch/supertag_nodes_test.go) and above every type migration before it, and over a
 -- store the backfill filled the pre-deploy census judges it with graph_nodes and graph_tuples past
@@ -27,7 +27,7 @@
 -- migration writes a type node. cmd/dispatch's
 -- TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs it after a backfill,
 -- with the census at a one-byte limit. Every row carries now(), the start of the runner's
--- transaction, as the rows of 20261123174700 do.
+-- transaction, as the rows of 20261125163555 do.
 --
 -- It runs once, as the runner applies every file: its inserts are not repeatable, so it joins no
 -- second run (typeMigrations in cmd/dispatch/supertag_nodes_test.go). A second run all the same

@@ -43,12 +43,16 @@ func (s *server) readUncutIssueTree(ctx context.Context, who model.Actor, key, v
 	if err := refs.TurnJITOff(ctx, tx); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
+	// Each builder reads as the route's does (readIssueTree, build): under the deployment the read
+	// is served from, whose dashboard URLs each excerpt is cut around, and, at a version, with the
+	// blocks a later write deleted from the cut (readHistoricalBlocks).
 	pageSize := cmp.Or(s.deps.IssueTreePageSize, issueTreePageSize)
-	whole := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, pageSize: pageSize}
+	whole := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, pageSize: pageSize, serverURL: s.deps.ServerURL, atVersion: version != 0}
 	if err := whole.readWholeTree(version); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
-	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, kinds: kinds, before: before, pageSize: pageSize}
+	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, kinds: kinds, before: before, pageSize: pageSize,
+		serverURL: s.deps.ServerURL, atVersion: version != 0}
 	builder.takeReadsOf(whole)
 	if err := builder.applySkeleton(version, cursor); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
@@ -90,7 +94,7 @@ func (b *issueTreeBuilder) readWholeTree(version int) error {
 		return err
 	}
 	b.enterWalk()
-	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
+	if err := b.readDescendants(); err != nil {
 		return err
 	}
 	if err := b.readOthers(); err != nil {
@@ -102,9 +106,7 @@ func (b *issueTreeBuilder) readWholeTree(version int) error {
 	if err := b.readFacts(b.candidates()); err != nil {
 		return err
 	}
-	if err := b.placeOthers(); err != nil {
-		return err
-	}
+	b.placeOthers()
 	b.keep()
 	if err := b.readContext(); err != nil {
 		return err
@@ -154,7 +156,7 @@ func (b *issueTreeBuilder) applySkeleton(version int, cursor string) error {
 		return err
 	}
 	b.enterWalk()
-	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
+	if err := b.readDescendants(); err != nil {
 		return err
 	}
 	if err := b.readOthers(); err != nil {
@@ -166,9 +168,7 @@ func (b *issueTreeBuilder) applySkeleton(version int, cursor string) error {
 	if err := b.readFacts(b.candidates()); err != nil {
 		return err
 	}
-	if err := b.placeOthers(); err != nil {
-		return err
-	}
+	b.placeOthers()
 	b.keep()
 	if err := b.readContext(); err != nil {
 		return err

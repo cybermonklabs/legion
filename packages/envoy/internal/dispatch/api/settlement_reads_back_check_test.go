@@ -18,7 +18,7 @@ import (
 )
 
 // settlementReadsBackSpec is a spec holding a callout inside a list item, the tree a browser edit
-// turns into one the renderer may render in a form the parser refuses (this issue's spec R25).
+// turns into one the renderer may render in a form the parser refuses (R25 of the issue-tree spec).
 const settlementReadsBackSpec = "# Spec\n\nDispatch shows each record.\n\n- Lead.\n\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n  Gone.\n  :::\n"
 
 // settlementReadsBackRefused is a document the parser refuses, which pmdoc's
@@ -100,9 +100,9 @@ func settlementReadsBackPending(t *testing.T, database *store.Store, room string
 	return pending
 }
 
-// c-settlement-reads-back (this issue's spec R25): no version Dispatch stores is one its own parser
-// refuses, and the conversion passes over a stored version that does not read back, written
-// before this work, with the parser's error. The first half is the settlement's
+// c-settlement-reads-back (R25 of the issue-tree spec): no version Dispatch stores is one its own
+// parser refuses, and the conversion passes over a stored version that does not read back,
+// written before this work, with the parser's error. The first half is the settlement's
 // (settlementReadsBackBrowserEdit), the second the conversion's (settlementReadsBackConversion).
 func TestABrowserEditThatDoesNotReadBackStoresNoVersion(t *testing.T) {
 	logged := captureLog(t)

@@ -38,11 +38,11 @@ type Moved struct {
 }
 
 // MovedTo answers what address resolves to, and true. A block's address resolves to the block a
-// document_blocks row holds in one order (T17 of this branch's plan): the far end of the newest
-// moved_to that address states now, read as AsOfOut reads a relation, and so on from there while
-// another current moved_to stands at the far end; then, where no tuple stands, the same block id
-// in the room the reached address's document is edited in (its document_rooms row: the node
-// `<tree ref_key>#<block id>` of an issue room); then the reached address itself. Where that
+// document_blocks row holds in one order (T17 of the issue-tree spec's plan): the far end of the
+// newest moved_to that address states now, read as AsOfOut reads a relation, and so on from there
+// while another current moved_to stands at the far end; then, where no tuple stands, the same
+// block id in the room the reached address's document is edited in (its document_rooms row: the
+// node `<tree ref_key>#<block id>` of an issue room); then the reached address itself. Where that
 // reaches no block, the reached address's newest moved_to may end at an ask whose row stands
 // instead: the heading of a section that cites an answered ask a person removed. It answers false
 // where none of these is held, and where the walk stops early: a far end that is neither a block

@@ -35,17 +35,12 @@ const (
 )
 
 // The statement each phase is told by, each written by one place of the server alone, so a
-// window that holds one holds that phase's write and no other's. A delete and a move that each
-// write a version both insert it, so neither of them is told by that insert: a delete is told by
-// the delete of the blocks it takes out of the index, a move by the read of the placement_seq it
-// answers, which no delete reads.
+// window that holds one holds that phase's write and no other's: a drain by sqlClearsQueryMark and
+// a fill by sqlFillsDigest (write_batch_test.go, which every build of the package's tests holds),
+// and the others by these. A delete and a move that each write a version both insert it, so
+// neither of them is told by that insert: a delete is told by the delete of the blocks it takes
+// out of the index, a move by the read of the placement_seq it answers, which no delete reads.
 const (
-	// sqlClearsQueryMark clears the mark of the queries a write left owed: the drain's alone
-	// (docs' queryMarkClearStatement).
-	sqlClearsQueryMark = "delete from issue_query_marks"
-	// sqlFillsDigest records the record digest a version's row owed: the fill's alone
-	// (docs' queueFilledDigest).
-	sqlFillsDigest = "update version_renders set record_sha256"
 	// sqlRemovesBlocks deletes the rows of the blocks a version no longer holds, in the index
 	// pass of the version a delete writes (refs' BlockIndexing.queueRows): no move takes a block
 	// out of its document.

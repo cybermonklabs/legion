@@ -244,20 +244,12 @@ func planQueryVersion(t *testing.T, database *store.Store, key string) int {
 	return number
 }
 
-// holdUnconverted makes a server process live that lists no issue room beside the test's own,
-// as holdIssuesUnconverted does, so an issue created while it stands is created unconverted, and
-// answers the function that takes it away again, so no live process lacks the issue room, which
-// the conversion's gate (docs.IssueRoomGate) requires.
+// holdUnconverted is holdIssuesUnconverted, so an issue created while its process stands is
+// created unconverted, answering the function that takes that process away again, so no live
+// process lacks the issue room, which the conversion's gate (docs.IssueRoomGate) requires.
 func holdUnconverted(t *testing.T, database *store.Store) func() {
 	t.Helper()
-	var instance string
-	if err := database.Pool.QueryRow(context.Background(), `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() + interval '1 day', $3)
-		returning instance::text`,
-		pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol).Scan(&instance); err != nil {
-		t.Fatalf("add a live server process that lists no issue room: %v", err)
-	}
+	instance := holdIssuesUnconverted(t, database)
 	return func() {
 		t.Helper()
 		if _, err := database.Pool.Exec(context.Background(), `delete from server_processes where instance = $1::uuid`, instance); err != nil {
@@ -366,13 +358,13 @@ func TestEveryDeclaredPlanAttributeSurvivesTheConversionAndThePlanView(t *testin
 		issue, _ := createRoomIssue(t, handler, database, "BORN", "A plan born converted", spec, "")
 		key := issue.Key
 		first := planAttributesWritten(t, schema, key, false)
-		uploadPlan(t, handler, key, first.markdown)
+		uploadDocument(t, handler, "/api/v1/issues/"+key, "plan.md", first.markdown)
 		document, specDocument := readDecisionDocument(t, database, key, "plan-md"), readDecisionDocument(t, database, key, "spec")
 		firstTexts := blockTextsByID(t, handler, document.id)
 		firstVersion := planQueryVersion(t, database, key)
 
 		revised := planAttributesWritten(t, schema, key, true)
-		uploadPlan(t, handler, key, revised.markdown)
+		uploadDocument(t, handler, "/api/v1/issues/"+key, "plan.md", revised.markdown)
 		head := treeRead(t, handler, key, "?view=plan", "alice", false)
 		requirePlanView(t, head, key, "", document, specDocument, revised, blockTextsByID(t, handler, document.id), names)
 		at := fmt.Sprintf("?view=plan&v=%d", firstVersion)
@@ -386,7 +378,7 @@ func TestEveryDeclaredPlanAttributeSurvivesTheConversionAndThePlanView(t *testin
 		issue, _ := createRoomIssue(t, handler, database, "MOVED", "A plan the conversion moves", spec, "")
 		key := issue.Key
 		plan := planAttributesWritten(t, schema, key, false)
-		uploadPlan(t, handler, key, plan.markdown)
+		uploadDocument(t, handler, "/api/v1/issues/"+key, "plan.md", plan.markdown)
 		if document := readDecisionDocument(t, database, key, "plan-md"); document.room != document.id {
 			t.Fatalf("the plan of %s is a fragment of the room %s, want a room of its own before the conversion: this case proves nothing", key, document.room)
 		}

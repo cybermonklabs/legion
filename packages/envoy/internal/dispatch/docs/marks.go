@@ -439,7 +439,7 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		var replacement *pmdoc.Node
 		if code {
 			replacement = codeReplacement(acceptedCode(tree, with, at, range_))
-		} else if replacement, err = inlineAware(with, edgesOf(at, range_), opensDocument(tree, range_.From), budget); err != nil {
+		} else if replacement, err = inlineAware(with, edgesOf(at, range_), opensDocument(tree, range_.From), budget, tree); err != nil {
 			return err
 		}
 		// Accepted text stays inside every ask and comment anchor the suggestion lay wholly inside,

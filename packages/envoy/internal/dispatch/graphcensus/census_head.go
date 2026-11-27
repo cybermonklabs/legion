@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -97,15 +98,15 @@ var headFillNodesStatement = `
 			union all
 			select t.from_kind, t.from_id from graph_tuples t
 			where t.to_kind = '` + graphstore.KindArtifact + `' and t.to_id = document.ref_key
-			  and t.kind in ('` + graphstore.TuplePartOf + `', 'in_document')
-			  and t.from_kind in ('` + graphstore.KindVersion + `', 'block')
+			  and t.kind in ('` + graphstore.TuplePartOf + `', '` + refs.TupleInDocument + `')
+			  and t.from_kind in ('` + graphstore.KindVersion + `', '` + refs.BlockNodeKind + `')
 		) named (kind, id)
 		join graph_nodes n on n.kind = named.kind and n.id = named.id
 		where n.id like $2 escape '\'
 		union
 		select t.from_kind, t.from_id
 		from artifacts a
-		join graph_tuples t on t.to_kind = '` + graphstore.KindArtifact + `' and t.to_id = a.ref_key and t.kind = 'in_document'
+		join graph_tuples t on t.to_kind = '` + graphstore.KindArtifact + `' and t.to_id = a.ref_key and t.kind = '` + refs.TupleInDocument + `'
 		where a.issue_key = $1
 		union
 		select '` + graphstore.KindAsk + `', id::text from asks where issue_key = $1
@@ -114,11 +115,11 @@ var headFillNodesStatement = `
 		union
 		select '` + graphstore.KindMessage + `', id::text from messages where issue_key = $1
 		union
-		select 'ask_block', b.node_id from ask_blocks b join asks a on a.id = b.ask_id where a.issue_key = $1
+		select '` + refs.ItemAsk.BlockKind() + `', b.node_id from ask_blocks b join asks a on a.id = b.ask_id where a.issue_key = $1
 		union
-		select 'comment_block', b.node_id from comment_blocks b join comments c on c.id = b.comment_id where c.issue_key = $1
+		select '` + graphstore.KindCommentBlock + `', b.node_id from comment_blocks b join comments c on c.id = b.comment_id where c.issue_key = $1
 		union
-		select 'message_block', b.node_id from message_blocks b join messages m on m.id = b.message_id where m.issue_key = $1
+		select '` + refs.ItemMessage.BlockKind() + `', b.node_id from message_blocks b join messages m on m.id = b.message_id where m.issue_key = $1
 		union
 		select h.node_kind collate "default", h.node_address collate "default" from issue_head_nodes h where h.issue_key = $1
 	), head_reached (kind, id, depth) as (
@@ -138,8 +139,8 @@ var headFillNodesStatement = `
 		) child
 		where reached.depth < 32
 		  and (reached.kind = '` + graphstore.KindIssue + `' and reached.id = $1
-		       or reached.kind not in ('` + graphstore.KindIssue + `', '` + graphstore.KindArtifact + `', '` + graphstore.KindVersion + `', 'block')
-		       or reached.id like 'lens/%'
+		       or reached.kind not in ('` + graphstore.KindIssue + `', '` + graphstore.KindArtifact + `', '` + graphstore.KindVersion + `', '` + refs.BlockNodeKind + `')
+		       or reached.id like '` + graphstore.KindLens + `/%'
 		       or split_part(reached.id, '/', 1) = $1)
 	)
 	select distinct kind, id from head_reached`
@@ -312,9 +313,13 @@ var headSides = `
 		where exists (select 1 from issue_head_marks mark where mark.issue_key = expected.issue_key)
 	)`
 
+// headNodeUnprojected is the cause of a row the store gives that issue_head_nodes holds none of,
+// the one difference of the head census that is a node's (CensusOfHeads).
+const headNodeUnprojected = "a node the issue's tree holds and no row projects"
+
 // headDifferences is each row the two sides do not hold alike, as (cause, at): a row the table holds
 // that the store gives no row of, or gives another, and a row the store gives that the table holds
-// none of, each named by its issue and its node.
+// none of (headNodeUnprojected), each named by its issue and its node.
 var headDifferences = headSides + `
 	select case when expected.issue_key is null then 'a row of a node no issue''s tree holds, or of an issue that holds it no more'
 	            else 'the row and the store disagree' end,
@@ -324,7 +329,7 @@ var headDifferences = headSides + `
 	  and expected.node_kind = stored.node_kind and expected.node_address = stored.node_address
 	where expected.digest is distinct from stored.digest
 	union all
-	select 'a node the issue''s tree holds and no row projects',
+	select ` + store.QuoteLiteral(headNodeUnprojected) + `,
 	       'issue ' || expected.issue_key || ' ' || expected.node_kind || ' ' || expected.node_address
 	from head_expected expected
 	where not exists (
@@ -360,7 +365,7 @@ func CensusOfHeads(ctx context.Context, tx pgx.Tx) (KindReport, error) {
 		if err := rows.Scan(&found.Cause, &found.At); err != nil {
 			return KindReport{}, fmt.Errorf("census of %s: %w", headKind, err)
 		}
-		if strings.HasPrefix(found.Cause, "a node ") {
+		if found.Cause == headNodeUnprojected {
 			kind.NodeDifferences++
 			if len(kind.ReportedNodes) < reportedDifferences {
 				kind.ReportedNodes = append(kind.ReportedNodes, found)

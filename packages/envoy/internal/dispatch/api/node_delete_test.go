@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -212,12 +213,9 @@ func relationsOutOf(t *testing.T, database *store.Store, kind, id string) []grap
 // the node toID.
 func holdsRelation(t *testing.T, database *store.Store, kind, id, tupleKind, toID string) bool {
 	t.Helper()
-	for _, tuple := range relationsOutOf(t, database, kind, id) {
-		if tuple.Kind == tupleKind && tuple.ToID == toID {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(relationsOutOf(t, database, kind, id), func(tuple graphstore.Tuple) bool {
+		return tuple.Kind == tupleKind && tuple.ToID == toID
+	})
 }
 
 // versionCount is the number of versions of the document artifactID.
@@ -374,11 +372,7 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	key := issue.Key
 	spec := readDecisionDocument(t, database, key, "spec")
 	specQuery := queryArtifactOf(t, database, key, graphstore.QuerySpec)
-	testwait.Eventually(t, "version 1 of the spec query of "+key+" to hold its render", func() bool {
-		var rendered bool
-		err := database.Pool.QueryRow(ctx, `select exists (select 1 from version_renders where artifact_id = $1 and number = 1)`, specQuery).Scan(&rendered)
-		return err == nil && rendered
-	})
+	awaitFirstRender(t, database, specQuery)
 	approved := reviewDocument(t, handler, specQuery, "alice", "approved", "")
 	move := func(as nodeCaller, owner, node, parent string) {
 		t.Helper()
@@ -554,11 +548,7 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	}
 	newest := func(id string) string {
 		t.Helper()
-		var markdown string
-		if err := database.Pool.QueryRow(ctx, `select coalesce(markdown, '') from artifact_versions where artifact_id = $1 order by number desc limit 1`, id).Scan(&markdown); err != nil {
-			t.Fatalf("read the newest version of %s: %v", id, err)
-		}
-		return markdown
+		return newestQueryVersion(t, database, id).markdown
 	}
 	if text := newest(issue.PrimaryArtifactID); strings.Contains(text, deleteR1Words) {
 		t.Errorf("the newest spec version still holds R1:\n%s", text)
@@ -572,8 +562,7 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	if text := newest(child.PrimaryArtifactID); strings.Contains(text, deleteQWords) {
 		t.Errorf("the newest version of the child's room still holds Q:\n%s", text)
 	}
-	coverage := decodeBody[model.IssueCoverage](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key+"/coverage", nil, "alice"))
-	for _, requirement := range coverage.Requirements {
+	for _, requirement := range readCoverage(t, handler, key).Requirements {
 		if requirement.BlockID == "r2" && requirement.Checks != 2 {
 			t.Errorf("R2's coverage counts %d checks after the delete, want 2: C2 and C4, and no C1", requirement.Checks)
 		}
@@ -796,16 +785,39 @@ func TestADeleteTakesTheNodeAndItsSubtreeOutInOneWrite(t *testing.T) {
 	refusedWith(t, "the hidden lens's author's dry run", deleteNodeAs(second, key, hiddenAddress, true, -1, ""), http.StatusForbidden, codeStateNotPermitted)
 	requireUnchanged(t, database, "the refused deletes of "+r5+" and of the hidden lens", before)
 
+	// An issue the first agent may not see, its node reserved for alice, who wrote it: the agent's
+	// delete of C3's result is 404 NOT_FOUND, as its delete of the issue's node is and as any node
+	// it may not see under the issue is, and alice's of either is still the 400 of a node the
+	// delete never takes.
+	reserveIssue := func(visibility string) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `update graph_nodes set visibility = $3 where kind = $1 and id = $2`,
+			graphstore.KindIssue, key, visibility); err != nil {
+			t.Fatalf("set the visibility of %s's node to %s: %v", key, visibility, err)
+		}
+	}
+	reserveIssue(graphstore.VisibilityAuthor)
+	before = readDeleteCounts(t, database)
+	for _, address := range []string{graphstore.KindResult + "/" + result.ID, graphstore.KindIssue + "/" + key} {
+		notFound := fmt.Sprintf("no node %q under %s", address, key)
+		for _, dry := range []bool{true, false} {
+			what := fmt.Sprintf("the first agent's delete (dry run %t) of %s under the issue it may not see", dry, address)
+			if message := refusedWith(t, what, deleteNodeAs(first, key, address, dry, 1, `"1"`), http.StatusNotFound, "NOT_FOUND"); !strings.Contains(message, notFound) {
+				t.Errorf("%s does not answer the words %q: %s", what, notFound, message)
+			}
+			refusedWith(t, fmt.Sprintf("alice's delete (dry run %t) of %s under the issue reserved for her", dry, address),
+				deleteNodeAs(alice, key, address, dry, 1, `"1"`), http.StatusBadRequest, codeNodeNotDeletable)
+		}
+	}
+	requireUnchanged(t, database, "the deletes under the issue the first agent may not see", before)
+	reserveIssue(graphstore.VisibilityProject)
+
 	t.Run("writer", func(t *testing.T) {
 		t.Parallel()
 		writers := newNodeWriterRig(t)
 		requirement := writers.spec.address("r1")
 		_, writerTag := placementOf(t, writers.database, "block", requirement)
-		worker := func(method, path string, body any, header http.Header) *httptest.ResponseRecorder {
-			header = header.Clone()
-			header.Set("Authorization", "Bearer agent-token")
-			return serveNodeRequest(t, writers.handler, method, path, map[string]any{"actor": map[string]any{"kind": "session", "id": writers.worker.session}}, header)
-		}
+		worker := writers.caller(t, writers.worker)
 		counts := readDeleteCounts(t, writers.database)
 		for _, dry := range []bool{true, false} {
 			refusedWith(t, fmt.Sprintf("the worker's delete (dry run %t) of %s", dry, requirement),

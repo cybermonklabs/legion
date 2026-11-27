@@ -28,9 +28,9 @@ import (
 // tick drains each mark a request left (drainOwedQueryMarks).
 
 // QueryDrainActor is the writer the versions a drain writes name, and their artifact.version, where
-// no tuple stands at the mark's greatest_seq to name the writer that marked the issue
-// (queryMarkReadStatement): a system actor of the drain's own, as SettlementActor is a
-// settlement's.
+// neither a tuple at the mark's greatest_seq nor the event at its greatest_event names the writer
+// that marked the issue (queryMarkReadStatement): a system actor of the drain's own, as
+// SettlementActor is a settlement's.
 var QueryDrainActor = model.Actor{Kind: "system", ID: "query-drain"}
 
 // queryMarkBatch is the most marks one tick of the block-index reconciliation drains.
@@ -39,15 +39,26 @@ const queryMarkBatch = 100
 // queryMarkStatementOf is the statement that marks the queries of the issue $1 owed where the issue
 // has converted - an issue_trees row holds its tree - and marks nothing for any other issue. The
 // mark's causes are the greatest of each the marks of the issue hold: the event cause, an SQL
-// expression, null for a write no event records, and the newest tuple sequence this session drew,
-// which is the sequence of the last tuple the write appended, since the write queues the mark after
-// its own appends in the same batch. That tuple's writer (graph_tuples.who) is the writer the drain
-// names.
+// expression, null for a write no event records, and the newest tuple sequence this session drew
+// (latestTupleSeq), which is the sequence of the last tuple the write appended, since the write
+// queues the mark after its own appends in the same batch. That tuple's writer (graph_tuples.who)
+// is the writer the drain names.
 func queryMarkStatementOf(cause string) string {
+	return queryMarkUpsertOf(cause, latestTupleSeq, `issue_trees t where t.issue_key = $1`)
+}
+
+// latestTupleSeq is the newest tuple sequence this session drew, the graph_tuples seq sequence's
+// currval, as store.LatestEventID is the newest event id.
+const latestTupleSeq = `(select currval(pg_get_serial_sequence('graph_tuples', 'seq')))`
+
+// queryMarkUpsertOf marks owed the queries of the converted issue whose issue_trees row, aliased
+// t, from finds, with the causes cause and sequence, two SQL expressions, each kept as the greatest
+// of the marks of the issue.
+func queryMarkUpsertOf(cause, sequence, from string) string {
 	return `
 	insert into issue_query_marks (issue_key, greatest_event, greatest_seq)
-	select t.issue_key, ` + cause + `, (select currval(pg_get_serial_sequence('graph_tuples', 'seq')))
-	from issue_trees t where t.issue_key = $1
+	select t.issue_key, ` + cause + `, ` + sequence + `
+	from ` + from + `
 	on conflict (issue_key) do update set
 		greatest_event = greatest(issue_query_marks.greatest_event, excluded.greatest_event),
 		greatest_seq = greatest(issue_query_marks.greatest_seq, excluded.greatest_seq)`
@@ -62,13 +73,19 @@ var (
 	queryMarkLatestEventStatement = queryMarkStatementOf(store.LatestEventID)
 )
 
-// queryMarkReadStatement reads the mark of the issue $1: its two causes, and the writer of the
-// tuple at its greatest_seq (graph_tuples.who, read through the tuple's primary key), null where
-// no tuple stands there.
+// queryMarkReadStatement reads the mark of the issue $1: its two causes, and the writer that marked
+// it - the writer of the tuple at its greatest_seq (graph_tuples.who, read through the tuple's
+// primary key), and where no tuple stands there, the actor of the event at its greatest_event (read
+// through its primary key), which a mark that names no tuple of its own writer names instead
+// (askQueryMarkStatement) - null where neither stands.
 const queryMarkReadStatement = `
 	select m.greatest_event, m.greatest_seq, g.who
 	from issue_query_marks m
-	left join graph_tuples g on g.seq = m.greatest_seq
+	left join lateral (
+		select coalesce(
+			(select t.who from graph_tuples t where t.seq = m.greatest_seq),
+			(select e.actor from events e where e.id = m.greatest_event)) as who
+	) g on true
 	where m.issue_key = $1`
 
 // queryMarkClearStatement clears the mark of the issue $1 only where it still holds the causes the
@@ -107,22 +124,45 @@ func QueueQueryMark(b *store.WriteBatch, issueKey string, event int64, marked *b
 	})
 }
 
-// roomQueryMarkStatement marks owed the queries of the issue whose tree is the room $1 (issue_trees),
-// as queryMarkStatementOf marks them, and answers the issue's key. Its causes are none for the
-// event - the write that queues it in a document's operation does not know whether its caller
-// appends one, as a node route's mark names none (QueueQueryMark with graphstore.NoEvent) - and,
-// for the sequence, the newest tuple the transaction sees as the statement runs, read off the log's
-// primary key: the write queues it last in its batch (writeLast), after the facts its caller appends
-// under the version's event, so that tuple is the write's own last one, whose writer the drain names
-// its versions after. A sequence this session never drew is no error here, as currval's would be.
-const roomQueryMarkStatement = `
-	insert into issue_query_marks (issue_key, greatest_event, greatest_seq)
-	select t.issue_key, null::bigint, coalesce((select seq from graph_tuples order by seq desc limit 1), 0)
-	from issue_trees t where t.artifact_id = $1
-	on conflict (issue_key) do update set
-		greatest_event = greatest(issue_query_marks.greatest_event, excluded.greatest_event),
-		greatest_seq = greatest(issue_query_marks.greatest_seq, excluded.greatest_seq)
+// treeQueryMarkStatementOf is the statement that marks owed the queries of the converted issue
+// whose issue_trees row, aliased t, from finds, with the causes cause and sequence, two SQL
+// expressions, each the greatest of the marks of the issue (queryMarkUpsertOf), and answers the
+// issue's key. from finds one row at most, so the insert never meets one issue twice.
+func treeQueryMarkStatementOf(cause, sequence, from string) string {
+	return queryMarkUpsertOf(cause, sequence, from) + `
 	returning issue_key`
+}
+
+var (
+	// roomQueryMarkStatement marks the queries of the issue whose tree is the room $1, for a pass
+	// that stated nodes and no tuple. Its causes are none for the event - the write that queues it
+	// in a document's operation does not know whether its caller appends one, as a node route's
+	// mark names none (QueueQueryMark with graphstore.NoEvent) - and, for the sequence, the newest
+	// tuple the transaction sees as the statement runs, read off the log's primary key. A sequence
+	// this session never drew is no error here, as currval's would be.
+	roomQueryMarkStatement = treeQueryMarkStatementOf(`null::bigint`,
+		`coalesce((select seq from graph_tuples order by seq desc limit 1), 0)`, `issue_trees t where t.artifact_id = $1`)
+	// roomTupleQueryMarkStatement is roomQueryMarkStatement for a pass that stated tuples, which its
+	// writer appends under its own event in this batch before the mark (writeLast): the sequence
+	// is the newest one this session drew (queryMarkStatementOf's), the write's own last tuple,
+	// whose writer the drain names its versions after. The newest tuple the transaction sees would
+	// be another writer's where that writer committed a later tuple between this write's append and
+	// its mark.
+	roomTupleQueryMarkStatement = treeQueryMarkStatementOf(`null::bigint`, latestTupleSeq,
+		`issue_trees t where t.artifact_id = $1`)
+	// askQueryMarkStatement marks the queries of the issue of the ask $1 where it is a question
+	// (questionAsk) of a converted issue: the decisions query takes such an ask by its node
+	// (decisionsTakes), and a request of a document's approval, an ask on a project document and
+	// an ask of an issue that has not converted mark nothing. Every write that queues it appends an
+	// event of its own before it in the same batch - the ask's event, or the follow's - but not
+	// always a tuple: a reword states nothing on the ask's node. So its event is the latest one
+	// this session appended (store.LatestEventID), and it names no tuple (sequence 0): the drain
+	// names its versions after that event's actor, the write's own writer (queryMarkReadStatement),
+	// where no later write's tuple raised the mark, and never after whoever wrote the newest tuple
+	// of the store before this write.
+	askQueryMarkStatement = treeQueryMarkStatementOf(store.LatestEventID, `0`, `asks k join issue_trees t on t.issue_key = k.issue_key
+	where k.id = $1::uuid and k.kind = '`+questionAsk+`'`)
+)
 
 // markRoomQueries marks owed, at the end of the write phase of the transaction ctx joined
 // (writeLast), the queries of the issue whose room is room, where a write of one of the room's
@@ -145,25 +185,73 @@ func markRoomQueries(ctx context.Context, tx pgx.Tx, room string, stated graphst
 		return nil
 	}
 	ledger.markedRooms = append(ledger.markedRooms, room)
-	return writeLast(ctx, tx, func(b *store.WriteBatch) error {
-		b.Queue("mark the queries of the issue of room "+room+" owed", roomQueryMarkStatement, room).Query(func(rows pgx.Rows) error {
+	statement := roomQueryMarkStatement
+	if len(stated.Tuples) > 0 {
+		statement = roomTupleQueryMarkStatement
+	}
+	return writeLast(ctx, tx, ledger.markStep("mark the queries of the issue of room "+room+" owed", statement, room))
+}
+
+// MarkAskQueries marks owed, at the end of the write phase (the ledger's closing steps, as
+// writeLast queues them), the queries of the issue of ask, a question of a converted issue whose
+// row or node this transaction writes: its create, a change of its words, which the decisions
+// query's rendering prints, and every change of its answer state, which PlanSettle marks for it.
+// The decisions query takes the ask by its node (decisionsTakes), and its record holds every value
+// and every relation out of that node, so R14 owes that query a version, which the drain writes
+// once the transaction has committed (Ledger.Commit, drainOwed). It marks once a transaction for an
+// issue, and nothing for a request of a document's approval, which no query takes, for an ask on no
+// issue, nor where no ledger the caller joined queues the writes: a settlement's own mark covers
+// the asks it settles (queueSettledQueryMark), and the statement itself marks nothing for an issue
+// that has not converted (askQueryMarkStatement). The step is not one the write phase drops with a
+// carry (droppable): a mark the write did not need costs a drain that finds no query moved.
+func (l *Ledger) MarkAskQueries(ask model.Ask) {
+	if l == nil || l.tx == nil || l.sealed || ask.Kind != questionAsk || ask.IssueKey == nil || slices.Contains(l.markedIssues, *ask.IssueKey) {
+		return
+	}
+	l.markedIssues = append(l.markedIssues, *ask.IssueKey)
+	l.closing = append(l.closing, l.markStep("mark the queries of the issue of ask "+ask.ID+" owed", askQueryMarkStatement, ask.ID))
+}
+
+// markStep is the write step of one of the marks above: statement over arg, each issue it marks
+// recorded once among the ledger's marks, which Commit drains.
+func (l *Ledger) markStep(what, statement, arg string) WriteStep {
+	return func(b *store.WriteBatch) error {
+		b.Queue(what, statement, arg).Query(func(rows pgx.Rows) error {
 			for rows.Next() {
 				var issue string
 				if err := rows.Scan(&issue); err != nil {
 					return err
 				}
-				if !slices.Contains(ledger.marks, issue) {
-					ledger.marks = append(ledger.marks, issue)
+				if !slices.Contains(l.marks, issue) {
+					l.marks = append(l.marks, issue)
 				}
 			}
 			return rows.Err()
 		})
 		return nil
+	}
+}
+
+// QueueAskQueryMark queues on b the mark of the queries of the issue of the ask askID owed, where
+// it is a question of a converted issue (askQueryMarkStatement), for a write that changes the ask's
+// node in a transaction no ledger queues: the follow and the unfollow of an ask, whose followed_by
+// is a relation of the node the decisions query's record holds. The write queues it after the
+// tuples it appends, in the same batch, so it adds no statement to its window. Once the batch has
+// run, marked holds the issue it marked, "" for none, and the write's caller drains that issue's
+// queries after its COMMIT (DrainOwedQueries).
+func QueueAskQueryMark(b *store.WriteBatch, askID string, marked *string) {
+	b.Queue("mark the queries of the issue of ask "+askID+" owed", askQueryMarkStatement, askID).Query(func(rows pgx.Rows) error {
+		for rows.Next() {
+			if err := rows.Scan(marked); err != nil {
+				return err
+			}
+		}
+		return rows.Err()
 	})
 }
 
 // takeMarks is each issue whose queries the ledger's committed write phase marked owed
-// (markRoomQueries), once: the caller that drains them takes them.
+// (markRoomQueries, MarkAskQueries), once: the caller that drains them takes them.
 func (l *Ledger) takeMarks() []string {
 	marks := l.marks
 	l.marks = nil
@@ -187,7 +275,7 @@ func (s *Service) drainOwed(ctx context.Context, issues []string) []model.Event 
 }
 
 // queryMark is one issue's mark as the drain reads it (queryMarkReadStatement): its two causes and
-// the writer of the tuple at its greatest_seq, nil where none stands there.
+// the writer that marked it, nil where neither a tuple nor an event names one.
 type queryMark struct {
 	event  *int64
 	seq    int64
@@ -197,17 +285,31 @@ type queryMark struct {
 // DrainOwedQueries is the drain a request runs once the write that marked the queries of the issue
 // issueKey owed has committed, and before the server publishes that write's events (api's publish):
 // it fills each record digest a version of the issue owes, then writes a version of each query
-// whose record moved and clears the mark (drainQueryMark), named after the writer of the newest
-// tuple a marking write appended. It answers the events the fill and the drain appended, for the
-// caller to publish after its own, which they follow in the event log. A drain that fails is
-// logged and leaves the mark, which the block-index tick drains (drainOwedQueryMarks); the write it
-// follows stands committed either way, and so does a fill that committed before the drain failed.
+// whose record moved and clears the mark (drainQueryMark), named after the writer that marked it:
+// the writer of the newest tuple a marking write appended, else its event's actor. It answers the
+// events the fill and the drain appended, for the caller to publish after its own, which they
+// follow in the event log. A drain that fails is logged (drainLogLevel) and leaves the mark, which
+// the block-index tick drains (drainOwedQueryMarks); the write it follows stands committed either
+// way, and so does a fill that committed before the drain failed.
 func (s *Service) DrainOwedQueries(ctx context.Context, issueKey string) []model.Event {
 	appended, _, err := s.drainQueryMark(ctx, issueKey)
 	if err != nil {
-		slog.Error("dispatch: drain the queries an issue owes", "issue", issueKey, "error", err)
+		slog.Log(ctx, drainLogLevel(err), "dispatch: drain the queries an issue owes", "issue", issueKey, "error", err)
 	}
 	return appended
+}
+
+// drainLogLevel is the level a drain that failed with err is logged at. A drain refused while a
+// query version of the issue owes its record digest (errQueryDigestOwed) is no failure: another
+// write of the issue committed that version between this drain's fill and its read, as the room's
+// settlement an answer schedules does beside the answer's own drain, and that write's own fill,
+// then its drain where it marked the issue, else the block-index tick's, takes the mark that
+// stays. It is logged at Info, and every other failure at Error.
+func drainLogLevel(err error) slog.Level {
+	if errors.Is(err, errQueryDigestOwed) {
+		return slog.LevelInfo
+	}
+	return slog.LevelError
 }
 
 // drainQueryMark runs, for the issue issueKey, two transactions in order and never one inside the
@@ -228,9 +330,9 @@ func (s *Service) drainQueryMark(ctx context.Context, issueKey string) ([]model.
 // drainMark drains the mark of the issue issueKey, where one stands, in a transaction of its own,
 // and answers the events it appended and whether it found a mark to drain. It takes the issue's
 // owner lock (store.LockOwner), then the lock of the issue's query rooms (LockQueryRooms), and
-// reads the mark under them, with the writer of the tuple at its greatest_seq; none of the three
-// gives the transaction an id. That writer names the versions it writes, and their
-// artifact.version, and QueryDrainActor does where no tuple stands at that sequence. Under the
+// reads the mark under them, with the writer that marked it (queryMarkReadStatement); none of the
+// three gives the transaction an id. That writer names the versions it writes, and their
+// artifact.version, and QueryDrainActor does where neither a tuple nor an event names one. Under the
 // drain's own ledger (queueWrites) it reads what each version is decided on (planRevisions), which
 // refuses while a query version of the issue still owes its record digest, so the mark is never
 // cleared then, and, where it writes a version, the issue's chain (DocumentEventAncestors); then it
@@ -378,10 +480,14 @@ func (s *Service) carryAppendedResults(ctx context.Context, tx pgx.Tx, issueKey 
 			"", knownRecord(revised.record.Digest), eventSink(ctx))
 	}
 	approved, held, err := approvedRecord(ctx, tx, issueKey, revised.document.query, id, newest.Version)
-	if err != nil || !held || !appendsResultsAlone(approved, revised.record) {
+	if err != nil || !held {
 		return err
 	}
-	arrived, err := arrivedResults(ctx, tx, approved, revised.record)
+	approvedNodes := recordAddresses(approved)
+	if !appendsResultsAlone(approvedNodes, approved, revised.record) {
+		return nil
+	}
+	arrived, err := arrivedResults(ctx, tx, approvedNodes, revised.record)
 	if err != nil {
 		return err
 	}
@@ -393,17 +499,23 @@ func (s *Service) carryAppendedResults(ctx context.Context, tx pgx.Tx, issueKey 
 		arrivedResultsChange(arrived), RecordCarry{}, eventSink(ctx))
 }
 
-// arrivedResults names each result node record holds that approved does not, in record's order,
-// as "<check block id> (<verdict>)": the block id is the part of its check's address after the
-// last '#', and the verdict the result's verdict value (graphstore.AttributeVerdict).
-func arrivedResults(ctx context.Context, tx pgx.Tx, approved, record QueryRecord) ([]string, error) {
-	held := make(map[string]bool, len(approved.Nodes))
-	for _, node := range approved.Nodes {
-		held[node.Address()] = true
+// recordAddresses is the address of each node record takes.
+func recordAddresses(record QueryRecord) map[string]bool {
+	addresses := make(map[string]bool, len(record.Nodes))
+	for _, node := range record.Nodes {
+		addresses[node.Address()] = true
 	}
+	return addresses
+}
+
+// arrivedResults names each result node record holds that approved does not, approved being the
+// address of each node of the approved version's record (recordAddresses), in record's order, as
+// "<check block id> (<verdict>)": the block id is the part of its check's address after the last
+// '#', and the verdict the result's verdict value (graphstore.AttributeVerdict).
+func arrivedResults(ctx context.Context, tx pgx.Tx, approved map[string]bool, record QueryRecord) ([]string, error) {
 	var named []string
 	for _, node := range record.Nodes {
-		if node.Type != graphstore.SupertagResult || held[node.Address()] {
+		if node.Type != graphstore.SupertagResult || approved[node.Address()] {
 			continue
 		}
 		verdict, _, err := graphstore.CurrentValue(ctx, tx, node.Kind, node.ID, graphstore.AttributeVerdict)
@@ -439,8 +551,11 @@ func approvedRecord(ctx context.Context, tx pgx.Tx, issueKey, query, artifactID 
 	if digest == nil || at == nil || readSeq == nil {
 		return QueryRecord{}, false, nil
 	}
-	records := cutRecords{cut: refs.TreeCut{At: *at, ReadSeq: *readSeq}}
-	record, err := records.record(ctx, tx, queryOf{issue: issueKey, query: query})
+	tree, err := WalkIssueTree(ctx, tx, issueKey, refs.TreeCut{At: *at, ReadSeq: *readSeq})
+	if err != nil {
+		return QueryRecord{}, false, err
+	}
+	record, err := tree.QueryRecord(ctx, tx, query)
 	if err != nil {
 		return QueryRecord{}, false, err
 	}
@@ -448,15 +563,11 @@ func approvedRecord(ctx context.Context, tx pgx.Tx, issueKey, query, artifactID 
 }
 
 // appendsResultsAlone reports whether record differs from approved, the record of the same query
-// at an approved version, by result nodes approved does not hold alone: with each of them taken
-// out, record's entries are approved's, byte for byte and in its order, so every other node, each
-// check among them, and every result approved holds stand as they stood. A record that appends no
-// result node is no such difference.
-func appendsResultsAlone(approved, record QueryRecord) bool {
-	held := make(map[string]struct{}, len(approved.Nodes))
-	for _, node := range approved.Nodes {
-		held[node.Address()] = struct{}{}
-	}
+// at an approved version whose node addresses are held (recordAddresses), by result nodes approved
+// does not hold alone: with each of them taken out, record's entries are approved's, byte for
+// byte and in its order, so every other node, each check among them, and every result approved
+// holds stand as they stood. A record that appends no result node is no such difference.
+func appendsResultsAlone(held map[string]bool, approved, record QueryRecord) bool {
 	rest, before := record.Record, approved.Record
 	appended := false
 	for _, node := range record.Nodes {
@@ -465,7 +576,7 @@ func appendsResultsAlone(approved, record QueryRecord) bool {
 			return false
 		}
 		rest = after
-		if _, kept := held[node.Address()]; !kept && node.Kind == graphstore.KindResult {
+		if !held[node.Address()] && node.Kind == graphstore.KindResult {
 			appended = true
 			continue
 		}
@@ -484,8 +595,8 @@ func appendsResultsAlone(approved, record QueryRecord) bool {
 // request's drain does, after the writer of the tuple at the mark's greatest_seq, or
 // QueryDrainActor where none stands there. It publishes what each appended once it has committed,
 // a fill that committed before its drain failed included, and counts the issues it drained in
-// tick.Queries. A mark it cannot drain is logged and left for the next tick. It reports whether
-// the batch was full.
+// tick.Queries. A mark it cannot drain is logged (drainLogLevel) and left for the next tick. It
+// reports whether the batch was full.
 func (s *Service) drainOwedQueryMarks(ctx context.Context, tick *BlockIndexTick) (bool, error) {
 	if err := s.fillLostDigests(ctx); err != nil {
 		return false, err
@@ -507,7 +618,7 @@ func (s *Service) drainOwedQueryMarks(ctx context.Context, tick *BlockIndexTick)
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
-			slog.Error("dispatch: block index could not drain the queries an issue owes", "issue", issue, "error", err)
+			slog.Log(ctx, drainLogLevel(err), "dispatch: block index could not drain the queries an issue owes", "issue", issue, "error", err)
 			continue
 		}
 		if drained {

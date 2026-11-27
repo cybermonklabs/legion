@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -91,21 +94,14 @@ type queryMarkRow struct {
 func readQueryMarkRow(t *testing.T, database *store.Store, issueKey string) (queryMarkRow, bool) {
 	t.Helper()
 	var mark queryMarkRow
-	rows, err := database.Pool.Query(context.Background(), `
+	err := database.Pool.QueryRow(context.Background(), `
 		select m.greatest_event, m.greatest_seq, coalesce(g.who, '{}'::jsonb)
 		from issue_query_marks m left join graph_tuples g on g.seq = m.greatest_seq
-		where m.issue_key = $1`, issueKey)
-	if err != nil {
-		t.Fatalf("read the query mark of %s: %v", issueKey, err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			t.Fatalf("read the query mark of %s: %v", issueKey, err)
-		}
+		where m.issue_key = $1`, issueKey).Scan(&mark.event, &mark.seq, &mark.writer)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return queryMarkRow{}, false
 	}
-	if err := rows.Scan(&mark.event, &mark.seq, &mark.writer); err != nil {
+	if err != nil {
 		t.Fatalf("read the query mark of %s: %v", issueKey, err)
 	}
 	return mark, true
@@ -153,25 +149,22 @@ func greatestSeqOf(t *testing.T, database *store.Store, event int64) int64 {
 	return seq
 }
 
-// documentEventOf is the id and the actor of the event of type the log holds for version number of
-// the document artifactID, and whether it holds one.
+// documentEventOf is the id and the actor of the first event of type the log holds for version
+// number of the document artifactID, and whether it holds one; a failed read fails t, never reading
+// as no event.
 func documentEventOf(t *testing.T, database *store.Store, eventType, artifactID string, number int) (int64, model.Actor, bool) {
 	t.Helper()
 	var id int64
 	var actor model.Actor
-	rows, err := database.Pool.Query(context.Background(), `
+	err := database.Pool.QueryRow(context.Background(), `
 		select id, actor from events
 		where type = $1 and payload->>'artifact_id' = $2
 		  and coalesce((payload->'version'->>'number')::int, (payload->>'version')::int) = $3
-		order by id`, eventType, artifactID, number)
-	if err != nil {
-		t.Fatalf("read the %s of version %d of %s: %v", eventType, number, artifactID, err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
+		order by id`, eventType, artifactID, number).Scan(&id, &actor)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, model.Actor{}, false
 	}
-	if err := rows.Scan(&id, &actor); err != nil {
+	if err != nil {
 		t.Fatalf("read the %s of version %d of %s: %v", eventType, number, artifactID, err)
 	}
 	return id, actor, true
@@ -217,11 +210,6 @@ func publishedSince(published <-chan model.Event) []model.Event {
 	}
 }
 
-// sentShape is a statement as the drain's trace reads it: lowered, its whitespace folded.
-func sentShape(statement storetest.SentStatement) string {
-	return strings.Join(strings.Fields(strings.ToLower(statement.SQL)), " ")
-}
-
 // The heads of the statements the trace of a result's write and its drain is read by.
 const (
 	markUpsertHead   = "insert into issue_query_marks"
@@ -238,9 +226,13 @@ const (
 // room's lock, reads the mark, and only then inserts the version and clears the mark, and commits.
 func requireDrainTrace(t *testing.T, what string, sent []storetest.SentStatement) {
 	t.Helper()
+	shapes := make([]string, len(sent))
+	for index, statement := range sent {
+		shapes[index] = normalizedStatement(statement.SQL)
+	}
 	at := func(from int, match func(string) bool) int {
-		for index := from; index < len(sent); index++ {
-			if match(sentShape(sent[index])) {
+		for index := from; index < len(shapes); index++ {
+			if match(shapes[index]) {
 				return index
 			}
 		}

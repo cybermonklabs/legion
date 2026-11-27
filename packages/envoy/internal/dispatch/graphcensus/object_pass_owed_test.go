@@ -167,8 +167,9 @@ func TestAnEventOwesTheObjectPassOnlyWhileItLeavesARowAndItsNodeApart(t *testing
 // second for the next run, still writes the owed issue's node, and answers More, in two
 // transactions; the next pass names the batch left, in one, and answers no More.
 //
-// Its control is a batch owed names alone spending no budget: the first pass then names both
-// batches, in three transactions, and answers no More.
+// A pass whose batches owed names alone spent no budget would read otherwise: its first run would
+// name both batches, in three transactions, and answer no More. The first run's More and its two
+// transactions are what show the naming budget spent.
 func TestRowsOwedTheirNameAloneSpendANamingBudgetOfTheirOwn(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()

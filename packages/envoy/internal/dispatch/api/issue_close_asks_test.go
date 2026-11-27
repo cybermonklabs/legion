@@ -234,9 +234,14 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 			if len(detail.OpenAsks) != 0 {
 				t.Fatalf("open asks after the close = %d, want none", len(detail.OpenAsks))
 			}
-			if response.LastSeq != detail.LastSeq {
-				t.Fatalf("close response last_seq = %d, a read of the issue answers %d", response.LastSeq, detail.LastSeq)
+			// The close withdraws the open questions, which the decisions query takes, so its write
+			// marks the issue's queries owed and its drain, after the close's COMMIT, writes the
+			// decisions query's next version (R14): that version's artifact.version is the one event
+			// past the close's answer.
+			if detail.LastSeq != response.LastSeq+1 {
+				t.Fatalf("close response last_seq = %d, a read of the issue answers %d, want the one event the close's drain appends past it", response.LastSeq, detail.LastSeq)
 			}
+			requireDecisionsVersionEventAt(t, f.database, f.issue, detail.LastSeq, decisionsQuery)
 			for _, ask := range f.open() {
 				requireWithdrawn(t, f.handler, f.issue, ask, closedBy)
 				if count := askEventCount(t, f.database, ask, "ask.resolved"); count != 1 {
@@ -272,8 +277,8 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 				t.Fatalf("settle the closed issue's documents: %v", err)
 			}
 			awaitSettled(t, f.database, documents...)
-			// The settlement committed its versions and its query mark together; the drain after its
-			// COMMIT writes the decisions query's version and clears the mark.
+			// The settlement committed its versions and its query mark together; its drain finds the
+			// decisions query's record as the close's drain left it.
 			renderAtVersionQuiet(t, f.database, f.issue, f.spec)
 			closedAt := map[string]int{}
 			for _, document := range documents {
@@ -285,7 +290,7 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 				requireLiveText(t, f.handler, document, resolved[document])
 			}
 			if _, drained := decisionsQueryVersions(t, f.database, f.issue); drained != decisionsBefore+1 {
-				t.Fatalf("the decisions query of %s holds version %d after the closed issue's settlement, want %d: the drain writes one version of it, holding the withdrawn asks",
+				t.Fatalf("the decisions query of %s holds version %d after the closed issue's settlement, want %d: the close's drain writes one version of it, holding the withdrawn asks, and the settlement moves its record no further",
 					f.issue, drained, decisionsBefore+1)
 			}
 			requireQuietVersionEvents(t, f.database, f.issue, response.LastSeq, len(documents)+1)
@@ -330,9 +335,12 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 			if got, want := openAskIDs(detail), sorted(f.open()); !reflect.DeepEqual(got, want) {
 				t.Fatalf("open asks after the reopen = %v, want exactly the withdrawn %v", got, want)
 			}
-			if reopenResponse.LastSeq != detail.LastSeq {
-				t.Fatalf("reopen response last_seq = %d, a read of the issue answers %d", reopenResponse.LastSeq, detail.LastSeq)
+			// The reopen restores the questions the close withdrew, so its drain writes the decisions
+			// query's next version past its answer, as the close's did (R14).
+			if detail.LastSeq != reopenResponse.LastSeq+1 {
+				t.Fatalf("reopen response last_seq = %d, a read of the issue answers %d, want the one event the reopen's drain appends past it", reopenResponse.LastSeq, detail.LastSeq)
 			}
+			requireDecisionsVersionEventAt(t, f.database, f.issue, detail.LastSeq, decisionsQuery)
 			for _, ask := range f.open() {
 				got := readBlockAsk(t, f.handler, ask)
 				before := recordsBefore[ask]
@@ -384,6 +392,21 @@ func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T
 
 // closeDecisionState finds the state the close-decision block's opener holds in a stored version.
 var closeDecisionState = regexp.MustCompile(`#close-decision[^}\n]* state="([a-z]+)"`)
+
+// requireDecisionsVersionEventAt fails unless the event at seq of the issue is the artifact.version
+// of decisions, the issue's decisions query: the version a write's drain appends once the write
+// that moved the query's record has committed.
+func requireDecisionsVersionEventAt(t *testing.T, database *store.Store, issue string, seq int, decisions string) {
+	t.Helper()
+	var kind, artifact string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select type, coalesce(payload->>'artifact_id', '') from events where issue_key = $1 and seq = $2`, issue, seq).Scan(&kind, &artifact); err != nil {
+		t.Fatalf("read the event at %d of %s: %v", seq, issue, err)
+	}
+	if kind != "artifact.version" || artifact != decisions {
+		t.Errorf("the event at %d of %s is a %s of %q, want the artifact.version of the decisions query %s", seq, issue, kind, artifact, decisions)
+	}
+}
 
 // failingSettlement is a document service whose settlement of an issue's documents before its
 // close fails, leaving the blocks written since the last settlement without an ask.

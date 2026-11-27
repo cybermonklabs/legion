@@ -88,21 +88,7 @@ func TestTheCensusHoldsAnAuthoredNodesPlaceAndItsAuthors(t *testing.T) {
 	version := 1
 	index := func(what string) {
 		t.Helper()
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin %s: %v", what, err)
-		}
-		defer tx.Rollback(ctx)
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, checks, refs.OneVersion(checks, version, at), markdown, blocks, nil, pointers, "", refs.TypedFacts{})
-		if err != nil || !won {
-			t.Fatalf("%s: won %t, %v", what, won, err)
-		}
-		if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
-			t.Fatalf("append what %s stated: %v", what, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit %s: %v", what, err)
-		}
+		censusPass(t, database, what, blockIndex(checks, refs.OneVersion(checks, version, at), markdown, blocks, pointers))
 	}
 	index("the index of checks.md")
 	for _, placed := range []struct{ block, kind, id string }{{"k1", graphstore.KindComment, comment}, {"r1", graphstore.KindIssue, "CORE-1"}} {
@@ -174,7 +160,7 @@ func TestTheCensusHoldsAnAuthoredNodesPlaceAndItsAuthors(t *testing.T) {
 func requireBlockAuthorsAgree(t *testing.T, what string, report *StoreReport) {
 	t.Helper()
 	kind := censusKind(t, report, "block_author")
-	for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+	for _, difference := range differencesOf(kind) {
 		t.Errorf("%s reads a block_author difference at %s: %s", what, difference.At, difference.Cause)
 	}
 	if kind.RowDifferences+kind.NodeDifferences != 0 || kind.Rows == 0 || kind.Nodes == 0 {
@@ -208,6 +194,19 @@ func censusDocument(t *testing.T, database *store.Store, slug, kind string, prim
 		t.Fatalf("create %s: %v", slug, err)
 	}
 	return id, refKey
+}
+
+// joinIssueRoom records tree, an artifact of CORE-1, as the issue's tree, and each of documents
+// as a fragment of its issue room (issue_trees, document_rooms), as the issue conversion records
+// them.
+func joinIssueRoom(t *testing.T, database *store.Store, tree string, documents ...string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		with held as (insert into issue_trees (issue_key, artifact_id) values ('CORE-1', $1::uuid))
+		insert into document_rooms (artifact_id, room) select joined.artifact_id::uuid, $1::uuid from unnest($2::text[]) as joined (artifact_id)
+	`, tree, documents); err != nil {
+		t.Fatalf("move %v into the issue room of the tree %s: %v", documents, tree, err)
+	}
 }
 
 // censusVersion writes version number of artifact, holding markdown, with authors in the order a
@@ -249,10 +248,11 @@ func censusPass(t *testing.T, database *store.Store, what string, pass func(ctx 
 	}
 }
 
-// blockIndex is a pass of the block index alone over versions of artifact.
-func blockIndex(artifact string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock) func(context.Context, pgx.Tx) (graphstore.Uncaused, error) {
+// blockIndex is a pass of the block index alone over versions of artifact, with the pointers its
+// blocks write.
+func blockIndex(artifact string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock, pointers []refs.Pointer) func(context.Context, pgx.Tx) (graphstore.Uncaused, error) {
 	return func(ctx context.Context, tx pgx.Tx) (graphstore.Uncaused, error) {
-		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, nil, "", refs.TypedFacts{})
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, artifact, versions, markdown, blocks, nil, pointers, "", refs.TypedFacts{})
 		if err == nil && !won {
 			err = errLostFence
 		}
@@ -286,25 +286,29 @@ func renderVersion(t *testing.T, tree *pmdoc.Node) renderedVersion {
 	for _, offset := range offsets {
 		version.blocks = append(version.blocks, model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To})
 	}
-	for _, pointer := range pmdoc.BlockPointers(tree) {
-		version.pointers = append(version.pointers, refs.Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets})
-	}
+	version.pointers = refs.PointersOf(tree)
 	return version
 }
 
-// typedIndex is the pass a version write runs over version number of artifact, written at at: the
-// typed-node pass reads its decisions, readings and asks of the version's record
-// (refs.ReadIndexedVersion), with credited the author of every block the document service is
-// asked for (refs.TypedSources.Authors) and no ask answered, and the block index states what it
-// states with the typed-node pass's own facts planned into the same write (refs.IndexBlocks).
-func typedIndex(artifact string, number int, at time.Time, version renderedVersion, credited model.Actor) func(context.Context, pgx.Tx) (graphstore.Uncaused, error) {
-	sources := refs.TypedSources{Authors: func(ids []string) (map[string]model.Actor, error) {
+// creditedSources is the document service as a test's typed-node pass asks it, crediting credited
+// with every block it is asked for (refs.TypedSources.Authors) and answering no ask.
+func creditedSources(credited model.Actor) refs.TypedSources {
+	return refs.TypedSources{Authors: func(ids []string) (map[string]model.Actor, error) {
 		authors := make(map[string]model.Actor, len(ids))
 		for _, id := range ids {
 			authors[id] = credited
 		}
 		return authors, nil
 	}}
+}
+
+// typedIndex is the pass a version write runs over version number of artifact, written at at: the
+// typed-node pass reads its decisions, readings and asks of the version's record
+// (refs.ReadIndexedVersion), with credited the author of every block the document service is
+// asked for (creditedSources) and no ask answered, and the block index states what it states with
+// the typed-node pass's own facts planned into the same write (refs.IndexBlocks).
+func typedIndex(artifact string, number int, at time.Time, version renderedVersion, credited model.Actor) func(context.Context, pgx.Tx) (graphstore.Uncaused, error) {
+	sources := creditedSources(credited)
 	return func(ctx context.Context, tx pgx.Tx) (graphstore.Uncaused, error) {
 		versions := refs.OneVersion(artifact, number, at)
 		record, err := refs.ReadIndexedVersion(ctx, tx, artifact, artifact, number)
@@ -373,12 +377,7 @@ func TestTheCensusHoldsNoAuthorOfARoomBlockThatMovedBetweenFragments(t *testing.
 	spec, _ := censusDocument(t, database, "spec-md", "doc", true)
 	verification, _ := censusDocument(t, database, "verification-md", "doc", false)
 	tree, treeRef := censusDocument(t, database, "tree", "tree", false)
-	if _, err := database.Pool.Exec(context.Background(), `
-		with held as (insert into issue_trees (issue_key, artifact_id) values ('CORE-1', $1::uuid))
-		insert into document_rooms (artifact_id, room) values ($2::uuid, $1::uuid), ($3::uuid, $1::uuid)
-	`, tree, spec, verification); err != nil {
-		t.Fatalf("move the documents into the issue room: %v", err)
-	}
+	joinIssueRoom(t, database, tree, spec, verification)
 	alice, carol, erin := model.Actor{Kind: "user", ID: "alice"}, model.Actor{Kind: "user", ID: "carol"}, model.Actor{Kind: "user", ID: "erin"}
 	const check, words = "Check.", "Moved words."
 	markdown := check + "\n\n" + words
@@ -393,14 +392,14 @@ func TestTheCensusHoldsNoAuthorOfARoomBlockThatMovedBetweenFragments(t *testing.
 	verificationAt := censusVersion(t, database, verification, 1, check, erin)
 	censusPass(t, database, "the index of the room with x in the spec's fragment", blockIndex(tree, refs.Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 4, At: specAt}, verification: {Number: 1, At: verificationAt},
-	}, markdown, room(spec)))
+	}, markdown, room(spec), nil))
 	requireBlockAuthorsAgree(t, "the census of the room with x in the spec's fragment", storeCensusOf(t, database))
 
 	specNext := censusVersion(t, database, spec, 5, "", carol)
 	verificationNext := censusVersion(t, database, verification, 2, markdown, carol)
 	censusPass(t, database, "the index of the room with x in the Verification document's fragment", blockIndex(tree, refs.Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 5, At: specNext}, verification: {Number: 2, At: verificationNext},
-	}, markdown, room(verification)))
+	}, markdown, room(verification), nil))
 	requireAuthoredBy(t, database, "the moved x", treeRef+"#x", refs.BlockSupertag, "alice")
 	requireBlockAuthorsAgree(t, "the census of the room once x moved into the Verification document's fragment", storeCensusOf(t, database))
 }

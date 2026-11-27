@@ -175,6 +175,9 @@ type QuoteFinder struct {
 	prepared bool
 	err      error
 	text     flattenedText
+	// blocks is the range of each block of the document by its block id (blockRange), read
+	// whole at the first call that asks for one, nil before.
+	blocks map[string]Range
 }
 
 // NewQuoteFinder returns a finder over doc. It reads nothing of doc until its first Find.
@@ -222,19 +225,12 @@ func (e *QuoteBlockError) Unwrap() error { return ErrTargetNotFound }
 // block of that id, or whose block matches the quote nowhere, is a QuoteBlockError; an occurrence
 // past the block's matches is Find's miss, counting the block's matches.
 func (f *QuoteFinder) FindInBlock(quote, blockID string, occurrence *int) (Range, error) {
-	matches, err := f.matches(quote)
+	inside, _, held, err := f.matchesInBlock(quote, blockID)
 	if err != nil {
 		return Range{}, err
 	}
-	_, block, held := findBlock(f.doc, blockID)
 	if !held {
 		return Range{}, &QuoteBlockError{BlockID: blockID}
-	}
-	inside := matches[:0]
-	for _, match := range matches {
-		if match.From >= block.From && match.To <= block.To {
-			inside = append(inside, match)
-		}
 	}
 	if len(inside) == 0 {
 		return Range{}, &QuoteBlockError{BlockID: blockID, Held: true}
@@ -247,20 +243,61 @@ func (f *QuoteFinder) FindInBlock(quote, blockID string, occurrence *int) (Range
 // filters them, that start before from. held is false where the document holds no block of that
 // id or from lies outside it, where no occurrence of the block places the match.
 func (f *QuoteFinder) OccurrenceInBlock(quote, blockID string, from int) (occurrence int, held bool, err error) {
-	matches, err := f.matches(quote)
+	inside, block, found, err := f.matchesInBlock(quote, blockID)
 	if err != nil {
 		return 0, false, err
 	}
-	_, block, found := findBlock(f.doc, blockID)
 	if !found || from < block.From || from >= block.To {
 		return 0, false, nil
 	}
-	for _, match := range matches {
-		if match.From >= block.From && match.To <= block.To && match.From < from {
+	for _, match := range inside {
+		if match.From < from {
 			occurrence++
 		}
 	}
 	return occurrence, true, nil
+}
+
+// matchesInBlock is the matches of quote that lie inside the block carrying blockID, in document
+// order, with that block's range, and held false where the document holds no block of that id.
+func (f *QuoteFinder) matchesInBlock(quote, blockID string) (inside []quoteMatch, block Range, held bool, err error) {
+	matches, err := f.matches(quote)
+	if err != nil {
+		return nil, Range{}, false, err
+	}
+	if block, held = f.blockRange(blockID); !held {
+		return nil, Range{}, false, nil
+	}
+	inside = matches[:0]
+	for _, match := range matches {
+		if match.From >= block.From && match.To <= block.To {
+			inside = append(inside, match)
+		}
+	}
+	return inside, block, true, nil
+}
+
+// blockRange is the range of the block carrying blockID, as findBlock finds it: the first in
+// document order that carries it. The finder reads the range of every block in one walk at its
+// first call and keeps them, since its document does not change while it is in use, so a write
+// that places many anchors walks the tree once rather than once an anchor.
+func (f *QuoteFinder) blockRange(blockID string) (Range, bool) {
+	if f.blocks == nil {
+		f.blocks = map[string]Range{}
+		walk(f.doc, func(node *Node, _ []int, pos, end int) bool {
+			if node.Type == "doc" || isInlineNodeType(node.Type) {
+				return true
+			}
+			if id, ok := node.Attrs[BlockIDAttr].(string); ok {
+				if _, again := f.blocks[id]; !again {
+					f.blocks[id] = Range{From: pos, To: end}
+				}
+			}
+			return true
+		})
+	}
+	block, held := f.blocks[blockID]
+	return block, held
 }
 
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the

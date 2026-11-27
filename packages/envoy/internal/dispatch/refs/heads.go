@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -229,13 +230,9 @@ func headItemOf(plan pgtype.ScanPlan, raw []byte) (*HeadItem, error) {
 // installed again.
 func headProseSQL() string {
 	names := pmdoc.TypedBlockNames()
-	typed := make([]string, len(names))
-	for index, name := range names {
-		typed[index] = `'` + strings.ReplaceAll(name, `'`, `''`) + `'`
-	}
 	notTyped := `true`
-	if len(typed) > 0 {
-		notTyped = `coalesce(heads.supertag, '') not in (` + strings.Join(typed, ", ") + `)`
+	if len(names) > 0 {
+		notTyped = `coalesce(heads.supertag, '') not in (` + store.QuoteLiterals(names) + `)`
 	}
 	return `heads.node_kind = '` + BlockNodeKind + `'
 		and heads.document_id = any((select head_roles.ids from head_roles)::uuid[])
@@ -259,8 +256,8 @@ const headCheckSQL = `(heads.supertag = '` + graphstore.BlockTypeCheck + `' or p
 // conversation item's node reads of its document (documentColumns: its project, its session, its
 // kind and whether it is primary), plus whether its blocks are in a tree artifact. It also reads
 // the project of each issue $2 names. The documents and issues come from the head rows
-// (HeadItem), and the issues those items belong to, each read by its key once. The two were two
-// statements, the second sent by the read of the comment page (ConversationPageNodesOfHeads).
+// (HeadItem), and the issues those items belong to, each read by its key once: one statement, so
+// the read of the comment page (ConversationPageNodesOfHeads) adds no round trip.
 var headDocumentsStatement = `
 	select 'artifact', a.id::text, a.slug, a.issue_key, ` + DocumentBandSQL("a") + `, a.project_key, a.session_id, a.kind, a.is_primary,
 	       a.kind = 'tree' or exists (select 1 from document_rooms r where r.artifact_id = a.id)
@@ -372,9 +369,11 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 	if len(held) == 0 {
 		return nil, false, nil
 	}
-	typeMap := pgtype.NewMap()
+	var typeMap *pgtype.Map
 	if conn := rows.Conn(); conn != nil {
 		typeMap = conn.TypeMap()
+	} else {
+		typeMap = pgtype.NewMap()
 	}
 	decode := headTextsText
 	if fields[headFirstArray].Format == pgx.BinaryFormatCode {
@@ -383,19 +382,23 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 	read := make([]HeadRow, 0, len(held))
 	var blocks []headBlock
 	var documents, issues []string
-	named := map[string]bool{}
+	named := map[[2]string]bool{}
 	var plans []pgtype.ScanPlan
 	var itemPlan pgtype.ScanPlan
 	itemColumn := headFirstArray + 5
+	// One set of scan targets serves every row, each row overwriting it: a null leaves a pgtype
+	// value invalid and a pointer nil, and head starts each row empty.
+	var head HeadRow
+	var parentKind, parentID, document, blockType, textSHA256, state, visibility pgtype.Text
+	var madeAt *time.Time
+	var changedVersion pgtype.Int4
+	var valueKinds, valueTexts, relationKinds, relationToKinds, relationToIDs []string
+	destinations := []any{&head.Node.Kind, &head.Node.ID, &parentKind, &parentID, &head.Rank, &head.Text,
+		&head.Stored, &head.Supertag, &state, &visibility, &madeAt, &head.Authors, &head.FirstAuthors, &head.FirstAt,
+		&document, &blockType, &textSHA256, &changedVersion, &head.Seen, &head.zeroMaker}
+	arrays := []*[]string{&valueKinds, &valueTexts, &relationKinds, &relationToKinds, &relationToIDs}
 	for _, raw := range held {
-		var head HeadRow
-		var parentKind, parentID, document, blockType, textSHA256, state, visibility pgtype.Text
-		var madeAt *time.Time
-		var changedVersion pgtype.Int4
-		var valueKinds, valueTexts, relationKinds, relationToKinds, relationToIDs []string
-		destinations := []any{&head.Node.Kind, &head.Node.ID, &parentKind, &parentID, &head.Rank, &head.Text,
-			&head.Stored, &head.Supertag, &state, &visibility, &madeAt, &head.Authors, &head.FirstAuthors, &head.FirstAt,
-			&document, &blockType, &textSHA256, &changedVersion, &head.Seen, &head.zeroMaker}
+		head = HeadRow{}
 		if plans == nil {
 			plans = make([]pgtype.ScanPlan, len(destinations))
 			for index, destination := range destinations {
@@ -407,7 +410,7 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 				return nil, false, fmt.Errorf("read the column %s of a head row of %s: %w", fields[index].Name, issueKey, err)
 			}
 		}
-		for index, array := range []*[]string{&valueKinds, &valueTexts, &relationKinds, &relationToKinds, &relationToIDs} {
+		for index, array := range arrays {
 			if *array, err = decode(raw[headFirstArray+index]); err != nil {
 				return nil, false, fmt.Errorf("read a head row of %s: %w", issueKey, err)
 			}
@@ -439,19 +442,19 @@ func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, 
 			_, blockID, _ := strings.Cut(head.Node.ID, "#")
 			blocks = append(blocks, headBlock{read: len(read), row: BlockRow{BlockID: blockID, Document: document.String,
 				Type: blockType.String, TextSHA256: textSHA256.String, ChangedVersion: int(changedVersion.Int32)}})
-			if !named[document.String] {
-				named[document.String] = true
+			if key := [2]string{graphstore.KindArtifact, document.String}; !named[key] {
+				named[key] = true
 				documents = append(documents, document.String)
 			}
 		}
 		if item := head.Item; item != nil {
-			if item.IssueKey != nil && !named["issue "+*item.IssueKey] {
-				named["issue "+*item.IssueKey] = true
+			if item.IssueKey != nil && !named[[2]string{graphstore.KindIssue, *item.IssueKey}] {
+				named[[2]string{graphstore.KindIssue, *item.IssueKey}] = true
 				issues = append(issues, *item.IssueKey)
 			}
 			for _, document := range []*string{item.ArtifactID, item.DocumentID} {
-				if document != nil && !named[*document] {
-					named[*document] = true
+				if document != nil && !named[[2]string{graphstore.KindArtifact, *document}] {
+					named[[2]string{graphstore.KindArtifact, *document}] = true
 					documents = append(documents, *document)
 				}
 			}
@@ -807,7 +810,7 @@ func (head *HeadRow) Child() TreeChild {
 	if head.Text != nil {
 		opening, _, _ = strings.Cut(*head.Text, "\n")
 	}
-	child.Type = TreeNodeType(head.Node.Kind, head.Supertag, opening)
+	child.Type = TreeNodeType(head.Node.Kind, head.Node.ID, head.Supertag, opening)
 	return child
 }
 

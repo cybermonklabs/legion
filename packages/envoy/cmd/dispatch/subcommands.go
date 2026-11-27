@@ -53,9 +53,7 @@ var subcommands = []subcommand{
 	{"convert-decisions", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return runDecisionsStep(ctx, "convert-decisions", true, args, env, stdout, stderr)
 	}},
-	{"convert-issues", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
-		return convertIssues(ctx, args, env, stdout, stderr)
-	}},
+	{"convert-issues", convertIssues},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
 	}},
@@ -389,43 +387,21 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 //
 // kept for one release: decisions-step
 func runDecisionsStep(ctx context.Context, name string, convert bool, args []string, env settingValues, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	project := flags.String("project", "", "the key of the project whose issues the step runs over (required)")
-	dryRun := flags.Bool("dry-run", false, "print what the step would do and write nothing; refused while a migration or the step's first phase is owed")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	if flags.NArg() > 0 || strings.TrimSpace(*project) == "" {
-		fmt.Fprintf(stderr, "%s: usage: envoy-dispatch %s --project <KEY> [--dry-run]\n", name, name)
-		return 2
-	}
-	open := openMigrated
-	if *dryRun {
-		open = openUnmigrated
-	}
-	database, ok := open(ctx, name, env.get("DATABASE_URL"), stdout)
-	if !ok {
-		return 1
+	database, key, dryRun, code := openProjectRun(ctx, name,
+		"the key of the project whose issues the step runs over (required)",
+		"print what the step would do and write nothing; refused while a migration or the step's first phase is owed",
+		args, env, stdout, stderr)
+	if code != 0 {
+		return code
 	}
 	defer database.Pool.Close()
-	key := strings.TrimSpace(*project)
-	var known bool
-	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, key).Scan(&known); err != nil {
-		fmt.Fprintf(stdout, "%s: read the project %q: %v\n", name, key, err)
-		return 1
-	}
-	if !known {
-		fmt.Fprintf(stderr, "%s: the database holds no project %q; --project takes a project's key as the projects table holds it\n", name, key)
-		return 2
-	}
 	documents := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: loadServerURL(env)})
 	defer documents.Shutdown(context.Background())
 	step := docs.NewDecisionStep(database, buildCommit, slog.New(slog.NewTextHandler(stderr, nil)))
 	step.UseDocuments(documents)
-	issues, failures, err := step.RunByHand(ctx, key, convert, *dryRun)
+	issues, failures, err := step.RunByHand(ctx, key, convert, dryRun)
 	for _, issue := range issues {
-		writeDecisionIssue(stdout, name, issue, *dryRun)
+		writeDecisionIssue(stdout, name, issue, dryRun)
 	}
 	for _, failure := range failures {
 		fmt.Fprintf(stdout, "%s: issue=%s failed: %v\n", name, failure.Issue, failure.Err)
@@ -438,7 +414,7 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 		return 1
 	}
 	if len(issues) == 0 {
-		fmt.Fprintf(stdout, "%s: issues=0 project=%s dry_run=%t\n", name, key, *dryRun)
+		fmt.Fprintf(stdout, "%s: issues=0 project=%s dry_run=%t\n", name, key, dryRun)
 	}
 	return 0
 }

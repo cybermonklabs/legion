@@ -339,6 +339,11 @@ type conversionStop struct {
 
 func (stop *conversionStop) Error() string { return stop.reason }
 
+// stoppedBy is result ended by stop: its outcome, its reason and the document it names, if any.
+func (result *ConvertedIssue) stoppedBy(stop *conversionStop) {
+	result.Outcome, result.Reason, result.Document = stop.outcome, stop.reason, stop.document
+}
+
 // ConvertIssue converts the issue issueKey into its room in a transaction of its own, which it
 // commits, or under dryRun rolls back once every write and the write phase's end have run, and
 // answers what it did. A done issue, and one that holds its room already, is passed over before
@@ -372,7 +377,7 @@ func (s *Service) ConvertIssue(ctx context.Context, issueKey string, gate Conver
 			return answer(err)
 		}
 		if stop != nil {
-			result.Outcome, result.Reason, result.Document = stop.outcome, stop.reason, stop.document
+			result.stoppedBy(stop)
 			return answer(nil)
 		}
 	}
@@ -392,7 +397,7 @@ func (s *Service) ConvertIssue(ctx context.Context, issueKey string, gate Conver
 		return answer(fmt.Errorf("the conversion of %s: %w", issueKey, err))
 	}
 	if stop != nil {
-		result.Outcome, result.Reason, result.Document = stop.outcome, stop.reason, stop.document
+		result.stoppedBy(stop)
 		return answer(nil)
 	}
 	// The ledger runs this after the approval/version events and their tuples are written,
@@ -415,7 +420,7 @@ func (s *Service) ConvertIssue(ctx context.Context, issueKey string, gate Conver
 	answerCommit := func(err error) (ConvertedIssue, error) {
 		var stop *conversionStop
 		if errors.As(err, &stop) {
-			result.Outcome, result.Reason = stop.outcome, stop.reason
+			result.stoppedBy(stop)
 			return answer(nil)
 		}
 		return answer(fmt.Errorf("finish the conversion of %s: %w", issueKey, err))
@@ -507,10 +512,7 @@ func (c *issueConversion) run(ctx context.Context, gate ConvertGate, result *Con
 	if err := c.tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&c.tree); err != nil {
 		return nil, fmt.Errorf("draw the id of the tree of %s: %w", c.key, err)
 	}
-	rooms := []string{c.tree}
-	for _, document := range c.documents {
-		rooms = append(rooms, document.id)
-	}
+	rooms := append([]string{c.tree}, c.ids()...)
 	slices.Sort(rooms)
 	for _, room := range rooms {
 		if err := lockDocumentRoom(ctx, c.tx, room); err != nil {
@@ -674,11 +676,7 @@ func indexableConversionID(id string) bool {
 // otherwise than its latest version while it owes a settlement defers it, since that settlement
 // is what versions the room's last edits and credits their authors.
 func (c *issueConversion) readHeads(ctx context.Context) (*conversionStop, error) {
-	ids := make([]string, len(c.documents))
-	for index, document := range c.documents {
-		ids[index] = document.id
-	}
-	latest, err := readRoomVersions(ctx, c.tx, ids)
+	latest, err := readRoomVersions(ctx, c.tx, c.ids())
 	if err != nil {
 		return nil, err
 	}
@@ -897,7 +895,7 @@ func (c *issueConversion) writeTree(ctx context.Context) error {
 	if c.issue.parent != "" {
 		viewMarked = true
 		for _, document := range c.documents {
-			viewMarked = viewMarked && !holdsRequirement(document.tree)
+			viewMarked = viewMarked && !holdsBlockType(document.tree, requirementType)
 		}
 	}
 	if err := writeExec(ctx, c.tx, "record how the issue was converted", `
@@ -939,9 +937,6 @@ func (c *issueConversion) writeQueries(ctx context.Context) error {
 	}
 	if err := graphstore.Write(ctx, c.tx, nodes, tuples); err != nil {
 		return fmt.Errorf("make the documents of %s query nodes: %w", c.key, err)
-	}
-	if err := graphstore.WriteHeads(ctx, c.tx, graphstore.HeadsOf(nodes, tuples)); err != nil {
-		return err
 	}
 	if err := writeExec(ctx, c.tx, "clear the roles of the issue's documents",
 		`update artifacts set role = null where issue_key = $1 and role is not null`, c.key); err != nil {
@@ -1015,9 +1010,9 @@ func (c *issueConversion) writeDecisionsQuery(ctx context.Context) error {
 	if err := graphstore.Caused(ctx, c.tx, stated, graphstore.NoEvent); err != nil {
 		return err
 	}
-	// The query's head row, written once its artifacts row names it, and those of what its
-	// version states.
-	return graphstore.WriteHeads(ctx, c.tx, append(graphstore.HeadsOf([]graphstore.Node{node}, queryTuples), graphstore.HeldHeads(stated)...))
+	// The query's head row, written once its artifacts row names it; Caused wrote those of what
+	// its version states.
+	return graphstore.WriteHeads(ctx, c.tx, graphstore.HeadsOf([]graphstore.Node{node}, queryTuples))
 }
 
 // writeSeed appends the room's first update, its version 1, under the tree's own key.
@@ -1122,9 +1117,9 @@ func (c *issueConversion) writeMoves(ctx context.Context) error {
 		if len(moves) == 0 {
 			continue
 		}
-		from := make([]string, len(moves))
+		from, ids := make([]string, len(moves)), make([]string, len(moves))
 		for index, move := range moves {
-			from[index] = move.from
+			from[index], ids[index] = move.from, move.fromID
 		}
 		held, err := c.readHeldOut(ctx, from, []string{graphstore.TupleAuthoredBy, graphstore.TupleDecidedBy, refs.TupleKeptBy, refs.ValueKeptTextSum})
 		if err != nil {
@@ -1135,10 +1130,6 @@ func (c *issueConversion) writeMoves(ctx context.Context) error {
 			if tuple.kind == graphstore.TupleAuthoredBy {
 				recorded[tuple.from] = append(recorded[tuple.from], tuple)
 			}
-		}
-		ids := make([]string, 0, len(moves))
-		for _, move := range moves {
-			ids = append(ids, move.fromID)
 		}
 		first, err := c.readFirstAuthors(ctx, document.id, ids)
 		if err != nil {
@@ -1228,7 +1219,7 @@ func (c *issueConversion) writeMoves(ctx context.Context) error {
 	if err := graphstore.Write(ctx, c.tx, nodes, tuples); err != nil {
 		return fmt.Errorf("state the moves of the blocks of %s: %w", c.key, err)
 	}
-	return graphstore.WriteHeads(ctx, c.tx, graphstore.HeadsOf(nodes, tuples))
+	return nil
 }
 
 // readHeldOut reads the tuples of kinds the block nodes from assert now

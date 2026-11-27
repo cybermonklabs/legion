@@ -192,6 +192,24 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
   await sql(`UPDATE issues SET created_by = 'null'::jsonb WHERE key = ${sqlLiteral(issueKey)}`);
 }
 
+/** The first key every loop lease of the server is taken under, 0x4C4F4F50 (duty's leaseNamespace,
+ *  packages/envoy/internal/dispatch/duty/exclusive.go), and the block-index reconciliation's
+ *  lease's name (docs.BlockIndexLease). */
+const LOOP_LEASE_NAMESPACE = 1280266064;
+const BLOCK_INDEX_LEASE_NAME = "block-index";
+
+/** The block-index reconciliation's lease as duty.Exclusive takes it, the two keys of an advisory
+ *  lock. While a session holds it no pass of the server's runs: a tick whose lease another session
+ *  holds runs nothing and waits a whole BlockIndexReconcileInterval (docs/block_index.go). */
+export const BLOCK_INDEX_LEASE = `${LOOP_LEASE_NAMESPACE}, hashtext(${sqlLiteral(BLOCK_INDEX_LEASE_NAME)})`;
+
+/** How long one block-index pass may hold its lease in this suite: the longest a row waits for a
+ *  pass it did not start to end. The longest pass a row starts is coverage.e2e.ts's over an issue
+ *  room whose Verification document holds a list of 2,100 blocks, past what a version write
+ *  indexes in its own request: five runs of that row on one worker of four cores measured the pass
+ *  at 2.9 s to 7.2 s, and the bound is four times the longest, for a CI runner's heavier load. */
+export const BLOCK_INDEX_PASS_MS = 30_000;
+
 // The reset's delete locks its tables one at a time, in its own order, waiting for each while it
 // holds the ones before it. A transaction that reads two of those tables in another order can
 // close a cycle with it (the Inbox reads asks before comments, the sidebar issues before
@@ -210,6 +228,14 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
 // locks are on the tables' own sequences, which only an insert into one of those tables advances.
 // Each wait is capped at the time left of 5 s, so a table still held 5 s after the step began
 // fails the reset then, naming that table's holders.
+//
+// Before any of those, while it holds none of them, the reset takes the block-index lease, for
+// the rest of its transaction (BLOCK_INDEX_LEASE): a block-index pass reads artifact_versions and
+// holds what it took until it commits, and one pass can run past 5 s - the pass coverage.e2e.ts
+// waits for, where an attempt of that row that failed leaves the pass running into the reset of
+// its retry. So the reset waits for the pass to end, up to BLOCK_INDEX_PASS_MS, and no pass starts
+// while it empties the tables: the server takes the lease without waiting (pg_try_advisory_lock),
+// so nothing waits for the reset's hold of it, and a tick it refuses runs after the reset.
 
 // One statement: a DO block is a transaction of its own, so the inserts that end it are the ones
 // the delete's own transaction makes, and the reset pays psql one round trip rather than the five
@@ -230,8 +256,25 @@ async function resetDatabaseOnce(): Promise<void> {
         holds_rows boolean;
         contended regclass;
         holders text;
-        deadline timestamptz := clock_timestamp() + interval '5 seconds';
+        deadline timestamptz;
       BEGIN
+        -- The block-index lease first, waited for while this block holds nothing else.
+        PERFORM set_config('lock_timeout', '${BLOCK_INDEX_PASS_MS}ms', true);
+        BEGIN
+          PERFORM pg_advisory_xact_lock(${BLOCK_INDEX_LEASE});
+        EXCEPTION WHEN lock_not_available THEN
+          SELECT string_agg(DISTINCT format('%s (%s)',
+                   left(regexp_replace(a.query, '\\s+', ' ', 'g'), 120), a.state), '; ')
+            INTO holders
+            FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+            WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 2
+              AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+              AND l.classid = ${LOOP_LEASE_NAMESPACE}::oid
+              AND l.objid = hashtext(${sqlLiteral(BLOCK_INDEX_LEASE_NAME)})::oid;
+          RAISE EXCEPTION 'could not take the block-index lease within % ms; held by: %',
+            ${BLOCK_INDEX_PASS_MS}, coalesce(holders, 'a session that gave it back just before this report');
+        END;
+        deadline := clock_timestamp() + interval '5 seconds';
         -- The closure a TRUNCATE ... CASCADE of these tables would empty, which is the closure
         -- the deletes below reach. packages/envoy/internal/pgmigrate/touched.go
         -- (reachedByForeignKeys) walks the same closure for a migration's truncate.
