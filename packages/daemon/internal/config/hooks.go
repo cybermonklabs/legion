@@ -19,7 +19,7 @@ import (
 const hooksKey = "hooks"
 
 // HookEventWorkBack is the one event that ships: the work of an issue went back a phase, which
-// the daemon counts by its `<from>-<to>` pair (plan.MovesBackPairs).
+// the daemon counts by its `<from>-<to>` pair (phase.MovePairs).
 const HookEventWorkBack = "work_back"
 
 // HookEvents are the events a hook's `on` may name: the daemon's own set of events, which the
@@ -183,7 +183,7 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 }
 
 // readHookMoves is a hook's `moves`: the moves back it selects, each written "<from>-<to>" as the
-// daemon counts them: a move back some task's line makes (plan.MovesBackPairs). A task moves back
+// daemon counts them: a move back some task's line makes (plan.CanMoveBack). A task moves back
 // by its own order, which need not be today's, so the move back of one task (testing-reviewing,
 // where its review comes before its test) is a forward move of another. A step of a role the
 // deployment defines runs as step, so a move may leave or reach step, and the move back from one

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/pause"
@@ -244,11 +245,11 @@ runtime:
 // members of its metadata endpoint. It is appended to settingsFixtureFile, as the settings tests
 // append each block of theirs to it (TestSettingsOfTheSandboxShowsEachMember), rather than
 // written into that file, where a block of its own would be a second `sandbox` key beside each
-// one those tests append. The third state body carries it (stateCarryingEveryDeclaredValue), so
-// the fixture bodies realise the microvm block and its keys, which no body of the maximal file
-// alone carries (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture). No record holds them:
-// no reader types a key of the block below its top level (withoutUntypedSettings). Names and
-// hosts are placeholders.
+// one those tests append. stateCarryingEveryDeclaredValue, a body of this case's own, carries
+// it, so the fixture bodies realise the microvm block and its keys, which no body of the maximal
+// file alone carries (TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture). No record holds
+// them: no reader types a key of the block below its top level (withoutUntypedSettings). Names
+// and hosts are placeholders.
 const sandboxSettingsBlock = `    sandbox:
       canary_issues: [LEGION-208]
       microvm:
@@ -259,16 +260,17 @@ const sandboxSettingsBlock = `    sandbox:
           identity_provider: https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example
 `
 
-// stateCarryingTheRestOfTheShape is the second state body, and it carries what populatedState
-// cannot: an issue waiting on a person for a design gate, which is the `waitingOn` of a kind
-// the first body has none of; an issue whose wait a person declined to answer, which is the
-// value contract 68 added to `answeredBy` and the one this change's serving-down of a value is
-// for; a status write the daemon owes Dispatch; a repository cache whose health read failed;
-// the project's last pause, which a state carries only while no pause stands, and populatedState
-// carries the one that stands (contract 178); and the settings of a tmux deployment
-// (shapeSettingsFile). Every key of these is a key the state route writes, so the records
-// describe each of them, the settings keys no reader types apart (withoutUntypedSettings), and a
-// serving-down that forgets one is caught where a thinner sample would pass.
+// stateCarryingTheRestOfTheShape is a state body of this case's own, and it carries what
+// populatedState cannot: an issue waiting on a person for a design gate, which is the
+// `waitingOn` of a kind the first body has none of; an issue whose wait a person declined to
+// answer, which is the value contract 68 added to `answeredBy` and the one this change's
+// serving-down of a value is for; a status write the daemon owes Dispatch; a repository cache
+// whose health read failed; the project's last pause, which a state carries only while no pause
+// stands, where pausedState carries the one that stands and populatedState carries neither
+// (contract 178); and the settings of a tmux deployment (shapeSettingsFile). Every key of these
+// is a key the state route writes, so the records describe each of them, the settings keys no
+// reader types apart (withoutUntypedSettings), and a serving-down that forgets one is caught
+// where a thinner sample would pass.
 func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	t.Helper()
 	since := time.Date(2026, 9, 22, 7, 30, 0, 0, time.UTC)
@@ -361,11 +363,12 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	}
 }
 
-// stateCarryingEveryDeclaredValue is the third state body. It carries every value answers.go's
-// EnumeratedFields declares above the floor, at every key path of the state the table declares
-// the value at, which the first two bodies do not carry between them. The value comparison
-// (shapeProblems) reads only the values a served body carries, so a value no body carries is held
-// to no record at any contract (TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody).
+// stateCarryingEveryDeclaredValue is a state body of this case's own. It carries every value
+// answers.go's EnumeratedFields declares above the floor, at every key path of the state the
+// table declares the value at, which the bodies before it in stateFixtures do not carry between
+// them. The value comparison (shapeProblems) reads only the values a served body carries, so a
+// value no body carries is held to no record at any contract
+// (TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody).
 //
 // The values are written here, and not read from the table: a value the table gains with no body
 // that carries it is then red in that census, and an edit of the table alone cannot carry it
@@ -379,20 +382,23 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // ancestor's basis carries the `basis` its status writes it with. Every issue of the line is held,
 // so one more issue carries the one value of an issue's own `phase` above the floor,
 // `awaiting_children`. The project's pause waits on the stop of one claim of each role, so
-// `paused.waitsOn.*.role` carries every role, where populatedState's pause waits on an implementer
-// alone. Its repositories block names five live repositories, both role Apps installed on each,
-// whose caches stand in the five states a cache can be in, so `repositories.live.*.cache.state`
+// `paused.waitsOn.*.role` carries every role, where pausedState's pause waits on an architect,
+// implementers and a reviewer alone. Its repositories block names five live repositories, both
+// role Apps installed on each, whose caches stand in the five states a cache can be in, so
+// `repositories.live.*.cache.state`
 // carries every word of that field, which arrived with the block at repositoriesLiveContract
 // (answers.go's liveCacheStates). The intake's open give-ups list one record of each reason, so
 // `intakeGiveUps.newest.*.reason` carries every word, where populatedState's three records carry
 // three of the five.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
-// `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
-// that file alone, and stay so because the state golden is written from them, and the second
-// body's are a tmux file's. They carry `dispatch_token_broker` too, turned on in the loaded
-// configuration, since the file names `dispatch_token_file`, which the loader refuses beside the
-// setting.
+// `type` (sandboxSettingsBlock), which no other body carries: populatedState's and pausedState's
+// settings are that file with `dispatch_token_broker` turned on and the checker, the role their
+// issues at step name, added to `roles`, and stay so because the state golden is written from
+// them, and operatorClaimState's and
+// stateCarryingTheRestOfTheShape's are a tmux file's. They carry `dispatch_token_broker` too,
+// turned on in the loaded configuration, since the file names `dispatch_token_file`, which the
+// loader refuses beside the setting.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
@@ -523,7 +529,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
 	}
-	settings := loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)
+	settings := apifixture.LoadSettings(t, settingsFixtureFile+sandboxSettingsBlock)
 	settings.DispatchTokenBroker = true
 	both := AppInstallationsView{Implement: true, Review: true}
 	live := make([]LiveRepositoryView, 0, len(cacheWords))
@@ -556,22 +562,24 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		WakesWaiting: wakes,
 		Repositories: RepositoriesView{Live: live},
 		Settings:     SettingsOf(settings),
-		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
+		// Built as the state's read builds it (PauseStateTx), holding no row: the paused state's
 		// pause carries the held rows.
-		Paused:        pausedViewOf(goldenPause(false), stops, nil),
+		Paused:        pausedViewOf(apifixture.Pause(false), stops, nil),
 		IntakeGiveUps: giveUps,
 	}
 }
 
 // stateFixtures are the state bodies the records of the state and of the issue record are taken
-// from: the populated state every other golden of this package is written from, a second one of
-// this case's own carrying what the first cannot (stateCarryingTheRestOfTheShape), a third
-// carrying every value the enumerated fields declare above the floor and the settings' sandbox
-// block (stateCarryingEveryDeclaredValue), and then the bodies each entry's test file adds for a
-// key it adds to the state (entryTestRows.states), in the build's order.
+// from: the populated state every other golden of this package is written from, the same record
+// paused (pausedState), which alone carries `paused` with its held rows, the operator's spawn
+// (operatorClaimState), whose architect alone stands in a tmux pane, a state of this case's own
+// carrying what those cannot (stateCarryingTheRestOfTheShape), one carrying every value the
+// enumerated fields declare above the floor and the settings' sandbox block
+// (stateCarryingEveryDeclaredValue), and then the bodies each entry's test file adds for a key it
+// adds to the state (entryTestRows.states), in the build's order.
 func stateFixtures(t *testing.T) []State {
 	t.Helper()
-	states := []State{populatedState(t), stateCarryingTheRestOfTheShape(t), stateCarryingEveryDeclaredValue(t)}
+	states := []State{populatedState(t), pausedState(t), operatorClaimState(t), stateCarryingTheRestOfTheShape(t), stateCarryingEveryDeclaredValue(t)}
 	for _, rows := range entriesTestRows() {
 		if rows.states != nil {
 			states = append(states, rows.states(t)...)
@@ -617,7 +625,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// paths read as one set.
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
-		// The register golden's own value (TestRegisterResponseGolden).
+		// The register golden's own value (TestRegisterResponseGolden), and richer than it: the
+		// golden is the registration of a claim that replaces no session, and this body carries
+		// the session it replaces (replacesContract), so the records describe that key too.
 		AnswerRegister: {roots: typesOf(claim.RegisterResponse{}), bodies: []any{claim.RegisterResponse{
 			ClaimToken:   "legion-legion-legion-208-architect",
 			Tree:         "LEGION-208",
@@ -626,13 +636,17 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Generation:   3,
 			Secret:       "U3VwZXJ2aXNlZEJ5TGVnaW9u",
 			PromptAgents: []string{"deep-worker", "oracle", "plan-gap-analyst"},
+			Replaces:     "ses_architect_before",
 		}}},
-		// The controller registration golden's own value (TestControllerRegisterResponseGolden).
+		// The controller registration golden's own value (TestControllerRegisterResponseGolden),
+		// and richer than it in the same way: this body carries the session the daemon's own
+		// controller's new session replaces.
 		AnswerRegisterController: {roots: typesOf(ControllerRegisterResponse{}), bodies: []any{ControllerRegisterResponse{
 			ClaimToken: "legion-legion-controller",
 			Role:       claim.RoleController,
 			Generation: 2,
 			Secret:     "Q29udHJvbGxlZEJ5TGVnaW9u",
+			Replaces:   "ses_controller_before",
 		}}},
 		// 204 and nothing after the headers. The four routes write the status themselves
 		// (claims.go's ready, exit and activity, update.go's ready-for-update), and this
@@ -778,12 +792,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 	return fixtures
 }
 
-// controllerPause is the goldens' pause (goldenPause) begun by the controller from its session
-// rather than by the operator, and ended by the controller as the goldens' is, so a view of it
-// names a session at `by` and, once ended, at `endedBy` too: a fixture body is maximal, and the
-// operator's pause names no session at `by`.
+// controllerPause is the goldens' pause (apifixture.Pause) begun by the controller from its
+// session rather than by the operator, and ended by the controller as the goldens' is, so a view
+// of it names a session at `by` and, once ended, at `endedBy` too: a fixture body is maximal, and
+// the operator's pause names no session at `by`.
 func controllerPause(ended bool) store.Pause {
-	p := goldenPause(ended)
+	p := apifixture.Pause(ended)
 	p.By = store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
 	return p
 }
@@ -1352,7 +1366,7 @@ func sortedShapeRecords(records []contractShape) []contractShape {
 // readContractShapes is the frozen fixture as it stands, and false where no file is there.
 func readContractShapes(t *testing.T) ([]contractShape, bool) {
 	t.Helper()
-	encoded, err := os.ReadFile(goldenPath(contractShapesFixture))
+	encoded, err := os.ReadFile(apifixture.Path(contractShapesFixture))
 	if os.IsNotExist(err) {
 		return nil, false
 	}

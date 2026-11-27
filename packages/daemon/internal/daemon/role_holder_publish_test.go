@@ -570,8 +570,11 @@ func TestASuspensionKeepsItsClaimsRoleOnlyWhereItsSourceDoes(t *testing.T) {
 
 // A claim the idle release suspended holds its role until the claim ends or its role moves to
 // another session, and each of those changes queues its publication: a failure and a retirement
-// send the set without the session; a session the claim forgot, as a fresh start forgets it,
-// sends the set without it too; and a resume whose agent registers under another session sends the
+// send the set without the session; a suspension by any other source over the released claim,
+// which changes its source alone (supervise's suspendedAgain: a linger, a leave, a park, an
+// operator's or the controller's suspend), sends the set without it too, one row for each such
+// source (suspensionsKeepTheirRole); a session the claim forgot, as a fresh start forgets it,
+// sends the set without it; and a resume whose agent registers under another session sends the
 // set naming the new session in the old one's place, with no empty set between them.
 //
 // The control is the code before this change, under which the release had already sent the empty
@@ -582,28 +585,39 @@ func TestAReleasedClaimKeepsItsRoleUntilItEndsOrMoves(t *testing.T) {
 	type write struct {
 		name      string
 		state     supervise.ClaimState
+		by        supervise.SuspendSource
 		session   string
 		moves     bool
 		architect string
 	}
-	for _, tc := range []struct {
+	type change struct {
 		name   string
 		writes []write
-	}{
-		{"failed", []write{{"the failure", supervise.StateFailed, "ses-1", true, ""}}},
-		{"retired", []write{{"the retirement", supervise.StateRetired, "ses-1", true, ""}}},
-		{"session forgotten", []write{{"the fresh start that forgets the session", supervise.StateQueued, "", true, ""}}},
+	}
+	changes := []change{
+		{"failed", []write{{"the failure", supervise.StateFailed, "", "ses-1", true, ""}}},
+		{"retired", []write{{"the retirement", supervise.StateRetired, "", "ses-1", true, ""}}},
+		{"session forgotten", []write{{"the fresh start that forgets the session", supervise.StateQueued, "", "", true, ""}}},
 		{"another session", []write{
-			{"the launch that resumes the kept session", supervise.StateLaunching, "ses-1", false, "ses-1"},
-			{"the registration under another session", supervise.StateRegistered, "ses-2", true, "ses-2"},
+			{"the launch that resumes the kept session", supervise.StateLaunching, "", "ses-1", false, "ses-1"},
+			{"the registration under another session", supervise.StateRegistered, "", "ses-2", true, "ses-2"},
 		}},
-	} {
+	}
+	for _, source := range suspensionsKeepTheirRole {
+		if source.keeps {
+			continue
+		}
+		changes = append(changes, change{"suspended again by " + string(source.by), []write{
+			{"the suspension by " + string(source.by) + " over the released claim", supervise.StateSuspended, source.by, "ses-1", true, ""},
+		}})
+	}
+	for _, tc := range changes {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newHeldRoleRig(t)
 			r.released()
 			for _, w := range tc.writes {
-				r.step(w.name, w.state, "", w.session, w.moves, w.architect)
+				r.step(w.name, w.state, w.by, w.session, w.moves, w.architect)
 			}
 		})
 	}

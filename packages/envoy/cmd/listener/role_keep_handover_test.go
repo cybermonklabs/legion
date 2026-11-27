@@ -180,6 +180,7 @@ func (l *keptLaneUnderClaim) keys() []string {
 // one walk forwards therefore used to strand every copy past the twentieth until it aged out
 // unread, with every sender answered 202 kept.
 func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-budget"
@@ -209,6 +210,7 @@ func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
 // starts none (subscribeHandler). The handover walks the lane again itself, after a back-off, so
 // the copy reaches the holder its sender was told it was kept for.
 func TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-retry"
@@ -237,6 +239,7 @@ func TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim(t *testing
 // instead, leaves the lane when the record no longer names its own session, and the handover walks
 // it again for the holder it finds then.
 func TestADrainStopsWhenTheRoleChangesHolderUnderIt(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role    = "kept-handover-moved"
@@ -336,6 +339,7 @@ func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) 
 // another handover while that holder holds the role. The handover retries on a cadence that widens
 // instead (roleKeepDrainBackoff), for longer than roleKeepDrainIdleRounds walks.
 func TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role     = "kept-handover-failures"
@@ -634,6 +638,7 @@ func TestAHandoverOfAnEmptyKeptLaneResolvesNoHolder(t *testing.T) {
 // holder for, so the listener keeps this one, and the role's next live holder is handed it inside
 // its hour.
 func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-dispatch-route"
@@ -674,6 +679,8 @@ func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T
 // goroutine on its guard. It ends with one WARN that it left the lane to the role's next claim,
 // naming the read that failed; the claimed row, whose lane is not left, writes none.
 func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T) {
+	// Not parallel: its unclaimed row requires the handover (drainKeptRole), which ends at its
+	// first lane read that fails, to end inside roleKeepDrainRetryPause (1 s).
 	for _, test := range []struct {
 		name           string
 		claimed        bool

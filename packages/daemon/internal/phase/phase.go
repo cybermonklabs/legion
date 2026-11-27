@@ -61,8 +61,8 @@ var All = []Phase{
 //
 // Both internal/config and internal/workflow read this set. The loader takes a hook's move as a
 // pair of MovePairs (all 42 ordered pairs of the seven, and the 15 pairs of step) that some task's
-// line makes as a move back (plan.MovesBackPairs, 41 of them), since it reads the file with no
-// plan, and refuses the other 16, which would never fire. The engine counts the pair of each
+// line makes as a move back (plan.CanMoveBack, 41 of them), since it reads the file with no plan,
+// and refuses the other 16, which would never fire. The engine counts the pair of each
 // move back the task's own line reads (Walk.MovesBack), and a pass. It
 // lives here, not in internal/workflow, because internal/config cannot import internal/workflow.
 // Measured with
@@ -74,13 +74,19 @@ var All = []Phase{
 // names one package of this repository, internal/claim.
 var Order = []Phase{Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging}
 
-// MovesBack says whether to is a phase of today's line, Order, before from. Both must stand in
-// Order. A phase outside it, step among them, is no part of the forward line, so this answers no
-// move into or out of it. A task in another order moves back by its own (workflow's
-// Walk.MovesBack).
+// MovesBack says whether to is a phase of today's line, Order, before from (MovesBackOn). A phase
+// outside Order, step among them, is no part of the forward line, so this answers no move into or
+// out of it. A task in another order moves back by its own (workflow's Walk.MovesBack).
 func MovesBack(from, to Phase) bool {
-	toIndex := slices.Index(Order, to)
-	return toIndex >= 0 && toIndex < slices.Index(Order, from)
+	return MovesBackOn(Order, from, to)
+}
+
+// MovesBackOn says whether to stands before from on line. Both must stand on it: a phase the line
+// does not hold is no part of it, so nothing moves back into or out of it. A phase the line holds
+// at two places, as step where a task names two roles the deployment defines, is read at its first.
+func MovesBackOn(line []Phase, from, to Phase) bool {
+	toIndex := slices.Index(line, to)
+	return toIndex >= 0 && toIndex < slices.Index(line, from)
 }
 
 // BackwardPairs is every move back of today's line, Order, each written "<from>-<to>": each

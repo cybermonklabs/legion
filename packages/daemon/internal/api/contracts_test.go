@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 )
 
 // The registry's tests (contracts.go) build their registries through buildContractRegistry, the
@@ -518,7 +520,7 @@ func TestEveryEntryHasOneFixture(t *testing.T) {
 	if *updateGolden {
 		t.Skip("the entry fixtures are being written; run the suite again without -update")
 	}
-	dir := goldenPath("contracts")
+	dir := apifixture.Path("contracts")
 	if info, err := os.Lstat(dir); err == nil && !info.IsDir() {
 		t.Fatalf("%s is a %s, not a directory: it holds the entry fixtures", dir, kindOf(info.Mode()))
 	}

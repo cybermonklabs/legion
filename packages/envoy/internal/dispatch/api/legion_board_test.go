@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -186,18 +187,34 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if board.Project != "INFRA" {
 		t.Fatalf("the board names project %q, want INFRA", board.Project)
 	}
-	if len(board.Columns) != len(legionBoardColumnOrder) {
-		t.Fatalf("the board has %d columns, want the %d the view draws", len(board.Columns), len(legionBoardColumnOrder))
+	// The twelve columns the board answers, left to right, each with the label the view draws over
+	// it, written out rather than read from legion.Columns and legionBoardColumnLabels, which the
+	// route is built from: a reorder, a lost column or a changed label fails here.
+	wantColumns := []struct{ id, label string }{
+		{"queue", "Queue"},
+		{"design", "Design"},
+		{"planning", "Planning"},
+		{"implementing", "Implementing"},
+		{"testing", "Testing"},
+		{"reviewing", "Reviewing"},
+		{"accepting", "Accepting"},
+		{"retro", "Retro"},
+		{"merging", "Merging"},
+		{"awaiting_children", "Waiting on children"},
+		{"awaiting_person", "Waiting on a person"},
+		{"held", "Held"},
 	}
-	for index, column := range board.Columns {
-		want := legionBoardColumnOrder[index]
-		if column.ID != want.id || column.Label != want.label {
+	if len(board.Columns) != len(wantColumns) {
+		t.Fatalf("the board has %d columns, want the %d the view draws", len(board.Columns), len(wantColumns))
+	}
+	for index, want := range wantColumns {
+		if column := board.Columns[index]; column.ID != want.id || column.Label != want.label {
 			t.Fatalf("column %d is %q/%q, want %q/%q", index, column.ID, column.Label, want.id, want.label)
 		}
 	}
 	// The waiting line's own order, which the view does not re-sort: the answered root first,
 	// though Dispatch's rank would put the queued root there, and the blocked one after both.
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-10", "INFRA-1", "INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-10", "INFRA-1", "INFRA-2"}) {
 		t.Errorf("the queue holds %v, want the waiting line then the blocked issue", got)
 	}
 	// Each parent in `awaiting_children` carries a card, in its own column (the map below). The
@@ -211,17 +228,17 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		t.Errorf("the card of the parent whose last child closed = %+v, want nothing holding it and no child counted", returning)
 	}
 	for id, want := range map[string][]string{
-		legionColumnDesign:           {"INFRA-3"},
-		legionColumnImplementing:     {"INFRA-4"},
-		legionColumnAwaitingPerson:   {"INFRA-5"},
-		legionColumnHeld:             {"INFRA-6"},
-		legionColumnAwaitingChildren: {"INFRA-11", "INFRA-13"},
-		legionColumnPlanning:         {},
-		legionColumnTesting:          {},
-		legionColumnReviewing:        {},
-		legionColumnAccepting:        {},
-		legionColumnRetro:            {},
-		legionColumnMerging:          {},
+		legion.ColumnDesign:           {"INFRA-3"},
+		legion.ColumnImplementing:     {"INFRA-4"},
+		legion.ColumnAwaiting:         {"INFRA-5"},
+		legion.ColumnHeld:             {"INFRA-6"},
+		legion.ColumnAwaitingChildren: {"INFRA-11", "INFRA-13"},
+		legion.ColumnPlanning:         {},
+		legion.ColumnTesting:          {},
+		legion.ColumnReviewing:        {},
+		legion.ColumnAccepting:        {},
+		legion.ColumnRetro:            {},
+		legion.ColumnMerging:          {},
 	} {
 		if got := legionColumnKeys(t, board, id); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v", id, got, want)
@@ -293,14 +310,14 @@ func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
 	for index, column := range board.Columns {
 		ids[index] = column.ID
 	}
-	if retro := slices.Index(ids, legionColumnRetro); retro < 1 || retro+1 >= len(ids) ||
-		ids[retro-1] != legionColumnAccepting || ids[retro+1] != legionColumnMerging {
+	if retro := slices.Index(ids, legion.ColumnRetro); retro < 1 || retro+1 >= len(ids) ||
+		ids[retro-1] != legion.ColumnAccepting || ids[retro+1] != legion.ColumnMerging {
 		t.Errorf("the columns are %v, want retro between accepting and merging", ids)
 	}
-	if got := legionColumnKeys(t, board, legionColumnRetro); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnRetro); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the Retro column holds %v, want the issue in retro alone", got)
 	}
-	if got := legionColumnKeys(t, board, legionColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
 		t.Errorf("the Merging column holds %v, want the issues in merging and awaiting_merge", got)
 	}
 }
@@ -357,7 +374,7 @@ func TestTheLegionBoardQueuesByRankUntilADaemonRecordsItsWaitingLine(t *testing.
 	seedLegionRead(t, database, "INFRA", now, "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-2", "INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-2", "INFRA-1"}) {
 		t.Fatalf("the queue holds %v, want the two roots in Dispatch's rank order", got)
 	}
 	if board.Header.SlotCap != nil {
@@ -425,10 +442,10 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	}
 
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-3", "INFRA-4"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-3", "INFRA-4"}) {
 		t.Errorf("the queue holds %v, want the waiting root then the blocked child", got)
 	}
-	if got := legionColumnKeys(t, board, legionColumnDesign); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnDesign); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the design column holds %v, want the root holding a slot", got)
 	}
 	child := legionCard(t, board, "INFRA-2")
@@ -630,7 +647,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 		"INFRA-2":{"key":"INFRA-2","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}},
 		"INFRA-3":{"key":"INFRA-3","phase":"planning","workers":{"planner":{"claim":{"state":"working"}}}}}}`)
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Fatalf("after the first read the testing column holds %v, want INFRA-2", got)
 	}
 	if roles := legionCard(t, board, "INFRA-1").Roles; !slices.Equal(roles, []string{"architect", "implementer"}) {
@@ -661,7 +678,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 		t.Errorf("the board puts INFRA-3 in tree %q, want INFRA-1: the middle issue left the daemon's state and is still Legion's", tree)
 	}
 	now := time.Now().UTC()
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -699,7 +716,7 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 	if !commits.Fired() {
 		t.Fatal("no statement of the board's answer read legion_current, so no commit landed during it")
 	}
-	if got := legionColumnKeys(t, board, legionColumnPlanning); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Errorf("the answer the commit landed in holds %v in planning, want INFRA-2: its card is the first read's", got)
 	}
 	if tree := legionCard(t, board, "INFRA-2").Tree; tree != "INFRA-1" {
@@ -707,7 +724,7 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 	}
 
 	board = legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Errorf("the next answer holds %v in testing, want INFRA-2: the commit's", got)
 	}
 	if tree := legionCard(t, board, "INFRA-2").Tree; tree != "INFRA-2" {
@@ -744,7 +761,7 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	if board.Header.ReadOK || board.Header.ReadError == nil {
 		t.Errorf("the answer the commit landed in has the header %+v, want the failed read the commit came after", board.Header)
 	}
-	if got := legionColumnKeys(t, board, legionColumnPlanning); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the answer the commit landed in holds %v in planning, want INFRA-1: the cards under the failed read's header are the good read's before it", got)
 	}
 
@@ -752,7 +769,7 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	if !board.Header.ReadOK {
 		t.Errorf("the next answer has the header %+v, want the commit's good read", board.Header)
 	}
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the next answer holds %v in testing, want INFRA-1: the commit's", got)
 	}
 }
@@ -788,10 +805,10 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 		t.Errorf("the header = %+v (read_error %v), want the read failed, its error the refusal of its record", header, deref(header.ReadError))
 	}
 	for column, want := range map[string][]string{
-		legionColumnImplementing:   {"INFRA-1"},
-		legionColumnTesting:        {"INFRA-2"},
-		legionColumnReviewing:      {},
-		legionColumnAwaitingPerson: {},
+		legion.ColumnImplementing: {"INFRA-1"},
+		legion.ColumnTesting:      {"INFRA-2"},
+		legion.ColumnReviewing:    {},
+		legion.ColumnAwaiting:     {},
 	} {
 		if got := legionColumnKeys(t, board, column); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v: the last good read's cards", column, got, want)
@@ -904,17 +921,17 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 	legion.NewSampler(database.Pool).Pass(t.Context())
 
 	infraBoard := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, infraBoard, legionColumnImplementing); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, infraBoard, legion.ColumnImplementing); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("INFRA's implementing column holds %v, want INFRA-1 as INFRA's daemon reports it", got)
 	}
-	if got := legionColumnKeys(t, infraBoard, legionColumnReviewing); len(got) != 0 {
+	if got := legionColumnKeys(t, infraBoard, legion.ColumnReviewing); len(got) != 0 {
 		t.Errorf("INFRA's reviewing column holds %v, want none: LINUX's daemon put INFRA-1 there, and it is no source of INFRA's board", got)
 	}
 	if roles := legionCard(t, infraBoard, "INFRA-1").Roles; !slices.Equal(roles, []string{"implementer"}) {
 		t.Errorf("INFRA-1's roles on INFRA's board are %v, want INFRA's implementer alone", roles)
 	}
 	linuxBoard := legionBoardOf(t, handler, "LINUX")
-	if got := legionColumnKeys(t, linuxBoard, legionColumnTesting); !slices.Equal(got, []string{"LINUX-1"}) {
+	if got := legionColumnKeys(t, linuxBoard, legion.ColumnTesting); !slices.Equal(got, []string{"LINUX-1"}) {
 		t.Errorf("LINUX's testing column holds %v, want LINUX-1 as LINUX's daemon reports it", got)
 	}
 	if roles := legionCard(t, linuxBoard, "LINUX-1").Roles; !slices.Equal(roles, []string{"tester"}) {
@@ -933,19 +950,28 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 		{"INFRA", "INFRA-1", nil},
 		{"LINUX", "LINUX-1", []string{"INFRA-2 by implementer of LINUX-1, " + metrics.ClassOutOfTree}},
 	} {
-		population, err := metrics.Read(t.Context(), database.Pool, nil, one.project, start.Add(-24*time.Hour), now.Add(time.Hour))
+		population, err := metrics.ReadProject(t.Context(), database.Pool, one.project, now)
 		if err != nil {
 			t.Fatalf("read %s's metrics population: %v", one.project, err)
 		}
-		report := metrics.Compute(population, metrics.ScopeAll, now)
-		if report.Finished != 1 || len(report.Rework.Issues) != 1 || report.Rework.Issues[0].Key != one.issue {
-			t.Fatalf("%s's report finished %d issues, %+v, want its own %s alone", one.project, report.Finished, report.Rework.Issues, one.issue)
+		facts := map[string]metrics.IssueFacts{}
+		for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+			facts[key] = closed.FactsAt(population.To)
 		}
-		if rounds := report.Rework.Issues[0].ReviewRounds; rounds != 0 {
+		var finished []string
+		for _, key := range slices.Sorted(maps.Keys(facts)) {
+			if facts[key].ClosedAt != nil {
+				finished = append(finished, key)
+			}
+		}
+		if !slices.Equal(finished, []string{one.issue}) {
+			t.Fatalf("%s's facts finished %v, want its own %s alone", one.project, finished, one.issue)
+		}
+		if rounds := facts[one.issue].ReviewRounds; rounds != 0 {
 			t.Errorf("%s's %s has %d review rounds, want none: %s's daemon never reported it in review", one.project, one.issue, rounds, one.project)
 		}
 		var filed []string
-		for _, row := range report.Splitting.Filed {
+		for _, row := range metrics.ProjectFilings(population) {
 			filed = append(filed, fmt.Sprintf("%s by %s of %s, %s", row.Key, row.Filer, row.FilerIssue, row.Class))
 		}
 		if !slices.Equal(filed, one.filed) {
@@ -954,9 +980,8 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 	}
 }
 
-// closeLegionIssue closes one seeded issue, which is what brings its whole parent chain into the
-// metrics' read scope (legion/metrics/population.go's scopeKeys: the issues that could have
-// finished in the window and their ancestors).
+// closeLegionIssue closes one seeded issue, the child at the bottom of a chain each of these
+// fixtures hangs a finished issue under.
 func closeLegionIssue(t *testing.T, database *store.Store, key string, at time.Time) {
 	t.Helper()
 	legionExec(t, database, `update issues set status = 'done', closed_at = $2 where key = $1`, key, at)

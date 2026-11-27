@@ -1,12 +1,13 @@
 // Package plan is the plan the owner of an issue gives Legion: its tasks, the steps of each task,
 // the roles those steps name, and the two checks a plan passes before Legion takes it — Validate,
 // what Legion cannot carry out in any release, and Supported, what this release does not carry
-// out yet. It reads the blocks of one version of the plan document (FromBlocks) and
-// compares two versions (ChangedTasks); it holds no store and calls nothing.
+// out yet. It reads the blocks of one version of the plan document, each need as the task it
+// names (FromBlocks), and compares two versions (ChangedTasks); it holds no store and calls
+// nothing.
 //
-// It imports internal/phase alone, so both the configuration loader, which reads a project's
-// default steps with this grammar and these checks, and the workflow, which walks the line they
-// make (Line), can import it.
+// Of this repository's packages it imports internal/phase and internal/redact alone, so both the
+// configuration loader, which reads a project's default steps with this grammar and these checks,
+// and the workflow, which walks the line they make (Line), can import it.
 package plan
 
 import (
@@ -53,10 +54,13 @@ const DefaultTask = "default"
 type Task struct {
 	// ID is the block's id, which every record of the task's steps names.
 	ID string
-	// Needs are the `needs` values, each kept whole as the block writes it: a reference to a
-	// block or a word. This release only refuses them (Supported), so it decides nothing of how
-	// one names a task.
+	// Needs are the tasks this task needs, each by its id, in the order the block writes them:
+	// FromBlocks reads each `needs` word, a reference to a block or a word, as the id of the task
+	// it names, and keeps a word that names no task in Unresolved.
 	Needs []string
+	// Unresolved are the `needs` words that name no task of the plan, in the block's order, as
+	// FromBlocks leaves them; Validate refuses each one.
+	Unresolved []string
 	// PartOf is `part_of` and Owner is `owner`, each as the block writes it, "" when unset.
 	PartOf, Owner string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
@@ -71,6 +75,25 @@ type Task struct {
 
 // NamesSteps says whether t's block names a step at all.
 func (t Task) NamesSteps() bool { return len(t.Steps) > 0 }
+
+// Sinks is the ids of the tasks of tasks that no task needs, in id order: the tasks whose work
+// ends the plan, where it merges. A need is a task id (FromBlocks).
+func Sinks(tasks []Task) []string {
+	needed := map[string]bool{}
+	for _, task := range tasks {
+		for _, id := range task.Needs {
+			needed[id] = true
+		}
+	}
+	var sinks []string
+	for _, task := range tasks {
+		if !needed[task.ID] {
+			sinks = append(sinks, task.ID)
+		}
+	}
+	slices.Sort(sinks)
+	return sinks
+}
 
 // RoleDef is a role a step can name: its name and the type of the work it does. How a step of the
 // role runs is decided by its name alone (RunsAs).
@@ -161,7 +184,7 @@ func ParseSteps(text string) ([]Step, error) {
 	for _, word := range words {
 		role, key, keyed := strings.Cut(word, ":")
 		if !nameWord.MatchString(role) || keyed && !nameWord.MatchString(key) {
-			return nil, fmt.Errorf("the step %q is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*", word)
+			return nil, fmt.Errorf("the step %q is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*", quoted(word))
 		}
 		steps = append(steps, Step{Role: role, Key: key})
 	}
@@ -191,31 +214,27 @@ func Line(steps []Step) []phase.Phase {
 	return append(line, phase.Retro, phase.Merging)
 }
 
-// MovesBackPairs is every move back a task this release takes can make, each written
-// "<from>-<to>" (phase.Pair), in the order of phase.MovePairs: a pair whose to stands before its
-// from on the Line of some task that Supported and Validate take, since a task moves back from a
-// phase of its line to any phase before it (workflow's backwardRows). It is read off those two
-// checks, over every order of every choice of Legion's five roles and two roles of a deployment,
-// so a later release whose checks take another line moves the set with them. A step of a role the
-// deployment defines runs as step wherever it stands, whatever its name, so two such roles of the
-// type testing, which may stand before the implementer or after it, stand for every role a
-// deployment defines, and make the pairs of step, step-step among them. The other pairs are a move
-// back of no line: each step phase to retro or to merging, and retro to merging, since the retro
+// CanMoveBack says whether from-to is a move back a task this release takes can make: to stands
+// before from on the Line of some task that Supported and Validate take (Refusals), since a task
+// moves back from a phase of its line to any phase before it (workflow's backwardRows). The set is
+// read off those two checks, over every order of every choice of Legion's five roles and two roles
+// of a deployment, so a later release whose checks take another line moves the set with them. A
+// step of a role the deployment defines runs as step wherever it stands, whatever its name, so two
+// such roles of the type testing, which may stand before the implementer or after it, stand for
+// every role a deployment defines, and make the pairs of step, step-step among them. In this
+// release it holds 41 of the 57 pairs of phase.MovePairs. The other 16 are a move back of no line:
+// each step phase, step among them, to retro or to merging, and retro to merging, since the retro
 // and the merge end every line; and implementing to testing, reviewing or accepting, since every
 // tester, reviewer and acceptance step comes after the implementer's (stepReasons). The
 // configuration loader takes a hook's moves from this set alone (config's readHookMoves), so no
-// hook names a move that never fires. The answer is a fresh slice.
-func MovesBackPairs() []string {
-	return slices.Clone(movesBackPairs())
-}
-
-// CanMoveBack says whether from-to is a pair MovesBackPairs holds.
+// hook names a move that never fires.
 func CanMoveBack(from, to phase.Phase) bool {
-	return slices.Contains(movesBackPairs(), phase.Pair(from, to))
+	return movesBack()[phase.Pair(from, to)]
 }
 
-// movesBackPairs is MovesBackPairs, built at its first read.
-var movesBackPairs = sync.OnceValue(func() []string {
+// movesBack is CanMoveBack's set, each pair written "<from>-<to>" (phase.Pair), built at its
+// first read.
+var movesBack = sync.OnceValue(func() map[string]bool {
 	roles := slices.Clone(builtinRoles)
 	for _, name := range []string{"deployment-a", "deployment-b"} {
 		roles = append(roles, RoleDef{Name: name, Type: TypeTesting})
@@ -228,7 +247,7 @@ var movesBackPairs = sync.OnceValue(func() []string {
 	var choose func(steps []Step)
 	choose = func(steps []Step) {
 		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
-		if len(steps) > 0 && len(Supported(p, d)) == 0 && len(Validate(p, d)) == 0 {
+		if len(steps) > 0 && len(Refusals(p, d)) == 0 {
 			line := Line(steps)
 			for at, from := range line {
 				for _, to := range line[:at] {
@@ -248,11 +267,5 @@ var movesBackPairs = sync.OnceValue(func() []string {
 		}
 	}
 	choose(nil)
-	pairs := make([]string, 0, len(found))
-	for _, pair := range phase.MovePairs() {
-		if found[pair] {
-			pairs = append(pairs, pair)
-		}
-	}
-	return pairs
+	return found
 })

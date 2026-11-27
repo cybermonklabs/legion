@@ -57,8 +57,10 @@ A step of a role of this deployment holds the checks only as its prompt file ask
 
 ## What Legion refuses
 
-`register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
-Fix each reason and give a new version.
+`register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, a reason for each cause, its `task` empty for a cause of the whole plan.
+Past the first reasons of one kind, it counts the rest of that kind in one more reason, of the whole plan.
+Give each task block an id of lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64 bytes: Legion refuses any other id, since Dispatch records no step of such a task.
+Fix each reason and give a new version; the next refusal names what is left.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the rules above.
 Among them, a role of this deployment of the type implementation after the implementer's step: `task <id> names <role> at step <i>, a step of the type implementation after the step implementer at step <j>, and Legion's retro is done by the implementer in this release.`
 A step that names a role neither Legion nor this deployment defines is refused `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`, and no release takes it.

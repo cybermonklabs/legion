@@ -252,10 +252,10 @@ func checkDeploymentRoleKeys(cfg Config) error {
 }
 
 // checkDefaultSteps holds each project's `default_steps` to the checks a plan of the one task
-// `default` with those steps passes (plan.Supported, then plan.Validate against the deployment's
-// roles, Legion's and those of `roles`), so the steps a task with none runs are steps this release
-// carries out. The projects are judged in the order of their keys, and a refusal names the key,
-// then gives every reason of both checks.
+// `default` with those steps passes against the deployment's roles, Legion's and those of `roles`
+// (plan.Refusals: plan.Supported, then plan.Validate), so the steps a task with none runs are
+// steps this release carries out. The projects are judged in the order of their keys, and a
+// refusal names the key, then gives every reason of both checks.
 func checkDefaultSteps(cfg Config) error {
 	deployment := cfg.Deployment()
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
@@ -264,7 +264,7 @@ func checkDefaultSteps(cfg Config) error {
 			continue
 		}
 		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-		refusals := append(plan.Supported(task, deployment), plan.Validate(task, deployment)...)
+		refusals := plan.Refusals(task, deployment)
 		if len(refusals) == 0 {
 			continue
 		}

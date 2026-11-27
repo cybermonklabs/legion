@@ -44,7 +44,7 @@
 // issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers and the real outbox lanes. Facts
 // enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS stream for the
@@ -131,6 +131,9 @@ type behindEntryFenceLive struct {
 // longer works, the registered reviewer's own move back into testing, and the same completion at
 // the same head refused because a move back raised the entry the phase now stands on.
 func TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share.
 	r := newBehindEntryFenceLive(t)
 	r.step("the tester works its entry", r.testerWorksItsEntry)
 	r.step("testing is entered again by a forward move", r.testingIsEnteredAgain)

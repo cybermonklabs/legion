@@ -329,11 +329,11 @@ func assertPlanNodes(t *testing.T, pool *pgxpool.Pool, key, when string, want ..
 }
 
 // ownersNode is the plan node of LEGION-208's run 1 on version of the owner's plan whose one
-// task, a, runs the implementer and the reviewer.
+// task, a, runs the implementer and the reviewer and needs no task.
 func ownersNode(version int) record.PlanRecord {
 	return record.PlanRecord{ID: PlanID("LEGION-208", 1), Generation: 1, Source: record.PlanSourceOwner,
 		PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: version},
-		Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}}}}
+		Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}, Needs: &[]string{}}}}
 }
 
 // The plan node of a run is the plan its walk holds. An owner's plan given before the
@@ -342,7 +342,8 @@ func ownersNode(version int) record.PlanRecord {
 // start writes the version then in force. A version 2 taken while a runs writes the node again,
 // whole, at version 2, under the run's one id. A version that replaces the stopped task default
 // with a writes the node of a. An issue whose owner gave no plan writes the source default, with
-// no document and no version, and the project's default_steps as the task default.
+// no document and no version, and the project's default_steps as the task default. Each task's
+// needs are written, [] for a task that needs none, so Dispatch records them.
 func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T) {
 	t.Parallel()
 	t.Run("the owner's plan: version 1 at the start, and version 2 again when it is taken", func(t *testing.T) {
@@ -366,7 +367,7 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 		root := stepRoot(t, pool, phase.Admitted)
 		firstStep(t, pool, engine, root.Key)
 		defaults := record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
-			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}
 		assertPlanNodes(t, pool, root.Key, "at the start on the default steps", defaults)
 		if result := apply("stop", ownersStop(t, root, plan.DefaultTask)); result.Refusal != nil {
 			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
@@ -382,16 +383,17 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 		root := stepRoot(t, pool, phase.Admitted)
 		firstStep(t, pool, engine, root.Key)
 		assertPlanNodes(t, pool, root.Key, "at the start", record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
-			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"implementer", "reviewer"}}}})
+			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"implementer", "reviewer"}, Needs: &[]string{}}}})
 	})
 }
 
 // The default steps are stated in one place, the project's setting (config.Project.RunsByDefault,
 // which the daemon wires as Config.DefaultSteps). With default_steps [implementer, reviewer], the
 // plan node an issue whose owner gave no plan writes at its first step holds exactly the one task
-// default of those two steps, so a list the package held of its own would name other steps there.
-// An issue with no plan rows runs today's steps at today's places whatever the project names:
-// under the same setting its implementer is step 2 and its tester step 3 of the task default.
+// default of those two steps, which needs no task, so a list the package held of its own would name
+// other steps there. An issue with no plan rows runs today's steps at today's places whatever the
+// project names: under the same setting its implementer is step 2 and its tester step 3 of the task
+// default.
 func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 	t.Parallel()
 	t.Run("the plan node holds the project's default_steps", func(t *testing.T) {
@@ -411,7 +413,7 @@ func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 		if err := json.Compact(&tasks, fields["tasks"]); err != nil {
 			t.Fatalf("compact the plan node's tasks %q: %v", fields["tasks"], err)
 		}
-		if want := `[{"id":"default","steps":["implementer","reviewer"]}]`; tasks.String() != want {
+		if want := `[{"id":"default","needs":[],"steps":["implementer","reviewer"]}]`; tasks.String() != want {
 			t.Fatalf("the plan node's tasks = %s, want %s", tasks.String(), want)
 		}
 	})

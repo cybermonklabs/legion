@@ -15,6 +15,7 @@ import (
 )
 
 func TestThermoOpsListenerConfigDefaultsToLoopback(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	t.Setenv("ENVOY_MACHINE_ID", "thermo-ops")
 	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
 	t.Setenv("ENVOY_LISTEN_HOST", "")
@@ -43,6 +44,7 @@ func TestThermoOpsListenerConfigDefaultsToLoopback(t *testing.T) {
 }
 
 func TestThermoOpsListenerConfigAllowsExplicitWidening(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	t.Setenv("ENVOY_MACHINE_ID", "thermo-ops")
 	t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
 	t.Setenv("ENVOY_LISTEN_HOST", "0.0.0.0")

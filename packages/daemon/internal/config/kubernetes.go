@@ -148,7 +148,7 @@ type RepositoryCacheConfig struct {
 	RetainHours    int
 	Resources      Reservation
 	// Bucket is `bucket`: the Cloud Storage bucket each cache keeps the packs it serves in, which
-	// an issue pod's fetch downloads through the short-lived signed addresses its cache gives it.
+	// an issue pod's provision downloads through the short-lived signed addresses its cache gives it.
 	// ServiceAccount is `service_account`: the Kubernetes ServiceAccount the cache pods alone run
 	// as, the one the bucket's grant goes to. The two are set together or not at all, and "" for
 	// both, the default, is off: each cache pod then runs as runtime.kubernetes.pod.service_account,
@@ -372,9 +372,9 @@ func (c SandboxConfig) AnyMicroVM() bool {
 	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
 }
 
-// PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
-// issue pod's one container and its two init containers, workspace-fetch and workspace-init,
-// carry Issue, and the controller's pod's one container Controller.
+// PodResources are the reservations of the two pods the daemon builds, each a whole pod's: an
+// issue pod's roles container and workspace-init carry Issue, and the controller's pod's one
+// container carries Controller.
 type PodResources struct {
 	Issue, Controller Reservation
 }
@@ -960,8 +960,8 @@ const defaultServiceAccount = "default"
 // write the bucket, and they write it as no other. A blank value is refused, as optionalString
 // refuses one, and so is one still holding a `${…}` placeholder (unfilledPlaceholder) and an
 // account that is no ServiceAccount's name (serviceAccountName). The bucket must have the shape
-// workspace.ValidBucketName holds it to, the one rule a fetch holds a /packs manifest's bucket to as
-// well. The account must not be the one the issue pods run as: pod.ServiceAccount, the file's
+// workspace.ValidBucketName holds it to, the one rule a provision holds a /packs manifest's bucket
+// to as well. The account must not be the one the issue pods run as: pod.ServiceAccount, the file's
 // runtime.kubernetes.pod.service_account, or defaultServiceAccount where the file sets none, since
 // the bucket's grant to that account would reach every issue pod of the deployment. Nor may it be
 // pod.ControllerServiceAccount, the controller's own account where the file names one, since the

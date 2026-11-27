@@ -8,14 +8,12 @@ package config
 //ci:reads packages/contracts/fixtures/daemon-api/* golden (the write is under -update, which CI never passes)
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixture this package pins")
@@ -59,28 +57,9 @@ func TestStallDefaultsGolden(t *testing.T) {
 	})
 }
 
-// golden pins what this package writes for the plugin to read: internal/api's helper with this
-// package's command in its message, as internal/projection's copy carries its own. A fixture that
-// differs from what Go now writes is stale.
+// golden pins what this package writes for the plugin to read (testgolden.Check).
 func golden(t *testing.T, name string, value any) {
 	t.Helper()
-	encoded, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal %s: %v", name, err)
-	}
-	encoded = append(encoded, '\n')
-	path := filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
-	if *updateGolden {
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden (run `go test ./internal/config/ -update`): %v", err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Fatalf("%s is stale\n got: %s\nwant: %s", name, encoded, want)
-	}
+	testgolden.Check(t, filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name), value, *updateGolden,
+		"go test ./internal/config/ -update")
 }

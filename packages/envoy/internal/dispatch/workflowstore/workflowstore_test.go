@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -799,13 +800,18 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"returned_to with no result": func(write *StepWrite) {
 			write.ReturnedTo = new(2)
 		},
-		"report":     func(write *StepWrite) { write.Report = new("not-a-uuid") },
-		"id":         func(write *StepWrite) { write.ID = "not-a-uuid" },
-		"task":       func(write *StepWrite) { write.Task = new("Default") },
-		"role":       func(write *StepWrite) { write.Role = new("Implementer") },
-		"type":       func(write *StepWrite) { write.Type = new("Review") },
-		"generation": func(write *StepWrite) { write.Generation = new(int64(0)) },
-		"issue":      func(write *StepWrite) { write.Issue = "" },
+		"report": func(write *StepWrite) { write.Report = new("not-a-uuid") },
+		"id":     func(write *StepWrite) { write.ID = "not-a-uuid" },
+		"task":   func(write *StepWrite) { write.Task = new("Default") },
+		// A task id is lowercase letters, digits and hyphens, the first a letter or a digit, at
+		// most contracts.StepTaskMax bytes (contracts.StepTaskPattern), the form the Legion
+		// daemon's plan read holds a task block's id to through
+		// github.com/sjawhar/envoy/steprecord.
+		"task over the bound": func(write *StepWrite) { write.Task = new(strings.Repeat("t", contracts.StepTaskMax+1)) },
+		"role":                func(write *StepWrite) { write.Role = new("Implementer") },
+		"type":                func(write *StepWrite) { write.Type = new("Review") },
+		"generation":          func(write *StepWrite) { write.Generation = new(int64(0)) },
+		"issue":               func(write *StepWrite) { write.Issue = "" },
 		// The agent, the session and the model are printable ASCII with no space, at most 128
 		// characters (contracts.StepAgentTextPattern): `dispatch steps` joins a record's fields with
 		// spaces, so a space or a newline in one would shift its columns or forge a line.

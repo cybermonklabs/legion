@@ -30,7 +30,7 @@ func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
 	credential, carried := dispatchCredentialServed(t, body)
 	want := map[string]any{
 		"session": "legion-daemon:LEGION", "transitionLaunches": float64(2),
-		"lastTransitionLaunchAt": "2026-09-22T09:17:03Z", "liveLaunchesWithDispatchToken": float64(3),
+		"lastTransitionLaunchAt": "2126-09-22T09:17:03Z", "liveLaunchesWithDispatchToken": float64(3),
 	}
 	if !carried || len(credential) != len(want) {
 		t.Fatalf("the state %s carries dispatchCredential %v (carried %v), want %v", body, credential, carried, want)

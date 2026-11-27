@@ -12,6 +12,7 @@ import {
   type Request,
   runLegionPane,
 } from "@legion/pi-shared/test/omp-harness";
+import { namesMissing } from "@legion/test-fixtures/names-whole";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -186,6 +187,19 @@ function toolNames(request: Request): string[] {
   return tools.map((tool: unknown) =>
     typeof tool === "object" && tool !== null && "name" in tool ? String(tool.name) : ""
   );
+}
+
+/** The description of the `legion` tool a Messages request offers the model. */
+function legionToolDescription(request: Request): string {
+  const tools = Array.isArray(request.body.tools) ? request.body.tools : [];
+  const tool = tools.find(
+    (candidate: unknown) =>
+      typeof candidate === "object" &&
+      candidate !== null &&
+      "name" in candidate &&
+      candidate.name === "legion"
+  );
+  return String(tool?.description ?? "");
 }
 
 /** How one pane differs from the implementer pane the phase-stall cases run: the runner's
@@ -391,6 +405,11 @@ test.skipIf(skip)(
     expect(turns).toHaveLength(3);
     // A Legion pane, both entries loaded: the host offers the model the `legion` tool.
     expect(toolNames(turns[0] as Request)).toContain("legion");
+    // The tool text the model is offered names the report's `verdict` and its two values. The
+    // roles the daemon takes it from, the tester and a role of the deployment, are not held: the
+    // text names them in other sentences too, so a check of them could not fail.
+    const offered = legionToolDescription(turns[0] as Request);
+    expect(namesMissing(offered, ["`verdict`", "pass|fail"])).toEqual([]);
     expect(userText(turns[0] as Request)).not.toContain("handoff_complete");
     // The sentence the settling message earned still leads the reminder it earned.
     expect(userText(turns[1] as Request)).toContain("written as text");

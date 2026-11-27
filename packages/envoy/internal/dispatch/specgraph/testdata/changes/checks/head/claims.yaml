@@ -1,0 +1,58 @@
+---
+type: requirement
+id: legion-keeps-each-claim-in-dispatch
+kind: behavior
+text:
+  - Legion keeps the claim of each issue in Dispatch.
+---
+type: requirement
+id: a-claim-survives-a-restart
+kind: behavior
+parent: legion-keeps-each-claim-in-dispatch
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.
+---
+type: check
+id: a-restart-keeps-the-claim
+serves: a-claim-survives-a-restart
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/daemon TestARestartKeepsTheClaim
+  job: go-checks
+claim: The daemon reads the claim of each issue after it starts again.
+procedure_text:
+  - The program claims one issue, starts the daemon again and reads the claims.
+  - It must find the claim one time.
+failing_example:
+  - A daemon that keeps its claims in memory only.
+---
+type: check
+id: a-claim-at-the-time-limit-stays
+serves: a-claim-survives-a-restart
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/daemon TestAClaimAtTheTimeLimitStays
+  job: go-checks
+time_limit: 720h0m0s
+claim: A claim that is 59 minutes old stays after a restart.
+procedure_text:
+  - The program makes a claim 59 minutes old, starts the daemon again and reads the claims.
+  - It must find the claim.
+failing_example:
+  - A daemon that removes each claim older than 58 minutes when it starts.
+---
+type: check
+id: a-lost-claim-is-reported
+serves: a-claim-survives-a-restart
+subject: production
+procedure: agent
+claim: The daemon reports a claim that it cannot read after a restart.
+procedure_text:
+  - An agent stops the database during a restart and reads the log of the daemon.
+  - It must find one report for the claim.
+failing_example:
+  - A daemon that starts with no claims and writes no report.

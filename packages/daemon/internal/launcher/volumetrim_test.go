@@ -88,7 +88,6 @@ type fixtureFile struct {
 var fixtureProtectedFiles = map[string]string{
 	"workspaces":                       "cybermonklabs/legion/infra-2009/packages/daemon/go.mod",
 	"repos":                            "github.com/cybermonklabs/legion/.jj/repo/store/op_heads",
-	"feed":                             "issue.json",
 	"scratch/state":                    "planner/omp/profile.json",
 	"scratch/data":                     "omp/sessions.sqlite",
 	"go/mod":                           "github.com/sjawhar/legion@v0.1.0/go.mod",
@@ -261,13 +260,12 @@ func (f *trimFixture) keep(path string, at time.Time) {
 
 // assertKeptBuilt counts, before any sweep, the files of the case's tree the trimmer must never
 // touch, as they stand on the volume: one under each protected path — the workspaces, the clone,
-// the feed, a role's state home, the data home, the Go module cache, uv's two directories,
-// ms-playwright, legion-claude-code and the leak check — the role's own work and a directory's
-// notes in $TMPDIR outside any `go-build` tree, and the Go build cache's three names that are no
-// entry. Every case builds its tree in newTrimFixture, which asks this, so every sweeping case
-// asserts the count before its sweep as well as after it (assertProtected), and a fixture that
-// built none of one kind fails here rather than passing a case that never showed the trimmer
-// leaving that kind alone.
+// a role's state home, the data home, the Go module cache, uv's two directories, ms-playwright,
+// legion-claude-code and the leak check — the role's own work and a directory's notes in $TMPDIR
+// outside any `go-build` tree, and the Go build cache's three names that are no entry. Every case
+// builds its tree in newTrimFixture, which asks this, so every sweeping case asserts the count
+// before its sweep as well as after it (assertProtected), and a fixture that built none of one kind
+// fails here rather than passing a case that never showed the trimmer leaving that kind alone.
 func (f *trimFixture) assertKeptBuilt() {
 	f.t.Helper()
 	present := 0

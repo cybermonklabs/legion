@@ -24,8 +24,8 @@ func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 const noList = ": no --retired list, so no id is checked against the ids the approved spec removed\n"
 
 // plantedFaults is each fixture tree of specgraph's TestEachPlantedFaultIsNamed with the one
-// problem the command must name, and the counts of the blocks it holds. The counts come from the
-// opening lines of each fixture, not from the command. The retired-id tree is its own row of
+// problem the command must name, and the counts of the nodes it holds. The counts come from the
+// documents of each fixture, not from the command. The retired-id tree is its own row of
 // TestTheBuiltBinary, since it needs --retired.
 var plantedFaults = []struct {
 	dir, file    string
@@ -33,29 +33,29 @@ var plantedFaults = []struct {
 	node, detail string
 	counts       string
 }{
-	{"about-a-missing-component", "spec.md", 1, "a-claim-survives-a-restart", `missing-target: about names "legion", which the files do not hold`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"bad-id", "spec.md", 1, "step-3", `bad-id: "step-3" is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"check-serves-two-statements", "spec.md", 21, "each-restart-keeps-the-claim", "check-serves: a check serves exactly one statement of the files", "2 statements, 3 checks, 0 components, 0 interfaces, 0 terms"},
-	{"check-subject-not-allowed", "spec.md", 5, "a-restart-keeps-the-claim", `bad-subject: "the logs" is not code, production or graph`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"check-without-failing-example", "spec.md", 5, "a-restart-keeps-the-claim", "no-failing-example: the check has no failing example", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"claim-names-a-path", "spec.md", 5, "a-restart-keeps-the-claim", "code-in-text: claim names code: cmd/listener/main.go", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"component-names-a-package", "spec.md", 1, "dispatch", "code-in-text: purpose names code: internal/dispatch/pmdoc", "0 statements, 0 checks, 1 component, 0 interfaces, 0 terms"},
-	{"component-no-purpose", "spec.md", 1, "dispatch", "bad-component: a component has a name and one sentence of purpose", "0 statements, 0 checks, 1 component, 0 interfaces, 0 terms"},
-	{"doubled-id", "b.md", 1, "a-claim-survives-a-restart", "doubled-id: also at a.md:1", "2 statements, 2 checks, 0 components, 0 interfaces, 0 terms"},
-	{"go-selector-two-words-missing", "spec.md", 5, "a-restart-keeps-the-claim", `bad-selector: a go selector is "<import path> <TopLevelTestName>"`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"interface-joins-a-missing-component", "spec.md", 5, "legion-to-dispatch", `bad-interface: joins "legion", which is no component`, "0 statements, 0 checks, 1 component, 1 interface, 0 terms"},
-	{"interface-joins-one", "spec.md", 9, "legion-to-dispatch", "bad-interface: an interface joins two or more components", "0 statements, 0 checks, 2 components, 1 interface, 0 terms"},
-	{"leaf-without-check", "spec.md", 1, "a-claim-survives-a-restart", "leaf-without-check: no statement is under it and no check serves it", "1 statement, 0 checks, 0 components, 0 interfaces, 0 terms"},
-	{"missing-parent", "spec.md", 1, "a-claim-survives-a-restart", `no-parent: the files hold no statement "legion-keeps-each-claim"`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"parent-and-serves-loop", "spec.md", 1, "a-claim-survives-a-restart", "loop: a-claim-survives-a-restart -[serves]-> legion-keeps-each-claim -[parent]-> a-claim-survives-a-restart", "2 statements, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"parent-loop", "spec.md", 1, "a-claim-survives-a-restart", "loop: a-claim-survives-a-restart -[parent]-> legion-keeps-each-claim -[parent]-> a-claim-survives-a-restart", "2 statements, 0 checks, 0 components, 0 interfaces, 0 terms"},
-	{"program-check-without-job", "spec.md", 5, "a-restart-keeps-the-claim", "no-job: a program check names the job that runs its test", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"program-check-without-test-part", "spec.md", 5, "a-restart-keeps-the-claim", "no-test: a program check names its runner and its selector", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"program-procedure-names-a-test", "spec.md", 5, "a-restart-keeps-the-claim", "code-in-text: procedure names code: TestARestart_LosesNoClaim", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"query-check-with-test-part", "spec.md", 5, "each-claim-is-in-the-graph", "test-on-non-program: a query check names no runner, selector or job", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"statement-names-a-package", "spec.md", 1, "a-document-keeps-its-blocks", "code-in-text: text names code: internal/dispatch/pmdoc", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"statement-without-kind", "spec.md", 1, "a-claim-survives-a-restart", `bad-kind: "" is not behavior, structure or property`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
-	{"structure-statement-without-about", "spec.md", 1, "legion-reads-issues-only-through-dispatch", "no-about: a statement of kind structure names its components or interfaces", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"about-a-missing-component", "spec.yaml", 1, "a-claim-survives-a-restart", `missing-target: about names "legion", which the files do not hold`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"bad-id", "spec.yaml", 1, "step-3", `bad-id: "step-3" is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"check-serves-two-statements", "spec.yaml", 35, "each-restart-keeps-the-claim", "schema: /serves: 'a-claim-survives-a-database-restart a-claim-survives-a-restart' does not match pattern '^[a-z0-9]+(-[a-z0-9]+)*$'", "2 statements, 3 checks, 0 components, 0 interfaces, 0 terms"},
+	{"check-subject-not-allowed", "spec.yaml", 7, "a-restart-keeps-the-claim", "schema: /subject: value must be one of 'code', 'production', 'graph'", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"check-without-failing-example", "spec.yaml", 7, "a-restart-keeps-the-claim", "schema: node: missing property 'failing_example'", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"claim-names-a-path", "spec.yaml", 7, "a-restart-keeps-the-claim", "code-in-text: claim names code: cmd/listener/main.go", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"component-names-a-package", "spec.yaml", 1, "dispatch", "code-in-text: purpose names code: internal/dispatch/pmdoc", "0 statements, 0 checks, 1 component, 0 interfaces, 0 terms"},
+	{"component-no-purpose", "spec.yaml", 1, "dispatch", "schema: node: missing property 'purpose'", "0 statements, 0 checks, 1 component, 0 interfaces, 0 terms"},
+	{"doubled-id", "b.yaml", 1, "a-claim-survives-a-restart", "doubled-id: also at a.yaml:1", "2 statements, 2 checks, 0 components, 0 interfaces, 0 terms"},
+	{"go-selector-two-words-missing", "spec.yaml", 7, "a-restart-keeps-the-claim", `bad-selector: a go selector is "<import path> <TopLevelTestName>"`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"interface-joins-a-missing-component", "spec.yaml", 8, "legion-to-dispatch", `bad-interface: joins "legion", which is no component`, "0 statements, 0 checks, 1 component, 1 interface, 0 terms"},
+	{"interface-joins-one", "spec.yaml", 15, "legion-to-dispatch", "schema: /joins: minItems: got 1, want 2", "0 statements, 0 checks, 2 components, 1 interface, 0 terms"},
+	{"leaf-without-check", "spec.yaml", 1, "a-claim-survives-a-restart", "leaf-without-check: no statement is under it and no check serves it", "1 statement, 0 checks, 0 components, 0 interfaces, 0 terms"},
+	{"missing-parent", "spec.yaml", 1, "a-claim-survives-a-restart", `no-parent: the files hold no statement "legion-keeps-each-claim"`, "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"parent-and-serves-loop", "spec.yaml", 1, "a-claim-survives-a-restart", "loop: a-claim-survives-a-restart -[serves]-> legion-keeps-each-claim -[parent]-> a-claim-survives-a-restart", "2 statements, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"parent-loop", "spec.yaml", 1, "a-claim-survives-a-restart", "loop: a-claim-survives-a-restart -[parent]-> legion-keeps-each-claim -[parent]-> a-claim-survives-a-restart", "2 statements, 0 checks, 0 components, 0 interfaces, 0 terms"},
+	{"program-check-without-job", "spec.yaml", 7, "a-restart-keeps-the-claim", "schema: /test: missing property 'job'", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"program-check-without-test-part", "spec.yaml", 7, "a-restart-keeps-the-claim", "schema: node: missing property 'test'", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"program-procedure-names-a-test", "spec.yaml", 7, "a-restart-keeps-the-claim", "code-in-text: procedure names code: TestARestart_LosesNoClaim", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"query-check-with-test-part", "spec.yaml", 7, "each-claim-is-in-the-graph", "schema: /test: the node takes no such key", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"statement-names-a-package", "spec.yaml", 1, "a-document-keeps-its-blocks", "code-in-text: text names code: internal/dispatch/pmdoc", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"statement-without-kind", "spec.yaml", 1, "a-claim-survives-a-restart", "schema: node: missing property 'kind'", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
+	{"structure-statement-without-about", "spec.yaml", 1, "legion-reads-issues-only-through-dispatch", "schema: node: missing property 'about'", "1 statement, 1 check, 0 components, 0 interfaces, 0 terms"},
 }
 
 // TestTheBuiltBinary builds the command once and runs it as a process over specgraph's fixture
@@ -105,33 +105,44 @@ func TestTheBuiltBinary(t *testing.T) {
 			stderr: "spec-check: " + dir + noList,
 		})
 	})
-	t.Run("tree over a CRLF copy of the valid tree prints the same count line", func(t *testing.T) {
+	// The reader normalizes nothing: a CRLF copy of the valid tree reads as the same nodes, so the
+	// counts stay, and each file is refused at its first line, as Print writes no CR; the line
+	// shows the carriage return and the line that print writes.
+	t.Run("tree refuses a CRLF copy of the valid tree and counts the same nodes", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		for _, name := range []string{"claims.md", "interfaces.md"} {
+		for _, name := range []string{"claims.yaml", "interfaces.yaml"} {
 			content, err := os.ReadFile(filepath.Join(valid, name))
 			if err != nil {
 				t.Fatal(err)
 			}
 			writeFile(t, filepath.Join(dir, name), []byte(strings.ReplaceAll(string(content), "\n", "\r\n")))
 		}
-		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{stdout: validLine(dir), stderr: "spec-check: " + dir + noList})
+		crlf := `not-printed: line 1 is "---\r\n", and print writes "---\n" there (a carriage return: print ends each line with a line feed only); ` +
+			"spec-check print writes each node in that form\n"
+		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
+			code:   1,
+			stdout: "spec-check: " + dir + ": 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is refused\n",
+			stderr: "spec-check: " + dir + noList +
+				"spec-check: " + filepath.Join(dir, "claims.yaml") + ":1: legion-keeps-each-claim-in-dispatch: " + crlf +
+				"spec-check: " + filepath.Join(dir, "interfaces.yaml") + ":1: dispatch: " + crlf,
+		})
 	})
 	t.Run("tree refuses a file that is not UTF-8 or holds a NUL byte, naming the file and the line", func(t *testing.T) {
 		t.Parallel()
-		for name, content := range map[string]string{
-			"Latin-1": ":::term{#cafe-term name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n",
-			"NUL":     ":::term{#nul-term name=\"nul term\"}\nA nul\x00term is a word.\n:::\n",
+		for _, row := range []struct{ name, content, detail string }{
+			{"Latin-1", "---\ntype: term\nid: cafe-term\nname: cafe\ndefinition:\n  - A caf\xe9 is a place where a session waits.\n", "bad-yaml: invalid trailing UTF-8 octet"},
+			{"NUL", "---\ntype: term\nid: nul-term\nname: nul term\ndefinition:\n  - A nul\x00term is a word.\n", "bad-yaml: control characters are not allowed"},
 		} {
 			dir := copyOf(t, valid)
-			writeFile(t, filepath.Join(dir, "bytes.md"), []byte(content))
+			writeFile(t, filepath.Join(dir, "bytes.yaml"), []byte(row.content))
 			got := runBinary(t, binary, "", "tree", "--dir", dir)
 			if want := (result{
 				code:   1,
-				stdout: "spec-check: " + dir + ": 3 statements, 4 checks, 2 components, 1 interface, 2 terms; the tree is refused\n",
-				stderr: "spec-check: " + dir + noList + "spec-check: " + filepath.Join(dir, "bytes.md") + ":2: -: bad-encoding: a spec file is UTF-8 text with no NUL byte\n",
+				stdout: "spec-check: " + dir + ": 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is refused\n",
+				stderr: "spec-check: " + dir + noList + "spec-check: " + filepath.Join(dir, "bytes.yaml") + ":6: -: " + row.detail + "\n",
 			}); got != want {
-				t.Errorf("%s: exit %d, stdout %q, stderr %q\nwant exit %d, stdout %q, stderr %q", name, got.code, got.stdout, got.stderr, want.code, want.stdout, want.stderr)
+				t.Errorf("%s: exit %d, stdout %q, stderr %q\nwant exit %d, stdout %q, stderr %q", row.name, got.code, got.stdout, got.stderr, want.code, want.stdout, want.stderr)
 			}
 		}
 	})
@@ -143,7 +154,7 @@ func TestTheBuiltBinary(t *testing.T) {
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir, "--retired", retired), result{
 			code:   1,
 			stdout: "spec-check: " + dir + ": 1 statement, 1 check, 0 components, 0 interfaces, 0 terms; the tree is refused\n",
-			stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":1: gone-statement: retired-id: the approved spec removed this id\n",
+			stderr: "spec-check: " + filepath.Join(dir, "spec.yaml") + ":1: gone-statement: retired-id: the approved spec removed this id\n",
 		})
 	})
 	t.Run("tree without --retired says so and checks no id", func(t *testing.T) {
@@ -193,10 +204,12 @@ func TestTheBuiltBinary(t *testing.T) {
 			stderr: "spec-check: " + dir + noList,
 		})
 	})
+	// A *.md file of the block form, beside the YAML files, is no spec file: the command warns of
+	// it, says what a spec file is, and reads the tree without it.
 	t.Run("tree warns of each entry that is not a spec file", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		for _, name := range []string{"claims.md", "interfaces.md"} {
+		for _, name := range []string{"claims.yaml", "interfaces.yaml"} {
 			content, err := os.ReadFile(filepath.Join(valid, name))
 			if err != nil {
 				t.Fatal(err)
@@ -204,13 +217,16 @@ func TestTheBuiltBinary(t *testing.T) {
 			writeFile(t, filepath.Join(dir, name), content)
 		}
 		writeFile(t, filepath.Join(dir, "notes.txt"), []byte("Not a spec file.\n"))
-		if err := os.Mkdir(filepath.Join(dir, "nested.md"), 0o755); err != nil {
+		writeFile(t, filepath.Join(dir, "old.md"), []byte("A spec file of the block form, which the command reads no more.\n"))
+		if err := os.Mkdir(filepath.Join(dir, "nested.yaml"), 0o755); err != nil {
 			t.Fatal(err)
 		}
+		const notSpec = ": not a spec file (file): a spec file is a *.yaml file, which spec-check print writes; the importer passes over it\n"
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
 			stdout: validLine(dir),
-			stderr: "spec-check: warning: " + filepath.Join(dir, "nested.md") + ": not a spec file (directory); the importer passes over it\n" +
-				"spec-check: warning: " + filepath.Join(dir, "notes.txt") + ": not a spec file (file); the importer passes over it\n" +
+			stderr: "spec-check: warning: " + filepath.Join(dir, "nested.yaml") + ": not a spec file (directory); the importer passes over it\n" +
+				"spec-check: warning: " + filepath.Join(dir, "notes.txt") + notSpec +
+				"spec-check: warning: " + filepath.Join(dir, "old.md") + notSpec +
 				"spec-check: " + dir + noList,
 		})
 	})
@@ -219,17 +235,22 @@ func TestTheBuiltBinary(t *testing.T) {
 		parent := filepath.Dir(valid)
 		expect(t, runBinary(t, binary, parent, "tree", "--dir", "valid"), result{stdout: validLine(valid), stderr: "spec-check: " + valid + noList})
 	})
-	t.Run("tree refuses a parse problem and a rule problem together, in file and line order", func(t *testing.T) {
+	t.Run("tree refuses a problem of the reader and a problem of a rule together, in file and line order", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, "a.md"), []byte(":::requirement{#a-claim-survives-a-restart kind=\"behavior\"}\nLegion keeps each claim.\n:::\nA line outside a block.\n"))
+		writeFile(t, filepath.Join(dir, "a.yaml"), []byte("---\ntype: requirement\nid: a-claim-survives-a-restart\nkind: behavior\ntext:\n  - Legion keeps each claim.\n"+
+			"---\ntype: term\nid: work-unit\nname: work unit\ndefinition:\n  - A work unit is work.\nsurprise: true\n"))
 		expect(t, runBinary(t, binary, "", "tree", "--dir", dir), result{
 			code:   1,
-			stdout: "spec-check: " + dir + ": 1 statement, 0 checks, 0 components, 0 interfaces, 0 terms; the tree is refused\n",
+			stdout: "spec-check: " + dir + ": 1 statement, 0 checks, 0 components, 0 interfaces, 1 term; the tree is refused\n",
 			stderr: "spec-check: " + dir + noList +
-				"spec-check: " + filepath.Join(dir, "a.md") + ":1: a-claim-survives-a-restart: leaf-without-check: no statement is under it and no check serves it\n" +
-				"spec-check: " + filepath.Join(dir, "a.md") + ":4: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n",
+				"spec-check: " + filepath.Join(dir, "a.yaml") + ":1: a-claim-survives-a-restart: leaf-without-check: no statement is under it and no check serves it\n" +
+				"spec-check: " + filepath.Join(dir, "a.yaml") + ":7: work-unit: schema: node: additional properties 'surprise' not allowed\n",
 		})
+	})
+	t.Run("form", func(t *testing.T) {
+		t.Parallel()
+		testForm(t, binary)
 	})
 
 	t.Run("changes lists no statement for a move to another file", func(t *testing.T) {
@@ -277,7 +298,7 @@ func TestTheBuiltBinary(t *testing.T) {
 		base := fixture(t, "trees", "leaf-without-check")
 		expect(t, runBinary(t, binary, "", "changes", "--base", base, "--dir", valid), result{
 			code:   2,
-			stderr: "spec-check: " + filepath.Join(base, "spec.md") + ":1: a-claim-survives-a-restart: leaf-without-check: no statement is under it and no check serves it\n",
+			stderr: "spec-check: " + filepath.Join(base, "spec.yaml") + ":1: a-claim-survives-a-restart: leaf-without-check: no statement is under it and no check serves it\n",
 		})
 	})
 
@@ -310,15 +331,20 @@ func TestTheBuiltBinary(t *testing.T) {
 		dir := fixture(t, "trees", "program-check-without-job")
 		expect(t, runBinary(t, binary, "", "checks", "--dir", dir, "--job", "go-checks"), result{
 			code:   2,
-			stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: a-restart-keeps-the-claim: no-job: a program check names the job that runs its test\n",
+			stderr: "spec-check: " + filepath.Join(dir, "spec.yaml") + ":7: a-restart-keeps-the-claim: schema: /test: missing property 'job'\n",
 		})
 	})
 	t.Run("checks writes no workflow command a selector holds", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		writeFile(t, filepath.Join(dir, "spec.md"), []byte(":::requirement{#a-claim-survives-a-restart kind=\"behavior\"}\nLegion keeps the claim of an issue after the daemon starts again.\n:::\n\n"+
-			":::check{#a-restart-keeps-the-claim serves=\"a-claim-survives-a-restart\" subject=\"code\" procedure=\"program\" runner=\"bun\" selector=\"daemon.test.ts ##[error]forged\" job=\"bun-checks\"}\n"+
-			"Claim: The daemon reads the claim of an issue after it starts again.\nProcedure: The program starts the daemon again and reads the claims.\nFailing example: A daemon that keeps its claims in memory only.\n:::\n"))
+		statement := specgraph.Statement{ID: "a-claim-survives-a-restart", Kind: specgraph.KindBehavior, Text: "Legion keeps the claim of an issue after the daemon starts again."}
+		check := specgraph.Check{
+			ID: "a-restart-keeps-the-claim", Serves: statement.ID, Subject: specgraph.SubjectCode, Procedure: specgraph.ProcedureProgram,
+			Test:  &specgraph.Test{Runner: "bun", Selector: "daemon.test.ts ##[error]forged", Job: "bun-checks"},
+			Claim: "The daemon reads the claim of an issue after it starts again.", ProcedureText: "The program starts the daemon again and reads the claims.",
+			FailingExample: "A daemon that keeps its claims in memory only.",
+		}
+		writeFile(t, filepath.Join(dir, "spec.yaml"), printed(t, statement, check))
 		got := runBinary(t, binary, "", "checks", "--dir", dir, "--job", "bun-checks")
 		if got.code != 0 || got.stderr != "" || strings.Contains(got.stdout, "##[") {
 			t.Fatalf("exit %d, stdout %q, stderr %q: want exit 0 and no \"##[\"", got.code, got.stdout, got.stderr)
@@ -358,6 +384,7 @@ func TestTheBuiltBinary(t *testing.T) {
 			{[]string{"compare", "--approved", approved}, "compare: --dir is required"},
 			{[]string{"print", "--approved", approved}, "print: --id is required"},
 			{[]string{"print", "--id", "order"}, "print: --approved is required"},
+			{[]string{"print", "--approved", approved, "--id", "order"}, "print: --dir is required"},
 			{[]string{"guard"}, "guard: --root is required"},
 			{[]string{"guard", "--root", valid, "extra"}, `guard: takes no argument but its flags, got "extra"`},
 			{[]string{"state"}, "state: --scenario is required"},

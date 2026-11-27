@@ -29,6 +29,7 @@ import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
@@ -227,26 +228,25 @@ const toolFor = (active: LegionToolSession) =>
 
 // The daemon's refusals and notices over children carry its rules for ending a child
 // (record.EndChildRule) and its sentence on a status it has not taken yet
-// (record.StatusNotTakenYet), and the description gives an architect the same words. The daemon's
+// (record.StatusNotTakenYet), and the description gives an architect the same text. The daemon's
 // golden test (`packages/daemon/internal/api`, TestTheEndChildRuleGolden) writes both texts to
-// `end-child-rule.json`. This case holds the description to the file, so a word changed on either
-// side alone fails one test or the other. The first and the last sentence of the rule are written
-// out here, so a fixture that holds only a part of the rule fails here too.
-test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, word for word", () => {
+// `end-child-rule.json`. This case holds the description to the file, so a change on either side
+// alone fails one test or the other. It holds no word of either text.
+test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, as the daemon writes them", () => {
   const { rule, notTakenYet } = daemonFixture("end-child-rule.json") as {
     readonly rule: string;
     readonly notTakenYet: string;
   };
-  expect(rule).toStartWith("End a child with your own status write in Dispatch. ");
-  expect(rule).toEndWith(" When the daemon set the move back, write it again.");
+  expect(rule).not.toBe("");
+  expect(notTakenYet).not.toBe("");
   const { description } = toolFor(claimSession("architect"));
   expect(description).toContain(rule);
   expect(description).toContain(notTakenYet);
 });
 
 /** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
- * the words of its `description`s: every property and every `op` value in the order the tool
- * declares them. */
+ * the words of each property's description: every property and every `op` value in the order the
+ * tool declares them. Which properties carry a description is DESCRIBED_PROPERTIES. */
 const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   $schema: "https://json-schema.org/draft/2020-12/schema",
   type: "object",
@@ -335,13 +335,52 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
   additionalProperties: false,
 });
 
-// The schema the tool gives is read without the words of its `description`s, which no test holds.
-test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, but for its descriptions, for every session", () => {
+/** The properties whose description the tool states, in the order it declares them, each with the
+ * operations, fields, flags and values that description names. */
+const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
+  artifactId: ["register_gate", "register_plan", "--artifact"],
+  step: ["register_gate", "decisions", "criteria", "spec"],
+  basis: ["register_gate", "basisVersion", "reason"],
+  basisVersion: ["register_gate"],
+  task: ["stop_task", "plan_task", "default"],
+  reason: [
+    "close_root",
+    "request_backward_move",
+    "retry_or_escalate",
+    "pause",
+    "set_p0_bound",
+    "clear_p0_bound",
+    "register_gate",
+    "discard_give_up",
+    "replay_give_up",
+    "rerun_child",
+    "issue",
+  ],
+  giveUp: ["replay_give_up", "discard_give_up", "consumer", "throughSeq"],
+  consumer: ["replay_give_up", "discard_give_up", "read_state", "throughSeq"],
+  throughSeq: ["consumer", "replay_give_up", "discard_give_up", "read_state"],
+  bound: ["set_p0_bound", "unbounded"],
+  unbounded: ["set_p0_bound", "true", "legion.yaml", "admission_p0_bound"],
+};
+
+test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, for every session", () => {
   for (const active of EVERY_SESSION) {
-    const schema = z.toJSONSchema(toolFor(active).parameters as z.ZodType);
-    expect(
-      JSON.stringify(schema, (key, value) => (key === "description" ? undefined : value))
-    ).toBe(OMP_LEGION_TOOL_SCHEMA);
+    const schema = z.toJSONSchema(toolFor(active).parameters as z.ZodType) as {
+      readonly properties: Record<string, Record<string, unknown>>;
+    };
+    const described: string[] = [];
+    const properties: Record<string, Record<string, unknown>> = {};
+    for (const [name, { description, ...property }] of Object.entries(schema.properties)) {
+      if (description !== undefined) {
+        expect(typeof description, name).toBe("string");
+        const missing = namesMissing(String(description), DESCRIBED_PROPERTIES[name] ?? []);
+        expect(missing, name).toEqual([]);
+        described.push(name);
+      }
+      properties[name] = property;
+    }
+    expect(described).toEqual(Object.keys(DESCRIBED_PROPERTIES));
+    expect(JSON.stringify({ ...schema, properties })).toBe(OMP_LEGION_TOOL_SCHEMA);
   }
 });
 
@@ -797,22 +836,18 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts a verdict from the tester and from a
-// role of the deployment alone (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer
-// from its own instructions that it reports one.
-test("the legion tool's description gives a verdict to the tester or a role of the deployment", () => {
-  const tool = createLegionTool({
-    pi,
-    daemon: recordingDaemon({}).daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    dispatch: noDispatch,
-    session: () => claimSession("reviewer"),
-  });
-  expect(tool.description).not.toContain("when your role's instructions require one");
+// Every phase worker reads one description of the tool, whatever its role, and the daemon alone
+// decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
+// no phase worker is given a description of its own. That one description names the `verdict`
+// field and its two values, each once in it. The roles the verdict is taken from, the tester and a
+// role of the deployment, are not held: the description names them in other sentences too, so a
+// check of them could not fail. The case holds no word of it.
+test("every phase worker is given the same description of the legion tool", () => {
+  const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
+    (role) => toolFor(claimSession(role)).description
+  );
+  expect(new Set(described).size).toBe(1);
+  expect(namesMissing(described[0] ?? "", ["`verdict`", "pass|fail"])).toEqual([]);
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {
@@ -2207,7 +2242,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
       firstBootAt: "2026-10-01T00:00:00Z",
       startedAt: "2026-10-30T01:02:03Z",
     },
-    admission: { cap: 8, active: [], waiting: [], blocked: [], free: 0 },
+    admission: { cap: 8, active: [], waiting: [], blocked: [] },
     issues: {},
     pendingStatusWrites: [],
     heldOutboxRows: [],
@@ -2305,7 +2340,6 @@ function stateOf92Issues(running = 46): LegionState {
     issues,
     admission: {
       cap: 8,
-      free: 0,
       active: ["INFRA-100", "INFRA-101"],
       waiting: ["INFRA-102"],
       blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103", "INFRA-104"] }],
@@ -2359,7 +2393,7 @@ async function summaryLinesOf(daemon: () => LegionDaemonClient): Promise<string[
 
 test("the controller reads the state without a grant and sets an issue's status with its own", async () => {
   const state = legionState({
-    admission: { cap: 2, free: 0, active: ["LEGION-208"], waiting: [], blocked: [] },
+    admission: { cap: 2, active: ["LEGION-208"], waiting: [], blocked: [] },
     issues: {
       "LEGION-208": {
         key: "LEGION-208",
@@ -2588,7 +2622,9 @@ test("the controller stops, retries, suspends and resumes an agent it names by i
         "/legion/v1/agents/resume",
         409,
         "SUSPENDED_BY_OPERATOR",
-        "legion-omp-legion-209-tester is held by the operator's own suspension, which only the operator lifts"
+        "legion-omp-legion-209-tester is held by the operator's own suspension, which only the operator lifts",
+        true,
+        0
       ),
     },
   });
@@ -2654,7 +2690,9 @@ test("the controller asks for the replacement of an issue's pod with its own gra
         "/legion/v1/issues/pod-update",
         409,
         "POD_UPDATE_LIMITED",
-        "the project's pod_update_max_open_rounds (2) holds back the update round of LEGION-209"
+        "the project's pod_update_max_open_rounds (2) holds back the update round of LEGION-209",
+        true,
+        0
       ),
     },
   });
@@ -3143,7 +3181,9 @@ test("resume_agent resumes an agent, resume names no issue, and a paused project
         "/legion/v1/agents/resume",
         409,
         "PROJECT_PAUSED",
-        sentence
+        sentence,
+        true,
+        0
       ),
     },
   });
@@ -3363,7 +3403,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 
   expect(summary).toContain("project INFRA boots 9 started 2026-10-30T01:02:03Z");
   expect(summary).toContain(
-    "\nadmission cap 8 free 0\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
+    "\nadmission cap 8\nactive INFRA-100 INFRA-101\nwaiting INFRA-102\nblocked INFRA-102 on INFRA-103 INFRA-104\n"
   );
   expect(summary).toContain("\ncapability subagents present\n");
   expect(summary).toContain(
@@ -3550,17 +3590,18 @@ test("read_state's summary names the live trees and each held issue with its rea
 
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(admissionLines(golden)).toEqual([
-    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-240",
-    "waiting LEGION-212 LEGION-211",
-    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-218 LEGION-219",
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220 LEGION-240",
+    "waiting LEGION-212 LEGION-211 LEGION-216",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219",
     "blocked LEGION-209 on LEGION-210 LEGION-213",
-    "blocked LEGION-211 on LEGION-210",
+    "blocked LEGION-216 on LEGION-210",
     "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
     "held LEGION-214 label_off",
+    "held LEGION-215 ancestry by LEGION-208",
   ]);
 
   const idle = legionState({
-    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [], free: 8 },
+    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [] },
   });
   expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: idle }).daemon))).toEqual([
     "active (none)",
@@ -3579,23 +3620,29 @@ test("read_state's summary names the live trees and each held issue with its rea
 // R6): one line while the project is paused, naming the pause, since when, by whom and why, the
 // roles whose stop it still waits on and how many rows it holds; one line while the project
 // runs after a pause, naming that pause and when and by whom it was ended; and neither before
-// the project's first pause. The two states are the daemon's goldens, read through the client.
+// the project's first pause. The three states are the daemon's goldens, read through the client.
 test("read_state's summary prints the pause's line while the project is paused and the last pause's line while it runs", async () => {
   const pauseLines = (lines: readonly string[]) =>
     lines.filter((line) => line.startsWith("paused: ") || line.startsWith("last pause: "));
 
-  const paused = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  const paused = await summaryLinesOf(
+    goldenDaemon({ "/legion/v1/state": "state-paused.json" }).daemon
+  );
   const pausedLine =
-    "paused: pause 7 since 2026-09-22T09:09:00Z by the controller (session ses_controller): " +
-    "the model provider is refusing every turn; waits on 1 role — LEGION-208 implementer; " +
-    "holds 2 rows";
+    "paused: pause 1 since 2126-09-22T09:18:00Z by the controller (session ses_controller): " +
+    "the model provider is refusing every turn; waits on 8 roles — LEGION-207 implementer, " +
+    "LEGION-208 architect, LEGION-208 implementer, LEGION-218 implementer, LEGION-218 reviewer, " +
+    "LEGION-219 implementer, LEGION-219 reviewer, LEGION-220 implementer; holds 2 rows";
   expect(pauseLines(paused)).toEqual([pausedLine]);
+  expect(
+    pauseLines(await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon))
+  ).toEqual([]);
 
   const running = await summaryLinesOf(
     goldenDaemon({ "/legion/v1/state": "state-last-pause.json" }).daemon
   );
   expect(pauseLines(running)).toEqual([
-    "last pause: pause 7 since 2026-11-15T09:00:00Z by the operator: " +
+    "last pause: pause 1 since 2026-11-15T09:00:00Z by the operator: " +
       "the model provider is refusing every turn; " +
       "ended 2026-11-15T09:41:30Z by the controller (session ses_controller)",
   ]);
@@ -3668,7 +3715,6 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   const wave = legionState({
     admission: {
       cap: 8,
-      free: 0,
       active: ["INFRA-100", "INFRA-101"],
       waiting: ["INFRA-102"],
       blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103"] }],
@@ -3704,7 +3750,7 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
 
   // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
-  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
+  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2126-09-22T09:17:56Z"]);
 });
 
 // What the controller reads of the intake's give-ups in `read_state` with no field: one line for

@@ -235,12 +235,16 @@ starts: for a child, before `release_children` releases it, since a released chi
 first step in the same admission pass. Legion holds a plan given for a child it has not recorded
 yet, and the child's first step takes the newest plan its owner gave. Legion runs only those steps,
 in the order the plan names them, then the retro and the merge, so an issue with that plan runs no
-planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and one
-reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
-project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are
-`planner implementer tester reviewer acceptance:owner` unless the project sets others; so does an
-issue whose work started before its owner gave it a plan, until the owner stops that task with
-`stop_task` and gives a plan whose one task replaces it.
+planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and its reasons: the
+first reasons of each kind of cause, and one more reason for each kind with more that counts the
+rest of it. Each reason quotes the plan's words and lists its task ids within a bound of bytes,
+and a task id outside the form Dispatch records a step's task under (lowercase letters, digits and
+hyphens, starting with a letter or a digit, at most 64 bytes) is refused, so the answer has a bound in bytes
+whatever the plan holds. An issue whose owner gives it no plan, or a task with
+no steps, runs the project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`,
+which are `planner implementer tester reviewer acceptance:owner` unless the project sets others;
+so does an issue whose work started before its owner gave it a plan, until the owner stops that
+task with `stop_task` and gives a plan whose one task replaces it.
 Set `default_steps` only once every daemon that reads the file runs a release that knows it: an
 earlier daemon refuses the whole file (`Unknown key "projects.<KEY>.default_steps"`).
 An issue that leaves its tree, as an orphan admitted again as a root of its own does, takes no plan

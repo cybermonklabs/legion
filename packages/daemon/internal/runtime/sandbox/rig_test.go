@@ -50,10 +50,11 @@ import (
 )
 
 const (
-	testNamespace = "legion"
-	testProject   = "legion"
-	testImage     = "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef"
-	testTree      = "LEGION-208"
+	testNamespace      = "legion"
+	testProject        = "legion"
+	testImage          = "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef"
+	testTree           = "LEGION-208"
+	testRigBootTimeout = 2 * time.Second
 	// testSessionDSNKey is the providers Secret's key holding the session database's URL under the
 	// postgres store (Options.SessionStore), which every runtime a test configures carries as a
 	// postgres deployment's does.
@@ -74,11 +75,11 @@ var (
 // deployment that runs one has it done.
 var testLeakCheck = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), ManifestSHA256: strings.Repeat("5e", 32)}
 
-// testOptions are the options every test starts from: production's shape — a store that keeps
-// sessions in a database included, which configure requires, here the postgres one with its URL key
-// — both pods' reservations at the daemon's defaults (reservations), the deployment's shared leak
-// check (testLeakCheck), with budgets short enough that a wait the test expects to end never slows
-// the suite.
+// testOptions are direct runtime-test options: production's shape — a store that keeps sessions in
+// a database included, which configure requires, here the postgres one with its URL key — both
+// pods' reservations at the daemon's defaults (reservations), the deployment's shared leak check
+// (testLeakCheck), and the named two-second test boot timeout. newRig replaces that timeout with
+// the test deadline unless a timeout-verdict row asks for withTestBootTimeout.
 func testOptions() Options {
 	return Options{
 		Namespace:    testNamespace,
@@ -97,7 +98,7 @@ func testOptions() Options {
 			GH: "/usr/local/bin/gh", Git: "/usr/bin/git", JJ: "/usr/local/bin/jj", Legion: "/opt/legion/bin/legion",
 			AgentSecrets: "/opt/legion/bin/agent-secrets",
 		},
-		BootTimeout:           2 * time.Second,
+		BootTimeout:           testRigBootTimeout,
 		RegistrationIntervals: 3,
 		BusyBackoff:           time.Millisecond,
 		TerminationGrace:      200 * time.Millisecond,
@@ -519,14 +520,15 @@ func (a action) String() string {
 // while it is Suspended it deletes the pod it owns — the two behaviours of v1.0.3's reconcilePod
 // the runtime depends on (sandbox_controller.go:1256-1287, 1380-1453).
 type rig struct {
-	t     *testing.T
-	ctx   context.Context
-	stop  context.CancelFunc
-	r     *Runtime
-	dyn   *dynamicfake.FakeDynamicClient
-	kube  *kubefake.Clientset
-	conns *fake.Conns
-	now   atomic.Pointer[time.Time]
+	t             *testing.T
+	ctx           context.Context
+	stop          context.CancelFunc
+	deadlineWaits bool
+	r             *Runtime
+	dyn           *dynamicfake.FakeDynamicClient
+	kube          *kubefake.Clientset
+	conns         *fake.Conns
+	now           atomic.Pointer[time.Time]
 	// store is the runtime's in-memory durable state, unless an option handed it another.
 	store *fakeStore
 
@@ -608,6 +610,24 @@ type rig struct {
 type rigOption func(*rig, *Options)
 
 func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options) { edit(o) } }
+
+// withTestBootTimeout keeps the named two-second rig bound for a test whose assertion is that a
+// launch gives up at its boot timeout. Other newRig calls take withWaitsToTheDeadline by default.
+func withTestBootTimeout() rigOption {
+	return func(g *rig, o *Options) {
+		g.deadlineWaits = false
+		o.BootTimeout = testRigBootTimeout
+	}
+}
+
+// withMeasuredBootTimeout is a finite timing assertion's own bound. Its rig must start even where
+// the binary has less than testwait's normal clean-failure margin left.
+func withMeasuredBootTimeout(bound time.Duration) rigOption {
+	return func(g *rig, o *Options) {
+		g.deadlineWaits = false
+		o.BootTimeout = bound
+	}
+}
 
 // withWaitsToTheDeadline sets the runtime's boot timeout to what is left of the test binary's
 // deadline when the rig is made (testwait.Remaining), in place of testOptions' 2 s. That timeout
@@ -852,10 +872,15 @@ func (h *heldEvents) Stop() {
 	})
 }
 
+// newRig builds a runtime over its fakes. It clears testOptions' boot timeout, applies the caller's
+// options, and only where none set a finite BootTimeout gives the runtime's waits the test binary's
+// deadline (withWaitsToTheDeadline). Its context parent is testwait.Context (30 s before that
+// deadline) unless withTestBootTimeout or withMeasuredBootTimeout cleared deadlineWaits, in which
+// case it is context.Background with no earlier deadline, so a finite-timeout row can assert its own
+// bound even under a short -timeout. A finite BootTimeout set through withOptions keeps
+// testwait.Context.
 func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *rig {
 	t.Helper()
-	ctx, stop := context.WithCancel(context.Background())
-	t.Cleanup(stop)
 	var dynamicObjects []*unstructured.Unstructured
 	var kubeObjects []k8sruntime.Object
 	for _, object := range objects {
@@ -866,7 +891,7 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		}
 	}
 	g := &rig{
-		t: t, ctx: ctx, stop: stop, conns: fake.NewConns(),
+		t: t, deadlineWaits: true, conns: fake.NewConns(),
 		dyn: newDynamic(t, dynamicObjects...), kube: kubefake.NewClientset(kubeObjects...),
 	}
 	g.autoStart.Store(true)
@@ -877,11 +902,27 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		client.PrependReactor("*", "*", g.record)
 	}
 	opts := testOptions()
+	// An unset rig boot timeout is the event-wait default below. An explicit test timeout must be
+	// applied before testwait.Remaining, which correctly refuses a binary with no clean-failure
+	// margin left.
+	opts.BootTimeout = 0
 	opts.Conns = g.conns
 	opts.Now = func() time.Time { return *g.now.Load() }
 	for _, option := range options {
 		option(g, &opts)
 	}
+	if opts.BootTimeout == 0 {
+		// A rig's event waits end at the test binary's deadline. Timeout-verdict tests set their
+		// finite BootTimeout through withTestBootTimeout or an option of their own.
+		withWaitsToTheDeadline()(g, &opts)
+	}
+	parent := context.Background()
+	if g.deadlineWaits {
+		parent = testwait.Context(t)
+	}
+	ctx, stop := context.WithCancel(parent)
+	t.Cleanup(stop)
+	g.ctx, g.stop = ctx, stop
 	g.store, _ = opts.Store.(*fakeStore)
 	g.opts = opts
 	var dyn dynamic.Interface = g.dyn
@@ -1363,11 +1404,11 @@ func (g *rig) editPod(name, what string, edit func(*corev1.Pod)) {
 	})
 }
 
-// suspendedCopy stops g and is a second rig, made with config, that runs no controller and holds
+// suspendedCopy stops g and is a second rig, made with options, that runs no controller and holds
 // copies of the Sandbox name and of its pod as g's API holds them, the Sandbox set Suspended. It
 // answers that rig and the copy of the Sandbox. The second rig's API stamps uids from its own
 // count, so the copies carry a uid of their own, which no Sandbox that rig creates holds.
-func (g *rig) suspendedCopy(name string, config func(*Options)) (*rig, *unstructured.Unstructured) {
+func (g *rig) suspendedCopy(name string, options ...rigOption) (*rig, *unstructured.Unstructured) {
 	g.t.Helper()
 	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
 	if err != nil {
@@ -1383,7 +1424,7 @@ func (g *rig) suspendedCopy(name string, config func(*Options)) (*rig, *unstruct
 	pod.ResourceVersion = ""
 	pod.OwnerReferences[0].UID = suspended.GetUID()
 	g.stop()
-	return newRig(g.t, []k8sruntime.Object{suspended, pod}, withoutController(), withOptions(config)), suspended
+	return newRig(g.t, []k8sruntime.Object{suspended, pod}, append([]rigOption{withoutController()}, options...)...), suspended
 }
 
 // sandbox is the Sandbox named name in the tracker, or nil.

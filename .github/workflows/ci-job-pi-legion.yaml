@@ -56,15 +56,21 @@ jobs:
     # runs now: the job's set-up with the NATS service started and the checkout (15 s), setup-bun
     # (2), install-jj (3), install-omp (6), setup-go and the go-daemon cache restore (26), the
     # workspace install and contracts' build (14), the lint and the typecheck (16), the test step
-    # (300), the pack, the upload and the ci-ok report (4), the post steps with the containers
+    # (500), the pack, the upload and the ci-ok report (4), the post steps with the containers
     # stopped (5), and the seconds the job's own clock holds over the sum of its steps (5). That
-    # is 396 s, 6 m 36 s, a floor this job, without the typecheck and the pack, stays under.
+    # is 596 s, 9 m 56 s, a floor this job, without the typecheck and the pack, stays under.
     # The test step runs the package's files in four workers (`bun test --parallel=4`,
     # package.json; README.md, "Development", says why the count is fixed), one per CPU of this
-    # runner, so it lasts as long as its slowest worker, which runs
-    # legion-stall-watchdog-omp.test.ts alone: its eight cases took 241.3 s, 281.5 s and 296.4 s
-    # of the step's 241.4 s, 281.8 s and 296.7 s in jobs 137348443705, 137353258170 and
-    # 137361573250 (2026-11-22), the 300 above being the slowest rounded up. Three runs are no
+    # runner, so it lasts as long as its slowest worker. That is the one that runs
+    # scripts/skill-scenarios/rig.test.ts, whose row "a notice kept before the launch reaches a
+    # child owner's RPC session as a card and starts its turn, and one kept for another role does
+    # not" runs a child owner's whole run, the label's build included: the row took 355.6 s and
+    # 431.2 s of the step's 410.5 s and 492.1 s in jobs 140165692067 and 140176717957
+    # (2026-11-26), the 500 above being the slower rounded up. Two runs are no worst case. The
+    # row's own limit is 1,200 s, so a row that reaches it still leaves the job under the 28
+    # minutes below. Before that row, the slowest worker ran legion-stall-watchdog-omp.test.ts
+    # alone: its eight cases took 241.3 s, 281.5 s and 296.4 s of the step's 241.4 s, 281.8 s and
+    # 296.7 s in jobs 137348443705, 137353258170 and 137361573250 (2026-11-22). Three runs are no
     # worst case. Run one after another, the files took a median 774 s that day.
     # A job its own limit cuts off reports `cancelled`, which ci-ok fails, and 10 did that to
     # the merge groups of 2026-11-08T23:22Z and 2026-11-09T00:53Z with every step of the job

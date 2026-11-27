@@ -103,9 +103,9 @@ var stepPhase = map[string]string{
 
 // phaseLine is the order of the phases a fallback timeline names at the moment at: design, then
 // the phase of each step of the task the issue's plan names, in the task's order, `step` for a
-// step of a role the deployment defines, then retro and merging. The plan is the one of the
-// newest run whose node was made at or before at, or the first run's where at falls before every
-// plan, since a run's design comes before its plan is written. An issue with no plan, or a plan
+// step of a role the deployment defines, then retro and merging. The plan is the newest version
+// written at or before at, of any run of the issue, or the oldest where at falls before every
+// version, since a run's design comes before its plan is written. An issue with no plan, or a plan
 // whose steps this reading cannot place, reads the default steps' order (phaseOrder). Three rules
 // read it: which phase a handoff starts (handoffStart), the rank that keeps a role's first event
 // from starting a phase the issue has passed (phaseSteps), and the phase `needs_review` names
@@ -228,12 +228,12 @@ type PhaseSpan struct {
 // phase before observations — metric 3's review rounds, its send-backs and the first review its
 // hours are counted from — read the status history up to that moment. An issue whose only
 // observation is the mark the sampler left after it closed has no observed hour of its own life:
-// the stretch that mark opens lies after the close, so observedPhases clips it to nothing, and the
+// the stretch that mark opens lies after the close, so sampledPhases clips it to nothing, and the
 // whole of its life is before observations.
 func (p *Population) Phases(issue *Issue) ([]PhaseSpan, int) {
 	until := p.issueEnd(issue)
 	steps := phaseSteps(p.fallbackMarks(issue))
-	observed := p.observedPhases(issue)
+	observed := p.sampledPhases(issue)
 	if len(observed) > 0 {
 		until = observed[0].Span.From
 		if cut := slices.IndexFunc(steps, func(step phaseMark) bool { return !step.at.Before(until) }); cut >= 0 {
@@ -284,12 +284,19 @@ func layOutOfWorkflow(timeline []PhaseSpan, out []Span) []PhaseSpan {
 	return laid
 }
 
-// observedPhases is the timeline the sampler's `phase` observations draw, with each admitted
-// stretch split into the design the issue held a slot through and the queue it did not, and each
-// `step` stretch split by the role of the step it ran (stepRoleSpans).
-func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
+// sampledPhases is the timeline the sampler's `phase` observations draw and nothing else: each
+// stretch a phase mark holds (phaseStretches), with each admitted stretch split into the design
+// the issue held a slot through and the queue it did not, and each `step` stretch split by the
+// role of the step it ran (stepRoleSpans). It is the issue's observed phase at each moment, which
+// is what the two rules that read only an observed phase stand on (slotWaitHours and idleByRole):
+// an hour before the sampler first saw the issue has no observed phase, so it is on neither.
+func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 	end := p.issueEnd(issue)
-	var timeline []PhaseSpan
+	var (
+		timeline  []PhaseSpan
+		slots     []Span
+		readSlots bool
+	)
 	for stretch := range p.phaseStretches(issue) {
 		if stretch.Span.Duration() == 0 {
 			continue
@@ -303,7 +310,11 @@ func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 			timeline = append(timeline, stretch)
 			continue
 		}
-		held := intersect([]Span{stretch.Span}, p.slotSpans(issue, end))
+		if !readSlots {
+			slots = p.slotSpans(issue, end)
+			readSlots = true
+		}
+		held := intersect([]Span{stretch.Span}, slots)
 		for _, holding := range held {
 			timeline = append(timeline, PhaseSpan{Phase: phaseDesign, Span: holding})
 		}
@@ -359,7 +370,7 @@ func stepRoleSpans(issue *Issue, span Span) []PhaseSpan {
 // next mark that carries a phase or to the issue's end where none follows, and its hours stay on
 // the bar of the phase the issue was last seen in, so the bars of the issue still add up to its
 // work time (the spec's "Parked and pre-work hours in phase time"). Both readers of an issue's
-// phase stretches take them from here, the timeline (observedPhases) and the root's recorded wait
+// phase stretches take them from here, the timeline (sampledPhases) and the root's recorded wait
 // on a person (waitingOnPersonSpans), so the two cannot read one mark two ways. slotSpans reads
 // the drops through markedPhase too.
 func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
@@ -412,7 +423,7 @@ func markedPhase(mark Mark) string { return legion.JSONString([]byte(mark.Value)
 // at its moment is a release. Where no read carries the issue again, the hold runs to end.
 //
 // This is the one reader of the slot marks. The timeline's split of an admitted stretch into
-// design and queue (observedPhases), and so the queue time (queuedSpans) and every bar, take them
+// design and queue (sampledPhases), and so the queue time (queuedSpans) and every bar, take them
 // from here, as does the start of the design phase before observations (fallbackMarks).
 func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
 	phases, slots := issue.Observed[legion.FieldPhase], issue.Observed[legion.FieldSlot]
@@ -468,7 +479,8 @@ func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
 // sendBack is statusPhase's own decision that a status change sends the issue back to
 // implementing, or a failed run's return (fallbackMarks); a role's first event and a handoff
 // never do. role is the role of a `step` mark, the role the deployment defines whose run it is.
-// rank is the phase's place on the issue's line at that moment (Issue.phaseLine, phaseRank).
+// rank is the phase's place on the issue's line at that moment (Issue.phaseLine), -1 for a phase
+// the line does not hold.
 type phaseMark struct {
 	at       time.Time
 	source   markSource
@@ -525,12 +537,12 @@ func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) [
 func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 	architect, hasArchitect := issue.FirstRoleEvent["architect"]
 	var marks []phaseMark
-	add := func(source markSource, at time.Time, phase, role string, sendBack bool) {
-		marks = append(marks, phaseMark{at: at, source: source, phase: phase, role: role, sendBack: sendBack, rank: phaseRank(issue.phaseLine(at), phase)})
+	add := func(source markSource, at time.Time, line []string, phase, role string, sendBack bool) {
+		marks = append(marks, phaseMark{at: at, source: source, phase: phase, role: role, sendBack: sendBack, rank: slices.Index(line, phase)})
 	}
 	for role, at := range issue.FirstRoleEvent {
 		if phase, works := rolePhase[role]; works && role != "architect" {
-			add(sourceRole, at, phase, "", false)
+			add(sourceRole, at, issue.phaseLine(at), phase, "", false)
 		}
 	}
 	// "An issue has a design phase when a session titled `Legion architect · <its own key>` wrote
@@ -542,11 +554,12 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if slots := p.slotSpans(issue, p.issueEnd(issue)); len(slots) > 0 && slots[0].From.Before(architect) {
 			architect = slots[0].From
 		}
-		add(sourceRole, architect, phaseDesign, "", false)
+		add(sourceRole, architect, issue.phaseLine(architect), phaseDesign, "", false)
 	}
 	for _, handoff := range issue.Handoffs {
-		if phase, starts := handoffStart(issue.phaseLine(handoff.At), handoff.Phase); starts {
-			add(sourceHandoff, handoff.At, phase, "", false)
+		line := issue.phaseLine(handoff.At)
+		if phase, starts := handoffStart(line, handoff.Phase); starts {
+			add(sourceHandoff, handoff.At, line, phase, "", false)
 		}
 	}
 	previous := ""
@@ -554,8 +567,9 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if mark.Value == previous {
 			continue
 		}
-		if phase, sendBack, named := statusPhase(previous, mark.Value, issue.phaseLine(mark.At)); named && !issue.stepStatus(mark) {
-			add(sourceStatus, mark.At, phase, "", sendBack)
+		line := issue.phaseLine(mark.At)
+		if phase, sendBack, named := statusPhase(previous, mark.Value, line); named && !issue.stepStatus(mark) {
+			add(sourceStatus, mark.At, line, phase, "", sendBack)
 		}
 		previous = mark.Value
 	}
@@ -564,9 +578,9 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 	// handoff says either, and no status does: the workflow writes `in_progress` for `step` as for
 	// implementing (stepStatus), so the run is the one word of where the issue stands.
 	for _, run := range issue.Runs {
-		add(sourceRunStart, run.Start, legion.PhaseStep, run.Role, false)
+		add(sourceRunStart, run.Start, issue.phaseLine(run.Start), legion.PhaseStep, run.Role, false)
 		if run.Returned && run.End != nil {
-			add(sourceRunEnd, *run.End, legion.PhaseImplementing, "", true)
+			add(sourceRunEnd, *run.End, issue.phaseLine(*run.End), legion.PhaseImplementing, "", true)
 		}
 	}
 	slices.SortFunc(marks, func(a, b phaseMark) int {
@@ -622,11 +636,6 @@ func phaseSteps(marks []phaseMark) []phaseMark {
 		steps = append(steps, mark)
 	}
 	return steps
-}
-
-// phaseRank is a phase's place on line (Issue.phaseLine), and -1 for one the line does not hold.
-func phaseRank(line []string, phase string) int {
-	return slices.Index(line, phase)
 }
 
 // statusPhase is the phase a status change sets before observations exist, on the issue's line

@@ -214,9 +214,10 @@ func issueKeys(m map[string]map[string]any) []string {
 
 // Each claim the row leaves out for an older caller is logged, one line each, naming the caller's
 // plugin contract and the claim: the checker's stranded claim on LEGION-241, its waiting wake and
-// the open pause's wait on its stop are three lines, and none of the three is served.
+// the open pause's wait on its stop are three lines, and none of the three is served. The pause is
+// the paused state's (pausedState), since the populated state holds none.
 func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
-	state := populatedState(t)
+	state := pausedState(t)
 	state.WakesWaiting = append(slices.Clone(state.WakesWaiting), WakeWaiting{Claim: "legion-legion-legion-241-checker", Issue: "LEGION-241", Role: "checker",
 		Kind: "launch", DueAt: time.Date(2026, 9, 22, 9, 18, 20, 0, time.UTC)})
 	paused := *state.Paused
@@ -337,11 +338,12 @@ func TestEachRoleRowIsTheSixBelowTheEntryAndOpenFromIt(t *testing.T) {
 		six[i] = string(role)
 	}
 	slices.Sort(six)
-	// The golden state carries the checker's stranded claim on LEGION-241 beside claims of the six
-	// in each of the three lists; its waiting wake and the open pause's wait on its stop are added
-	// here, as TestEachClaimLeftOutForAnOlderCallerIsLogged adds them.
+	// The paused state (pausedState) carries the checker's stranded claim on LEGION-241 beside
+	// claims of the six in each of the three lists, and the open pause; the checker's waiting wake
+	// and the pause's wait on its stop are added here, as TestEachClaimLeftOutForAnOlderCallerIsLogged
+	// adds them.
 	const checker = "legion-legion-legion-241-checker"
-	state := populatedState(t)
+	state := pausedState(t)
 	state.WakesWaiting = append(slices.Clone(state.WakesWaiting), WakeWaiting{Claim: checker,
 		Issue: "LEGION-241", Role: "checker", Kind: "launch",
 		DueAt: time.Date(2026, 9, 22, 9, 18, 20, 0, time.UTC)})
