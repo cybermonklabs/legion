@@ -1526,6 +1526,9 @@ So for each surface the two builds share, this is what build N+1 may change whil
 - **Response members.**
   A new member is optional to every reader: a page or command of build N+1 works when build N answers without it.
   A member is removed only once no page or command still serving reads it.
+  The delivery measures answer (`GET /api/v1/delivery/measures`, the timeline's `measures` and the live measures view) keeps `change_failure_rate.per_pr`, `change_failure_rate.per_deploy` and `time_to_restore` for the Delivery page of the build before the failure measures, which reads them with no null guard:
+  each leaf is null, nothing computes them, and they go with `GET` and `PUT /api/v1/settings/delivery`, in the release after the roll (`api.deliveryMeasures`).
+  A page of this build reads only the members this build writes, and shows no data where a server of the earlier build answers none of them (`web/src/features/delivery/lib/failures.ts`).
 
 - **Stored documents.**
   Reader-first, by the schema manifest (`internal/dispatch/pmdoc/schema/blocks.json`).
@@ -1663,6 +1666,7 @@ Beside the previous release, a page of this tree is admitted by that release's n
 The first rollout of the fleet's numbers needs a release before the fleet columns, so `build-dispatch-build.sh` builds the first-rollout build as well, with `--commit edb69e0d7588ec037847182e74a04a343a0664c9` (the release tagged `legion-envoy-v30.20.2`), and the test runs it and holds a page of this tree read-only while that build's process is live and writable once that process has left.
 That tag is lightweight and can move, so the commit is the pin: the test fails a first-rollout build of another commit (`firstRolloutRelease` in `twobuild_harness_test.go`), and the CI job fails when the tag names another commit (`FIRST_ROLLOUT_COMMIT`).
 The same CI job then runs the browser suite's `cross-build.multiprocess` beside each of the two builds, each build's page against the other build's server, and expects the document writable or read-only as the live registry's numbers admit it (`packages/dispatch/e2e/cross-build.multiprocess.e2e.ts`, `pageWritable`).
+It also reads what each page rendered of the Delivery measures with "Definitions & alternatives" open: this build's page shows no data for the failure measures a previous server does not answer, and the previous build's page reads the retired members this build's server writes as explicit nulls, which the run checks on the live snapshot and on the measures route.
 In the run beside the first-rollout build, `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` holds the run to that build's commit and to a registry that reads version 0 while that build is live, so a build of another commit, or a build that registers its schema numbers, fails the run.
 
 Generations and holds protect from the release after the first one that carries them.

@@ -84,10 +84,30 @@ const catalogueTargets: { [K in keyof Targets]: NonNullable<Targets[K]> } = {
   unowned_p0: { value: 0, inclusive: true, direction: "lower_better", judges: ["issues.value"] },
 };
 
+/** The retired flag-count containers the server keeps with every leaf null for the Delivery page
+ *  of the previous build. */
+const retiredChangeFailLeaves = {
+  per_pr: {
+    confirmed: null,
+    pending: null,
+    rejected: null,
+    reverts: null,
+    total: null,
+    rate: null,
+  },
+  per_deploy: {
+    confirmed: null,
+    total: null,
+    rate: null,
+    confirmed_or_pending: null,
+    upper_bound_rate: null,
+  },
+};
+
 /** GET /api/v1/delivery/measures for the fixture window, as the server answers it while no day row
  *  of the three failure measures' evals is stored (the reference request recorded on the slice 2
- *  pull request): each failure measure is null, "no data", and the change failure rate's verdict
- *  is not reached. */
+ *  pull request): each failure measure reads no data, the retired containers keep every leaf null,
+ *  and the change failure rate's verdict is not reached. */
 const fixtureMeasures: DeliveryMeasuresResponse = {
   window: { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" },
   computed_at: "2026-10-09T04:33:22Z",
@@ -104,8 +124,14 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: 1260, p90_minutes: 2874, max_minutes: 4320 },
       opened_to_merge: { median_minutes: 330, p90_minutes: 462.00000000000006, max_minutes: 1080 },
     },
-    change_failure_rate: null,
-    time_to_restore: null,
+    change_failure_rate: {
+      failed: null,
+      total: null,
+      rate: null,
+      ...retiredChangeFailLeaves,
+    },
+    time_to_restore: { median_minutes: null },
+    failed_deployment_recovery: null,
     deployment_rework_rate: null,
     rework_share: 0.2857142857142857,
     deploy_run_success: {
@@ -258,6 +284,7 @@ const measuredFailureRate: DeliveryMeasuresResponse["measures"]["change_failure_
   failed: 1,
   total: 50,
   rate: 0.02,
+  ...retiredChangeFailLeaves,
 };
 
 test("the panel shows the six KPI cards, each with its badge, number and target", () => {
@@ -457,7 +484,7 @@ test("a figure whose statistic the target does not judge takes no tone, and the 
     ...fixtureMeasures,
     measures: {
       ...fixtureMeasures.measures,
-      change_failure_rate: { failed: 0, total: 5, rate: 0 },
+      change_failure_rate: { failed: 0, total: 5, rate: 0, ...retiredChangeFailLeaves },
     },
     targets: {
       ...catalogueTargets,
@@ -1387,8 +1414,9 @@ test("with the record measured, the failure measures show the per-deploy rate, t
     status: { ...fixtureMeasures.status, change_failure_rate: false },
     measures: {
       ...fixtureMeasures.measures,
-      change_failure_rate: { failed: 2, total: 5, rate: 0.4 },
-      time_to_restore: { n: 2, median_minutes: 30, not_restored: 1 },
+      change_failure_rate: { failed: 2, total: 5, rate: 0.4, ...retiredChangeFailLeaves },
+      time_to_restore: { median_minutes: null },
+      failed_deployment_recovery: { n: 2, median_minutes: 30, not_restored: 1 },
       deployment_rework_rate: { restoring: 1, total: 5, rate: 0.2 },
     },
   });
@@ -1413,6 +1441,55 @@ test("with the record measured, the failure measures show the per-deploy rate, t
   expect(definition("Deployment rework rate").textContent).toBe(
     "Deployment rework rate20.0%1 of 5 deploys restored a failure"
   );
+});
+
+test("a previous-build server answer with legacy placeholders and no modern failure fields reads no data in the card, the strip and the fold", async () => {
+  const {
+    failed_deployment_recovery: _recovery,
+    deployment_rework_rate: _rework,
+    ...sharedMeasures
+  } = fixtureMeasures.measures;
+  const previousServerAnswer = {
+    ...fixtureMeasures,
+    measures: {
+      ...sharedMeasures,
+      // As a previous server answered it: flag-count containers with numbers,
+      // a broken-PR-to-fix median on time_to_restore, and neither failed_deployment_recovery nor
+      // deployment_rework_rate.
+      change_failure_rate: {
+        per_pr: { confirmed: 1, pending: 2, rejected: 0, reverts: 1, total: 10, rate: 0.1 },
+        per_deploy: {
+          confirmed: 1,
+          pending: 2,
+          rejected: 0,
+          reverts: 1,
+          total: 5,
+          rate: 0.2,
+          confirmed_or_pending: 3,
+          upper_bound_rate: 0.6,
+        },
+      },
+      time_to_restore: { median_minutes: 45 },
+    },
+  } as unknown as DeliveryMeasuresResponse;
+  renderPanel(previousServerAnswer);
+  const cfr = within(card("Change failure rate"));
+  expect(cfr.getByText("n/a")).toBeDefined();
+  expect(cfr.getByText("No data for this window")).toBeDefined();
+  expect(cfr.queryByText("20.00%")).not.toBeInTheDocument();
+  const strip = screen.getByTestId("measures-strip");
+  for (const label of ["CFR (per deploy)", "Recovery time", "Deploy rework"]) {
+    expect(within(strip).getByText(label).parentElement?.textContent).toBe(`n/a${label}`);
+  }
+  expect(within(strip).queryByText("45m")).not.toBeInTheDocument();
+  await openFold();
+  for (const title of [
+    "Change failure rate (per deploy)",
+    "Failed deployment recovery time",
+    "Deployment rework rate",
+  ]) {
+    expect(definition(title).textContent).toBe(`${title}n/aNo data for this window`);
+  }
 });
 
 test("more than six unowned P0 issues list six and name the rest", () => {

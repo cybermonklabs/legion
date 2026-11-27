@@ -90,9 +90,30 @@ const emptyMeasures: DeliveryMeasuresResponse = {
       opened_to_merge: { median_minutes: null, p90_minutes: null, max_minutes: null },
     },
     // As the server answers it while no day row of the three failure measures is stored: each
-    // null, "no data".
-    change_failure_rate: null,
-    time_to_restore: null,
+    // failure measure reads no data, and the retired members the earlier build read keep null
+    // leaves.
+    change_failure_rate: {
+      failed: null,
+      total: null,
+      rate: null,
+      per_pr: {
+        confirmed: null,
+        pending: null,
+        rejected: null,
+        reverts: null,
+        total: null,
+        rate: null,
+      },
+      per_deploy: {
+        confirmed: null,
+        total: null,
+        rate: null,
+        confirmed_or_pending: null,
+        upper_bound_rate: null,
+      },
+    },
+    time_to_restore: { median_minutes: null },
+    failed_deployment_recovery: null,
     deployment_rework_rate: null,
     rework_share: 0,
     deploy_run_success: { concluded: 0, reached_production: 0, cancelled: 0, rate: null },

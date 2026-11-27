@@ -460,7 +460,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 	if folded, missing := foldedMeasures(all, window); missing != "" {
 		differ("all repositories: %s", missing)
 	} else {
-		compare("the measures of all repositories", oracleTree(t, folded), subtree(wholeMeasures, "measures"))
+		compare("the measures of all repositories", oracleTree(t, deliveryMeasuresOf(folded)), subtree(wholeMeasures, "measures"))
 		// The targets and each KPI's verdict, stated from the folded measures as the route states
 		// them from its own (deliveryTargets, measuresStatus over evals.ResultStatistics), the
 		// unowned P0 issues being those open now, which no day row of a past window counts.

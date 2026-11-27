@@ -266,11 +266,11 @@ So a failure counts for every project its deploy counts for whose failure source
 
 - **Failed deployment recovery time**: the median of the minutes from each counted failure's deploy finishing to the failure's restore, over the failures restored in the window, beside `not_restored`, the counted failures of the window's deploys that no restore has closed yet.
   A window with no restore has no median: "no data", never 0.
-  The delivery measures route answers it as `{n, median_minutes, not_restored}`.
+  The delivery measures route answers it as `failed_deployment_recovery`, `{n, median_minutes, not_restored}`.
 
 - **Deployment rework rate**: the deploys that restored a counted failure, over every deploy.
   A deploy restores a failure when it is that failure's `restored_by_deploy`: a revert's own deploy, or the deploy a person names when marking the failure restored.
-  The delivery measures route answers it as `{restoring, total, rate}`.
+  The delivery measures route answers it as `deployment_rework_rate`, `{restoring, total, rate}`.
 
 A window's value folds its days: the two rates divide the summed numerators by the summed denominators, and the recovery time takes the median of every restore's minutes, never a mean of the daily medians.
 From `failures_measured_since` on, every day holds a row of each of the three, a day with no deploy a row of zeros, so the two rates of a window from that day with no failure read 0 percent.
@@ -325,7 +325,12 @@ The route takes the timeline's parameters: `from` and `to` (the last seven days 
 Any signed-in person or agent token reads it.
 `GET /api/v1/delivery/timeline` carries the same answer as its `measures` for its own window and filters, so an agent reading both needs only the timeline.
 The routes and the page's live updates compute from the same stored facts with the same code, so they agree.
-The three failure measures are `change_failure_rate` (`{failed, total, rate}`), `time_to_restore` (`{n, median_minutes, not_restored}`) and `deployment_rework_rate` (`{restoring, total, rate}`), and each is null, "no data" with no verdict, where no stored day row of its eval holds a part of the window (The failure measures, above).
+The three failure measures are `change_failure_rate` (`{failed, total, rate}`), `failed_deployment_recovery` (`{n, median_minutes, not_restored}`) and `deployment_rework_rate` (`{restoring, total, rate}`).
+Where no stored day row of a measure's eval holds a part of the window, it reads "no data" with no verdict (The failure measures, above): `failed_deployment_recovery` and `deployment_rework_rate` are null, and `change_failure_rate` is still an object, with `failed`, `total` and `rate` null.
+While a release rolls, the Delivery page of the release before this one is still served, and it reads three members of `measures` with no null guard.
+So the answer keeps `change_failure_rate.per_pr` and `change_failure_rate.per_deploy`, and `time_to_restore`, as objects whose every leaf is null in every window: no release counts what they held, and nothing computes them.
+`time_to_restore` is not the recovery time, which is `failed_deployment_recovery`.
+No reader reads a figure from those members, and they are removed in the next release, with `GET` and `PUT /api/v1/settings/delivery`.
 A project's own figures, its failure measures among them, are its evals: `GET /api/v1/projects/{key}/evals`.
 
 The record has three routes, each of a project:

@@ -20852,7 +20852,16 @@
       "DeliveryChangeFailRate": {
         "properties": {
           "failed": {
-            "type": "integer"
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "per_deploy": {
+            "$ref": "#/components/schemas/DeliveryRetiredDeployFlagCounts"
+          },
+          "per_pr": {
+            "$ref": "#/components/schemas/DeliveryRetiredPRFlagCounts"
           },
           "rate": {
             "type": [
@@ -20861,13 +20870,18 @@
             ]
           },
           "total": {
-            "type": "integer"
+            "type": [
+              "null",
+              "integer"
+            ]
           }
         },
         "required": [
           "failed",
           "total",
-          "rate"
+          "rate",
+          "per_pr",
+          "per_deploy"
         ],
         "type": "object"
       },
@@ -21191,14 +21205,7 @@
       "DeliveryMeasures": {
         "properties": {
           "change_failure_rate": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DeliveryChangeFailRate"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "$ref": "#/components/schemas/DeliveryChangeFailRate"
           },
           "daily": {
             "items": {
@@ -21225,14 +21232,7 @@
               }
             ]
           },
-          "lead_time": {
-            "$ref": "#/components/schemas/LeadTime"
-          },
-          "rework_share": {
-            "format": "double",
-            "type": "number"
-          },
-          "time_to_restore": {
+          "failed_deployment_recovery": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/DeliveryRecovery"
@@ -21241,6 +21241,16 @@
                 "type": "null"
               }
             ]
+          },
+          "lead_time": {
+            "$ref": "#/components/schemas/LeadTime"
+          },
+          "rework_share": {
+            "format": "double",
+            "type": "number"
+          },
+          "time_to_restore": {
+            "$ref": "#/components/schemas/DeliveryRetiredTimeToRestore"
           }
         },
         "required": [
@@ -21248,6 +21258,7 @@
           "lead_time",
           "change_failure_rate",
           "time_to_restore",
+          "failed_deployment_recovery",
           "deployment_rework_rate",
           "rework_share",
           "deploy_run_success",
@@ -21595,6 +21606,111 @@
           "n",
           "median_minutes",
           "not_restored"
+        ],
+        "type": "object"
+      },
+      "DeliveryRetiredDeployFlagCounts": {
+        "properties": {
+          "confirmed": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "confirmed_or_pending": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "rate": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "total": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "upper_bound_rate": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "required": [
+          "confirmed",
+          "total",
+          "rate",
+          "confirmed_or_pending",
+          "upper_bound_rate"
+        ],
+        "type": "object"
+      },
+      "DeliveryRetiredPRFlagCounts": {
+        "properties": {
+          "confirmed": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "pending": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "rate": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "rejected": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "reverts": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "total": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "confirmed",
+          "pending",
+          "rejected",
+          "reverts",
+          "total",
+          "rate"
+        ],
+        "type": "object"
+      },
+      "DeliveryRetiredTimeToRestore": {
+        "properties": {
+          "median_minutes": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "required": [
+          "median_minutes"
         ],
         "type": "object"
       },

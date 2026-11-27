@@ -11,11 +11,12 @@
 // is judged. Three differences, each from LEGION-567's slice 2 plan or a later spec: the three
 // failure measures (change failure rate per deploy, failed deployment recovery time beside the
 // failures not restored, and deployment rework rate) are their evals' folds of the record of
-// deploys and failures (dispatch://INFRA-978, R11), and read "no data" where the window holds no
-// row of theirs; the P0 card links each issue inside Dispatch and dates its count by the
-// response's computed_at; and the cards and the strip lay themselves out for the panel's own
-// width, since Dispatch's sidebar leaves it narrower than the prototype's page and a phone
-// narrower still, where the prototype is desktop-only.
+// deploys and failures, read through `lib/failures.ts`, and read "no
+// data" where the window holds no row of theirs or the server is of the build before them; the P0
+// card links each issue inside Dispatch and dates its count by the response's computed_at; and the
+// cards and the strip lay themselves out for the panel's own width, since Dispatch's sidebar
+// leaves it narrower than the prototype's page and a phone narrower still, where the prototype is
+// desktop-only.
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -34,6 +35,7 @@ import {
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { JudgedFigure, tone } from "./JudgedFigure";
+import { type FailureMeasures, readFailureMeasures } from "./lib/failures";
 import { formatMinutes, NO_VALUE, pct } from "./lib/format";
 import {
   count,
@@ -58,7 +60,7 @@ const NO_DATA = "No data for this window";
 /** A failure measure's rate as a figure, `NO_VALUE` where the window holds no row of its eval
  *  (the measure is null) or it states no rate. */
 function failureRate(
-  measure: { rate: number | null } | null,
+  measure: { rate: number | null } | null | undefined,
   digits: number,
   extra: number
 ): string {
@@ -170,7 +172,9 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   const targets = data?.targets;
   const status = data?.status;
   const measures = data?.measures;
-  const failures = measures?.change_failure_rate;
+  // The three failure measures, read once for the strip, the card and the fold alike.
+  const failures = measures === undefined ? undefined : readFailureMeasures(measures);
+  const changeFail = failures?.changeFailRate;
 
   const strip: StripStat[] = [
     {
@@ -195,20 +199,20 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     },
     {
       label: "CFR (per deploy)",
-      write: show((d, extra) => failureRate(d.measures.change_failure_rate, 1, extra)),
+      write: show((_, extra) => failureRate(changeFail, 1, extra)),
       judged: {
         measure: "change_failure_rate",
         statistic: "per_deploy.rate",
-        value: failures?.rate ?? null,
+        value: changeFail?.rate ?? null,
       },
     },
     {
       label: "Recovery time",
-      write: show((d) => formatMinutes(d.measures.time_to_restore?.median_minutes ?? null)),
+      write: show(() => formatMinutes(failures?.recovery?.median_minutes ?? null)),
     },
     {
       label: "Deploy rework",
-      write: show((d) => failureRate(d.measures.deployment_rework_rate, 1, 0)),
+      write: show(() => failureRate(failures?.rework, 1, 0)),
     },
     { label: "Rework share", write: show((d) => pct(d.measures.rework_share)) },
   ];
@@ -279,12 +283,12 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               measure="change_failure_rate"
               statistic="per_deploy.rate"
               targets={targets}
-              value={failures?.rate ?? null}
-              write={show((d, extra) => failureRate(d.measures.change_failure_rate, 2, extra))}
+              value={changeFail?.rate ?? null}
+              write={show((_, extra) => failureRate(changeFail, 2, extra))}
             />
             <span className={`text-xs ${textMutedOnSurface}`}>per deploy</span>
           </div>
-          {failures === undefined || targets === undefined ? null : failures === null ? (
+          {changeFail === undefined || targets === undefined ? null : changeFail === null ? (
             <div className={`text-xs ${textMutedOnCanvas}`}>{NO_DATA}</div>
           ) : (
             <div className={`text-[11px] ${textMutedOnSurface}`}>
@@ -292,16 +296,16 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 measure="change_failure_rate"
                 statistic="per_deploy.failed"
                 targets={targets}
-                value={failures.failed}
-                write={count(failures.failed)}
+                value={changeFail.failed}
+                write={count(changeFail.failed)}
               />{" "}
               of{" "}
               <WindowFigure
                 measure="change_failure_rate"
                 statistic="per_deploy.total"
                 targets={targets}
-                value={failures.total}
-                write={count(failures.total)}
+                value={changeFail.total}
+                write={count(changeFail.total)}
               />{" "}
               deploys with a failure
             </div>
@@ -536,7 +540,9 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         )}
       </div>
 
-      {data === undefined || !open ? null : <Definitions data={data} />}
+      {data === undefined || failures === undefined || !open ? null : (
+        <Definitions data={data} failures={failures} />
+      )}
     </section>
   );
 }
@@ -573,8 +579,15 @@ function DayCell(props: {
   );
 }
 
-/** The fold's eight definition cards and the per-day table, newest first. */
-function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
+/** The fold's eight definition cards and the per-day table, newest first: `failures` is the
+ *  answer's three failure measures as the panel read them (`readFailureMeasures`). */
+function Definitions({
+  data,
+  failures,
+}: {
+  data: DeliveryMeasuresResponse;
+  failures: FailureMeasures;
+}): ReactNode {
   const { measures, targets } = data;
   // Newest first, copied once per answer rather than on every render of the open fold.
   const newestFirst = useMemo(() => [...(measures.daily ?? [])].reverse(), [measures.daily]);
@@ -599,9 +612,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const frequency = measures.deploy_frequency;
   const merge = measures.lead_time.merge_to_production;
   const lead = measures.lead_time;
-  const failures = measures.change_failure_rate;
-  const recovery = measures.time_to_restore;
-  const rework = measures.deployment_rework_rate;
+  const { changeFailRate, recovery, rework } = failures;
   return (
     <>
       <div
@@ -674,26 +685,29 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
 
         <DefinitionCard
           title="Change failure rate (per deploy)"
-          value={figure("change_failure_rate", "per_deploy.rate", failures?.rate ?? null, (extra) =>
-            failureRate(failures, 1, extra)
+          value={figure(
+            "change_failure_rate",
+            "per_deploy.rate",
+            changeFailRate?.rate ?? null,
+            (extra) => failureRate(changeFailRate, 1, extra)
           )}
         >
-          {failures === null ? (
+          {changeFailRate === null ? (
             NO_DATA
           ) : (
             <>
               {figure(
                 "change_failure_rate",
                 "per_deploy.failed",
-                failures.failed,
-                count(failures.failed)
+                changeFailRate.failed,
+                count(changeFailRate.failed)
               )}{" "}
               of{" "}
               {figure(
                 "change_failure_rate",
                 "per_deploy.total",
-                failures.total,
-                count(failures.total)
+                changeFailRate.total,
+                count(changeFailRate.total)
               )}{" "}
               deploys with an unrejected failure
             </>

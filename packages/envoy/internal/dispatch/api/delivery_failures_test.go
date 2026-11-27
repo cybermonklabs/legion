@@ -2,17 +2,18 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"math"
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -124,80 +125,202 @@ func sameFigure(t *testing.T, name string, got, want *float64) {
 	}
 }
 
+// legacyMeasureReads lists the members of the measures object the previous Delivery page reads
+// with no null guard, container by container: its strip and cards read
+// change_failure_rate.per_pr.rate, per_deploy.rate and upper_bound_rate, its fold every per_pr
+// count and per_deploy's confirmed and total, its breakdown per_deploy.confirmed_or_pending, and
+// both time_to_restore.median_minutes. No build measures any of them now, so the answer writes
+// each container with exactly these leaves, each null, in every window (deliveryChangeFailRate).
+var legacyMeasureReads = []struct {
+	container, leaves []string
+}{
+	{[]string{"change_failure_rate", "per_pr"}, []string{"confirmed", "pending", "rejected", "reverts", "total", "rate"}},
+	{[]string{"change_failure_rate", "per_deploy"}, []string{"confirmed", "total", "rate", "confirmed_or_pending", "upper_bound_rate"}},
+	{[]string{"time_to_restore"}, []string{"median_minutes"}},
+}
+
+// modernFailureMembers is the failure measures' members this build measures, each by its path in
+// the measures object: the change fail rate's counts and rate, the failed deployment recovery time
+// and the deployment rework rate, each null where the window holds no day part of its eval.
+var modernFailureMembers = [][]string{
+	{"change_failure_rate", "failed"}, {"change_failure_rate", "total"}, {"change_failure_rate", "rate"},
+	{"failed_deployment_recovery"}, {"deployment_rework_rate"},
+}
+
+// writtenMeasures is one surface's measures object as it wrote it, decoded as a JSON tree, where an
+// explicit null and a member left out differ, and as the answer's own type reads it.
+type writtenMeasures struct {
+	tree map[string]any
+	read deliveryMeasures
+}
+
+// decodeWrittenMeasures is the measures object of body, a measures answer as surface wrote it, as
+// writtenMeasures.
+func decodeWrittenMeasures(t *testing.T, surface string, body json.RawMessage) writtenMeasures {
+	t.Helper()
+	var answer struct {
+		Measures json.RawMessage `json:"measures"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatalf("%s: decode its answer: %v", surface, err)
+	}
+	var written writtenMeasures
+	if err := json.Unmarshal(answer.Measures, &written.tree); err != nil || written.tree == nil {
+		t.Fatalf("%s: decode its measures %s as an object: %v", surface, answer.Measures, err)
+	}
+	if err := json.Unmarshal(answer.Measures, &written.read); err != nil {
+		t.Fatalf("%s: decode its measures %s: %v", surface, answer.Measures, err)
+	}
+	return written
+}
+
+// measuresMember is the value at path in tree, a measures object as a surface wrote it, and
+// whether the object holds every key of path.
+func measuresMember(tree map[string]any, path []string) (any, bool) {
+	var value any = tree
+	for _, key := range path {
+		object, isObject := value.(map[string]any)
+		if !isObject {
+			return nil, false
+		}
+		held, ok := object[key]
+		if !ok {
+			return nil, false
+		}
+		value = held
+	}
+	return value, true
+}
+
+// nullMemberProblems is what is wrong with each of paths in tree, a measures object a surface
+// wrote: every one must be held, as the JSON literal null. A member left out is no null, since a
+// page reads its absence as undefined.
+func nullMemberProblems(tree map[string]any, paths ...[]string) []string {
+	var problems []string
+	for _, path := range paths {
+		if value, held := measuresMember(tree, path); !held || value != nil {
+			problems = append(problems, fmt.Sprintf("measures.%s is %v (held %t), want null", strings.Join(path, "."), value, held))
+		}
+	}
+	return problems
+}
+
+// legacyReadProblems is what is wrong with tree, a measures object a surface wrote, as the page of
+// the previous build reads it: each container of legacyMeasureReads must be an object of
+// exactly its leaves, each the JSON literal null.
+func legacyReadProblems(tree map[string]any) []string {
+	var problems []string
+	for _, read := range legacyMeasureReads {
+		held, ok := measuresMember(tree, read.container)
+		object, isObject := held.(map[string]any)
+		if !ok || !isObject {
+			problems = append(problems, fmt.Sprintf("measures.%s is %v (held %t), want an object, which that page reads with no null guard",
+				strings.Join(read.container, "."), held, ok))
+			continue
+		}
+		if keys, want := slices.Sorted(maps.Keys(object)), slices.Sorted(slices.Values(read.leaves)); !slices.Equal(keys, want) {
+			problems = append(problems, fmt.Sprintf("measures.%s holds %v, want exactly %v", strings.Join(read.container, "."), keys, want))
+		}
+		for _, leaf := range read.leaves {
+			problems = append(problems, nullMemberProblems(tree, append(slices.Clone(read.container), leaf))...)
+		}
+	}
+	return problems
+}
+
+// requireNullMembers fails for each of nullMemberProblems(tree, paths...), which surface wrote.
+func requireNullMembers(t *testing.T, surface string, tree map[string]any, paths ...[]string) {
+	t.Helper()
+	for _, problem := range nullMemberProblems(tree, paths...) {
+		t.Errorf("%s: %s", surface, problem)
+	}
+}
+
+// requireLegacyReadsNull fails for each of legacyReadProblems(tree), which surface wrote.
+func requireLegacyReadsNull(t *testing.T, surface string, tree map[string]any) {
+	t.Helper()
+	for _, problem := range legacyReadProblems(tree) {
+		t.Errorf("%s: %s", surface, problem)
+	}
+}
+
 // TestTheMeasuresRoutesFailureValuesEqualTheEvalRoutes (k11, decision 3): over the history's two
 // days, the old delivery routes answer the three failure measures FAIL's eval routes answer, from
-// the same stored rows through the same folds: change fail rate 2 of 3, recovery 180 minutes with
-// one failure not restored, rework 1 of 3. Each of the three surfaces that still answer them is
-// held to it: the measures route, the `measures` of the timeline route, and the live hub's
-// `measures` view, which a subscriber's first answer carries. A window that starts before
+// the same stored rows through the same folds: change fail rate 2 of 3, failed deployment recovery
+// 180 minutes with one failure not restored, rework 1 of 3. Each of the three surfaces that still
+// answer them is held to it: the measures route, the `measures` of the timeline route, and the live
+// hub's `measures` view, which a subscriber's first answer carries. A window that starts before
 // failures_measured_since reads null in all of them and in the evals; and with a second
 // delivery-on project the deployment-wide routes and the hub answer null, while FAIL's evals still
-// answer.
+// answer. In every window, measured or not, each surface also writes every member the Delivery
+// page of the previous build reads (legacyMeasureReads), as the JSON literal null: that
+// page reads them while the two builds roll, and nothing measures them.
 func TestTheMeasuresRoutesFailureValuesEqualTheEvalRoutes(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedFailureHistory(t, database)
 	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	refreshEvalDays(t, registry, database, failuresNow)
 
-	// The three surfaces' measures: the measures route's, the timeline route's measures object and
-	// the first snapshot a subscriber of the hub's measures view is sent, of one window.
-	measuresRoute := func(from, to int) measures.Result {
+	// The three surfaces' measures objects as each wrote them: the measures route's, the timeline
+	// route's measures object and the first snapshot a subscriber of the hub's measures view is
+	// sent, of one window.
+	measuresRoute := func(from, to int) writtenMeasures {
 		t.Helper()
-		return getDeliveryMeasures(t, handler, failureWindowQuery(from, to)).Measures
+		return decodeWrittenMeasures(t, "the measures route", getBody(t, handler, "/api/v1/delivery/measures?"+failureWindowQuery(from, to)))
 	}
-	timelineRoute := func(from, to int) measures.Result {
+	timelineRoute := func(from, to int) writtenMeasures {
 		t.Helper()
-		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/timeline?"+failureWindowQuery(from, to), nil, "alice")
-		if response.Code != http.StatusOK {
-			t.Fatalf("GET timeline?%s: status=%d body=%s", failureWindowQuery(from, to), response.Code, response.Body.String())
+		var timeline struct {
+			Measures json.RawMessage `json:"measures"`
 		}
-		return decodeBody[deliveryTimelineWithMeasures](t, response).Measures.Measures
+		if err := json.Unmarshal(getBody(t, handler, "/api/v1/delivery/timeline?"+failureWindowQuery(from, to)), &timeline); err != nil {
+			t.Fatalf("decode timeline?%s: %v", failureWindowQuery(from, to), err)
+		}
+		return decodeWrittenMeasures(t, "the timeline route's measures", timeline.Measures)
 	}
-	hubView := func(hub *hubRig, from, to int) measures.Result {
+	hubView := func(hub *hubRig, from, to int) writtenMeasures {
 		t.Helper()
 		conn := newFakeLiveConn()
 		hub.hub.Subscribe(conn, subscribeFrame("m", measuresRange(failuresDay.AddDate(0, 0, from), failuresDay.AddDate(0, 0, to), "")))
-		var body deliveryMeasuresResponse
-		if err := json.Unmarshal(conn.snapshot(t, "m").Body, &body); err != nil {
-			t.Fatalf("decode the hub's measures snapshot: %v", err)
-		}
-		return body.Measures
+		return decodeWrittenMeasures(t, "the hub's measures view", conn.snapshot(t, "m").Body)
 	}
 
 	query := failureWindowQuery(0, 2)
 	want := evalStatistics(t, handler, query)
 	cfr, recovery, rework := want[evals.SlugChangeFailRate].Window, want[evals.SlugFailedDeployRecovery].Window, want[evals.SlugDeploymentReworkRate].Window
 	oneProject := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
-	for surface, got := range map[string]measures.Result{
+	for surface, written := range map[string]writtenMeasures{
 		"the measures route": measuresRoute(0, 2), "the timeline route's measures": timelineRoute(0, 2), "the hub's measures view": hubView(oneProject, 0, 2),
 	} {
-		if got.ChangeFailureRate == nil || got.TimeToRestore == nil || got.DeploymentReworkRate == nil {
+		requireLegacyReadsNull(t, surface, written.tree)
+		got := written.read
+		rate, restored := got.ChangeFailureRate, got.FailedDeploymentRecovery
+		if rate.Failed == nil || rate.Total == nil || rate.Rate == nil || restored == nil || got.DeploymentReworkRate == nil {
 			t.Fatalf("%s answers change fail rate %v, recovery %v and rework rate %v, want a value each",
-				surface, got.ChangeFailureRate, got.TimeToRestore, got.DeploymentReworkRate)
+				surface, written.tree["change_failure_rate"], written.tree["failed_deployment_recovery"], written.tree["deployment_rework_rate"])
 		}
-		sameFigure(t, surface+": change fail rate", got.ChangeFailureRate.Rate, cfr["rate"])
-		sameFigure(t, surface+": failed deploys", new(float64(got.ChangeFailureRate.Failed)), cfr["failed"])
-		sameFigure(t, surface+": deploys", new(float64(got.ChangeFailureRate.Total)), cfr["total"])
-		sameFigure(t, surface+": recovery median", got.TimeToRestore.MedianMinutes, recovery["median"])
-		sameFigure(t, surface+": restores timed", new(float64(got.TimeToRestore.N)), recovery["n"])
-		sameFigure(t, surface+": failures not restored", new(float64(got.TimeToRestore.NotRestored)), recovery["not_restored"])
+		sameFigure(t, surface+": change fail rate", rate.Rate, cfr["rate"])
+		sameFigure(t, surface+": failed deploys", new(float64(*rate.Failed)), cfr["failed"])
+		sameFigure(t, surface+": deploys", new(float64(*rate.Total)), cfr["total"])
+		sameFigure(t, surface+": recovery median", restored.MedianMinutes, recovery["median"])
+		sameFigure(t, surface+": restores timed", new(float64(restored.N)), recovery["n"])
+		sameFigure(t, surface+": failures not restored", new(float64(restored.NotRestored)), recovery["not_restored"])
 		sameFigure(t, surface+": rework rate", got.DeploymentReworkRate.Rate, rework["rate"])
 		sameFigure(t, surface+": restoring deploys", new(float64(got.DeploymentReworkRate.Restoring)), rework["restoring"])
-		if got.ChangeFailureRate.Failed != 2 || got.ChangeFailureRate.Total != 3 || got.TimeToRestore.MedianMinutes == nil ||
-			*got.TimeToRestore.MedianMinutes != 180 || got.TimeToRestore.NotRestored != 1 || got.DeploymentReworkRate.Restoring != 1 {
-			t.Errorf("%s answers change fail rate %+v, recovery %+v and rework rate %+v; want 2 of 3, 180 minutes with 1 not restored, 1 of 3",
-				surface, *got.ChangeFailureRate, *got.TimeToRestore, *got.DeploymentReworkRate)
+		if *rate.Failed != 2 || *rate.Total != 3 || restored.MedianMinutes == nil || *restored.MedianMinutes != 180 ||
+			restored.NotRestored != 1 || got.DeploymentReworkRate.Restoring != 1 {
+			t.Errorf("%s answers change fail rate %v, recovery %+v and rework rate %+v; want 2 of 3, 180 minutes with 1 not restored, 1 of 3",
+				surface, written.tree["change_failure_rate"], *restored, *got.DeploymentReworkRate)
 		}
 	}
 
 	early := failureWindowQuery(-1, 2)
-	for surface, before := range map[string]measures.Result{
+	for surface, before := range map[string]writtenMeasures{
 		"the measures route": measuresRoute(-1, 2), "the timeline route's measures": timelineRoute(-1, 2), "the hub's measures view": hubView(oneProject, -1, 2),
 	} {
-		if before.ChangeFailureRate != nil || before.TimeToRestore != nil || before.DeploymentReworkRate != nil {
-			t.Errorf("a window from the day before failures_measured_since answers %v, %v and %v on %s, want null each",
-				before.ChangeFailureRate, before.TimeToRestore, before.DeploymentReworkRate, surface)
-		}
+		surface += ", over a window from the day before failures_measured_since"
+		requireNullMembers(t, surface, before.tree, modernFailureMembers...)
+		requireLegacyReadsNull(t, surface, before.tree)
 	}
 	if rate := evalStatistics(t, handler, early)[evals.SlugChangeFailRate].Window["rate"]; rate != nil {
 		t.Errorf("a window from the day before failures_measured_since reads change fail rate %g on the eval route, want no data", *rate)
@@ -210,16 +333,26 @@ func TestTheMeasuresRoutesFailureValuesEqualTheEvalRoutes(t *testing.T) {
 	// The hub that answers the two-project window is one that starts after the second project's
 	// settings are saved, so its first read is of the settings as they stand.
 	twoProjects := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
-	for surface, two := range map[string]measures.Result{
+	for surface, two := range map[string]writtenMeasures{
 		"the measures route": measuresRoute(0, 2), "the timeline route's measures": timelineRoute(0, 2), "the hub's measures view": hubView(twoProjects, 0, 2),
 	} {
-		if two.ChangeFailureRate != nil || two.TimeToRestore != nil || two.DeploymentReworkRate != nil {
-			t.Errorf("with two delivery-on projects %s answers %v, %v and %v, want null each",
-				surface, two.ChangeFailureRate, two.TimeToRestore, two.DeploymentReworkRate)
-		}
+		surface += ", with two delivery-on projects"
+		requireNullMembers(t, surface, two.tree, modernFailureMembers...)
+		requireLegacyReadsNull(t, surface, two.tree)
 	}
 	if rate := evalStatistics(t, handler, query)[evals.SlugChangeFailRate].Window["rate"]; rate == nil {
 		t.Error("with two delivery-on projects FAIL's change fail rate reads no data, want its value")
+	}
+
+	// Control, pinned to what the previous Delivery page reads (legacyMeasureReads):
+	// the answer it threw a TypeError on, the three failure measures each null and no container,
+	// is refused for every container, so the checks above fail where the containers are absent.
+	var crashed map[string]any
+	if err := json.Unmarshal([]byte(`{"change_failure_rate":null,"time_to_restore":null,"deployment_rework_rate":null}`), &crashed); err != nil {
+		t.Fatalf("decode the control answer: %v", err)
+	}
+	if got := legacyReadProblems(crashed); len(got) != len(legacyMeasureReads) {
+		t.Errorf("the control answer with no legacy container has %d problems %v, want one for each of the %d containers", len(got), got, len(legacyMeasureReads))
 	}
 }
 

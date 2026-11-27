@@ -74,10 +74,6 @@ type measuresFixture struct {
 
 const measuresFixtureWindow = "from=2026-08-30T00:00:00Z&to=2026-09-27T20:00:00Z"
 
-// noFailureMeasuresJSON is a measures answer's three failure measures where no one delivery-on
-// project counts a failure source: each null, "no data", which no target judges.
-const noFailureMeasuresJSON = `"change_failure_rate":null,"time_to_restore":null,"deployment_rework_rate":null`
-
 // seedMeasuresFixture writes the fixture's settings, issues, pull requests, runs and jobs through
 // the same store calls intake and reconcile use, so Dispatch derives each PR's deploy from the
 // stored rows (containment.go FirstShippingApply) as it does in production.
@@ -384,18 +380,21 @@ func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
 			t.Fatalf("GET timeline?%s: status = %d, body = %s", query, response.Code, response.Body.String())
 		}
 		var timeline struct {
-			Measures *deliveryMeasuresResponse `json:"measures"`
+			Measures json.RawMessage `json:"measures"`
 		}
-		if err := json.Unmarshal(response.Body.Bytes(), &timeline); err != nil {
-			t.Fatalf("decode timeline?%s: %v", query, err)
+		if err := json.Unmarshal(response.Body.Bytes(), &timeline); err != nil || len(timeline.Measures) == 0 {
+			t.Fatalf("decode timeline?%s: %v, measures = %s, want the measures answer", query, err, timeline.Measures)
 		}
-		if timeline.Measures == nil {
-			t.Fatalf("timeline?%s carries no measures", query)
+		var got deliveryMeasuresResponse
+		if err := json.Unmarshal(timeline.Measures, &got); err != nil {
+			t.Fatalf("decode timeline?%s's measures: %v", query, err)
 		}
-		got, want := *timeline.Measures, getDeliveryMeasures(t, handler, query)
-		if !strings.Contains(response.Body.String(), noFailureMeasuresJSON) {
-			t.Errorf("timeline?%s carries no %s with no stored row of the failure measures", query, noFailureMeasuresJSON)
-		}
+		want := getDeliveryMeasures(t, handler, query)
+		// No row of the failure measures' evals is stored: each of their members reads null, as
+		// does every member the previous Delivery page reads.
+		written := decodeWrittenMeasures(t, "timeline?"+query, timeline.Measures)
+		requireNullMembers(t, "timeline?"+query, written.tree, modernFailureMembers...)
+		requireLegacyReadsNull(t, "timeline?"+query, written.tree)
 		if got.ComputedAt.IsZero() {
 			t.Errorf("timeline?%s: measures.computed_at is zero", query)
 		}
@@ -443,14 +442,11 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	}
 
 	// No row of the three failure measures' evals is stored, so each reads no value: a 0 would be
-	// a measured rate, which a target would judge met.
-	if result.ChangeFailureRate != nil || result.TimeToRestore != nil || result.DeploymentReworkRate != nil {
-		t.Errorf("the failure measures = %+v, %+v, %+v with no stored row, want each null", result.ChangeFailureRate, result.TimeToRestore, result.DeploymentReworkRate)
-	}
-	if !strings.Contains(string(raw), noFailureMeasuresJSON) {
-		_, answered, _ := strings.Cut(string(raw), `"change_failure_rate"`)
-		t.Errorf("the answer carries no %s with no stored row; it answers %.400s", noFailureMeasuresJSON, answered)
-	}
+	// a measured rate, which a target would judge met. The members the previous Delivery page
+	// reads are null too, as in every window.
+	written := decodeWrittenMeasures(t, "measures?"+measuresFixtureWindow, raw)
+	requireNullMembers(t, "measures?"+measuresFixtureWindow, written.tree, modernFailureMembers...)
+	requireLegacyReadsNull(t, "measures?"+measuresFixtureWindow, written.tree)
 	if len(body.UnownedP0) != 1 || body.UnownedP0[0] != (delivery.UnownedIssue{Key: "ACME-103", Title: "Production deploy gate flakes"}) {
 		t.Errorf("unowned_p0 = %+v, want [{ACME-103 Production deploy gate flakes}]", body.UnownedP0)
 	}

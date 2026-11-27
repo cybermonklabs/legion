@@ -724,8 +724,8 @@ func TestNoRouteThisChildAddsAnswersAFailureMeasure(t *testing.T) {
 	}
 
 	// The fixture actually has a figure that a route could accidentally include.
-	rate := getDeliveryMeasures(t, handler, failureWindowQuery(0, 2)).Measures.ChangeFailureRate
-	if rate == nil || rate.Rate == nil {
+	rate := getDeliveryMeasures(t, handler, failureWindowQuery(0, 2)).Measures.ChangeFailureRate.Rate
+	if rate == nil {
 		t.Fatal("the failure fixture must have a measured change fail rate")
 	}
 	for _, route := range routes {
@@ -753,7 +753,7 @@ func TestNoRouteThisChildAddsAnswersAFailureMeasure(t *testing.T) {
 			}
 			// Control: the settings answer with the measured rate beside its targets is a leak.
 			withFigure := decodeBody[map[string]any](t, response)
-			withFigure[evals.SlugChangeFailRate] = map[string]any{"value": *rate.Rate}
+			withFigure[evals.SlugChangeFailRate] = map[string]any{"value": *rate}
 			if field := failureFigureAt(withFigure, ""); field != "."+evals.SlugChangeFailRate {
 				t.Errorf("control found %q, want the injected change fail rate figure", field)
 			}
