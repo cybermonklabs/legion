@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -160,7 +161,7 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 				t.Fatalf("UNKNOWN: %s records no secret, so the check compares nothing", record)
 			}
 			if again, err := json.MarshalIndent(want, "", "  "); err != nil || !bytes.Equal(append(again, '\n'), raw) {
-				t.Fatalf("%s holds an entry or a form -record does not write (a repeated secret, or one written by hand), which the comparison would not read; write it as -record does", record)
+				t.Fatalf("%s holds an entry or a form -record does not write (%s), which the comparison would not read; write it as -record does", record, recordForm(raw, "secret"))
 			}
 			compareSources(t, "List", "Load", got, want)
 			compareSources(t, "Describe, a reread", "LoadOne, a reread", reread, want)
@@ -202,4 +203,33 @@ func sourceText(source string, present bool) string {
 		return "absent"
 	}
 	return strconv.Quote(source)
+}
+
+// recordForm names what makes a record other than what -record writes: each top-level key it
+// holds more than once, of which decoding keeps the last, or else a form written by hand.
+func recordForm(raw []byte, entry string) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil {
+		return err.Error()
+	}
+	seen, repeated := map[string]bool{}, []string{}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return err.Error()
+		}
+		if name, _ := key.(string); seen[name] {
+			repeated = append(repeated, fmt.Sprintf("the %s %q more than once", entry, name))
+		} else {
+			seen[name] = true
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return err.Error()
+		}
+	}
+	if len(repeated) == 0 {
+		return "an entry or a layout written by hand"
+	}
+	return strings.Join(repeated, ", ")
 }
