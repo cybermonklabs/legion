@@ -9207,6 +9207,7 @@ describe("executeDispatchTool", () => {
     ["a line feed", `x\n${forgedCheckLine}`],
     ["a cursor move to column 1", `x\x1b[1G${forgedCheckLine}`],
     ["U+2028", `x\u2028${forgedCheckLine}`],
+    ["a tab", `x\t${forgedCheckLine}`],
   ] as const;
   /** An answer whose one check CI proves, with `ci` over its fields, and `results` its derived
    *  result or none. */
