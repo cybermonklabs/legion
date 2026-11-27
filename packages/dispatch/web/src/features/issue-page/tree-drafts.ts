@@ -21,7 +21,7 @@ import type { ReferenceNameReading } from "../refs/reference-names";
 import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { firstWordedBlock } from "../refs/tree-fragment";
-import { agentsOnlyIds, issueAsks } from "./agents-only";
+import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
   type ChangeComment,
@@ -775,7 +775,7 @@ function addAsks(
   context: TreeContext
 ): ReadonlyMap<string, string> {
   const asks = new Map<string, TreeAsk>();
-  for (const ask of issueAsks(reads.issue.open_asks, reads.asks)) {
+  for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
     if (ask.kind === "question") asks.set(ask.id, ask);
   }
   const placed = new Map<string, string>();
@@ -940,11 +940,10 @@ function addTurns(
 ): void {
   // The asks `addAsks` drew its nodes from, which is what tells a reply under a question the
   // tree draws from one under an approval request, which it does not.
-  const history = agentsOnlyIds(
-    reads.comments,
-    reads.messages,
-    issueAsks(reads.issue.open_asks, reads.asks)
-  );
+  const history = agentsOnlyIds(reads.comments, reads.messages, [
+    ...(reads.issue.open_asks ?? []),
+    ...(reads.asks ?? []),
+  ]);
   const turns: Turn[] = [
     ...(reads.comments ?? []).map((comment) => ({
       at: comment.created_at,

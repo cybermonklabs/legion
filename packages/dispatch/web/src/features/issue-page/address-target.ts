@@ -13,7 +13,6 @@ import {
 import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/reference-target";
 import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { prefixReference } from "../refs/text-references";
-import { issueAsks } from "./agents-only";
 import {
   type AddressTarget,
   agentsOnlyItem,
@@ -332,12 +331,10 @@ export function useAddressFallback({
     () =>
       unheldId === undefined
         ? undefined
-        : agentsOnlyItem(
-            { id: unheldId, kind: "item" },
-            comments,
-            messages,
-            issueAsks(openAsks, asks)
-          ),
+        : agentsOnlyItem({ id: unheldId, kind: "item" }, comments, messages, [
+            ...(openAsks ?? []),
+            ...(asks ?? []),
+          ]),
     [asks, comments, messages, openAsks, unheldId]
   );
   const ancestor = useMemo(
