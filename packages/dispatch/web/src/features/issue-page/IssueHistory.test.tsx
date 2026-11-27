@@ -4739,7 +4739,7 @@ test("Show more whose first entry it draws is a run with no handoff moves the fo
   }
 });
 
-/** The handoffs the addresses of table E name, each id a UUID, as a handoff's address names it. */
+/** The handoffs the addresses of table E name, each id a UUID, as the server writes a handoff's. */
 const ADDRESSED = "0195f3a4-0000-7000-8000-000000000001";
 const NEWER = "0195f3a4-0000-7000-8000-000000000002";
 const NOT_LISTED = "0195f3a4-0000-7000-8000-000000000003";
@@ -4995,6 +4995,47 @@ describe("an address lands as its table says", () => {
       ).not.toContain(NOT_LISTED);
     } finally {
       page.restore();
+    }
+  });
+
+  // An id that is not in a handoff's form, mistyped or cut short to its first part, names no
+  // handoff of the issue either. The bodies route refuses a whole request that holds such an id
+  // (`400 HANDOFF_ID_INPUT`), as the read here does, so the page asks it for no such id, and the
+  // bodies of the entries in view still arrive.
+  test("E10: an id that is not a UUID says that no such handoff exists, and the bodies in view still arrive", async () => {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    for (const id of ["not-a-uuid", NEWER.slice(0, 8)]) {
+      handoffsRead().mockResolvedValue([listedHandoff(NEWER, 30, 2)]);
+      const page = drawAtAddress(handoffPath(id));
+      page.bodies.mockImplementation(async (_key, ids) => {
+        if (!ids.every((one) => uuid.test(one))) throw new Error("HANDOFF_ID_INPUT");
+        return {
+          bodies: ids.map((one) => ({ body: handoffRecord(`The body of ${one}`).body, id: one })),
+          left: [],
+        };
+      });
+      try {
+        const history = await screen.findByTestId("issue-history");
+        await within(history).findByText(ANSWER_LINES.handoff_missing);
+        expect(page.hold.isOpen, `the address of ${id} left Details shut`).toBe(true);
+        expect(document.querySelector('[data-history-entry][aria-current="true"]')).toBe(null);
+        await waitFor(() =>
+          expect(page.headingLandings(), "the address did not land on the History heading").toBe(1)
+        );
+        await showHandoffs(page.near);
+        await waitFor(() => expect(page.bodies).toHaveBeenCalled());
+        expect(
+          page.bodies.mock.calls.flatMap(([, ids]) => ids),
+          `the page asked the bodies route for ${id}, which no handoff of the issue has`
+        ).not.toContain(id);
+        await within(
+          document.querySelector<HTMLElement>(
+            `[data-history-entry="handoff:${NEWER}"]`
+          ) as HTMLElement
+        ).findByText(`The body of ${NEWER}`);
+      } finally {
+        page.restore();
+      }
     }
   });
 

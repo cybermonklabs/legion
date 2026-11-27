@@ -737,9 +737,10 @@ test("the decisions tab owns its path and names the issue's decisions.md", () =>
 });
 
 // A handoff's page address: both pages read it, the new page to open its entry in the history
-// and today's to open its card on the Conversation tab. Its id is a handoff's, a UUID, and the
-// route names it `handoffId`, not `id`, so no reader of an item's route (`ItemRoute`) takes it
-// for an ask, a comment or a message.
+// and today's to open its card on the Conversation tab. Its id is any one decoded segment, as an
+// ask's, a comment's and a message's is, so an id that names no handoff of the issue, in whatever
+// form, opens the issue's page, which says so. The route names it `handoffId`, not `id`, so no
+// reader of an item's route (`ItemRoute`) takes it for an ask, a comment or a message.
 const HANDOFF_ID = "0195f3a4-7b2c-7d10-9a3e-5c1d2e3f4a5b";
 
 test("a handoff address is read and written back", () => {
@@ -761,21 +762,36 @@ test("a handoff address is read and written back", () => {
   expect(shortForm(route)).toBe("CORE-1 handoff");
 });
 
-test("an id that does not decode reads as no route", () => {
+// The ids that give no route: a segment that does not decode, one that decodes to a control
+// character, an empty one, two segments, and the address's word in the singular.
+test("a handoff address that holds no one decoded segment reads as no route", () => {
+  for (const id of ["%E0%A4%A", "%00", `${HANDOFF_ID}/fields`, ""]) {
+    expect(parseIssuePath(`/issues/CORE-1/handoffs/${id}`), id).toBeUndefined();
+  }
+  expect(parseIssuePath(`/issues/CORE-1/handoff/${HANDOFF_ID}`)).toBeUndefined();
+});
+
+// An id that is not in a handoff's form, mistyped or cut short, is still the handoff's address:
+// the page opens, and says that the issue holds no such handoff (R3). Each id is lower-cased, as a
+// handoff's id is written, so a UUID in upper case names its handoff.
+test("a handoff address whose id is not a UUID reads as the handoff route with that id", () => {
   for (const id of [
-    "%E0%A4%A",
-    "%00",
     "handoff-1",
     "not-a-uuid",
     `${HANDOFF_ID}0`,
     HANDOFF_ID.replaceAll("-", ""),
     `{${HANDOFF_ID}}`,
-    `${HANDOFF_ID}/fields`,
-    "",
+    HANDOFF_ID.slice(0, 8),
   ]) {
-    expect(parseIssuePath(`/issues/CORE-1/handoffs/${id}`), id).toBeUndefined();
+    const route = { handoffId: id, key: "CORE-1", kind: "handoff" as const };
+    expect(parseIssuePath(`/issues/CORE-1/handoffs/${id}`), id).toEqual(route);
+    expect(parseIssuePath(buildIssuePath(route)), id).toEqual(route);
   }
-  expect(parseIssuePath(`/issues/CORE-1/handoff/${HANDOFF_ID}`)).toBeUndefined();
+  expect(parseIssuePath(`/issues/CORE-1/handoffs/${HANDOFF_ID.toUpperCase()}`)).toEqual({
+    handoffId: HANDOFF_ID,
+    key: "CORE-1",
+    kind: "handoff",
+  });
 });
 
 test("a handoff address names nothing in text", () => {

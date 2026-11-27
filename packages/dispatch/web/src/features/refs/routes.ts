@@ -238,8 +238,6 @@ const sessionRouteIDPattern = /^[A-Za-z0-9_-]+$/;
 const personLoginOnlyPattern = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 /** One machine's page: `/machines/<machine>`, the machine name as one percent-encoded segment. */
 const machinePathPattern = /^\/machines\/([^/]+)$/;
-/** A handoff's id as the server writes it: a UUID in its canonical form, in lower case. */
-const handoffIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The page of an agent's artifact, the router's pattern for `AgentArtifactRoute`. */
 export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
@@ -507,16 +505,17 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "decisions") {
     return { key, kind: "decisions" };
   }
-  // A handoff's page address: the id a handoff has, a UUID, in the form the server writes it. It
-  // opens that handoff's entry in the history on the new page and its card on today's
-  // Conversation tab, and names nothing in text (`pageRoutes`), as the server's `text` reads no
-  // handoff. The id is `handoffId`, not `id`, so no reader of an item's route takes it in.
+  // A handoff's page address. It opens that handoff's entry in the history on the new page and
+  // its card on today's Conversation tab, and names nothing in text (`pageRoutes`), as the
+  // server's `text` reads no handoff. Its id is any one decoded segment, as an ask's, a comment's
+  // and a message's address takes: an id that is no handoff of the issue, in whatever form, opens
+  // the issue's page too, whose history says that no such handoff exists. It is lower-cased, as
+  // the server writes a handoff's id, so a UUID in upper case names its handoff. The id is
+  // `handoffId`, not `id`, so no reader of an item's route takes it in.
   const handoff = target.match(/^handoffs\/([^/?#\s]+)$/);
   if (handoff !== null) {
     const handoffId = decodedSegment(handoff[1] ?? "")?.toLowerCase();
-    return handoffId !== undefined && handoffIdPattern.test(handoffId)
-      ? { handoffId, key, kind: "handoff" }
-      : undefined;
+    return handoffId === undefined ? undefined : { handoffId, key, kind: "handoff" };
   }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
