@@ -58,12 +58,12 @@
 #            the command a person runs: each loss means another run published
 #            in between, so a chain that long means something keeps moving the
 #            tags. A commit left to another run loses an image and a version
-#            number of its own, never its change: the header of
-#            .github/workflows/release-envoy-listener.yaml, above its
-#            `concurrency:` block, says why, and is the one copy of that
-#            reasoning. The run started here is a workflow_dispatch, which
-#            that file's workflow-level group keys on its run id, so it is a
-#            group of its own and no newer push replaces it while it waits.
+#            number of its own, never its change:
+#            .github/ci-notes/release-envoy-listener.md#why-only-the-newest-waiting-push-builds-and-why-a-dispatch-is-never-replaced
+#            says why, and is the one copy of that reasoning. The run started
+#            here is a workflow_dispatch, which release-envoy-listener.yaml's
+#            workflow-level group keys on its run id, so it is a group of its
+#            own and no newer push replaces it while it waits.
 # tag:       create the release tag <tag> on $GITHUB_SHA, the commit the
 #            release run started on, which main contains, as the legion-v,
 #            legion-envoy-v and envoy-infra-v tags always named it; pushes
