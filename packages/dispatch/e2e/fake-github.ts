@@ -473,11 +473,17 @@ function installationLimited(id: number): boolean {
   );
 }
 
-/** The installation an installation token of this fake was minted for (`ghs_fake_<id>`), or
- *  undefined for any other credential. */
+/** The installation an installation token of this fake was minted for (`ghs_fake_<id>_<n>`, the
+ *  `n`th mint), or undefined for any other credential. */
 function tokenInstallation(request: Request): number | undefined {
-  const token = request.headers.get("Authorization")?.match(/^Bearer ghs_fake_(\d+)$/);
+  const token = request.headers.get("Authorization")?.match(/^Bearer ghs_fake_(\d+)_\d+$/);
   return token === null || token === undefined ? undefined : Number(token[1]);
+}
+
+/** The installation token a call carries, as this fake minted it, or undefined for any other
+ *  credential (the App's JWT, none). */
+function tokenOf(request: Request): string | undefined {
+  return request.headers.get("Authorization")?.match(/^Bearer (ghs_fake_\d+_\d+)$/)?.[1];
 }
 
 /** The headers GitHub answers a call of a spent budget with: no requests remain, and the budget
@@ -503,12 +509,16 @@ function countCheckRunRead(repo: string, sha: string): void {
  *  what it asks for: each pull request it asks by number (`acme/tools#22`), with `(absence)` where
  *  it asks the count of the repository's pull requests too, or `search` for a query that asks for
  *  no pull request by number. A listing of an installation's repositories asks its page size
- *  (`per_page=1`, the rate reading's; the reconcile lists 100 a page). */
+ *  (`per_page=1`, the rate reading's; the reconcile lists 100 a page). `token` is the installation
+ *  token the call carried, and `minted` the token a mint answered: each mint answers a token of
+ *  its own, so a reader can tell which calls a mint's token served. */
 interface Call {
   readonly route: string;
   readonly repo?: string;
   readonly installation?: number;
   readonly asks?: string;
+  readonly token?: string;
+  readonly minted?: string;
 }
 
 /** The most calls the log keeps; later ones are counted in `callsDropped` alone. */
@@ -520,6 +530,8 @@ const callLogBound = 1_000;
 // The fixture routes and /healthz are no calls of the server's.
 let calls: Call[] = [];
 let callsDropped = 0;
+// The mints the fake answered since it started, which numbers each token it mints.
+let mints = 0;
 
 function logCall(call: Call): void {
   if (calls.length < callLogBound) calls.push(call);
@@ -527,18 +539,23 @@ function logCall(call: Call): void {
 }
 
 /** The call of `method` at `pathname`, its repository, numbers and commits written as names, the
- *  installation of a token's mint, and the page size a listing of an installation's repositories
- *  asks (`search`, the URL's query). */
-function callOf(method: string, pathname: string, search: URLSearchParams): Call {
+ *  page size a listing of an installation's repositories asks (`search`, the URL's query), and the
+ *  installation token the call carried (`token`, tokenOf). */
+function callOf(
+  method: string,
+  pathname: string,
+  search: URLSearchParams,
+  token: string | undefined
+): Call {
   const named = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/);
   const path = named === null ? pathname : `/repos/{owner}/{repo}${named[3] ?? ""}`;
   const route = `${method} ${path.replace(/\/[0-9a-f]{40}(?=\/|$)/g, "/{sha}").replace(/\/\d+(?=\/|$)/g, "/{n}")}`;
-  if (named !== null) return { repo: `${named[1]}/${named[2]}`, route };
+  const carried = token === undefined ? {} : { token };
+  if (named !== null) return { repo: `${named[1]}/${named[2]}`, route, ...carried };
   if (pathname === "/installation/repositories") {
-    return { asks: `per_page=${search.get("per_page") ?? ""}`, route };
+    return { asks: `per_page=${search.get("per_page") ?? ""}`, route, ...carried };
   }
-  const minted = pathname.match(/^\/app\/installations\/(\d+)\/access_tokens$/);
-  return minted === null ? { route } : { installation: Number(minted[1]), route };
+  return { route, ...carried };
 }
 
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
@@ -581,9 +598,12 @@ const server = Bun.serve({
     }
 
     if (url.pathname === "/healthz") return Response.json({ ok: true });
-    // A GraphQL query is logged where its body is read, below, with what it asks for.
-    if (!(request.method === "POST" && url.pathname === "/graphql")) {
-      logCall(callOf(request.method, url.pathname, url.searchParams));
+    // A GraphQL query is logged where its body is read, below, with what it asks for, and a mint
+    // where it is answered, with the token it answers.
+    const minting =
+      request.method === "POST" && /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname);
+    if (!(request.method === "POST" && url.pathname === "/graphql") && !minting) {
+      logCall(callOf(request.method, url.pathname, url.searchParams, tokenOf(request)));
     }
 
     const installation = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/installation$/);
@@ -601,15 +621,17 @@ const server = Bun.serve({
       });
     }
 
-    if (
-      request.method === "POST" &&
-      /^\/app\/installations\/\d+\/access_tokens$/.test(url.pathname)
-    ) {
+    if (minting) {
+      const installationId = Number(url.pathname.split("/")[3]);
+      mints++;
+      const token = `ghs_fake_${installationId}_${mints}`;
+      logCall({
+        installation: installationId,
+        minted: token,
+        route: "POST /app/installations/{n}/access_tokens",
+      });
       return Response.json(
-        {
-          expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-          token: `ghs_fake_${url.pathname.split("/")[3]}`,
-        },
+        { expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), token },
         { status: 201 }
       );
     }
@@ -628,9 +650,7 @@ const server = Bun.serve({
     }
 
     if (request.method === "GET" && url.pathname === "/installation/repositories") {
-      const installationId = Number(
-        request.headers.get("Authorization")?.replace("Bearer ghs_fake_", "")
-      );
+      const installationId = tokenInstallation(request);
       return Response.json({
         repositories: [...repos]
           .filter(([, repo]) => repo.installation_id === installationId)
@@ -677,6 +697,7 @@ const server = Bun.serve({
       for (const repository of commitsAsked) {
         countPullRead(repository.fullName, "commit_pulls", repository.commits.length);
       }
+      const token = tokenOf(request);
       logCall({
         asks:
           commitsAsked.length > 0
@@ -698,6 +719,7 @@ const server = Bun.serve({
                   )
                   .join(", "),
         route: "POST /graphql",
+        ...(token === undefined ? {} : { token }),
       });
       const installationId = tokenInstallation(request);
       if (installationId !== undefined && installationLimited(installationId)) {

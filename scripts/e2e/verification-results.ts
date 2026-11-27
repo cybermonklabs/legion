@@ -4881,8 +4881,10 @@ async function tipRows(): Promise<string[]> {
 interface FakeCall {
   readonly asks?: string;
   readonly installation?: number;
+  readonly minted?: string;
   readonly repo?: string;
   readonly route: string;
+  readonly token?: string;
 }
 
 /** Every call the fake took since its counts were last emptied (resetPullReads), oldest first. A
@@ -4906,7 +4908,13 @@ function callText(call: FakeCall): string {
   const repository = call.repo === undefined ? "" : ` (${call.repo})`;
   const installation =
     call.installation === undefined ? "" : ` (installation ${call.installation})`;
-  return `${call.route}${repository}${installation}${call.asks === undefined ? "" : ` asking ${call.asks}`}`;
+  const token =
+    call.minted !== undefined
+      ? ` minting ${call.minted}`
+      : call.token === undefined
+        ? ""
+        : ` with ${call.token}`;
+  return `${call.route}${repository}${installation}${call.asks === undefined ? "" : ` asking ${call.asks}`}${token}`;
 }
 
 /** Whether `call` reads a pull request by the REST routes the intake reads one with: the pull
@@ -4953,19 +4961,34 @@ function tipMint(call: FakeCall): boolean {
   );
 }
 
-/** Whether `call` is one of the reads the rate reading of each start makes (cmd/dispatch's
- *  ratereading.go, main's #4681): the App's installations (`GET /app/installations`, which only
+/** The calls of `calls` that the rate reading of each start makes (cmd/dispatch's ratereading.go,
+ *  main's #4681): the App's installations (`GET /app/installations`, which only
  *  githubapp.Client.ReadInstallations asks, for the rate reading), the App itself (`GET /app`,
  *  AppIdentity, the same), the first repository of an installation (`GET
- *  /installation/repositories` with `per_page=1`, where the reconcile's listing asks 100 a page)
- *  and that repository's workflows, whose answer carries the rate counter. */
-function rateReadingCall(call: FakeCall): boolean {
-  return (
-    ["GET /app/installations", "GET /app", "GET /repos/{owner}/{repo}/actions/workflows"].includes(
-      call.route
-    ) ||
-    (call.route === "GET /installation/repositories" && call.asks === "per_page=1")
+ *  /installation/repositories` with `per_page=1`, where the reconcile's listing asks 100 a page),
+ *  that repository's workflows, whose answer carries the REST counter, `GET /rate_limit`, which
+ *  only the reading reads, and the token it mints for an installation: a mint whose token those
+ *  reads alone carried. The client keeps one token for each installation, so a token the pass also
+ *  carried is the pass's too, and stays counted. */
+function rateReadingCalls(calls: readonly FakeCall[]): Set<FakeCall> {
+  const reads = new Set(
+    calls.filter(
+      (call) =>
+        [
+          "GET /app/installations",
+          "GET /app",
+          "GET /repos/{owner}/{repo}/actions/workflows",
+          "GET /rate_limit",
+        ].includes(call.route) ||
+        (call.route === "GET /installation/repositories" && call.asks === "per_page=1")
+    )
   );
+  for (const mint of calls) {
+    if (mint.minted === undefined) continue;
+    const carried = calls.filter((call) => call.token === mint.minted);
+    if (carried.length > 0 && carried.every((call) => reads.has(call))) reads.add(mint);
+  }
+  return reads;
 }
 
 /** Runs one half of first-start-tip, and ends the process. */
@@ -5229,14 +5252,17 @@ async function tipSecondStart(
   // GraphQL query, the facts line's, asking for #22 alone, beside the installation lookup and the
   // token that query needs, and #22's messages are stored after the pass. Where they were stored
   // before, it calls GitHub for nothing. The webhook redelivery sweep's read
-  // (GET /app/hook/deliveries) and the start's rate reading (rateReadingCall, main's #4681) are the
-  // App's own duties, neither the intake's nor the pass's, and are left out.
+  // (GET /app/hook/deliveries) and the start's rate reading (rateReadingCalls, main's #4681: its
+  // reads and the token it minted for them alone) are the App's own duties, neither the intake's
+  // nor the pass's, and are left out, and named so a reader sees what was.
   const messagesAfter = await sql(tipMessagesOfTheSecond);
   note(
     `T3 #22's commit messages: ${messagesBefore} before the second start, ${messagesAfter} after its pass`
   );
+  const reading = rateReadingCalls(calls);
+  note(`T3 left out as the rate reading's: ${[...reading].map(callText).join("; ") || "none"}`);
   const counted = calls.filter(
-    (call) => call.route !== "GET /app/hook/deliveries" && !rateReadingCall(call)
+    (call) => call.route !== "GET /app/hook/deliveries" && !reading.has(call)
   );
   const unstored = messagesBefore === "not read";
   if (unstored) {
