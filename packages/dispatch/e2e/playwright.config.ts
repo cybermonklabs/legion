@@ -586,13 +586,15 @@ const parallelProjects = [
   // page, or a navigation that takes the whole page, so that the page, which must hand the focus
   // to the control that opened it or to the page's content, is read at the point the engine leaves
   // it on the body. INFRA-2160's round-21 rows, each of which asserts where the page hands it:
-  // `keyboard-complete`'s five `k-comment-focus` rows of a Conversation composer after Discard, of
+  // `keyboard-complete`'s five `composer hand-back` rows of a Conversation composer after Discard, of
   // a comment's edit composer and the margin's after a second Escape, of a thread's reply box
   // after Escape and of the docked composer after Cancel reply; `issue-page-q`'s Change form after
   // Cancel; `issue-page-h`'s Repository box after its clear lands; `issue-page-p`'s Issue actions
   // menu, closed by one Escape with Details open; `credential-expired`'s row that Enter on a
   // Dismiss takes away; `priorities`' New priority form after Cancel; and `create-document`'s
-  // document made from the project's Documents list.
+  // document made from the project's Documents list. INFRA-2160's round-22 rows, read the same
+  // way: `keyboard-complete`'s two `composer hand-back` rows of a Conversation comment's edit
+  // composer and the spec margin's after Save.
   // Where the engine leaves the focus once the element that held it is removed or replaced, which
   // the Inbox's reading view below 1280 px must hand on from: the focus held by the answer box, the
   // scroller or a card's control that a commit takes off the page as the view closes on the last

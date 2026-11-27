@@ -11221,6 +11221,102 @@ test("composer hand-back: on today's issue page a second Escape over Discard dra
   ).toBeFocused();
 });
 
+// The tester's red row of round 22 (an inline editor a key or a button ends leaves the focus on the
+// page body: a comment's edit composer that its Save ends runs MentionComposer.tsx:558-562's
+// `landed`, whose `onSent()` (:560) is ThreadCard.tsx:481's `() => setEditingId(undefined)`, which
+// unmounts the editor that holds the focus and calls no `editFocus.handBack()`, where its
+// `onClose` (:476-480) hands the focus back to the comment's Edit; ThreadCard.tsx:464-465 says
+// "Save hands nothing back: its editor stays until the saved words are read, by when the reader
+// may be elsewhere", though `useFocusBack` already gives the focus back only from the page's body
+// (useFocusBack.ts:43); the architect's ruling of 2026-11-27T01:18Z). On the Conversation tab, Expand
+// thread, Edit on alice's own comment, a change to its text and Save end the edit; the focus must
+// be back on the comment's Edit button. At e4ece294 it is on the body in every sample: Chromium,
+// Firefox and WebKit twice each, at 1440x900 and at 390x664, after Save and after Ctrl+Enter.
+// SLOW(>=2s): one comment seeded, one Conversation tab open, its thread opened, and the comment's
+// edit composer opened and saved, one write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("composer hand-back: on today's issue page Save in a Conversation comment's edit composer gives the focus back to the comment's Edit button @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `composer hand-back: Save in a Conversation comment's edit composer: ${text}`;
+  const seed = await plantOwnComment();
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${seed.key}/conversation`);
+  const turn = page.locator(`[data-turn="comment:${seed.commentId}"]`);
+  const edit = turn.getByRole("button", { exact: true, name: "Edit" });
+  const field = turn.getByRole("textbox", { name: "Edit comment" });
+  const saved = "Alice asks why the clock is shared, and since when.";
+  await turn.getByRole("button", { exact: true, name: "Expand thread" }).click();
+  await expect(edit, step("the open thread offers Edit on alice's own comment.")).toBeVisible();
+  await edit.click();
+  await expect(field, step("Edit opens the comment's editor.")).toBeVisible();
+  await field.click();
+  await field.fill(saved);
+  await expect(field, step("the changed text is in the editor.")).toHaveValue(saved);
+  await expect(field, step("the editor holds the caret.")).toBeFocused();
+  await turn.getByRole("button", { exact: true, name: "Save" }).click();
+  await expect(field, step("Save ends the edit and takes the editor away.")).toHaveCount(0);
+  await expect(turn, step("the comment shows the saved text.")).toContainText(saved);
+  await expect(
+    edit,
+    step(
+      "after Save the focus is back on the comment's Edit button, which opened the editor, not on the page body."
+    )
+  ).toBeFocused();
+});
+
+// The tester's red row of round 22 (an inline editor a key or a button ends leaves the focus on the
+// page body: a margin comment's edit composer that its Save ends runs MentionComposer.tsx:558-562's
+// `landed`, whose `onSent()` (:560) is ThreadCard.tsx:481's `() => setEditingId(undefined)`, in the
+// spec's margin useMarginSheet.ts's `setEditingCommentId`, which unmounts the editor that holds the
+// focus and calls no `editFocus.handBack()`, where its `onClose` (:476-480) hands the focus back to
+// the card's Edit; the architect's ruling of 2026-11-27T01:18Z). In the spec's margin, alice's comment on
+// "lease" opened, its Edit, a change to its text and Save end the edit; the focus must be back on
+// the card's Edit button. At e4ece294 it is on the body in every sample: Chromium, Firefox and
+// WebKit twice each, at 1440x900 and at 390x664, after Save and after Ctrl+Enter.
+// SLOW(>=2s): one comment on the spec seeded, the spec opened and connected, the comment's card
+// opened, and its edit composer opened and saved, one write.
+// @firefox: the engine's focus after the element that held it is removed (playwright.config.ts names the clause).
+test("composer hand-back: on today's issue page Save in the spec margin's edit composer gives the focus back to the card's Edit button @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `composer hand-back: Save in the spec margin's edit composer: ${text}`;
+  const seed = await seedCommentFocus();
+  const comment = await createComment(seed.key, {
+    anchor: { artifact: "spec", quote: THIRD_WORD },
+    body: "Why does the lease return at noon?",
+  });
+  await page.setViewportSize(WIDE);
+  await openSpec(page, seed.key, FOCUS_PARAGRAPHS[2][0]);
+  const card = page.getByTestId(`margin-comment-${comment.id}`);
+  const edit = card.getByRole("button", { exact: true, name: "Edit" });
+  const field = card.getByRole("textbox", { name: "Edit comment" });
+  const saved = "Why does the lease return at midnight?";
+  await card.getByRole("button", { expanded: false }).first().click();
+  await expect(card, step("a click on the card's preview opens its thread.")).toHaveAttribute(
+    "aria-expanded",
+    "true"
+  );
+  await expect(edit, step("the open card offers Edit on alice's own comment.")).toBeVisible();
+  await edit.click();
+  await expect(field, step("Edit opens the comment's editor.")).toBeVisible();
+  await field.click();
+  await field.fill(saved);
+  await expect(field, step("the changed text is in the editor.")).toHaveValue(saved);
+  await expect(field, step("the editor holds the caret.")).toBeFocused();
+  await card.getByRole("button", { exact: true, name: "Save" }).click();
+  await expect(field, step("Save ends the edit and takes the editor away.")).toHaveCount(0);
+  await expect(card, step("the card shows the saved text.")).toContainText(saved);
+  await expect(
+    edit,
+    step(
+      "after Save the focus is back on the card's Edit button, which opened the editor, not on the page body."
+    )
+  ).toBeFocused();
+});
+
 // The tester's red row of round 19 (R12; the architect's ruling of 2026-11-25T13:35Z): on today's
 // issue page one Escape in the header's title editor ends the edit with the focus back on Edit
 // title, as the new issue page puts it back on its title. At c6dc939c IssueHeader.tsx's Escape
