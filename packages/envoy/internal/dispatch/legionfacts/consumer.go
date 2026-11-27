@@ -130,8 +130,9 @@ type Deps struct {
 	// Events is signalled when an event commits, whichever process wrote it: in the server the
 	// pglisten.Hub wake on api.EventsChannel.
 	Events <-chan struct{}
-	// Observations is signalled when the sampler has read a daemon: the hub's wake on
-	// legion.StateChannel.
+	// Observations is signalled when the Legion state intake has recorded a daemon's state, a
+	// batch of its state events or a whole read, and when a Legion setting is written: the hub's
+	// wake on legion.StateChannel.
 	Observations <-chan struct{}
 	// Deliveries is signalled when a delivery fact changed: the hub's wake on
 	// delivery.ChangesChannel. A facts write of either process notifies it once its changes
@@ -185,8 +186,8 @@ type process struct {
 //     title an event's actor carries, which decides whether the issue carries Legion phase work
 //     at all - so the pass takes the page's issues and recomputes them (readEventPage).
 //  2. The daemon's observations, woken by Deps.Observations: the phase, the slot and the wait
-//     the sampler recorded of an issue, and the project's admission block, which every open
-//     row's waiting reason reads, so a move of the block recomputes those rows
+//     the Legion state intake recorded of an issue, and the project's admission block, which
+//     every open row's waiting reason reads, so a move of the block recomputes those rows
 //     (readObservationPage).
 //  3. A pull request's merge time, woken by Deps.Deliveries: of the issue that holds the pull
 //     request now, and of the issue a move of it left with a merge no pull request backs

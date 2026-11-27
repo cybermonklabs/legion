@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -758,14 +759,14 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 }
 
 // write stores everything the trees built, one statement per table. Each statement takes its
-// table's columns as arrays and unnests them, so a history of thousands of rows costs seven round
-// trips (the project's row, the five tables and one read of whether the database has a keyword
-// fill) rather than thousands. The project's row is kept where it exists already; one it makes
-// names alice, the history's person, as its default assignee, the column every project fills
-// (store migration 20261111210103). Each issue's last_seq is the seq of the last event written of
-// it, 0 for one with none: an event the server writes takes the issue's last_seq + 1, and
-// events_issue_key_seq_key holds one event to each, so an issue left at 0 beside events 1..n would
-// refuse the next write the API makes to it.
+// table's columns as arrays and unnests them, so a history of thousands of rows costs nine round
+// trips (the project's row, four tables, the observations' transaction of three and one read of
+// whether the database has a keyword fill) rather than thousands. The project's row is kept where
+// it exists already; one it makes names alice, the history's person, as its default assignee, the
+// column every project fills (store migration 20261111210103). Each issue's last_seq is the seq of
+// the last event written of it, 0 for one with none: an event the server writes takes the issue's
+// last_seq + 1, and events_issue_key_seq_key holds one event to each, so an issue left at 0 beside
+// events 1..n would refuse the next write the API makes to it.
 //
 // The events are dated in the history's past. A keyword fill serving the database, as a kit's
 // server does when evalfixture loads into it, may have stored a reach above those dates, which
@@ -842,11 +843,20 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		s.rows.handoffIssues, s.rows.handoffPhases, s.rows.handoffAuthors, s.rows.handoffAt); err != nil {
 		return err
 	}
-	return exec("observations", `
-		insert into legion_observations (project, issue_key, field, value, observed_at)
-		select $1, issue, field, value::jsonb, at
-		from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[])
-			as seeded(issue, field, value, at)`,
-		s.spec.Project, s.rows.observeIssues, s.rows.observeFields, s.rows.observeValues,
-		s.rows.observeAt)
+	// The observations go in as every insert into legion_observations does: under the observations'
+	// lock (legion.QueueLockObservations), held to its own transaction's commit, since a history
+	// loaded into a serving database lands beside the Legion state intake's writes, and the Legion
+	// facts consumer pages the table by id.
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		batch := &pgx.Batch{}
+		legion.QueueLockObservations(batch)
+		store.QueueExec(batch, "write the observations of "+s.spec.Project, `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			select $1, issue, field, value::jsonb, at
+			from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[])
+				as seeded(issue, field, value, at)`,
+			s.spec.Project, s.rows.observeIssues, s.rows.observeFields, s.rows.observeValues,
+			s.rows.observeAt)
+		return tx.SendBatch(ctx, batch).Close()
+	})
 }

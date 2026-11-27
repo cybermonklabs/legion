@@ -29,12 +29,13 @@ type projectStanding struct {
 
 // legionProjects is every project this loop computes, by key, each with its standing on this
 // pass. A project is one of them once it names a Legion daemon (its row of legion_settings), once
-// that daemon has been read (its sampler's observations) or once it holds a stored row. The
-// setting is enough on its own: a daemon the sampler has never read is still a daemon working
-// the project, whose issues carry phase work the event log holds, and four of the six Legion
-// evals (work time, phase time, rework and splitting) read the facts of that work and no
-// observation. An event of a project none of the three answers for is no work of this loop: its
-// setting or its first observation brings the project in, and the whole read then computes it.
+// Dispatch has recorded that daemon's state (its observations) or once it holds a stored row. The
+// setting is enough on its own: a daemon whose state Dispatch has never recorded is still a
+// daemon working the project, whose issues carry phase work the event log holds, and four of the
+// six Legion evals (work time, phase time, rework and splitting) read the facts of that work and
+// no observation. An event of a project none of the three answers for is no work of this loop:
+// its setting or its first observation brings the project in, and the whole read then computes
+// it.
 //
 // A project is read whole - a pass of this same loop that runs ComputeProject over the project
 // rather than Compute over a key set - where no build has read it whole (it holds no record of
@@ -378,9 +379,10 @@ const storedFilingsOfQuery = `
 // The old tree is the tree as the last computation recorded it: the moved issue's stored
 // root_key, and every issue the table holds under that root. Nothing else can name it, because
 // the links the pass reads are the links after the move. It is two queries, and only where an
-// issue moved. A move is uncommon: a parent link is moved by hand, and the sampler writes a
-// `tree` observation only where the tree it reports differs from the newest one it recorded
-// (legion.RecordObservations), so a daemon that goes on reporting one tree writes one row.
+// issue moved. A move is uncommon: a parent link is moved by hand, and the Legion state intake
+// writes a `tree` observation only where the tree the daemon reports differs from the newest one
+// recorded (legion's recordObservations and recordEvents), so a daemon that goes on reporting one
+// tree writes one row.
 //
 // The stored root is taken whether or not the links now give another one. There is one root
 // rule, legion.TreeChain, which is what wrote that root_key, and a walk of the raw parent links

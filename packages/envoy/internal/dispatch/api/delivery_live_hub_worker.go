@@ -307,9 +307,9 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 	return read, err
 }
 
-// readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
-// recorded it, and its stored facts closed at now, the moment the body is answered as of. It
-// reads no delivery settings — its own are the project's Legion setting, and a deployment that
+// readLegionBoardView is a Legion board's read: the project's own daemon state as the Legion
+// intake recorded it, and its stored facts closed at now, the moment the body is answered as of.
+// It reads no delivery settings — its own are the project's Legion setting, and a deployment that
 // configured one and not the other still shows the board. A project that does not exist is
 // loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
 func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {

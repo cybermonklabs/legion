@@ -52,6 +52,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -126,8 +128,9 @@ func LegionSpec(project string, issues int, now time.Time, offset int) legionsee
 
 // observedCases writes into the Legion history legionseed wrote three cases its trees lack, which
 // the method texts of the Legion evals state and k6 compares. Two are drops: when the daemon stops
-// reporting an issue, its sampler writes `null` for every field of the issue at one moment, and the
-// phase and the slot the issue held run on through it to the next observation that names a phase.
+// reporting an issue, the Legion state intake writes `null` for every field of the issue at one
+// moment, and the phase and the slot the issue held run on through it to the next observation that
+// names a phase.
 // The newest tree's root is dropped from the second hour of its tree to the third, holding its
 // slot in `admitted` (design) with its architect's claim `working`, and the tree's first child from
 // the sixth hour to the eighth, holding its slot in `implementing` with its implementer's claim
@@ -212,11 +215,20 @@ func observedCases(ctx context.Context, pool *store.Pool, history legionseed.Fix
 			record(one.issue, field, holding[field], one.to)
 		}
 	}
-	if _, err := pool.Exec(ctx, `
-		insert into legion_observations (project, issue_key, field, value, observed_at)
-		select $1, issue, field, value::jsonb, at
-		from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[]) as written(issue, field, value, at)`,
-		history.Project, issues, fields, values, moments); err != nil {
+	// The cases go in as every insert into legion_observations does: under the observations' lock
+	// (legion.QueueLockObservations), held to its own transaction's commit, since a fixture loaded
+	// into a serving database lands beside the Legion state intake's writes, and the Legion facts
+	// consumer pages the table by id.
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		batch := &pgx.Batch{}
+		legion.QueueLockObservations(batch)
+		store.QueueExec(batch, "write the drops and the child in design of "+history.Project, `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			select $1, issue, field, value::jsonb, at
+			from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[]) as written(issue, field, value, at)`,
+			history.Project, issues, fields, values, moments)
+		return tx.SendBatch(ctx, batch).Close()
+	}); err != nil {
 		return fmt.Errorf("write the drops and the child in design of %s: %w", history.Project, err)
 	}
 	return nil

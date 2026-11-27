@@ -584,15 +584,12 @@ func TestPromotionStartsAChildUnlessItsWorkerIsStartedForTheRun(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				var id int64
 				inTx(t, pool, func(tx pgx.Tx) {
-					if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
+					if id, err = record.NewStore().EnqueueID(context.Background(), tx, row); err != nil {
 						t.Fatalf("enqueue %s: %v", payload.Op, err)
 					}
 				})
-				var id int64
-				if err := pool.QueryRow(context.Background(), `select max(id) from outbox`).Scan(&id); err != nil {
-					t.Fatalf("read the %s row's id: %v", payload.Op, err)
-				}
 				return id
 			}
 			putClaim := func(token claim.Token, project, tree, state string, serving uint64, lastStart int64) {
@@ -1114,7 +1111,10 @@ func TestReconcileReleasesSlotWhoseDispatchStatusLeftActiveSet(t *testing.T) {
 
 func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// The admission runs for CAPTURE, the project the captured event names, so the issue is
+	// recorded under it and holds one of CAPTURE's own slots: the state's admission.active lists
+	// the project's own slot holders alone (blockers.JudgeAdmission).
+	admission := newAdmissionForProject(t, "CAPTURE", 1, config.DesignGate("").Steps(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	js := testJetStream(t)
 	consumers, err := intake.OpenConsumers(context.Background(), js, pool, intake.ConsumerSpec{Project: "CAPTURE", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, AckWait: time.Second, NakDelay: time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {

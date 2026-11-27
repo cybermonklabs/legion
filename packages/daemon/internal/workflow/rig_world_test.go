@@ -30,6 +30,7 @@ import (
 // RIG_TEXTS_ANSWER it reads the world request (scored-runs-contracts.ts, WorldRequest) and writes
 // the world answer; with neither it runs its own cases.
 func TestRigWorld(t *testing.T) {
+	t.Parallel()
 	request, answer := rigWorldFiles(t)
 	if request != "" {
 		writeRigWorldAnswer(t, answer, rigWorld(t, readRigWorldRequest(t, request)))
