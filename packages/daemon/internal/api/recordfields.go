@@ -187,7 +187,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "TurnOutcomeMark", Column: ColumnWithheld,
 		Reason: "the key at or below which the window answers a report sent again as a repeat, bookkeeping of the window it rides on"},
 	{Field: "Abandoned", Column: ColumnWithheld,
-		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
+		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and in its registration answer (`replaces`), and no surface"},
 	{Field: "SessionRun", Column: ColumnWithheld,
 		Reason: "the run of the claim's session since it last finished a turn, which decides the controller's replacement of a failing session and reaches the daemon's log and the fresh session's first task, and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,

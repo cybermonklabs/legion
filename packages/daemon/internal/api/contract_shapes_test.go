@@ -608,7 +608,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
 		// The register golden's own value (TestRegisterResponseGolden), less the two keys the
-		// task-take entry added, whose test rows carry a body with them.
+		// task-take entry added, whose test rows carry a body with them, and richer than it in
+		// one: the golden is the registration of a claim that replaces no session, and this body
+		// carries the session it replaces (replacesContract), so the records describe that key too.
 		AnswerRegister: {roots: typesOf(claim.RegisterResponse{}), bodies: []any{claim.RegisterResponse{
 			ClaimToken:   "legion-legion-legion-208-architect",
 			Tree:         "LEGION-208",
@@ -617,13 +619,17 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Generation:   3,
 			Secret:       "U3VwZXJ2aXNlZEJ5TGVnaW9u",
 			PromptAgents: []string{"deep-worker", "oracle", "plan-gap-analyst"},
+			Replaces:     "ses_architect_before",
 		}}},
-		// The controller registration golden's own value (TestControllerRegisterResponseGolden).
+		// The controller registration golden's own value (TestControllerRegisterResponseGolden),
+		// and richer than it in the same way: this body carries the session the daemon's own
+		// controller's new session replaces.
 		AnswerRegisterController: {roots: typesOf(ControllerRegisterResponse{}), bodies: []any{ControllerRegisterResponse{
 			ClaimToken: "legion-legion-controller",
 			Role:       claim.RoleController,
 			Generation: 2,
 			Secret:     "Q29udHJvbGxlZEJ5TGVnaW9u",
+			Replaces:   "ses_controller_before",
 		}}},
 		// 204 and nothing after the headers. The five routes write the status themselves
 		// (claims.go's ready, exit and activity, update.go's ready-for-update and take.go's

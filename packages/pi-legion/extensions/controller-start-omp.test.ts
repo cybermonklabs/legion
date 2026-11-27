@@ -1639,7 +1639,7 @@ test.skipIf(skip)(
     });
     await session.shows(
       "a wait of the busy claim on screen",
-      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+      "was answered 503 at attempt 1; claiming it again in"
     );
     await session.shows(
       "the busy claim's failure on screen",
@@ -1662,7 +1662,7 @@ test.skipIf(skip)(
     });
     await session.shows(
       "a wait of the busy claim on screen",
-      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+      "was answered 503 at attempt 1; claiming it again in"
     );
     await landed.promise;
     expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);

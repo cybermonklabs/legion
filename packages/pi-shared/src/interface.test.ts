@@ -199,10 +199,12 @@ describe("the Envoy plugin interface", () => {
     expect(foreign.startupTurn).toEqual({ session: "ses_controller", sentAt: undefined });
   });
 
-  // Version 6: the claims' task values, which the Envoy entry publishes and the Legion entry's
-  // claim takes, and the mark the Legion entry's take keeps while a task's turn is pending.
-  test("is version 6, carrying the task values' one taker and the task-turn mark", () => {
-    expect(ENVOY_PLUGIN_INTERFACE_VERSION).toBe(6);
+  // Version 7: the claims' task values, which the Envoy entry publishes and the Legion entry's
+  // claim takes, and the mark the Legion entry's take keeps while a task's turn is pending; and the
+  // role claim's replaced session (`LegionRoleClaim`'s `replaces`). Each took version 6 on its own
+  // line, so the two together are the version after it.
+  test("is version 7, carrying the task values' one taker and the task-turn mark", () => {
+    expect(ENVOY_PLUGIN_INTERFACE_VERSION).toBe(7);
     const published = publishEnvoyPluginInterface("file:///plugins/pi-envoy/dist/envoy.js");
     const iface = envoyPluginInterface();
     expect(published).toBe(iface);

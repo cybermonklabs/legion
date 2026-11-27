@@ -10,7 +10,12 @@ import {
   publishEnvoyPluginInterface,
   resetEnvoyPluginInterfaceForTests,
 } from "./interface";
-import { bootLegionClaim, claimRoleAgainOnBusy, type LegionClaimHost } from "./legion-claim-core";
+import {
+  bootLegionClaim,
+  claimRoleAgainOnBusy,
+  claimStandsWithoutHandover,
+  type LegionClaimHost,
+} from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 import { createTaskTake, type TaskTake } from "./task-take";
 import { taskTurnMark } from "./task-values";
@@ -535,9 +540,9 @@ test("a claim the listener answers 503 is claimed again after a growing wait, an
   expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(4);
   expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "onRoleRegained"]);
   expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 1, so nothing was claimed; claiming it again in 1 ms`,
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 2, so nothing was claimed; claiming it again in 2 ms`,
-    `claim of Envoy role ${claimToken} was answered 503 at attempt 3, so nothing was claimed; claiming it again in 4 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 1; claiming it again in 1 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 2; claiming it again in 2 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 3; claiming it again in 4 ms`,
   ]);
   for (const line of lines) {
     expect(line).toContain("the message bus refused the message because its stream is full");
@@ -683,6 +688,46 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
   expect(unbounded).toBe(6);
 });
 
+/** The listener's 503 to a role claim with `body`, as envoy-client's `setRole` rejects with it. */
+function claimAnswered503With(body: Record<string, string>): EnvoyApiError {
+  return new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/roles/set",
+    status: 503,
+    responseBody: JSON.stringify(body),
+  });
+}
+
+// The one claim 503 that is no claim holding nothing: the claim landed and stands, and only the
+// handover of the session it replaces is not recorded. The listener names it by its code alone:
+// the same text with no code, or with another code, reads as a claim 503 that wrote nothing. Each
+// wait's log line hands the caller the 503 to tell them apart.
+test("a claim 503 whose claim stands is told from one that wrote nothing, and each wait hands its 503 to the log", async () => {
+  const handoverText =
+    "the claim landed, but the handover record of the session it replaces did not store, so claim again";
+  const handover = claimAnswered503With({ error: handoverText, code: "handover_unrecorded" });
+  expect(claimStandsWithoutHandover(handover)).toBe(true);
+  expect(claimStandsWithoutHandover(claimAnswered503())).toBe(false);
+  // The code names its 503 by itself: the handover's text with no code, or with any other code,
+  // is not this one.
+  expect(claimStandsWithoutHandover(claimAnswered503With({ error: handoverText }))).toBe(false);
+  expect(
+    claimStandsWithoutHandover(claimAnswered503With({ error: handoverText, code: "another_code" }))
+  ).toBe(false);
+  expect(claimStandsWithoutHandover(new Error(handoverText))).toBe(false);
+
+  const handed: unknown[] = [];
+  let tries = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++tries < 2) throw handover;
+    },
+    "controller",
+    { log: (_line, error) => handed.push(error), firstDelayMs: 1 }
+  );
+  expect(handed).toEqual([handover]);
+});
+
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no role claim and no regain listener", async () => {
   const { host, steps } = claimHost({
     ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
@@ -718,4 +763,59 @@ test("a ready retried after a 503 reads the value and claims the role as soon as
     `claimRole ${claimToken}`,
     "onRoleRegained",
   ]);
+});
+
+// Contract entry 20261125170509: the registration names the session this one replaces, the claim's
+// session the daemon forgot, and the role claim carries it, so the listener hands that session's
+// unread messages here. The claim is made where the boot makes it, right after the ready and the
+// read after it; a claim the listener answered 503 is made again naming it again.
+test("the role claim names the session the registration says this one replaces, on every try", async () => {
+  let answered503 = 0;
+  const claims: [string, string | undefined][] = [];
+  const { host, steps } = claimHost({
+    register: () => Response.json({ ...registered, replaces: "ses_replaced" }),
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role, replaces) => {
+        steps.push(`claimRole ${role}`);
+        claims.push([role, replaces]);
+        if (answered503++ === 0) throw claimAnswered503();
+      },
+    },
+  });
+
+  await expect(bootLegionClaim(host)).resolves.toBeDefined();
+
+  expect(claims).toEqual([
+    [claimToken, "ses_replaced"],
+    [claimToken, "ses_replaced"],
+  ]);
+  expect(steps).toEqual([
+    `claims/register ${JSON.stringify(registration)}`,
+    "setCapability",
+    `claims/ready ${readyBody()}`,
+    `claims/task ${JSON.stringify(caller())}`,
+    "taskValue",
+    "afterReadyRead",
+    `claimRole ${claimToken}`,
+    `claimRole ${claimToken}`,
+    "onRoleRegained",
+  ]);
+});
+
+test("control: a registration that replaces no session claims naming none", async () => {
+  const claims: [string, string | undefined][] = [];
+  const { replaces: _none, ...golden } = registered;
+  const { host } = claimHost({
+    register: () => Response.json(golden),
+    overrides: {
+      claimRole: async (role, replaces) => {
+        claims.push([role, replaces]);
+      },
+    },
+  });
+
+  await expect(bootLegionClaim(host)).resolves.toBeDefined();
+
+  expect(claims).toEqual([[claimToken, undefined]]);
 });

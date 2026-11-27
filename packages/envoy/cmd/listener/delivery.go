@@ -85,9 +85,14 @@ type listenerDeliveryHandlerConfig struct {
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
 	// configuration it reports through, once that configuration is otherwise built, and main.go
 	// and every test alike wire it there.
-	roleForwards      *roleForwarder
-	registry          *store.Registry
-	sessions          *session.SessionRegistry
+	roleForwards *roleForwarder
+	registry     *store.Registry
+	sessions     *session.SessionRegistry
+	// known is the known-session store a handover pass reads both sessions' last registrations
+	// from (handoverStands), the store listenerDeps.known is; nil on a listener with no store,
+	// whose handover passes copy nothing and end at their first judge, as on a store whose bucket
+	// is not open, and in a test config that runs no handover record.
+	known             *session.KnownSessions
 	machineID         string
 	dedupeCache       *dedupe.Cache
 	attemptCache      *dedupe.Cache

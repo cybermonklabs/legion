@@ -4123,7 +4123,10 @@ It publishes to:
   the routes serve once the grant reaches it, by a reload or a reconnect, without a restart.
   A listener whose grant lacks `envoy_known_sessions` logs one WARN naming that bucket and serves
   everything else: a publish answers no recipient count, and a send to a session with no registry
-  entry answers 404.
+  entry answers 404. It records no session's principal, so it admits each registration, heartbeats
+  included, with a warning that says so (one more WARN line a minute at most), refuses every
+  claim's handover of a replaced session's messages with a warning, and names no successor on
+  `GET /v1/sessions/{session_id}/successors`.
   That WARN is the store's own line, not the whole log a missing grant leaves: the server refuses
   each open attempt's publish to `$JS.API.STREAM.INFO.KV_envoy_known_sessions`, which the
   connection reports as one `envoy nats async error` at ERROR per attempt (`options`' async error

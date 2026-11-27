@@ -170,6 +170,7 @@ test("registers once the transcript exists, hands the bridge the registration's 
         return {
           claimed: true,
           interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
         }
       },
     },
@@ -313,6 +314,7 @@ test("a read of the claim's value after the ready that fails is logged and write
         return {
           claimed: true,
           interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
         }
       },
     },
@@ -378,6 +380,7 @@ test("hands the bridge every value as it is handed it — each one relayed for i
       setRole: async (): Promise<SetRoleResult> => ({
         claimed: true,
         interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+        warnings: [],
       }),
     },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
@@ -429,6 +432,69 @@ test("hands the bridge every value as it is handed it — each one relayed for i
     handedStep(valueAt(7, 18, 6)),
     handedStep(valueAt(7, 18, 7)),
     "finished 8",
+  ])
+})
+
+// The pane's claim can land and still hand over none of the messages of the session it replaces;
+// the listener says so in the answer's warnings, and the pane's log holds each, naming the role and
+// the session, while the claim goes on as a claim that landed.
+test("a claim that landed logs each of the listener's warnings about it on the pane's log", async () => {
+  const configDir = await tempDir()
+  await mkdir(join(configDir, "projects", "p"), { recursive: true })
+  await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
+  const registered = await daemonFixture("register.json")
+  const current = await daemonFixture("task.json")
+  const { posted, fetch } = daemonAnswering((path) => {
+    if (path.endsWith("/claims/register")) return Response.json(registered)
+    if (path.endsWith("/claims/task")) return Response.json(current)
+    return new Response(null, { status: 204 })
+  })
+  const handover =
+    "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals"
+  const lines: string[] = []
+  const remembered: string[] = []
+  const claim = startLegionClaim({
+    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
+    clientInstanceID: INSTANCE,
+    client: {
+      setRole: async (): Promise<SetRoleResult> => ({
+        claimed: true,
+        interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+        warnings: [handover],
+      }),
+    },
+    session: {
+      rememberRole: async (role) => {
+        remembered.push(role)
+      },
+      onRoleRegained: () => undefined,
+    },
+    task: () => undefined,
+    ready: () => undefined,
+    finished: () => undefined,
+    signal: new AbortController().signal,
+    log: (line) => lines.push(line),
+    stop: () => {
+      throw new Error("a claim that landed stops no pane")
+    },
+    pollMs: 5,
+  })
+  await claim.booted
+
+  const role = String(registered["claimToken"])
+  expect(lines).toEqual([
+    `the Envoy listener warned about the claim of role ${role} for session ${SESSION}: ${handover}`,
+  ])
+  expect(remembered).toEqual([role])
+  expect(posted.map(({ path }) => path)).toEqual([
+    "/legion/v1/claims/register",
+    "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
   ])
 })
 
@@ -553,6 +619,7 @@ test("a claim refused by a standing claim under this session's own id is asked a
         return {
           claimed: true,
           interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
         }
       },
     },
@@ -645,6 +712,7 @@ test("the wait asks on its own interval until the live window passes, and the gr
         return {
           claimed: true,
           interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
         }
       },
     },
@@ -819,6 +887,7 @@ async function bootOn(env: Record<string, string>): Promise<{
       setRole: async (): Promise<SetRoleResult> => ({
         claimed: true,
         interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+        warnings: [],
       }),
     },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
@@ -859,6 +928,83 @@ test("a pane no launcher keeps registers once the transcript exists, waiting for
     "/legion/v1/claims/task",
   ])
   expect(posted[0]?.body["ompSessionFile"]).toBe(transcript)
+})
+
+// Contract entry 20261125170509: a registration that names the session this one replaces (the
+// claim's session the daemon forgot) has the claim name it as its predecessor, which the listener
+// reads as the session whose unread messages it hands to this one. The claim is made where the
+// boot makes it, right after the ready, the read after it and the ready line. The first claim case
+// above is the control: the golden registration replaces no session, and its claim names none.
+test("a registration that replaces a session has the claim name that session as its predecessor", async () => {
+  const configDir = await tempDir()
+  await mkdir(join(configDir, "projects", "p"), { recursive: true })
+  await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
+  const registered = await daemonFixture("register.json")
+  const current = await daemonFixture("task.json")
+  // The daemon's requests and the claim's own steps, in the one order they happened in.
+  const steps: string[] = []
+  const { fetch } = daemonAnswering((path) => {
+    steps.push(path)
+    if (path.endsWith("/claims/register")) {
+      return Response.json({ ...registered, replaces: "ses_replaced" })
+    }
+    if (path.endsWith("/claims/task")) return Response.json(current)
+    return new Response(null, { status: 204 })
+  })
+  const setRoles: SetRoleInput[] = []
+  const lines: string[] = []
+  let stops = 0
+  const claim = startLegionClaim({
+    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: PLUGIN_CONTRACT,
+      fetch,
+    }),
+    clientInstanceID: INSTANCE,
+    client: {
+      setRole: async (input): Promise<SetRoleResult> => {
+        steps.push(`setRole ${input.role}`)
+        setRoles.push(input)
+        return {
+          claimed: true,
+          interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+          warnings: [],
+        }
+      },
+    },
+    session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: () => undefined,
+    ready: () => steps.push("ready"),
+    finished: () => undefined,
+    signal: new AbortController().signal,
+    log: (line) => lines.push(line),
+    stop: () => {
+      stops += 1
+    },
+    pollMs: 5,
+  })
+  await claim.booted
+
+  const token = String(registered["claimToken"])
+  expect(steps).toEqual([
+    "/legion/v1/claims/register",
+    "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
+    "ready",
+    `setRole ${token}`,
+  ])
+  expect(setRoles).toEqual([
+    {
+      sessionID: SESSION,
+      role: token,
+      soft: true,
+      clientInstanceID: INSTANCE,
+      previousSessionID: "ses_replaced",
+    },
+  ])
+  expect(stops).toBe(0)
+  expect(lines).toEqual([])
 })
 
 // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract

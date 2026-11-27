@@ -1327,10 +1327,10 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-// Each row is handed a body its own route could write, because the four rows whose shape has
-// moved shape a State, an Issue, the release records and a refusal and panic on anything else: a
-// row handed the wrong type would fail here as an answer with no row does, and never serve that
-// body unshaped.
+// Each row is handed a body its own route could write, because the six rows whose shape has
+// moved shape a State, an Issue, the release records, a refusal and the two registrations and
+// panic on anything else: a row handed the wrong type would fail here as an answer with no row
+// does, and never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	state := populatedState(t)
 	for _, answer := range Answers() {
@@ -1386,18 +1386,48 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
 			case AnswerRegister:
-				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect",
-					Task: &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44Z", Revision: 12}, Finished: 3}
+				// The replaces entry sorts before the task-take entry, so a caller at the one and
+				// below the other is served `replaces` and neither key of the take.
+				if entryNumber(replacesContract) >= entryNumber(taskTakeContract) {
+					t.Fatalf("the replaces entry is numbered %d, at or above the task-take entry's %d: this case proves nothing",
+						entryNumber(replacesContract), entryNumber(taskTakeContract))
+				}
+				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect", PromptAgents: []string{"oracle"},
+					Task: &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44Z", Revision: 12}, Finished: 3, Replaces: "ses_before"}
+				older := registration
+				older.Replaces = ""
 				below, _ := shapeAnswer(AnswerRegister, registration, ServingFloor, ServingFloor)
+				if !reflect.DeepEqual(below, any(withoutTaskReading(older))) {
+					t.Errorf("a registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added, and without `task` and `finished`, which the task-take entry added", below)
+				}
 				encoded, err := json.Marshal(below)
 				if err != nil {
 					t.Fatalf("marshal the registration served at the floor: %v", err)
 				}
-				if bytes.Contains(encoded, []byte(`"task"`)) || bytes.Contains(encoded, []byte(`"finished"`)) {
-					t.Errorf("the registration served at the floor carries `task` or `finished`, which the task-take entry added: %s", encoded)
+				if bytes.Contains(encoded, []byte(`"task"`)) || bytes.Contains(encoded, []byte(`"finished"`)) || bytes.Contains(encoded, []byte(`"replaces"`)) {
+					t.Errorf("the registration served at the floor carries `task`, `finished` or `replaces`, which the floor's reader does not know: %s", encoded)
+				}
+				between, _ := shapeAnswer(AnswerRegister, registration, entryNumber(replacesContract), entryNumber(replacesContract))
+				if !reflect.DeepEqual(between, any(withoutTaskReading(registration))) {
+					t.Errorf("a registration was shaped to %+v at the replaces entry's number, want the body it was given without `task` and `finished`", between)
+				}
+				encoded, err = json.Marshal(between)
+				if err != nil {
+					t.Fatalf("marshal the registration served at the replaces entry's number: %v", err)
+				}
+				if !bytes.Contains(encoded, []byte(`"replaces":"ses_before"`)) || bytes.Contains(encoded, []byte(`"task"`)) || bytes.Contains(encoded, []byte(`"finished"`)) {
+					t.Errorf("the registration served at the replaces entry's number is %s, want `replaces` and neither `task` nor `finished`", encoded)
 				}
 				if at, _ := shapeAnswer(AnswerRegister, registration, DaemonAPIVersion(), DaemonAPIVersion()); !reflect.DeepEqual(at, any(registration)) {
 					t.Errorf("the registration served at %d is %+v, want the body it was given", DaemonAPIVersion(), at)
+				}
+			case AnswerRegisterController:
+				registration := ControllerRegisterResponse{ClaimToken: "legion-legion-controller", Replaces: "ses_before"}
+				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, ServingFloor, ServingFloor); shaped != any(ControllerRegisterResponse{ClaimToken: registration.ClaimToken}) {
+					t.Errorf("a controller's registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added", shaped)
+				}
+				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, entryNumber(replacesContract), entryNumber(replacesContract)); shaped != any(registration) {
+					t.Errorf("a controller's registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
 				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
@@ -1409,11 +1439,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The four rows that shape a body of their own panic on a body of another type, as a row that
+// The six rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

@@ -169,8 +169,10 @@ export function createClaimSession(deps: {
       // The claim's role topic is where the daemon sends every notice for an architect (the
       // notice executor, packages/daemon/internal/daemon/outbox.go), and where the listener
       // relays the claim's task value: no issue topic carries one, so no claim subscribes to one,
-      // and no phase worker is woken by an architect's notice.
-      claimRole: (role) => claimEnvoyRole(sessionID, role, context),
+      // and no phase worker is woken by an architect's notice. `replaces`, the session the
+      // registration says this one replaces, is the claim's `previous_session_id`, so its unread
+      // messages come here.
+      claimRole: (role, replaces) => claimEnvoyRole(sessionID, role, context, replaces),
       taskValue: (reading) => taking?.take.read(reading),
       afterReadyRead: () => readAnswered?.(),
       onRoleRegained: onEnvoyRoleRegained,

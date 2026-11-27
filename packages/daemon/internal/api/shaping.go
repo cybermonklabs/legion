@@ -251,6 +251,14 @@ func recordedContractAtOrBelow(n int) int {
 // below it the answer without both (withoutTaskReading). It follows strip as well, and placedByPod
 // places its caller by its pod too.
 //
+// The two registration rows take off `replaces`, the one key the replaces entry
+// (contract_20261125170509_replaces.go) added to a role's registration answer and to the
+// controller's, below that entry's number (entryNumber(replacesContract)). They follow strip too,
+// and placedByPod places the caller of a registration that carries the key by its pod. A role's
+// registration row applies both of its strips, and the replaces entry sorts before the task-take
+// entry, so a caller at or above the one and below the other is served `replaces` and neither
+// `task` nor `finished`.
+//
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in, the one row of the numbered entries' stand-ins (standIns). A
 // settings key no reader types is owed neither a stand-in nor a band, whatever a contract did to
@@ -260,8 +268,8 @@ func recordedContractAtOrBelow(n int) int {
 //
 // It reports what it took off the body beside the body itself. The state's row fills it on the
 // one application it makes, and every other row reports nothing, the record's, the release
-// records' and the refusal's included: the log holds a line for the state alone
-// (recordShaping), so those routes record nothing.
+// records', the refusal's and the two registrations' included: the log holds a line for the state
+// alone (recordShaping), so those routes record nothing.
 func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	var took tookOff
 	switch id {
@@ -308,8 +316,20 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		if !isRegistration {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+		if strip < entryNumber(replacesContract) {
+			registration.Replaces = ""
+		}
 		if strip < entryNumber(taskTakeContract) {
 			return withoutTaskReading(registration), took
+		}
+		return registration, took
+	case AnswerRegisterController:
+		registration, isRegistration := body.(ControllerRegisterResponse)
+		if !isRegistration {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < entryNumber(replacesContract) {
+			registration.Replaces = ""
 		}
 		return registration, took
 	case answerUnparsed:
@@ -337,10 +357,12 @@ func identityAnswer(id AnswerID) bool { return registry().identityAnswers[id] }
 // stateMachineContract, AnswerProjectPause and AnswerProjectResume arrived whole at
 // pauseContract, AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerIntakeReplay and
 // AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records any of
-// the six at all. AnswerRegister was one of them until the task-take entry added `task` and
-// `finished` to it, and is shapeAnswer's own case since, which serves a caller below that entry
-// the registration every numbered entry served.
-var frozenIdentityAnswers = []AnswerID{AnswerHealth, AnswerRegisterController, AnswerNoContent,
+// the six at all. The two registration answers, a role's and the controller's, were identity
+// answers of the numbered entries too, until the replaces entry added `replaces` to both: they
+// have rows of their own in shapeAnswer now. The task-take entry added `task` and `finished` to a
+// role's registration as well, and its row serves a caller below that entry the answer without
+// them.
+var frozenIdentityAnswers = []AnswerID{AnswerHealth, AnswerNoContent,
 	AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 	AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
 	AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard}
@@ -2354,14 +2376,18 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records, for a refusal whose body is a
-// PauseFailure or a PlanRefusal and for a registration, and false for every other answer. Those
-// answers' shapes moved at pauseContract, at OwnerPlanContract and, the registration's, at the
-// task-take entry, and their writers answer from no snapshot of their own, so
-// writeAnswer reads the claims for them (placingClaims). Every other answer writeAnswer writes is
-// the identity at every contract, and so is a plain refusal (a claim.Refusal or a Failure), so a
-// read of the claims for one of them would decide nothing. A serving-down added to one of them
-// reaches the caller of a pod only once this answers true for it. The state and the record are no
-// question for it: their routes hand in their own snapshot's claims (writeAnswerFrom).
+// PauseFailure or a PlanRefusal, for a role's registration, and for a controller's registration
+// that carries `replaces`, and false for every other answer. Those answers' shapes moved at
+// pauseContract, at OwnerPlanContract, at the replaces entry and, a role's registration's, at the
+// task-take entry too, and their writers answer from no snapshot of their own, so writeAnswer
+// reads the claims for them (placingClaims). A role's registration carries `task` and `finished`
+// on every answer, so it is placed whatever it replaces; a controller's registration that
+// replaces no session is the same body at every contract, so it reads none. Every other answer
+// writeAnswer writes is the identity at every contract, and so is a plain refusal (a
+// claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing. A
+// serving-down added to one of them reaches the caller of a pod only once this answers true for
+// it. The state and the record are no question for it: their routes hand in their own snapshot's
+// claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
 	case AnswerReleaseRecords, AnswerRegister:
@@ -2373,6 +2399,9 @@ func placedByPod(id AnswerID, body any) bool {
 		default:
 			return false
 		}
+	case AnswerRegisterController:
+		registration, isRegistration := body.(ControllerRegisterResponse)
+		return isRegistration && registration.Replaces != ""
 	default:
 		return false
 	}
