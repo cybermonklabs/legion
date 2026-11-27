@@ -11,6 +11,17 @@ import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
 import { listIssueAsks } from "./api";
 import {
+  BLOCK_EDITOR_READY_MARK,
+  BLOCK_EDITOR_START_MARK,
+  BLOCK_EDITOR_TASK_MS,
+  blockEditorMeasures,
+  forbiddenReadsIn,
+  isRoomSocket,
+  longestTaskInWindow,
+  readMark,
+  waitForMark,
+} from "./block-editor";
+import {
   ACT_MS,
   AFTER_LOAD_TITLE,
   actAddress,
@@ -298,10 +309,31 @@ for (const name of ACT_NAMES) {
       async ({ page, requests }) => {
         const made = await makeSteps(page, 0, act.steps, act.when);
         await waitForLoadEnd(page, requests);
-        return { last: made.last, record: await recordOf(page) };
+        const record = await recordOf(page);
+        const enter = record.acts[made.last]?.event?.timeStamp;
+        let editorTask: number | null = null;
+        if (act.kind === "edit") {
+          expect(enter, "the load recorded a trusted Enter key").toBeDefined();
+          const ready = await waitForMark(page, BLOCK_EDITOR_READY_MARK);
+          const measures = await blockEditorMeasures(page, enter ?? Infinity, ready);
+          expect(
+            measures.length,
+            "Enter found no block-editor-task measures before ready"
+          ).toBeGreaterThan(0);
+          editorTask = Math.max(...measures.map(({ duration }) => duration));
+        }
+        return { editorTask, last: made.last, record: await recordOf(page) };
       }
     );
     const prefix = `during-load.${boundWord(name)}`;
+    if (act.kind === "edit") {
+      holdBound({
+        bound: `${prefix}.block-editor-task-ms`,
+        limit: BLOCK_EDITOR_TASK_MS,
+        rate,
+        readings: loads.map((load) => load.editorTask),
+      });
+    }
     holdAct(
       prefix,
       rate,
@@ -326,41 +358,77 @@ test(AFTER_LOAD_TITLE, async ({ browser, loadSeeds }, testInfo) => {
   const acts = afterLoadOrder(LOAD_ACTS[loadWidth(testInfo)]);
   const rate = loadCpuRate(testInfo.project.name);
   const seeded = await loadSeeds.shape();
-  const loads = await fiveLoads(
-    browser,
-    rate,
-    { address: presetPath(seeded.key, "conversation"), boxes: "none" },
-    async ({ page, requests }) => {
-      await waitForLoadEnd(page, requests);
-      // Each act is made once the page has gone quiet again after the one before it.
-      const settle = () => waitForLoadEnd(page, requests);
-      const measured: number[] = [];
-      let next = 0;
-      for (const act of acts) {
-        if (act.paging !== undefined) {
-          await settle();
-          const paging = act.paging;
-          // The load has settled, so its drawn rows already determine whether the pager exists.
-          const pages = await page.evaluate(
-            (selector) => document.querySelector(selector) !== null,
-            paging
-          );
-          if (!pages) {
-            const message = `${act.name} not made: no paging control drawn (${paging})`;
-            printReading(message);
-            expect.soft(pages, message).toBe(true);
-            measured.push(-1);
-            continue;
-          }
+  const read = async ({ page, requests }: OpenedLoad) => {
+    await waitForLoadEnd(page, requests);
+    const start = await waitForMark(page, BLOCK_EDITOR_START_MARK);
+    if ((await readMark(page, BLOCK_EDITOR_READY_MARK)) !== null) return null;
+    // Each act is made once the page has gone quiet again after the one before it.
+    const settle = () => waitForLoadEnd(page, requests);
+    const measured: number[] = [];
+    let next = 0;
+    for (const act of acts) {
+      if (act.paging !== undefined) {
+        await settle();
+        const paging = act.paging;
+        // The load has settled, so its drawn rows already determine whether the pager exists.
+        const pages = await page.evaluate(
+          (selector) => document.querySelector(selector) !== null,
+          paging
+        );
+        if (!pages) {
+          const message = `${act.name} not made: no paging control drawn (${paging})`;
+          printReading(message);
+          expect.soft(pages, message).toBe(true);
+          measured.push(-1);
+          continue;
         }
-        const made = await makeSteps(page, next, act.steps, "now", settle);
-        measured.push(made.last);
-        next = (await makeSteps(page, made.next, act.after, "now")).next;
       }
-      await waitForLoadEnd(page, requests);
-      return { measured, record: await recordOf(page) };
+      // This load has just gone quiet. Waiting for quiet again here would wait out the very
+      // work the first act must overlap as soon as its imports send a request.
+      const made = await makeSteps(
+        page,
+        next,
+        act.steps,
+        "now",
+        measured.length === 0 ? undefined : settle
+      );
+      if (measured.length === 0) {
+        const firstAt = (await recordOf(page)).acts[next]?.event?.timeStamp;
+        const ready = await readMark(page, BLOCK_EDITOR_READY_MARK);
+        // Event time, not the time Playwright came back: a fast build may win this race.
+        if (firstAt === undefined || firstAt < start || (ready !== null && firstAt >= ready)) {
+          return null;
+        }
+      }
+      measured.push(made.last);
+      next = (await makeSteps(page, made.next, act.after, "now")).next;
     }
-  );
+    await waitForLoadEnd(page, requests);
+    return { measured, record: await recordOf(page) };
+  };
+  const loads: NonNullable<Awaited<ReturnType<typeof read>>>[] = [];
+  for (let run = 1; run <= LOADS; run += 1) {
+    let tried: Awaited<ReturnType<typeof read>> = null;
+    for (let attempt = 1; attempt <= 3 && tried === null; attempt += 1) {
+      tried = await oneLoad(
+        browser,
+        rate,
+        { address: presetPath(seeded.key, "conversation"), boxes: "none" },
+        read
+      );
+      if (tried === null) {
+        printReading(
+          `after-load load=${run} attempt=${attempt}: first act missed block-editor-start to block-editor-ready`
+        );
+      }
+    }
+    if (tried === null) {
+      throw new Error(
+        `after-load load ${run}: the first act was not made during the block editor's work in three attempts`
+      );
+    }
+    loads.push(tried);
+  }
   for (const [at, act] of acts.entries()) {
     const prefix = `after-load.${boundWord(act.name)}`;
     holdAct(
@@ -381,6 +449,68 @@ test(AFTER_LOAD_TITLE, async ({ browser, loadSeeds }, testInfo) => {
     rate,
     loads.map((load) => load.record)
   );
+});
+
+// SLOW(>=2s): five cold loads of Conversation, each waited through its room's first sync and build.
+test("the block editor is made ready after the load in tasks of 100 ms or less", async ({
+  browser,
+  loadSeeds,
+}, testInfo) => {
+  refuseASharedRun();
+  test.setTimeout(LOAD_ROW_MS);
+  const rate = loadCpuRate(testInfo.project.name);
+  const seeded = await loadSeeds.shape();
+  const loads = await fiveLoads(
+    browser,
+    rate,
+    { address: presetPath(seeded.key, "conversation"), boxes: "all" },
+    async ({ page, requests }) => {
+      const end = await waitForLoadEnd(page, requests);
+      const start = await waitForMark(page, BLOCK_EDITOR_START_MARK);
+      const ready = await waitForMark(page, BLOCK_EDITOR_READY_MARK);
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      );
+      const record = await recordOf(page);
+      return { end, start, ready, record, spans: requests.spans(record.timeOrigin) };
+    }
+  );
+  holdBound({
+    bound: "block-editor-ready.longest-task-ms",
+    rate,
+    limit: BLOCK_EDITOR_TASK_MS,
+    readings: loads.map(({ record, end, ready }) =>
+      longestTaskInWindow(record.longtask, end, ready)
+    ),
+  });
+  for (const [i, { end, start, ready, record, spans }] of loads.entries()) {
+    const label = `block-editor-ready rate=${rate} load=${i + 1}`;
+    printReading(`${label} end-to-ready-ms=${(ready - end).toFixed(1)}`);
+    expect
+      .soft(start, `${label}: block-editor-start was before load end`)
+      .toBeGreaterThanOrEqual(end);
+    expect.soft(ready, `${label}: block-editor-ready preceded start`).toBeGreaterThan(start);
+    const sockets = spans.filter(({ kind, url }) => kind === "websocket" && isRoomSocket(url));
+    expect.soft(sockets, `${label}: exactly one room socket opened`).toHaveLength(1);
+    expect
+      .soft(sockets[0]?.start, `${label}: room opened after load end`)
+      .toBeGreaterThanOrEqual(end);
+    expect.soft(sockets[0]?.start, `${label}: room opened by ready`).toBeLessThanOrEqual(ready);
+    const paths = spans.filter(
+      (span) => span.kind === "request" && span.start >= end && span.start <= ready
+    );
+    expect
+      .soft(forbiddenReadsIn(paths.map(({ url }) => url)), `${label}: forbidden reads before ready`)
+      .toEqual([]);
+    expect
+      .soft(
+        boxesMoved(record, ready)
+          .filter((move) => move.at >= end)
+          .map(moveLine),
+        `${label}: boxes moved between load end and ready`
+      )
+      .toEqual([]);
+  }
 });
 
 /** Prints one load's raw readings as one line of the run's log, `LOAD-CAPTURE <name> <json>`,

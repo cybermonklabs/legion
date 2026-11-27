@@ -8,6 +8,7 @@ import { type BrowserContext, errors, type Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import type { Preset } from "../web/src/features/issue-page/page-words";
+import { BLOCK_EDITOR_READY_MARK, waitForMark } from "./block-editor";
 import { DESKTOP, PHONE } from "./issue-page-g";
 import {
   HEADER_SELECTORS,
@@ -209,7 +210,8 @@ async function loadedView(
   address: string,
   width: RecordWidth,
   naming: Naming,
-  where: string
+  where: string,
+  waitForEditor = true
 ): Promise<ViewRecord> {
   return await oneLoad(
     browser,
@@ -217,6 +219,7 @@ async function loadedView(
     { address, boxes: "none" },
     async ({ page, requests }) => {
       await waitForLoadEnd(page, requests);
+      if (waitForEditor) await waitForMark(page, BLOCK_EDITOR_READY_MARK);
       return viewRecord(await readView(page, width), naming, where);
     }
   );
@@ -241,7 +244,8 @@ test("record the rows the base draws @phone", async ({ browser, loadSeeds, viewp
       presetPath(seeded.key, view.view as Preset),
       width,
       naming,
-      where
+      where,
+      false
     );
   }
   console.log(recordLine(widthRecord(width, views)));
