@@ -98,7 +98,8 @@ func init() {
 //
 // AnswerObservedState is no row of the table either, since no plugin parses it, and it has one
 // door, the state route it is a view of (observedStateDoor): a write of it from any other door is
-// a finding.
+// a finding. AnswerController is no row for the same reason, and its one door is the controller
+// route (controllerRouteDoor).
 func routeAnswerProblems() []string {
 	answersWritten.mu.Lock()
 	defer answersWritten.mu.Unlock()
@@ -111,10 +112,10 @@ func routeAnswerProblems() []string {
 		if pair.pattern == "" || pair.id == AnswerRefusal || pair.id == answerUnparsed {
 			continue
 		}
-		if pair.id == AnswerObservedState {
-			if pair.pattern != observedStateDoor {
+		if door, oneDoor := oneDoorAnswers[pair.id]; oneDoor {
+			if pair.pattern != door {
 				problems = append(problems, fmt.Sprintf(
-					"%s wrote the answer %s, whose one door is %s", pair.pattern, pair.id, observedStateDoor))
+					"%s wrote the answer %s, whose one door is %s", pair.pattern, pair.id, door))
 			}
 			continue
 		}
@@ -137,6 +138,16 @@ func routeAnswerProblems() []string {
 // observedStateDoor is the one route that writes the observed view (AnswerObservedState): the
 // state route, asked with `?view=observed`.
 const observedStateDoor = "GET /legion/v1/state"
+
+// controllerRouteDoor is the one route that writes the controller's answer (AnswerController).
+const controllerRouteDoor = "GET /legion/v1/controller"
+
+// oneDoorAnswers is each answer no plugin parses, so no row of the table, that one route alone
+// writes, by that route (routeAnswerProblems).
+var oneDoorAnswers = map[AnswerID]string{
+	AnswerObservedState: observedStateDoor,
+	AnswerController:    controllerRouteDoor,
+}
 
 // askedPattern is the method and the target one pattern is asked with: a wildcard stands for a
 // value a route of that shape is asked with, and the catch-all pattern for a path no route of

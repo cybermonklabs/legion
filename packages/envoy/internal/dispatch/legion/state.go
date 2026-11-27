@@ -25,8 +25,8 @@ import (
 //     issues' parent chain instead.
 
 // State is a daemon's state as Dispatch records it: its issues, its admission block, the settings
-// it reports, the session it names as its registered controller (ControllerLocator), the members of
-// its daemon block a whole read checks (Daemon), and nothing else of the document.
+// it reports, the members of its daemon block a whole read checks (Daemon), and nothing else of the
+// document.
 type State struct {
 	Issues map[string]Issue `json:"issues"`
 	// Admission is the daemon's admission block, absent from a document that carries none: the
@@ -39,19 +39,9 @@ type State struct {
 	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
 	// added to legion.yaml is recorded the day a daemon sends it.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
-	// ControllerLocator is the daemon's record of the session registered as the project's
-	// controller (packages/contracts/src/legion-api.ts, legionControllerLocator), absent until a
-	// session registers. Dispatch keeps its session alone: the reject of a production event
-	// (dispatch://INFRA-978, R8) proves the project's controller by that session.
-	ControllerLocator *ControllerLocator `json:"controllerLocator,omitempty"`
 	// Daemon is the daemon block, which no observation records: a whole read (fetchWhole) checks
 	// the state is the setting's project's and takes the starting point it reflects from it.
 	Daemon *Daemon `json:"daemon,omitempty"`
-}
-
-// ControllerLocator is the members of the daemon's controllerLocator that Dispatch records.
-type ControllerLocator struct {
-	SessionID string `json:"sessionId,omitempty"`
 }
 
 // Daemon is the state's daemon block in the members a whole read checks.
@@ -159,9 +149,6 @@ const (
 	// admission block: they belong to the project's daemon, not to an issue, and the board
 	// carries them (api/legion_board.go).
 	FieldSettings = "settings"
-	// FieldController is the session the daemon names as the project's registered controller,
-	// observed under AdmissionKey: `null` while no session is registered (ControllerSession).
-	FieldController = "controller"
 	// ClaimFieldPrefix starts the field of one role's claim state: `claim.architect`,
 	// `claim.implementer`.
 	ClaimFieldPrefix = "claim."
@@ -202,7 +189,7 @@ func JSONString(raw []byte) string {
 }
 
 // AdmissionKey is the issue key every project-level observation is written under — the admission
-// block, the settings and the controller session: the empty string, which no issue key can be
+// block and the settings: the empty string, which no issue key can be
 // (legion_observations.issue_key is free text with no foreign key, so the rows cost no issue).
 const AdmissionKey = ""
 
@@ -215,9 +202,9 @@ type Observation struct {
 }
 
 // Observations is every observed field of every issue the read carries, by issue key and then by
-// field, so two reads of one state produce one list. The project's own three come first, under
-// AdmissionKey: the admission block, the settings the daemon reports and the session it names as
-// its registered controller, none of which belongs to an issue.
+// field, so two reads of one state produce one list. The project's own two come first, under
+// AdmissionKey: the admission block and the settings the daemon reports, neither of which belongs
+// to an issue.
 //
 // Phase, slot and the wait are observed on every issue, `null` where the issue carries none, so a
 // slot released or a wait answered is a change like any other; a first `null` writes no row
@@ -234,12 +221,11 @@ type Observation struct {
 // passes through too (state_message.go), so a read and an event never encode one value differently.
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
-	// The three fields every issue carries and one claim each, and the project's three.
-	observations := make([]Observation, 0, len(keys)*4+3)
+	// The three fields every issue carries and one claim each, and the project's two.
+	observations := make([]Observation, 0, len(keys)*4+2)
 	observations = append(observations,
 		Observation{IssueKey: AdmissionKey, Field: FieldAdmission, Value: admissionValue(s.Admission)},
 		Observation{IssueKey: AdmissionKey, Field: FieldSettings, Value: settingsValue(s.Settings)},
-		Observation{IssueKey: AdmissionKey, Field: FieldController, Value: controllerValue(s.ControllerLocator)},
 	)
 	for _, key := range keys {
 		issue := s.Issues[key]
@@ -303,14 +289,6 @@ func admissionValue(admission *Admission) json.RawMessage { return encodeValue(a
 // settingsValue is the settings the daemon reports, `null` for none.
 func settingsValue(settings map[string]json.RawMessage) json.RawMessage {
 	return encodeValue(settings)
-}
-
-// controllerValue is the session the daemon names as its registered controller, `null` for none.
-func controllerValue(locator *ControllerLocator) json.RawMessage {
-	if locator == nil {
-		return encodeValue(nil)
-	}
-	return encodeValue(optional(locator.SessionID))
 }
 
 // encodeValue is value as the jsonb column holds it: its JSON, or `null` for a value that does not

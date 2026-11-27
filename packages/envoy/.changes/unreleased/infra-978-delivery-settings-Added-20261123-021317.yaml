@@ -13,7 +13,12 @@ body: |-
   `GET` and `PUT /api/v1/settings/delivery` keep answering in this release and are removed in the
   next one. Each deploy and each failed change is a row of
   `production_events`, read, posted and judged at `GET` and `POST
-  /api/v1/projects/{key}/production-events` and `PUT .../{id}/state`. Change fail rate, failed
+  /api/v1/projects/{key}/production-events` and `PUT .../{id}/state`. A person rejects, re-counts
+  and restores a failed change there, and the project's controller rejects and re-counts one:
+  Dispatch asks the project's Legion daemon which session is its controller at the moment of the
+  write (`GET /legion/v1/controller`, which the daemon serves from this release on), and refuses the
+  write `503 LEGION_CONTROLLER_UNREAD` where the daemon answers `404`, as an earlier build does, or
+  gives no answer within 2 s. Change fail rate, failed
   deployment recovery time and the new deployment rework rate read those rows; the pending
   state, the upper bound and change fail rate's `per_pr` series are removed.
   The measures answer (`GET /api/v1/delivery/measures`, the timeline's `measures` and the live

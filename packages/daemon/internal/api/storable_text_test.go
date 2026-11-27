@@ -165,6 +165,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"/":                                  noBody,
 		"GET /legion/v1/state":               noBody,
 		"GET /legion/v1/issues/{key}/record": noBody,
+		"GET /legion/v1/controller":          noBody,
 		"GET /healthz":                       noBody,
 		"GET /readyz":                        noBody,
 

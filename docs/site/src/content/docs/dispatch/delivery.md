@@ -250,9 +250,12 @@ A failure leaves the numbers only when it is rejected.
 A person or the project's controller rejects one with `PUT /api/v1/projects/{key}/production-events/{id}/state` and `{"state": "rejected", "reason": "…"}`.
 The row stays, with the reason, who rejected it and when (`state_reason`, `state_by`, `state_at`), and `{"state": "counted", "reason": "…"}` puts it back with its own reason.
 A person is a credential that holds the `person` scope.
-The project's controller is the session that the project's Legion daemon names as its registered controller, calling with that session's own broker-issued token.
+The project's controller is the session that the project's Legion daemon names as its registered controller at the moment of the write, calling with that session's own broker-issued token.
+Dispatch asks the daemon that the project's Legion setting names, at `GET /legion/v1/controller`, before it writes, and waits at most 2 seconds for the answer.
 A person marks a failure restored with `{"state": "restored", "restored_by_deploy": "<deploy id>"}`, which sets `restored_at` to the time of the write and names the deploy that restored it where the body names one.
-Anyone else is refused `403 PRODUCTION_EVENT_STATE_FORBIDDEN`.
+Anyone else is refused `403 PRODUCTION_EVENT_STATE_FORBIDDEN`, and so is a controller's write where the project names no Legion daemon or where its daemon names no registered controller or another session.
+Where Dispatch cannot learn the controller, a controller's write is refused `503 LEGION_CONTROLLER_UNREAD`, and the error says why: the daemon answered `404`, because its build is older than that route, it did not answer in time, or Dispatch could not read its answer.
+So the controller can reject or re-count only once its daemon runs a build that serves `GET /legion/v1/controller`, and a person can reject or re-count at any time.
 
 ## The failure measures
 

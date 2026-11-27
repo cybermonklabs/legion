@@ -2261,6 +2261,7 @@ Meanwhile a message of a project with no starting point applies nothing.
 Where the starting read is due, the message is finished, and where the cursor names it as the holder, the cursor names no holder from then on; where that read is not due yet, the message holds it as any owed read, and its redelivery is judged again (`Intake.applyMessage`, `Intake.startBlocked`).
 The next message, settings write or take-over after that process has left takes the starting point.
 No recurring timer reads a daemon.
+The one other call Dispatch makes of a daemon is the controller read of a production event's state route (`/api/v1/projects/{key}/production-events/{id}/state`, below), which reads the daemon's `GET /legion/v1/controller` and records nothing.
 Each whole read the intake records logs `legion intake: whole read` at INFO, with the first reason it was owed for as its `reason`, every reason it joined as its `reasons`, whether it was good as `ok`, the read's start on Dispatch's clock as `started`, the time `last_read_started_at` keeps, and, for a failed read, its `error` (`finishWhole`).
 A read whose setting no longer names the daemon it read when it lands records nothing but its start, and logs `legion intake: the Legion setting changed during a whole read; it is not recorded` at INFO instead; a read that the intake's stop cuts short records only its start too, and logs neither line.
 It stops with the two delivery intakes, under the same 15 s from the signal, before the shutdown closes the database pool.
@@ -5805,8 +5806,12 @@ Each item below names a path with its method and identity, then its purpose.
   Reject, re-count or restore one failure of the project, `{state, reason, restored_by_deploy?}`, answering the row.
   `rejected` takes the failure out of the numbers and `counted` puts it back, each with its `reason` (required), writer and time in `state_reason`, `state_by` and `state_at`; `restored` sets `restored_at`, `restored_by` and, where the body names one, the restoring deploy `restored_by_deploy`, and keeps no reason.
   A reject and a re-count are a person's (a credential holding `person`) or the project's controller's; a restore is a person's.
-  The controller is proven, never claimed: the request's credential proves its session (a broker-issued token), and that session is the one the project's Legion daemon names as its registered controller (`controllerLocator.sessionId` of `GET /legion/v1/state`, which the sampler records as the project's `controller` observation, `legion.ControllerSession`).
-  Anyone else is `403 PRODUCTION_EVENT_STATE_FORBIDDEN`.
+  The controller is proven, never claimed: the request's credential proves its session (a broker-issued token), and that session is the one the project's Legion daemon names as its registered controller at the moment of the write.
+  Dispatch asks the daemon the project's Legion setting names, `GET /legion/v1/controller` (its `controllerLocator.sessionId`, `legion.Client.Controller`), before the write's transaction opens, with no credential, within 2 s for the whole call (`legion.ControllerTimeout`) and 64 KiB of the answer (`legion.ControllerResponseLimit`).
+  It falls back to no whole state and to nothing it stored of the daemon, and a person's write asks the daemon nothing.
+  Anyone else is `403 PRODUCTION_EVENT_STATE_FORBIDDEN`, and so is a controller's write where the project names no Legion daemon, where its daemon names no registered controller, and where the daemon names another session.
+  A controller's write where Dispatch could not learn the controller is `503 LEGION_CONTROLLER_UNREAD`: the daemon answered `404`, as a daemon build before the route does, did not answer within the 2 s, or answered something Dispatch cannot read; the error names which, and says a person can still reject or re-count.
+  So a controller's reject or re-count needs a daemon build that serves `GET /legion/v1/controller` (daemon API entry `20261127150416` controller-route).
   The row must be the path project's: the project-scope check reads the path's key alone, so a row of another project is `404 PRODUCTION_EVENT_NOT_FOUND`, as is an id of no row.
   A deploy's row and a reject or re-count without a reason are `400 PRODUCTION_EVENT_STATE_INPUT`, a `restored_by_deploy` no deploy row is `409 PRODUCTION_EVENT_NO_DEPLOY`, and an unknown project `404 PROJECT_NOT_FOUND`.
   The precedent for who may write the state and what the row keeps is `POST /api/v1/results/{id}/retract`; the write drains its change rows after its commit, as the post does.

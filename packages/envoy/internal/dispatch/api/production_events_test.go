@@ -9,12 +9,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -926,15 +928,86 @@ func TestAFailurePostedThroughOneRouteOnASharedDeployCountsForThatProjectAlone(t
 	requireFigures("after a failing check on it", map[string][3]float64{"ALPHA": {1, 1, 1}, "OMEGA": {1, 1, 2}})
 }
 
+// controllerDaemon is a Legion daemon stand-in serving GET /legion/v1/controller, as
+// newFakeLegionDaemon serves the state route, and 404 to every other request: the route answers as
+// the test last set it (answers), and 404 too where it is set to nothing, as a daemon of a build
+// before the route answers it. It counts the controller reads it was sent (reads).
+type controllerDaemon struct {
+	*httptest.Server
+	mu    sync.Mutex
+	serve http.HandlerFunc
+	asked int
+}
+
+// newControllerDaemon starts a daemon stand-in whose route names no registered controller.
+func newControllerDaemon(t *testing.T) *controllerDaemon {
+	t.Helper()
+	daemon := &controllerDaemon{}
+	daemon.names("")
+	daemon.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		daemon.mu.Lock()
+		serve := daemon.serve
+		if r.URL.Path == legion.ControllerPath {
+			daemon.asked++
+		}
+		daemon.mu.Unlock()
+		if r.Method != http.MethodGet || r.URL.Path != legion.ControllerPath || serve == nil {
+			http.NotFound(w, r)
+			return
+		}
+		serve(w, r)
+	}))
+	t.Cleanup(daemon.Close)
+	return daemon
+}
+
+// answers sets how the controller route answers from the next read on; nil answers it 404.
+func (d *controllerDaemon) answers(serve http.HandlerFunc) {
+	d.mu.Lock()
+	d.serve = serve
+	d.mu.Unlock()
+}
+
+// names has the route name session as the project's registered controller, in the members of the
+// daemon's own answer (packages/daemon/internal/api's ControllerResponse), or `{}`, no registered
+// controller, for "".
+func (d *controllerDaemon) names(session string) {
+	body := `{}`
+	if session != "" {
+		body = fmt.Sprintf(`{"controllerLocator":{"runtime":"kubernetes","external":true,"sessionId":%q,"registeredAt":"2026-11-27T09:00:00Z","pluginContract":276}}`, session)
+	}
+	d.answers(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	})
+}
+
+// stalls has the route hold each read until its caller hangs up, which is past
+// legion.ControllerTimeout.
+func (d *controllerDaemon) stalls() {
+	d.answers(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+}
+
+// reads is how many controller reads the daemon was sent.
+func (d *controllerDaemon) reads() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.asked
+}
+
 // TestTheStateRouteTakesAPersonAndTheProvenControllerAlone: a person rejects, re-counts and
-// restores a failure; the project's controller, the session the daemon's newest read names and a
-// broker token proves, rejects and re-counts it and may not restore it; once a later read names
-// another session the same token is refused; a session that is neither, a reader that is neither
-// (a read-only token) and the shared token, which proves none, are refused, and the row is as it
-// was; and a row of another project is not the path's project's to write. Each reject and each
+// restores a failure, and asks the project's Legion daemon nothing; the project's controller, the
+// session the daemon's GET /legion/v1/controller names at the write and a broker token proves,
+// rejects and re-counts it and may not restore it. A controller's write is refused 403 where the
+// project names no Legion daemon and where its daemon names no registered controller, 503
+// LEGION_CONTROLLER_UNREAD where the daemon answers the route 404, a build before it, and where it
+// does not answer within legion.ControllerTimeout; once the daemon names a successor, the same
+// token is refused 403. A session that is neither, the shared token, which proves none, and a
+// read-only token are refused 403, and every refused write leaves the row as it was, read back
+// after each; a row of another project is not the path's project's to write. Each reject and each
 // re-count answers 200 and keeps its reason, its writer and its time, the server's (R8), and the
-// change fail rate, read after each, leaves the row out after a reject and puts it back in after
-// a re-count. A restore keeps its time and its writer through every write after it (R7).
+// change fail rate, read after each, leaves the row out after a reject and puts it back in after a
+// re-count. A restore keeps its time and its writer through every write after it (R7).
 func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -963,28 +1036,7 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	})
 	failure := writeProductionFailure(t, rig.database, brokerTestProject, "alerts:1", deploy.ID, now.Add(-time.Minute))
 	path := productionEventStatePath(brokerTestProject, failure.ID)
-	// The project's daemon, which its Legion setting names, serves a state whose controllerLocator
-	// names session, and the Legion state intake's whole read records it (readLegionWhole), as a
-	// read of a daemon whose controller registered does.
-	daemon := &fakeLegionDaemon{project: brokerTestProject}
-	daemon.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		daemon.mu.Lock()
-		body := daemon.body
-		daemon.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(daemon.Close)
-	if _, err := legion.PutSettings(context.Background(), rig.database.Pool, brokerTestProject, daemon.URL,
-		model.Actor{Kind: "user", ID: brokerTestPerson}); err != nil {
-		t.Fatalf("name %s's Legion daemon: %v", brokerTestProject, err)
-	}
-	readDaemon := func(session string) {
-		t.Helper()
-		daemon.read(t, rig.database, fmt.Sprintf(`{"daemon":{"project":%q,"stateSeq":1,"stateId":"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"},
-			"settings":{"dispatch_url":"http://dispatch.internal.example"},"issues":{},
-			"controllerLocator":{"sessionId":%q}}`, brokerTestProject, session))
-	}
+	daemon := newControllerDaemon(t)
 	stateOf := func() prodevents.Event {
 		t.Helper()
 		return readProductionEvent(t, rig.database, brokerTestProject, failure.ID)
@@ -1051,8 +1103,35 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 			}
 		}
 	}
+	// refused sends a write that must be refused with status and code, its message naming each of
+	// names, and holds the row the store keeps to the row as it stood before the write.
+	refused := func(what string, send func() *httptest.ResponseRecorder, status int, code string, names ...string) {
+		t.Helper()
+		before, err := json.Marshal(stateOf())
+		if err != nil {
+			t.Fatalf("encode the row: %v", err)
+		}
+		expectRefusal(t, what, send(), status, code, names...)
+		if after, err := json.Marshal(stateOf()); err != nil || string(after) != string(before) {
+			t.Fatalf("%s left the row %s (%v), want it as it was, %s", what, after, err, before)
+		}
+	}
+	controllerRejects := func() *httptest.ResponseRecorder {
+		return asController(map[string]any{"state": "rejected", "reason": "A duplicate of the first alert."})
+	}
 
 	requireChangeFailRate("before any state write", 1)
+	// Before the project names a Legion daemon, no session is its controller.
+	refused("the controller's reject while the project names no daemon", controllerRejects,
+		http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession, "names no Legion daemon")
+	if _, err := legion.PutSettings(context.Background(), rig.database.Pool, brokerTestProject, daemon.URL,
+		model.Actor{Kind: "user", ID: brokerTestPerson}); err != nil {
+		t.Fatalf("name %s's Legion daemon: %v", brokerTestProject, err)
+	}
+
+	// A person's writes ask the daemon nothing, and are taken while it answers the route 404 as a
+	// daemon of an earlier build does.
+	daemon.answers(nil)
 	setState("a person's reject", asPerson, prodevents.StateRejected, "A flaky probe.", person)
 	requireChangeFailRate("after the person's reject", 0)
 
@@ -1072,44 +1151,56 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	restoredAt, restoredBy := *stateOf().RestoredAt, *stateOf().RestoredBy
 	setState("a person's re-count", asPerson, prodevents.StateCounted, "The probe was right.", person)
 	requireChangeFailRate("after the person's re-count", 1)
+	if asked := daemon.reads(); asked != 0 {
+		t.Fatalf("a person's writes asked the daemon for its controller %d times, want none", asked)
+	}
 
-	// Before any read names it, the controller's session is no controller.
-	expectRefusal(t, "a session no read names", asController(map[string]any{
-		"state": "counted", "reason": "It was real.",
-	}), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
-	readDaemon(brokerTestSession)
+	// The daemon's answer decides the controller's write: a daemon of a build before the route,
+	// one that does not answer within the bound and one that names no registered controller are
+	// each refused, and say which.
+	refused("the controller's reject while the daemon answers the route 404", controllerRejects,
+		http.StatusServiceUnavailable, codeLegionControllerUnread, "404", legion.ControllerPath)
+	daemon.stalls()
+	refused("the controller's reject while the daemon does not answer", controllerRejects,
+		http.StatusServiceUnavailable, codeLegionControllerUnread, "no answer within")
+	daemon.names("")
+	refused("the controller's reject while the daemon names no controller", controllerRejects,
+		http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession, "names no registered controller")
+	if asked := daemon.reads(); asked != 3 {
+		t.Fatalf("the controller's three writes asked the daemon %d times, want once each", asked)
+	}
+
+	daemon.names(brokerTestSession)
 	setState("the controller's reject", asController, prodevents.StateRejected, "A duplicate of the first alert.", session)
 	requireChangeFailRate("after the controller's reject", 0)
 	setState("the controller's re-count", asController, prodevents.StateCounted, "It was real.", session)
 	requireChangeFailRate("after the controller's re-count", 1)
-	expectRefusal(t, "the controller's restore", asController(map[string]any{"state": "restored"}),
+	refused("the controller's restore", func() *httptest.ResponseRecorder { return asController(map[string]any{"state": "restored"}) },
 		http.StatusForbidden, codeProductionEventStateForbidden)
-	expectRefusal(t, "a session that is neither", rig.serve(caller.presenting(t, http.MethodPut, path, neither, map[string]any{
-		"state": "rejected", "reason": "Says another session.",
-	})), http.StatusForbidden, codeProductionEventStateForbidden, "ses_neither")
-	expectRefusal(t, "the shared token", rig.serve(brokerRequest(t, http.MethodPut, path, map[string]any{
-		"state": "rejected", "reason": "Says the shared token.",
-	}, "Bearer agent-token", "")), http.StatusForbidden, codeProductionEventStateForbidden)
-
+	refused("a session that is neither", func() *httptest.ResponseRecorder {
+		return rig.serve(caller.presenting(t, http.MethodPut, path, neither, map[string]any{
+			"state": "rejected", "reason": "Says another session.",
+		}))
+	}, http.StatusForbidden, codeProductionEventStateForbidden, "ses_neither")
+	refused("the shared token", func() *httptest.ResponseRecorder {
+		return rig.serve(brokerRequest(t, http.MethodPut, path, map[string]any{
+			"state": "rejected", "reason": "Says the shared token.",
+		}, "Bearer agent-token", ""))
+	}, http.StatusForbidden, codeProductionEventStateForbidden)
 	// A reader is neither a person nor the controller: a read-only token reads the record and is
-	// refused both writes of a reason, with the row as it was.
-	unchanged, err := json.Marshal(stateOf())
-	if err != nil {
-		t.Fatalf("encode the row: %v", err)
-	}
+	// refused both writes of a reason.
 	for _, state := range []string{prodevents.StateRejected, prodevents.StateCounted} {
-		expectRefusal(t, "a reader's "+state, rig.serve(caller.presenting(t, http.MethodPut, path, reader, map[string]any{
-			"state": state, "reason": "Says a reader.",
-		})), http.StatusForbidden, contracts.DispatchReadOnlyToken)
-	}
-	if kept, err := json.Marshal(stateOf()); err != nil || string(kept) != string(unchanged) {
-		t.Fatalf("the reader's refused writes left the row %s (%v), want it as it was, %s", kept, err, unchanged)
+		refused("a reader's "+state, func() *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, http.MethodPut, path, reader, map[string]any{
+				"state": state, "reason": "Says a reader.",
+			}))
+		}, http.StatusForbidden, contracts.DispatchReadOnlyToken)
 	}
 
-	readDaemon("ses_successor")
-	expectRefusal(t, "the controller after a read names another session", asController(map[string]any{
-		"state": "rejected", "reason": "Too late.",
-	}), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
+	daemon.names("ses_successor")
+	refused("the controller once the daemon names a successor", func() *httptest.ResponseRecorder {
+		return asController(map[string]any{"state": "rejected", "reason": "Too late."})
+	}, http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
 	if row := stateOf(); row.State != prodevents.StateCounted || row.StateBy == nil || row.StateBy.ID != brokerTestSession {
 		t.Fatalf("the refused writes moved the failure to %s by %v, want the controller's re-count to stand", row.State, row.StateBy)
 	}

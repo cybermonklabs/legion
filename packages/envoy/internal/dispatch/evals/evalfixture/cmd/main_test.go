@@ -44,9 +44,7 @@ func TestEveryModeButMergePRNeedsAProject(t *testing.T) {
 
 // TestTheFailuresModeRefusesTheModesThatWriteItsSettings: -failures saves its projects' delivery
 // settings, as -attribution and -delivery save theirs, so it is refused beside either, and -base
-// writes the Legion history alone; -controller-session names the controller of -failures'
-// projects, so it is refused without -failures. -failures beside -legion, and with a controller
-// session, is accepted.
+// writes the Legion history alone. -failures beside -legion is accepted.
 func TestTheFailuresModeRefusesTheModesThatWriteItsSettings(t *testing.T) {
 	for _, refused := range []struct {
 		name, says string
@@ -55,7 +53,6 @@ func TestTheFailuresModeRefusesTheModesThatWriteItsSettings(t *testing.T) {
 		{"-failures -attribution", "-failures", options{failures: true, attribution: true}},
 		{"-failures -delivery", "-failures", options{failures: true, delivery: true}},
 		{"-failures -base", "-base", options{failures: true, base: true}},
-		{"-controller-session alone", "-failures", options{legion: true, controllerSession: "ses_controller"}},
 	} {
 		refused.o.database, refused.o.project = "postgres://unused", "FAIL"
 		if err := check(refused.o); err == nil || !strings.Contains(err.Error(), refused.says) {
@@ -64,7 +61,6 @@ func TestTheFailuresModeRefusesTheModesThatWriteItsSettings(t *testing.T) {
 	}
 	for _, accepted := range []options{
 		{failures: true, legion: true},
-		{failures: true, controllerSession: "ses_controller"},
 	} {
 		accepted.database, accepted.project = "postgres://unused", "FAIL"
 		if err := check(accepted); err != nil {

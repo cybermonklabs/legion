@@ -105,6 +105,10 @@ type Options struct {
 	// the claim registration route registers a session on, and the grants route authenticates
 	// the registered session against.
 	Controller ControllerStore
+	// RuntimeName is the runtime this daemon runs under (config.Config.Runtime.Name, `tmux` or
+	// `kubernetes`), which the controller route names its registered session's runtime by, as the
+	// state's controllerLocator does (ControllerLocatorOf). Empty names none.
+	RuntimeName string
 	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), in the order it
 	// named them: what register_gate resolves a registration's step against, and what the
 	// controller secret route answers `legion controller start`. The empty list gates no step.
@@ -354,6 +358,8 @@ type server struct {
 	operatorSet     bool
 	operatorHash    [sha256.Size]byte
 	controller      ControllerStore
+	// runtimeName is Options.RuntimeName.
+	runtimeName string
 	// steps is Options.Steps, resolved: the deployment's design-gate steps, nil never.
 	steps []record.DesignStep
 	// controllerLaunched is Options.ControllerLaunched.
@@ -468,6 +474,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		project:            opts.Project,
 		dispatchProject:    opts.DispatchProject,
 		controller:         opts.Controller,
+		runtimeName:        opts.RuntimeName,
 		steps:              opts.Steps,
 		controllerLaunched: opts.ControllerLaunched,
 		pluginRelaunchable: opts.PluginRelaunchable,
@@ -585,6 +592,7 @@ func (s *server) routes() []route {
 	return []route{
 		{"GET /legion/v1/state", s.stateRoute},
 		{"GET /legion/v1/issues/{key}/record", s.issueRecordRoute},
+		{"GET /legion/v1/controller", s.controllerRoute},
 		{"GET /healthz", s.healthRoute},
 		{"GET /readyz", s.readyz},
 

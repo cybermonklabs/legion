@@ -503,3 +503,36 @@ func (s *server) writeControllerGrant(w http.ResponseWriter, r *http.Request, gr
 	}
 	s.writeAnswer(w, r, AnswerGrant, http.StatusOK, GrantResponse{GrantID: grant.ID, ExpiresAt: grant.ExpiresAt.UTC().Format(timeFormat)})
 }
+
+// ControllerResponse is `GET /legion/v1/controller`'s answer (controllerRoute): the session
+// registered as the project's controller, with exactly the members of the state's
+// controllerLocator (ControllerLocatorOf), and no controllerLocator while no session holds the
+// current capability, as the state leaves it out.
+type ControllerResponse struct {
+	ControllerLocator *ControllerLocator `json:"controllerLocator,omitempty"`
+}
+
+// controllerRoute answers `GET /legion/v1/controller` (contract entry 20261127150416
+// controller-route): the project's controller record, read under controllerMu as every read of it
+// is, shown as the state shows it under the runtime this daemon runs (ControllerLocatorOf), so a
+// caller learns the registered session without the whole state. Like the state route it
+// authenticates nobody: the state already shows that session to any caller. Dispatch reads it when
+// a caller that is not a person rejects or re-counts a failure of the project's record of deploys
+// and failed changes (dispatch://INFRA-978); no plugin parses it (AnswerController). A record the
+// store cannot read is refused 500, as the state route refuses a read that failed.
+func (s *server) controllerRoute(w http.ResponseWriter, r *http.Request) {
+	if s.controller == nil {
+		s.log.Error("api: the controller record is unset")
+		s.refuse(w, r, http.StatusInternalServerError, "controller unavailable")
+		return
+	}
+	s.controllerMu.Lock()
+	record, _, err := s.controller.Controller(r.Context(), s.project)
+	s.controllerMu.Unlock()
+	if err != nil {
+		s.logRequestFailure(r, err, "api: read the controller record for the controller route")
+		s.refuse(w, r, http.StatusInternalServerError, "controller unavailable")
+		return
+	}
+	s.writeAnswer(w, r, AnswerController, http.StatusOK, ControllerResponse{ControllerLocator: ControllerLocatorOf(s.runtimeName, record)})
+}

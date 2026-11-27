@@ -67,8 +67,7 @@ func NotifyRead(ctx context.Context, db Execer, project string) error {
 // (ObservationsLockKey, 0) that every insert into legion_observations takes immediately before it
 // draws its ids, and holds to its commit (QueueLockObservations): a whole read's
 // (recordObservations), a batch of state events' (recordEvents), a seeded history's
-// (legionseed's seeding.write), the eval fixture's cases (evalfixture's observedCases) and its
-// failures mode's controller (evalfixture's WriteFailures). It is
+// (legionseed's seeding.write) and the eval fixture's cases (evalfixture's observedCases). It is
 // the change log's lock in shape (delivery's lockChangesStatement, (6900, 0)) under the next key,
 // which no other lock of the module takes. An id is therefore drawn only once every row below it
 // has committed or rolled back, so a reader that pages the table by id, the Legion facts
@@ -145,13 +144,12 @@ func ListSettings(ctx context.Context, pool *store.Pool) ([]Settings, error) {
 	return listed, nil
 }
 
-// RowQueryer is the one call three readers of this package make of their connection. GetSettings
+// RowQueryer is the one call two readers of this package make of their connection. GetSettings
 // reads through the pool, or through a transaction a reader holds open so the setting answers the
 // moment its other reads of what the intake writes answer (api/legion_issue.go's readLegionIssue,
 // whose `configured` and state are one moment's). readPosition reads a project's setting and its
 // cursor through the pool outside any transaction (Intake.position), or through the transaction
-// that locks them (lockPosition). ControllerSession reads a project's controller session through
-// the pool (api's production event state route, evalfixture's WriteFailures).
+// that locks them (lockPosition).
 type RowQueryer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -481,8 +479,8 @@ type Current struct {
 // given a value, and an issue that left the daemon's state keeps its `phase` row, written `null`
 // when it left: it stays a Legion issue, so a child of it climbs through it to the tree above,
 // while it carries no card and no tree, since its `tree` was written `null` with the rest. The
-// rows under AdmissionKey belong to no issue — the admission block, the daemon's settings and its
-// controller session — so they report nothing.
+// rows under AdmissionKey belong to no issue — the admission block and the daemon's settings —
+// so they report nothing.
 func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, error) {
 	rows, err := db.Query(ctx, `
 		select issue_key, field, nullif(value, 'null'::jsonb), observed_at
@@ -518,23 +516,4 @@ func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, erro
 		return Current{}, fmt.Errorf("read the current Legion state of %s: %w", project, err)
 	}
 	return current, nil
-}
-
-// ControllerSession is the session project's daemon names as its registered controller, from the
-// newest good read (FieldController), and false where the daemon names none or Dispatch has read
-// no state of it. The reject of a production event proves the project's controller by it
-// (dispatch://INFRA-978, R8): a caller whose own session a credential proved and equals it.
-func ControllerSession(ctx context.Context, db RowQueryer, project string) (string, bool, error) {
-	var session string
-	err := db.QueryRow(ctx, `
-		select value #>> '{}' from legion_current
-		where project = $1 and issue_key = $2 and field = $3 and jsonb_typeof(value) = 'string'
-	`, project, AdmissionKey, FieldController).Scan(&session)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("read %s's controller session: %w", project, err)
-	}
-	return session, session != "", nil
 }

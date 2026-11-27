@@ -50,25 +50,6 @@ func goldenAdmission(t *testing.T, body []byte) map[string]json.RawMessage {
 	return document.Admission
 }
 
-// goldenController is the session a state document names as its registered controller
-// (controllerLocator.sessionId), as the daemon wrote it and without the decode under test, or ""
-// where it names none.
-func goldenController(t *testing.T, body []byte) string {
-	t.Helper()
-	var document struct {
-		ControllerLocator *struct {
-			SessionID string `json:"sessionId"`
-		} `json:"controllerLocator"`
-	}
-	if err := json.Unmarshal(body, &document); err != nil {
-		t.Fatalf("read the golden's controllerLocator: %v", err)
-	}
-	if document.ControllerLocator == nil {
-		return ""
-	}
-	return document.ControllerLocator.SessionID
-}
-
 // TestTheDecodeReadsTheStateDocumentTheDaemonWrote: a whole read's decode reads the daemon's own
 // goldens of its state document: state.json, the whole state, which
 // `packages/daemon/internal/daemon`'s TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds
@@ -84,14 +65,11 @@ func goldenController(t *testing.T, body []byte) string {
 // read needs to be a good read: daemon.project, which must name the setting's project,
 // daemon.stateSeq, the cursor's starting point, and the dispatch_url of the settings
 // (fetchWhole); so does daemon.stateRun, which a good read takes as the cursor's run
-// (recordWhole). The session a golden names as its registered controller
-// (controllerLocator.sessionId), which the reject of a production event reads (ControllerSession),
-// is its one controller observation: state.json names one, and observed-state.json, which carries
-// none, is observed `null`. Of the pull request the decode keeps nothing, though state.json
-// carries one: cybermonklabs/legion#2539 (main's contract 86) took the CI verdict out of the
-// daemon's state and deleted the record its required-check mark was read from, so metric 2's
-// CI-wait segment is not measured, a board card carries no CI verdict, and no reader is left for
-// the pull request's state.
+// (recordWhole). Of the pull request the decode keeps nothing, though state.json carries one:
+// cybermonklabs/legion#2539 (main's contract 86) took the CI verdict out of the daemon's state
+// and deleted the record its required-check mark was read from, so metric 2's CI-wait segment is
+// not measured, a board card carries no CI verdict, and no reader is left for the pull request's
+// state.
 func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	for _, golden := range []string{"state.json", "observed-state.json"} {
 		t.Run(golden, func(t *testing.T) {
@@ -148,30 +126,13 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 					state.Daemon.StateRun, orNone(read.stateRun))
 			}
 
-			// The observations a read of this document writes: the three project rows the board's
-			// header, its settings and the reject of a production event are read from, a phase for
-			// each issue, and nothing of the pull request.
+			// The observations a read of this document writes: the two project rows the board's header
+			// and its settings are read from, a phase for each issue, and nothing of the pull request.
 			fields := map[string]int{}
-			controller := ""
 			for _, observation := range state.Observations() {
 				fields[observation.Field]++
-				if observation.Field == FieldController {
-					if err := json.Unmarshal(observation.Value, &controller); err != nil {
-						t.Fatalf("the controller observation holds %s, want the session as a string or null: %v", observation.Value, err)
-					}
-				}
 			}
-			// The session the golden names as its registered controller (controllerLocator.sessionId):
-			// the whole state carries it, and the observed view carries none, whose observation is
-			// `null`.
-			wantController := goldenController(t, body)
-			if golden == "state.json" && wantController == "" {
-				t.Fatal("the golden of the whole state names no controllerLocator.sessionId, so the controller's decode proves nothing")
-			}
-			if controller != wantController {
-				t.Errorf("controller observation = %q, want %q, the golden's controllerLocator.sessionId", controller, wantController)
-			}
-			for _, field := range []string{FieldAdmission, FieldSettings, FieldController} {
+			for _, field := range []string{FieldAdmission, FieldSettings} {
 				if fields[field] != 1 {
 					t.Errorf("observations of %s = %d, want exactly one project row", field, fields[field])
 				}

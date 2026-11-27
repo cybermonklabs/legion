@@ -19,8 +19,10 @@ package api
 //   - A person rejects, re-counts and restores a failure; the project's controller rejects and
 //     re-counts one. The controller is proven, never claimed: the request's credential proved its
 //     session (a broker-issued token, callerSession) and that session is the one the project's
-//     Legion daemon names as its registered controller (legion.ControllerSession). The precedent
-//     for who may write a state and what the row keeps is POST /api/v1/results/{id}/retract.
+//     Legion daemon names as its registered controller at the moment of the write, read from the
+//     daemon's GET /legion/v1/controller before the write's transaction opens (legion's
+//     Client.Controller). The precedent for who may write a state and what the row keeps is
+//     POST /api/v1/results/{id}/retract.
 //
 // The route class is scopeProject, which reads the path's key alone, so the state route holds the
 // row to that project itself: a row of another project is 404 PRODUCTION_EVENT_NOT_FOUND. And both
@@ -57,6 +59,11 @@ const (
 	// codeProductionEventStateForbidden refuses a state write by any caller but a person and, for
 	// a reject or a re-count, the project's controller.
 	codeProductionEventStateForbidden = "PRODUCTION_EVENT_STATE_FORBIDDEN"
+	// codeLegionControllerUnread refuses a reject or a re-count by a caller that is not a person
+	// where Dispatch could not learn the project's controller from its Legion daemon: the daemon
+	// answered GET /legion/v1/controller 404 (a build before that route), did not answer within
+	// legion.ControllerTimeout, or answered something unreadable.
+	codeLegionControllerUnread = "LEGION_CONTROLLER_UNREAD"
 	// codeProductionEventNotFound is a state write naming a row the project does not hold.
 	codeProductionEventNotFound = "PRODUCTION_EVENT_NOT_FOUND"
 )
@@ -517,7 +524,8 @@ func productionEventInputError(format string, args ...any) *apiError {
 // (evals.DeployCountsFor), asked in the write's transaction once the store holds its row
 // (prodevents.DeployCheck): one that counts for other projects alone is answered as a deploy no
 // row holds is (prodevents.NoDeploy), and one that finished before the failed deploy finished is
-// 400 PRODUCTION_EVENT_STATE_INPUT (prodevents.SetState).
+// 400 PRODUCTION_EVENT_STATE_INPUT (prodevents.SetState). Who may write is decided before that
+// transaction opens (productionEventStateWriter), since it can ask the project's Legion daemon.
 func (s *server) putProductionEventState(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -567,11 +575,12 @@ func (s *server) putProductionEventState(w http.ResponseWriter, r *http.Request)
 }
 
 // productionEventStateWriter answers the actor a state write of project records, or refuses the
-// caller 403 PRODUCTION_EVENT_STATE_FORBIDDEN. A caller holding the person scope writes every
-// state, as the person it acts for (actingPerson). A reject and a re-count are also the
-// controller's: a caller whose credential proved its session (callerSession), where that session
-// is the one the project's daemon names as its controller (legion.ControllerSession), recorded as
-// that session. Each question is asked before the store opens its transaction.
+// caller. A caller holding the person scope writes every state, as the person it acts for
+// (actingPerson). A reject and a re-count are also the controller's: a caller whose credential
+// proved its session (callerSession), where that session is the one the project's Legion daemon
+// names as its registered controller now, recorded as that session (productionEventController).
+// Anyone else is 403 PRODUCTION_EVENT_STATE_FORBIDDEN. Each question is asked before the store
+// opens its transaction, the daemon's among them, since Dispatch makes no outside call inside one.
 func (s *server) productionEventStateWriter(w http.ResponseWriter, r *http.Request, project, state string) (model.Actor, bool) {
 	if s.callerHoldsScope(r, model.ScopePerson) {
 		return s.actingPerson(w, r)
@@ -582,24 +591,70 @@ func (s *server) productionEventStateWriter(w http.ResponseWriter, r *http.Reque
 		return model.Actor{}, false
 	}
 	session, proven := s.callerSession(r)
-	if proven {
-		controller, named, err := legion.ControllerSession(r.Context(), s.deps.Store.Pool, project)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return model.Actor{}, false
-		}
-		if named && controller == session {
-			return s.requireActor(w, r, nil)
-		}
+	if !proven {
 		writeError(w, codeProductionEventStateForbidden, http.StatusForbidden, fmt.Sprintf(
-			"a %s is a person's (the person scope) or the controller's of %s, and session %s is not the session %s's Legion daemon names as its controller",
-			state, project, session, project))
+			"a %s is a person's (the person scope) or the controller's of %s, proven by the broker-issued token of the session %s's Legion daemon names as its controller; this request's credential proves neither",
+			state, project, project))
 		return model.Actor{}, false
 	}
-	writeError(w, codeProductionEventStateForbidden, http.StatusForbidden, fmt.Sprintf(
-		"a %s is a person's (the person scope) or the controller's of %s, proven by the broker-issued token of the session %s's Legion daemon names as its controller; this request's credential proves neither",
-		state, project, project))
-	return model.Actor{}, false
+	if !s.productionEventController(w, r, project, state, session) {
+		return model.Actor{}, false
+	}
+	return s.requireActor(w, r, nil)
+}
+
+// productionEventController reports whether session, which the caller's credential proved, is the
+// one project's Legion daemon names as its registered controller at this moment, and refuses the
+// caller where it is not, naming why. It reads the project's Legion setting and then the daemon's
+// GET /legion/v1/controller (legion's Client.Controller, bounded by legion.ControllerTimeout), and
+// falls back to nothing: no whole state, and nothing Dispatch stored of the daemon.
+//
+//   - 403 PRODUCTION_EVENT_STATE_FORBIDDEN where the caller is proven not the controller: the
+//     project names no Legion daemon, the daemon names no registered controller, or it names
+//     another session.
+//   - 503 LEGION_CONTROLLER_UNREAD where Dispatch could not learn the controller: the daemon
+//     answered 404, a build before the route, or did not answer within the bound, or answered
+//     something unreadable.
+//
+// Each refusal says that a person can reject or re-count the failure.
+func (s *server) productionEventController(w http.ResponseWriter, r *http.Request, project, state, session string) bool {
+	const person = "a person (the person scope) can reject or re-count it"
+	setting, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project)
+	if errors.Is(err, legion.ErrNoSettings) {
+		writeError(w, codeProductionEventStateForbidden, http.StatusForbidden, fmt.Sprintf(
+			"a %s is a person's or the controller's of %s, and %s names no Legion daemon, so session %s is not its controller; %s",
+			state, project, project, session, person))
+		return false
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return false
+	}
+	controller, named, err := legion.New(setting.StateURL).Controller(r.Context())
+	switch {
+	case errors.Is(err, legion.ErrNoControllerRoute):
+		writeError(w, codeLegionControllerUnread, http.StatusServiceUnavailable, fmt.Sprintf(
+			"Dispatch could not learn %s's controller: %s's Legion daemon answered 404 to GET %s, so it runs a build before that route; %s",
+			project, project, legion.ControllerPath, person))
+		return false
+	case err != nil:
+		// Every other failure of the read wraps legion.ErrUnavailable and names its cause.
+		writeError(w, codeLegionControllerUnread, http.StatusServiceUnavailable, fmt.Sprintf(
+			"Dispatch could not learn %s's controller from its Legion daemon: %v; %s",
+			project, err, person))
+		return false
+	case !named:
+		writeError(w, codeProductionEventStateForbidden, http.StatusForbidden, fmt.Sprintf(
+			"a %s is a person's or the controller's of %s, and %s's Legion daemon names no registered controller, so session %s is not its controller; %s",
+			state, project, project, session, person))
+		return false
+	case controller != session:
+		writeError(w, codeProductionEventStateForbidden, http.StatusForbidden, fmt.Sprintf(
+			"a %s is a person's or the controller's of %s, and session %s is not the session %s's Legion daemon names as its controller; %s",
+			state, project, session, project, person))
+		return false
+	}
+	return true
 }
 
 // writeProductionEventError answers a refusal of the store (*prodevents.Error) as {code, error}:

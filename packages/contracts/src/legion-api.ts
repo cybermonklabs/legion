@@ -1685,6 +1685,18 @@ export const LegionObservedStateResponse = z.object({
 
 export type LegionObservedState = z.output<typeof LegionObservedStateResponse>;
 
+/** `api.ControllerResponse`, the body of `GET /legion/v1/controller` (daemon API entry
+ * 20261127150416 controller-route): the session registered as the project's controller, as
+ * `controllerLocator` with the members of the state's own (`legionControllerLocator`), and no
+ * `controllerLocator` while no session is registered, as the state leaves it out. The route takes
+ * no credential, as the state route takes none. Dispatch reads it when a caller that is not a
+ * person rejects or re-counts a failure of the project's record of deploys and failed changes
+ * (`packages/envoy/internal/dispatch/legion/client.go`, `Client.Controller`), and no plugin code
+ * reads it, so the daemon's table of the answers a plugin parses holds no row for it. */
+export const LegionControllerResponse = z.object({
+  controllerLocator: legionControllerLocator.optional(),
+});
+
 /** The fields a state event's change names (the `state_change` outbox payload of
  * `packages/daemon/internal/record/outbox.go`), each one Dispatch observes of an issue: its phase,
  * its tree, its admission slot, what it waits on from a person, and one role's claim. */

@@ -3234,6 +3234,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		DispatchProject:    cfg.Project,
 		OperatorToken:      p.operatorToken,
 		Controller:         st,
+		RuntimeName:        cfg.Runtime.Name,
 		Steps:              cfg.Gates.Steps(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,

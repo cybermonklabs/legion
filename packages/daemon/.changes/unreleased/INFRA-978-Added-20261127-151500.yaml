@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `GET /legion/v1/controller` answers the session registered as the project's controller:
+  `{"controllerLocator": {...}}` with the same members as the state's `controllerLocator`, or `{}`
+  while no session is registered. Like `GET /legion/v1/state`, it takes no credential. Dispatch
+  reads it when the project's controller rejects or re-counts a failed change, so it learns the
+  controller at that moment without reading the whole state. No plugin reads the answer. A
+  controller record the daemon's store cannot read is refused with 500. The route is daemon API
+  entry 20261127150416 controller-route.
+time: 2026-11-27T15:15:00Z
+custom:
+    Issue: INFRA-978

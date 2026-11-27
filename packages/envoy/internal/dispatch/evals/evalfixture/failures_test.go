@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -29,7 +28,7 @@ import (
 var failuresTables = []string{
 	"projects", "issues", "events", "artifacts", "issue_external_links", "check_results",
 	"project_delivery_settings", "project_deploy_sources", "delivery_pull_requests", "delivery_runs",
-	"delivery_run_jobs", "delivery_reverts", "production_events", "legion_observations", "legion_reads",
+	"delivery_run_jobs", "delivery_reverts", "production_events",
 }
 
 // failuresDigests is each of failuresTables as one digest of its rows.
@@ -102,17 +101,16 @@ func serverSignals(t *testing.T, pool *store.Pool) (stop func()) {
 }
 
 // TestTheFailuresModeLoadsTwiceIntoTheSameRows: -failures (dispatch://INFRA-978) loaded twice
-// with one -now and one controller session, beside a server's production signals' loop that reads
-// each input as it commits (serverSignals), writes the same rows of every table it writes and
-// answers the same result, so a check can load it again into a running server's database. What it
-// prints is what the rows hold: one failure row of each of the five signals, counted on arrival
-// and naming the deploy it blames, the revert restored by its own deploy; no row from the passing
-// check, the commit no deploy holds or the bug issue; a deploy row of each run a source's rule
-// calls a deploy and none of the run whose apply step failed or of the repository no source reads;
-// and each project's controller the session named. The evals the refresher then builds answer
-// each project's three failure measures and its deploy frequency over the window as the result
-// states them, and each deploy counts in deploy frequency for the projects the result names,
-// through what it names (R12). The pull requests and CI jobs among k12's rows count by
+// with one -now, beside a server's production signals' loop that reads each input as it commits
+// (serverSignals), writes the same rows of every table it writes and answers the same result, so a
+// check can load it again into a running server's database. What it prints is what the rows hold:
+// one failure row of each of the five signals, counted on arrival and naming the deploy it blames,
+// the revert restored by its own deploy; no row from the passing check, the commit no deploy holds
+// or the bug issue; and a deploy row of each run a source's rule calls a deploy and none of the run
+// whose apply step failed or of the repository no source reads. The evals the refresher then
+// builds answer each project's three failure measures and its deploy frequency over the window as
+// the result states them, and each deploy counts in deploy frequency for the projects the result
+// names, through what it names (R12). The pull requests and CI jobs among k12's rows count by
 // INFRA-2916's attribution (R15), which TestTheAttributionModeWritesK15sCase holds; the test logs
 // what the evals count of them beside what the result places, since a pull request or a job with
 // no issue counts through a default repository only on a head whose attribution reads
@@ -121,12 +119,12 @@ func TestTheFailuresModeLoadsTwiceIntoTheSameRows(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
 	stopServer := serverSignals(t, database.Pool)
-	first, err := evalfixture.WriteFailures(ctx, database.Pool, "FAIL", now, "ses_controller")
+	first, err := evalfixture.WriteFailures(ctx, database.Pool, "FAIL", now)
 	if err != nil {
 		t.Fatalf("load the failures mode: %v", err)
 	}
 	loaded := failuresDigests(t, database)
-	second, err := evalfixture.WriteFailures(ctx, database.Pool, "FAIL", now, "ses_controller")
+	second, err := evalfixture.WriteFailures(ctx, database.Pool, "FAIL", now)
 	if err != nil {
 		t.Fatalf("load the failures mode again: %v", err)
 	}
@@ -188,12 +186,6 @@ func TestTheFailuresModeLoadsTwiceIntoTheSameRows(t *testing.T) {
 			count(t, database, `select count(*) from issues where key = $1 and 'bug' = any(labels)`, negative.Ref)
 		if held != 1 {
 			t.Errorf("%s (%s) is %d stored inputs, want one", negative.What, negative.Ref, held)
-		}
-	}
-	for _, project := range first.Projects {
-		session, held, err := legion.ControllerSession(ctx, database.Pool, project)
-		if err != nil || !held || session != "ses_controller" {
-			t.Errorf("%s's controller is %q (%t, %v), want ses_controller", project, session, held, err)
 		}
 	}
 	if first.Expects.SourcesSaved["FAIL"] != 2 || first.Expects.DeploysByRepository[first.SecondRepo] == 0 ||

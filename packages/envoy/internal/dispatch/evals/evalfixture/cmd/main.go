@@ -13,7 +13,7 @@
 //	go run ./internal/dispatch/evals/evalfixture/cmd -database <url> \
 //	  -merge-pr acme/api#12 -now 2026-11-13T13:00:00Z
 //	go run ./internal/dispatch/evals/evalfixture/cmd -database <url> -project FAIL \
-//	  -failures -controller-session ses_controller -now 2026-11-13T12:00:00Z
+//	  -failures -now 2026-11-13T12:00:00Z
 //
 // -legion adds to one project and writes its projects row only where it has none, so it combines
 // with the other modes but -base, which writes the same history alone, into a database of the
@@ -33,9 +33,8 @@
 //	-merge-pr     <owner>/<repo>#<n>: that pull request merged at -now (k12's one change)
 //	-failures     INFRA-978's record of deploys and failed changes under -project and
 //	              -project+"B", its rows written through the writers production uses (the
-//	              production signals' loop among them); with -controller-session <id>, a Legion
-//	              read of each project naming that session its controller (k8); not with
-//	              -attribution or -delivery, which write the project's delivery settings too
+//	              production signals' loop among them); not with -attribution or -delivery, which
+//	              write the project's delivery settings too
 //
 // Every time is relative to -now, which defaults to this second: two loads with one -now hold
 // the same history at the same times, and a second -failures load writes the same rows.
@@ -60,7 +59,6 @@ type options struct {
 	database, project, mergePR string
 	legion, base, attribution  bool
 	delivery, failures         bool
-	controllerSession          string
 	issues, days               int
 	seed                       uint64
 	now                        time.Time
@@ -92,7 +90,6 @@ func main() {
 	flag.BoolVar(&o.delivery, "delivery", false, "write -days days of delivery rows for the project")
 	flag.StringVar(&o.mergePR, "merge-pr", "", "merge the pull request <owner>/<repo>#<n> at -now")
 	flag.BoolVar(&o.failures, "failures", false, "write INFRA-978's record of deploys and failed changes under -project and -project+\"B\"")
-	flag.StringVar(&o.controllerSession, "controller-session", "", "with -failures, record a Legion read of each project naming this session its controller")
 	flag.IntVar(&o.issues, "issues", evalfixture.DefaultIssues, "how many finished issues the Legion history holds at least")
 	flag.IntVar(&o.days, "days", 7, "how many days of delivery rows -delivery writes")
 	flag.Uint64Var(&o.seed, "seed", 1, "the seed of the delivery history's random draws (-delivery)")
@@ -138,7 +135,7 @@ func run(ctx context.Context, o options, out io.Writer) error {
 	// -failures writes its issues first, under the projects' first numbers, so a mode that numbers
 	// its issues after those a project holds (-legion) numbers after them.
 	if o.failures {
-		result, err := evalfixture.WriteFailures(ctx, pool, o.project, o.now, o.controllerSession)
+		result, err := evalfixture.WriteFailures(ctx, pool, o.project, o.now)
 		if err != nil {
 			return err
 		}
@@ -209,8 +206,6 @@ func check(o options) error {
 		return errors.New("-attribution and -delivery each write the project's delivery settings: load them into two databases")
 	case o.failures && (o.attribution || o.delivery):
 		return errors.New("-failures writes the project's delivery settings, as -attribution and -delivery do: load them into two databases")
-	case o.controllerSession != "" && !o.failures:
-		return errors.New("-controller-session names the controller of -failures' projects: name -failures too")
 	}
 	return nil
 }
