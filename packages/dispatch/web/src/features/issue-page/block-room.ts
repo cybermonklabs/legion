@@ -1,13 +1,5 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import {
-  createContext,
-  createElement,
-  type ReactNode,
-  type RefObject,
-  useContext,
-  useEffect,
-  useRef,
-} from "react";
+import { createElement, type ReactNode, useEffect, useRef } from "react";
 import type { Awareness } from "y-protocols/awareness";
 import type { Doc, XmlElement } from "yjs";
 
@@ -25,6 +17,7 @@ import { useMargin } from "../margin/margin-context";
 import { watchPicturePath } from "../refs/reference-target";
 import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { importWhenOnline } from "../shell/DeploymentResilience";
+import { IssueBlockRoomContext } from "./block-editor";
 import { useReportAdmission } from "./document-admission";
 import { askForTask } from "./drawn-in-slices";
 import { useOwnedIssueTree } from "./issue-tree-owner";
@@ -61,11 +54,16 @@ interface KeptEditor {
   destroy(): void | Promise<void>;
 }
 
-interface BindTarget<Editor> {
+export interface BindTarget<Editor> {
   readonly artifact: RoomArtifact;
   readonly connection: RoomConnection;
   readonly editor: Editor;
   readonly hidden: HTMLElement;
+  /** The element the kept editor is built in, inside `hidden`. Milkdown wraps the editable in a
+   *  box inside this element, and again at each change of the editor's plugins (its
+   *  `MILKDOWN_VIEW_CLEAR` view), so a bind moves this element into a row, never the editable
+   *  alone, which the next change of plugins would put back here. */
+  readonly root: HTMLElement;
   readonly scratch: XmlElement;
   watchAdmission(listener: (readOnly: boolean) => void): () => void;
   watchPending(listener: (state: PendingState) => void): () => void;
@@ -161,6 +159,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
   let alive = true;
   let started = false;
   let box: HTMLElement | undefined;
+  let editorRoot: HTMLElement | undefined;
   let scratch: Doc | undefined;
   let scratchBlock: XmlElement | undefined;
   let editor: Editor | undefined;
@@ -214,6 +213,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
         session.connection === undefined ||
         editor === undefined ||
         box === undefined ||
+        editorRoot === undefined ||
         scratchBlock === undefined
       ) {
         return;
@@ -225,6 +225,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
         connection: session.connection,
         editor,
         hidden: box,
+        root: editorRoot,
         scratch: scratchBlock,
         watchAdmission(listener) {
           session.admissions.add(listener);
@@ -255,16 +256,18 @@ export function createBlockRoom<Editor extends KeptEditor>({
         doc.getXmlFragment("scratch").insert(0, [paragraph]);
         const hidden = hiddenBox(host, rowWidth());
         box = hidden;
+        const root = hidden.appendChild(host.ownerDocument.createElement("div"));
         try {
           return {
             doc,
             handle: await buildEditor(paragraph, {
               boundArtifact: () => currentArtifact,
               queryClient,
-              root: hidden,
+              root,
             }),
             hidden,
             paragraph,
+            root,
           };
         } catch (error) {
           hidden.remove();
@@ -281,6 +284,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
       if (!made.hidden.contains(made.handle.view.dom)) made.hidden.append(made.handle.view.dom);
       scratch = made.doc;
       scratchBlock = made.paragraph;
+      editorRoot = made.root;
       editor = made.handle;
       mark(READY_MARK);
     } catch (error) {
@@ -425,12 +429,6 @@ function heldTree(queryClient: QueryClient, issueKey: string): TreeAnswer | unde
   return newest;
 }
 
-const IssueRoom = createContext<RefObject<BlockRoom<EditorHandle> | null> | undefined>(undefined);
-
-export function useIssueBlockRoom(): RefObject<BlockRoom<EditorHandle> | null> | undefined {
-  return useContext(IssueRoom);
-}
-
 /** Mount under the keyed issue page, not under a view that comes and goes. */
 export function IssueBlockRoom({
   children,
@@ -551,5 +549,5 @@ export function IssueBlockRoom({
       room.destroy();
     };
   }, [documentRef, key, queryClient, reportAdmission, specFragment, specId]);
-  return createElement(IssueRoom.Provider, { value: roomRef }, children);
+  return createElement(IssueBlockRoomContext.Provider, { value: roomRef }, children);
 }

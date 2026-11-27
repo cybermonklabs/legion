@@ -696,13 +696,17 @@ export function SpecFilterBody({
   const rowProps = (node: TreeNode): SpecRowProps => {
     const rowKey = rowKeys.get(node.id);
     const place = documentOfNode(node.id, artifacts);
+    const edited = editing !== undefined && editing.row === rowKey ? editing : undefined;
     return {
       editable: nodeEditable(place, issue.closed_at !== null, admissions),
-      editing: editing !== undefined && editing.row === rowKey ? editing.artifactId : undefined,
+      editing: edited?.artifactId,
       focused: focused === node.id,
       onFocus: (row) => focusStatement(row, node),
       ...(report?.row === node.id ? { report: report.line } : {}),
       rowKey,
+      // The page's kept block editor draws the block in a box of its own where the words stood
+      // (`block-editor.tsx`), so the row keeps its words and draws no stage over that box.
+      staged: edited?.kept === true ? undefined : edited?.artifactId,
       tabStop: tabStop === node.id,
     };
   };
@@ -1481,6 +1485,10 @@ interface SpecRowProps {
   /** What a key pressed on this row reported when it had nowhere to go. */
   report?: string;
   rowKey: string | undefined;
+  /** The document whose whole editor the row draws on its stage in place of its words while it is
+   *  edited there; undefined while it is not, and while the issue page's kept block editor draws
+   *  its block where its words stood (`block-editor.tsx`), which keeps the words, hidden. */
+  staged: string | undefined;
   tabStop: boolean;
 }
 
@@ -1491,7 +1499,8 @@ interface SpecRowProps {
  * with no limit of lines, with the focus or without it (R6): the view is where a statement is
  * read, so it draws every word of it, as its author wrote it. Its chips stand on the words' own
  * line after their last word, as a row of the outline draws its trail (`NodeRow.tsx`). While
- * editing, the same document stage replaces the words and the chips move below it.
+ * editing in the document's whole editor, the same document stage replaces the words and the
+ * chips move below it; the kept block editor takes the words' place, words and chips alike.
  */
 function Statement({
   context,
@@ -1503,6 +1512,7 @@ function Statement({
   onFocus,
   report,
   rowKey,
+  staged,
   statement,
   tabStop,
   wordsPress,
@@ -1518,9 +1528,9 @@ function Statement({
   const node = statement.node;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing);
+  const stage = useDocumentStage(staged);
   const press = useOnScreenUnderHeads(row, focused, editing === undefined && !wordsPress);
-  useOutOfTabOrder(words, editing === undefined);
+  useOutOfTabOrder(words, staged === undefined);
   // The count of the checks that serve it, drawn only where one does, and where its reference
   // names the block the Verification view puts the focus on.
   const checks = node.counts?.checks ?? 0;
@@ -1582,7 +1592,7 @@ function Statement({
           data-node-words=""
           ref={words}
         >
-          {editing !== undefined ? (
+          {staged !== undefined ? (
             <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
           ) : (
             <>
@@ -1598,7 +1608,7 @@ function Statement({
             </>
           )}
         </div>
-        {editing !== undefined && trail !== null ? (
+        {staged !== undefined && trail !== null ? (
           <div className="flex min-w-0 flex-wrap items-baseline">{trail}</div>
         ) : null}
         <Because decision={decision} statement={statement} />
@@ -1673,13 +1683,14 @@ function OtherRow({
   onFocus,
   report,
   rowKey,
+  staged,
   tabStop,
 }: SpecRowProps & { node: TreeNode }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing);
+  const stage = useDocumentStage(staged);
   const press = useOnScreenUnderHeads(row, focused, editing === undefined);
-  useOutOfTabOrder(words, editing === undefined);
+  useOutOfTabOrder(words, staged === undefined);
   return (
     <div
       aria-level={1}
@@ -1702,7 +1713,7 @@ function OtherRow({
       <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome} {...rowTiming}>
         {NODE_TYPE_NAMES[node.type]}
       </p>
-      {editing !== undefined ? (
+      {staged !== undefined ? (
         <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
       ) : (
         <div className={`text-[15px] leading-6 ${pageWordsText}`} data-node-words="" ref={words}>

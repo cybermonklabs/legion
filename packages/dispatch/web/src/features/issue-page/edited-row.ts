@@ -1,6 +1,8 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
 
 import { createHeld, type Held } from "./held-value";
+import type { TreeNode } from "./issue-tree";
+import type { CaretAt } from "./node-caret";
 import type { EditedRow } from "./useNodeEditing";
 
 /** No row of a tree is edited: what a row drawn outside a tree reads (`useEditedRow`). */
@@ -13,12 +15,20 @@ const NO_EDITED_ROW: Held<EditedRow | undefined> = createHeld<EditedRow | undefi
  */
 export const EditedRowContext = createContext<Held<EditedRow | undefined>>(NO_EDITED_ROW);
 
-/** The document the row `rowKey` is being edited in, or undefined while it is not the row being
- *  edited: the reading of the nearest tree's edited row that changes for this row alone. */
-export function useEditedRow(rowKey: string): string | undefined {
+/** The edit of the row `rowKey` - the document it is being edited in, and whether in the page's
+ *  kept block editor - or undefined while it is not the row being edited: the reading of the
+ *  nearest tree's edited row that changes for this row alone. */
+export function useEditedRow(rowKey: string): EditedRow | undefined {
   const edited = useContext(EditedRowContext);
   return useSyncExternalStore(edited.subscribe, () => {
     const row = edited.get();
-    return row?.row === rowKey ? row.artifactId : undefined;
+    return row?.row === rowKey ? row : undefined;
   });
 }
+
+/** Puts the caret in a row's node at a press on its words (`useNodeEditing`'s `edit`, the press
+ *  read by `pressInWords`): the outline's (`IssueTree.tsx`), for its rows to call; undefined for
+ *  a row drawn outside a tree that edits its rows. */
+export const EditAtPressContext = createContext<
+  ((row: string, node: TreeNode, at: CaretAt) => void) | undefined
+>(undefined);

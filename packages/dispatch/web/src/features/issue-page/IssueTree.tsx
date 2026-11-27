@@ -21,13 +21,14 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import type { RowSlices } from "./drawn-in-slices";
-import { EditedRowContext } from "./edited-row";
+import { EditAtPressContext, EditedRowContext } from "./edited-row";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { createHeld, type Held } from "./held-value";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import type { CaretAt } from "./node-caret";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
@@ -319,7 +320,10 @@ export function IssueTree({
     releaseFocus: () => {},
     stopEditing: () => {},
   });
-  const edit = useCallback((row: string, node: TreeNode) => edits.current.edit(row, node), []);
+  const edit = useCallback(
+    (row: string, node: TreeNode, at?: CaretAt) => edits.current.edit(row, node, at),
+    []
+  );
   const stopEditing = useCallback(() => edits.current.stopEditing(), []);
 
   const target = reveal?.at(-1);
@@ -1417,7 +1421,9 @@ export function IssueTree({
   );
   return (
     <EditedRowContext.Provider value={edited}>
-      <PublishedReferenceNames published={published}>{outline}</PublishedReferenceNames>
+      <EditAtPressContext.Provider value={edit}>
+        <PublishedReferenceNames published={published}>{outline}</PublishedReferenceNames>
+      </EditAtPressContext.Provider>
     </EditedRowContext.Provider>
   );
 }
@@ -1775,7 +1781,7 @@ export function useReleaseFocus({
 
 /** What `RowEditing` hands back to `IssueTree` without putting editing state on the tree. */
 interface RowEditingBridge {
-  edit: (row: string, node: TreeNode) => void;
+  edit: (row: string, node: TreeNode, at?: CaretAt) => void;
   releaseFocus: (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => void;
   stopEditing: () => void;
 }

@@ -1111,6 +1111,54 @@ html:has([data-issue-page]) {
   text-underline-offset: 3px;
 }
 
+/* R7's block editor (`issue-page/block-editor.tsx`): the issue page's kept editor, drawn in a
+   row's box where its words stood, which takes the words' classes, so the editor's text is the
+   words' 15 px on 24 px lines, in their ink, and its blocks stand as far apart as the words' do
+   (above). The editor library sizes a whole document - 16 px on 1.6 lines, a white page, a
+   400 px floor, 1em under each paragraph - in a stylesheet in no layer, so each rule here
+   outranks the library's own: `.proof-editor` (0,1,0), `.milkdown .editor` (0,2,0) and
+   `.milkdown p` (0,1,1). */
+[data-block-editor] .proof-editor {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  background: transparent;
+}
+
+[data-block-editor] .milkdown .editor {
+  min-height: 0;
+  line-height: inherit;
+}
+
+[data-block-editor] .milkdown :where(p, ul, ol, pre, blockquote, table) {
+  margin: 0 0 6px;
+  line-height: inherit;
+}
+
+[data-block-editor] .milkdown :where(ul, ol) {
+  padding-left: 22px;
+}
+
+[data-block-editor] .milkdown :where(li) {
+  margin: 0 0 2px;
+}
+
+[data-block-editor] .milkdown :where(h1, h2, h3, h4, h5, h6) {
+  margin: 6px 0 2px;
+  font-size: inherit;
+  font-weight: 600;
+  line-height: inherit;
+}
+
+[data-block-editor] .milkdown .editor > :first-child {
+  margin-top: 0;
+}
+
+[data-block-editor] .milkdown .editor > :last-child {
+  margin-bottom: 0;
+}
+
 /* A block or a document a node's words cite is a chip in place, named as a tie's chip is
    (`row-references.ts`'s `rowReferenceWords`, part G's R4): 12 px, in the row's muted grey, as the chips at the
    end of the words are drawn. */

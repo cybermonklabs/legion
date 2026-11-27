@@ -1,8 +1,10 @@
 import {
   type CSSProperties,
+  type MouseEvent,
   memo,
   type ReactNode,
   type RefObject,
+  useContext,
   useId,
   useLayoutEffect,
   useMemo,
@@ -40,12 +42,13 @@ import { namesBlockByLine, useKnownReferences } from "../refs/reference-names";
 import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { referenceTargetKind } from "../refs/target-id";
 import { agentRoleWord } from "./agent-role";
+import { useIssueBlockRoom } from "./block-editor";
 import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentReadOnly } from "./document-admission";
 import { useDocumentStage } from "./document-stage";
-import { useEditedRow } from "./edited-row";
+import { EditAtPressContext, useEditedRow } from "./edited-row";
 import { holdsFirstFocus } from "./first-focus";
 import { chipName } from "./first-line";
 import { useHeldChipLine } from "./held-chip-lines";
@@ -75,9 +78,15 @@ import {
   nodeStateWord,
 } from "./page-words";
 import { isThreadContext, tagFilter } from "./presets";
-import { ROW_TIMING, RowText, rowTiming, useOutOfTabOrder } from "./RowText";
+import { FOCUSABLE, ROW_TIMING, RowText, rowTiming, useOutOfTabOrder } from "./RowText";
+import { pressInWords } from "./spec-filter/pressed-words";
 import { titleReading } from "./statement-rules";
 import { indentOf } from "./tree-fold";
+
+/** What a press on a row's words lands on that is no press on the words themselves: a link or a
+ *  control in them, or the trail's chips (`spec-filter/pressed-words.ts`'s `statementWordsAt`
+ *  reads a statement's so). */
+const WORDS_CONTROLS = `${FOCUSABLE}, summary, [role="button"], [role="link"], [data-node-trail]`;
 
 /**
  * One row of the issue's outline, with everything its node shows on its face (R1, R6, R9, R11,
@@ -228,10 +237,20 @@ export const NodeRow = memo(function NodeRow({
   // The document this row's own text lives in while the reader is editing it here: its editor is
   // drawn in place of the row's words and the caret is in this node's block. The tree publishes
   // the edited row alone (`EditedRowContext`), so only this row hears Enter.
-  const editing = useEditedRow(rowKey);
+  const edited = useEditedRow(rowKey);
+  const editing = edited?.artifactId;
+  // The document whose whole editor the row draws on its stage in place of its words: none where
+  // the page's kept block editor draws the node's block in a box of its own where the words
+  // stood, the words kept under it, hidden, with the trail in them (`block-editor.tsx`).
+  const staged = edited?.kept === true ? undefined : editing;
   const readOnly = useDocumentReadOnly(document?.id);
   const takesTyping = editable && !readOnly;
-  const stage = useDocumentStage(editing);
+  const stage = useDocumentStage(staged);
+  // A press on the words puts the caret in the node's block where it was, in the issue page's
+  // kept block editor (R7), as Enter puts it at the block's start (`pressWords`, below): the
+  // tree's edit, on a page that keeps that editor.
+  const editAtPress = useContext(EditAtPressContext);
+  const pressEdits = useIssueBlockRoom() !== undefined && takesTyping;
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
   // A comment or a message its author deleted keeps its row, and draws the deleted line where
@@ -267,13 +286,38 @@ export const NodeRow = memo(function NodeRow({
       <NodeEdges node={node} tabStops={tabStops} />
     </span>
   );
-  const trailInWords = editing === undefined;
+  const trailInWords = staged === undefined;
   // Where the trail stands in the words' box, `styles.css` lays out inline each
   // `[data-author-text]` child of that box - the node's text (`RowText`'s `trailFollows`) and a
   // deleted post's line - so the words' box paints a first line either holds, and carries the
   // row's identifier in its place (`ROW_TIMING`).
   const wordsInline = trailInWords && trail !== null;
   const deletedInline = deleted !== null && wordsInline;
+  // A press on the row's words - not on a link, a control or a chip in them - read from the drawn
+  // words before the editor takes their place (`pressInWords`), once the press has given the row
+  // the focus, and acted on a task later, once the tree has let go of a row the press left, as
+  // the Spec view reads a press on a statement's words (`SpecFilterBody.tsx`). A drag that
+  // selected words opens nothing, and the selection stays.
+  const pressWords = (event: MouseEvent<HTMLDivElement>) => {
+    const words = event.currentTarget;
+    const held = row.current;
+    if (
+      editAtPress === undefined ||
+      held === null ||
+      event.detail === 0 ||
+      !(event.target instanceof Element) ||
+      words.contains(event.target.closest(WORDS_CONTROLS)) ||
+      window.getSelection()?.isCollapsed === false ||
+      held.ownerDocument.activeElement !== held
+    ) {
+      return;
+    }
+    const at = pressInWords(words, event.clientX, event.clientY);
+    window.setTimeout(() => {
+      if (held.ownerDocument.activeElement !== held || !held.contains(words)) return;
+      editAtPress(rowKey, node, at);
+    }, 0);
+  };
   // The view a node's kind tag opens it in, at its own block (R9).
   const tagView = tagFilter(node);
   const tagTo = tagView === undefined ? undefined : presetNodePath(tagView, node);
@@ -354,14 +398,17 @@ export const NodeRow = memo(function NodeRow({
               )}
             </p>
           ) : (
+            // biome-ignore lint/a11y/noStaticElementInteractions: the press is the row's own, which takes the focus; its key is Enter (`useTreeKeymap`).
+            // biome-ignore lint/a11y/useKeyWithClickEvents: Enter on the row puts the caret in the same block.
             <div
               className={`relative text-[15px] leading-6 ${
                 context ? pageQuietText : own ? pageInkText : pageWordsText
               }`}
               data-node-words=""
+              onClick={pressEdits ? pressWords : undefined}
               {...(deletedInline ? rowTiming : {})}
             >
-              {editing !== undefined ? (
+              {staged !== undefined ? (
                 // The editor lays its own content out, so on a phone it starts under the
                 // margin's float, at the words' whole width (`NODE_ROW_LAYOUT.content`).
                 <div className="clear-right flex min-w-0 flex-col" ref={stage} {...authorText} />

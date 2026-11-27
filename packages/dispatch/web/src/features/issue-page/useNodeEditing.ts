@@ -4,6 +4,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from "react"
 import type { Artifact } from "../../api/types";
 import { inputMethodKey } from "../../lib/input-method-key";
 import { focusOnDocument } from "../shell/roving";
+import { useKeptBlockEditor } from "./block-editor";
 import type { DocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
@@ -49,6 +50,10 @@ export interface EditedRow {
   readonly artifactId: string;
   readonly at?: CaretAt;
   readonly blockId: string;
+  /** Whether the row is edited in the issue page's kept block editor, bound to the node's block
+   *  where the row's words stood (`block-editor.tsx`), rather than in its document's whole
+   *  editor, which the row draws on its stage in place of its words (`document-stage.tsx`). */
+  readonly kept?: true;
   readonly row: string;
 }
 
@@ -119,6 +124,15 @@ export function nodeEditable(
 /**
  * The caret in a node's own text, where that text lives: the node's block of its own document,
  * with the collaborative cursors and the comment chord it has there.
+ *
+ * On the issue page, which keeps one block editor for the page's life (R7, `block-room.ts`), a
+ * row is edited in that editor instead: the room binds it to the node's block alone and draws it
+ * where the row's words stood (`block-editor.tsx`), once its work is done, and no document's
+ * whole editor is drawn. Everything below holds for it as for the whole document's editor - the
+ * caret placed once the editor stands in the row, the keys, the presses, Tab and Escape - but
+ * the hold, which is on as the editor is bound, and the box, which is the block's own size and
+ * is neither held to the window nor scrolled. Elsewhere, and on an issue with no primary spec,
+ * the row takes its document's whole editor, as follows.
  *
  * The tree holds no editor of its own. The page draws the one editor of whichever document a
  * row is editing (`slots/body.tsx`, through `onEditing`), `document-stage.tsx` moves it onto the
@@ -217,6 +231,9 @@ export function useNodeEditing({
   const [editing, setEditing] = useState<EditedRow | undefined>(undefined);
   // The row the reader has just left the caret in, so that row takes the focus back.
   const leaving = useRef<string | undefined>(undefined);
+  // The issue page's kept block editor, which a row's block is bound in where the page holds one
+  // (R7, `block-editor.tsx`), in place of its document's whole editor.
+  const keptEditor = useKeptBlockEditor();
 
   const edit = useCallback(
     (row: string, node: TreeNode, at?: CaretAt) => {
@@ -228,9 +245,15 @@ export function useNodeEditing({
       // Enter on the row already edited before the editor's hold is on leaves the first Enter's
       // look for the caret under way.
       if (editing?.row === row && hold.current !== "on") return;
-      setEditing({ artifactId: place.artifact.id, at, blockId: place.blockId, row });
+      setEditing({
+        artifactId: place.artifact.id,
+        at,
+        blockId: place.blockId,
+        ...(keptEditor?.available() === true ? { kept: true } : {}),
+        row,
+      });
     },
-    [artifacts, editing, onReport]
+    [artifacts, editing, keptEditor, onReport]
   );
   const stopEditing = useCallback(() => {
     setEditing((held) => {
@@ -246,6 +269,11 @@ export function useNodeEditing({
   // whenever the reader is editing the second. The row's key is the one thing that tells two
   // placements apart (`tree-keys.ts`'s `rowKeyOf`, `[data-row-key]`).
   const editingRow = editing?.row;
+  const editingKept = editing?.kept === true;
+  // The issue's artifacts as the bind of a row's block reads them, so a read of the issue that
+  // answers while the row is bound binds nothing again.
+  const artifactsHeld = useRef(artifacts);
+  artifactsHeld.current = artifacts;
 
   // The block the editor the page hands over holds every edit to (`holdEditsToBlock`), read as
   // each edit is made: none, while no row is edited, lets no edit in.
@@ -290,7 +318,7 @@ export function useNodeEditing({
   report.current = onReport;
 
   useEffect(() => {
-    if (editingArtifact !== undefined) {
+    if (editingArtifact !== undefined && !editingKept) {
       // What the hold is built of loads as the row asks for its editor, so the hold goes on in
       // the task the page hands that editor over in, before a key or a press can reach the
       // editor. A load that fails leaves the hold off whichever editor comes, so the row is
@@ -302,11 +330,58 @@ export function useNodeEditing({
         holdChanged.current?.();
       });
     }
-    onEditing(editingArtifact, onEditor);
+    // A row bound in the page's kept block editor asks for no document's whole editor.
+    onEditing(editingKept ? undefined : editingArtifact, onEditor);
     // The outline going - a document opened in its place - takes the row's editing with it, so
     // the page holds no editor for a row that is no longer drawn.
     return () => onEditing(undefined);
-  }, [editingArtifact, onEditing, onEditor]);
+  }, [editingArtifact, editingKept, onEditing, onEditor]);
+
+  // A row bound in the page's kept block editor (`block-editor.tsx`): the room binds that editor
+  // to the node's block, drawn where the row's words stood, at once where its work is done and
+  // else once it is, and the caret goes in by the rule below, as in a document's whole editor.
+  // The editor holds that one block, so its hold is on as it is bound, with nothing to load. The
+  // bind ending by itself - another writer deleted or merged the block - or never coming ends
+  // the editing, and the row says why where the focus is in the tree.
+  useEffect(() => {
+    const box = container.current;
+    const row =
+      editingRow === undefined
+        ? null
+        : (box?.querySelector<HTMLElement>(rowSelectorOf(editingRow)) ?? null);
+    const artifact = [...artifactsHeld.current.values()].find(
+      (held) => held.id === editingArtifact
+    );
+    if (
+      !editingKept ||
+      keptEditor === undefined ||
+      editingBlock === undefined ||
+      artifact === undefined ||
+      row === null
+    ) {
+      return;
+    }
+    load.current = undefined;
+    const release = keptEditor.bind({
+      artifact,
+      blockId: editingBlock,
+      row,
+      onBound(view) {
+        editorView.current = view;
+        hold.current = "on";
+        holdChanged.current?.();
+      },
+      onEnd(line) {
+        if (box?.contains(document.activeElement) === true) report.current(line);
+        setEditing(undefined);
+      },
+    });
+    return () => {
+      release();
+      hold.current = "awaited";
+      editorView.current = undefined;
+    };
+  }, [container, editingArtifact, editingBlock, editingKept, editingRow, keptEditor]);
 
   // The tree going takes the hold off the editor with it, whatever the page does with that editor.
   useEffect(
@@ -592,7 +667,9 @@ export function useNodeEditing({
       // focus stays on the row, where no key edits the document, and the row is looked at
       // again as the hold goes on (`holdChanged`).
       if (hold.current !== "on" || !caretInBlock(row, blockId, editing.at)) return false;
-      settled = holdEditorAtBlock(row, blockId, editing.at);
+      // The kept block editor is the block's own size, where the row's words stood: no box is
+      // held, scrolled or brought on screen for it.
+      settled = editing.kept === true ? () => {} : holdEditorAtBlock(row, blockId, editing.at);
       window.clearTimeout(look);
       looking.abort();
       // Only a selection moved after the caret was placed is the editor's doing.
