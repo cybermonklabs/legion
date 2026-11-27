@@ -741,13 +741,15 @@ test("a person writes a criterion under the words they are reading @phone", asyn
 // tagged "reading", in the agents' grey and named by its agent's role. The child's check is a row
 // under the statement it serves, marked with the child's key as a link, in Conversation and in
 // Graph; Conversation's read names no result and no plan task (`CONVERSATION_KINDS`), so there
-// the check draws neither, while Graph, which reads the whole tree, draws the check's result under
-// it and the child's plan task under the statement, and none of them under the child's own row.
-// That statement draws no "No check" in either, and under Verification it is covered: the child's
-// check is a row under it with its result. Under Decisions the decision's reading is a row under
-// it and the question's is not drawn; and no element but a kind tag reads a model's word whole,
-// nor any text a uuid. At 1440 px. How the child's check stands, which its result gives, is the
-// next row's.
+// the check draws neither, and no standing either - no state on its row, no state word and no
+// state glyph - since a read that names no result cannot say how the check stands
+// (`model-rows/model-drafts.ts`' `borrowedStanding`), while Graph, which reads the whole tree,
+// draws the check's result under it and the child's plan task under the statement, and none of
+// them under the child's own row. That statement draws no "No check" in either, and under
+// Verification it is covered: the child's check is a row under it with its result. Under
+// Decisions the decision's reading is a row under it and the question's is not drawn; and no
+// element but a kind tag reads a model's word whole, nor any text a uuid. At 1440 px. How the
+// child's check stands where a read gives its results is the next row's.
 //
 // The steps are asserted in the order (1), (3), (2), (4). On a page without the reading rows, no
 // step drafts a reading, so the row fails there on (1)'s first assertion.
@@ -802,14 +804,27 @@ test("a reading stands under what it reads and a child's check under the stateme
       })
       .toBe(question.row);
 
-    // (3) In Conversation the child's check under statement 7, marked with the child's key, and no
-    // row of its result or of the child's plan task, which Conversation's read does not name.
+    // (3) In Conversation the child's check under statement 7, marked with the child's key, with
+    // no standing, and no row of its result or of the child's plan task, which Conversation's
+    // read does not name.
     await expect
       .poll(() => parentOfRow(page, child.check.row), {
         message: "the child's check stands under statement 7",
       })
       .toBe(statementSeven.row);
     await expectChildMark(page, child.check.row, child.key, "check", "in Conversation");
+    const checkStateGlyphs: readonly string[] = Object.values(GLYPH_TOKENS.states.check);
+    const conversationCheck = rowOf(await drawnRows(page), child.check.row);
+    expect(
+      {
+        state: conversationCheck?.state,
+        stateGlyphs: conversationCheck?.glyphs.filter(({ token }) =>
+          checkStateGlyphs.includes(token)
+        ),
+        stateWord: conversationCheck?.stateWord,
+      },
+      "in Conversation the child's check draws a standing, which its read, naming no result, cannot give"
+    ).toEqual({ state: null, stateGlyphs: [], stateWord: null });
     await expect(
       nodeRow(page, child.result),
       "Conversation draws a row of the child's result, a kind its read does not name"
@@ -901,10 +916,11 @@ test("a reading stands under what it reads and a child's check under the stateme
 // passing result gives it, "passed". The page reads that standing from the tree read alone: the
 // check node's `check.text_sha256` and its result node's `result` (`verdict`, `retracted`,
 // `check_sha256`), read by the one shared reading of a check (`model-rows/model-drafts.ts`'
-// `borrowedStanding`). It is read in Graph, whose read is the whole tree and so holds the result
-// under the check: Conversation's read names no result (`CONVERSATION_KINDS`). The row first reads
-// that Graph's own read holds the one pass over the check's words as they stand, so the standing
-// drawn is the one that read gives. c-readings' `-g` selects it with row 2.
+// `borrowedStanding`), and only from a read that asks for results. It is read in Graph, whose
+// read is the whole tree and so holds the result under the check: Conversation's read names no
+// result (`CONVERSATION_KINDS`), so there the check draws no standing, which row 2 reads. The row
+// first reads that Graph's own read holds the one pass over the check's words as they stand, so
+// the standing drawn is the one that read gives. c-readings' `-g` selects it with row 2.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, then loaded in Graph and unfolded.
 test("a reading stands under what it reads, and a child's check draws the standing its results give", async ({

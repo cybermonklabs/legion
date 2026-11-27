@@ -200,6 +200,9 @@ export interface TreeDraftContext extends TreeWords {
    *  `parent` names, since a parent comes before its children; and under the issue, `[]`, where
    *  none stands. */
   readonly placeOf: (node: TreeAnswerNode) => string[];
+  /** Whether the read whose answer the steps draft asked for nodes of `kind`
+   *  (`IssueTreeReads.kinds`): of every kind where it named none, as Graph's read does. */
+  readonly readsKind: (kind: string) => boolean;
   /** The node's own `dispatch://` address, as its draft carries it (`referenceOf`), or undefined
    *  where it has none. */
   readonly referenceOf: (node: TreeAnswerNode) => string | undefined;
@@ -345,6 +348,7 @@ export function treeDraftsFrom(
       }
       return [];
     },
+    readsKind: (kind) => reads.kinds === undefined || reads.kinds.includes(kind),
     referenceOf: (node) => referenceOf(node, drafting),
     treeIdOf: idOf,
     treeIdOfNode: idOfNode,

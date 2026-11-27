@@ -1,11 +1,18 @@
 import { beforeAll, expect, test } from "bun:test";
 
+import { CONVERSATION_KINDS } from "../../../api/queries";
 import type { Actor, IssueDetails } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { parseNodeReference } from "../../refs/routes";
 import { artifact, issueDetails, KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { artifactsBySlug } from "../issue-artifacts";
-import { assemble, type IssueTreeReads, type TreeNode, treeWordsOf } from "../issue-tree";
+import {
+  assemble,
+  buildIssueTree,
+  type IssueTreeReads,
+  type TreeNode,
+  treeWordsOf,
+} from "../issue-tree";
 import { blockNodeId } from "../tree-drafts";
 import { pathTo } from "../tree-fold";
 import {
@@ -17,6 +24,7 @@ import {
 } from "../tree-read/tree-fixtures";
 import { treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
+import { viewTree } from "../useIssueTree";
 import { roomTarget } from "./room-target";
 
 /**
@@ -58,9 +66,10 @@ function answer(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple[] =
   return treeAnswer([ISSUE_NODE, ...nodes], tuples, { converted: true, tree: TREE });
 }
 
-/** The drafts `tree` holds and the outline `assemble` builds from them. */
-function drawn(tree: TreeAnswer) {
-  const reads: IssueTreeReads = { issue: issue() };
+/** The drafts `tree` holds and the outline `assemble` builds from them, drafted as the answer of
+ *  a read that asked for `kinds`, of every kind where none is given, as Graph's read is. */
+function drawn(tree: TreeAnswer, kinds?: readonly string[]) {
+  const reads: IssueTreeReads = { issue: issue(), ...(kinds === undefined ? {} : { kinds }) };
   const context = treeWordsOf(reads);
   const drafts = treeDraftsFrom(tree, reads, context);
   return { drafts, root: assemble(reads.issue, [...drafts.values()], context.chipOf) };
@@ -261,8 +270,9 @@ test("a borrowed check is one node under each statement it serves, with its issu
 });
 
 /** How the child's check stands where the read answers `results` under it, its own words'
- *  sum answered as `check` unless `check` is `false`. */
-function standingOf(results: readonly TreeAnswerNode[], check = true) {
+ *  sum answered as `check` unless `check` is `false`, the read asking for `kinds`, every kind
+ *  where none is given. */
+function standingOf(results: readonly TreeAnswerNode[], check = true, kinds?: readonly string[]) {
   const tree = answer(
     [
       statement("r1", 0),
@@ -272,17 +282,17 @@ function standingOf(results: readonly TreeAnswerNode[], check = true) {
     ],
     [treeTuple("serves", "c-child", "r1")]
   );
-  return drawn(tree).drafts.get("c-child")?.state;
+  return drawn(tree, kinds).drafts.get("c-child")?.state;
 }
 
-// R4, how a borrowed check stands: the read answers no results read for another issue, so the
-// check stands by the one shared reading of a check (`checkStanding`) over the result nodes the
-// read answers under it, from the words' sum the read answers on the check and the `result` on
-// each result node - the newest result nobody withdrew over the check's words now decides; where
-// none is, one over moved words reads out of date, every result withdrawn retracted, and none at
-// all no result. Without that sum or a node's `result` the check draws no standing word, since
-// its standing cannot be shown current.
-test("a borrowed check's standing comes from its results", () => {
+// R4, how a borrowed check stands in a read of every kind, as Graph's is: the read answers no
+// results read for another issue, so the check stands by the one shared reading of a check
+// (`checkStanding`) over the result nodes the read answers under it, from the words' sum the read
+// answers on the check and the `result` on each result node - the newest result nobody withdrew
+// over the check's words now decides; where none is, one over moved words reads out of date,
+// every result withdrawn retracted, and none at all no result. Without that sum or a node's
+// `result` the check draws no standing word, since its standing cannot be shown current.
+test("a borrowed check's standing comes from its results in a read of every kind", () => {
   const passThenFail = [
     childResult("res-1", "c-child", "pass", "2026-11-05T10:00:00Z"),
     childResult("res-2", "c-child", "fail", "2026-11-05T11:00:00Z"),
@@ -318,6 +328,69 @@ test("a borrowed check's standing comes from its results", () => {
     "no result": "no-result",
     "no words' sum on the check": undefined,
     "no result member on a result": undefined,
+  });
+});
+
+// R4: Conversation's read names its kinds (`CONVERSATION_KINDS`), `result` none of them, so its
+// answer holds no result node of any check, whatever results the check has: a borrowed check it
+// answers with its words' sum and no result node draws no standing, where the same answer read as
+// a read of every kind reads no result.
+test("a borrowed check of Conversation's read, which names no result, draws no standing", () => {
+  expect({
+    "Conversation's read": standingOf([], true, CONVERSATION_KINDS),
+    "a read of every kind": standingOf([]),
+  }).toEqual({ "Conversation's read": undefined, "a read of every kind": "no-result" });
+});
+
+// R4, each tree as `useIssueTree.ts` builds it: the outline's from the reads it sets the kinds
+// its read named on (`IssueTreeReads.kinds`), Conversation's `CONVERSATION_KINDS` and Graph's
+// none, and a view's by `viewTree`, which drafts the view's answer, over Conversation's answer as
+// its context, as the view's own read asked. So the child's check draws no standing in
+// Conversation's tree, and in Graph's tree and the Verification view's it stands as their result
+// nodes say: no result where they hold none, passed where they hold a pass. The Spec view's read
+// names no result either, so its tree draws the check, from Conversation's context, no standing.
+test("each tree the page builds reads a borrowed check's standing by what its read named", () => {
+  const check = childCheck("c-child", { check: { changed_version: 2, text_sha256: WORDS_NOW } });
+  const pass = childResult("res-1", "c-child", "pass", "2026-11-05T10:00:00Z");
+  const serves = [treeTuple("serves", "c-child", "r1")];
+  const outline = answer([statement("r1", 0), CHILD_NODE, check], serves);
+  const view = (name: string, nodes: readonly TreeAnswerNode[]) =>
+    treeAnswer([ISSUE_NODE, ...nodes], name === "verification" ? serves : [], {
+      converted: true,
+      tree: TREE,
+      view: name,
+    });
+  const conversation: IssueTreeReads = {
+    issue: issue(),
+    kinds: CONVERSATION_KINDS,
+    tree: outline,
+  };
+  const stateIn = (root: TreeNode) =>
+    nodesOf(root).find((node) => node.id === "c-child" && node.type === "check")?.state;
+
+  expect({
+    conversation: stateIn(buildIssueTree(conversation)),
+    graph: stateIn(buildIssueTree({ issue: issue(), tree: outline })),
+    "graph, with a pass": stateIn(
+      buildIssueTree({
+        issue: issue(),
+        tree: answer([statement("r1", 0), CHILD_NODE, check, pass], serves),
+      })
+    ),
+    spec: stateIn(viewTree(conversation, view("spec", [statement("r1", 0)]))),
+    verification: stateIn(
+      viewTree(conversation, view("verification", [statement("r1", 0), check]))
+    ),
+    "verification, with a pass": stateIn(
+      viewTree(conversation, view("verification", [statement("r1", 0), check, pass]))
+    ),
+  }).toEqual({
+    conversation: undefined,
+    graph: "no-result",
+    "graph, with a pass": "passed",
+    spec: undefined,
+    verification: "no-result",
+    "verification, with a pass": "passed",
   });
 });
 

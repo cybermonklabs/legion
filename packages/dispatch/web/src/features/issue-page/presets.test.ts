@@ -1095,6 +1095,36 @@ test("a plan task's place, size and issue come from the plan view's answer", () 
   expect(presetView(checks, "verification", "").root.children).toEqual([]);
 });
 
+// R4: the Verification view draws a check of an issue under this one as its own row, and that
+// row stands as the tree the view's own answer builds drafts it (`TreeViews.trees`), whose read
+// asks for the check's results, never as the outline's: Conversation's read names no result, so
+// its tree draws the same check, under the same statement, with no standing. The failing flag
+// counts the check by that standing too.
+test("a child's check the Verification view draws stands as the view's own tree drafts it", () => {
+  const verification = treeAnswer(
+    [
+      viewNode("r1", "requirement", "context", { in: "spec" }),
+      viewNode("c9", "check", "context", { in: "verification", issue: "CORE-2", parent: "r1" }),
+    ],
+    [treeTuple("serves", "c9", "r1")],
+    { view: "verification" }
+  );
+  const under = (check: TreeNode) =>
+    node("CORE-1", "issue", [statement("spec#b-r1", [check], { readId: "CORE-1/spec#r1" })]);
+  const borrowed = (extra: Partial<TreeNode> = {}) =>
+    node("c9", "check", [], { readId: "CORE-2/verification#c9", ...extra });
+  const root = {
+    ...under(borrowed()),
+    views: { trees: { verification: under(borrowed({ state: "failed" })) }, verification },
+  };
+  const rows = presetView(root, "verification", "").root.children;
+
+  expect(rows.flatMap((row) => row.children).map((row) => [row.id, row.state])).toEqual([
+    ["c9", "failed"],
+  ]);
+  expect(filterSignals(root, "").verification.flag).toEqual({ count: 1, word: "failing" });
+});
+
 // Two documents of an issue that has not converted can hold one block id, and each block is a row
 // of its own document's id: a filter draws the view's node as the tree's node of that same
 // document, never as the other document's block that shares its read id, though the tree holds

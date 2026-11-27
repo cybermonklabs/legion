@@ -519,8 +519,12 @@ function heldFilterView(
   // view's own tree names each block a chip of it names - a step it needs, a statement of the
   // outline read the view's tree holds as context - by that block's line (`chipsNamed`).
   const byReference = new Map<string, TreeNode>();
+  // Each node of the view's own tree by its id, at its first placement, whose standing a check of
+  // another issue the view draws as its own row takes (`standingOf`).
+  const ownNodes = new Map<string, TreeNode>();
   const index = (parent: TreeNode, outline: boolean): void => {
     for (const child of parent.children) {
+      if (!outline && !ownNodes.has(child.id)) ownNodes.set(child.id, child);
       if (child.reference !== undefined && !byReference.has(child.reference)) {
         byReference.set(child.reference, child);
       }
@@ -616,6 +620,14 @@ function heldFilterView(
   // where the check serves a statement it draws (`borrowedRows`).
   const borrowed =
     filter === "verification" ? borrowedRows(answer, treeOf, root.id) : NO_BORROWED_ROWS;
+  // A check of another issue the view draws as its own row (`borrowedRows`) stands as the view's
+  // own tree drafts it, where that tree holds it, and never as the outline's: the view's read
+  // asks for the check's results, where the outline's may name none, as Conversation's does,
+  // whose tree draws such a check no standing (`model-rows/model-drafts.ts`' `borrowedStanding`).
+  const standingOf = (node: TreeAnswerNode, tree: TreeNode): Pick<TreeNode, "state"> => {
+    const own = node.supertag === "check" && borrowed.has(node) ? ownNodes.get(tree.id) : undefined;
+    return own === undefined ? {} : { state: own.state };
+  };
   const rows = nodes.filter(
     (node) =>
       treeOf.has(node) &&
@@ -765,6 +777,7 @@ function heldFilterView(
           children: kept,
           held: heldBy(kept),
           ...(filter === "plan" ? planFactsOf(node, root.id) : {}),
+          ...standingOf(node, tree),
         },
       ],
     };

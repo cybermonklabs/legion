@@ -916,6 +916,51 @@ test("a statement's mark is how its checks stand at the commit the server names 
   ]);
 });
 
+// R17: a statement whose check is a child's reads as the Verification view reads that check,
+// from the view's read the issue's node holds, though the outline's tree draws the check with no
+// state: Conversation's read names no result, so its tree gives such a check none. With the
+// view's read holding one pass over the check's words as they stand, the statement is Met.
+test("a statement a child's check serves reads that check as the Verification view reads it", () => {
+  const words = "sum-of-the-words-now";
+  const check = treeNode("c9", "check", "r1", {
+    check: { changed_version: 1, text_sha256: words },
+    document: { artifact_id: "artifact-core-2-verification", position: 0, slug: "verification-md" },
+    issue: "CORE-2",
+    role: "context",
+  });
+  const pass = treeNode(
+    "res-9",
+    "result",
+    { first_line: "", id: check.id, kind: check.kind, supertag: "check" },
+    { issue: "CORE-2", result: { check_sha256: words, check_version: 1, verdict: "pass" } }
+  );
+  const verification: NonNullable<TreeNode["views"]>["verification"] = {
+    converted: true,
+    cursor: null,
+    documents: null,
+    issue: KEY,
+    nodes: [check, pass],
+    tree: null,
+    tuples: [],
+    version: null,
+    view: "verification",
+    view_of: null,
+  };
+  const tree = {
+    ...issueTree([
+      statement("r1", {
+        children: [node({ id: "c9", readId: check.id, type: "check" })],
+        counts: { checks: 1, planTasks: 0 },
+      }),
+    ]),
+    views: { verification },
+  };
+
+  expect(bodyOf(tree)[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark])).toEqual([
+    ["spec#b-r1", "met"],
+  ]);
+});
+
 // R20: a node an address names outranks the filter, whatever its kind. It is no statement: it
 // enters no run and carries no mark, and the body draws it by its kind and its words.
 test("a row the filter kept that is no statement is in no run", () => {

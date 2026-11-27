@@ -286,7 +286,7 @@ export function statementStandings(
   const standings = new Map<string, StatementStanding>();
   const walk = (node: TreeNode): void => {
     if (isStatement(node) && !standings.has(node.id)) {
-      const readings = node.children.filter(isCheck).map(read);
+      const readings = checksUnder(node, read);
       standings.set(node.id, {
         covered: carriesCheck(node, readings),
         state: statementState(readings),
@@ -296,6 +296,19 @@ export function statementStandings(
   };
   walk(root);
   return standings;
+}
+
+/** The readings of the checks drawn under `node` (`checkReader`): each check (`isCheck`), and
+ *  each check of an issue under this one that the Verification view's read answers
+ *  (`CheckReading.issue`), which the outline's tree draws with no state where its read names no
+ *  result (`model-rows/model-drafts.ts`' `borrowedStanding`), so the statement reads that check
+ *  as the Verification view reads it. */
+function checksUnder(node: TreeNode, read: (node: TreeNode) => CheckReading): CheckReading[] {
+  return node.children.flatMap((child) => {
+    if (child.type !== "check") return [];
+    const reading = read(child);
+    return isCheck(child) || reading.issue !== undefined ? [reading] : [];
+  });
 }
 
 /**

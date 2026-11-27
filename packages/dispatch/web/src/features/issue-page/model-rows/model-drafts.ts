@@ -16,8 +16,11 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
  *   them, and never under the child issue's node; one that serves none of this issue's
  *   statements is drawn nowhere (R4). A borrowed check stands as the one shared reading of a
  *   check reads it (`tree-drafts.ts`' `checkStanding`), over the result nodes the read answers
- *   under it (`borrowedStanding`). A borrowed plan task the Plan view's read answers with its
- *   place in the plan is drafted by the tree read's own step (`draftServing`).
+ *   under it (`borrowedStanding`), and only where that read asked for results: Conversation's
+ *   read names no `result`, so in its tree such a check draws no standing, while Graph's read,
+ *   which names every kind, and the Verification view's draw the standing their results give.
+ *   A borrowed plan task the Plan view's read answers with its place in the plan is drafted by
+ *   the tree read's own step (`draftServing`).
  * - **A borrowed result** stands under the borrowed check it was recorded against, with who
  *   recorded it and when.
  *
@@ -59,9 +62,10 @@ export function modelDraftSteps({
   /** A check or a plan task of another issue: under each statement of this issue its `serves`
    *  tuples name, in their order, with its address in its own issue (`draftOf`) and no author or
    *  time, as this issue's own checks draw none; none where it serves no statement of this
-   *  issue. A check stands as its result nodes say (`borrowedStanding`). A plan task the read
-   *  answers its place in the plan for (`plan`), which only the Plan view's read does, is the
-   *  tree read's own step's (`draftServing`), which drafts its order and its needs. */
+   *  issue. A check stands as its result nodes say where the read asked for them
+   *  (`borrowedStanding`). A plan task the read answers its place in the plan for (`plan`),
+   *  which only the Plan view's read does, is the tree read's own step's (`draftServing`), which
+   *  drafts its order and its needs. */
   const draftBorrowed: TreeDraftStep = (node, answer, context) => {
     if (
       (node.supertag !== "check" && node.supertag !== "plan_task") ||
@@ -79,7 +83,7 @@ export function modelDraftSteps({
     if (statements.length === 0) return undefined;
     const draft = draftOf(node, node.supertag, context);
     draft.parents = [...new Set(statements)];
-    const state = node.supertag === "check" ? borrowedStanding(node, answer) : undefined;
+    const state = node.supertag === "check" ? borrowedStanding(node, answer, context) : undefined;
     if (state !== undefined) draft.state = state;
     return draft;
   };
@@ -143,11 +147,20 @@ function resultsUnder(answer: TreeAnswer, parentId: string): readonly TreeAnswer
  * no result no-result. A pass at a commit the child's check no longer compares with still reads
  * passed, since no basis is read for another issue.
  *
- * Undefined where the read answers no words' sum on the check (`check`) or no `result` on one
- * of its result nodes, so the row draws no standing word: a pass that may be against old words
- * must not read as current.
+ * Undefined where the read did not ask for results (`TreeDraftContext.readsKind`), as
+ * Conversation's read does not (`CONVERSATION_KINDS`): its answer holds no result node of any
+ * check, so a check with results would read no-result. That is read from what the read named,
+ * never from what its answer holds, since an answer of a read that named no result and an
+ * answer of a check with none look the same. Undefined too where the read answers no words' sum
+ * on the check (`check`) or no `result` on one of its result nodes. In each case the row draws no
+ * standing word: a standing the read cannot show as current must not be drawn.
  */
-function borrowedStanding(check: TreeAnswerNode, answer: TreeAnswer): CheckState | undefined {
+function borrowedStanding(
+  check: TreeAnswerNode,
+  answer: TreeAnswer,
+  context: Pick<TreeDraftContext, "readsKind">
+): CheckState | undefined {
+  if (!context.readsKind("result")) return undefined;
   const reads = borrowedReads(check, answer);
   return reads === undefined ? undefined : checkStanding(reads).state;
 }

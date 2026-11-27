@@ -443,6 +443,10 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
  * draws a state - `no-result` until the results read answers (`tree-read/tree-nodes.ts`'
  * `draftServing`) - and a `check` block of any other document draws none and is a block and
  * nothing more: no row and no count of the Verification filter, and no check of a statement.
+ *
+ * A check of another issue draws a state only where the read the tree is built from asked for
+ * results (`IssueTreeReads.kinds`), so in Conversation's tree, whose read names none, it is no
+ * check here: its kind tag opens no view, and a filter drawn off that tree draws it as no row.
  */
 export function isCheck(node: Pick<TreeNode, "state" | "type">): boolean {
   return node.type === "check" && node.state !== undefined;
@@ -473,6 +477,13 @@ export interface IssueTreeReads {
    *  does not change it builds no tree again (`useIssueTree.ts`' `builtTree`). */
   readonly holdsPlanTask?: boolean;
   readonly issue: IssueDetails;
+  /** The kinds the read whose answer is `tree` asked for: Conversation's read the kinds it names
+   *  (`CONVERSATION_KINDS`), a view's read the kinds its view's query takes (`useIssueTree.ts`'
+   *  `VIEW_KINDS`). Undefined where the read named none, as Graph's does, which answers every
+   *  kind. A check of another issue stands as its result nodes say only where the read asked for
+   *  results (`model-rows/model-drafts.ts`' `borrowedStanding`): an answer whose read named no
+   *  `result` holds none of a check's results, whatever results the check has. */
+  readonly kinds?: readonly string[];
   /** The issue's messages with their replies: what a message's author did to one - deleted it or
    *  last replaced its body - which the tree read answers no mark of
    *  (`tree-read/tree-nodes.ts`'s `postMarksOf`). The tree read answers each message as a node. */
