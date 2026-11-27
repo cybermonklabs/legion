@@ -10,6 +10,8 @@ run must still say something. `go test` buffers a package's output until the pac
 neither: the log stops mid-step with no output at all, which is how this job failed. This script
 writes a line every 5 s as the run goes, naming the tests running at that moment and the largest
 process of the tree, so the last lines before a kill name what was running and how big it was.
+A paused parallel test is not running, and a line names at most NAMES_BYTES of tests, counting
+the rest, so every line stays one a log reader can take.
 
 The number is one process, the largest of the tree, and not a sum over it: one race binary is
 what grows, and a total over `go test`, the compiler's children and that binary would hide which
@@ -50,9 +52,24 @@ DEFAULT_LIMIT_KB = 8388608
 
 SAMPLE_SECONDS = 5.0
 
-# The -json actions that end a test. "cont" and "pause" leave it running; "output" carries the
-# text and changes nothing.
-DONE_ACTIONS = frozenset({"pass", "fail", "skip"})
+# The -json actions after which a test is not running: "pass", "fail" and "skip" end it, and a
+# parallel test reports "pause" at its t.Parallel call and "cont" when go test lets it go on, running
+# nothing in between. In a package whose tests are parallel most of them sit paused while a few
+# run, so a paused test is not named as running. "output" carries the text and changes nothing.
+# "Running" is what the events say: a test that started or went on and has not paused or ended
+# since. A parent waiting for its parallel subtests stays named, since no event says it waits.
+NOT_RUNNING_ACTIONS = frozenset({"pass", "fail", "skip", "pause"})
+RUN_ACTIONS = frozenset({"run", "cont"})
+
+# A line names at most this many bytes of test names, then says how many more run. A log reader
+# must be able to take every line: `gh run view --log` and `--log-failed` up to gh 2.105 read the
+# log with Go's bufio.Scanner, which stops at the first line over 64 KiB, prints nothing after it
+# and exits 0. A sample that named every paused test of envoy-go-race-docs grew to 193,662 bytes
+# and hid the rest of that job's log, its failing test and the step's own end, from such a reader
+# (job 140239891619). That job's own events, replayed with paused tests left out, never had more
+# than 17 tests running at once, 1,201 bytes of names, so the cap drops no name of a run like it;
+# what passes the cap is counted, not named.
+NAMES_BYTES = 2048
 
 
 def status_field(text: str, field: str) -> str | None:
@@ -91,7 +108,9 @@ def tree_statuses(root_pid: int) -> list[str]:
     One pass over /proc reads each process's status once: the text carries the parent pid the tree
     is built from (`PPid:`) along with the sizes. A process that exits between the walk and the
     read is skipped, which is the common case under `go test`: the compiler's children come and go
-    while the sampler walks.
+    while the sampler walks. The walk reads every process on the machine, and a process's `Name:`
+    is whatever bytes it set (prctl PR_SET_NAME), so the text is decoded with replacement: a
+    strict decode ended the whole step on another process's name that was no UTF-8.
     """
     texts: dict[int, str] = {}
     children: dict[int, list[int]] = {}
@@ -99,7 +118,7 @@ def tree_statuses(root_pid: int) -> list[str]:
         if not entry.name.isdigit():
             continue
         try:
-            text = (entry / "status").read_text()
+            text = (entry / "status").read_text(errors="replace")
         except OSError:
             continue
         parent = status_field(text, "PPid")
@@ -175,31 +194,67 @@ class RunningTests:
             return
         action = event.get("Action")
         with self._lock:
-            if action == "run":
+            if action in RUN_ACTIONS:
                 self._running.add(name)
-            elif action in DONE_ACTIONS:
+            elif action in NOT_RUNNING_ACTIONS:
                 self._running.discard(name)
 
     def names(self) -> str:
-        """The running tests, sorted, or `none`."""
+        """The running tests, sorted, as named() writes them."""
         with self._lock:
             running = sorted(self._running)
-        return ", ".join(running) if running else "none"
+        return named(running)
+
+
+def named(tests: list[str]) -> str:
+    """`none`, or the tests in their order, as many as NAMES_BYTES holds, then how many more run.
+
+    The count is whole whatever the cap drops, so a line still says how many tests ran at once.
+    """
+    if not tests:
+        return "none"
+    shown: list[str] = []
+    size = 0
+    for name in tests:
+        cost = len(name.encode()) + (2 if shown else 0)
+        if size + cost > NAMES_BYTES:
+            break
+        shown.append(name)
+        size += cost
+    rest = len(tests) - len(shown)
+    if not rest:
+        return ", ".join(shown)
+    if not shown:
+        return f"{rest} running; the first name alone passes the line's {NAMES_BYTES}-byte cap"
+    return f"{', '.join(shown)}, and {rest} more ({len(tests)} in all)"
 
 
 class Log:
-    """stdout, written by the reader thread and the sampler both, one whole write at a time."""
+    """stdout, written by the reader thread and the sampler both, one whole write at a time.
+
+    A line of the script's own starts a line of the log: the command's output can end a write
+    mid-line (a -json Output fragment, a print with no newline), and a sample written straight
+    after it would make one line of both, as long as the two together.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._mid_line = False
 
     def write(self, text: str) -> None:
         with self._lock:
-            sys.stdout.write(text)
-            sys.stdout.flush()
+            self._write(text)
 
     def line(self, text: str) -> None:
-        self.write(text + "\n")
+        with self._lock:
+            self._write(("\n" if self._mid_line else "") + text + "\n")
+
+    def _write(self, text: str) -> None:
+        if not text:
+            return
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        self._mid_line = not text.endswith("\n")
 
 
 def pump(stream: Iterable[str], tests: RunningTests, log: Log, events: TextIO | None = None) -> None:
@@ -233,8 +288,8 @@ def pump(stream: Iterable[str], tests: RunningTests, log: Log, events: TextIO | 
 def limit_from_env(environ: Mapping[str, str]) -> tuple[int, str]:
     """The limit in kB and where it came from, for the first line of the log.
 
-    A value that is not a number of kB raises ValueError naming that value, which is the message
-    the caller prints.
+    A value that is not a number of kB raises ValueError naming that value, at most its first 64
+    characters as every line of this script is bounded, which is the message the caller prints.
     """
     raw = environ.get("RACE_MEM_LIMIT_KB", "")
     if not raw.strip():
@@ -242,7 +297,8 @@ def limit_from_env(environ: Mapping[str, str]) -> tuple[int, str]:
     try:
         return int(raw), "RACE_MEM_LIMIT_KB"
     except ValueError:
-        raise ValueError(f"RACE_MEM_LIMIT_KB is {raw!r}, not a number of kB") from None
+        shown = repr(raw[:64]) + (f" and {len(raw) - 64} more characters" if len(raw) > 64 else "")
+        raise ValueError(f"RACE_MEM_LIMIT_KB is {shown}, not a number of kB") from None
 
 
 def decision_line(peak_kb: int, field: str, limit_kb: int, highest: Sample | None) -> str:
