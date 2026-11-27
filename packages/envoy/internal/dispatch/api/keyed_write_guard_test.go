@@ -273,30 +273,12 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		t.Fatalf("read the SQL functions the migrations define: %v", err)
 	}
 	guard.writingCall = writingCallOf(writing)
-	table := graph.named["api.server.routes"]
-	if table == nil {
-		t.Fatal("the guard finds no routes table (api.server.routes)")
-	}
-	ast.Inspect(table.body, func(node ast.Node) bool {
-		literal, ok := node.(*ast.CompositeLit)
-		if !ok || len(literal.Elts) != 5 {
-			return true
-		}
-		method, ok := ast.Unparen(literal.Elts[0]).(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		if !keyedMethod(verb) {
-			return false
-		}
-		pattern, _ := literalText(literal.Elts[1], table.pkg, graph.constants)
-		for _, handler := range graph.functionValue(literal.Elts[4]) {
-			guard.routes[verb+" "+pattern] = handler
+	for name, handlers := range keyedRouteHandlers(t, graph) {
+		for _, handler := range handlers {
+			guard.routes[name] = handler
 			guard.walk(handler)
 		}
-		return false
-	})
+	}
 	return guard
 }
 

@@ -150,7 +150,11 @@ message from Dispatch's Agents page as that person's own turn.
   decided on the standing claim: the listener grants it to the process that claim names, grants
   it once nobody renewed that claim inside its live window, and otherwise refuses it naming this
   very session, which keeps the role and the record here and asks again on the next heartbeat.
-  Only a refusal naming a different session ends the role and removes the record. Every healthy
+  Only a refusal naming a different session ends the role and removes the record. Every claim
+  that lands, the tool's, a restore's, a heartbeat's or a Legion pane's, writes each warning the
+  listener answers it with to stderr, naming the role and the session, such as that it handed over
+  no message of the replaced session and why; `envoy_role_set` also returns them beside the
+  interest row, as `warnings`. Every healthy
   registration heartbeat checks and reasserts the role if the listener lost it, and it confirms
   the role only when the lookup names this session *and* this process and reports no hand-back
   (`handed_back`); each heartbeat also renews the claims this process holds, whatever topics
