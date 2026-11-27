@@ -229,7 +229,8 @@ func TestDocumentEventsNameTheirIssueAncestors(t *testing.T) {
 		"# Decisions\n\n## The census runs first\n\nThe census reads the corpus before any view of it.\n")
 	step := docs.NewDecisionStep(database, "", nil)
 	step.UseDocuments(documents)
-	done, failed, err := step.RestoreAndConvert(ctx, "TEST", true, false)
+	pass, err := step.RestoreAndConvert(ctx, "TEST", true, false)
+	done, failed := pass.Done, pass.Failed
 	if err != nil || len(failed) > 0 || len(done) != 1 || done[0].Issue != grandchild.Key || done[0].SpecVersion == 0 {
 		t.Fatalf("the decisions step answered %+v, %+v, %v, want %s converted with a version of its spec", done, failed, err, grandchild.Key)
 	}
