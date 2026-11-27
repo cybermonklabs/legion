@@ -256,15 +256,17 @@ export async function sendApiCall(
     const refusal = gatedWriteRefusal(method, path, env);
     if (refusal !== undefined) throw refusal;
   }
-  const warnings: string[] = [];
+  const cuts: ReadCut[] = [];
   const answer =
     method === undefined
-      ? await client.readRoute(path, (cut, absent) => {
-          const read = new ReadCut(cut);
-          read.absent(absent);
-          warnings.push(read.line());
+      ? await client.readRoute(path, {
+          answeredAt: (cut) => {
+            cuts.push(new ReadCut(cut));
+          },
+          absent: (pointers) => cuts[0]?.absent(pointers),
         })
       : await client.sendRoute(method, path, optionalString(args, "body"));
+  const warnings = cuts.map((cut) => cut.line());
   const details = { path, ...defined("method", method) };
   const warned = warnings.length === 0 ? {} : { warnings };
   if ("body" in answer) {

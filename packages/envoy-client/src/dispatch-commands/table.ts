@@ -77,19 +77,19 @@ export type DispatchDryRunStep = (context: DryRunContext) => Promise<DryRunVerdi
  * `origin: "none"` is a command that answers on the session's context alone, so no subprocess
  * runs for it; every other command is handed the context `commandContext` builds. `reads: true`
  * is one of the seven read commands that take `--as-of` (dispatch://INFRA-4620): it reads whoami
- * before any other request and is handed what it read (`ReadingContext`). `dryRun` is the command's dry-run step, when it
- * has one. `documentFields` are the command's fields it checks as a Markdown document's text, when
- * it has any. Given inline or read from a file or stdin, such a field's text is refused by
- * `runDispatchCli` as the upload of a Markdown file of the same bytes refuses it, the size first,
- * then the first U+0000 or byte that is not UTF-8 (`documentBytesRefusal`): bytes read whether or
- * not they are UTF-8, and a text decoded or given inline in its UTF-8 (`documentFieldRefusal`). A
- * text given in argv holds no U+0000 on any kernel, and Linux holds one argument to
- * MAX_ARG_STRLEN, 32 pages, which is 128 KiB on 4 KiB pages and 2 MiB on 64 KiB pages, so with
- * 4 KiB pages argv carries no text past 1 MiB, and with 64 KiB pages it can. An in-process
- * caller's text can be either on any kernel. Inline text is checked however it is given, so what
- * is refused does not depend on the page size. Any other field read from a file or stdin is no
- * document, and is refused only for bytes that are not UTF-8, at their first U+0000 or byte that
- * is not UTF-8 (`unstorableBytes`).
+ * before any other request and is handed what it read (`ReadingContext`).
+ * `dryRun` is the command's dry-run step, when it has one. `documentFields` are the command's
+ * fields it checks as a Markdown document's text, when it has any. Given inline or read from a file
+ * or stdin, such a field's text is refused by `runDispatchCli` as the upload of a Markdown file of
+ * the same bytes refuses it, the size first, then the first U+0000 or byte that is not UTF-8
+ * (`documentBytesRefusal`): bytes read whether or not they are UTF-8, and a text decoded or given
+ * inline in its UTF-8 (`documentFieldRefusal`). A text given in argv holds no U+0000 on any kernel,
+ * and Linux holds one argument to MAX_ARG_STRLEN, 32 pages, which is 128 KiB on 4 KiB pages and
+ * 2 MiB on 64 KiB pages, so with 4 KiB pages argv carries no text past 1 MiB, and with 64 KiB pages
+ * it can. An in-process caller's text can be either on any kernel. Inline text is checked however
+ * it is given, so what is refused does not depend on the page size. Any other field read from a
+ * file or stdin is no document, and is refused only for bytes that are not UTF-8, at their first
+ * U+0000 or byte that is not UTF-8 (`unstorableBytes`).
  * `documentPathField` is the command's field whose value names a local file it uploads, when it
  * has one: `runDispatchCli` reads such a file once where Dispatch stores it as a Markdown
  * document, refuses it as the upload does (`documentFileRead`), and hands the bytes it read to the

@@ -151,9 +151,11 @@ function checkWordsText(check: CheckBlock, result: CheckResult, asOf: string | u
  *  (`asOf`) whether a pass stands is left out: it is read from GitHub and the deploys now. */
 function passStandsText(
   pass: CheckPassStands | undefined,
-  asOf: string | undefined,
-  check?: CheckBlock,
-  repository?: string
+  {
+    asOf,
+    check,
+    repository,
+  }: { asOf?: string | undefined; check?: CheckBlock; repository?: string | undefined } = {}
 ): string {
   if (pass === undefined) {
     return asOf === undefined
@@ -268,7 +270,7 @@ function resultLines(
  *  pull-request body line Dispatch wrote for the check follows, which the implementer copies, and
  *  then the run's reading: its conclusion, output and URL. */
 function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
-  const passStandsLine = `  ${passStandsText(check.pass_stands, undefined)}.`;
+  const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
   const pullRequestLine = `  Pull request line: ${ci.line}`;
   const derived = check.results?.[0];
   if (derived === undefined) {
@@ -315,7 +317,7 @@ function checkLines(
   const compared = comparedText(check, asOf);
   const results = check.results ?? [];
   return [
-    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands, asOf, check, repository)}.`,
+    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands, { asOf, check, repository })}.`,
     ...(check.pass_stands?.deploy === undefined
       ? []
       : [
@@ -338,9 +340,15 @@ function checkLines(
  *  left out. */
 export function formatCheckResults(
   results: IssueCheckResults,
-  brief = false,
-  repositories?: Readonly<Record<string, string>>,
-  asOf?: string
+  {
+    brief = false,
+    repositories,
+    asOf,
+  }: {
+    brief?: boolean;
+    repositories?: Readonly<Record<string, string>>;
+    asOf?: string | undefined;
+  } = {}
 ): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;

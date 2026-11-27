@@ -115,12 +115,12 @@ func TestACutTokenIsAnsweredAsOfItsCutWhateverAsOfItSends(t *testing.T) {
 	earlier := asof.CutAt(cut.Time().Add(-time.Hour))
 
 	callers := rig.callers(t)
-	person := slices.IndexFunc(callers, func(caller asOfReader) bool { return caller.person })
-	if person < 0 {
-		t.Fatal("no caller of the harness holds person")
-	}
-	reference := callers[person]
 	token := rig.cutCaller(t, cut)
+	held := slices.IndexFunc(callers, func(caller asOfReader) bool { return caller.login == token.login })
+	if held < 0 {
+		t.Fatalf("no caller of the harness names %s, the person the cut token names", token.login)
+	}
+	reference := callers[held]
 	t.Logf("the cut is %s; the token's as_of is none, %s, %s and %q", cut, earlier, later, malformedAsOf)
 
 	rows := map[string]asOfRow{}
@@ -259,7 +259,7 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 				entry := declared(name).Read
 				recorder := &cutRecorder{}
 				route.Handler = recorder.handler
-				if name == whoamiRow {
+				if name == asOfCallerRow {
 					route.Handler = func(w http.ResponseWriter, r *http.Request) {
 						recorder.runs = append(recorder.runs, "")
 						if seen, carried := asof.CutFrom(r.Context()); carried {
@@ -303,7 +303,7 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 						t.Errorf("%s answers as_of, and its %s header is %q, want the token's cut %s", name, contracts.DispatchAsOfHeader, named, cut)
 					}
 					answered++
-				case name == whoamiRow:
+				case name == asOfCallerRow:
 					var answer struct {
 						Cut *string `json:"cut"`
 					}

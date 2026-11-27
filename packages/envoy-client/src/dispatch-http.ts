@@ -1808,13 +1808,11 @@ export class DispatchClient {
    *
    *  An answer at a cut, under a token that carries one or with `as_of` in `path`, names the cut
    *  in `Dispatch-As-Of` and each field it left out in `Dispatch-As-Of-Absent`. The body alone
-   *  does not tell a field left out from a field that does not exist, so `atCut` is told the cut
-   *  and those fields' JSON Pointers. An answer that names no cut does not call it. */
-  async readRoute(
-    path: string,
-    atCut?: (cut: string, absent: readonly string[]) => void
-  ): Promise<RouteAnswer> {
-    return this.#route("GET", path, undefined, atCut);
+   *  does not tell a field left out from a field that does not exist, so `read` is told the cut
+   *  (`answeredAt`) and those fields' JSON Pointers (`absent`, where it names any), once the
+   *  answer passed every check (`#answeredAtCut`). An answer that names no cut tells it nothing. */
+  async readRoute(path: string, read: AsOfRead = {}): Promise<RouteAnswer> {
+    return this.#route("GET", path, undefined, read);
   }
 
   /** `<method> <path>`, for `dispatch api --method`: one write of a route no method here names,
@@ -2987,7 +2985,7 @@ export class DispatchClient {
     method: "GET" | DispatchApiMethod,
     path: string,
     body?: string,
-    atCut?: (cut: string, absent: readonly string[]) => void
+    read: AsOfRead = {}
   ): Promise<RouteAnswer> {
     const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
     const encoded = body === undefined ? undefined : { content: body, type: "application/json" };
@@ -3000,10 +2998,7 @@ export class DispatchClient {
     const answer = await this.#routeAnswer(method, url, response, presented, stalePresentation);
     // A 2xx at a cut names it (`Dispatch-As-Of`) and the fields it left out, which the caller is
     // told once the answer passed every check above.
-    const cut = response.headers.get(DISPATCH_AS_OF_HEADER);
-    if (cut !== null) {
-      atCut?.(cut, parseAsOfAbsent(response.headers.get(DISPATCH_AS_OF_ABSENT_HEADER)));
-    }
+    this.#answeredAtCut(url, response, read);
     return answer;
   }
 

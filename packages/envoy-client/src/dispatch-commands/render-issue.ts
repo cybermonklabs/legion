@@ -108,16 +108,22 @@ function advancesLine(issue: {
 export function claimText(
   claim: IssueClaim,
   agents: LiveAgents | undefined,
-  read: ClaimHolderLiveness = {},
-  name: (label: string) => string = (label) => label,
-  asOf?: string
+  {
+    read = {},
+    name = (label) => label,
+    asOf,
+  }: {
+    read?: ClaimHolderLiveness;
+    name?: (label: string) => string;
+    asOf?: string | undefined;
+  } = {}
 ): string {
   const titles = agents?.titles;
   // At a cut (`asOf`) whether a session holds the claim now is left out: neither the registry
   // nor the holder's liveness is read, and no word of the present is printed.
   if (asOf !== undefined) {
     const marker = claim.actor.kind === "session" ? ` · liveness ${leftOutAt(asOf)}` : "";
-    return `${actorLabel(claim.actor, titles)} since ${claim.at}${marker}`;
+    return `${name(actorLabel(claim.actor, titles))} since ${claim.at}${marker}`;
   }
   const liveness = holderLiveness(claim, agents, read);
   const holding = claimHolds(claim, titles, liveness);
@@ -259,9 +265,15 @@ export function routeHeldBySession(issue: RoutedIssue): boolean {
  */
 export function routeText(
   issue: RoutedIssue,
-  titles?: ReadonlyMap<string, string>,
-  name: (label: string) => string = (label) => label,
-  asOf?: string
+  {
+    titles,
+    name = (label) => label,
+    asOf,
+  }: {
+    titles?: ReadonlyMap<string, string> | undefined;
+    name?: (label: string) => string;
+    asOf?: string | undefined;
+  } = {}
 ): string {
   if (issue.route === null) return "none";
   if (asOf !== undefined) {
@@ -472,12 +484,12 @@ export function issueSummary(
     `Link: ${linkFor(`/issues/${encodeURIComponent(issue.key)}`, linkBase)}`,
     `Status: ${issue.status}`,
     `Assignee: ${issue.assignee ?? "unassigned"}`,
-    `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue, undefined, asOf)}`,
+    `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, { read: issue, asOf })}`,
     ...(issue.priority === null ? [] : [`Priority: P${issue.priority}`]),
     `Labels: ${labels.length === 0 ? "none" : labels.join(", ")}`,
     componentsLine(issue.components, asOf),
     advancesLine(issue),
-    `Route: ${routeText(issue, agents?.titles, undefined, asOf)}`,
+    `Route: ${routeText(issue, { titles: agents?.titles, asOf })}`,
     repositoryLine(issue),
     `Progress: ${progressText(issue.progress, ", ") || "none"}`,
     ...(specApproval === undefined

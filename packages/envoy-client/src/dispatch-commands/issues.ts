@@ -698,7 +698,7 @@ function listingRouteText(row: IssueSummary): string {
   if (status === undefined) {
     return ` · route ${route} (the listing does not say whether it reaches anyone)`;
   }
-  return ` · route ${routeText(row, undefined, rowPart)}`;
+  return ` · route ${routeText(row, { name: rowPart })}`;
 }
 
 /** One issue of `dispatch issues` as a line: its key, status, priority and title, its parent and
@@ -718,7 +718,7 @@ function issueListingLine(row: IssueSummary, agents: LiveAgents | undefined): st
     (row.open_asks === 0
       ? ""
       : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
-    (claim === null ? "" : ` · claimed by ${claimText(claim, agents, {}, rowPart)}`) +
+    (claim === null ? "" : ` · claimed by ${claimText(claim, agents, { name: rowPart })}`) +
     (progress === "" ? "" : ` · ${progress}`) +
     listingRouteText(row)
   );
@@ -932,7 +932,7 @@ export async function resultsCommand(
     })
   );
   return {
-    text: formatCheckResults(results, brief, repositories, reading.cut?.asOf),
+    text: formatCheckResults(results, { brief, repositories, asOf: reading.cut?.asOf }),
     details: {
       issue,
       checks: checks.length,

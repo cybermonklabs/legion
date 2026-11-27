@@ -84,10 +84,11 @@ func checksAtTheCut(ctx context.Context, checks []model.CheckBlock) {
 			leaveOut(ctx, place+"/ci")
 		}
 		resultAt := elementsOf(place + "/results")
+		live := readsTheLiveDeploy(*check)
 		for number := range check.Results {
 			result := resultAt(number)
 			leaveOut(ctx, result+"/commit_stands", result+"/currency")
-			if readsTheLiveDeploy(*check) {
+			if live {
 				leaveOut(ctx, result+"/not_counted")
 			}
 			if check.SHA256 == "" {

@@ -171,31 +171,20 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 		t.Errorf("the as_of kinds (each route's Read) have %d problems:\n%s", len(problems), strings.Join(problems, "\n"))
 	}
 
-	// plant is register's refusal of the declarations with change made to row's read class.
-	plant := func(t *testing.T, row string, change func(*readEntry)) string {
-		t.Helper()
-		planted := slices.Clone(routeRegistry)
-		index := slices.IndexFunc(planted, func(route routeDecl) bool { return route.Method+" "+route.Pattern == row })
-		if index < 0 {
-			t.Fatalf("no route declares %s", row)
-		}
-		change(&planted[index].Read)
-		withRouteRegistry(t, planted)
-		return registerRefusal(t)
-	}
-
 	t.Run("register refuses a GET row whose AsOf is unset, naming the row", func(t *testing.T) {
 		if refusal := registerRefusal(t); refusal != "" {
 			t.Fatalf("api.Register refused the read class as it stands: %s", refusal)
 		}
 		for _, row := range []string{"GET /api/v1/issues/{key}", "GET /api/v1/limits"} {
-			refusal := plant(t, row, func(entry *readEntry) {
-				entry.AsOf = asOfUnset
-				entry.AtACut = ""
+			t.Run(row, func(t *testing.T) {
+				refusal := plantedRefusal(t, routeChange{row, func(route *routeDecl) {
+					route.Read.AsOf = asOfUnset
+					route.Read.AtACut = ""
+				}})
+				if !strings.Contains(refusal, "read class") || !strings.Contains(refusal, row+": ") || !strings.Contains(refusal, "AsOf") {
+					t.Errorf("with %s's AsOf unset, api.Register refused %q, want a refusal of the read class naming the row and its AsOf", row, refusal)
+				}
 			})
-			if !strings.Contains(refusal, "read class") || !strings.Contains(refusal, row+": ") || !strings.Contains(refusal, "AsOf") {
-				t.Errorf("with %s's AsOf unset, api.Register refused %q, want a refusal of the read class naming the row and its AsOf", row, refusal)
-			}
 		}
 	})
 
@@ -209,12 +198,14 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 			{name: "asOfCaller on a row but whoami", row: "GET /api/v1/limits", change: func(entry *readEntry) { entry.AsOf = asOfCaller }, want: "asOfCaller"},
 			{name: "an answers row with no AtACut", row: "GET /api/v1/issues/{key}", change: func(entry *readEntry) { entry.AtACut = "" }, want: "AtACut"},
 			{name: "a no-history row with an AtACut", row: "GET /api/v1/limits", change: func(entry *readEntry) { entry.AtACut = "At a cut the route answers the present." }, want: "AtACut"},
-			{name: "the caller row with an AtACut", row: whoamiRow, change: func(entry *readEntry) { entry.AtACut = "At a cut the route answers the present." }, want: "AtACut"},
+			{name: "the caller row with an AtACut", row: asOfCallerRow, change: func(entry *readEntry) { entry.AtACut = "At a cut the route answers the present." }, want: "AtACut"},
 		} {
-			refusal := plant(t, row.row, row.change)
-			if !strings.Contains(refusal, "read class") || !strings.Contains(refusal, row.row+": ") || !strings.Contains(refusal, row.want) {
-				t.Errorf("with %s (%s), api.Register refused %q, want a refusal of the read class naming the row and %s", row.name, row.row, refusal, row.want)
-			}
+			t.Run(row.name, func(t *testing.T) {
+				refusal := plantedRefusal(t, routeChange{row.row, func(route *routeDecl) { row.change(&route.Read) }})
+				if !strings.Contains(refusal, "read class") || !strings.Contains(refusal, row.row+": ") || !strings.Contains(refusal, row.want) {
+					t.Errorf("with %s (%s), api.Register refused %q, want a refusal of the read class naming the row and %s", row.name, row.row, refusal, row.want)
+				}
+			})
 		}
 	})
 }
@@ -258,11 +249,11 @@ func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
 	}
 	for name := range answers {
 		if !listed[name] {
-			problems = append(problems, name+": its read entry says it answers as_of, and the plan's table does not list it")
+			problems = append(problems, name+": its read class says it answers as_of, and the plan's table does not list it")
 		}
 	}
-	if !slices.Equal(callers, []string{whoamiRow}) {
-		problems = append(problems, fmt.Sprintf("the rows of kind asOfCaller are %v, want %s alone", callers, whoamiRow))
+	if !slices.Equal(callers, []string{asOfCallerRow}) {
+		problems = append(problems, fmt.Sprintf("the rows of kind asOfCaller are %v, want %s alone", callers, asOfCallerRow))
 	}
 	slices.Sort(problems)
 	t.Logf("the table holds %d rows of kind asOfAnswers; the plan's table lists %d", len(answers), len(thePlansAnswersRows))

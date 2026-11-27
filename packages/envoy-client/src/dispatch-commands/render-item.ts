@@ -211,8 +211,7 @@ function openAskLine(ask: OpenAsk, linkBase: string | undefined, asOf: string | 
 export function formatOpenAsksSummary(
   response: OpenAsksResponse,
   linkBase: string | undefined,
-  project?: string,
-  asOf?: string
+  { project, asOf }: { project?: string | undefined; asOf?: string | undefined } = {}
 ): string {
   if (response.count === 0) {
     return (

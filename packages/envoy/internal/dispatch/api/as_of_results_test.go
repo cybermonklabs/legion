@@ -100,6 +100,17 @@ func newPastResultsRig(t *testing.T, statements *markedStatements) (http.Handler
 	return handler, github, served
 }
 
+// pastResultsChecks is the Verification document's two recorded checks: k1, which its pull request
+// heads answer, and k2, which the default branch answers, so the present read compares k2's
+// commit with the default branch and stores that branch's answer (branch_commits). An after-merge
+// check is compared with a merged pull request alone, which this issue has none of.
+const pastResultsChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\" negative_control=\"Break it and watch it fail.\"}\n" +
+	"The server records a result against a check.\n" +
+	":::\n\n" +
+	":::check{#k2 when=\"default_branch\"}\n" +
+	"The default branch answers at the merged commit.\n" +
+	":::\n"
+
 // TestPastTimeResultsWriteNothingAndAskGitHubNothing: a read of an issue's results at a cut asks
 // GitHub nothing and writes nothing (decision 11), though the same read at the present asks GitHub
 // and writes on the same state. The issue's Verification document holds a check its pull request
@@ -113,17 +124,6 @@ func newPastResultsRig(t *testing.T, statements *markedStatements) (http.Handler
 // check's words moved. The tracer finds no write of it to pull_request_heads, branch_commits or
 // events, and the counts of those rows do not move. ?at= with a cut is refused 400
 // AS_OF_NOT_SERVED naming at, and asks GitHub nothing either.
-// pastResultsChecks is the Verification document's two recorded checks: k1, which its pull request
-// heads answer, and k2, which the default branch answers, so the present read compares k2's
-// commit with the default branch and stores that branch's answer (branch_commits). An after-merge
-// check is compared with a merged pull request alone, which this issue has none of.
-const pastResultsChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\" negative_control=\"Break it and watch it fail.\"}\n" +
-	"The server records a result against a check.\n" +
-	":::\n\n" +
-	":::check{#k2 when=\"default_branch\"}\n" +
-	"The default branch answers at the merged commit.\n" +
-	":::\n"
-
 func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
 	statements := &markedStatements{}
 	handler, github, served := newPastResultsRig(t, statements)

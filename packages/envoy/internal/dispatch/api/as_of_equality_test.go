@@ -594,12 +594,8 @@ func (r *asOfRig) callers(t *testing.T) []asOfReader {
 	for _, said := range answers {
 		r.broker.Says(said.caller.token, said.answer)
 		actor, _, err := r.served.brokerTokenActor(r.key.presenting(t, http.MethodGet, "/api/v1/whoami", said.caller.token, nil))
-		named := ""
-		if actor.Owner != nil {
-			named = *actor.Owner
-		}
 		if err != nil || actor.Credential == nil || actor.Credential.ReadOnly != said.readOnly ||
-			actor.Credential.Holds(model.ScopePerson) != said.caller.person || named != said.caller.login || !actor.Credential.Cut.IsZero() {
+			actor.Credential.Holds(model.ScopePerson) != said.caller.person || deref(actor.Owner) != said.caller.login || !actor.Credential.Cut.IsZero() {
 			t.Fatalf("%s: Dispatch's actor is %+v (%v), want a credential read-only %t, holding person %t, naming the person %q, with no cut",
 				said.caller.name, actor, err, said.readOnly, said.caller.person, said.caller.login)
 		}
@@ -1678,12 +1674,7 @@ func TestAPastTimeThreadListRefusesAPageOfThreads(t *testing.T) {
 					t.Errorf("%s as of the cut: status=%d body=%s, want 400 %s naming order",
 						target, past.Code, past.Body.String(), contracts.DispatchAsOfNotServed)
 				}
-				var ran []string
-				for _, statement := range counted {
-					if strings.TrimSpace(statement) != "select now()" {
-						ran = append(ran, statement)
-					}
-				}
+				ran := slices.DeleteFunc(counted, func(statement string) bool { return strings.TrimSpace(statement) == "select now()" })
 				if len(ran) > 0 {
 					t.Errorf("%s as of the cut ran %d statements besides the as_of gate's clock read, want none: the list read before it refused the page:\n%s",
 						target, len(ran), strings.Join(roundTripLines(ran), "\n"))

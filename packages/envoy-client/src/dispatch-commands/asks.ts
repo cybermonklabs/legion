@@ -294,7 +294,7 @@ export async function openAsksCommand(
   if (project !== undefined) {
     const response = await client.openAsksForProject(project, reading.cut);
     return {
-      text: formatOpenAsksSummary(response, linkBase, project, asOf),
+      text: formatOpenAsksSummary(response, linkBase, { project, asOf }),
       details: { ...response },
     };
   }
@@ -302,7 +302,7 @@ export async function openAsksCommand(
   if (!sessionId) throw new Error("host session id is required for dispatch open-asks");
   const response = await client.openAsks(sessionId, undefined, reading.cut);
   return {
-    text: formatOpenAsksSummary(response, linkBase, undefined, asOf),
+    text: formatOpenAsksSummary(response, linkBase, { asOf }),
     details: { ...response },
   };
 }

@@ -23,11 +23,11 @@ const actor = { kind: "session" as const, id: "session-1" };
 const file = { name: "notes.md", file: new Blob(["# Notes"], { type: "text/markdown" }), actor };
 const inline = { name: "notes.md", content: "# Notes", actor };
 
-/** One call of each method, with arguments of the shapes it takes; what it answers is not read. */
 /** The cut a read of a route that answers `as_of` sends (`AsOfRead`): each such method is called
  *  with it, so its read at a cut goes through the same request function. */
 const AT = { asOf: "2026-11-10T12:00:00Z" };
 
+/** One call of each method, with arguments of the shapes it takes; what it answers is not read. */
 export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> = {
   issue: (client) => client.issue({ project: "DSP", title: "A title", actor }),
   resolveIssue: (client) => client.resolveIssue("owner/repo#1", AT),

@@ -148,7 +148,7 @@ async function sessionStart(raw: unknown): Promise<void> {
       signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
     }).openAsks(input.session_id, undefined, cut)
     process.stdout.write(
-      `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url, undefined, cut.cut)}\n`,
+      `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url, { asOf: cut.cut })}\n`,
     )
   } catch (error) {
     process.stdout.write(`Dispatch authored-ask summary unavailable: ${messageFor(error)}\n`)

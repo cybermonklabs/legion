@@ -328,10 +328,10 @@ func TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument(t *testing.T) {
 		note := reads[name].AtACut
 		switch {
 		case kind == asOfAnswers && (note == "" || !strings.Contains(read.Description, note)):
-			t.Errorf("%s answers as_of, and its description in the document does not say what it answers at a cut: write it in its read entry's AtACut (read_classes.go)",
+			t.Errorf("%s answers as_of, and its description in the document does not say what it answers at a cut: write it in the AtACut of the route's read class (routeDecl.Read, in the route's file)",
 				name)
 		case kind != asOfAnswers && note != "":
-			t.Errorf("the read entry of %s says what it answers at a cut (AtACut), and the row refuses as_of", name)
+			t.Errorf("the read class of %s says what it answers at a cut (AtACut), and the row refuses as_of", name)
 		}
 		if kind == asOfAnswers {
 			answers++
