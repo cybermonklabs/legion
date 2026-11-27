@@ -39,7 +39,7 @@ func offHeadWaitReason(head, prHead string) string {
 // head and creates no commit. It is the one owner of that rule: besideBranchOf names no branch for
 // any other role, so no start, binding, fix-started row or update ask names one.
 func pushesBesideFix(role claim.Role) bool {
-	return role != "" && role != claim.RoleReviewer
+	return role != ""
 }
 
 // besideBranchOf is the branch beside fix of task in issue's generation that role's step pushes to
