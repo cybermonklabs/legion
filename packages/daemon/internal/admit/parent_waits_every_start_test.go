@@ -1312,7 +1312,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if wait.Task != retry.Task {
 			t.Fatalf("the held task = %q, want the retry's task the implementer was given, %q, not its entry's", wait.Task, retry.Task)
 		}
-		want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Generation: 1,
+		want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Claim: token, Generation: 1,
 			Phase: phase.Implementing, Entry: 3}}
 		if retired := spRetired(t, pool, spParent); !reflect.DeepEqual(retired, want) {
 			t.Fatalf("task retirements = %+v, want %+v: the retry's task is the one the move takes back", retired, want)
@@ -1456,7 +1456,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("the held task = %q, want the work of the entry the implementer stands on, %q, not the resume task %q",
 				wait.Task, pwTask(spParent, phase.Implementing), resume.Task)
 		}
-		want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Generation: 1,
+		want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Claim: token, Generation: 1,
 			Phase: phase.Implementing, Entry: 3}}
 		if retired := spRetired(t, pool, spParent); !reflect.DeepEqual(retired, want) {
 			t.Fatalf("task retirements = %+v, want %+v: the move takes the resume task back, bounded by the entry", retired, want)
@@ -1702,12 +1702,14 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	t.Run("a relaunch during the wait is given no task of the stopped phase", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := pwAdmission(t, 2)
-		pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateIdle, "")
+		token := pwMidPhase(t, pool, spParent, phase.Implementing, supervise.StateIdle, "")
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
 
-		want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Generation: 1,
+		// The row names the claim that worked the stopped phase, read when the move was written, so
+		// it reaches that agent however late it runs.
+		want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Claim: token, Generation: 1,
 			Phase: phase.Implementing, Entry: 3}}
 		if retired := spRetired(t, pool, spParent); !reflect.DeepEqual(retired, want) {
 			t.Fatalf("task retirements = %+v, want %+v", retired, want)
