@@ -7,6 +7,7 @@ import { parseIssuePath } from "../../refs/routes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { useMarginDrawer } from "../margin-slot";
+import { abortOnReaderAct } from "../useNodeEditing";
 import type { SelectedWords, TextComposerOutcome } from "./SelectionComposer";
 
 /**
@@ -35,8 +36,9 @@ export interface TextComposer {
    *  thread's root takes the focus once the re-read draws it, or one sentence says a reply's
    *  quote was not kept. */
   readonly land: (outcome: TextComposerOutcome) => void;
-  /** What the last send left the page to do, until the page has done it (`settle`) or a
-   *  composer opens again. */
+  /** What the last send left the page to do, until the page has done it (`settle`), a composer
+   *  opens again, or - for a new thread's root, which takes the focus - the reader's first act
+   *  (`READER_ACTS`), so a card drawn after it takes no focus from where the reader put it. */
   readonly landed: TextComposerOutcome | undefined;
   /** Opens the composer in the column beside the request's node, or in that node's sheet below
    *  1024 px; the column is drawn for it. Details closes first where it is open (R2). */
@@ -53,6 +55,9 @@ export interface TextComposer {
 interface ComposerStore {
   held: { readonly key: string; readonly request: TextComposerRequest } | undefined;
   landed: { readonly key: string; readonly outcome: TextComposerOutcome } | undefined;
+  /** The reader's acts since `landed` came to hold a new thread's root (`abortOnReaderAct`): the
+   *  first ends what the send left. Aborted as `landed` changes, so no listener outlives it. */
+  landingActs: AbortController | undefined;
   readonly listeners: Set<() => void>;
   place: MarkComposePlace | undefined;
   /** How many sheets stand under the row of each node (`useSheet`), and the nodes that have one,
@@ -74,6 +79,7 @@ function composerStoreOf(client: QueryClient): ComposerStore {
     store = {
       held: undefined,
       landed: undefined,
+      landingActs: undefined,
       listeners,
       place: undefined,
       sheetCounts: new Map(),
@@ -128,10 +134,11 @@ function tell(store: ComposerStore): void {
 }
 
 /** Sets what `store` holds - the composer open, and what its last send left - and tells each
- *  reader. A compose of a block's editor that the composer leaves with no send out - closed,
- *  replaced by another, or gone with its page - rejects the editor's promise, so the editor takes
- *  its mark back out of the document; one whose send went out was resolved then, which this does
- *  not undo. */
+ *  reader. What a send left that lands a new thread's root ends at the reader's first act
+ *  (`landingActs`), and the acts of what it held before are let go of as it changes. A compose of
+ *  a block's editor that the composer leaves with no send out - closed, replaced by another, or
+ *  gone with its page - rejects the editor's promise, so the editor takes its mark back out of the
+ *  document; one whose send went out was resolved then, which this does not undo. */
 function holdComposer(
   store: ComposerStore,
   held: ComposerStore["held"],
@@ -139,7 +146,16 @@ function holdComposer(
 ): void {
   const left = store.held?.request.mark;
   store.held = held;
-  store.landed = landed;
+  if (store.landed !== landed) {
+    store.landingActs?.abort();
+    store.landingActs =
+      landed !== undefined && "root" in landed.outcome
+        ? abortOnReaderAct(() => {
+            if (store.landed === landed) holdComposer(store, store.held, undefined);
+          })
+        : undefined;
+    store.landed = landed;
+  }
   if (left !== undefined && held?.request.mark !== left) {
     left.reject(new Error("the composer closed with no send out"));
   }

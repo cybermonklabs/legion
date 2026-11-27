@@ -26,13 +26,34 @@ export function cardIn(container: Element | null, key: string): HTMLElement | nu
   return container?.querySelector<HTMLElement>(`[data-margin-item="${CSS.escape(key)}"]`) ?? null;
 }
 
-/** Gives `target` the focus, as a script gives it to an element out of the tab order: one with
- *  no `tabindex` takes `tabIndex = -1` first. The focus takes no scroll of the browser's own,
- *  which goes to where the card stood before the stack placed it, and the card is brought into
- *  the window once it is placed (`revealAfterPlacement`): the nearest edge, or `center` for an
- *  address. */
-export function takeFocus(target: HTMLElement, reveal: ScrollLogicalPosition = "nearest"): void {
+/**
+ * One landing of this part on `target` - the item an address names (R8), or the root of the
+ * thread a send wrote (R5), in the column or in a node's sheet - at one look: answers whether
+ * `target` holds the focus after it, which is when the landing is done. Nothing lands where there
+ * is no target yet, or where the box it stands in - its nearest element that carries
+ * `boxAttribute`, where one is given - is hidden or missing, since a hidden element takes no
+ * focus. Else `target` takes the focus as a script gives it to an element out of the tab order:
+ * one with no `tabindex` takes `tabIndex = -1` first. The focus takes no scroll of the browser's
+ * own, which goes to where the card stood before the stack placed it, and the card is brought
+ * into the window once it is placed (`revealAfterPlacement`): the nearest edge, or `center` for
+ * an address.
+ */
+export function landFocus(
+  target: HTMLElement | null | undefined,
+  {
+    boxAttribute,
+    reveal = "nearest",
+  }: { readonly boxAttribute?: string; readonly reveal?: ScrollLogicalPosition } = {}
+): boolean {
+  if (target === null || target === undefined) return false;
+  if (
+    boxAttribute !== undefined &&
+    target.closest<HTMLElement>(`[${boxAttribute}]`)?.hidden !== false
+  ) {
+    return false;
+  }
   if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
   target.focus({ preventScroll: true });
   revealAfterPlacement(target, reveal);
+  return target.contains(document.activeElement);
 }

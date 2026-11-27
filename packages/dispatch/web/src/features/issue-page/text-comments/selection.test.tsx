@@ -125,7 +125,9 @@ function placeOf(control: HTMLElement): { readonly left: number; readonly top: n
   return { left: Number.parseFloat(box.style.left), top: Number.parseFloat(box.style.top) };
 }
 
-/** Makes the window `width` px wide for what reads `innerWidth`, until the stub is restored. */
+/** Makes the window `width` px wide for what reads `innerWidth`, until the stub is restored. The
+ *  control reads it only where the root reports no client width, as happy-dom's, which lays
+ *  nothing out, reports 0 (`clientWidthOf`). */
 function windowWidthOf(width: number): { mockRestore(): void } {
   const own = Object.getOwnPropertyDescriptor(window, "innerWidth");
   Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
@@ -133,6 +135,21 @@ function windowWidthOf(width: number): { mockRestore(): void } {
     mockRestore: () => {
       if (own === undefined) Reflect.deleteProperty(window, "innerWidth");
       else Object.defineProperty(window, "innerWidth", own);
+    },
+  };
+}
+
+/** Makes the root's client width - the width a fixed element can use, which leaves out a classic
+ *  vertical scrollbar - `width` px, as `document.documentElement.clientWidth` reads it, until the
+ *  stub is restored. The width is the root's own, so it is set on the root alone. */
+function clientWidthOf(width: number): { mockRestore(): void } {
+  const root = document.documentElement;
+  const own = Object.getOwnPropertyDescriptor(root, "clientWidth");
+  Object.defineProperty(root, "clientWidth", { configurable: true, value: width });
+  return {
+    mockRestore: () => {
+      if (own === undefined) Reflect.deleteProperty(root, "clientWidth");
+      else Object.defineProperty(root, "clientWidth", own);
     },
   };
 }
@@ -366,8 +383,8 @@ test("control shown, the page scrolls, a box around the words scrolls, or the wi
 
 test("no selection, words selected to the end of a line at the window's right edge: the control stands inside the window, under the line", async () => {
   const { client, row, view } = await drawn({ threads: [] });
-  // A window 390 px wide, as a phone's, which the control reads (`innerWidth`), and the control's
-  // box 80 px wide, as a browser draws it.
+  // A window 390 px wide, as a phone's, which the control reads (`innerWidth`, where the root
+  // reports no client width), and the control's box 80 px wide, as a browser draws it.
   stubs.push(windowWidthOf(390), controlWidthOf(80));
   try {
     const end = rectOf(305, 200, 80, 20);
@@ -378,6 +395,33 @@ test("no selection, words selected to the end of a line at the window's right ed
       const { left, top } = placeOf(controlOf(view) as HTMLElement);
       expect(left, "the control stands past the window's left edge").toBeGreaterThanOrEqual(0);
       expect(left + 80, "the control stands past the window's right edge").toBeLessThanOrEqual(390);
+      expect(top, "the control covers the selected words of the line").toBeGreaterThanOrEqual(
+        end.bottom
+      );
+    });
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+// A desktop browser below 1024 px that draws a classic vertical scrollbar, 15 px wide: the window is
+// 390 px wide (`innerWidth`, which counts the scrollbar) and a fixed element can use 375 px of it
+// (the root's `clientWidth`). Words that end at 300 px leave the control room beside them inside
+// 390 px but not inside 375 px, so a control clamped to `innerWidth` stood partly under the
+// scrollbar.
+test("no selection, words selected near the right edge of a window with a classic scrollbar: the control stands inside the width the scrollbar leaves", async () => {
+  const { client, row, view } = await drawn({ threads: [] });
+  stubs.push(windowWidthOf(390), clientWidthOf(375), controlWidthOf(80));
+  try {
+    const end = rectOf(240, 200, 60, 20);
+    rangeEndsAt(end);
+    selectWords(row, "page");
+    await controlDrawn(view, "a selection near the scrollbar draws no control");
+    await waitFor(() => {
+      const { left, top } = placeOf(controlOf(view) as HTMLElement);
+      expect(left, "the control stands past the window's left edge").toBeGreaterThanOrEqual(0);
+      expect(left + 80, "the control stands under the scrollbar").toBeLessThanOrEqual(375 - 4);
       expect(top, "the control covers the selected words of the line").toBeGreaterThanOrEqual(
         end.bottom
       );

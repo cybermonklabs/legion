@@ -11,7 +11,7 @@ import type { Preset } from "../page-words";
 import { nodesInOrder } from "../tree-keys";
 import { outlineOf } from "../tree-read/tree-read";
 import type { NodeThreads } from "./text-threads";
-import { threadCommentNode } from "./thread-node";
+import { threadCommentNode, threadKindOf } from "./thread-node";
 import { useTextThreads } from "./useTextThreads";
 
 /**
@@ -113,7 +113,7 @@ export function withThreadEntries(
     for (const { thread } of held) {
       const comment = thread.root.comment;
       if (!isViewer(comment.author, viewer)) continue;
-      const kind = thread.kind ?? "comment";
+      const kind = threadKindOf(thread);
       kinds.set(comment.id, kind);
       const own = entries.get(host);
       const entry = threadCommentNode(comment, kind, key);

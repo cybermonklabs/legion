@@ -1,6 +1,10 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import type { CommentNodeAnchor } from "@legion/contracts";
 import { act, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { readComment } from "../outline-fixtures";
 import {
   HIGHLIGHT_STYLE_ATTRIBUTE,
   highlightThreadWords,
@@ -15,6 +19,7 @@ import {
   newClient,
   ON_CHECK,
   ON_STATEMENT,
+  RISK,
   rowOf,
 } from "./margin-fixtures";
 
@@ -41,6 +46,27 @@ let registry = new Map<string, StandInHighlight>();
 let held: { readonly css?: PropertyDescriptor; readonly highlight?: PropertyDescriptor } = {};
 
 let stubs: { mockRestore(): void }[] = [];
+
+/** The words of the issue's risk (`RISK`) a comment is on. */
+const RISK_QUOTE = "slow read";
+
+/** A comment on the words of the issue's risk, an item row the read-only caret of R6 takes,
+ *  anchored at the risk itself (G2's node anchor) as the comments read answers it. */
+const ON_RISK = {
+  ...readComment("on-risk", 7),
+  node_anchor: {
+    node: { id: RISK, kind: "risk", state: "live" },
+    occurrence: 0,
+    orphaned: false,
+    quote: RISK_QUOTE,
+  } satisfies CommentNodeAnchor,
+};
+
+// The caret goes into a row whose words the page may draw with the Markdown engine, which a row
+// that ran before may have loaded or not.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // happy-dom answers a new `CSS` at each read of the window's, so the case stands a `CSS` of its
 // own in, which holds the registry and reads every other member from happy-dom's.
@@ -124,41 +150,51 @@ test("each thread's words are in the margin highlight and the focused thread's i
 });
 
 // R2: a row in its editor draws the marks of its comments itself, so the column marks none of its
-// threads' words; the read-only caret of R6 (`read-only-caret.ts`) makes a row's words editable
-// too, marked `aria-readonly`, and draws no marks, so the row's words keep the column's while it
-// stands. The column measures again at each change of the stage's rows, as a read that lands or
-// a composer that opens makes, which the case makes by moving the statement's row in place.
-test("a row in its editor takes no marks, and a row with the read-only caret keeps its threads' marks", async () => {
-  stubs = answerSeededReads({ threads: [ON_STATEMENT, ON_CHECK] });
+// threads' words; the read-only caret of R6 (`read-only-caret.ts`) makes an item row's words
+// editable too and draws no marks, so that row's words keep the column's while it stands. The
+// caret goes in as a reader puts it in, by Enter on the risk's focused row, and the column tells
+// it from an editor by the caret's own record (`hasLiveEditor`), not by the attributes it sets.
+// The column measures again at each change of the stage's rows, as a read that lands or a composer
+// that opens makes, which the case makes by moving the statement's row in place.
+test("a row in its editor takes no marks, and an item row with the read-only caret keeps its threads' marks", async () => {
+  stubs = answerSeededReads({ posts: [ON_RISK], risk: true, threads: [ON_STATEMENT] });
   const client = newClient();
   const view = drawPage(client, "conversation");
   try {
     expect(await columnOf(view, "Comments on text"), "no column is drawn").not.toBeNull();
-    const both = [ON_STATEMENT.quote, ON_CHECK.quote].sort();
     await waitFor(() =>
-      expect(wordsIn(TEXT_COMMENT_HIGHLIGHT), "the words each thread quotes").toEqual(both)
-    );
-    const { row, words } = located(view, ON_STATEMENT.node);
-    const measuredAgain = () => row.parentElement?.insertBefore(row, row.nextSibling);
-
-    // An editor in the statement's row: its words take input, and it draws their marks itself.
-    words.setAttribute("contenteditable", "true");
-    measuredAgain();
-    await waitFor(() =>
-      expect(wordsIn(TEXT_COMMENT_HIGHLIGHT), "the column marks words its editor draws").toEqual([
-        ON_CHECK.quote,
-      ])
-    );
-
-    // The read-only caret in the same row, with the attributes `read-only-caret.ts` sets.
-    words.setAttribute("inputmode", "none");
-    words.setAttribute("aria-readonly", "true");
-    measuredAgain();
-    await waitFor(() =>
-      expect(wordsIn(TEXT_COMMENT_HIGHLIGHT), "the read-only caret took the row's marks").toEqual(
-        both
+      expect(wordsIn(TEXT_COMMENT_HIGHLIGHT), "the words each thread quotes").toEqual(
+        [ON_STATEMENT.quote, RISK_QUOTE].sort()
       )
     );
+
+    // The read-only caret in the risk's row, put in by Enter on the focused row.
+    const risk = located(view, RISK);
+    act(() => risk.row.focus());
+    await userEvent.setup().keyboard("{Enter}");
+    expect(
+      risk.words.getAttribute("contenteditable"),
+      "Enter put no caret in the risk's words"
+    ).toBe("true");
+    expect(risk.words.getAttribute("aria-readonly"), "the risk's caret is not read-only").toBe(
+      "true"
+    );
+    expect(document.activeElement, "Enter left the focus off the risk's words").toBe(risk.words);
+
+    // An editor in the statement's row: its words take input, and it draws their marks itself.
+    const statement = located(view, ON_STATEMENT.node);
+    statement.words.setAttribute("contenteditable", "true");
+    statement.row.parentElement?.insertBefore(statement.row, statement.row.nextSibling);
+    await waitFor(() =>
+      expect(
+        wordsIn(TEXT_COMMENT_HIGHLIGHT),
+        "the column marked words the statement's editor draws, or took the caret's row's marks"
+      ).toEqual([RISK_QUOTE])
+    );
+    expect(
+      risk.words.getAttribute("contenteditable"),
+      "the caret left the risk's words while the marks were read"
+    ).toBe("true");
   } finally {
     view.finish();
     client.clear();

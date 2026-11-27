@@ -492,6 +492,76 @@ test("a send lands while its node's row is not drawn: the hidden card takes no f
   }
 });
 
+// R5: what a send left ends at the reader's first act, as an address's landing does. A thread whose
+// node's row the stage draws only later - unfolded, or paged in, minutes after the send - would
+// otherwise take the focus, and scroll the page to its card, wherever the reader works by then.
+test("a send lands while its node's row is not drawn and the reader acts elsewhere: the landing ends at the act, and the root takes no focus once the row is drawn", async () => {
+  stubs = answerSeededReads({ threads: [ON_STATEMENT] });
+  const client = newClient();
+  const view = drawFrame(
+    client,
+    "conversation",
+    <>
+      <SendLander root={ON_STATEMENT.comment.id} />
+      <button type="button">a control elsewhere</button>
+    </>
+  );
+  try {
+    await waitFor(() => expect(rowOf(view, STATEMENT_NODE)).not.toBeNull());
+    const column = await columnDrawn(view, "no column is drawn");
+    const card = await waitFor(() => {
+      const held = column.querySelector<HTMLElement>(
+        `[data-margin-item="${CSS.escape(ON_STATEMENT.comment.id)}"]`
+      );
+      expect(held, "the column draws no card of the thread").not.toBeNull();
+      return held as HTMLElement;
+    });
+    const box = card.closest<HTMLElement>("[data-text-thread-node]");
+    const row = rowOf(view, STATEMENT_NODE);
+    if (row === null) throw new Error("the stage draws no row of the statement");
+    // The column finds a node's row by its `data-node-id`, so while the row carries none the
+    // stage draws no row of the statement for it.
+    await act(async () => {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement) focused.blur();
+      row.removeAttribute("data-node-id");
+    });
+    const user = userEvent.setup();
+    await user.click(view.getByRole("button", { name: "land a send" }));
+    expect(box?.hidden, "the thread's box stands while the stage draws no row of its node").toBe(
+      true
+    );
+    expect(view.getByTestId("landed").textContent, "the send left nothing to land").toBe("landed");
+    // The reader acts elsewhere: a press on another control, which takes the focus.
+    const elsewhere = view.getByRole("button", { name: "a control elsewhere" });
+    await user.click(elsewhere);
+    expect(
+      view.getByTestId("landed").textContent,
+      "the landing outlived the reader's act elsewhere"
+    ).toBe("settled");
+    expect(document.activeElement, "the press left the focus off its control").toBe(elsewhere);
+    // The stage draws the row: a change of its children, as an unfold or a page that lands makes.
+    row.setAttribute("data-node-id", STATEMENT_NODE);
+    row.parentElement?.insertBefore(row, row.nextSibling);
+    await waitFor(() =>
+      expect(box?.hidden, "the thread's box stays hidden once the stage draws its row").toBe(false)
+    );
+    // Two frames more, so the column has drawn again over the shown box and run its landing.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      await promise;
+    });
+    expect(card.contains(document.activeElement), "the root took the focus after the act").toBe(
+      false
+    );
+    expect(document.activeElement, "the focus left where the reader put it").toBe(elsewhere);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
 // R2: a thread stands level with the first line of its quoted words in the node's row, or level with
 // the row's first line where the row does not draw those words. A view that cuts a node's words
 // (`CutWords`) clips what stands past the cut, which is in the text and in no line the reader sees.

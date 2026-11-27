@@ -1,6 +1,12 @@
-import type { ThreadComment } from "../../margin/useMarginItems";
+import type { Thread, ThreadComment } from "../../margin/useMarginItems";
 import { buildDispatchReference } from "../../refs/routes";
 import type { TreeNode } from "../issue-tree";
+
+/** The kind of the item at the root of `thread`: `"message"` for a thread whose root is a
+ *  message, and `"comment"` for every other, which sets none (`Thread.kind`). */
+export function threadKindOf(thread: Pick<Thread, "kind">): "comment" | "message" {
+  return thread.kind ?? "comment";
+}
 
 /**
  * The node of the outline that stands for one comment or message of a thread on text (R7, R8):

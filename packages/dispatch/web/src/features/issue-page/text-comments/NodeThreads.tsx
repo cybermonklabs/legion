@@ -17,7 +17,7 @@ import {
   useSheet,
   useTextComposer,
 } from "./composer-store";
-import { cardIn, takeFocus } from "./reveal";
+import { cardIn, landFocus } from "./reveal";
 import { SelectionComposer, wordsKeyOf } from "./SelectionComposer";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
 import type { TextThread } from "./text-threads";
@@ -206,15 +206,14 @@ function SheetBody({
   useStopsOutOfTabOrder(sheet, !tabStops);
 
   // The root of the thread a send of this part wrote takes the focus once the re-read draws it in
-  // the sheet (R5).
+  // the sheet (R5), and the landing is done once the root holds it; it ends at the reader's first
+  // act (`composer-store.ts` ends what the send left then).
   const sent = composer.landed;
   useEffect(() => {
     if (sent === undefined || !("root" in sent)) return;
     const thread = threads.find((one) => one.thread.root.comment.id === sent.root);
     const card = thread === undefined ? null : cardIn(sheet.current, thread.thread.key);
-    if (card === null) return;
-    takeFocus(card);
-    composer.settle();
+    if (landFocus(card)) composer.settle();
   });
 
   // Escape in the composer, and its own Close, close it with its draft kept and give the focus to

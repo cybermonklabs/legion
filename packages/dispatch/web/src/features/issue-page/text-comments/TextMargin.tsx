@@ -40,7 +40,8 @@ import {
   useTextComposer,
 } from "./composer-store";
 import { highlightThreadWords, type ThreadWords } from "./highlights";
-import { cardIn, takeFocus } from "./reveal";
+import { hasLiveEditor } from "./read-only-caret";
+import { cardIn, landFocus } from "./reveal";
 import { rowTextOf } from "./row-text-runs";
 import { SelectionComposer, wordsKeyOf } from "./SelectionComposer";
 import { quotedNodeOf, rangeOf } from "./selection-quote";
@@ -446,11 +447,9 @@ function Column({
       const rect = range?.getClientRects()[0] ?? row.getBoundingClientRect();
       tops.set(key, Math.max(0, rect.top - origin));
       // A row in its editor draws the marks of its comments itself. The read-only caret
-      // (`read-only-caret.ts`) makes the row's words editable too, marked `aria-readonly`, and
-      // draws no marks: the row's words keep theirs while it stands.
-      const editing =
-        row.querySelector('[contenteditable="true"]:not([aria-readonly="true"])') !== null;
-      if (range !== null && !composing && !editing) ranges.push({ key, range });
+      // (`read-only-caret.ts`) makes the row's words editable too and draws no marks, so the row's
+      // words keep theirs while it stands (`hasLiveEditor`).
+      if (range !== null && !composing && !hasLiveEditor(row)) ranges.push({ key, range });
     }
     setWanted((current) => {
       const kept = composerAway ? current.get(COMPOSER_BOX) : undefined;
@@ -538,26 +537,23 @@ function Column({
       thread.root.comment.id === landing.id
         ? card
         : (lens ?? card?.querySelector<HTMLElement>('li[data-reply][aria-current="true"]'));
-    if (target === null || target === undefined) return;
-    if (target.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)?.hidden !== false) return;
-    takeFocus(target, "center");
-    if (target.contains(document.activeElement)) landed.current = landing.following;
+    if (landFocus(target, { boxAttribute: THREAD_NODE_ATTRIBUTE, reveal: "center" })) {
+      landed.current = landing.following;
+    }
   });
 
   // The root of the thread a send of this part wrote takes the focus once the re-read draws its
   // card, as the item an address names does (R5). Until the stage draws its node's row - folded or
   // paged away while the send was out - its box is hidden (`measure`), and a hidden element takes
-  // no focus, so the landing waits for the row, as an address's does, and is done once the root
-  // holds the focus.
+  // no focus, so the landing waits for the row, as an address's does. It is done once the root
+  // holds the focus, and ends at the reader's first act (`composer-store.ts` ends what the send
+  // left then), so a row drawn later takes no focus from where the reader put it.
   const sent = composer.landed;
   useEffect(() => {
     if (sent === undefined || !("root" in sent) || detailsOpen) return;
     const thread = placed.find(({ thread: one }) => one.thread.root.comment.id === sent.root);
     const card = thread === undefined ? null : cardIn(region.current, thread.thread.thread.key);
-    if (card === null) return;
-    if (card.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)?.hidden !== false) return;
-    takeFocus(card);
-    if (card.contains(document.activeElement)) composer.settle();
+    if (landFocus(card, { boxAttribute: THREAD_NODE_ATTRIBUTE })) composer.settle();
   });
 
   // Escape in a thread, outside its composer, gives the focus to the row of the thread's node

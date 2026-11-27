@@ -39,6 +39,7 @@ import {
   threadOn,
 } from "./margin-fixtures";
 import type { QuotedReplyBlock } from "./on-text";
+import { quoteLine } from "./quote-line";
 import { cardIn as cardOf } from "./reveal";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
 import { type TextThread, textThreadsOf } from "./text-threads";
@@ -425,12 +426,12 @@ test("the quote comes first, then each entry whole", async () => {
   }
 });
 
-// R4: the card draws its quote line cut to one line of at most 80 characters, while a
-// suggestion's diff strikes through the whole quote, the characters Accept writes over.
+// R4: the card draws its quote line cut by the quote line's rule (`quoteLine`, whose own cases
+// hold the cut), while a suggestion's diff strikes through the whole quote, the characters Accept
+// writes over.
 test("a long suggestion's diff strikes through the whole quote under the cut quote line", async () => {
-  const words = Array.from({ length: 11 }, (_, at) => `segment-${at + 10}`);
-  const quote = words.join(" ");
-  expect(Array.from(quote), "the quote is not 120 characters long").toHaveLength(120);
+  const quote = Array.from({ length: 11 }, (_, at) => `segment-${at + 10}`).join(" ");
+  expect(quoteLine(quote), "the quote line's rule does not cut the quote").not.toBe(quote);
   const seed = threadOn("on-long", SPEC_DOCUMENT, STATEMENT, quote, 8);
   const suggested: TextThreadSeed = {
     ...seed,
@@ -447,10 +448,8 @@ test("a long suggestion's diff strikes through the whole quote under the cut quo
     );
     const lines = [...card.querySelectorAll("blockquote")].map((quoted) => quoted.textContent);
     const line = lines[0] ?? "";
-    expect(line, "the card's quote line is not the quote cut to one line").toBe(
-      `${words.slice(0, 7).join(" ")}\u2026`
-    );
-    expect(Array.from(line).length, "the quote line passes 80 characters").toBeLessThan(81);
+    expect(line, "the card's quote line is not the quote line's rule's").toBe(quoteLine(quote));
+    expect(line, "the card's quote line is the whole quote").not.toBe(quote);
     expect(lines, "the card draws the whole quote as its quote line").not.toContain(quote);
   } finally {
     view.finish();

@@ -41,34 +41,37 @@ export const CONTROL_ATTRIBUTE = "data-selection-comment";
 /** How far from the selection's end the control stands, right of it or under its line, in px. */
 const GAP = 4;
 
-/** How far inside the window's left and right edges the control stands, in px. */
+/** How far inside the viewport's left and right edges the control stands, in px. */
 const EDGE = 4;
 
 /** The words a selection quotes and where its range ends, as the window stood when it was read. */
 interface Selected {
   /** The last client rectangle of the range, in px from the window's top left corner. */
   readonly end: DOMRectReadOnly;
-  /** The window's width, in px (`innerWidth`). */
-  readonly windowWidth: number;
+  /** The width a fixed element can use, in px: the root's `clientWidth`, which leaves out a
+   *  classic vertical scrollbar that `innerWidth` counts, so the control never stands under it;
+   *  `innerWidth` only where the root reports no width, as happy-dom's, which lays nothing out,
+   *  reports 0. */
+  readonly viewportWidth: number;
   readonly words: SelectedWords;
 }
 
 /**
  * Where the control, `width` px wide as drawn, stands for `selected`: right of the range's end,
- * at its top, where it fits there inside the window; else under the end's line, its right edge at
- * the end's and inside the window, so it covers none of the line's selected words. A fixed
+ * at its top, where it fits there inside the viewport; else under the end's line, its right edge
+ * at the end's and inside the viewport, so it covers none of the line's selected words. A fixed
  * element cannot be scrolled to, and a phone has no chord to stand in for the control: at 390 px,
- * words selected to the end of a line would put most of it past the window's right edge.
+ * words selected to the end of a line would put most of it past the viewport's right edge.
  */
 function placeFor(
   selected: Selected,
   width: number
 ): { readonly left: number; readonly top: number } {
-  const { end, windowWidth } = selected;
+  const { end, viewportWidth } = selected;
   const beside = end.right + GAP;
-  if (beside + width + EDGE <= windowWidth) return { left: beside, top: end.top };
+  if (beside + width + EDGE <= viewportWidth) return { left: beside, top: end.top };
   return {
-    left: Math.max(EDGE, Math.min(end.right, windowWidth - EDGE) - width),
+    left: Math.max(EDGE, Math.min(end.right, viewportWidth - EDGE) - width),
     top: end.bottom + GAP,
   };
 }
@@ -139,7 +142,8 @@ function selectedIn(
   if (sendTargetOf(view, node, issue, selected) === null) return null;
   const rects = range.getClientRects();
   const end = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
-  return { end, windowWidth: window.innerWidth, words: selected };
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  return { end, viewportWidth, words: selected };
 }
 
 /** Whether `event` is `$mod+Alt+m` by the key's place: Meta or Control, as the page's keymap

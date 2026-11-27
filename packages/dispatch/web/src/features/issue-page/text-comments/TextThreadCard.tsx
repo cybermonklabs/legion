@@ -32,7 +32,7 @@ import { authorKind, isReader, LENS_WORDS } from "../page-words";
 import { RowText } from "../RowText";
 import { quoteLine } from "./quote-line";
 import type { TextThread } from "./text-threads";
-import { threadCommentNode } from "./thread-node";
+import { threadCommentNode, threadKindOf } from "./thread-node";
 
 /**
  * One thread on text as the column draws it beside its node (R4), and each node's sheet below
@@ -187,7 +187,7 @@ export function TextThreadCard({
 }): ReactNode {
   const card = thread.thread;
   const root = card.root.comment.id;
-  const kind = card.kind ?? "comment";
+  const kind = threadKindOf(card);
   const replyKey = marginReplySendKey(card.key);
   // The card's reply composer stands open from the load (R4), so it is handed no agents, and reads
   // no list of them for its mention picker, until the reader uses it: the focus in a composer of

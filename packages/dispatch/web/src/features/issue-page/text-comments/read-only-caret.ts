@@ -60,6 +60,20 @@ export function caretOnEnter(row: Element | null, kind: NodeType): boolean {
   return row !== null && ITEM_PLACE_KINDS[kind] === true && caretIn(row) !== null;
 }
 
+/**
+ * Whether `row` holds an editor that takes input: an element whose text is editable
+ * (`contenteditable="true"`) that is no read-only caret of this file's. The caret makes a row's
+ * words editable too, and the words that hold it are those `active` holds while it stands, so a
+ * reader of the row - the column, which leaves the marks of a row in its editor to the editor -
+ * tells the two apart by the caret's own record, not by the attributes it sets.
+ */
+export function hasLiveEditor(row: Element): boolean {
+  for (const editable of row.querySelectorAll<HTMLElement>('[contenteditable="true"]')) {
+    if (!active.has(editable)) return true;
+  }
+  return false;
+}
+
 /** Puts a read-only caret in `row`'s words element (`rowTextOf(row)`). Answers the function that
  *  takes the caret and its listeners away, or null where `row` has no words element or the
  *  element draws none of its node's text. */
