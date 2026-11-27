@@ -5392,8 +5392,37 @@ A replay of a run makes none again, a `--controls` trace makes none again and co
 
 A case's world also holds typed parts that a read a role makes through a tool answers from:
 the daemon's `claim`, `issue`, `entry`, `architect`, `records`, `admission` and `gate`, Dispatch's `issue.labels`, `issues` and `steps`, GitHub's `settings` and `branchRules`, and a pull request's `mergeStateStatus`, `autoMergeRequest`, `nodeId`, `diff` and `mergeResult`.
-They are parsed and documented in `heldout-case.ts` and are not yet served:
-neither lane R's stand-ins nor lane D's seeding reads them, and a read of such a fact answers as it did (404 where no record exists).
+`heldout-case.ts` parses and documents them, and both lanes serve each one.
+A read of a fact that no part holds answers as it did (404 where no record exists), and no lane invents a default for a part the world leaves out.
+
+- Lane R's daemon stand-in (`daemon-standin.ts`, with the rules in `daemon-standin-world.ts`) answers from the daemon parts.
+  `rig.sh` starts the stand-in and the pane on `daemon.claim`.
+  `read_record` and `read_state` answer each record, its architect claim's state, the claim's phase entry, the admission and the claim tree's gate.
+  A completion is held to the entry fence of `api/handoff.go`.
+  An architect's operations are held to the ownership rules of `api/architect.go` and `api/plan.go`, and `release_children` and `register_plan` read each issue from the run's Dispatch.
+  A release or a rerun writes each child todo as the project's daemon session, as `setDispatchStatus` does.
+
+- Lane R's seed (`seed.ts case-world`) files the other issues with their titles, parents, labels, statuses, `blocked_by` links, claims and board order, and the case's issue with its labels.
+  It writes each step run as the project's daemon writes it, and reads every fact back through the routes that `dispatch read` and `dispatch steps` read.
+  It writes the id the scratch Dispatch gives each gate step's document to `dispatch-fixture.json`, which the stand-in reads, and names that id in the prompt.
+
+- Lane R's GitHub (`case-world.ts githubFixtures`, which `gh-standin.ts` serves) answers the repository's read with the settings, each branch's rules (`[]` for a branch they do not name), and a pull request's node id, merge state, auto-merge request, GraphQL read, diff and merge from the world.
+
+- Lane D's seed (`teardown_effects_live_test.go`) writes the daemon parts into the real daemon's store and reads each back through `read_record` and `read_state`.
+  It admits the claim on `claim.issue` in `claim.tree`, writes the case's record, each record with its architect claim in its state, the phases row with its entry and owed task, a slot for each active issue and the gate rows.
+  It writes each world record whose writer is `claim.session` as the replay's own session.
+  It files and reads back the Dispatch parts as lane R's seed does.
+  Its GitHub fixture answers the daemon's reads with the settings, the branch rules and each pull request's merge state, auto-merge request and node id, and a merge queue change names its pull request by that node id.
+  A document a trace or a run names by the case's id or by lane R's scratch id is named by the id lane D's Dispatch gave it.
+
+- Each lane refuses its setup, naming the part, for a part it cannot serve: an architect claim in a state no claim has, a gate step the daemon gates none of, a gate document the claim tree's root does not hold, a step run with no role, and any member of a typed part's container that the lane has no seeding for.
+  A fact the read-back finds otherwise is the same setup failure.
+
+- Lane D takes a Dispatch write by a project daemon's session (`legion-daemon:<PROJECT>`) as an effect of a legion call, which its own real daemon makes again, and replays no such write.
+
+`internal/daemon/testdata/teardown-effects/typed-parts-cases.json` is T0's example with every typed part written onto its worlds, at values that leave its four traces answered as they record (its `.command` says how it was made).
+`--controls --cases` on it must seed and read back every part with no setup failure, and write the same four `replay.json` and `effects.json`, each `ok`, and every control the example promises.
+
 `internal/daemon/testdata/teardown-effects/local-only-head` is the public development control, on a child issue:
 the implementer commits with jj, and its first completion is refused by the tool with the phase unmoved while that commit is local only;
 its push, pull request and result follow, and its second completion is accepted.

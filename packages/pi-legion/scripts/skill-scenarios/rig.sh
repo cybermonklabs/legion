@@ -3007,12 +3007,16 @@ cmd_case_world() {
 # runs, holds the `dispatch` that dispatch-recorder.ts is, in front of the Envoy plugin's: it runs
 # the real CLI and records each invocation's exit and requests to $R/calls.jsonl, which outcome.ts
 # reads the role's Dispatch reads from. A plain session has no launcher directory, so its
-# `dispatch` is the plugin's and records nothing.
+# `dispatch` is the plugin's and records nothing. The claim is the world's `daemon.claim` where it
+# states one (a root architect's is on its tree's root), else the case's issue in the tree of its
+# Dispatch parent or its own. The stand-in reads the issues an architect's operation names from the
+# run's Dispatch, and the ids of the gate's documents from seed.ts case-world's
+# dispatch-fixture.json.
 case_legion_pane() {
   local role=$1 issue tree claim port repo branch project
   local -a answers=()
-  issue=$(jq -er .dispatch.issue.key "$R/launch-world.json")
-  tree=$(jq -er '.dispatch.issue | .parent // .key' "$R/launch-world.json")
+  issue=$(jq -er '.daemon.claim.issue // .dispatch.issue.key' "$R/launch-world.json")
+  tree=$(jq -er '.daemon.claim.tree // (.dispatch.issue | .parent // .key)' "$R/launch-world.json")
   repo=$(jq -er .repository "$R/launch.json")
   branch=$(jq -er .defaultBranch "$R/launch.json")
   claim=$role
@@ -3039,7 +3043,9 @@ case_legion_pane() {
   # which outcome.ts and lane D's replay count from, and not from the stand-in's own start.
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$R/state/secrets/boot" \
     "$project" "$issue" "$claim" "$repo" "$branch" --world "$R/launch-world.json" \
-    --clock-real "$R/clock-real.txt" --tree "$tree" --gh-calls "$R/calls.jsonl" "${answers[@]}"
+    --clock-real "$R/clock-real.txt" --tree "$tree" --gh-calls "$R/calls.jsonl" \
+    --case-dispatch "$R/dispatch-fixture.json" \
+    --dispatch "http://127.0.0.1:$dispatch_port" "$work/services/dispatch-token" "${answers[@]}"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   bun "$here/case-world.ts" pane "$R" "$co" "$port" "$profile" "$project" "$claim" "$issue" "$tree" \

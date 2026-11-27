@@ -398,16 +398,26 @@ type teardownEffectsTraceAction struct {
 	Change *teardownEffectsPullMutation
 }
 
+// teardownEffectsWorld is a case's world (heldout-case.ts World) as lane D seeds it, each typed part
+// of it (teardownEffectsDaemonParts, teardownEffectsDispatchIssue, teardownEffectsStepRun, the GitHub
+// parts) among them. Its decoding (teardown_effects_world_test.go) names in unserved each member of a
+// typed part's container that lane D has no seeding for, which start refuses as a setup failure.
 type teardownEffectsWorld struct {
 	Clock    time.Time
 	Dispatch struct {
-		Issue     struct{ Key, Title, Status, Spec, Parent string }
+		Issue struct {
+			Key, Title, Status, Spec, Parent string
+			// Labels is the issue's labels where the world states them, nil where it states none.
+			Labels *[]string
+		}
 		Documents []struct{ Name, Body string }
 		Handoffs  []struct {
 			Phase, Author string
 			Version       int
 			Body          json.RawMessage
 		}
+		Issues []teardownEffectsDispatchIssue
+		Steps  []teardownEffectsStepRun
 	}
 	Git *struct {
 		Commits []struct {
@@ -426,6 +436,11 @@ type teardownEffectsWorld struct {
 	GitHub *struct {
 		Repository   string
 		PullRequests []teardownEffectsPull
+		Settings     map[string]json.RawMessage
+		BranchRules  *[]struct {
+			Branch string
+			Rules  []json.RawMessage
+		}
 	}
 	Daemon *struct {
 		Phase phase.Phase
@@ -440,7 +455,9 @@ type teardownEffectsWorld struct {
 			OpenedAt, BoundAt time.Time
 			MergeCommit       string
 		}
+		teardownEffectsDaemonParts
 	}
+	unserved []string
 }
 
 var (
@@ -520,14 +537,19 @@ func teardownEffectsBarePointers(key, name, body string) string {
 }
 
 // teardownEffectsPull is one pull request of the scratch GitHub, as the case's world gives it
-// (heldout-case.ts PullRequest), and, once a change armed it, its auto-merge and its place in the
-// merge queue (teardownEffectsScratch.change), which no world records.
+// (heldout-case.ts PullRequest): with, where the world states them, GraphQL's merge state of it
+// (MergeStateStatus, `CLEAN`), its auto-merge request (AutoMergeRequest, JSON null for none), its
+// node id (NodeID), its diff and what a merge of it answers (MergeResult); and, once a change armed
+// it, its auto-merge and its place in the merge queue (teardownEffectsScratch.change), which no
+// world records.
 type teardownEffectsPull struct {
 	Number                                int
 	State, Base, Title, Body, MergeCommit string
 	Draft                                 bool
 	Head                                  struct{ Ref, SHA string }
 	Reviews                               []teardownEffectsReview
+	MergeStateStatus, NodeID, Diff        string
+	AutoMergeRequest, MergeResult         json.RawMessage
 	AutoMerge, Queued                     bool `json:"-"`
 }
 
@@ -2300,8 +2322,10 @@ func TestTeardownEffectsTakesCarriedKinds(t *testing.T) {
 
 // The case's world holds the typed parts a read answers from (heldout-case.ts: the daemon's claim,
 // issue, entry, architect, records, admission and gate; Dispatch's other issues and step runs;
-// GitHub's settings, branch rules and a pull request's merge state), and lane D reads a world with
-// them as it read the world without: it refuses none and seeds nothing from them yet.
+// GitHub's settings, branch rules and a pull request's merge state), and lane D reads each one
+// rather than dropping it in silence, as it did before it seeded them: a world with them reads
+// otherwise than the world without, part for part (teardown_effects_world_test.go seeds and holds
+// them).
 func TestTeardownEffectsReadsTheWorldParts(t *testing.T) {
 	t.Parallel()
 	plain := teardownEffectsExampleCases(t, nil)
@@ -2324,7 +2348,13 @@ func TestTeardownEffectsReadsTheWorldParts(t *testing.T) {
 		github["branchRules"] = []any{map[string]any{"branch": "main", "rules": []any{}}}
 		return cases
 	})
-	if !reflect.DeepEqual(plain, parts) {
-		t.Fatalf("a world holding every part reads as %+v, and the world without them as %+v", parts[0].World, plain[0].World)
+	if reflect.DeepEqual(plain, parts) {
+		t.Fatalf("a world holding every part reads as the world without them: %+v", parts[0].World)
+	}
+	read := parts[0].World
+	daemonParts := read.Daemon.teardownEffectsDaemonParts
+	if daemonParts.Claim == nil || daemonParts.Issue == nil || daemonParts.Entry == nil || daemonParts.Architect == nil || len(daemonParts.Records) != 1 || daemonParts.Admission == nil || len(daemonParts.Gate) != 1 ||
+		read.Dispatch.Issue.Labels == nil || len(read.Dispatch.Issues) != 1 || len(read.Dispatch.Steps) != 1 || read.GitHub.Settings == nil || read.GitHub.BranchRules == nil || len(read.unserved) != 0 {
+		t.Fatalf("a world holding every part reads as %+v, its daemon parts as %+v", read, daemonParts)
 	}
 }

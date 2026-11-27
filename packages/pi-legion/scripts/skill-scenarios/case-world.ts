@@ -45,7 +45,16 @@ interface Route {
   pages?: unknown[];
 }
 
-/** Compile the case's GitHub world to the recording stand-in's first-match route list. */
+/** Compile the case's GitHub world to the recording stand-in's first-match route list. Each pull
+ * request is answered as GitHub answers it: `gh pr view` and the REST read with its node id
+ * (`nodeId`, else `PR_<number>`), its merge state and its auto-merge request where the world
+ * states them (GraphQL's `mergeStateStatus` and `autoMergeRequest`, REST's `mergeable_state` and
+ * `auto_merge`), GraphQL's read of it (`repository.pullRequest`), `gh pr diff` with its `diff`,
+ * and a merge (`gh pr merge`, `PUT …/pulls/<n>/merge`) with its `mergeResult`. The repository's
+ * read (`GET repos/<repository>`) answers the world's `settings` over the stand-in's own members,
+ * and `GET repos/<repository>/rules/branches/<branch>` each branch's `branchRules`, `[]` for a
+ * branch they do not name, as GitHub answers a branch with no rules. A read of a fact no part
+ * holds matches no route, and the stand-in answers it 404 as GitHub does. */
 export function githubFixtures(github: World["github"], branch: string, issue: string) {
   const routes: Route[] = [];
   if (github === null) return { routes };
@@ -77,7 +86,8 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
       number: pr.number,
       url,
       html_url: url,
-      id: `PR_${pr.number}`,
+      id: pr.nodeId ?? `PR_${pr.number}`,
+      node_id: pr.nodeId ?? `PR_${pr.number}`,
       title: pr.title,
       body: pr.body,
       state: pr.state.toUpperCase(),
@@ -95,6 +105,15 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
       reviewDecision: approval ?? "",
       statusCheckRollup: rollup,
       mergeable: "MERGEABLE",
+      ...(pr.mergeStateStatus === undefined
+        ? {}
+        : {
+            mergeStateStatus: pr.mergeStateStatus,
+            mergeable_state: pr.mergeStateStatus.toLowerCase(),
+          }),
+      ...(pr.autoMergeRequest === undefined
+        ? {}
+        : { autoMergeRequest: pr.autoMergeRequest, auto_merge: pr.autoMergeRequest }),
     };
   });
   for (const entry of mergeQueue) {
@@ -121,6 +140,18 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
           )
           .join("\n"),
       },
+      ...(pr.diff === undefined
+        ? []
+        : [{ match: `^gh pr diff(?=.* ${selector}(?: |$))`, stdout: pr.diff }]),
+      ...(pr.mergeResult === undefined
+        ? []
+        : [
+            { match: `^gh pr merge(?=.* ${selector}(?: |$))`, stdout: pr.mergeResult },
+            {
+              match: `^gh api (?=.*${rest}/merge(?: |$))(?=.*(?:-X|--method)[ =]PUT(?: |$))`,
+              stdout: pr.mergeResult,
+            },
+          ]),
       { match: `^gh api .*${rest}/reviews(?: |$)`, stdout: view?.reviews },
       { match: `^gh api .*${rest}/comments(?: |$)`, stdout: [] },
       {
@@ -160,10 +191,43 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
         },
       },
     }));
-    routes.push({
-      match: `^gh api .*graphql(?=.*reviewThreads)${pullRequests.length === 1 ? "" : `(?=.*(?:number:\\s*|number=)${n}\\b)`}`,
-      pages,
-    });
+    const numbered = pullRequests.length === 1 ? "" : `(?=.*(?:number:\\s*|number=)${n}\\b)`;
+    routes.push(
+      { match: `^gh api .*graphql(?=.*reviewThreads)${numbered}`, pages },
+      // GraphQL's read of the pull request (`repository.pullRequest`): no mutation, which the
+      // merge queue's routes and gh-standin's change rules answer.
+      {
+        match: `^gh api .*graphql(?!.*\\bmutation\\b)(?=.*\\bpullRequest\\s*\\()${numbered}`,
+        stdout: {
+          data: {
+            repository: {
+              pullRequest: view && {
+                id: view.id,
+                number: view.number,
+                url: view.url,
+                title: view.title,
+                body: view.body,
+                state: view.state,
+                isDraft: view.isDraft,
+                merged: view.merged,
+                headRefName: view.headRefName,
+                headRefOid: view.headRefOid,
+                baseRefName: view.baseRefName,
+                mergeCommit: view.mergeCommit,
+                mergeable: view.mergeable,
+                reviewDecision: view.reviewDecision,
+                ...(pr.mergeStateStatus === undefined
+                  ? {}
+                  : { mergeStateStatus: pr.mergeStateStatus }),
+                ...(pr.autoMergeRequest === undefined
+                  ? {}
+                  : { autoMergeRequest: pr.autoMergeRequest }),
+              },
+            },
+          },
+        },
+      }
+    );
   }
   for (const sha of new Set(pullRequests.flatMap((pr) => pr.checks.map(({ commit }) => commit)))) {
     const runs = pullRequests.flatMap((pr) => pr.checks.filter(({ commit }) => commit === sha));
@@ -203,15 +267,28 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
       match: `^gh api .*repos/${repo}/pulls(?: |$)`,
       stdout: pulls.filter((p) => p.state === "OPEN"),
     },
+    // The repository's read: the world's settings over the stand-in's own members.
     {
       match: `^gh api .*repos/${repo}(?: |$)`,
-      stdout: { default_branch: branch, full_name: repository },
+      stdout: { default_branch: branch, full_name: repository, ...github.settings },
     },
+    // A branch's rules, `[]` for a branch the world names none of, once the world states them.
+    ...(github.branchRules ?? []).map((rules) => ({
+      match: `^gh api .*repos/${repo}/rules/branches/${RegExp.escape(rules.branch)}(?:[ ?]|$)`,
+      stdout: rules.rules,
+    })),
+    ...(github.branchRules === undefined
+      ? []
+      : [{ match: `^gh api .*repos/${repo}/rules/branches/[^ ?]+(?:[ ?]|$)`, stdout: [] }]),
     { match: "^gh (api user|auth status)", stdout: { login: "rig[bot]" } }
   );
   const issuePr = pulls.find((pr) => pr.headRefName === `legion/${issue}`);
   if (issuePr) {
+    const world = pullRequests.find((pr) => pr.number === issuePr.number);
     routes.push({ match: "^gh pr view( |$)", stdout: issuePr });
+    if (world?.diff !== undefined) routes.push({ match: "^gh pr diff( |$)", stdout: world.diff });
+    if (world?.mergeResult !== undefined)
+      routes.push({ match: "^gh pr merge( |$)", stdout: world.mergeResult });
     routes.push({ match: "^gh pr (edit|comment|review|ready)( |$)", stdout: issuePr.url });
   }
   return { routes };
