@@ -75,8 +75,9 @@ const STILL_PX = 1;
  *
  * With nothing that can move the target - no diagram waiting, and a `drawn` whose height never
  * changes - it does not run again and the target is pulsed once. A caller with no drawn root to
- * name (a reading column, whose scroll container keeps its own size whatever its content does)
- * passes none and waits on the diagrams alone.
+ * name passes none and waits on the diagrams alone. A reading column's scroll container keeps its
+ * own size whatever its content does, so it names the document drawn inside it
+ * (`scrollBlockToTop`).
  *
  * It runs only while nobody but the page itself has moved the page since this was called, so a
  * reader who moved on is never pulled back. Five things end it, and the first four are all "the
@@ -143,9 +144,8 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
   let sizes: ResizeObserver | undefined;
   // The drawn document, which is also what says whose scroll a scroll is and whose selection a
   // selection is: the box carrying it is what every correction moves, and the selection that
-  // ends this is one inside it. A caller with no drawn root (`scrollBlockToTop`, a reading
-  // column whose own box keeps its size) names neither, and keeps the reader's own actions and
-  // the limit as its only stops.
+  // ends this is one inside it. A caller with no drawn root names neither, and keeps the
+  // reader's own actions and the limit as its only stops.
   const root = drawn instanceof HTMLElement ? drawn : undefined;
   /** The events this watch reads by the table of the reader's inputs. A watch with a drawn root
    *  reads a scroll for itself (`scrolled`, below): where its own correction, a keeper's write

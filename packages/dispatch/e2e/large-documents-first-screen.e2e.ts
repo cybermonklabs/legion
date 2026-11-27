@@ -30,6 +30,7 @@ import { LONGEST_WAIT_FOR_THE_DOCUMENT_MS } from "../web/src/features/doc/first-
 import { subscribeSession } from "./agents";
 import { createAsk } from "./api";
 import { documentEditor, documentTransport, editorBeingBuilt } from "./editor";
+import { issueDetailsButton, openIssueDetails } from "./issue-details";
 import {
   documentDiagrams,
   documentTitle,
@@ -498,12 +499,16 @@ test("the reads the first editable block needs none of go out after the editor's
 
     // The page is up and the reader has the document's own draw. The header waits for the
     // batch too now (`web/src/features/doc/AfterTheFirstBatch.tsx`), so the reader reaches for
-    // its box, which draws it: every panel the held reads belong to is then on the page, and
-    // each of those reads still waits, because each has a gate of its own.
+    // its box, which draws it, and opens its Details, where the Subscribers toggle and the
+    // components stand (`HeaderDetails`, dispatch://INFRA-5200): every panel the held reads
+    // belong to is then on the page, and each of those reads still waits, because each has a
+    // gate of its own. Details is a disclosure the panels stay mounted in while it is shut, so
+    // opening it starts no read.
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeVisible({
       timeout: aDrawWithinMs,
     });
     await page.getByTestId("issue-header-box").click({ position: { x: 5, y: 5 } });
+    await openIssueDetails(page);
     await expect(page.getByRole("button", { name: /^Subscribers/ })).toBeVisible();
     await expect(page.locator('[data-testid="issue-components"]')).toBeVisible();
     // A read that never goes out cannot be awaited, so the row waits the settled window: a read
@@ -578,9 +583,11 @@ test("a reader who opens a panel before the first batch has its read started the
     await documentTransport(page, { holding: true });
     await page.goto(path);
 
-    // The header waits for the batch too, so the reader reaches for its box first; the panel
-    // inside it is still shut, and its read still held.
+    // The header waits for the batch too, so the reader reaches for its box first, and opens
+    // its Details, where the Subscribers toggle stands (`HeaderDetails`, dispatch://INFRA-5200);
+    // the panel the toggle opens is still shut, and its read still held.
     await page.getByTestId("issue-header-box").click({ position: { x: 5, y: 5 } });
+    await openIssueDetails(page);
     const toggle = page.getByRole("button", { name: /^Subscribers/ });
     await expect(toggle).toBeVisible({ timeout: aDrawWithinMs });
     // The settled window: only time shows that the subscribers read nobody made is a read
@@ -641,6 +648,10 @@ test("a page with no document on it makes those reads as it always did @phone", 
     const page = await alice.newPage();
     await watchTheReads(page);
     await page.goto(`/issues/${issueKey}/conversation`);
+    // The Subscribers toggle stands in the header's Details (`HeaderDetails`,
+    // dispatch://INFRA-5200), which the reader opens once the header is drawn.
+    await expect(issueDetailsButton(page)).toBeVisible({ timeout: aDrawWithinMs });
+    await openIssueDetails(page);
     await expect(page.getByRole("button", { name: /^Subscribers/ })).toBeVisible({
       timeout: aDrawWithinMs,
     });
@@ -715,8 +726,11 @@ test("a panel arriving while the reader is in a long document moves what they ar
     await expect(documentEditor(page)).toBeVisible({ timeout: aLongDrawWithinMs });
     await withoutScrollAnchoring(page);
 
-    // The reader opens the panel - its read is still held, so it is the empty frame of itself -
-    // and reads their way down to the landmark, which is where they are when it lands.
+    // The reader opens the header's Details, where the Subscribers toggle stands
+    // (`HeaderDetails`, dispatch://INFRA-5200), then the panel - its read is still held, so it
+    // is the empty frame of itself - and reads their way down to the landmark, which is where
+    // they are when it lands.
+    await openIssueDetails(page);
     await page.getByRole("button", { name: "Subscribers", exact: true }).click();
     const landmark = documentEditor(page).getByRole("heading", { name: landmarkText });
     await landmark.scrollIntoViewIfNeeded();

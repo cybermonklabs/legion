@@ -4,8 +4,9 @@ import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { answerAsk, createAsk, createComment, createIssue, createProject, resolveAsk } from "./api";
 import { recordClipboard } from "./clipboard";
 import { documentEditor, indexedBlockAsk } from "./editor";
-import { askCard, inboxRow } from "./inbox-pane";
+import { askCard, inboxRow, readingView } from "./inbox-pane";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
+import { hasReadingPane } from "./reading-pane";
 import { openRefPicker, pickReference } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { pasteFile } from "./sends";
@@ -592,7 +593,17 @@ test("the open picker owns the arrows and Enter inside an Inbox ask card @phone"
     await expect(field).toHaveValue(PLANNER_MENTION);
     await expect(list).toHaveCount(0);
     await expect(field).toBeFocused();
-    await expect(inboxRow(page, ask.id)).toBeVisible();
+    // Nor did the arrows or the Enter move the Inbox: beside the reading column the question's
+    // row is still on the screen and the one selected, and below the column's width, where the
+    // Inbox reads the open row in place of the list (INFRA-5200), the reading view still reads
+    // this question.
+    if (hasReadingPane(page)) {
+      await expect(inboxRow(page, ask.id)).toBeVisible();
+      await expect(inboxRow(page, ask.id)).toHaveAttribute("data-inbox-selected", "true");
+    } else {
+      await expect(readingView(page)).toBeVisible();
+      await expect(readingView(page)).toHaveAttribute("data-inbox-reading-row", ask.id);
+    }
   } finally {
     await alice.close();
   }

@@ -12,8 +12,10 @@ import {
 } from "./api";
 import { holdFirstRequest } from "./editor";
 import { nextFrames } from "./frames";
-import { askCard, inboxPane, paneScroller, selectedRow } from "./inbox-pane";
+import { drawer, peekTrigger } from "./inbox-drawer";
+import { inboxPane, paneScroller, selectedRow, selectRow } from "./inbox-pane";
 import { READING_PANE_WIDTH } from "./reading-pane";
+import { navigateInApp } from "./sends";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -429,11 +431,13 @@ test("the reading-pane row for an approval request with replies on its ask: each
 });
 
 // A reply the reader types in the approval request's reply box, in the reading pane, and has not
-// sent is a draft of a reply on an open ask. Where the window narrows below the reading column the
-// same request is drawn as a card, and the card must not read that draft as a reply typed under a
-// settled ask that has since opened again: that note says the reply "was not sent" and stands in
-// the composer's place, though nothing settled and nothing was refused (INFRA-341, testing round
-// 17, at 1808df5f).
+// sent is a draft of a reply on an open ask. Wherever else the same request is drawn, no drawing
+// may read that draft as a reply typed under a settled ask that has since opened again: that note
+// says the reply "was not sent" and stands in the composer's place, though nothing settled and
+// nothing was refused (INFRA-341, testing round 17, at 1808df5f, where the Inbox drew the request
+// as a card below the reading column). Below the column the Inbox now reads the open row in place
+// of the list, in the column's own pane (INFRA-5200), and the request is drawn as a card in the
+// Inbox drawer, at every width: the row reads both.
 test("a reply typed in the approval pane and not sent is not read as a reply to a question that opened again", async ({
   browser,
 }) => {
@@ -451,20 +455,36 @@ test("a reply typed in the approval pane and not sent is not read as a reply to 
     const box = thread.getByRole("textbox", { name: "Reply" });
     await box.fill(draft);
     await expect(box).toHaveValue(draft);
+    // The box a drawing of the ask draws a reply it reads as unsent in, by the id it gives that
+    // box (`UnsentReply`, web/src/features/inbox/AskThread.tsx), and the note that box says.
+    const unsent = async () => {
+      await nextFrames(page);
+      await expect(page.getByTestId("ask-unsent-reply")).toHaveCount(0);
+      await expect(page.getByText(/opened again before you sent your reply/)).toHaveCount(0);
+    };
 
+    // Below the column, the reading view draws the same pane: its box holds the draft.
     await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
-    const card = await askCard(page, seed.askId);
+    await selectRow(page, seed.askId);
+    await expect(box, "the reading view's reply box holds the draft").toHaveValue(draft);
+    await unsent();
+
+    // The drawer draws the request as its card, over another page: the card reads the draft
+    // and says nothing of a reply that was not sent.
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH });
+    await navigateInApp(page, `/issues/${seed.issueKey}`);
+    await peekTrigger(page).click();
+    const card = drawer(page).getByTestId(`ask-${seed.askId}`);
     await expect(card).toBeVisible();
     await expect(card.getByRole("radio", { name: /^Approve/ })).toBeVisible();
-    await nextFrames(page);
-    // The box a card draws a reply it reads as unsent in, by the id it gives that box
-    // (`UnsentReply`, web/src/features/inbox/AskThread.tsx), and the note that box says.
-    await expect(page.getByTestId("ask-unsent-reply")).toHaveCount(0);
-    await expect(page.getByText(/opened again before you sent your reply/)).toHaveCount(0);
+    await unsent();
+    await page.keyboard.press("Escape");
+    await expect(drawer(page)).toHaveCount(0);
 
     // The draft is still the ask's, so the card had a draft to read: the pane drawn again
     // holds it in its box.
-    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH });
+    await navigateInApp(page, inboxAt(seed.askId));
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.askId);
     await expect(box, "the pane's reply box keeps the draft").toHaveValue(draft);
   } finally {
     await alice.close();

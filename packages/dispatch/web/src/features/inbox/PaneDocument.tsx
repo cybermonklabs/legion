@@ -361,8 +361,11 @@ function useDocumentAtBlock({
     const column = scroller.current;
     if (column !== null) {
       // The reader's own placement: the column is theirs from here, so the section's is over.
+      // The drawn document is what the skip's re-run watches, so the blocks the skip brings into
+      // view, painting at their own height, put the block back at the top rather than push it
+      // down the column (`scrollBlockToTop`).
       placement.current?.hold.release();
-      scrollBlockToTop(blockId, column);
+      scrollBlockToTop(blockId, column, content.current ?? undefined);
     }
   }, [blockId]);
 

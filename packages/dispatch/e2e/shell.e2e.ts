@@ -189,13 +189,21 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
       seen.push({ type: `visibilitychange:${document.visibilityState}` })
     );
   });
+  // Each document the tab loads, counted by its DOMContentLoaded rather than its `load`. The
+  // page asks for the document's transport while it boots (`openDocumentEarly`,
+  // `web/src/features/doc/open-document-early.ts`, dispatch://INFRA-341 R11), so the chunk this
+  // row holds can be asked for before the document's `load` has fired, and a held request the
+  // document is still loading holds `load` with it: in CI run 45994800355
+  // (`firefox-download-navigation`, flaky) that chunk was the one request left unanswered, and
+  // `page.goto`, which waited for `load`, timed out before the row had begun. DOMContentLoaded
+  // waits for the entry's own script and for nothing the page asks for after it.
   let loads = 0;
-  page.on("load", () => {
+  page.on("domcontentloaded", () => {
     loads += 1;
   });
 
   try {
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(`/issues/${issue.key}/spec`, { waitUntil: "domcontentloaded" });
     const held = await transportCode.held;
     // The tab strip is drawn after the editor's first batch now
     // (`web/src/features/doc/AfterTheFirstBatch.tsx`, dispatch://INFRA-341 R11), and the batch

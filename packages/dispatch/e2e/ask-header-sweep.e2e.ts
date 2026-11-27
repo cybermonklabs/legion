@@ -1,4 +1,4 @@
-import { type Browser, expect, type Locator, test } from "@playwright/test";
+import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   answerAsk,
@@ -23,7 +23,7 @@ import {
 } from "./ask-header-rows";
 import { expectRootFont, LARGE_FONT, setDefaultFont, XL } from "./default-font";
 import { documentEditor, indexedBlockAsk, marginCard, setSheet } from "./editor";
-import { askCard } from "./inbox-pane";
+import { askCard, inboxPane, inboxRow, readingView } from "./inbox-pane";
 import { asUser } from "./users";
 
 /**
@@ -414,6 +414,22 @@ async function readsAtLargeFont(header: Locator, compact: boolean): Promise<void
   else await expect(copy).not.toHaveCSS("min-height", "44px");
 }
 
+/** The question's card under the Inbox's reading column at `LARGE_FONT`: the Inbox lists short
+ *  rows there and reads the row a reader opens in place of the list (INFRA-5200), so this opens
+ *  the row's reading view, from the list, and answers the card the view draws. `askCard` reads
+ *  which of the two the page draws off the viewport's width against the 16 px default's
+ *  1280 px (`READING_PANE_WIDTH`), where the column stands from `XL * LARGE_FONT` px here. */
+async function cardInReadingView(page: Page, askId: string): Promise<Locator> {
+  const view = readingView(page);
+  if ((await view.count()) > 0) {
+    await view.getByRole("button", { exact: true, name: "Back to the Inbox list" }).click();
+    await expect(view).toHaveCount(0);
+  }
+  await inboxRow(page, askId).locator("time").first().click();
+  await expect(view.and(page.locator(`[data-inbox-reading-row="${askId}"]`))).toBeVisible();
+  return inboxPane(page).getByTestId(`ask-${askId}`);
+}
+
 // SLOW(>=2s): six asks seeded, then on each side of `xl` the Inbox, the Conversation and the
 // issue page each loaded once, and eleven headers read at six widths each.
 test("at a 20 px default font the cards' and records' headers hold their layout just under and at each width it switches at, on both sides of xl", async ({
@@ -437,9 +453,9 @@ test("at a 20 px default font the cards' and records' headers hold their layout 
         ["an agent's turn", theirs],
       ] as const) {
         // The Inbox's reading column shows from `xl` (`READING_PANE_QUERY`), where `askCard`
-        // selects the row and reads its card there. Under it each row holds its own card, read
-        // here directly: `askCard` takes the column to show from 1280 px, the 16 px default's.
-        const host = compact ? page.getByTestId(`ask-${ask.id}`) : await askCard(page, ask.id);
+        // selects the row and reads its card there. Under it the Inbox reads the row a reader
+        // opens in place of the list, and the card is that view's (`cardInReadingView`).
+        const host = compact ? await cardInReadingView(page, ask.id) : await askCard(page, ask.id);
         const header = host.locator("[data-ask-header]").first();
         await readsAtLargeFont(header, compact);
         await holdsAt(header, card(true), widths, `the Inbox card, ${state}, ${at}`);
