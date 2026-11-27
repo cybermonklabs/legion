@@ -903,6 +903,20 @@ const legionCloseWait = z.object({
   unread: z.object({ cause: z.string().optional(), since: timestamp.optional() }).optional(),
 });
 
+/** `api.BranchRefusedView` — an issue's branch row that GitHub, or the deployment's private-name
+ * rules, refused in a way a retry meets again (the branch-refused entry): the outbox row, what it
+ * wrote (`create` or `move`), the refusal's kind, the row's error and when it was refused. Each
+ * word is a string and not an enum, so a kind a later daemon adds is read rather than refused, and
+ * the reader takes every member as optional, since no plugin code reads them
+ * (LEGION_ANSWER_READS). */
+const legionBranchRefused = z.object({
+  row: z.number().int().nonnegative().optional(),
+  write: z.string().optional(),
+  kind: z.string().optional(),
+  reason: z.string().optional(),
+  at: timestamp.optional(),
+});
+
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
@@ -1125,6 +1139,10 @@ const legionIssue = z.object({
    * every issue of the body the route serves a caller below the entry, which is why a reader takes
    * it as optional. */
   closeWait: legionCloseWait.optional(),
+  /** The refusal for good of the issue's branch row at its generation (the branch-refused entry,
+   * `legionBranchRefused`): present only while one stands, and absent from every issue of the body
+   * the route serves a caller below the entry, which is why a reader takes it as optional. */
+  branchRefused: legionBranchRefused.optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, its boot history, and

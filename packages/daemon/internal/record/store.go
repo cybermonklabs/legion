@@ -3824,8 +3824,9 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // issue, so a done run while the publish backs off for its retry would leave the document saying
 // the closed issue still waits. A start of an issue's role waits while an older
 // issue_branch row of the issue is unfinished, so no role starts before its issue's branch exists
-// on GitHub (IssueBranch), and a create GitHub keeps refusing holds the issue's roles back while
-// the row retries. A start of an issue's role also waits while an older issue_release row of the
+// on GitHub (IssueBranch), and a create GitHub keeps failing holds the issue's roles back while the
+// row retries, until it passes or a refusal for good ends it (internal/daemon's permanentRefusal).
+// A start of an issue's role also waits while an older issue_release row of the
 // issue is in the outbox, and, once that release is committed, while its teardown row is, whatever
 // the start's age, so no role starts in the pod the release's teardown is about to take
 // (IssueRelease). And a start marked as waiting for the issue's admission slot
