@@ -5,21 +5,20 @@
 # takes its name; the `ok N - name`, `not ok` and `<name>: PASS` forms are cases too; a harness
 # that exited other than 0 always has a failing harness row with its exit status, from its last
 # case line to its end, however its cases went, and one that exited 0 has a passing one when its
-# end is more than 0.05 s after its last case line; a harness's end is its `.ended`, and its
-# `.started` plus its wall seconds only when it has no `.ended`; a log with no case line is one
+# end, its `.ended`, is more than 0.05 s after its last case line; a log with no case line is one
 # harness row for the whole harness; a job that ran no pool wait step prints nothing, while every
 # other job is still read, and one still running, or cancelled with its cancelled-job step run,
 # counts as one that ran; a job whose pool held no harness, its `judged` 0, prints nothing either;
 # and whatever the record cannot tell is an UNKNOWN row and exit 1, never a row left out: a job
 # whose artifact is missing, holds no `judged` that is a whole number, or holds a number of
 # entries other than its `judged`, a harness that never took a slot or has no exit status, an
-# `.ended` that is no finite number or earlier than the harness's start, records missing,
-# unfinished by the stamper, torn or not adding up to the log, a record that is not a time and a
-# line, and times that are no finite number or run backwards; one such row alone is enough for
-# exit 1, and each UNKNOWN row of a harness whose `.exit` was read carries that status. With no
-# UNKNOWN row, a failing row is exit 3, and only a run whose every row passed is exit 0. With
-# --run it reads through gh, every page of 100 of the jobs and of the artifacts, and leaves no
-# download behind.
+# `.exit` with no `.ended`, an `.ended` that is no finite number or earlier than the harness's
+# start, records missing, unfinished by the stamper, torn or not adding up to the log, a record
+# that is not a time and a line, and times that are no finite number or run backwards; one such
+# row alone is enough for exit 1, and each UNKNOWN row of a harness whose `.exit` was read carries
+# that status, while a case row carries none. With no UNKNOWN row, a failing row is exit 3, and
+# only a run whose every row passed is exit 0. With --run it reads through gh, every page of 100
+# of the jobs and of the artifacts, and leaves no download behind.
 #
 # Every fixture is written here by hand, record by record, so each time and byte count a case
 # checks is one it chose. The reader's `--run` path is driven through a stand-in `gh` on PATH
@@ -41,8 +40,9 @@ trap 'rm -rf "$work"' EXIT
 
 # entry <artifact dir> <NNN> <harness> <started> <exit> <wall> [<time> <line>]...: a harness's
 # complete record. Its command returned <wall> seconds after it started, so its .ended is the
-# sum. The stamper read the whole log, so .lines.end and .logbytes both hold the bytes its lines
-# stand for, each line's bytes and the newline after it.
+# sum; its .seconds holds <wall> too, as the recorder writes it, though the reader reads only
+# .ended. The stamper read the whole log, so .lines.end and .logbytes both hold the bytes its
+# lines stand for, each line's bytes and the newline after it.
 entry() {
   local d=$1 n=$2 bytes
   mkdir -p "$d"
@@ -316,7 +316,12 @@ ended "$d" 012 soon
 entry "$d" 013 .github/scripts/early-ended.test.sh 1764000100.000000000 1 1.0 \
   1764000100.250000 '  PASS: a case of a harness that ended before it started'
 ended "$d" 013 1764000099.500000000
-judged "$d" 14
+# Its .exit was written but its .ended was not, as a failed write of .ended leaves it. Its
+# .seconds still says 1.0, and its one case line is whole.
+entry "$d" 014 .github/scripts/no-ended.test.sh 1764000100.000000000 1 1.0 \
+  1764000100.250000 '  PASS: a case of a harness whose end was not written'
+rm "$d/014.ended"
+judged "$d" 15
 # Its wait found three harnesses; two arrived, each complete.
 entry "$a/harness-times-205" 000 .github/scripts/part-one.test.sh 1764000100.000000000 0 1.0 \
   1764000100.250000 '  PASS: a case of a part that arrived'
@@ -330,9 +335,7 @@ entry "$a/harness-times-207" 000 .github/scripts/unjudged.test.sh 1764000100.000
   1764000100.250000 '  PASS: a case beside no judged'
 # Each of job 208's harnesses is complete but for its times. The first's second record is earlier
 # than its first, the second's first record earlier than its start, the third's time 400 digits
-# long, past any float; the fourth's .started and the fifth's wall seconds are 400 digits too, and
-# the fifth has no .ended, as an artifact from before the recorder uploaded it. The fifth's one
-# case line is whole, but when the harness ended, and so what its last row holds, is not known.
+# long, past any float, and the fourth's .started 400 digits too.
 d="$a/harness-times-208"
 huge=$(printf '1%0399d' 0)
 entry "$d" 000 .github/scripts/backwards.test.sh 1764000100.000000000 0 3.0 \
@@ -343,10 +346,7 @@ entry "$d" 001 .github/scripts/before-start.test.sh 1764000100.000000000 0 1.0 \
 entry "$d" 002 .github/scripts/infinite-stamp.test.sh 1764000100.000000000 0 1.0 \
   "$huge" '  PASS: a case stamped past any float'
 entry "$d" 003 .github/scripts/infinite-start.test.sh "$huge" 0 1.0
-entry "$d" 004 .github/scripts/infinite-wall.test.sh 1764000100.000000000 2 "$huge" \
-  1764000100.250000 '  PASS: a case of a harness whose end is not known'
-rm "$d/004.ended"
-judged "$d" 5
+judged "$d" 4
 read_run --from-dir "$a" --jobs-json "$m/jobs.json"
 
 echo "case: a pool job whose artifact is absent is one UNKNOWN row for the job, and the exit status is 1"
@@ -368,6 +368,9 @@ echo "case: a harness whose .ended is no finite number, or is earlier than its .
 check "one UNKNOWN row for bad-ended.test.sh, whose .ended is 'soon', and no case of it" "$(is "$(pick harness=.github/scripts/bad-ended.test.sh case status kind why)" $'null\tunknown\tunknown\tits 012.ended is not a finite number of seconds, so when it ended is not known')"
 check "one UNKNOWN row for early-ended.test.sh, whose .ended is half a second before its start" "$(is "$(pick harness=.github/scripts/early-ended.test.sh case status kind why)" $'null\tunknown\tunknown\tits 013.ended 1764000099.500000 is earlier than its start 1764000100.000000 in its 013.started')"
 
+echo "case: a harness with an .exit and no .ended is one UNKNOWN row with its exit, and no case row or harness row"
+check "exactly one row for no-ended.test.sh, UNKNOWN, with its exit 1 and a why saying its end is not known" "$(is "$(pick harness=.github/scripts/no-ended.test.sh case status kind exit why)" $'null\tunknown\tunknown\t1\tit has no 014.ended, so when it ended is not known')"
+
 echo "case: a harness whose .logbytes is missing, as the wait leaves one whose log grew after its stamper finished, is one UNKNOWN row"
 check "one UNKNOWN row for no-logbytes.test.sh, and no case of it" "$(is "$(pick harness=.github/scripts/no-logbytes.test.sh case status kind)" $'null\tunknown\tunknown')"
 check "its why names the missing file" "$(contains "$(pick harness=.github/scripts/no-logbytes.test.sh why)" '^its 011.logbytes is missing')"
@@ -381,7 +384,7 @@ check "records that do not add up: lost-middle.test.sh, exit 2" "$(is "$(pick ha
 check "a torn .lines: torn.test.sh, exit 1" "$(is "$(pick harness=.github/scripts/torn.test.sh status exit)" $'unknown\t1')"
 check "an .ended that is no number: bad-ended.test.sh, exit 1" "$(is "$(pick harness=.github/scripts/bad-ended.test.sh status exit)" $'unknown\t1')"
 check "an .ended before the start: early-ended.test.sh, exit 1" "$(is "$(pick harness=.github/scripts/early-ended.test.sh status exit)" $'unknown\t1')"
-check "no .ended and wall seconds that are no number: infinite-wall.test.sh, exit 2" "$(is "$(pick harness=.github/scripts/infinite-wall.test.sh status exit)" $'unknown\t2')"
+check "no .ended: no-ended.test.sh, exit 1" "$(is "$(pick harness=.github/scripts/no-ended.test.sh status exit)" $'unknown\t1')"
 check "and a harness with no .exit carries none" "$(is "$(pick harness=.github/scripts/no-exit.test.sh status exit)" $'unknown\tnull')"
 
 echo "case: records that do not add up to the bytes the stamper read are one UNKNOWN row naming both counts"
@@ -432,7 +435,6 @@ check "its why names record 1, its time and the harness's start" "$(contains "$(
 check "one UNKNOWN row for infinite-stamp.test.sh" "$(is "$(pick harness=.github/scripts/infinite-stamp.test.sh case status kind)" $'null\tunknown\tunknown')"
 check "its why names record 1 and says its time is no finite number" "$(contains "$(pick harness=.github/scripts/infinite-stamp.test.sh why)" 'record 1 of its 002.lines has a time of 400 digits, 10000000000000000000..., which is no finite number of seconds')"
 check "one UNKNOWN row for infinite-start.test.sh, whose .started is no finite number" "$(is "$(pick harness=.github/scripts/infinite-start.test.sh case status kind why)" $'null\tunknown\tunknown\tits 003.started is not a finite number of seconds')"
-check "one UNKNOWN row for infinite-wall.test.sh, which has no .ended and whose wall seconds are no finite number, and no case" "$(is "$(pick harness=.github/scripts/infinite-wall.test.sh case status kind why)" $'null\tunknown\tunknown\tit has no 004.ended and its 004.seconds gives no finite number of wall seconds, so when it ended is not known')"
 check "every line it printed is JSON with no Infinity or NaN in it" "$(is "$(strict_json)" ok)"
 check "and the run printed one row for each of the seven jobs whose record is lost or unreadable, each of the nineteen harnesses of jobs 202 and 208, and the time after the last case of the two of them that are whole" "$(is "$(count_rows)" 28)"
 
@@ -475,10 +477,10 @@ check "and printed exactly one row" "$(is "$(count_rows)" 1)"
 # then exited 1; the stamper read that line in its drain, after the command returned, so the
 # line's time is past its .ended. Job 503's harnesses exited 0: the first ended two seconds after
 # its last case line, the second 0.06 s after it, the third 0.05 s after it, and the fourth before
-# it. The next two are the review's probe, each with wall seconds of 2.0: the first ended 0.02 s
-# after its last case line, where its wall seconds put the end 0.06 s after it, and the second
-# 0.08 s after it, where they put it 0.04 s after. The last has no .ended, as an artifact from
-# before the recorder uploaded it. Job 504 ran a pool and has no artifact.
+# it. The last two are records whose .ended and whose wall seconds, 2.0 for both, fall on opposite
+# sides of the 0.05 s: the first's .ended is 0.02 s after its last case line, where its wall
+# seconds put the end 0.06 s after it, and the second's 0.08 s after it, where they put it 0.04 s
+# after. Job 504 ran a pool and has no artifact.
 m="$work/exits"
 a="$m/artifacts"
 mkdir -p "$a"
@@ -509,10 +511,7 @@ ended "$a/harness-times-503" 004 1764000601.960000000
 entry "$a/harness-times-503" 005 .github/scripts/probe-late.test.sh 1764000610.000000000 0 2.0 \
   1764000611.960000 '  PASS: a check 0.08 s before its end'
 ended "$a/harness-times-503" 005 1764000612.040000000
-entry "$a/harness-times-503" 006 .github/scripts/no-ended.test.sh 1764000620.000000000 0 2.0 \
-  1764000621.500000 '  PASS: a check of an artifact with no .ended'
-rm "$a/harness-times-503/006.ended"
-judged "$a/harness-times-503" 7
+judged "$a/harness-times-503" 6
 
 echo "case: a harness its bound stopped after two passing cases prints both, then a failing row from its last case line to its end with its exit status, and the reader exits 3"
 read_run --from-dir "$a" --jobs-json "$m/jobs.json" --job 501
@@ -532,14 +531,11 @@ check "0.06 s after it, a row of those 0.06 s" "$(is "$(pick harness=.github/scr
 echo "case: a harness that exited 0 and whose .ended is 0.05 s or less after its last case line, or before it, has no row after it, and a run whose every row passed exits 0"
 check "0.05 s after it, its case row alone" "$(is "$(pick harness=.github/scripts/poll-end.test.sh case status kind)" $'a check one poll before its end\tpass\tcase')"
 check "before it, its case row alone" "$(is "$(pick harness=.github/scripts/line-end.test.sh case status kind)" $'a check in the poll of its end\tpass\tcase')"
-check "the job printed its 7 case rows and its 4 harness rows, and exits 0" "$(is "$status:$(count_rows)" 0:11)"
+check "the job printed its 6 case rows and its 3 harness rows, and exits 0" "$(is "$status:$(count_rows)" 0:9)"
 
-echo "case: the time after a harness's last case line is measured to its .ended, not to its wall seconds, which are rounded to a tenth"
+echo "case: the time after a harness's last case line is measured to its .ended, never to the wall seconds its .seconds also holds"
 check "0.02 s to its .ended, where its wall seconds say 0.06: its case row alone" "$(is "$(pick harness=.github/scripts/probe-early.test.sh case status kind)" $'a check 0.02 s before its end\tpass\tcase')"
 check "0.08 s to its .ended, where its wall seconds say 0.04: a passing row of those 0.08 s" "$(is "$(pick harness=.github/scripts/probe-late.test.sh case status start end seconds kind exit)" $'a check 0.08 s before its end\tpass\t1764000610.0\t1764000611.96\t1.96\tcase\tnull\nnull\tpass\t1764000611.96\t1764000612.04\t0.08\tharness\t0')"
-
-echo "case: a harness with no .ended, from an artifact made before the recorder uploaded it, ends at its .started plus its wall seconds"
-check "its case, then a passing row to 2.0 s after its start" "$(is "$(pick harness=.github/scripts/no-ended.test.sh case status start end seconds kind exit)" $'a check of an artifact with no .ended\tpass\t1764000620.0\t1764000621.5\t1.5\tcase\tnull\nnull\tpass\t1764000621.5\t1764000622.0\t0.5\tharness\t0')"
 
 echo "case: a run with an UNKNOWN row exits 1 though another row failed"
 read_run --from-dir "$a" --jobs-json "$m/jobs.json"

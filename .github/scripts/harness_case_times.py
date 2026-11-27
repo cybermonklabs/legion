@@ -16,9 +16,7 @@ job's artifact, the pool's numbered entries (`NNN` = 000, 001, ...), one per har
 
     NNN.name       the harness's name
     NNN.started    when it took a slot, epoch seconds (absent: it never took one)
-    NNN.seconds    `<wall> <cpu> <waited>`, each rounded to a tenth
-    NNN.ended      when its command returned, epoch seconds (absent: an artifact made before the
-                   recorder uploaded it, or a recorder that died first)
+    NNN.ended      when its command returned, epoch seconds, written before its exit status
     NNN.exit       its exit status (absent: its recorder died without writing one)
     NNN.lines      one record per line of its log, `<epoch seconds>\\t<the line's bytes>\\n`
     NNN.lines.end  the bytes of the log the stamper read, written once it read to the end
@@ -55,20 +53,18 @@ it, or at the harness's start for its first.
 A harness's exit status is part of its record and is never inferred from its case lines: a
 harness that printed only passing cases can still have failed, as one its `--minutes` bound
 stopped or `set -e` ended in the middle of a case has, and the time after its last case line is
-where a hang lives. A harness's end is its `.ended`; only an artifact with no `.ended`, made
-before the recorder uploaded it, has its `.started` plus its wall seconds as its end, good to the
-tenth of a second the recorder rounds them to. A harness that exited other than 0 always has a
-row of its own, of kind `harness` and no case, that fails: it starts at the time of its last case
-line and ends at the harness's end, a span that belongs to no passed case. A harness that exited
-0 has that row, passing, when its end is more than 0.05 s after its last case line. A harness
-whose log has no case line has that row alone, from its start to its end. The stamper reads the
-log to its end only after the harness's command has returned, so a line it read then carries a
-time past the harness's end; a failing row then ends at that line and holds no seconds, rather
-than ending before it starts.
+where a hang lives. A harness's end is its `.ended`. A harness that exited other than 0 always
+has a row of its own, of kind `harness` and no case, that fails: it starts at the time of its
+last case line and ends at the harness's end, a span that belongs to no passed case. A harness
+that exited 0 has that row, passing, when its end is more than 0.05 s after its last case line.
+A harness whose log has no case line has that row alone, from its start to its end. The stamper
+reads the log to its end only after the harness's command has returned, so a line it read then
+carries a time past the harness's end; a failing row then ends at that line and holds no
+seconds, rather than ending before it starts.
 
-Once a harness's `.exit` has been read, every row of it that is no case row carries that status
-as `exit`: its harness row, and any UNKNOWN row its record gives instead, so that a record the
-reader cannot read still says whether its harness failed.
+Harness rows carry the harness's exit status as `exit`, and so does each UNKNOWN row of a harness
+whose `.exit` was read, so that a record the reader cannot read still says whether its harness
+failed. Case rows carry no `exit`.
 
 UNKNOWN. A row whose status and kind are `unknown`, with a `why` saying what is missing, stands
 for what the record cannot tell: a job that ran a pool but has no artifact in the run, an expired
@@ -81,12 +77,13 @@ recorder died without its exit status; a harness whose records the stamper did n
 records do not add up to the log they came from, or whose records' times do not run forwards: a
 time that is no finite number, one earlier than the harness's start, or one earlier than the
 record before it, which no stamper reading a clock wrote. Such a harness prints no case: what its
-records hold may be any part of what it ran. A `.started`, an `.ended` or a wall second that is
-no finite number is no time either, and makes its harness UNKNOWN the same way, since when it
-started or ended is not known, and so does an `.ended` earlier than its `.started`. A row is
-printed for each of these rather than left out because a reader of the rows sees only what is
-there: a job or a harness left out reads as one that ran no case, and a total of case times over
-the run would count a lost record as no time at all. The exit status says it too: 1 when any row
+records hold may be any part of what it ran. A `.started` or an `.ended` that is no finite
+number is no time either, and makes its harness UNKNOWN the same way, since when it started or
+ended is not known, and so do an `.ended` earlier than its `.started` and an `.exit` with no
+`.ended` beside it, since the recorder writes `.ended` first. A row is printed for each of these
+rather than left out because a reader of the rows sees only what is there: a job or a harness
+left out reads as one that ran no case, and a total of case times over the run would count a
+lost record as no time at all. The exit status says it too: 1 when any row
 is UNKNOWN; otherwise 3 when any row fails, a case's or a harness's, so that a harness's exit
 status reaches the reader's; otherwise 0; and 2 for a usage error or a `gh` call that failed
 outright.
@@ -354,22 +351,14 @@ def entry_rows(job: dict, base: str, entry: str) -> list[dict]:
         return [unknown(job, harness, why, status)]
 
     raw = read_file(f"{base}.ended")
-    if raw is not None:
-        ended = number(raw)
-        if ended is None:
-            return lost(f"its {entry}.ended is not a finite number of seconds, so when it ended is not known")
-        end = round(ended, 6)
-        if end < started:
-            return lost(f"its {entry}.ended {end:.6f} is earlier than its start {started:.6f} in its {entry}.started")
-    else:
-        # An artifact made before the recorder uploaded `.ended`: its end is good to the tenth of a
-        # second its wall seconds are rounded to.
-        wall = number((read_file(f"{base}.seconds") or b"").split(b" ", 1)[0])
-        if wall is None:
-            return lost(
-                f"it has no {entry}.ended and its {entry}.seconds gives no finite number of wall seconds, so when it ended is not known"
-            )
-        end = round(started + wall, 6)
+    if raw is None:
+        return lost(f"it has no {entry}.ended, so when it ended is not known")
+    ended = number(raw)
+    if ended is None:
+        return lost(f"its {entry}.ended is not a finite number of seconds, so when it ended is not known")
+    end = round(ended, 6)
+    if end < started:
+        return lost(f"its {entry}.ended {end:.6f} is earlier than its start {started:.6f} in its {entry}.started")
 
     lines = read_file(f"{base}.lines")
     if lines is None:
