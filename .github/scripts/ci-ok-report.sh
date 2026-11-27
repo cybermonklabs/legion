@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Posts the failing ci-ok of a merge-group run from the job whose own result decides the group, in
-# that job's last step, the moment it ends. Every other verdict is ci.yaml's `ci-ok` job's: that
+# that job's last step, the moment it ends. Every other verdict is `.github/workflows/ci.yaml#ci-ok` job's: that
 # job needs every job of the run, fails when ci-ok.sh's verdict over their results is failure, and
 # its own check run is the ci-ok main's ruleset reads.
 #

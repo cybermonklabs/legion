@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
@@ -37,11 +38,17 @@ import (
 // answers like a refusal (`malformed overlay` on stderr, exit 1) once a SIGTERM reaches it, as the
 // probe's deadline sends one; otherwise it says the setting is false, or true under
 // $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
-// $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_WAITING set, a read under a `slow` or
-// `refuses-late` overlay appends `config get <overlay>` there once it waits, after its trap is
-// set where it has one. With $LEGION_TEST_SEEN set, each run appends the environment it saw
-// there: PI_CONFIG_FILES, whether the first overlay it names exists, and OMP_SESSION_STORAGE;
-// with $LEGION_TEST_KEY_SEEN, the provider key TEST_PROVIDER_KEY.
+// $LEGION_TEST_FALLBACK_FAIL. `--version` prints omp/18.18.6 on its first line, or fails under
+// $LEGION_TEST_VERSION_FAIL, or sleeps (`exec sleep 30`) under $LEGION_TEST_VERSION_SLOW, so only
+// a stop ends it; `--help` prints a flags table that lists --session-id, or, under
+// $LEGION_TEST_NO_SESSION_ID, one that lists no such flag but mentions it in a description, or
+// fails under $LEGION_TEST_HELP_FAIL, or sleeps the same way under $LEGION_TEST_HELP_SLOW. With
+// $LEGION_TEST_WAITING set, each run that waits appends there what it is once it waits, after its
+// trap is set where it has one: `config get <overlay>` for a read under a `slow` or
+// `refuses-late` overlay, `omp --version` and `omp --help` for the slow ones. With
+// $LEGION_TEST_SEEN set, each run appends the environment it saw there: PI_CONFIG_FILES, whether
+// the first overlay it names exists, and OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the
+// provider key TEST_PROVIDER_KEY.
 func imageOmp(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "omp")
@@ -52,7 +59,7 @@ if [ -n "${LEGION_TEST_SEEN:-}" ]; then
   printf '%s %s %s\n' "${PI_CONFIG_FILES:-none}" "$written" "${OMP_SESSION_STORAGE:-unset}" >>"$LEGION_TEST_SEEN"
 fi
 [ -z "${LEGION_TEST_KEY_SEEN:-}" ] || printf '%s\n' "${TEST_PROVIDER_KEY:-unset}" >>"$LEGION_TEST_KEY_SEEN"
-waiting() { [ -z "${LEGION_TEST_WAITING:-}" ] || printf 'config get %s\n' "$overlay" >>"$LEGION_TEST_WAITING"; }
+waiting() { [ -z "${LEGION_TEST_WAITING:-}" ] || printf '%s\n' "$1" >>"$LEGION_TEST_WAITING"; }
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json")
   envoy=$(cd "$3" && pwd -P)
@@ -74,8 +81,8 @@ case "$*" in
     case "$overlay" in
     *malformed*)
       printf '%s\n          ^\nerror: Failed to parse config overlay %s: SyntaxError: YAML Parse error\n' "` + strings.Repeat("x", 400) + `" "$overlay" >&2; exit 1 ;;
-    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; waiting; sleep 30 & wait ;;
-    *slow*) waiting; exec sleep 30 ;;
+    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; waiting "config get $overlay"; sleep 30 & wait ;;
+    *slow*) waiting "config get $overlay"; exec sleep 30 ;;
     esac
   done
   unset IFS
@@ -84,17 +91,30 @@ case "$*" in
   fi
   if [ -n "${LEGION_TEST_FALLBACK_ON:-}" ]; then value=true; else value=false; fi
   printf '{"key":"retry.modelFallback","value":%s,"type":"boolean"}\n' "$value" ;;
+"--version")
+  if [ -n "${LEGION_TEST_VERSION_FAIL:-}" ]; then echo "fake omp: --version failed" >&2; exit 1; fi
+  if [ -n "${LEGION_TEST_VERSION_SLOW:-}" ]; then waiting 'omp --version'; exec sleep 30; fi
+  printf 'omp/18.18.6\nthe fake omp of probe_image_test.go\n' ;;
+"--help")
+  if [ -n "${LEGION_TEST_HELP_FAIL:-}" ]; then echo "fake omp: --help failed" >&2; exit 1; fi
+  if [ -n "${LEGION_TEST_HELP_SLOW:-}" ]; then waiting 'omp --help'; exec sleep 30; fi
+  printf 'omp v18.18.6\n\nFLAGS\n  -r, --resume=<value>      Resume a session (by ID prefix, path, or picker if omitted)\n'
+  if [ -n "${LEGION_TEST_NO_SESSION_ID:-}" ]; then
+    printf '      --fork=<value>        Start a session under a new id, as --session-id does\n'
+  else
+    printf '      --session-id=<value>  Start a new session under this id (a lowercase UUID)\n'
+  fi ;;
 *) echo "Invalid $OMP_SESSION_STORAGE for OMP_SESSION_STORAGE" >&2; exit 1 ;;
 esac
 `
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
 	return path
 }
 
 // thisBinarysContract is the daemon API contract this binary speaks, as a manifest writes it.
-var thisBinarysContract = strconv.Itoa(api.DaemonAPIVersion)
+var thisBinarysContract = strconv.Itoa(api.DaemonAPIVersion())
 
 // image is the worker image's two plugin roots, which every probe-image run is given, the
 // claude-envoy root and Claude Code pin the Claude lane and the claude-code row check, its bin of
@@ -117,7 +137,7 @@ func (i image) without(t *testing.T, name string) {
 // install writes an executable stub over one of the image's stubbed binaries.
 func (i image) install(t *testing.T, name, script string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(i.bin, name), []byte(script), 0o755); err != nil {
+	if err := execfile.Write(filepath.Join(i.bin, name), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -170,9 +190,13 @@ func inImage(t *testing.T, contract, omp string) image {
 	return roots
 }
 
+// ompMarks are the OK line's omp-version and omp-session-id marks under a stubbed image whose omp
+// prints omp/18.18.6 for --version and lists --session-id in its help.
+const ompMarks = " omp-version=omp/18.18.6 omp-session-id=taken"
+
 // capabilityMarks are the OK line's marks after agent-models under a stubbed image whose omp
-// says model fallback is off.
-const capabilityMarks = " capabilities=checked model-fallback=off daemon-api-version="
+// says model fallback is off, with ompMarks after them.
+const capabilityMarks = " capabilities=checked model-fallback=off" + ompMarks + " daemon-api-version="
 
 // probeImage runs `legion probe-image` with args and answers its exit code, stdout and stderr.
 func probeImage(args ...string) (int, string, string) {
@@ -186,6 +210,7 @@ func probeImage(args ...string) (int, string, string) {
 // naming the check, when it fails; here its layout cannot be made, since the directory named is a
 // file. Nothing of the image's launch probes runs: no Oh My Pi is named at all.
 func TestProbeImageRefusesWhenTheRoleNamespaceCheckFails(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	file := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -198,6 +223,7 @@ func TestProbeImageRefusesWhenTheRoleNamespaceCheckFails(t *testing.T) {
 }
 
 func TestProbeImageRefusesANegativeProbeBudget(t *testing.T) {
+	t.Parallel()
 	code, stdout, stderr := probeImage("--plugin-root", t.TempDir(), "--envoy-plugin-root", t.TempDir(), "--probe-budget", "-1s")
 	if code != 1 || stdout != "" || !strings.Contains(stderr, "--probe-budget must not be negative") {
 		t.Fatalf("probe-image with a negative budget = %d, stdout %q, stderr %q; want exit 1 naming --probe-budget", code, stdout, stderr)
@@ -222,6 +248,7 @@ func tableLines(stdout string) []string {
 // plugin enabled in profile's lock — and then the OK line the daemon's probe Sandbox reads,
 // carrying the capabilities and model-fallback marks, with nothing between them.
 func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 
@@ -254,6 +281,7 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 
 // The daemon's probe Sandbox passes its own contract, which the image's plugin must declare.
 func TestProbeImageHoldsThePluginToTheContractItIsAskedFor(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, "2", omp)
 
@@ -277,9 +305,10 @@ const lastContractWithoutDefaultBranch = 25
 // pi-legion declaring that older contract, so the daemon's probe Sandbox, asking for this binary's
 // own, refuses it by both numbers before any issue pod runs that image's `workspace-init`.
 func TestProbeImageRefusesAnImageWhoseWorkspaceInitTakesNoDefaultBranch(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutDefaultBranch {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
+	if api.DaemonAPIVersion() <= lastContractWithoutDefaultBranch {
 		t.Fatalf("DaemonAPIVersion is %d: the pod's --default-branch needs a contract above %d, or an image whose workspace-init rejects the flag passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutDefaultBranch)
+			api.DaemonAPIVersion(), lastContractWithoutDefaultBranch)
 	}
 	old := strconv.Itoa(lastContractWithoutDefaultBranch)
 	img := inImage(t, old, imageOmp(t))
@@ -300,9 +329,10 @@ const lastContractWithoutGhBundles = 29
 // the daemon's probe Sandbox, asking for this binary's own, refuses it by both numbers before any
 // issue pod runs that image's git.
 func TestProbeImageRefusesAnImageWithoutTheGhWrapper(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutGhBundles {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
+	if api.DaemonAPIVersion() <= lastContractWithoutGhBundles {
 		t.Fatalf("DaemonAPIVersion is %d: per-owner gh bundles need a contract above %d, or an image without legion gh and legion git-credential passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutGhBundles)
+			api.DaemonAPIVersion(), lastContractWithoutGhBundles)
 	}
 	old := strconv.Itoa(lastContractWithoutGhBundles)
 	img := inImage(t, old, imageOmp(t))
@@ -320,9 +350,10 @@ const lastContractWithoutRepositoryCache = 31
 // the daemon's probe Sandbox, asking for this binary's own, refuses it by both numbers before any
 // cache pod runs that image's `legion workspace-init cache` and exits 2 on the unknown subcommand.
 func TestProbeImageRefusesAnImageWithoutTheRepositoryCache(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutRepositoryCache {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
+	if api.DaemonAPIVersion() <= lastContractWithoutRepositoryCache {
 		t.Fatalf("DaemonAPIVersion is %d: the cache pod's workspace-init cache needs a contract above %d, or an image without it passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutRepositoryCache)
+			api.DaemonAPIVersion(), lastContractWithoutRepositoryCache)
 	}
 	old := strconv.Itoa(lastContractWithoutRepositoryCache)
 	img := inImage(t, old, imageOmp(t))
@@ -333,6 +364,7 @@ func TestProbeImageRefusesAnImageWithoutTheRepositoryCache(t *testing.T) {
 }
 
 func TestProbeImageProbesTheOmpItIsGiven(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, "/nonexistent/omp")
 
@@ -349,6 +381,7 @@ func TestProbeImageProbesTheOmpItIsGiven(t *testing.T) {
 // Each glob name has a sibling its pattern also matches, holding an omp that fails, so a probe
 // that let the shell expand the path would run the other file or hand it the first as an argument.
 func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	for _, testCase := range []struct{ name, sibling string }{
 		{"x y", ""}, {"sq'x", ""}, {"q?x", "qax"}, {"glob[x]", "globx"},
 	} {
@@ -367,7 +400,7 @@ func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
 					if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(other, []byte("#!/bin/sh\necho 'the omp a glob matched ran' >&2\nexit 97\n"), 0o755); err != nil {
+					if err := execfile.Write(other, []byte("#!/bin/sh\necho 'the omp a glob matched ran' >&2\nexit 97\n"), 0o755); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -431,6 +464,7 @@ func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
 // The image build's probe, which has none of the operator's model configuration, skips the agents'
 // models, and its OK line says so, which the daemon's probe Sandbox refuses at boot.
 func TestProbeImageWithSkipAgentModelsSaysSoOnTheOKLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 
@@ -446,6 +480,7 @@ func TestProbeImageWithSkipAgentModelsSaysSoOnTheOKLine(t *testing.T) {
 // browser row unchecked and its OK line's capabilities mark browser-skipped, which the daemon's
 // probe Sandbox refuses (bootprobe.Capabilities is not CapabilitiesAll).
 func TestProbeImageWithSkipBrowserPassesAnImageWithNoBrowser(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	img.without(t, "chromium")
@@ -457,7 +492,7 @@ func TestProbeImageWithSkipBrowserPassesAnImageWithNoBrowser(t *testing.T) {
 
 	code, stdout, stderr = probeImage(img.flags("--skip-agent-models", "--skip-browser")...)
 
-	want := "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=skipped capabilities=browser-skipped model-fallback=off daemon-api-version=" + thisBinarysContract + "\n"
+	want := "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=skipped capabilities=browser-skipped model-fallback=off" + ompMarks + " daemon-api-version=" + thisBinarysContract + "\n"
 	if code != 0 || !strings.HasSuffix(stdout, want) {
 		t.Fatalf("probe-image --skip-browser = %d %q %q, want the OK line %q", code, stdout, stderr, want)
 	}
@@ -475,6 +510,7 @@ func TestProbeImageWithSkipBrowserPassesAnImageWithNoBrowser(t *testing.T) {
 // that alone, so a broken omp (or a transient one) never blocks the build; it warns on stderr
 // instead and still certifies the image, leaving the capability report's own row open.
 func TestProbeImageMarksTheOKLineWithTheModelFallbackItRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	for mark, on := range map[string]bool{"off": false, "on": true} {
@@ -485,7 +521,7 @@ func TestProbeImageMarksTheOKLineWithTheModelFallbackItRead(t *testing.T) {
 
 			code, stdout, stderr := probeImage(img.flags()...)
 
-			if want := " capabilities=checked model-fallback=" + mark + " daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
+			if want := " capabilities=checked model-fallback=" + mark + ompMarks + " daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
 				t.Fatalf("probe-image = %d %q %q, want the OK line ending %q", code, stdout, stderr, want)
 			}
 		})
@@ -495,13 +531,53 @@ func TestProbeImageMarksTheOKLineWithTheModelFallbackItRead(t *testing.T) {
 
 		code, stdout, stderr := probeImage(img.flags()...)
 
-		if want := " capabilities=checked model-fallback=unread daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
+		if want := " capabilities=checked model-fallback=unread" + ompMarks + " daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
 			t.Fatalf("probe-image = %d %q %q, want the OK line ending %q", code, stdout, stderr, want)
 		}
 		if !strings.Contains(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: ") {
 			t.Errorf("stderr = %q, want it to warn that model-fallback was not read", stderr)
 		}
 	})
+}
+
+// The OK line's omp-session-id mark is whether the image's Oh My Pi's own help lists --session-id
+// in its flags table, under the probe's environment, and its omp-version mark the first line that
+// Oh My Pi prints for --version: taken when the help lists the flag; absent when it lists none,
+// though a description mentions it; unread when the help fails, which the probe does not refuse
+// the run for — it warns on stderr and still prints its OK line, exit 0, so the daemon that reads
+// the mark decides. A version it cannot read is unread the same way.
+func TestProbeImageMarksTheOKLineWithWhetherOhMyPiTakesSessionID(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	for _, tc := range []struct {
+		name, env, marks, warning string
+	}{
+		{"taken", "", " omp-version=omp/18.18.6 omp-session-id=taken", ""},
+		{"absent", "LEGION_TEST_NO_SESSION_ID", " omp-version=omp/18.18.6 omp-session-id=absent", ""},
+		{"unread", "LEGION_TEST_HELP_FAIL", " omp-version=omp/18.18.6 omp-session-id=unread",
+			"legion probe-image: whether Oh My Pi takes --session-id not read; the OK line says omp-session-id=unread, which a daemon that sets runtime.kubernetes.agent_secrets.exchange_audience refuses: " + omp + " --help exited 1: fake omp: --help failed\n"},
+		{"version unread", "LEGION_TEST_VERSION_FAIL", " omp-version=unread omp-session-id=taken",
+			"legion probe-image: Oh My Pi's version not read; the OK line says omp-version=unread: " + omp + " --version exited 1: fake omp: --version failed\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env != "" {
+				t.Setenv(tc.env, "1")
+			}
+
+			code, stdout, stderr := probeImage(img.flags()...)
+
+			if want := " model-fallback=off" + tc.marks + " daemon-api-version=" + thisBinarysContract + "\n"; code != 0 || !strings.HasSuffix(stdout, want) {
+				t.Fatalf("probe-image = %d %q %q, want exit 0 and the OK line ending %q", code, stdout, stderr, want)
+			}
+			if tc.warning == "" && strings.Contains(stderr, " not read;") {
+				t.Errorf("stderr = %q, want no warning of a mark not read", stderr)
+			}
+			if tc.warning != "" && !strings.Contains(stderr, tc.warning) {
+				t.Errorf("stderr = %q, want the warning %q", stderr, tc.warning)
+			}
+		})
+	}
 }
 
 // A capability the image lacks fails the probe after the launch probes passed: the whole table is
@@ -512,6 +588,7 @@ func TestProbeImageMarksTheOKLineWithTheModelFallbackItRead(t *testing.T) {
 // browser by running what PUPPETEER_EXECUTABLE_PATH names, as Oh My Pi would, CodeGraph by the
 // profile's plugin lock, the toolchain by PATH.
 func TestProbeImageRefusesAnImageMissingACapability(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	for name, testCase := range map[string]struct {
 		setup   func(t *testing.T, img image)
 		missing []string
@@ -561,6 +638,7 @@ func TestProbeImageRefusesAnImageMissingACapability(t *testing.T) {
 // for the daemon to compare with its own; a seed that is not a user's is refused before any probe
 // runs. Neither output carries a seed.
 func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	seed, public := testnkeys.User(t)
@@ -587,6 +665,7 @@ func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
 // 0440 under fsGroup, is read through the group (config.ReadGroupSecretPointer's test; a test
 // cannot make a file root's), and a file the probe's own uid owns is held to 0600.
 func TestProbeImageReadsTheSeedPointerByTheDaemonsModeRule(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	seed, _ := testnkeys.User(t)
@@ -608,6 +687,7 @@ func TestProbeImageReadsTheSeedPointerByTheDaemonsModeRule(t *testing.T) {
 // providers Secret resolves as it would in a worker; a key the environment already names is refused
 // as the shim refuses it, before any probe runs.
 func TestProbeImageWithAProviderEnvDirExportsTheKeysAsTheShimDoes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	providers := t.TempDir()
@@ -655,6 +735,7 @@ func TestProbeImageWithAProviderEnvDirExportsTheKeysAsTheShimDoes(t *testing.T) 
 // it is. The session-storage probe exports its own OMP_SESSION_STORAGE over either, on its one
 // run, so that value is counted once and the baseline's (or none) on every other run.
 func TestProbeImageWithPodSafetyProbesOnThePodsBaseline(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	// The operator's overlay, at a path nothing on this machine holds, so "absent" is the probe's
@@ -711,6 +792,7 @@ func TestProbeImageWithPodSafetyProbesOnThePodsBaseline(t *testing.T) {
 // exiting non-zero on it, exits 1 after the capability table with the line the daemon refuses its
 // boot on, naming the role, the file and Oh My Pi's own error line, and prints no OK line.
 func TestProbeImageReadsEachRolesOwnOverlaysAsTheRoleStarts(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	dir := t.TempDir()
@@ -820,6 +902,7 @@ func probeImageCutOnceLogged(log, line string, args ...string) (int, string, str
 // never answers its --version, so the browser row is unanswered). In each row the deadline passes
 // once the step it cuts has logged that it waits, to $LEGION_TEST_WAITING (probeImageCutOnceLogged).
 func TestProbeImageJudgesEachStepByTheDeadlineAsItReturns(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	dir := t.TempDir()
 	overlay := func(name string) string {
 		path := filepath.Join(dir, name)
@@ -889,9 +972,59 @@ func TestProbeImageJudgesEachStepByTheDeadlineAsItReturns(t *testing.T) {
 	}
 }
 
+// A read of the OK line's omp-version or omp-session-id mark that the probe's deadline cuts has no
+// verdict, like every other check: the deadline stops the read's process group, so its failure may
+// be the deadline's own doing, and an omp-session-id=unread would be refused for good by a daemon
+// that sets an exchange audience. The probe exits 75 naming the read, prints no OK line, and warns
+// of no unread mark. A help read is cut once it waits; a version read is cut once it waits, and
+// the help read after it is kept from starting, since ctx has ended. In each row the deadline
+// passes once the read it cuts has logged that it waits (probeImageCutOnceLogged). A read that
+// fails before the deadline is still unread on the OK line, exit 0
+// (TestProbeImageMarksTheOKLineWithWhetherOhMyPiTakesSessionID).
+func TestProbeImageJudgesTheOmpMarksReadsByTheDeadline(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	for _, tc := range []struct {
+		name, env, waits string
+		// noVerdict are what the no-verdict line holds.
+		noVerdict []string
+	}{
+		{"a help read the deadline cuts", "LEGION_TEST_HELP_SLOW", "omp --help", []string{"omp-session-id: " + omp + " --help"}},
+		{"a version read the deadline cuts", "LEGION_TEST_VERSION_SLOW", "omp --version", []string{"omp-version: " + omp + " --version", "omp-session-id: "}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, "1")
+			waiting := filepath.Join(t.TempDir(), "waiting")
+			t.Setenv("LEGION_TEST_WAITING", waiting)
+
+			code, stdout, stderr := probeImageCutOnceLogged(waiting, tc.waits, img.flags("--probe-budget", unreachedProbeBudget)...)
+
+			if code != bootprobe.NoVerdictExit || strings.Contains(stdout, bootprobe.OKPrefix) {
+				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and no OK line", code, stdout, stderr, bootprobe.NoVerdictExit)
+			}
+			detail, hasNoVerdict := bootprobe.NoVerdict(stderr)
+			if !hasNoVerdict {
+				t.Fatalf("stderr %q carries no no-verdict line", stderr)
+			}
+			for _, want := range tc.noVerdict {
+				if !strings.Contains(detail, want) {
+					t.Errorf("the no-verdict line's detail = %q, want it to hold %q", detail, want)
+				}
+			}
+			for _, warning := range []string{"legion probe-image: Oh My Pi's version not read;", "legion probe-image: whether Oh My Pi takes --session-id not read;"} {
+				if strings.Contains(stderr, warning) {
+					t.Errorf("stderr = %q, want no warning %q of a mark the deadline cut", stderr, warning)
+				}
+			}
+		})
+	}
+}
+
 // A --role-config-files value no role could carry is refused as the flags are read, before any
 // probe runs.
 func TestProbeImageRefusesARoleConfigFilesValueNoRoleCarries(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	for _, tc := range []struct {
@@ -918,6 +1051,7 @@ func TestProbeImageRefusesARoleConfigFilesValueNoRoleCarries(t *testing.T) {
 // read, before any probe runs: resolving the image's own role prompts in its place would pass a
 // probe the daemon asked about its own.
 func TestProbeImageRefusesRoleReferencesItCannotDecode(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	seen := filepath.Join(t.TempDir(), "seen")
@@ -939,6 +1073,7 @@ func TestProbeImageRefusesRoleReferencesItCannotDecode(t *testing.T) {
 // naming the flag, so deleting either from the image's build line fails that build rather than
 // probing a lane no pod loads.
 func TestProbeImageRefusesWithoutAPluginRoot(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	for _, testCase := range []struct {
@@ -966,6 +1101,7 @@ func TestProbeImageRefusesWithoutAPluginRoot(t *testing.T) {
 }
 
 func TestProbeImageRefusesWithoutAnOmpOrAContract(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	img := inImage(t, thisBinarysContract, "")
 	code, _, stderr := probeImage(img.flags()...)
 	if code != 1 || !strings.Contains(stderr, "set LEGION_OMP_PATH (or pass --omp) to the OMP executable to probe") {
@@ -987,6 +1123,7 @@ func TestProbeImageRefusesWithoutAnOmpOrAContract(t *testing.T) {
 // `claude` — the stubbed bin holds none — and the lane passes without one, the claude-code row
 // saying the same two facts with the npm and node a pod's install runs, and the OK line following.
 func TestProbeImageRunsTheClaudeLaneOnThePluginAndThePin(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	if _, err := os.Stat(filepath.Join(img.bin, "claude")); !errors.Is(err, fs.ErrNotExist) {
@@ -1016,6 +1153,7 @@ func TestProbeImageRunsTheClaudeLaneOnThePluginAndThePin(t *testing.T) {
 // that is not JSON, a range rather than one version, a lockfile out of step with it, one that
 // locks no linux-x64 package, locks it at another version, or carries no sha512 integrity for it.
 func TestProbeImageRefusesABrokenClaudeRootOrPin(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (inImage); it changes the whole process's working directory (inImage).
 	pinned := `"@anthropic-ai/claude-code": "` + capabilitiestest.ClaudeCodeVersion + `"`
 	platform := `"node_modules/@anthropic-ai/claude-code-linux-x64": {
       "version": "` + capabilitiestest.ClaudeCodeVersion + `"`
@@ -1085,6 +1223,7 @@ func TestProbeImageRefusesABrokenClaudeRootOrPin(t *testing.T) {
 // worker image carries the claude-envoy root and the Claude Code pin at; an empty flag names no
 // directory, and is a usage error naming both flags before any probe runs.
 func TestProbeImageChecksTheImagesClaudePathsUnlessToldOthers(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory (inImage).
 	img := inImage(t, thisBinarysContract, imageOmp(t))
 
 	code, stdout, stderr := probeImage("--plugin-root", img.legion, "--envoy-plugin-root", img.envoy)

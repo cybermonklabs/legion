@@ -114,7 +114,8 @@ func (d destination) key() string {
 type batchEvent struct {
 	pendingEvent
 	item contracts.Envelope
-	// delivered is the set of the event's published_destinations (publishedDestinationSet).
+	// delivered is the set of the event's published_destinations (publishedDestinationSet) and
+	// of its refused_destinations: every subject the event sends nothing to again.
 	// destinationsOf are every destination the event has; resolveErr is why the list ends short,
 	// when it does, and resolveLost that the error is the batch's context ending (a
 	// recipient read the process's stop cancelled), which releases the event rather than backing
@@ -142,7 +143,8 @@ type batchEvent struct {
 	mentionPending bool
 	// incomplete is that the list ends at a recipient read that failed (unansweredRecipients): the
 	// sessions that read would add are unknown, so the event holds its owner's later events back
-	// from every session key its list neither names nor it already reached (planChains).
+	// from every session key its list neither names nor it already reached or had refused
+	// (planChains).
 	incomplete bool
 	sends      []*chainSend
 	// held are the earlier events of the owner that held a destination of this one back without a
@@ -154,14 +156,14 @@ type batchEvent struct {
 }
 
 // blocker is what held an event's send to a destination back: an earlier event of its owner that
-// had that destination unreached, or, on any key, the owner's topic family unreached; or whose list
-// is incomplete and neither names nor reached it. It is either an event of the batch, whose
-// outcome then says when the held one is tried again - its send to the destination failed, or its
-// topic send that this one waited for (chainSend.after), its recipient read failed, or its copy
-// for that destination waits on a mention - or one that is not due, until its nextAttempt. It is
-// never the held event itself: the copies of one event have no order among themselves, so the
-// batch reads a blocker only for the owner's later events, and the outcome read of one is always
-// an outcome the batch has settled already (planChains, holdBack).
+// had that destination unreached, or, on any key, the owner's topic family neither reached nor
+// refused for good; or whose list is incomplete and neither names nor reached it. It is either an
+// event of the batch, whose outcome then says when the held one is tried again - its send to the
+// destination failed, or its topic send that this one waited for (chainSend.after), its recipient
+// read failed, or its copy for that destination waits on a mention - or one that is not due, until
+// its nextAttempt. It is never the held event itself: the copies of one event have no order among
+// themselves, so the batch reads a blocker only for the owner's later events, and the outcome read
+// of one is always an outcome the batch has settled already (planChains, holdBack).
 type blocker struct {
 	event *batchEvent
 	until *time.Time
@@ -174,13 +176,19 @@ const (
 	// unsent: the send was never made, because the batch stopped first (NATS unreachable, the
 	// publisher hold's deadline passed, the process stopping).
 	unsent sendState = iota
-	// reached: NATS accepted the envelope, or refused it in a way no retry changes (bus.ErrRefused).
+	// reached: NATS accepted the envelope.
 	reached
+	// refused: NATS refused the envelope in a way no retry changes (bus.ErrRefused), and then
+	// refused its stand-in too. The chain goes on past it, and the event records the subject in
+	// refused_destinations, not in published_destinations, so it never sends it again
+	// (settleEvent, recordBatch).
+	refused
 	// failed: NATS answered the send with a failure of the envelope: a denial, no acknowledgement
 	// on a connection still current, or another error.
 	failed
 	// lost: the send met a lost connection, the hold's deadline or the process stopping, so whether
-	// it landed is unknown and no fault of the event.
+	// it landed is unknown and no fault of the event. A refused send whose stand-in the batch
+	// stopped before it went is lost too: the next scan sends the event again, and its stand-in.
 	lost
 	// held: an earlier send of the chain failed, or the earlier event's topic send this one waited
 	// for (chainSend.after) failed or was held back itself, so this one was not made.
@@ -204,12 +212,12 @@ type chainSend struct {
 	heldBy *batchEvent
 	// after is, on a send to any key but the owner's topic family, the last send to that family
 	// the batch makes for an earlier event of the owner, nil when there is none: this send is made
-	// only once that one reached the topic family, and is held back when it did not (planChains,
-	// sendChains).
+	// only once that one reached the topic family or was refused for good, and is held back when
+	// that one failed or was held back itself (planChains, sendChains).
 	after *chainSend
 	// standIn is the envelope this send carries once NATS refused the event's own
 	// (standInEnvelope): the same event with its payload left out. It is set once, so a
-	// stand-in NATS refuses too is the end of this send.
+	// stand-in NATS refuses too settles the send refused.
 	standIn *contracts.Envelope
 }
 
@@ -233,10 +241,10 @@ func (s *chainSend) heldByHolder() *roleForward {
 }
 
 // chain is the sends of one owner's events to one destination key, in id order. Its next send is
-// made only once the one before it reached its destination, and once the earlier event's topic
-// send it waits for (chainSend.after) reached the topic family. owner is whose lane the chain runs
-// in: a batch settles and releases an owner once every chain of that owner has finished
-// (sendChains, publishBatch).
+// made only once the one before it reached its destination or was refused for good, and once the
+// earlier event's topic send it waits for (chainSend.after) reached the topic family or was
+// refused for good. owner is whose lane the chain runs in: a batch settles and releases an owner
+// once every chain of that owner has finished (sendChains, publishBatch).
 type chain struct {
 	owner string
 	sends []*chainSend
@@ -245,53 +253,57 @@ type chain struct {
 
 // planChains orders each owner's sends. An owner's events are walked in id order, and each
 // destination an event has not reached yet goes on its owner's chain for that destination's key -
-// unless an earlier event of the owner that is not due has that key or the owner's topic family
-// unreached (below), an earlier event whose list is incomplete may still owe that key (below), or
-// an earlier event's own copy for that key waits on a mention (below), in which case the event is
-// held back from it (batchEvent.held). Every destination key of every owner is a chain of its own,
-// and a chain's sends go one at a time (sendChains), so the order holds per (owner, destination
-// key): event N+1 of an owner reaches a destination only after every earlier unpublished event of
-// that owner bound for it has. A destination that stalls - its send failed, its event is waiting
-// out a back-off with that destination unreached, or its copy waits on a mention - holds back that
-// destination's later events of that owner, and nothing else unless it is the owner's topic
-// family.
+// unless an earlier event of the owner that is not due has that key unreached or the owner's topic
+// family neither reached nor refused for good (below), an earlier event whose list is incomplete
+// may still owe that key (below), or an earlier event's own copy for that key waits on a mention
+// (below), in which case the event is held back from it (batchEvent.held). Every destination key of
+// every owner is a chain of its own, and a chain's sends go one at a time (sendChains), so the
+// order holds per (owner, destination key): event N+1 of an owner reaches a destination only after
+// every earlier unpublished event of that owner bound for it has. A destination that stalls - its
+// send failed, its event is waiting out a back-off with that destination unreached, or its copy
+// waits on a mention - holds back that destination's later events of that owner, and nothing else
+// unless it is the owner's topic family.
 //
 // The owner's topic family holds back every key. Each session that follows the owner receives on
 // that family beside its own agent subject, and its relay hands it both in stream order, so a later
 // event that reached such a session's own subject before an earlier event reached the topic family
 // would reach that session first; the outbox cannot know which sessions follow the owner, so an
-// earlier event's topic send that has not gone comes before each later send of the owner to any
-// key. An earlier event that is not due with the topic family unreached holds the owner's later
-// events back from every key, behind its nextAttempt. A topic send of an earlier event that this
-// batch makes is what each later send of the owner to another key waits for (chainSend.after): the
-// batch's chains start at once, so the later send would otherwise go while the topic send is in
-// flight, and sendChains makes it only once the topic send reached the topic family, and holds it
-// back, with the rest of its chain, when the topic send failed or was held back itself. The hold is
+// earlier event's topic send that has not gone, and that NATS has not refused for good, comes
+// before each later send of the owner to any key. An earlier event that is not due, with the topic
+// family neither reached nor refused for good, holds the owner's later events back from every key,
+// behind its nextAttempt. A topic send of an earlier event that this batch makes is what each
+// later send of the owner to another key waits for (chainSend.after): the batch's chains start at
+// once, so the later send would otherwise go while the topic send is in flight, and sendChains
+// makes it only once the topic send reached the topic family or was refused for good, and holds
+// it back, with the rest of its chain, when the topic send failed or was held back itself. A topic
+// send NATS refused for good is never sent again, so no later send can overtake it. The hold is
 // one-sided: a session key reaches its one session, which takes the owner's events in order from
 // the topic family as well, so a session key that stalls holds back that key alone and the owner's
 // topic family goes on (TestABackedOffEventHoldsBackOnlyItsDestination,
 // TestASessionTakesAnOwnersEventsInOrderThroughAFailedTopicPublish,
-// TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch). A mention's copies are outside
-// the hold: the API's own mention send is no send of the outbox's, and a comment_fallback_copies
-// row is the fallback pass's to publish (below), so either can reach a session before an earlier
-// event of the owner whose topic send has not gone.
+// TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch,
+// TestASendToASessionGoesOnPastARefusedTopicSendOfItsBatch). A mention's copies are outside the
+// hold: the API's own mention send is no send of the outbox's, and a comment_fallback_copies row is
+// the fallback pass's to publish (below), so either can reach a session before an earlier event of
+// the owner whose topic send has not gone.
 //
 // The other hold wider than a destination is an event whose recipient read failed
 // (batchEvent.incomplete): its list ends at the read, so it may be bound for any session the read
 // would name. Every later event of its owner is held back from each session key - an agent
 // subject, or a role route's key - that the incomplete event neither names in its list nor already
-// reached (batchEvent.delivered), behind a blocker that falls due when the incomplete event is
-// tried again: the event itself when it is due, whose back-off or release its outcome carries,
-// and its nextAttempt when it is not. A key the list names and the event has not reached chains as
-// any other, and a key the event already reached holds nothing back: a destination reached counts
-// by the subject it recorded, not by its key now, so a role route reached names its role topic and
-// not the agent subject of whoever holds the role in this batch, a session the failed read may yet
-// name. The owner's topic comes before every read (eventDestinations), so the owner's topic family
-// is never held this way, and the two holds add up: a later event is held back from a session key
-// by either. So a recipient read that fails holds back, until the retry of the event that asked
-// it, its owner's later session copies on the keys that event could still owe; and every event,
-// its reads answered or not, holds back the destinations it has not reached, and every key while
-// one of them is the owner's topic family.
+// reached or had refused (batchEvent.delivered: its published_destinations and its
+// refused_destinations), behind a blocker that falls due when the incomplete event is tried again:
+// the event itself when it is due, whose back-off or release its outcome carries, and its
+// nextAttempt when it is not. A key the list names and the event has not reached chains as any
+// other, and a key the event already reached or had refused holds nothing back: such a
+// destination counts by the subject it recorded, not by its key now, so a role route reached names
+// its role topic and not the agent subject of whoever holds the role in this batch, a session the
+// failed read may yet name. The owner's topic comes before every read (eventDestinations), so the
+// owner's topic family is never held this way, and the two holds add up: a later event is held
+// back from a session key by either. So a recipient read that fails holds back, until the retry of
+// the event that asked it, its owner's later session copies on the keys that event could still
+// owe; and every event, its reads answered or not, holds back the destinations it has neither
+// reached nor had refused, and every key while one of them is the owner's topic family.
 //
 // A copy that waits on a mention (destination.waiting) goes on no chain and sends nothing, but
 // it holds its key: the owner's later events bound for that key are held behind it, behind the
@@ -448,27 +460,30 @@ func planChains(events []*batchEvent) []*chain {
 
 // sendChains runs chains through sender, one window: the first send of every chain at once, in the
 // order the chains were planned, and each chain's next send as soon as the answer to the one before
-// it came back as reached, so the chains proceed side by side and each one in order. A role route
-// is forwarded to its holder with a Request (roleForward.send), or answered at once with why it
-// stays pending. A failed send holds back the rest of its chain. A send that waits for an earlier
-// event's topic send of its owner (chainSend.after) is made only once that send reached the topic
-// family, its chain parked until then, and when the topic send failed or was held back itself, the
-// waiting send and the rest of its chain are held back by the same event, as a failed send holds
-// back the rest of its own chain. A topic send waits for no other chain, so every such wait ends
-// at an answer on the owner's topic chain, or when the batch stops. A send that meets a lost
-// connection or a passed deadline (bus.ErrUnavailable; bus.ErrWindowDeadline, the window refusing
-// a send past the publisher hold's deadline) stops the batch: no further send of any chain is
-// made. So does ctx ending; the answers already in are still read, and every other send in flight
-// is lost. Each send that did not reach its destination is counted once as it settles, under the
-// reason it came to (deps.countPublishFailure), and a role forward its holder's resolution held
-// pending under that holder's state instead (deps.countRoleForwardHeld), being a wait and no
-// publish failure; a send the hold's deadline fenced and one ctx's end cut count nothing, neither
-// being an outcome NATS gave.
+// it came back as reached or refused, so the chains proceed side by side and each one in order. A
+// role route is forwarded to its holder with a Request (roleForward.send), or answered at once with
+// why it stays pending. A failed send holds back the rest of its chain. A send that waits for an
+// earlier event's topic send of its owner (chainSend.after) is made only once that send reached the
+// topic family or was refused for good (a refused topic send is never made again, so nothing is
+// left for the session to see first), its chain parked until then, and when the topic send failed
+// or was held back itself, the waiting send and the rest of its chain are held back by the same
+// event, as a failed send holds back the rest of its own chain. A topic send waits for no other
+// chain, so every such wait ends at an answer on the owner's topic chain, or when the batch stops.
+// A send that meets a lost connection or a passed deadline (bus.ErrUnavailable;
+// bus.ErrWindowDeadline, the window refusing a send past the publisher hold's deadline) stops the
+// batch: no further send of any chain is made. So does ctx ending; the answers already in are
+// still read, and every other send in flight is lost. Each send that did not reach its destination
+// is counted once as it settles, under the reason it came to (deps.countPublishFailure), and a
+// role forward its holder's resolution held pending under that holder's state instead
+// (deps.countRoleForwardHeld), being a wait and no publish failure; a send the hold's deadline
+// fenced and one ctx's end cut count nothing, neither being an outcome NATS gave.
 //
 // A send NATS refuses (bus.ErrRefused) is made once more with the event's payload left out
 // (standInEnvelope), on the same chain and in the same place, so a reader hears which event it
-// is and reads the item itself; a stand-in refused in its turn ends that send as every refusal
-// ended before stand-ins.
+// is and reads the item itself. A stand-in refused in its turn settles the send refused: the
+// chain goes on past it, and the event records the subject as refused, not reached. A batch
+// that stops before the stand-in goes leaves the send lost, so the next scan sends the event
+// again, and its stand-in after it.
 //
 // settled is called once per owner, as soon as the last chain of that owner has finished - its
 // sends all answered, or the rest of them held back or never made - so the batch can settle,
@@ -509,7 +524,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			return
 		}
 		send := c.sends[c.next]
-		if send.after != nil && send.after.state != reached {
+		if send.after != nil && send.after.state != reached && send.after.state != refused {
 			parked = append(parked, c)
 			return
 		}
@@ -532,10 +547,10 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		inflight = append(inflight, c)
 	}
 	// unpark takes on each parked chain whose topic send has its answer: on to its send when the
-	// topic send reached the topic family, and to its end when it did not, its sends held back by
-	// the event whose failed send stopped it, the topic send's own or the one that held it back. A
-	// batch that stopped makes no further send, so a parked chain then ends with its sends unsent,
-	// as every other chain does.
+	// topic send reached the topic family or was refused for good, and to its end when it failed or
+	// was held back, its sends held back by the event whose failed send stopped it, the topic send's
+	// own or the one that held it back. A batch that stopped makes no further send, so a parked
+	// chain then ends with its sends unsent, as every other chain does.
 	unpark := func() {
 		taken := parked
 		parked = parked[:0]
@@ -544,7 +559,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			switch {
 			case stopped || ctx.Err() != nil:
 				finish(c)
-			case after.state == reached:
+			case after.state == reached, after.state == refused:
 				issue(c)
 			case after.state == failed:
 				holdRest(c, after.event)
@@ -576,13 +591,14 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			// Refused the same way however often it is retried (the envelope is past the server's
 			// max payload, or its subject past NATS's limit or holding whitespace, as an unbounded
 			// document slug or a bearer's session id can make it). It did not reach NATS, so it is
-			// counted a refusal and logged once per event: a stand-in refused in its turn is the
-			// same event's one refusal, already counted when NATS refused the payload it was made
-			// of, and counting it again would count one event twice.
+			// counted a refusal and logged. A stand-in refused in its turn is the same refusal,
+			// already counted when NATS refused the payload it was made of, and counting it again
+			// would count one event twice. A batch that stops before the stand-in goes counts and
+			// logs the refusal again on the next scan, which sends the event again.
 			if send.standIn != nil {
 				slog.Error("dispatch outbox: the stand-in was refused too",
 					"event_id", send.event.event.ID, "topic", send.dest.subject, "error", err)
-				send.state = reached
+				send.state = refused
 				break
 			}
 			deps.countPublishFailure("refused")
@@ -590,16 +606,16 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			// An event whose payload NATS will not take still has readers waiting on it, so the
 			// same event goes out once more with that payload left out (standInEnvelope): the
 			// reader learns which event it is and reads the item itself. A stand-in refused in
-			// its turn, one this batch can no longer send, and an envelope no stand-in can be
-			// made of count as reached, as every refusal did before stand-ins.
-			if !stopped && ctx.Err() == nil {
-				if item, ok := standInEnvelope(send.event.item); ok {
-					send.standIn = &item
-					issue(c)
-					return
-				}
+			// its turn settles the send refused, above. A stand-in this batch can no longer send
+			// leaves the send lost: the next scan sends the event again, and the stand-in after it.
+			if stopped || ctx.Err() != nil {
+				send.state = lost
+				break
 			}
-			send.state = reached
+			standIn := standInEnvelope(send.event.item)
+			send.standIn = &standIn
+			issue(c)
+			return
 		case send.fenced, errors.Is(err, bus.ErrUnavailable):
 			// NATS unreachable is the outage the publish-failure metric exists for, so the send
 			// that met it is counted a failure, once; a send the hold's deadline refused never
@@ -640,7 +656,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		switch {
 		case send.state == failed:
 			holdRest(c, send.event)
-		case send.state != reached:
+		case send.state != reached && send.state != refused:
 			c.next = len(c.sends)
 			finish(c)
 		case c.next < len(c.sends):
@@ -739,18 +755,18 @@ var standInWholeFields = map[string]bool{"ask_sessions": true, "project_key": tr
 // names whatever its size, plus payload_omitted: true. A reader then learns which event it is
 // and reads the item itself for the rest, where today it learns nothing at all.
 //
-// ok is false for an envelope no stand-in can be made of - one whose payload is not a JSON
-// object, or whose event carries no payload - which settles as a refusal settled before
-// stand-ins.
-func standInEnvelope(item contracts.Envelope) (contracts.Envelope, bool) {
+// A payload that is not a JSON object - an array, a string, a number, a boolean, null, or no
+// payload at all - has no field to keep, so its stand-in's payload is {"payload_omitted":true}.
+// So every event has a stand-in.
+func standInEnvelope(item contracts.Envelope) contracts.Envelope {
 	var event map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
-		return contracts.Envelope{}, false
+	if json.Unmarshal([]byte(item.Payload), &event) != nil || event == nil {
+		// envelope encodes every event as an object, so this is an envelope it did not build.
+		event = map[string]json.RawMessage{}
 	}
+	// A payload that is not a JSON object does not decode here, and payload stays empty.
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(event["payload"], &payload); err != nil {
-		return contracts.Envelope{}, false
-	}
+	_ = json.Unmarshal(event["payload"], &payload)
 	kept := make(map[string]json.RawMessage, len(payload)+1)
 	for name, value := range payload {
 		if len(value) <= standInPayloadFieldBytes || standInWholeFields[name] {
@@ -758,15 +774,9 @@ func standInEnvelope(item contracts.Envelope) (contracts.Envelope, bool) {
 		}
 	}
 	kept["payload_omitted"] = json.RawMessage("true")
-	short, err := json.Marshal(kept)
-	if err != nil {
-		return contracts.Envelope{}, false
-	}
-	event["payload"] = short
-	encoded, err := json.Marshal(event)
-	if err != nil {
-		return contracts.Envelope{}, false
-	}
+	// Neither encoding can fail: every value in them is one that json.Unmarshal read whole.
+	event["payload"], _ = json.Marshal(kept)
+	encoded, _ := json.Marshal(event)
 	item.Payload = string(encoded)
-	return item, true
+	return item
 }

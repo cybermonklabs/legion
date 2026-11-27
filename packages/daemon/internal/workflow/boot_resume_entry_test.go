@@ -19,6 +19,7 @@ import (
 // entry's own task reaches it only on the next admission pass or entry sweep. A claim level with
 // its row is resumed as before, at no entry, since it is on the entry its row names already.
 func TestTheBootsResumeOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: entryIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true}
 	for _, tc := range []struct {

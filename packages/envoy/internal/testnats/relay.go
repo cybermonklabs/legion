@@ -256,10 +256,11 @@ func (r *relay) freeze() func() {
 // there, with the func that lets the writes through again, which runs once however often it is
 // called. Holds nest: the relay writes again once every hold has been released. Bytes a client
 // sends meanwhile wait in the relay, as a freeze keeps them, while the server's own bytes keep
-// reaching the client. Within connectTimeout, hold fails on a frozen relay, whose PONGs barrier
+// reaching the client. Within connectTimeout, or by the end of bound (the caller's test's
+// deadline, testDeadline) when that comes first, hold fails on a frozen relay, whose PONGs barrier
 // could not read, on a connection the relay cannot read as NATS protocol, and on one that stays
 // part-way through an operation; the func it returns must run all the same.
-func (r *relay) hold() (func(), error) {
+func (r *relay) hold(bound waitEnd) (func(), error) {
 	r.mu.Lock()
 	r.holds++
 	frozen := r.gate != nil
@@ -273,7 +274,7 @@ func (r *relay) hold() (func(), error) {
 	if frozen {
 		return release, errors.New("the relay is frozen, so the server's answer to the relay's PING could not reach it")
 	}
-	return release, r.await("every client's bytes to the server to stop at the end of an operation", func() (bool, error) {
+	return release, r.await("every client's bytes to the server to stop at the end of an operation", bound, func() (bool, error) {
 		for j := range r.joins {
 			if j.sent.broken != nil {
 				return false, fmt.Errorf("the relay cannot read what the client on port %d sends as NATS protocol: %w", j.port(), j.sent.broken)
@@ -313,12 +314,13 @@ func (r *relay) leave(j *joined, written []byte) {
 
 // barrier sends the server a PING of the relay's own on each connection whose client has sent its
 // CONNECT, with a hold in force, and returns once the server has answered each with its PONG or
-// closed the connection, within connectTimeout. The server reads a connection in order and answers
-// a PING only once it has processed everything before it, so every request a client sent before
-// the hold has been processed: the server's unlocked read of a service import's account
-// (Server.Reload), and the importing account's lock it takes after that read, are behind it, which
-// orders them before a reload's write under that lock. The client never sees that PONG.
-func (r *relay) barrier() error {
+// closed the connection, within connectTimeout or by the end of bound when that comes first. The
+// server reads a connection in order and answers a PING only once it has processed everything
+// before it, so every request a client sent before the hold has been processed: the server's
+// unlocked read of a service import's account (Server.Reload), and the importing account's lock it
+// takes after that read, are behind it, which orders them before a reload's write under that lock.
+// The client never sees that PONG.
+func (r *relay) barrier(bound waitEnd) error {
 	type ping struct {
 		j      *joined
 		number int64
@@ -339,7 +341,7 @@ func (r *relay) barrier() error {
 		// A write that fails is a connection the server has closed, which the wait below sees.
 		_, _ = p.j.upstream.Write([]byte("PING\r\n"))
 	}
-	return r.await("the server's answer to the relay's PING on every connection", func() (bool, error) {
+	return r.await("the server's answer to the relay's PING on every connection", bound, func() (bool, error) {
 		for _, p := range pings {
 			if _, open := r.joins[p.j]; open && p.j.pongs < p.number {
 				return false, nil
@@ -349,11 +351,18 @@ func (r *relay) barrier() error {
 	})
 }
 
-// await waits, within connectTimeout, for settled, called under the relay's mu, to say the
-// relay's connections are where it wants them, and returns settled's error, or one naming what it
-// waited for if the time ran out. A relay that has closed has nothing to wait for.
-func (r *relay) await(what string, settled func() (bool, error)) error {
+// await waits, within connectTimeout or until the end of bound when that comes first, for
+// settled, called under the relay's mu, to say the relay's connections are where it wants them,
+// and returns settled's error, or one naming what it waited for if the time ran out. A relay that
+// has closed has nothing to wait for. bound is the caller's test's own (testDeadline), so a Reload
+// whose wait reaches that deadline fails its test by name rather than spend the binary's last
+// seconds.
+func (r *relay) await(what string, bound waitEnd, settled func() (bool, error)) error {
 	deadline := time.Now().Add(connectTimeout)
+	cut := bound.bounded && bound.end.Before(deadline)
+	if cut {
+		deadline = bound.end
+	}
 	for {
 		r.mu.Lock()
 		done, err := settled()
@@ -363,6 +372,9 @@ func (r *relay) await(what string, settled func() (bool, error)) error {
 			return err
 		}
 		if time.Now().After(deadline) {
+			if cut {
+				return fmt.Errorf("waited for %s until %s, short of the test's deadline", what, bound)
+			}
 			return fmt.Errorf("waited %s for %s", connectTimeout, what)
 		}
 		time.Sleep(barrierPoll)

@@ -132,6 +132,7 @@ func assertStopped(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string,
 // refusal writes nothing and leaves the fact unspent. Each control is the same stop with no such
 // change between the read and the fact, and it stops the task.
 func TestAnOwnersStopIsJudgedOnTheRecordItsFactReads(t *testing.T) {
+	t.Parallel()
 	for _, adopted := range []bool{false, true} {
 		name := "control: the owner's stop of the run its route read stops the task"
 		if adopted {
@@ -250,6 +251,7 @@ func TestAnOwnersStopIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 // no longer is refused ISSUE_OUTSIDE_TREE. Each refusal writes nothing and leaves the fact
 // unspent.
 func TestAnOwnersPlanIsJudgedOnTheRecordItsFactReads(t *testing.T) {
+	t.Parallel()
 	widget := func(t *testing.T) plan.Task { return givenTask(t, "Build the widget.", "implementer", "reviewer") }
 
 	t.Run("control: a plan given at generation 0 for a child recorded since that has not started waits for its first step", func(t *testing.T) {

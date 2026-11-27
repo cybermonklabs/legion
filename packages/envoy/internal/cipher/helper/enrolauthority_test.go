@@ -100,7 +100,10 @@ func newEnrolBroker(t *testing.T) *enrolBroker {
 		}
 		w.WriteHeader(204)
 	})
-	b.srv = httptest.NewServer(mux)
+	// The handlers read b.srv on the server's goroutines, so it is set before the server serves:
+	// built unstarted, assigned, then started.
+	b.srv = httptest.NewUnstartedServer(mux)
+	b.srv.Start()
 	t.Cleanup(b.srv.Close)
 	return b
 }

@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The generated API contract carries `expected: {title?, description?}` on the body of
+  `PATCH /api/v1/priorities/{id}`, and the route's description names it and its refusal,
+  `409 PRIORITY_CHANGED`.

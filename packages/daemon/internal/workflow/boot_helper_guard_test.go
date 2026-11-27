@@ -24,6 +24,7 @@ import (
 // the earlier release moved is, and the first fact after the scenario boots again (rebooted):
 // none fails.
 func TestTheBootPassBeforeAFactRefusesARunAFactLeftUncounted(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		write func(t *testing.T, pool *pgxpool.Pool, engine *Engine)

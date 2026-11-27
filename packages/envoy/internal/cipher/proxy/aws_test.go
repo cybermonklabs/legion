@@ -50,17 +50,21 @@ var (
 	awsSessionPlaceholder = placeholder.Prefix + "awsSessionAwsSessionAwsSession01"
 )
 
-// awsRules is the rules file of a key pair: one entry of kind aws, bound to the one host, with
-// no allow list, since what bounds an AWS call is the key the broker signs it with.
+// awsRules is the airlock's rules of a key pair: the aws kind on the one host, whose one way is
+// sign, with no allow list, since what bounds an AWS call is the key the broker signs it with, and
+// the pair's name bound to it by way of sign.
 func awsRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: awsName, Hosts: []string{boundHost}, Kind: "aws"}}}
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{{Name: "aws", Hosts: []string{boundHost}, Ways: []string{proxyrules.WaySign}}},
+		Names: []proxyrules.Binding{{Name: awsName, Kind: "aws", Way: proxyrules.WaySign}},
+	}
 }
 
 // newAWSRig is the rig with the key pair as the grant's one name. session says whether the pair
 // has a session token, which is the slot a stored pair fills only when its value holds one.
 func newAWSRig(t *testing.T, session bool) *rig {
 	t.Helper()
-	r := newRig(t, Options{Rules: awsRules()})
+	r := newRuledRig(t, awsRules(), Options{})
 	awsGrant(r, session)
 	return r
 }
@@ -374,7 +378,7 @@ func TestTheThreeAWSShapesTheAirlockRefuses(t *testing.T) {
 func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
 	const body = "a body of thirty-two bytes, this"
 	// A budget of exactly one such body, so the second call of that size has to wait for it.
-	r := newRig(t, Options{Rules: awsRules(), HashBudget: int64(len(body))})
+	r := newRuledRig(t, awsRules(), Options{HashBudget: int64(len(body))})
 	awsGrant(r, false)
 
 	// The stand-in holds every call it is sent until the row lets them all answer, so a call
@@ -464,6 +468,28 @@ func TestTheAirlockHoldsOnlyItsBudgetOfBodiesToHash(t *testing.T) {
 		case <-time.After(cutWait):
 			t.Fatalf("a call had not answered %v after the stand-in let them all answer", cutWait)
 		}
+	}
+}
+
+// TestAPlaceholderInAnAWSCallsQueryIsRefusedOnTheSignPath: the leftover scan reads the query of
+// an AWS call signed with the real key, so a whole placeholder the command wrote in its query is
+// refused 403 PLACEHOLDER_NOT_SWAPPED. This is a regression test: an SC14 draft blanked the query
+// for the sign path under the false assumption that the sign path rewrites it.
+func TestAPlaceholderInAnAWSCallsQueryIsRefusedOnTheSignPath(t *testing.T) {
+	r := newAWSRig(t, true)
+	verifyingStandIn(r, true)
+	target := "https://" + boundHost + "/v1/things?tag=" + placeholder.Prefix + "0123456789abcdef0123456789abcdef"
+	request := awsRequest(t, "GET", target, "", "execute-api", true)
+	answer, body := sendAWS(t, r.client(awsKeyPlaceholder), request)
+	if answer.StatusCode != http.StatusForbidden {
+		t.Fatalf("a signed AWS call with a placeholder in its query answered %d %q; want 403", answer.StatusCode, body)
+	}
+	lines := r.logs.refusals()
+	if len(lines) != 1 || lines[0].fields["code"] != codePlaceholderLeft {
+		t.Fatalf("the refusal logged %v; want one line coded %s", lines, codePlaceholderLeft)
+	}
+	if seen := r.requests(); len(seen) != 0 {
+		t.Fatalf("the service saw %d requests; want none", len(seen))
 	}
 }
 

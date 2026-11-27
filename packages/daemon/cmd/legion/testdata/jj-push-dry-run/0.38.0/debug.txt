@@ -1,0 +1,5 @@
+jj git push --dry-run --ignore-working-copy --color=never --debug --bookmark forward
+2026-11-20T02:36:52.172158Z  INFO jj_cli::cli_util: debug logging enabled
+Changes to push to origin:
+  Move forward bookmark forward from bacdb9e98ea0 to 82c89dd0bcca
+Dry-run requested, not pushing.

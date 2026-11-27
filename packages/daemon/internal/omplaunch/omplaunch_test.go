@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -241,5 +242,135 @@ func TestWithPrefix(t *testing.T) {
 	got := WithPrefix([]string{"env", "OMP_PROFILE=legion", "--", "nice", "-n 5"}, invocation)
 	if want := "env 'OMP_PROFILE=legion' -- nice '-n 5' " + invocation; got != want {
 		t.Errorf("prefix: got %q, want %q", got, want)
+	}
+}
+
+// PrefixMasked takes every word of the prefix of MaskedPrefixWord characters or more out of a
+// launch's output a line at a time, the program included, and the value alone of a NAME=value
+// word, wherever each stands; a shorter word stays, a line that names the variable with another
+// value stays, and a line that still holds a 10-character run of an argument or a value, folded or
+// cut, is not printed. A program word with no command's shape (a token) is held to the same way,
+// so its cut copy and its upper-case copy are not printed either. The credentials are made up: a
+// token pasted as the program, a token an env word sets, and a proxy URL's password.
+func TestPrefixMaskedTakesOutEveryWordAndValue(t *testing.T) {
+	const program, value = "madeUpProgramToken0123", "madeUpEnvValue0123456"
+	proxy := "https://legion:madeUpProxyPass0123" + "@proxy.example"
+	prefix := []string{program, "OMP_TOKEN=" + value, "--", proxy}
+	text := "sh: 1: " + program + ": not found; OMP_TOKEN=" + value + " (" + value + "x); -- kept; " + proxy + "\n" +
+		"OMP_TOKEN=other is set\n" +
+		"the token MADEUPENVVALUE0123456 is refused\n" +
+		"cut: madeUpProgramTo…\n" +
+		"MADEUPPROGRAMTOKEN0123 refused"
+	want := "sh: 1: <prefix word 0>: not found; <prefix word 1> (<prefix word 1>x); -- kept; <prefix word 3>\n" +
+		"OMP_TOKEN=other is set\n" +
+		"(a line of 42 bytes that holds part of the launch prefix, not printed)\n" +
+		"(a line of 23 bytes that holds part of the launch prefix, not printed)\n" +
+		"(a line of 30 bytes that holds part of the launch prefix, not printed)"
+	if got := PrefixMasked(text, prefix); got != want {
+		t.Fatalf("PrefixMasked = %q, want %q", got, want)
+	}
+	if got := PrefixMasked("nothing of it", nil); got != "nothing of it" {
+		t.Fatalf("PrefixMasked with no prefix = %q, want the text as it was", got)
+	}
+}
+
+// A prefix word holding "=" that sets no variable is a word whole, whose runs a line may not hold:
+// a key handed to a wrapper with its base64 padding (`<token>==`), and a `--key=<token>` flag. The
+// wrapper echoes each token without what surrounded it. The tokens are made up.
+func TestPrefixMaskedReadsOnlyAVariableAsANameValueWord(t *testing.T) {
+	for _, tc := range []struct{ name, word, token string }{
+		{"a base64 key and its padding", "madeUpKeyToken0123456789==", "madeUpKeyToken0123456789"},
+		{"a base64 key holding a / and a +", "madeUp+Key/Token0123456789=", "madeUp+Key/Token0123456789"},
+		{"a flag with its value", "--key=madeUpFlagToken0123456789", "madeUpFlagToken0123456789"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PrefixMasked("keywrap: key "+tc.token+" rejected", []string{"keywrap", "--key", tc.word})
+			if strings.Contains(got, tc.token[:10]) {
+				t.Fatalf("PrefixMasked = %q, which holds part of the key", got)
+			}
+		})
+	}
+	// A variable set to a value is still read as one: the line naming the variable is kept.
+	const value = "madeUpEnvValue0123456"
+	if got := PrefixMasked("OMP_TOKEN is set", []string{"env", "OMP_TOKEN=" + value}); got != "OMP_TOKEN is set" {
+		t.Fatalf("PrefixMasked = %q, want the line naming the variable kept", got)
+	}
+}
+
+// The program is taken out as an exact copy and by its base name, and by its base name's runs only
+// when that has no command's shape: a line that shares a directory with it is kept, a check's JSON
+// among them, while a shell's refusal naming it either way is masked, and a cut copy of a token
+// pasted as the program is not printed. The token is made up.
+func TestPrefixMaskedKeepsALineSharingTheProgramsDirectory(t *testing.T) {
+	for _, tc := range []struct{ name, program, text, want string }{
+		{"a library beside the wrapper", "/usr/local/bin/proxywrap",
+			"error: cannot read /usr/local/lib/libproxy.so.1", "error: cannot read /usr/local/lib/libproxy.so.1"},
+		{"a check's JSON", "/usr/local/bin/omp-proxy-wrapper",
+			`{"python":"/usr/local/lib/python3.12"}`, `{"python":"/usr/local/lib/python3.12"}`},
+		{"the program by its path", "/usr/local/bin/proxywrap",
+			"sh: 1: /usr/local/bin/proxywrap: not found", "sh: 1: <prefix word 0>: not found"},
+		{"the program by its base name", "/usr/local/bin/proxywrap",
+			"proxywrap: cannot reach the proxy", "<prefix word 0>: cannot reach the proxy"},
+		{"a command name's cut copy", "/usr/local/bin/omp-proxy-wrapper",
+			"omp-proxy-wr… exited 1", "omp-proxy-wr… exited 1"},
+		{"a token program's cut copy", "/opt/bin/madeUpProgramToken0123",
+			"sh: madeUpProgramTo: cut", "(a line of 24 bytes that holds part of the launch prefix, not printed)"},
+		{"a line beside a token program", "/opt/bin/madeUpProgramToken0123",
+			"error: cannot read /opt/bin/wrapper.conf", "error: cannot read /opt/bin/wrapper.conf"},
+		{"a segmented token program's cut copy", "a1b2-c3d4-e5f6-g7h8-i9j0",
+			"sh: a1b2-c3d4-e5f6: not found", "(a line of 29 bytes that holds part of the launch prefix, not printed)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PrefixMasked(tc.text, []string{tc.program, "--"}); got != tc.want {
+				t.Fatalf("PrefixMasked = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// PrefixShown names the prefix's program, without its directory, and how many arguments follow,
+// never an argument: a made-up token set with env, and a made-up proxy URL with a password, are
+// the arguments here. A first word that is a NAME=value word shows as one, and one that has no
+// command's shape, a made-up token pasted where the program goes, bare or as a path's last part,
+// shows as ProgramNotShown. WithPrefixShown puts those words before the invocation, which holds no
+// credential.
+func TestPrefixShownNamesNoArgument(t *testing.T) {
+	const token = "madeUpPrefixToken0123456789"
+	invocation := "/usr/bin/mise x 'github:sjawhar/oh-my-pi@18' -- omp"
+	for _, tc := range []struct {
+		name   string
+		prefix []string
+		want   []string
+	}{
+		{"none", nil, nil},
+		{"a program alone", []string{"/usr/bin/nice"}, []string{"nice"}},
+		{"env setting a token", []string{"/usr/bin/env", "OMP_TOKEN=" + token}, []string{"env", "(1 argument, not shown)"}},
+		{"a proxy wrapper handed a URL", []string{"proxywrap", "--upstream", "https://legion:" + token + "@proxy.example", "--"}, []string{"proxywrap", "(3 arguments, not shown)"}},
+		{"a NAME=value first word", []string{"OMP_TOKEN=" + token, "omp-wrapper"}, []string{"(a NAME=value word)", "(1 argument, not shown)"}},
+		{"a versioned program", []string{"/usr/local/bin/python3.12", "-m", "wrap"}, []string{"python3.12", "(2 arguments, not shown)"}},
+		{"a token where the program goes", []string{token, "--flag"}, []string{ProgramNotShown, "(1 argument, not shown)"}},
+		{"a path ending in a token", []string{"/opt/bin/" + token}, []string{ProgramNotShown}},
+		{"a hex key where the program goes", []string{"deadbeefcafe4bad"}, []string{ProgramNotShown}},
+		{"a base64 key and its padding where the program goes", []string{token + "=="}, []string{ProgramNotShown}},
+		// A made-up token written in segments that each hold a digit, with no long run: it has no
+		// command's shape. A compiler's name with a digit in two of its segments keeps one.
+		{"a token in segments where the program goes", []string{"a1b2-c3d4-e5f6-g7h8-i9j0", "--x"}, []string{ProgramNotShown, "(1 argument, not shown)"}},
+		{"a cross compiler", []string{"/usr/bin/aarch64-linux-gnu-gcc-12"}, []string{"aarch64-linux-gnu-gcc-12"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PrefixShown(tc.prefix)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("PrefixShown(%q) = %q, want %q", tc.prefix, got, tc.want)
+			}
+			shown := WithPrefixShown(tc.prefix, invocation)
+			if want := strings.TrimSpace(strings.Join(tc.want, " ") + " " + invocation); shown != want {
+				t.Fatalf("WithPrefixShown = %q, want %q", shown, want)
+			}
+			for i := 0; i+10 <= len(token); i++ {
+				if strings.Contains(shown, token[i:i+10]) {
+					t.Fatalf("WithPrefixShown = %q, which holds %q of the token", shown, token[i:i+10])
+				}
+			}
+		})
 	}
 }

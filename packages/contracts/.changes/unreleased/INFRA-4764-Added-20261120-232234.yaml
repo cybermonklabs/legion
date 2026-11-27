@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The Dispatch API types hold a project's `proven_sessions` and the two routes
+  `PUT /api/v1/projects/{key}/proven-sessions` and `DELETE /api/v1/projects/{key}/proven-sessions`.
+  The new tool spec `dispatch_project_update` turns a project's proven-sessions setting on or off.
+time: 2026-11-20T23:22:34Z
+custom:
+    Issue: INFRA-4764

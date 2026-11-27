@@ -7,6 +7,7 @@ import {
   createComment,
   createIssueArtifact,
   dashboardOrigin,
+  editComment,
   getArtifactText,
   listMyAnswers,
   userHeaders,
@@ -16,15 +17,14 @@ import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
   answeredQuestionPreview,
+  FOUND_REFERENCE,
   HOST_KEY,
-  INERT_REFERENCE,
   OTHER_KEY,
   openMarginThread,
   QUESTION_IDS,
   questionBlock,
   questionText,
   RENDERED_BODY,
-  RENDERED_REFERENCE,
   type ReferenceWorld,
   referenceAgent,
   referenceTargetsIn,
@@ -39,7 +39,7 @@ import { asUser } from "./users";
  * The browser's half of the shared text table (`@legion/contracts`'s DISPATCH_TEXT_REFERENCES,
  * which the Go reader and the dashboard's reader are both held to): every row written into a
  * real Dispatch, read on the three surfaces a person reads text on — the rendered markdown of a
- * Conversation turn, the inert one-line preview of an Answers row, and the live document editor —
+ * Conversation turn, the one-line preview of an Answers row, and the live document editor —
  * each linking exactly the references its row names and nothing else, inside code included,
  * against a server that resolves them for real.
  *
@@ -67,6 +67,14 @@ const NO_ISSUE_KEY = "CORE-404";
  *  the preview takes rows of at most 160 characters with no line break, and this body has two. */
 const DECISION_BLOCK_ROW = ":::ask{#q2}\nWhich region first?\n:::";
 
+/** Why a row that nests blocks past the server's bound is no line of a document: the server
+ *  counts quotes, lists, list items and footnote definitions toward `maxNesting` and refuses a
+ *  document that opens a block past it (`nestingGuard` and `nestingRefusal`,
+ *  `packages/envoy/internal/dispatch/pmdoc/nesting.go`). Such a row is about where the readers of
+ *  text stop nesting, as the renderer does, not about the editor. */
+const NESTED_PAST_THE_BOUND =
+  "it nests blocks past the bound the server holds a document to, so the upload of every row would be refused whole";
+
 /** Rows no document can hold as a line of its text, each with the reason. They are read on the
  *  rendered and preview surfaces like any other.
  *
@@ -81,6 +89,10 @@ const DECISION_BLOCK_ROW = ":::ask{#q2}\nWhich region first?\n:::";
  *  document, and proved on the rendered and preview surfaces; their exclusion is no gap in the
  *  grammar. */
 const EDITOR_EXCLUDED: Readonly<Record<string, string>> = {
+  "```\ndispatch://CORE-1":
+    "an unclosed fence, which in a document opens a block that swallows every row written after it",
+  "```a`b\ndispatch://CORE-1\n```":
+    "a backtick in a fence's info string: the two readers of a reference follow CommonMark, which takes this for no fence at all, and the document editor's own parser does not - it opens a block here and swallows every row after it. So a party written on that line is delivered while a reader of the document sees code, which is the milder of the two directions and is left as it stands: aligning the readers would make them wrong against the server's renderer and every other reader of the stored text, and aligning the editor means changing vendored parsing for every document",
   ':::callout{#d1 affects="dispatch://CORE-1/spec#b-a dispatch://CORE-1/spec#b-b"}':
     "an unclosed directive, which in a document opens a block that swallows the text after it",
   [DECISION_BLOCK_ROW]:
@@ -89,6 +101,8 @@ const EDITOR_EXCLUDED: Readonly<Record<string, string>> = {
     "a document stores no numeric character reference: the parse reads it as the text `See #q2 here.`",
   "See \\#q2 and #q3 here.":
     "a document stores no backslash escape: the parse reads it as the text `See #q2 and #q3 here.`",
+  [`${"- ".repeat(51)}    dispatch://role/reviewer\n`]: NESTED_PAST_THE_BOUND,
+  [`${"> ".repeat(100)}>     dispatch://role/reviewer\n`]: NESTED_PAST_THE_BOUND,
 };
 
 /** Whether `row` writes a prefix two of its own items carry: the table proves an ambiguous
@@ -183,11 +197,14 @@ function casesFor(
     ...Object.values(world.items).map((item) => item.reference),
     ...QUESTION_IDS.map((id) => askReference(world, questions, id)),
   ]);
-  const document = new RegExp(`^dispatch://(${issues.join("|")})/(spec|artifact/)`);
-  // A document's title is the name its own reference carries, so the editor draws one whether
-  // or not that document exists; a block's title is the block's own text, so it draws only for
-  // a block this world holds.
-  const made = (link: string) => named.has(link) || (document.test(link) && !link.includes("#b-"));
+  // A spec is titled by its issue, and a document by its own name, which only a document the
+  // world holds has: this world makes one, the target's `notes.md`, and any other document's
+  // reference is its writer's words with no title (R8). A block's title is the block's own
+  // text, so it draws only for a block this world holds.
+  const document = new RegExp(
+    `^dispatch://(?:(?:${issues.join("|")})/spec|${world.target.key}/artifact/notes-md(?:@v\\d+)?)$`
+  );
+  const made = (link: string) => named.has(link) || document.test(link);
   return DISPATCH_TEXT_REFERENCES.map((row, index) => {
     const ids = new Map(
       Object.entries(row.items ?? {}).map(([id, reference]) => [
@@ -252,10 +269,10 @@ async function issueStatus(key: string): Promise<number> {
 
 /**
  * The world's precondition, a setup error when it fails: every key a row needs exists, every
- * other key it writes where the grammar could read it names no issue, and each short id the
- * table writes to name nothing still names nothing once it has been rewritten into this world
- * (the real ids are minted, so a value the table chose to miss by one character could in
- * principle hit).
+ * other key it writes where the grammar could read it names no issue, every issue it links that
+ * this world holds is one its case expects drawn, and each short id the table writes to name
+ * nothing still names nothing once it has been rewritten into this world (the real ids are
+ * minted, so a value the table chose to miss by one character could in principle hit).
  */
 async function expectWorldHolds(world: ReferenceWorld, cases: readonly Case[]): Promise<void> {
   const statuses = new Map<string, Promise<number>>();
@@ -279,6 +296,21 @@ async function expectWorldHolds(world: ReferenceWorld, cases: readonly Case[]): 
     for (const key of standaloneKeys(item.body)) {
       if (!(item.row.issues ?? []).includes(key) && (await status(key)) !== 404) {
         throw new Error(`setup: ${rowName(item)} needs ${key} to name no issue`);
+      }
+    }
+    // The world holds issues `casesFor` does not expect drawn: ACME-1 to ACME-11 stand before
+    // ACME-12 only to give it its number. The live editor draws a title for every issue that
+    // exists, so a row that links one of them fails as though the editor drew too much. A key
+    // longer than a key can be names no issue and is not asked about.
+    for (const link of item.links) {
+      if (item.drawn.includes(link)) {
+        continue;
+      }
+      const key = /^dispatch:\/\/([A-Z][A-Z0-9]{0,9}-[1-9]\d{0,8})$/.exec(link)?.[1];
+      if (key !== undefined && (await status(key)) === 200) {
+        throw new Error(
+          `setup: ${rowName(item)} cites ${key}, which exists in this world but is not in drawn`
+        );
       }
     }
     // A row whose reference names nothing must still name nothing: its written id is no prefix
@@ -388,6 +420,17 @@ test("a margin thread's replies link each reference the shared table links and n
       });
       continue;
     }
+    if (item.row.refs.includes("dispatch://agent/a(b)c")) {
+      // The balanced-parentheses row is a readable session reference but not a delivery target.
+      // An edit stores text without delivering it, so this row can still exercise the renderer.
+      const reply = await createComment(
+        world.host.key,
+        { body: "Text before the edit.", reply_to: root.id },
+        referenceAgent
+      );
+      await editComment(reply.id, { body: item.body }, referenceAgent);
+      continue;
+    }
     await createComment(world.host.key, { body: item.body, reply_to: root.id }, referenceAgent);
   }
 
@@ -400,9 +443,16 @@ test("a margin thread's replies link each reference the shared table links and n
     await expect(replies).toHaveCount(cases.length);
     const body = (item: Case) => replies.nth(cases.indexOf(item)).locator(RENDERED_BODY).first();
     for (const item of cases) {
+      // The reader finds exactly the row's links; each whose target this world holds is a link,
+      // and each it does not hold is its writer's words (R8), which `reference-naming.e2e.ts`
+      // holds on its own rows.
       await expect
-        .poll(() => referenceTargetsIn(body(item), RENDERED_REFERENCE), { message: rowName(item) })
+        .poll(() => referenceTargetsIn(body(item), FOUND_REFERENCE), { message: rowName(item) })
         .toEqual([...item.links]);
+      await expect(
+        body(item).locator("[data-dispatch-ref]:not(a[href])"),
+        rowName(item)
+      ).toHaveCount(0);
       await expectMadeTitles(body(item), (link) => `a[data-dispatch-ref="${link}"]`, titles, item);
     }
 
@@ -429,14 +479,14 @@ test("a margin thread's replies link each reference the shared table links and n
   }
 });
 
-test("the one-line preview shows each reference the shared table links as its target's title, with no link inside it", async ({
+test("the one-line preview shows each reference the shared table links as its target's title", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);
   const world = await seedReferenceWorld();
   // The Replies page carried this one-line preview until INFRA-450 deleted that page, and the
   // Inbox that took its rows draws a thread whole with live links rather than a preview of it.
-  // The inert one-line preview a reader still meets is an answered ask's question on the
+  // The one-line preview a reader still meets is an answered ask's question on the
   // Answers page, so each row of the table is written as one question there. A preview is one
   // line of a list, so the table's longer and multi-line bodies are read on the rendered and
   // editor surfaces alone.
@@ -492,12 +542,15 @@ test("the one-line preview shows each reference the shared table links as its ta
     for (const [item, ask] of asks) {
       const preview = answeredQuestionPreview(page, ask);
       await expect
-        .poll(() => referenceTargetsIn(preview, INERT_REFERENCE), { message: rowName(item) })
+        .poll(() => referenceTargetsIn(preview, FOUND_REFERENCE), { message: rowName(item) })
         .toEqual([...item.links]);
       await expectMadeTitles(preview, (link) => `[data-dispatch-ref="${link}"]`, titles, item);
-      // A preview is one control's text: what a reference reads as is link-styled text, never
-      // a link.
-      await expect(preview.locator("a"), rowName(item)).toHaveCount(0);
+      // The Answers row is a record a reader reads (`DISPATCH_READING_SURFACES`'s
+      // `answers-subject`), so each reference it draws is a link into its target; a preview
+      // inside a control draws the same text with no link in it.
+      await expect(preview.locator("[data-dispatch-ref]:not(a[href])"), rowName(item)).toHaveCount(
+        0
+      );
     }
   } finally {
     await context.close();

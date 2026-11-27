@@ -249,6 +249,7 @@ func tree(t *testing.T, root string) map[string]string {
 // as the controller's pod mounts its one role's. A layout that moved the directory would leave the
 // guard copying under a root-owned mount point no role can write, or into /tmp.
 func TestTheGuardsPrivateCopyIsMadeInTheRolesOwnPrivateDirectory(t *testing.T) {
+	t.Parallel()
 	if want := FixedRoot + "/" + RolePrivateDir; leakguard.PrivateCopyBase != want {
 		t.Fatalf("leakguard.PrivateCopyBase = %s, want the private directory role-init binds for the role alone, %s", leakguard.PrivateCopyBase, want)
 	}
@@ -258,6 +259,7 @@ func TestTheGuardsPrivateCopyIsMadeInTheRolesOwnPrivateDirectory(t *testing.T) {
 // launcher whose environment names no pin says nothing of a check at all, and refuses a check
 // pushed to it anyway, writing nothing.
 func TestTheHelloNamesTheLaunchersLeakCheckPin(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	t.Run("a pin", func(t *testing.T) {
 		pinLeakCheck(t, leakCheckPin)
 		g := newSessionRig(t, Config{LeakCheckDir: filepath.Join(t.TempDir(), "leak-check")})
@@ -291,6 +293,7 @@ func TestTheHelloNamesTheLaunchersLeakCheckPin(t *testing.T) {
 // the same process says it is installed, and a sequence pushed again on it is answered Installed
 // at once with no second install.
 func TestTheSingleRoleLauncherInstallsThePushedCheckOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	pinLeakCheck(t, leakCheckPin)
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
@@ -328,6 +331,7 @@ func TestTheSingleRoleLauncherInstallsThePushedCheckOnce(t *testing.T) {
 // What a launcher process installed is its own: a new Run over a directory an earlier one
 // installed into says it has installed nothing, and installs over that install when pushed.
 func TestANewLauncherProcessInstallsOverTheInstallItFinds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	pinLeakCheck(t, leakCheckPin)
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
@@ -360,6 +364,7 @@ func TestANewLauncherProcessInstallsOverTheInstallItFinds(t *testing.T) {
 // is verified once, and a role that reconnects says it is installed. Nothing of a role's
 // namespaces is needed, since no generation starts.
 func TestTheRolesOfOneContainerInstallTheCheckOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	pinLeakCheck(t, leakCheckPin)
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
@@ -396,6 +401,7 @@ func TestTheRolesOfOneContainerInstallTheCheckOnce(t *testing.T) {
 // whichever slice makes the body whole installs it, every other slice of either caller finds it
 // installed, both sequences end Installed, and the check is verified once.
 func TestTwoCallersOfOneCheckInstallInstallItOnce(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	runs := filepath.Join(t.TempDir(), "help-runs")
 	frames := servedLeakCheck(t, leakCheckPin, runs)
@@ -447,6 +453,7 @@ func TestTwoCallersOfOneCheckInstallInstallItOnce(t *testing.T) {
 // refused slices were dropped), a tag that is not the launcher's pin, and a check whose --help
 // does not answer.
 func TestARefusedLeakCheckLeavesTheDirectoryAsItWas(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	for _, tc := range []struct {
 		name   string
 		frames func(t *testing.T, runs string) []shimwire.LauncherLeakCheck
@@ -596,6 +603,7 @@ func reaperBound(t *testing.T) time.Duration {
 // race). The check served here writes its own pid and waits, while it runs, until the test has
 // read the guard, so the answer does not depend on how fast a reaper's pass is on this machine.
 func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pinLeakCheck).
 	pinLeakCheck(t, leakCheckPin)
 	marks := t.TempDir()
 	pidFile, release := filepath.Join(marks, "pid"), filepath.Join(marks, "release")
@@ -666,6 +674,7 @@ const installsUnderReaper = 200
 // unguarded installs met no reap at all, so the installs run in the test binary as PID 1 of a PID
 // namespace of its own (TestLeakCheckInstallPIDOneHelper).
 func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
+	t.Parallel()
 	t.Logf("%s", runAsPIDOne(t, "TestLeakCheckInstallPIDOneHelper"))
 }
 
@@ -677,6 +686,7 @@ func TestTheLeakCheckInstallSurvivesPID1sReaper(t *testing.T) {
 // the reaper (reapedByAnother), within installsUnderReaper tries, or the reaper never met a run's
 // exit and the installs before it prove nothing.
 func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
 	}

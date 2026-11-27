@@ -22,6 +22,7 @@ import type {
   DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
+  LegionIssueResponse,
   MyRepliesResponse,
   ReferenceTarget,
 } from "./types";
@@ -144,6 +145,16 @@ export const issueStepsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "steps"],
     queryFn: () => api.listSteps(key),
+  });
+
+/** Each version of each phase handoff of one issue, without its body
+ *  (`GET /api/v1/issues/{key}/handoffs`): the Conversation's handoff cards and Dashboard's phase
+ *  track read the one key, which a handoff's event refreshes (`api/event-refresh.ts`). A card
+ *  reads a handoff's body when expanded. */
+export const handoffsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["handoffs", key],
+    queryFn: () => api.listHandoffs(key),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
@@ -413,11 +424,13 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   return settled.promise;
 }
 
-/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
- *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
- *  leaves the closed issues out, as the project listing's own flag does. */
+/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, only
+ *  those whose own row names it where it asks for that (`own`), in the statuses it names, with
+ *  their move into backlog or icebox where it asks for that. `open` leaves the closed issues
+ *  out, as the project listing's own flag does. */
 export const advancesIssuesParams = (listing: AdvancesListing, open = false) => ({
   advances: [listing.advances],
+  ...(listing.own ? { own: true } : {}),
   ...(listing.statuses === undefined ? {} : { status: [...listing.statuses] }),
   ...(listing.moved ? { moved: true } : {}),
   ...(open ? { open: true } : {}),
@@ -438,6 +451,7 @@ export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
       "issues",
       "advances",
       listing.advances,
+      ...(listing.own ? ["own"] : []),
       ...(listing.statuses === undefined ? [] : ["status", ...listing.statuses]),
       ...(listing.moved ? ["moved"] : []),
       ...(open ? ["open"] : []),
@@ -495,6 +509,9 @@ interface DeliveryLiveBodies {
   readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
+  /** One issue's Legion state, `GET /api/v1/issues/{key}/legion`'s body: not a delivery view,
+   *  but served by the same hub, so `api/legion-issue.ts` subscribes it through `subscribeLive`. */
+  readonly legion_issue: LegionIssueResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
@@ -510,6 +527,9 @@ function subscribeLive<K extends keyof DeliveryLiveBodies>(
     DeliveryLiveBodies[K]
   >;
 }
+
+/** `api/legion-issue.ts` builds its live query of an issue's Legion state from these two. */
+export { LIVE, subscribeLive };
 
 /** The delivery timeline, live: the window, the search and every facet, applied by Dispatch
  *  (LEGION-567's plan, "API"), keyed by the view so a filter change subscribes its own entry. */

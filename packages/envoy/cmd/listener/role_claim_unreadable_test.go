@@ -78,6 +78,7 @@ func assertUnreadableRoleClaimAnswer(t *testing.T, recorder *httptest.ResponseRe
 }
 
 func TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	for _, tc := range unreadableRoleClaims {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +96,7 @@ func TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
 // holder_lapsed) reports one, and an unreadable claim establishes nothing about the holder, so a
 // consumer of the lane is told nothing it would act on.
 func TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) {
+	t.Parallel()
 	const role = "reviewer"
 	topic := contracts.RoleTopicPrefix + role
 	for _, tc := range unreadableRoleClaims {
@@ -138,6 +140,7 @@ func TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError(t *testing.T) 
 // (packages/pi-shared/src/legion-claim-core.ts): the record will not change at the next try, so a
 // claimant that retried a 503 would claim it forever. The record is left as it was.
 func TestASoftClaimOfAnUnreadableClaimRecordIsAServerErrorAndNotClaimedAgain(t *testing.T) {
+	t.Parallel()
 	const role, claimant = "reviewer", "ses_soft_claimant"
 	for _, tc := range unreadableRoleClaims {
 		t.Run(tc.name, func(t *testing.T) {
@@ -159,6 +162,7 @@ func TestASoftClaimOfAnUnreadableClaimRecordIsAServerErrorAndNotClaimedAgain(t *
 // error above, and so does the bare session id that build also stored. A missing field is never
 // store.ErrMalformedRoleClaim.
 func TestARoleLookupReadsAClaimRecordThatNamesNoProcessAndNoRenewal(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}

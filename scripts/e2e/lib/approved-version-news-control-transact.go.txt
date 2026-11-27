@@ -1,0 +1,27 @@
+//go:build e2e
+
+// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
+// scratch copy of the base commit alone, whose package daemon defines no seedTransact, the seam
+// the head's part-one seed takes its transaction through. It does what that seed did before
+// #4533 (78a2a9692d) moved it onto store.Transact, which the base lacks: it opens a commit scope
+// (intake.WithCommitHooks), runs write in one transaction on the base's Pool, and runs the hooks
+// the writes registered once the transaction committed, never when it rolled back.
+package daemon
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/store"
+)
+
+func seedTransact(ctx context.Context, pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) error) error {
+	ctx, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return write(ctx, tx) }); err != nil {
+		return err
+	}
+	committed()
+	return nil
+}

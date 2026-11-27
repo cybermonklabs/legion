@@ -2,6 +2,7 @@ package bus
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strconv"
@@ -284,6 +285,16 @@ func clientOwning(conn *nats.Conn) *Client {
 		}
 	}
 	return nil
+}
+
+// loggerOwning is the logger of the client that owns conn (WithLogger), and followsDefault, which
+// writes where slog.Default() points at each line, when no client owns it: where a function given
+// a connection and no client, such as EnsureKeyValue, writes its lines.
+func loggerOwning(conn *nats.Conn) *slog.Logger {
+	if owner := clientOwning(conn); owner != nil {
+		return owner.log()
+	}
+	return followsDefault
 }
 
 // refusedBy is send's answer, or the server's refusal of one of subjects, the subjects send

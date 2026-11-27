@@ -77,10 +77,10 @@ type sessionConsumerSweep struct {
 	logger *logging.Logger
 }
 
-// startSessionConsumerSweep runs a pass every interval, and one as the listener starts
-// (startSweep), under the context the listener's other KV loops run under.
-func startSessionConsumerSweep(ctx context.Context, sweep *sessionConsumerSweep, interval time.Duration) <-chan struct{} {
-	return startSweep(ctx, interval, sweep.pass)
+// startSessionConsumerSweep runs a pass every interval, at the phase phase in it (startSweep,
+// sweepPhase), under the context the listener's other KV loops run under.
+func startSessionConsumerSweep(ctx context.Context, sweep *sessionConsumerSweep, interval, phase time.Duration) <-chan struct{} {
+	return startSweep(ctx, interval, phase, sweep.pass)
 }
 
 // pass deletes the consumer of every session the registry judges gone, trying at most

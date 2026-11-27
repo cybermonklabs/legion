@@ -19,6 +19,7 @@ import (
 // which the loopback fake can vouch for. The backfill runs over it too, so a row's bytes make the
 // whole trip: Postgres, the bucket, back through the verifying reader, and the row cleared.
 func TestS3AgainstAnS3CompatibleServer(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process (tests3.Start).
 	if os.Getenv("DISPATCH_TEST_NO_CONTAINERS") == "1" {
 		t.Skip("DISPATCH_TEST_NO_CONTAINERS=1: this box runs no test containers")
 	}

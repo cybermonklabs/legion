@@ -1,14 +1,14 @@
 /**
- * Nine rules every TypeScript reader and writer of Dispatch text shares, so no copy drifts: the
+ * Ten rules every TypeScript reader and writer of Dispatch text shares, so no copy drifts: the
  * session id an agent's conversation is addressed by, whether an id is written short, how many
- * UTF-8 bytes a string holds, the most bytes a reference's target id may hold, the caption a
- * picture line carries, the syntax that line is written in, the text a streamed row carries for
- * a block it renders no other way, which uploads are pictures, and the lines a person's message
- * is compared by when a session says it delivered it. The Go server holds the same session-id
- * rule (`text.IsSessionID`), short-id rule (`text.IsIDPrefix`) and target bound
- * (`text.MaxTargetBytes`), all pinned against the TypeScript readers by
- * `DISPATCH_TEXT_REFERENCES`, and classifies an upload as a picture by the same four types, read
- * from its bytes.
+ * UTF-8 bytes a string holds, the most bytes a reference's target id may hold, the tabs of an
+ * issue's page whose address names the issue, the caption a picture line carries, the syntax that
+ * line is written in, the text a streamed row carries for a block it renders no other way, which
+ * uploads are pictures, and the lines a person's message is compared by when a session says it
+ * delivered it. The Go server holds the same session-id rule (`text.IsSessionID`), short-id rule
+ * (`text.IsIDPrefix`), target bound (`text.MaxTargetBytes`) and issue tabs (`text.issueTabs`),
+ * all pinned against the TypeScript readers by `DISPATCH_TEXT_REFERENCES`, and classifies an
+ * upload as a picture by the same four types, read from its bytes.
  */
 
 /**
@@ -79,6 +79,25 @@ export const MAX_REFERENCE_TARGET_BYTES = 2048;
 export function referenceTargetFits(target: string): boolean {
   return utf8Bytes(target) <= MAX_REFERENCE_TARGET_BYTES;
 }
+
+/**
+ * The tabs of an issue's page whose whole route is the tab itself - no block, no slug, no id -
+ * each the segment of its own name after the issue's key, in a reference
+ * (`dispatch://CORE-1/plan`) and in the dashboard's path (`/issues/CORE-1/plan`) alike. Either
+ * reads as the issue, as the dashboard draws it and the server's graph stores it (`text.issueTabs`,
+ * which adds the conversation, written `conversation` in both and `log` in a reference too).
+ * `DISPATCH_TEXT_REFERENCES` holds a row per tab, so a tab added here that the server does not
+ * read fails its table.
+ */
+export const PLAIN_ISSUE_TABS = [
+  "verification",
+  "plan",
+  "steps",
+  "activity",
+  "children",
+  "artifacts",
+  "collaborators",
+] as const;
 
 /**
  * A file name as the caption of its picture line, `![<caption>](<address>)`. A caption is

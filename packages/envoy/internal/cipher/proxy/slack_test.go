@@ -63,10 +63,18 @@ var (
 	noListPlaceholder    = placeholder.Prefix + "NoListNoListNoListNoListNoListN1"
 )
 
-// slackRules is the deployment's entry for the token: bound to the host, swapped into
-// Authorization, with no allow list, so the rules alone let it travel on any method and path.
+// slackKindJSON is the deployment's slack kind as the profiles file declares it, on the rig's
+// host: the token swapped into Authorization, with no allow list, so the rules alone let it travel
+// on any method and path.
+const slackKindJSON = `[{"name": "slack", "hosts": ["` + boundHost + `"], "headers": ["authorization"], "ways": ["swap"]}]`
+
+// slackRules is the airlock's rules of that kind with the token's name bound to it, a stored
+// value swapped in.
 func slackRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: slackName, Hosts: []string{boundHost}, Headers: []string{"authorization"}}}}
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{swapKind("slack", []string{boundHost}, "authorization")},
+		Names: []proxyrules.Binding{swapBinding(slackName, "slack")},
+	}
 }
 
 // slackPost is one request a row sends: its method, its path with any query, its headers in
@@ -287,10 +295,10 @@ func grantSlack(r *rig, placeholder, grantID string, secret requests.AirlockSecr
 // TestAPrivateProjectsSlackGrantPostsOnlyToItsChannels: a Limited grant of the token carries
 // slack-post.ts's post to a channel on its list and refuses every other request 403
 // CHANNEL_NOT_ALLOWED before any of it reaches Slack; a Limited grant whose list is empty or
-// missing, and a Limited name whose entry is no header swap, carry nothing; an unlimited grant
+// missing, and a Limited name whose binding is no header swap, carry nothing; an unlimited grant
 // carries every one of those requests as it did before the limit existed.
 func TestAPrivateProjectsSlackGrantPostsOnlyToItsChannels(t *testing.T) {
-	r := newRig(t, Options{Rules: slackRules()})
+	r := newRuledRig(t, slackRules(), Options{})
 	value := map[string]string{requests.SlotValue: slackValue}
 	grantSlack(r, limitedPlaceholder, "grant-slack-limited", requests.AirlockSecret{Slots: value, Limited: true, Channels: []string{channelA, channelB}})
 	grantSlack(r, unlimitedPlaceholder, "grant-slack-unlimited", requests.AirlockSecret{Slots: value})
@@ -319,14 +327,14 @@ func TestAPrivateProjectsSlackGrantPostsOnlyToItsChannels(t *testing.T) {
 		sendSlack(t, r, r.client(noListPlaceholder), noListPlaceholder, post).refused(t, "a Limited grant whose Channels is nil", post)
 	})
 
-	t.Run("a Limited name whose entry is no header swap", func(t *testing.T) {
+	t.Run("a Limited name whose binding is no header swap", func(t *testing.T) {
 		aws := newAWSRig(t, false)
 		values := map[string]string{requests.SlotAWSAccessKeyID: awsRealKeyID, requests.SlotAWSSecretAccessKey: awsRealSecret}
 		aws.grants.setValues(testGrantID, map[string]requests.AirlockSecret{awsName: {Slots: values, Limited: true, Channels: []string{channelA}}})
-		// A call signed with the placeholder key, which the aws kind would sign again and send on.
+		// A call signed with the placeholder key, which the sign way would sign again and send on.
 		post := jsonPost(postTo(channelA))
 		request := awsRequest(t, post.method, "https://"+boundHost+post.path, post.body, "execute-api", false, "Content-Type", slackJSON)
-		sendRequest(t, aws, aws.client(awsKeyPlaceholder), request).refused(t, "a Limited name of kind aws", post)
+		sendRequest(t, aws, aws.client(awsKeyPlaceholder), request).refused(t, "a Limited name of way sign", post)
 	})
 
 	// The three ways the broker answers Limited with an empty list, each read from the real
@@ -462,9 +470,9 @@ func (b *slackBroker) post(t *testing.T, p slackPost) slackAnswer {
 func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, projects ...string) *slackBroker {
 	t.Helper()
 	st := storetest.Open(t)
-	file := policytest.ProfilesFile(`{"name": "` + slackName + `", "proxy": {"hosts": ["` + boundHost + `"], "headers": ["authorization"]}}`)
-	rules := policytest.Profiles(t, file).ProxyRules()
-	token := policytest.Secret(slackName, policy.OwnerShared, policy.TierAgent, slackValue)
+	// The token is behind the proxy by its own proxy tag, under the file's slack kind: no profile.
+	file := policytest.KindsFileOf(slackKindJSON)
+	token := policytest.Proxied(policytest.Secret(slackName, policy.OwnerShared, policy.TierAgent, slackValue), "slack")
 	token.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
 	local := secrets.NewLocal(token)
 	loader := policytest.Loader(local)
@@ -479,13 +487,14 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: slackAudience, Skew: time.Minute, Replay: replayOnce(st),
-		Chain:   requests.NewChainVerifier(st, slackAudience, time.Minute, rules),
-		Airlock: rules,
+		Chain: requests.NewChainVerifier(st, slackAudience, time.Minute, current),
 		// Two strings the release carries through unread: the command here is the rig's client,
 		// which reaches the proxy and trusts its authority on its own.
-		AirlockProxyURL:      "http://127.0.0.1:13381",
-		AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nslack-test-airlock-ca\n-----END CERTIFICATE-----\n",
-		Projects:             dispatch,
+		AirlockProxyURL: "http://127.0.0.1:13381",
+		ProxyRoots: func() string {
+			return "-----BEGIN CERTIFICATE-----\nslack-test-airlock-ca\n-----END CERTIFICATE-----\n"
+		},
+		Projects: dispatch,
 	}
 
 	enrollmentID, key := enrolSession(t, st, projects)
@@ -504,7 +513,7 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	}
 
 	clock := &proxyClock{}
-	r := newRig(t, Options{Rules: rules, Grants: m, Now: clock.now})
+	r := newRig(t, Options{Grants: m, Now: clock.now})
 	return &slackBroker{rig: r, client: r.client(release.Airlock.ProxyPassword), password: release.Airlock.ProxyPassword, dispatch: dispatch, clock: clock}
 }
 

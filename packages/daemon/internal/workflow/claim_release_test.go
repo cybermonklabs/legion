@@ -30,6 +30,7 @@ import (
 // nothing. No row disarms a pull request, since the daemon changes no merge setting of any
 // (dispatch://INFRA-714 R2).
 func TestLeaveQueuesTheClaimRelease(t *testing.T) {
+	t.Parallel()
 	// A root's park acts on its whole tree: six suspends and an IssueSuspend for each of its two
 	// members, and the one row that closes the linger.
 	parkedTree := map[string]int{"supervise": 12, "issue_suspend": 2, "linger_close": 1}

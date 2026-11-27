@@ -17,6 +17,7 @@ import (
 // the fourth message and none of the three A read. The fourth is the control: it shows the watch
 // sees the copies the passes make.
 func TestATakeoverRecordWhoseHolderTookTheRoleBackCopiesOnlyWhatItDidNotRead(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, c, role = "ses_held_again_a", "ses_held_again_b", "ses_held_again_c", "held-again"
 	answerA := func(frame relayedFrame) []string {
@@ -37,7 +38,7 @@ func TestATakeoverRecordWhoseHolderTookTheRoleBackCopiesOnlyWhatItDidNotRead(t *
 	rig.claim(rig.away, b, role)
 	// The claim's handover runs in a goroutine of its own, so the control waits for its pass's
 	// write rather than for the role's guard, which that goroutine may not hold yet.
-	waitFor(t, crashWatch, "a takeover record of "+a+" that moved its sequence after "+b+" took the role", func() bool {
+	waitFor(t, "a takeover record of "+a+" that moved its sequence after "+b+" took the role", func() bool {
 		for _, record := range rig.records(role, a) {
 			if record.Next != 0 {
 				return true
@@ -50,7 +51,7 @@ func TestATakeoverRecordWhoseHolderTookTheRoleBackCopiesOnlyWhatItDidNotRead(t *
 	rig.claim(rig.mux, a, role)
 	// The handover of A's claim runs a pass of the record while A holds the role, which sets the
 	// record back to reading A's floor anew.
-	waitFor(t, crashWatch, "the takeover record of "+a+" set back while "+a+" holds the role", func() bool {
+	waitFor(t, "the takeover record of "+a+" set back while "+a+" holds the role", func() bool {
 		for _, record := range rig.records(role, a) {
 			if record.Next != 0 {
 				return false

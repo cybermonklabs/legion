@@ -1,0 +1,5 @@
+kind: Added
+body: 'Two stored texts a writer types in a box with the reference picker gain their display tree, for a caller that sends `Dispatch-Trees: 1`: `ArchitectureTree`''s Not architectural rows are `ArchitectureTreeNoneRead`, which carries `reason_tree` beside the model''s own `ArchitectureTreeNone`; and `IssueDetails` carries `components_reason_tree`, the tree of `components.reason`. `DISPATCH_READING_SURFACES` gains `reference-card-words`, the excluded row for a reference card that names its target by the reference as the body wrote it, and drops `issue-decision-link`: a link to a spec block a decision shaped draws no stored text.'
+time: 2026-11-16T18:00:00.000000000Z
+custom:
+    Issue: pr3125

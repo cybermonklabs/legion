@@ -16,7 +16,8 @@ import {
   getIssueArtifactText,
 } from "./api";
 import { documentEditor, openSpec, typeAtEnd } from "./editor";
-import { ONE_PIXEL_PNG, pastePicture } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import { pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, type Response, test } from "./test";
 import { asUser } from "./users";
@@ -466,10 +467,11 @@ test("a long-named picture in a comment draws, its link to a long-named document
       .locator("p", { hasText: "See" })
       .locator(`a[data-dispatch-href="${designTarget}"]`);
     await expect(link).toHaveAttribute("href", path);
-    // The link's words are the document's name, which a portal fills in after the body painted.
-    // Waited for before the loop: that late growth slides the link under a pointer resting on a
-    // paragraph, which opens a card over the paragraph hovered next.
-    await expect(link).toContainText("design design");
+    // The link keeps the words its author wrote. Only an address standing on its own, and a
+    // link whose words are its own address, read as the target's name, so this
+    // one never grows into the document's long name after the body paints and never slides
+    // under a pointer resting on a paragraph.
+    await expect(link).toHaveText("design");
     // Asserted once the author's link is drawn, in the same pass: the bare URL's words are the URL
     // and it keeps its href, never the document's name and route a reference link would show.
     const bare = thread.locator("p", { hasText: "Bare:" }).getByRole("link");

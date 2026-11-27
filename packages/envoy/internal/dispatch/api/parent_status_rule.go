@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -70,6 +71,13 @@ type issueWriter struct {
 	// credential is the credential of the caller that optionalActor resolved, which actor no
 	// longer carries (model.Actor.Recorded). It is nil for the fix, which has no request.
 	credential *model.Credential
+	// callerProject is the one project the request's credential names (callerProject), empty
+	// for a credential that names none and for the fix. A PATCH (writeIssue) and a status change
+	// (planStatusChangeUnderLocks) ask access.CredentialCovers about each issue of another
+	// project they write with it, and R24's conflict and the open-child check leave out of
+	// their answers each issue of a private project that the credential does not name
+	// (seenConflictIssues, seenForeignChildren).
+	callerProject string
 	// human is true only for a request that presents no token and that the browser identity
 	// names: a person at a browser (optionalActor's second answer).
 	human bool
@@ -78,8 +86,8 @@ type issueWriter struct {
 }
 
 // requestWriter is the writer of a request: the actor that actorFrom records, the credential of
-// the caller that optionalActor resolved, and whether that caller is a person at a browser. It
-// resolves the caller once and refuses what actorFrom refuses.
+// the caller that optionalActor resolved, the one project that credential names, and whether that
+// caller is a person at a browser. It resolves the caller once and refuses what actorFrom refuses.
 func (s *server) requestWriter(r *http.Request, supplied *model.Actor) (issueWriter, error) {
 	caller, human, err := s.optionalActor(r)
 	if err != nil {
@@ -89,7 +97,8 @@ func (s *server) requestWriter(r *http.Request, supplied *model.Actor) (issueWri
 	if err != nil {
 		return issueWriter{}, err
 	}
-	return issueWriter{actor: actor, credential: caller.Credential, human: human}, nil
+	callerProject, _ := s.callerProject(r)
+	return issueWriter{actor: actor, credential: caller.Credential, callerProject: callerProject, human: human}, nil
 }
 
 // parentStatusFixWriter is the writer of R25's fix, which only the boot fix uses: Dispatch's
@@ -98,13 +107,30 @@ func parentStatusFixWriter() issueWriter {
 	return issueWriter{actor: parentStatusRuleActor, system: true}
 }
 
-// issueWritePlan is a write of the status or the parent of one or more issues, step by step, as
-// refuseIssueWritePlan judges it before the first step writes.
+// statusChangeOptions is the three options of a status change (POST
+// /api/v1/issues/{key}/status-change): include_children, unlink_children and include_parent. Each
+// check of a plan reads them: R24's refusal of include_children with done from a token, and R26's
+// owning architect's write, which the options narrow (legion_status_scope.go). A PATCH and R25's
+// fix carry none.
+type statusChangeOptions struct {
+	// includeChildren is that the call moves the open issues under the issue it names with that
+	// issue.
+	includeChildren bool
+	// unlinkChildren is that the call removes each open child from the issue it names.
+	unlinkChildren bool
+	// includeParent is that the call moves each ancestor that is not in work to in_progress.
+	includeParent bool
+}
+
+// issueWritePlan is a write of one or more issues, step by step, as refuseIssueWritePlan judges it
+// before the first step writes. A step may write the status, the parent, the labels, or none of
+// them (the plan of a PATCH that writes the title alone).
 type issueWritePlan struct {
 	steps []issueWriteStep
-	// includeChildren is that the call moves the open issues under the issue it names with that
-	// issue (the status-change route's include_children). The PATCH never sets it.
-	includeChildren bool
+	// options is the options of the status change that the plan is, or of the status change that
+	// the plan's one step is a step of (issueWriteCallStep.options). A PATCH and R25's fix carry
+	// none.
+	options statusChangeOptions
 	// unjudged is that the caller refuses no conflict with R24, so refuseIssueWritePlan reads
 	// none: the PATCH's plan with the rule off. The route and the fix never set it, since a dry
 	// run answers the conflict whatever the setting and the fix writes with the rule on.
@@ -114,8 +140,12 @@ type issueWritePlan struct {
 // issueWriteStep is the write of one issue in a plan: the issue as the plan read it under its
 // owner lock, and what the step writes.
 type issueWriteStep struct {
-	key          string
-	title        string
+	key   string
+	title string
+	// project is the issue's project, which no write changes. The check of who writes a
+	// Legion-run issue's spec reads the issue's chain only up to a parent of that project
+	// (refuseSpecWriterOfIssueWrite).
+	project      string
 	statusBefore string
 	// statusAfter is the status the step writes, or nil when the step writes no status.
 	statusAfter *string
@@ -147,6 +177,7 @@ func issueWritePlanOfPatch(before model.Issue, status *string, parentProvided bo
 	return issueWritePlan{steps: []issueWriteStep{{
 		key:          before.Key,
 		title:        before.Title,
+		project:      before.Project,
 		statusBefore: before.Status,
 		statusAfter:  status,
 		parentBefore: before.Parent,
@@ -211,23 +242,30 @@ type ruleIssue struct {
 }
 
 // issueWriteRow is an issue's row as the builder of a plan reads it to fill in its steps. project
-// is the project the issue belongs to, which a status change holds a scoped caller to
-// (refuseStepsOutsideCallerProject).
+// is the project the issue belongs to, and private whether that project is private, which a status
+// change asks access.CredentialCovers about (planStatusChangeUnderLocks).
 type issueWriteRow struct {
 	key, title, status, project string
 	parent                      *string
 	lastSeq                     int
+	private                     bool
 }
 
-// readIssueWriteRows reads the rows of the issues keys, by key.
+// readIssueWriteRows reads the rows of the issues keys, by key, each with its project's visibility
+// in the same statement.
 func readIssueWriteRows(ctx context.Context, q queryer, keys []string) (map[string]issueWriteRow, error) {
-	rows, err := q.Query(ctx, `select key, title, status, project_key, parent_key, last_seq from issues where key = any($1)`, keys)
+	rows, err := q.Query(ctx, `
+		select i.key, i.title, i.status, i.project_key, i.parent_key, i.last_seq, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = any($1)
+	`, keys)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of a plan: %w", err)
 	}
 	collected, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueWriteRow, error) {
 		var read issueWriteRow
-		err := row.Scan(&read.key, &read.title, &read.status, &read.project, &read.parent, &read.lastSeq)
+		err := row.Scan(&read.key, &read.title, &read.status, &read.project, &read.parent, &read.lastSeq, &read.private)
 		return read, err
 	})
 	if err != nil {
@@ -251,21 +289,27 @@ func (call *issueWriteCall) unlinkFrom(parent string) {
 }
 
 // refuseIssueWritePlan is the one check of a plan, which its caller runs before the plan's first
-// write, with the owner lock of each step's issue and of each step's current and new parent held.
-// It refuses with an error what no setting lets through. Then it answers the conflict with R24
-// (parentStatusConflictOf), or nil when the plan keeps the rule. An unjudged plan answers nil and
-// reads nothing, since its caller refuses no conflict. Every other caller refuses the conflict
-// only while the rule is on, but for a dry run of the route.
+// write, with the owner lock of each step's issue held, and for a step that writes a status or a
+// parent, the locks of its current and new parent too.
+// It refuses with an error R26's refusal, while its setting is on, and what no setting lets
+// through. Then it answers the conflict with R24 (parentStatusConflictOf), or nil when the plan
+// keeps the rule. An unjudged plan answers nil without R24's read, since its caller refuses no
+// conflict; R26 judges it all the same. Every other caller refuses the conflict only while the
+// rule is on, but for a dry run of the route.
 func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issueWriter, plan issueWritePlan) (*parentStatusConflict, error) {
-	// INFRA-4732's guard of who may write a Legion issue's status becomes the first statement here.
-	if plan.includeChildren && !writer.human && plan.writesStatus("done") {
+	// R26 (legion_status_scope.go) comes first, so a call that R24 refuses too answers R26's code.
+	// It runs with the parent-status rule off too: an unjudged plan returns after it.
+	if err := refuseLegionStatusWrite(ctx, q, s.deps.LegionStatusScope, writer, plan); err != nil {
+		return nil, err
+	}
+	if plan.options.includeChildren && !writer.human && plan.writesStatus("done") {
 		return nil, errorf(http.StatusForbidden, "BROWSER_SIGN_IN_REQUIRED",
 			"Only a person who is signed in at a browser can close the open issues under an issue together with it (include_children with done). This request presents a token.")
 	}
 	if plan.unjudged {
 		return nil, nil
 	}
-	return parentStatusConflictOf(ctx, q, plan)
+	return parentStatusConflictOf(ctx, q, plan, writer.callerProject)
 }
 
 // writesStatus reports whether a step of the plan writes status.
@@ -279,10 +323,11 @@ func (plan issueWritePlan) writesStatus(status string) bool {
 }
 
 // plannedIssue is an issue that a plan involves, as q read it and with each step of the plan
-// written over it.
+// written over it, with its project and whether that project is private.
 type plannedIssue struct {
-	key, title, status string
-	parent             *string
+	key, title, status, project string
+	parent                      *string
+	private                     bool
 }
 
 // parentStatusConflictOf judges the pairs that the plan changes on the state after every step:
@@ -290,9 +335,12 @@ type plannedIssue struct {
 // each issue whose status a step changes) and writes each step's status and parent over them. A
 // status change judges the issue with its parent and with each direct child. A change of parent
 // judges the issue with its new parent. A pair that no step changes is not judged, so a plan that
-// changes no pair reads nothing. The issues are listed in the order of the steps, a parent before
-// the children, and the children in the order of their numbers.
-func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan) (*parentStatusConflict, error) {
+// changes no pair reads nothing. Every writer of a pair holds the parent's owner lock, so two
+// writes of one pair are judged one after the other. The issues are listed in the order of the
+// steps, a parent before the children, and the children in the order of their numbers. The rule
+// judges every pair, an issue that caller, the one project the request's credential names, cannot
+// see included. The answer leaves out each such issue (seenConflictIssues).
+func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan, caller string) (*parentStatusConflict, error) {
 	var judged []issueWriteStep
 	var parentsOfChildren []string
 	for _, step := range plan.steps {
@@ -309,16 +357,18 @@ func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan) 
 	}
 	keys := issueWriteLocks(judged)
 	rows, err := q.Query(ctx, `
-		select key, title, status, parent_key from issues
-		where key = any($1) or parent_key = any($2)
-		order by project_key, number
+		select i.key, i.title, i.status, i.parent_key, i.project_key, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = any($1) or i.parent_key = any($2)
+		order by i.project_key, i.number
 	`, keys, parentsOfChildren)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of a write's parent-status pairs: %w", err)
 	}
 	read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (*plannedIssue, error) {
 		var issue plannedIssue
-		err := row.Scan(&issue.key, &issue.title, &issue.status, &issue.parent)
+		err := row.Scan(&issue.key, &issue.title, &issue.status, &issue.parent, &issue.project, &issue.private)
 		return &issue, err
 	})
 	if err != nil {
@@ -331,7 +381,8 @@ func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan) 
 	for _, step := range plan.steps {
 		issue, ok := issues[step.key]
 		if !ok {
-			issue = &plannedIssue{key: step.key, title: step.title, status: step.statusBefore, parent: step.parentBefore}
+			// A step's issue is one the caller writes, so it is no issue the caller cannot see.
+			issue = &plannedIssue{key: step.key, title: step.title, status: step.statusBefore, parent: step.parentBefore, project: step.project}
 			issues[step.key] = issue
 		}
 		if step.statusAfter != nil {
@@ -350,6 +401,7 @@ func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan) 
 		listed[[2]string{of.key, holder.key}] = true
 		conflict.issues = append(conflict.issues, parentStatusConflictIssue{
 			Key: holder.key, Title: holder.title, Status: holder.status, Relation: relation, of: of.key, reason: reason,
+			project: holder.project, private: holder.private,
 		})
 	}
 	for _, step := range judged {
@@ -371,24 +423,61 @@ func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan) 
 	if len(conflict.issues) == 0 {
 		return nil, nil
 	}
+	conflict.issues = seenConflictIssues(conflict.issues, caller)
 	return conflict, nil
+}
+
+// seenConflictIssues is issues without each issue of a private project that caller, the one
+// project the request's credential names, does not name (seenBy). A caller whose credential names
+// no project sees each issue. The rule has judged every pair already, so a conflict refuses the
+// write whatever this leaves, and its list can be empty. Every builder of a conflict that can list
+// such an issue answers through here (parentStatusConflictOf, openChildrenOfAClose): the parent of
+// a new issue (createParentConflict) is one that the create's read of its parent already covered.
+func seenConflictIssues(issues []parentStatusConflictIssue, caller string) []parentStatusConflictIssue {
+	if caller == "" {
+		return issues
+	}
+	return seenBy(caller, issues, func(issue parentStatusConflictIssue) (string, bool) { return issue.project, issue.private })
+}
+
+// seenBy is items without each item of a private project that caller, the one project a
+// request's credential names, does not name (access.CredentialCovers), projectOf reading an item's
+// project and whether that project is private. An answer that can name an issue of such a project
+// leaves it out through here: the issues of a 409 PARENT_STATUS_CONFLICT (seenConflictIssues), the
+// children of a 409 FOREIGN_CHILD_OPEN (seenForeignChildren), and the checks that a result's
+// check value matches (resolveCheck). Each caller answers a caller that names no project, "",
+// before it calls this, since such a caller sees every item.
+func seenBy[T any](caller string, items []T, projectOf func(T) (string, bool)) []T {
+	seen := make([]T, 0, len(items))
+	for _, item := range items {
+		if project, private := projectOf(item); access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+			seen = append(seen, item)
+		}
+	}
+	return seen
 }
 
 // openChildrenOfAClose is the second read of a close with the rule on: the children of key
 // that are not done, read in the close's write phase after its own update of key's row. A create
 // under key holds no owner lock of key, so the close's first check cannot see a child whose create
 // has not committed. The create's share lock of key's row makes the close's update wait for that
-// commit, so this read, the statement after the update, sees the child.
-func openChildrenOfAClose(ctx context.Context, tx pgx.Tx, key string) (*parentStatusConflict, error) {
+// commit, so this read, the statement after the update, sees the child. caller is the one project
+// the request's credential names, empty for one that names none: the answer leaves out each child
+// that caller cannot see (seenConflictIssues).
+func openChildrenOfAClose(ctx context.Context, tx pgx.Tx, key, caller string) (*parentStatusConflict, error) {
 	rows, err := tx.Query(ctx, `
-		select key, title, status from issues where parent_key = $1 and status <> 'done' order by project_key, number
+		select i.key, i.title, i.status, i.project_key, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.parent_key = $1 and i.status <> 'done'
+		order by i.project_key, i.number
 	`, key)
 	if err != nil {
 		return nil, fmt.Errorf("read the open children of a close: %w", err)
 	}
 	children, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (parentStatusConflictIssue, error) {
 		child := parentStatusConflictIssue{Relation: relationChild, of: key, reason: childReason("done")}
-		err := row.Scan(&child.Key, &child.Title, &child.Status)
+		err := row.Scan(&child.Key, &child.Title, &child.Status, &child.project, &child.private)
 		return child, err
 	})
 	if err != nil {
@@ -397,7 +486,7 @@ func openChildrenOfAClose(ctx context.Context, tx pgx.Tx, key string) (*parentSt
 	if len(children) == 0 {
 		return nil, nil
 	}
-	return &parentStatusConflict{issues: children}, nil
+	return &parentStatusConflict{issues: seenConflictIssues(children, caller)}, nil
 }
 
 // createParentConflict is the conflict of a new issue, which is in triage, with a parent in
@@ -455,6 +544,10 @@ type parentStatusConflictIssue struct {
 	of string
 	// reason is why this issue holds the rule against that issue, as the error text says it.
 	reason string
+	// project is the project this issue belongs to, and private whether that project is private,
+	// which decide whether the answer names this issue to the caller (seenConflictIssues).
+	project string
+	private bool
 }
 
 // parentStatusConflictBody is the 409 PARENT_STATUS_CONFLICT body.

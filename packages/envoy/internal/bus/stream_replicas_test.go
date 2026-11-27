@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
+	"net/http"
 	"reflect"
 	"slices"
 	"strconv"
@@ -18,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests here run on an in-process three-server cluster (testnats.StartCluster), one per test
@@ -72,12 +75,10 @@ func deployedClusterStream(change func(*nats.StreamConfig)) nats.StreamConfig {
 	return deployed
 }
 
-// keptValueWait is a hang guard on awaitKeptValue's read, not a budget: a copy a raise adds
-// catches up with a one-message stream in milliseconds.
-const keptValueWait = 30 * time.Second
-
 // awaitKeptValue reads key through kv until the bucket answers with want, and fails the test if
-// no read does within keptValueWait.
+// no read does. The wait is bounded only by the test binary's deadline (testwait.UntilPolling): a
+// copy a raise adds catches up with a one-message stream in milliseconds, and a loaded machine
+// only makes it later.
 //
 // A KV read is a direct get, and nats-server hands a copy the direct-get queue group as soon as
 // that copy is 90% caught up with its leader, rather than when it is current
@@ -87,17 +88,10 @@ const keptValueWait = 30 * time.Second
 // on no copy, and no read answers with it.
 func awaitKeptValue(t *testing.T, kv KeyValue, key, want string) {
 	t.Helper()
-	deadline := time.Now().Add(keptValueWait)
-	for {
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("get %s after the raise to answer %q", key, want), func() (string, bool) {
 		entry, err := kv.Get(key)
-		if err == nil && string(entry.Value()) == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("get %s after the raise = %v, %v within %s; want %q", key, entry, err, keptValueWait, want)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return fmt.Sprintf("%v, %v", entry, err), err == nil && string(entry.Value()) == want
+	})
 }
 
 // On an existing three-copy stream with a byte limit, DiscardOld and an id, a start that changes
@@ -297,7 +291,7 @@ func TestTheStreamTakesTheDeploymentsByteLimitAndKeepsADeployedOne(t *testing.T)
 
 	counting := &countingJetStream{JetStreamContext: js}
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3), WithStreamMaxBytes(testStreamMaxBytes)}).streamConfig()
-	if _, err := ensureStreamWithConfig(t.Context(), counting, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), counting, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("start setting %d: %v", testStreamMaxBytes, err)
 	}
 	if writes := counting.written(); len(writes) != 0 {
@@ -517,9 +511,79 @@ func TestARefusedRaiseNamesTheReplicaSetting(t *testing.T) {
 	}
 }
 
+// stopAFollower waits until the JetStream meta leader of cluster, every member of which runs,
+// counts every member with its JetStream statistics (Cluster.AwaitReady), stops a member other
+// than that leader, waits until JetStream is ready without it, and returns its index.
+//
+// nats-server v2.15.1's meta leader places a stream's copies, and places one on a member only
+// while it holds that member's JetStream statistics, which reach it in the member's STATSZ: a
+// member without them it discards as offline (server/jetstream_cluster.go:10763-10767,
+// server/server.go:407-412), and with two members left for three copies it refuses the create,
+// "no suitable peers for placement, peer offline". A stop marks the member offline and keeps its
+// statistics (server/events.go:1728-1734), and a follower's stop leaves the leader leading, the
+// two members left being a quorum, so the leader that counted the follower still places a copy on
+// it. A stopped leader would leave the placement to the member elected next, which holds the
+// stopped member's statistics only if one of its STATSZ has arrived since the route between the
+// two registered, which records none (server/route.go:2375-2388); in a cluster that has just
+// formed, none may have.
+func stopAFollower(t *testing.T, cluster *testnats.Cluster) int {
+	t.Helper()
+	cluster.AwaitReady(t)
+	stopped := (metaLeader(t, cluster) + 1) % len(cluster.Servers)
+	cluster.Servers[stopped].Stop(t)
+	cluster.AwaitReady(t)
+	return stopped
+}
+
+// metaLeader is the index of the member that leads cluster's JetStream meta group, read once every
+// member's /jsz names that member; every member must be running.
+func metaLeader(t *testing.T, cluster *testnats.Cluster) int {
+	t.Helper()
+	ctx := testwait.Context(t)
+	named := testwait.UntilPolling(t, 50*time.Millisecond, "every member's /jsz to name one JetStream meta leader", func() ([]string, bool) {
+		named := make([]string, len(cluster.Servers))
+		for i, server := range cluster.Servers {
+			leader, err := jszMetaLeader(ctx, server)
+			if err != nil {
+				named[i] = err.Error()
+				return named, false
+			}
+			named[i] = leader
+		}
+		return named, cluster.Member(named[0]) >= 0 && !slices.ContainsFunc(named, func(leader string) bool { return leader != named[0] })
+	})
+	return cluster.Member(named[0])
+}
+
+// jszMetaLeader is the server_name of the JetStream meta leader server's /jsz names, "" while it
+// knows none. The read ends with ctx, the shared wait's (testwait.Context), so a monitor that never
+// answers fails the row by name at the wait's give-up rather than holding it past the binary's
+// deadline: the read runs inside a wait's own question, which the wait cannot cut short.
+func jszMetaLeader(ctx context.Context, server *testnats.Server) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.MonitorURL()+"/jsz", nil)
+	if err != nil {
+		return "", fmt.Errorf("read /jsz: %w", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("read /jsz: %w", err)
+	}
+	defer response.Body.Close()
+	var jsz struct {
+		Meta struct {
+			Leader string `json:"leader"`
+		} `json:"meta_cluster"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&jsz); err != nil {
+		return "", fmt.Errorf("decode /jsz: %w", err)
+	}
+	return jsz.Meta.Leader, nil
+}
+
 // With one server of three stopped and the stream and a bucket already at three copies, a start
 // succeeds and writes nothing to either; a bucket created at three copies with one server stopped
-// lands, with the stopped member among its peers.
+// lands, with the stopped member among its peers. The server stopped does not lead the JetStream
+// meta group (stopAFollower).
 func TestOneServerStoppedAStartOfAThreeCopyDeploymentWritesNothing(t *testing.T) {
 	t.Parallel()
 	cluster, js := startClusterJetStream(t)
@@ -531,17 +595,16 @@ func TestOneServerStoppedAStartOfAThreeCopyDeploymentWritesNothing(t *testing.T)
 	testnats.AwaitSettledStream(t, js, Stream)
 	testnats.AwaitSettledStream(t, js, "KV_"+bucket)
 
-	cluster.Servers[2].Stop(t)
-	cluster.AwaitReady(t)
+	stopped := stopAFollower(t, cluster)
 	js = cluster.JetStream(t)
-	testnats.AwaitStreamLeader(t, js, Stream, cluster.Name(2))
-	testnats.AwaitStreamLeader(t, js, "KV_"+bucket, cluster.Name(2))
+	testnats.AwaitStreamLeader(t, js, Stream, cluster.Name(stopped))
+	testnats.AwaitStreamLeader(t, js, "KV_"+bucket, cluster.Name(stopped))
 
 	startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(testStreamMaxBytes))
 	startOnCluster(t, cluster, WithReplicas(3))
 	counting := &countingJetStream{JetStreamContext: js}
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3), WithStreamMaxBytes(testStreamMaxBytes)}).streamConfig()
-	if _, err := ensureStreamWithConfig(t.Context(), counting, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), counting, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure the stream with one server stopped: %v", err)
 	}
 	if _, err := EnsureKeyValue(t.Context(), clusterConn(t, cluster), counting, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
@@ -570,19 +633,19 @@ func TestOneServerStoppedAStartOfAThreeCopyDeploymentWritesNothing(t *testing.T)
 // A create of the stream at three copies with one server of three stopped lands on nats-server
 // v2.15.1, with the stopped member among the stream's peers, and the start serves: it publishes
 // and reads back. Once the stopped member starts again it catches up, and the stream holds three
-// settled copies with the message the start published.
+// settled copies with the message the start published. The server stopped does not lead the
+// JetStream meta group (stopAFollower): the leader that counted it places the create.
 func TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp(t *testing.T) {
 	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
-	cluster.Servers[2].Stop(t)
-	cluster.AwaitReady(t)
+	stopped := stopAFollower(t, cluster)
 	client, err := ConnectOwningStream(cluster.URLs(), WithReplicas(3))
 	if err != nil {
-		t.Fatalf("start at three copies with one server of three stopped: %v", err)
+		t.Fatalf("start at three copies with %s, a follower in the JetStream meta group, stopped: %v", cluster.Name(stopped), err)
 	}
 	t.Cleanup(client.Close)
 	js := cluster.JetStream(t)
-	info := testnats.AwaitStreamLeader(t, js, Stream, cluster.Name(2))
+	info := testnats.AwaitStreamLeader(t, js, Stream, cluster.Name(stopped))
 	if info.Config.Replicas != 3 || testnats.Copies(info.Cluster) != 3 {
 		t.Fatalf("stream replicas = %d with %d copies assigned, want 3 and 3", info.Config.Replicas, testnats.Copies(info.Cluster))
 	}
@@ -593,7 +656,7 @@ func TestOneServerStoppedACreateAtThreeCopiesLandsAndTheStoppedMemberCatchesUp(t
 		t.Fatalf("publish with one server stopped: %v", err)
 	}
 
-	cluster.Servers[2].Start(t)
+	cluster.Servers[stopped].Start(t)
 	cluster.AwaitReady(t)
 	js = cluster.JetStream(t)
 	after := testnats.AwaitStreamCopies(t, js, Stream, 3)
@@ -671,7 +734,7 @@ func TestASecondStartOnASingleServerWritesNothing(t *testing.T) {
 	}
 	counting := &countingJetStream{JetStreamContext: client.JS()}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
-	if _, err := ensureStreamWithConfig(t.Context(), counting, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), counting, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("second start: %v", err)
 	}
 	if _, err := EnsureKeyValue(t.Context(), client.Conn, counting, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {

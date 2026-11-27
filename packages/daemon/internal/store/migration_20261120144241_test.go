@@ -86,6 +86,7 @@ var intakeFailuresTables = []string{"intake_failures", "cleared_pull_requests", 
 // head is a row of a pull request the record holds, of one of two kinds, once for each kind and
 // head, and it goes with its pull request's row.
 func TestMigration20261120144241KeepsEachIntakeFailureToItsRules(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, intakeFailuresVersion-1)
@@ -375,6 +376,7 @@ func controllerNotices(t *testing.T, store *Store) []record.OutboxRow {
 // version recorded and applies nothing, and reads the records where they stood: the two still
 // open are in the state, and a new give-up is recorded and counted in a new notice.
 func TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {
@@ -485,6 +487,7 @@ func TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 // The control runs the same block with the project's predicate cut out of both deletes, over the
 // same rows written again: it leaves neither of OTHER's two, so the predicates are what keep them.
 func TestTheIntakeGiveUpWayBackDeletesOnlyTheRowsOfTheProjectThatRollsBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	at := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
 	// leftBy is, on a fresh store with both projects' rows written, the project of each

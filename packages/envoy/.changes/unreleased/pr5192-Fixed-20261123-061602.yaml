@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  An edge listener reads each field it judges a frame by - its topic, its role mark, and a GitHub
+  event's payload and the payload's `repo` - by its exact key, past one leading byte order mark and
+  at any depth, as the session's plugin reads the frame (`exactFrameTopic`, `exactFrameField`).
+  Before, it read them with `encoding/json`, which matches a key without regard to case: a frame
+  whose `topic` named another project's event and whose later `Topic` named the session's own
+  subject passed as the session's own message, and the plugin showed it as that project's event.
+  A later `Payload` or `Repo` key passed another repository's GitHub event the same way. A frame
+  that names such a field under more than one key, or under a key that differs from its name only
+  in case, is now withheld and counted under `reason="ambiguous_key"`, and a frame with a top-level
+  `__proto__` key, whose fields the plugin reads as the envelope's own, under
+  `reason="prototype_key"`. A frame on an agent subject that `encoding/json` does not read and
+  that is no role message whose topic is a role lane or an agent subject is withheld, and a GitHub
+  event whose envelope or payload it does not read names no repository, as before; a frame with a
+  byte order mark is judged by the topic past it.
+time: 2026-11-23T06:16:02Z
+custom:
+    Issue: pr5192

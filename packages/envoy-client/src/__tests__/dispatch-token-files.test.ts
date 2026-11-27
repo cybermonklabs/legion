@@ -505,10 +505,12 @@ describe("the dispatch command's token files", () => {
 
     // The token goes to DISPATCH_URL's origin alone, whatever URL a caller names.
     const config = activeDispatchSettings(
-      sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
-        cwd: copy.dir,
-        tokenFiles: true,
-      }).dispatch
+      (
+        await sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
+          cwd: copy.dir,
+          tokenFiles: true,
+        })
+      ).dispatch
     );
     if (config === null) throw new Error("Dispatch is off");
     const elsewhere = `http://localhost:${new URL(dispatch.url).port}/api/v1/projects`;
@@ -520,6 +522,40 @@ describe("the dispatch command's token files", () => {
       );
     expect(refusal).toContain("DISPATCH_URL");
     expect(refusal).not.toContain(copy.token);
+  });
+
+  test("`dispatch api` sends the file's token and a proof made with the file's key, with a host and with none", async () => {
+    const dispatch = standInDispatch();
+    const copy = copyFiles();
+    const hosted = commandEnvironment(copy, dispatch.url);
+    // With no host, as in a job no plugin runs: no DISPATCH_HOST, no envoy.json and no parent
+    // process that names one.
+    const unhosted = commandEnvironment(copy, dispatch.url, {
+      DISPATCH_HOST: undefined,
+      ENVOY_CONFIG_FILE: undefined,
+    });
+    for (const env of [hosted, unhosted]) {
+      let stdout = "";
+      let stderr = "";
+      const code = await runDispatchCli(["api", "--path", "/api/v1/issues/DSP-1"], env, {
+        stdout: (text) => {
+          stdout += text;
+        },
+        stderr: (text) => {
+          stderr += text;
+        },
+        readText: (file) => readFileSync(file, "utf8"),
+        cwd: copy.dir,
+        nearestAncestorNamed: () => undefined,
+      });
+      expect([env.DISPATCH_HOST, code, stderr]).toEqual([env.DISPATCH_HOST, 0, ""]);
+      expect(JSON.parse(stdout)).toEqual(issue);
+      const presented = dispatch.presented.splice(0);
+      expect(presented.map(({ method, url }) => `${method} ${url.pathname}`)).toEqual([
+        "GET /api/v1/issues/DSP-1",
+      ]);
+      expectFileCredential(presented[0] as Presented, copy.token, copy.key, dispatch.url);
+    }
   });
 
   test("a write whose result names an owner sends the listener nothing of the file's token", async () => {
@@ -655,10 +691,12 @@ describe("the dispatch command's token files", () => {
     // The credential the command resolves, held for the whole loop: one process, 50 reads.
     const env = commandEnvironment(copy, dispatch.url);
     const config = activeDispatchSettings(
-      sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
-        cwd: copy.dir,
-        tokenFiles: true,
-      }).dispatch
+      (
+        await sessionDispatchSettings({ path: env.ENVOY_CONFIG_FILE ?? "", error: null }, env, {
+          cwd: copy.dir,
+          tokenFiles: true,
+        })
+      ).dispatch
     );
     if (config === null) throw new Error("Dispatch is off");
     const client = new DispatchClient(config.url, config.credential);
@@ -819,8 +857,8 @@ describe("the dispatch command's token files", () => {
       ],
     ] as const) {
       for (const dispatch of [
-        sessionDispatchSettings(chosen, set, { cwd: copy.dir }).dispatch,
-        sessionSettings(chosen, set, { cwd: copy.dir, nats: false }).dispatch,
+        (await sessionDispatchSettings(chosen, set, { cwd: copy.dir })).dispatch,
+        (await sessionSettings(chosen, set, { cwd: copy.dir, nats: false })).dispatch,
       ]) {
         expect([label, dispatch.enabled]).toEqual([label, false]);
         const error = dispatch.enabled ? "" : (dispatch.error ?? "");
@@ -830,7 +868,7 @@ describe("the dispatch command's token files", () => {
       }
     }
 
-    const command = sessionDispatchSettings(chosen, env, { cwd: copy.dir, tokenFiles: true });
+    const command = await sessionDispatchSettings(chosen, env, { cwd: copy.dir, tokenFiles: true });
     if (!command.dispatch.enabled) throw new Error(`Dispatch is off: ${command.dispatch.error}`);
     expect(command.dispatch.url).toBe(url);
     expect(command.dispatch.credential.scheme).toBe("DPoP");

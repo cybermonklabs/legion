@@ -1,0 +1,17 @@
+# lean-cipher-repository-forwarded: the model's rewrite forwards Cipher-Repository with every
+# other header. Caught by lake build: T1_structure states that the answer's headers are the
+# incoming ones without Cipher-Repository, and that no header of the answer is named so, and
+# that proof no longer holds. Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
++++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
+@@ -511,7 +511,8 @@
+ def rewriteReq (rules : Rules) (g : Grant) (value : String) (r : Request) : Option Request :=
+   match check rules g value r with
+   | .ok bk =>
+-    some { r with headers := (r.headers.filter keepHeader).map (swapHeader (allowedHeaders bk.2) g.placeholder value) }
++    -- MUTANT: Cipher-Repository is forwarded with every other header.
++    some { r with headers := r.headers.map (swapHeader (allowedHeaders bk.2) g.placeholder value) }
+   | .error _ => none
+ 
+ end Airlock

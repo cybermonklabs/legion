@@ -11,7 +11,7 @@ const gone = `dispatch://agent/${session}/artifact/gone-png@v1`;
 const unreachable = `dispatch://agent/${session}/artifact/slow-png@v1`;
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]);
 
-function client(): DispatchClient {
+async function client(): Promise<DispatchClient> {
   const fetchImpl = async (url: string | URL | Request): Promise<Response> => {
     const { pathname } = new URL(String(url));
     if (pathname === `/api/v1/agents/${session}/artifacts/shot-png`) {
@@ -99,7 +99,7 @@ test("a picture Dispatch cannot serve is named and costs the delivery neither it
 });
 
 test("a Dispatch configuration that cannot be read leaves the delivery its text", async () => {
-  const broken = (): DispatchClient | undefined => {
+  const broken = async (): Promise<DispatchClient | undefined> => {
     throw new Error("dispatch config: DISPATCH_TOKEN_FILE cannot be read");
   };
   expect(await withDeliveredPictures("envoy: card", [address], broken, true, new Set())).toEqual({
@@ -111,9 +111,9 @@ test("a Dispatch configuration that cannot be read leaves the delivery its text"
 test("a delivery with no pictures, or no Dispatch to read them from, stays text", async () => {
   const plain = { content: "plain", shown: [] };
   expect(await withDeliveredPictures("plain", [], client, true, new Set())).toEqual(plain);
-  expect(await withDeliveredPictures("plain", [address], () => undefined, true, new Set())).toEqual(
-    plain
-  );
+  expect(
+    await withDeliveredPictures("plain", [address], async () => undefined, true, new Set())
+  ).toEqual(plain);
 });
 
 test("a delivery leaves the session's pictures as they were: the caller adds what it showed once the host took it", async () => {

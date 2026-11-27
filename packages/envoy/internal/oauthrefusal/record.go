@@ -9,18 +9,26 @@ import (
 )
 
 // Record is ctx carrying a copy of the client x/oauth2 and go-oidc send their requests with - the
-// one ctx carries (oauth2.HTTPClient), else http.DefaultClient - timeout and all, with its
-// transport wrapped so answered records what became of each request it carries. A reader whose
-// library error drops an answer's status, or quotes its body, reads the answer from answered
-// instead.
+// one ctx carries (oauth2.HTTPClient), else http.DefaultClient - wrapped as Client wraps it.
 func Record(ctx context.Context, answered *Recorder) context.Context {
-	wrapped := *oauth2.NewClient(ctx, nil)
+	return context.WithValue(ctx, oauth2.HTTPClient, Client(oauth2.NewClient(ctx, nil), answered))
+}
+
+// Client is a copy of base (nil is http.DefaultClient), timeout and all, with its transport wrapped
+// so answered records what became of each request it carries, for a library that takes its client
+// as an option rather than from ctx. A reader whose library error drops an answer's status, or
+// quotes its body, reads the answer from answered instead.
+func Client(base *http.Client, answered *Recorder) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	wrapped := *base
 	answered.base = wrapped.Transport
 	if answered.base == nil {
 		answered.base = http.DefaultTransport
 	}
 	wrapped.Transport = answered
-	return context.WithValue(ctx, oauth2.HTTPClient, &wrapped)
+	return &wrapped
 }
 
 // Recorder is a transport that records what became of the last request it carried: the host it

@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/natscred"
 )
 
@@ -54,9 +55,9 @@ func credential(lookup func(string) (string, bool)) (nats.Option, error) {
 		if file == "" {
 			return nil, fmt.Errorf("%s is set but empty", ServiceTokenFileEnvVar)
 		}
-		reader := natscred.ServiceFile(file)
+		reader := natscred.ServiceFile(file, ServiceTokenFileEnvVar)
 		if _, err := reader.Read(); err != nil {
-			return nil, fmt.Errorf("%s names %s, which holds no token: %w", ServiceTokenFileEnvVar, file, err)
+			return nil, err
 		}
 		return keptService(reader), nil
 	}
@@ -64,7 +65,7 @@ func credential(lookup func(string) (string, bool)) (nats.Option, error) {
 		if strings.TrimSpace(audience) == "" {
 			return nil, fmt.Errorf("%s is set but empty", ServiceGoogleAudienceEnvVar)
 		}
-		return keptService(natscred.ServiceGoogle(strings.TrimSpace(audience))), nil
+		return keptService(natscred.ServiceGoogle(strings.TrimSpace(audience), ServiceGoogleAudienceEnvVar)), nil
 	}
 	return nkeyCredential(lookup)
 }
@@ -98,10 +99,13 @@ func keepAlongside(keeper natscred.Keeper) nats.Option {
 // nkeyCredential is the nkey user credential names when no service token is set: the trimmed
 // contents of the file NATS_NKEY_SEED_FILE names, else NATS_NKEY_SEED. A set variable is
 // authoritative, and the file pointer wins over the seed: an empty pointer, or a missing,
-// unreadable or blank file, is an error naming the variable and the path, never a fallback to
-// NATS_NKEY_SEED or to no credential (Legion's X_FILE rule, the Legion daemon's
-// config.ReadSecretPointer); so is a blank NATS_NKEY_SEED, and a seed that is not a user nkey
-// seed. Neither set is a nil option. No error carries the seed.
+// unreadable or blank file, is an error naming the variable, never a fallback to NATS_NKEY_SEED or
+// to no credential (Legion's X_FILE rule, the Legion daemon's config.ReadSecretPointer); so is a
+// blank NATS_NKEY_SEED, and a seed that is not a user nkey seed. A file that could not be read is
+// named by the variable and the system's reason alone (redact.File), never by its path or the
+// error's own text, which repeats it: the path is where a person who pasted the seed itself put
+// it. A file that was read is named by its path too. Neither set is a nil option. No error carries
+// the seed.
 // Deploy order: a process gets a seed only after its server has nkey users (the SRE's stage 1, with
 // the no_auth_user fallback); a server with no users sends no nonce, and nats.go then refuses the
 // nkey ("nats: nkeys not supported by the server") rather than connecting without it.
@@ -113,7 +117,7 @@ func nkeyCredential(lookup func(string) (string, bool)) (nats.Option, error) {
 		}
 		contents, err := os.ReadFile(file)
 		if err != nil {
-			return nil, fmt.Errorf("%s names %s, which could not be read: %w", nkeySeedFileVariable, file, err)
+			return nil, fmt.Errorf("%s names a file that could not be read: %w", nkeySeedFileVariable, redact.File(err))
 		}
 		seed = strings.TrimSpace(string(contents))
 		if seed == "" {
