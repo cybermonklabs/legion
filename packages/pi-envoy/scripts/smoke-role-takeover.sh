@@ -521,6 +521,7 @@ row1_claude() {
   # The claim is renewed at the last moment this server has: the window the restarted server
   # must make its first claim inside starts here, and this row is about a claim made inside it.
   renew_claude cc-restart-1
+  probe_renewed_ms=$(date +%s%3N)
   send cc-restart-1 '{"op":"kill"}'
   expect_true "the session is still registered after the server is gone" registered "$session"
 
@@ -532,6 +533,7 @@ row1_claude() {
   # A listener that grants the claim and one that refuses it both answer it; a listener that
   # never sees one leaves the status below empty, which is the row's failure to report.
   wait_for "$listener_wait_timeout" made_claim cc-restart-2 "$session" "$session" || true
+  note "probe-margin cc-restart: first claim seen $(($(date +%s%3N) - probe_renewed_ms)) ms after the renew, live window ${session_live_window}"
   second="$(instance_id cc-restart-2 "$session")"
   expect "the restarted server is another client instance" \
     "$([[ -n "$second" && "$second" != "$first" ]] && echo different || echo same)" "different"
@@ -790,10 +792,12 @@ row5_claude() {
   # be inside the live window when B claims, and the row below needs B to have registered X
   # last, which two servers heartbeating against each other would settle by coin toss.
   renew_claude cc-a
+  probe_renewed_ms=$(date +%s%3N)
   # B shares A's plugin data directory, as two `claude` processes of one user do, so it reads the
   # role record A wrote for X and claims it back under that same id as it boots.
   start_claude cc-b "$x" "$state" "$claude_heartbeat_ms"
   wait_for "$listener_wait_timeout" made_claim cc-b "$x" "$x" || true
+  note "probe-margin cc-a/cc-b: first claim seen $(($(date +%s%3N) - probe_renewed_ms)) ms after the renew, live window ${session_live_window}"
   # A answers for its claim again, now that B has made its first: B asks again on each heartbeat
   # from here, and this row is what happens while the holder is still answering — the role stays
   # with A's process, and B's asking changes nothing.

@@ -480,6 +480,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
       "unresponsive",
       frozenAt + LIVE_WINDOW_MS + 20_000
     );
+    console.log(`probe-margin row1: registration gap ${Math.abs(stalled.lastSeen - registered)} ms against a slack of ${REGISTRATION_SLACK_MS} ms`);
 
     // (1) The state is its record's age, and `last_seen` is the registration it made before it
     // froze — not the moment the listener noticed, which is a whole live window later.
@@ -622,10 +623,16 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // passes over an unresponsive holder every time: for the whole horizon the claim stays the
     // one the child made. Every read here is taken a pass short of the horizon
     // (stalled.lastSeen + GONE_HORIZON_MS), which is the earliest moment any pass may release it.
+    let lastReadDone = 0;
+    let slowestRead = 0;
     while (Date.now() < stalled.lastSeen + GONE_HORIZON_MS - REAP_INTERVAL_MS) {
+      const readStart = Date.now();
       expect(await roleClaim(claims, child.role)).toEqual(claimed);
+      lastReadDone = Date.now();
+      slowestRead = Math.max(slowestRead, lastReadDone - readStart);
       await Bun.sleep(REAP_INTERVAL_MS);
     }
+    console.log(`probe-margin row3: last pre-horizon read done ${stalled.lastSeen + GONE_HORIZON_MS - lastReadDone} ms before the horizon; slowest read ${slowestRead} ms`);
 
     await awaitState(
       envoyUrl,
