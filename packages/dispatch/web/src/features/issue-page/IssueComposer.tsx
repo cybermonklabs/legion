@@ -737,10 +737,12 @@ function CriterionForm({
   });
   // A line the page stops drawing while its write is out lets go of the box.
   useEffect(() => () => hold(false), [hold]);
+  // What the line says of its last write: the reader's stop, or Dispatch's refusal.
+  const said = line.stopped ?? (line.answer === undefined ? undefined : ANSWER_LINES[line.answer]);
   // Whether a write of the line was out at the last render: its end with a refusal, or with the
   // reader's stop, gives the field back the focus its disabled line moved to the page.
   const wasOut = useRef(false);
-  const ended = line.answer !== undefined || line.stopped !== undefined;
+  const ended = said !== undefined;
   useEffect(() => {
     if (line.pending) {
       wasOut.current = true;
@@ -753,8 +755,6 @@ function CriterionForm({
       form.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
     }
   }, [ended, line.pending]);
-  // What the line says of its last write: the reader's stop, or Dispatch's refusal.
-  const said = line.stopped ?? (line.answer === undefined ? undefined : ANSWER_LINES[line.answer]);
   return (
     <form
       aria-label={CONTROL_LABELS.criterion_target}
@@ -835,7 +835,7 @@ function CriterionForm({
                 and the fieldset holds Retry while the write it makes is out. */}
             {line.stopped === undefined ? null : (
               <button
-                className="font-medium underline"
+                className="font-medium underline disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={line.retry}
                 onMouseDown={keepFocusOnPress}
                 type="button"

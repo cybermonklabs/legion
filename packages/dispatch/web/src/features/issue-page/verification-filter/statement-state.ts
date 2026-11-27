@@ -83,9 +83,10 @@ export interface CheckReading {
    *  answered for the check. */
   readonly latest?: TreeNode;
   /** Whether the page has read no result of the check: a check of another issue
-   *  (`isBorrowedCheck`) while the page holds no Verification view answer, the one read that
-   *  answers such a check's results (`checkReader`). Absent on every check the page read, one
-   *  Dispatch could not read among them, which has no state either. */
+   *  (`isBorrowedCheck`) that no Verification view answer the page holds answers - none is held,
+   *  or the one held holds no node of it, as a page whose next page does - since that answer is
+   *  the one read that answers such a check's results (`checkReader`). Absent on every check the
+   *  page read, one Dispatch could not read among them, which has no state either. */
   readonly resultsUnread?: true;
   /** The id of the result the check's state stands on (`CheckStanding.stands`), which the body
    *  marks wherever it draws it; absent where none stands. */
@@ -377,16 +378,15 @@ function checkReader(
     }
   }
   return (node) => {
-    // Until the page holds that answer it has read no result of a check of another issue, which
-    // the results read never answers for: such a check reads with no state and says why.
-    if (answer === undefined && isBorrowedCheck(node)) {
-      return { ...checkReading(node, undefined), resultsUnread: true };
-    }
     const check = node.readId === undefined ? undefined : borrowed.get(node.readId);
-    if (answer === undefined || check === undefined) {
-      return checkReading(node, blocks.get(node.reference ?? ""));
+    if (answer !== undefined && check !== undefined) {
+      return { ...checkReading(node, borrowedReads(check, answer)), issue: check.issue };
     }
-    return { ...checkReading(node, borrowedReads(check, answer)), issue: check.issue };
+    // A check of another issue that answer does not hold - no answer is held, or the one held is
+    // a page that holds no node of it - has no result the page read, since the results read never
+    // answers for it: such a check reads with no state and says why.
+    if (isBorrowedCheck(node)) return { ...checkReading(node, undefined), resultsUnread: true };
+    return checkReading(node, blocks.get(node.reference ?? ""));
   };
 }
 

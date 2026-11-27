@@ -841,7 +841,10 @@ test("a reading stands under what it reads and a child's check under the stateme
       .toBe(statementSeven.row);
     await expectChildMark(page, child.check.row, child.key, "check", "in Conversation");
     const checkStateGlyphs: readonly string[] = Object.values(GLYPH_TOKENS.states.check);
-    const conversationCheck = rowOf(await drawnRows(page), child.check.row);
+    const conversationCheck = rowOf(
+      await settledValue("the tree's rows", () => drawnRows(page)),
+      child.check.row
+    );
     expect(
       {
         state: conversationCheck?.state,

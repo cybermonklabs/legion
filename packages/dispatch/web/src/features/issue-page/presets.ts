@@ -26,6 +26,7 @@ import {
 } from "./page-words";
 import { storedReading } from "./stored-reading";
 import { outOfCounts } from "./tree-fold";
+import { nodesInOrder } from "./tree-keys";
 import { isForeign, nextTreeCursor, readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
@@ -538,12 +539,14 @@ function heldFilterView(
   // view's own tree names each block a chip of it names - a step it needs, a statement of the
   // outline read the view's tree holds as context - by that block's line (`chipsNamed`).
   const byReference = new Map<string, TreeNode>();
-  // Each node of the view's own tree by its id, at its first placement, whose standing a check of
-  // another issue the view draws as its own row takes (`standingOf`).
-  const ownNodes = new Map<string, TreeNode>();
+  // Under Verification, each node of the view's own tree by its id at its first placement, whose
+  // standing a check of another issue the view draws as its own row takes (`standingOf`).
+  const viewTreeNodes = new Map<string, TreeNode>();
   const index = (parent: TreeNode, outline: boolean): void => {
     for (const child of parent.children) {
-      if (!outline && !ownNodes.has(child.id)) ownNodes.set(child.id, child);
+      if (!outline && filter === "verification" && !viewTreeNodes.has(child.id)) {
+        viewTreeNodes.set(child.id, child);
+      }
       if (child.reference !== undefined && !byReference.has(child.reference)) {
         byReference.set(child.reference, child);
       }
@@ -644,7 +647,8 @@ function heldFilterView(
   // asks for the check's results, where the outline's may name none, as Conversation's does,
   // whose tree draws such a check no standing (`model-rows/model-drafts.ts`' `borrowedStanding`).
   const standingOf = (node: TreeAnswerNode, tree: TreeNode): Pick<TreeNode, "state"> => {
-    const own = node.supertag === "check" && borrowed.has(node) ? ownNodes.get(tree.id) : undefined;
+    const own =
+      node.supertag === "check" && borrowed.has(node) ? viewTreeNodes.get(tree.id) : undefined;
     return own === undefined ? {} : { state: own.state };
   };
   const rows = nodes.filter(
@@ -1073,13 +1077,11 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
  *  read, draws as its own rows (`heldFilterView`'s `borrowedRows`), each once by the read's id of
  *  its node (`TreeNode.readId`), however many statements it is drawn under (`isBorrowedCheck`). */
 function borrowedChecksDrawn(view: TreeNode): ReadonlySet<string> {
-  const drawn = new Set<string>();
-  const walk = (node: TreeNode): void => {
-    if (isBorrowedCheck(node)) drawn.add(node.readId ?? node.id);
-    for (const child of node.children) walk(child);
-  };
-  walk(view);
-  return drawn;
+  return new Set(
+    nodesInOrder(view)
+      .filter(isBorrowedCheck)
+      .map((node) => node.readId ?? node.id)
+  );
 }
 
 /** The signal each filter's control draws under `query`, which its count follows. A count read

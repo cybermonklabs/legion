@@ -490,7 +490,6 @@ export function OutlineWriterProvider({
         focus();
         return;
       }
-      // A Reply whose comment is still being read sets nothing once this has aimed the line.
       presses.current += 1;
       setReply(null);
       setAnswer(undefined);

@@ -916,11 +916,14 @@ test("a statement's mark is how its checks stand at the commit the server names 
   ]);
 });
 
-// R17: a statement whose check is a child's reads as the Verification view reads that check,
-// from the view's read the issue's node holds, though the outline's tree draws the check with no
-// state: Conversation's read names no result, so its tree gives such a check none. With the
-// view's read holding one pass over the check's words as they stand, the statement is Met.
-test("a statement a child's check serves reads that check as the Verification view reads it", () => {
+/** c9, a check of the child CORE-2 that serves the statement r1, as the Verification view's read
+ *  answers it, and res-9, one pass over its words as they stand; with that read's answer, which
+ *  holds both, or, where `holdsCheck` is false, neither: a page of the read whose next page holds
+ *  them. */
+function childCheckRead(holdsCheck = true): {
+  readonly check: TreeAnswerNode;
+  readonly verification: NonNullable<TreeNode["views"]>["verification"];
+} {
   const words = "sum-of-the-words-now";
   const check = treeNode("c9", "check", "r1", {
     check: { changed_version: 1, text_sha256: words },
@@ -934,18 +937,29 @@ test("a statement a child's check serves reads that check as the Verification vi
     { first_line: "", id: check.id, kind: check.kind, supertag: "check" },
     { issue: "CORE-2", result: { check_sha256: words, check_version: 1, verdict: "pass" } }
   );
-  const verification: NonNullable<TreeNode["views"]>["verification"] = {
-    converted: true,
-    cursor: null,
-    documents: null,
-    issue: KEY,
-    nodes: [check, pass],
-    tree: null,
-    tuples: [],
-    version: null,
-    view: "verification",
-    view_of: null,
+  return {
+    check,
+    verification: {
+      converted: true,
+      cursor: holdsCheck ? null : "page-2",
+      documents: null,
+      issue: KEY,
+      nodes: holdsCheck ? [check, pass] : [],
+      tree: null,
+      tuples: [],
+      version: null,
+      view: "verification",
+      view_of: null,
+    },
   };
+}
+
+// R17: a statement whose check is a child's reads as the Verification view reads that check,
+// from the view's read the issue's node holds, though the outline's tree draws the check with no
+// state: Conversation's read names no result, so its tree gives such a check none. With the
+// view's read holding one pass over the check's words as they stand, the statement is Met.
+test("a statement a child's check serves reads that check as the Verification view reads it", () => {
+  const { check, verification } = childCheckRead();
   const tree = {
     ...issueTree([
       statement("r1", {
@@ -983,46 +997,24 @@ test("a statement only a child's check serves is covered with no Verification vi
 
 /** The statement r1, which `own`, a check of this issue, and c9, a check of the child CORE-2,
  *  serve, the child's as the outline's tree draws it: with no state, since Conversation's read
- *  names no result. With `held`, the issue's node holds the Verification view's answer, which
- *  holds c9 with one pass over its words as they stand. Each statement comes with the verdict its
- *  row draws: its mark, or none where the page holds no verdict of it
- *  (`SpecStatement.noVerdict`). */
-function childServedVerdicts(own: CheckBlock, held: boolean): (string | undefined)[][] {
-  const words = "sum-of-the-words-now";
-  const childCheck = treeNode("c9", "check", "r1", {
-    check: { changed_version: 1, text_sha256: words },
-    document: { artifact_id: "artifact-core-2-verification", position: 0, slug: "verification-md" },
-    issue: "CORE-2",
-    role: "context",
-  });
-  const pass = treeNode(
-    "res-9",
-    "result",
-    { first_line: "", id: childCheck.id, kind: childCheck.kind, supertag: "check" },
-    { issue: "CORE-2", result: { check_sha256: words, check_version: 1, verdict: "pass" } }
-  );
-  const verification: NonNullable<TreeNode["views"]>["verification"] = {
-    converted: true,
-    cursor: null,
-    documents: null,
-    issue: KEY,
-    nodes: [childCheck, pass],
-    tree: null,
-    tuples: [],
-    version: null,
-    view: "verification",
-    view_of: null,
-  };
+ *  names no result. Where `verification` is given, the issue's node holds it as the Verification
+ *  view's answer (`childCheckRead`). Each statement comes with the verdict its row draws: its
+ *  mark, or none where the page holds no verdict of it (`SpecStatement.noVerdict`). */
+function childServedVerdicts(
+  own: CheckBlock,
+  verification?: NonNullable<TreeNode["views"]>["verification"]
+): (string | undefined)[][] {
   const tree = issueTree([
     statement("r1", {
       children: [
-        node({ id: "c9", issue: "CORE-2", readId: childCheck.id, type: "check" }),
+        node({ id: "c9", issue: "CORE-2", readId: childCheckRead().check.id, type: "check" }),
         checkNode(own),
       ],
       counts: { checks: 2, planTasks: 0 },
     }),
   ]);
-  const groups = bodyOf(held ? { ...tree, views: { verification } } : tree, [], READER, [own]);
+  const held = verification === undefined ? tree : { ...tree, views: { verification } };
+  const groups = bodyOf(held, [], READER, [own]);
   return (groups[0]?.runs[0]?.statements ?? []).map((one) => [
     one.node.id,
     one.noVerdict === true ? undefined : one.mark,
@@ -1033,7 +1025,8 @@ function childServedVerdicts(own: CheckBlock, held: boolean): (string | undefine
 // a Spec load does not send while Conversation's answer holds such a check. Until the page holds
 // it, a statement that check serves has no verdict the page can give, though its own check
 // passed, and draws none of the three marks; where its own check failed it is Not met, since one
-// failed check is enough. Once that answer is held it reads as that answer's results give it.
+// failed check is enough. Once that answer is held it reads as that answer's results give it,
+// and an answer that holds no node of the check, a page whose next page holds it, gives none.
 test("a statement a child's check serves draws no verdict until the page reads that check's results, but Not met where its own check failed", () => {
   const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
   const failed = check({
@@ -1042,9 +1035,14 @@ test("a statement a child's check serves draws no verdict until the page reads t
     results: [result({ id: "f1", verdict: "fail" })],
   });
 
-  expect(childServedVerdicts(passed, false)).toEqual([["spec#b-r1", undefined]]);
-  expect(childServedVerdicts(failed, false)).toEqual([["spec#b-r1", "not_met"]]);
-  expect(childServedVerdicts(passed, true)).toEqual([["spec#b-r1", "met"]]);
+  expect(childServedVerdicts(passed)).toEqual([["spec#b-r1", undefined]]);
+  expect(childServedVerdicts(failed)).toEqual([["spec#b-r1", "not_met"]]);
+  expect(childServedVerdicts(passed, childCheckRead().verification)).toEqual([
+    ["spec#b-r1", "met"],
+  ]);
+  expect(childServedVerdicts(passed, childCheckRead(false).verification)).toEqual([
+    ["spec#b-r1", undefined],
+  ]);
 });
 
 // R20: a node an address names outranks the filter, whatever its kind. It is no statement: it

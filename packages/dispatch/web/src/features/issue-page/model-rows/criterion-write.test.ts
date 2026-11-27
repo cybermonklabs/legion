@@ -1,4 +1,4 @@
-import { expect, mock, spyOn, test } from "bun:test";
+import { expect, type Mock, mock, spyOn, test } from "bun:test";
 import { DISPATCH_WRITING_HINT_QUIET } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
@@ -8,9 +8,10 @@ import { MemoryRouter } from "react-router-dom";
 
 import { onFakeClock } from "../../../__tests__/fake-clock";
 import { answerRequests } from "../../../__tests__/network";
+import { answerRoute } from "../../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../../__tests__/stop-late-write";
-import { ApiError, api } from "../../../api/client";
-import { whoAmIQuery } from "../../../api/queries";
+import { ApiError, api, type WriteBounds } from "../../../api/client";
+import { issueAskThreadsQuery, whoAmIQuery } from "../../../api/queries";
 import { pageKindBullet } from "../../../theme/classes";
 import { KEY_HOURS } from "../../writes/write-words";
 import type { TreeNode } from "../issue-tree";
@@ -23,6 +24,7 @@ import {
   useOutlineWriter,
 } from "../outline-writer";
 import { CRITERION_STOPPED_WORDS } from "../page-words";
+import { issueMessagesQuery } from "../useIssueTree";
 import {
   criterionMarkdown,
   criterionOffered,
@@ -111,30 +113,24 @@ function renderLine(
   );
 }
 
-/** One attempt of a write, as the client's `send` is handed it: its request, and the key it
- *  goes under. */
-interface Attempt {
-  readonly key: string;
-  readonly request: unknown;
+/** The answer of the tree artifact's edits route, as `answerRoute` calls it: with the tree its
+ *  path names, the edit's body, and the attempt's bounds, which carry the key it goes under. */
+type EditAnswer = (tree: string, body: unknown, bounds: WriteBounds) => Promise<unknown>;
+
+/** Answers each attempt of an edit of the tree artifact at the client's `send` (`answerRoute`):
+ *  Dispatch out of reach while `down()` says so, and the edit landed after. A write the reader
+ *  stops waits out its send deadline on the fake clock, and an answer at `fetch` comes on the
+ *  real event loop, so the cases that stop a write answer a level above it, where each attempt
+ *  tells its request as `send` does before it goes out. */
+function answerEditSends(down: () => boolean): Mock<EditAnswer> {
+  const edits = answerRoute<EditAnswer>("POST", "/api/v1/artifacts/*/edits");
+  edits.mockImplementation(() => (down() ? Promise.reject(UNAVAILABLE) : Promise.resolve(LANDED)));
+  return edits;
 }
 
-/** Answers each attempt of a write at the client's `send` with `answer()`, and keeps each one.
- *  A write the reader stops waits out its send deadline on the fake clock, and an answer at
- *  `fetch` comes on the real event loop, so the cases that stop a write answer a level above it,
- *  where each attempt tells its request as `send` does before it goes out. */
-function answerSends(answer: () => Promise<unknown>): {
-  readonly attempts: Attempt[];
-  readonly restore: () => void;
-} {
-  const attempts: Attempt[] = [];
-  const send = spyOn(api, "send").mockImplementation(((
-    ...[request, bounds]: Parameters<typeof api.send>
-  ) => {
-    bounds.sent?.(request);
-    attempts.push({ key: bounds.key, request });
-    return answer();
-  }) as typeof api.send);
-  return { attempts, restore: () => send.mockRestore() };
+/** Each attempt `edits` answered, in order: the tree its path names, its body, and its key. */
+function attemptsOf(edits: Mock<EditAnswer>) {
+  return edits.mock.calls.map(([tree, body, bounds]) => ({ body, key: bounds.key, tree }));
 }
 
 /** Dispatch out of reach: an answer a write is tried again under its key after. */
@@ -334,7 +330,7 @@ test("a refusal keeps the text", async () => {
 // Dispatch answers with what the stopped write did there.
 test("a stopped write says it is unconfirmed, and its Retry sends the same request under its key", async () => {
   let down = true;
-  const sends = answerSends(() => (down ? Promise.reject(UNAVAILABLE) : Promise.resolve(LANDED)));
+  const edits = answerEditSends(() => down);
   const client = signedInClient();
   const onLanded = mock(() => {});
   const told: boolean[] = [];
@@ -351,21 +347,20 @@ test("a stopped write says it is unconfirmed, and its Retry sends the same reque
     expect(line.result.current.pending).toBe(false);
     // The stop settled the write, so the box lets go of its aim.
     expect(told).toEqual([true, false]);
-    const request = criterionRequest(TREE, criterionMarkdown(PARENT, TEXT));
-    const [first] = sends.attempts;
-    expect(first).toEqual({ key: expect.any(String), request });
-    const stopped = sends.attempts.length;
+    const { body } = criterionRequest(TREE, criterionMarkdown(PARENT, TEXT));
+    const [first] = attemptsOf(edits);
+    expect(first).toEqual({ body, key: expect.any(String), tree: TREE });
+    const stopped = edits.mock.calls.length;
 
     down = false;
     act(() => line.result.current.retry());
     await waitFor(() => expect(onLanded).toHaveBeenCalledTimes(1));
-    expect(sends.attempts.slice(stopped)).toEqual([{ key: first?.key, request }]);
+    expect(attemptsOf(edits).slice(stopped)).toEqual([{ body, key: first?.key, tree: TREE }]);
     expect(line.result.current.text).toBe("");
     expect(line.result.current.stopped).toBeUndefined();
     expect(told).toEqual([true, false, true, false]);
   } finally {
     line.unmount();
-    sends.restore();
   }
 });
 
@@ -374,7 +369,7 @@ test("a stopped write says it is unconfirmed, and its Retry sends the same reque
 // takes no change meanwhile, and the request sent is the one the key covers.
 test("a send while a write is stopped makes that write again under its key, and the text takes no change", async () => {
   let down = true;
-  const sends = answerSends(() => (down ? Promise.reject(UNAVAILABLE) : Promise.resolve(LANDED)));
+  const edits = answerEditSends(() => down);
   const client = signedInClient();
   const onLanded = mock(() => {});
   const line = renderLine(onLanded, undefined, client);
@@ -384,8 +379,8 @@ test("a send while a write is stopped makes that write again under its key, and 
       act(() => line.result.current.send());
       await stopTheLateWrite(client);
     });
-    const [first] = sends.attempts;
-    const stopped = sends.attempts.length;
+    const [first] = attemptsOf(edits);
+    const stopped = edits.mock.calls.length;
 
     act(() => line.result.current.setText(`${TEXT} Edited.`));
     expect(line.result.current.text).toBe(TEXT);
@@ -394,12 +389,15 @@ test("a send while a write is stopped makes that write again under its key, and 
     down = false;
     act(() => line.result.current.send());
     await waitFor(() => expect(onLanded).toHaveBeenCalledTimes(1));
-    expect(sends.attempts.slice(stopped)).toEqual([
-      { key: first?.key, request: criterionRequest(TREE, criterionMarkdown(PARENT, TEXT)) },
+    expect(attemptsOf(edits).slice(stopped)).toEqual([
+      {
+        body: criterionRequest(TREE, criterionMarkdown(PARENT, TEXT)).body,
+        key: first?.key,
+        tree: TREE,
+      },
     ]);
   } finally {
     line.unmount();
-    sends.restore();
   }
 });
 
@@ -407,8 +405,8 @@ test("a send while a write is stopped makes that write again under its key, and 
  *  no tree read of the issue held. */
 function drawWriter() {
   const client = signedInClient();
-  client.setQueryData(["asks", KEY, "thread"], []);
-  client.setQueryData(["issue-messages", KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
   client.setQueryData(["agents"], []);
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(

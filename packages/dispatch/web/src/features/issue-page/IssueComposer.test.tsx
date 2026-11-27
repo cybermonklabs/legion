@@ -16,8 +16,10 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerRequests } from "../../__tests__/network";
 import { issueCollaborators, plannerAgent, searchResponse } from "../../__tests__/search-fixture";
+import { answerRoute } from "../../__tests__/send-answers";
 import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
+import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
 import type {
   Actor,
@@ -1576,19 +1578,20 @@ test("a criterion write the reader stopped draws its stopped note and a Retry, n
       viewOf: null,
     })
   );
-  // Dispatch is down until the reader stops the write, and takes its Retry: the key of each
-  // attempt, in order.
+  // Dispatch is down until the reader stops the write, and takes its Retry. Each attempt is
+  // answered at the client's `send` (`answerRoute`) with its bounds, which carry its key.
   let down = true;
-  const keys: string[] = [];
-  stub(
-    spyOn(api, "send").mockImplementation(((...[request, bounds]: Parameters<typeof api.send>) => {
-      bounds.sent?.(request);
-      keys.push(bounds.key);
-      return down
-        ? Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" }))
-        : Promise.resolve({ applied: 1, changed: true, written: "" });
-    }) as typeof api.send)
+  const edits = answerRoute<(tree: string, body: unknown, bounds: WriteBounds) => Promise<unknown>>(
+    "POST",
+    "/api/v1/artifacts/*/edits"
   );
+  edits.mockImplementation(() =>
+    down
+      ? Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" }))
+      : Promise.resolve({ applied: 1, changed: true, written: "" })
+  );
+  // The key of each attempt, in order.
+  const keys = () => edits.mock.calls.map(([, , bounds]) => bounds.key);
   const page = renderPage();
   await act(async () =>
     page.writer().criterionUnder(commentNode("comment-1", BOB, "Earlier words"))
@@ -1620,12 +1623,12 @@ test("a criterion write the reader stopped draws its stopped note and a Retry, n
 
   // Retry, once Dispatch is back: the same write under its key lands, and the reader is taken to
   // the new criterion.
-  const stopped = keys.length;
+  const stopped = keys().length;
   expect(stopped).toBeGreaterThan(0);
   down = false;
   await user.click(within(line).getByRole("button", { name: CONTROL_LABELS.retry }));
   await waitFor(() => expect(page.writer().criterion).toBeUndefined());
-  expect(keys.slice(stopped)).toEqual([keys[0]]);
+  expect(keys().slice(stopped)).toEqual([keys()[0]]);
 });
 
 // Departure 1 of the plan: under a view no outline is drawn to consume a landing, so a write sent
