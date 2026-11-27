@@ -260,12 +260,15 @@ func TestPriorityPatchExpected(t *testing.T) {
 		}
 	})
 
-	// The reach a list holding a null would have: a priority whose description nobody has
-	// written stores "", so a writer who never read it, naming a null the server read as "",
-	// would write over it. Each shape of that write is refused and the description stays empty.
-	// A writer who did read it names "" itself, and that write lands: the precondition guards
-	// what the server holds, not who read it, and "" is the value one read answers.
-	t.Run("an empty description is not writable by a client that never read it", func(t *testing.T) {
+	// What a list holding a null would reach if it were read as a list of strings: Go would read
+	// the null as "", the description of a priority nobody has written, so a write naming [null]
+	// would go over that empty description though its writer never read it. Each list shape
+	// holding a null is refused 400 and the description stays empty; a writer who did read it
+	// names "" itself, and that write lands. This guards the list alone. A bare null and an absent
+	// expected are no precondition at all, as they were before the list: a write naming either
+	// writes over whatever is stored, the empty description included, read or not, and the last
+	// two writes below pin that.
+	t.Run("a list holding a null does not reach an empty description; a bare null or no expected is no precondition", func(t *testing.T) {
 		const empty = "unwritten-description"
 		createTestPriority(t, handler, map[string]any{"id": empty, "title": "No description yet"}, "alice")
 		if stored := readTestPriority(t, handler, empty).Description; stored != "" {
@@ -302,6 +305,25 @@ func TestPriorityPatchExpected(t *testing.T) {
 		}
 		if stored := readTestPriority(t, handler, empty).Description; stored != "Written by a reader" {
 			t.Fatalf("the description is %q after the write that named it, want it written", stored)
+		}
+		// No precondition: a bare null, and no expected at all, write over what is stored, which
+		// this writer never read.
+		for _, test := range []struct {
+			what string
+			body map[string]any
+			text string
+		}{
+			{"a bare null", map[string]any{"description": "Over a bare null", "expected": map[string]any{"description": nil}}, "Over a bare null"},
+			{"no expected", map[string]any{"description": "Over no expected"}, "Over no expected"},
+		} {
+			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/"+empty, test.body, "carol")
+			if code, text := refusalOf(t, response); response.Code != http.StatusOK {
+				t.Fatalf("%s: status=%d code=%s error=%.300q, want 200: it names no precondition",
+					test.what, response.Code, code, text)
+			}
+			if stored := readTestPriority(t, handler, empty).Description; stored != test.text {
+				t.Fatalf("%s left the description %q, want it written as %q", test.what, stored, test.text)
+			}
 		}
 	})
 
