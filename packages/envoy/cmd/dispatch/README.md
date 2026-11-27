@@ -5044,6 +5044,9 @@ The reasons, which `asof.AbsentFields` gives for each member:
   `GET /api/v1/asks/open` leaves out no wording: the restore writes only an ask decided before the edit that it undoes, so the record gives the wording of each ask open at the cut.
 
 - A check's version and digest, and whether a check's words moved after a result, come from the block index: no event records them for a version of the Verification document that `document_indexed_versions` does not hold.
+  The digest is computed from the version at the cut, and a re-index of that version in place can change the digest the block index holds with no new version and no record of the time (`refs.BlockIndexing.KeepRespelled`).
+  So where the block index holds that version now (`document_block_versions`) under another digest of a check (`document_blocks.text_sha256`), the answer leaves out the check's `sha256` and whether the words of each of its results moved, and keeps its `version`.
+  Where the block index holds a later version now, nothing is compared, since a later version can keep a check's changed version under a new digest.
 
 - Part ids and revisions stand only for an ask that did not change after the cut, and whose wording at the cut a record gives.
 

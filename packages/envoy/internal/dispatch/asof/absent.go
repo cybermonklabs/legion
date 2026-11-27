@@ -41,6 +41,11 @@ const (
 		"and only where no other block of that version has the same text. It gives no id of a table row or a table cell."
 	// E, for a check of the Verification document.
 	reasonUnindexedVersion = "No event records this field for a version that document_indexed_versions does not hold."
+	// E, for a check's digest and for whether a check's words moved, which compares that digest.
+	reasonReindexedDigest = reasonUnindexedVersion + " " +
+		"A re-index of a stored version in place can change the digest of a check, and no record gives the time of that re-index. " +
+		"So this field is also left out where the digest that the block index holds now for the version at the cut " +
+		"differs from the digest of the check in that version."
 	// E, for whether the mark of a comment's anchor was gone.
 	reasonAnchorOrphaned = "No record gives the time at which the mark of this anchor went out of the document. " +
 		"Only an anchor refresh event gives that time."
@@ -178,8 +183,8 @@ var AbsentFields = map[string][]AbsentField{
 		{"/checks/*/results/*/currency", reasonGitHub},
 		{"/checks/*/results/*/not_counted", reasonCurrentDeploy},
 		{"/checks/*/version", reasonUnindexedVersion},
-		{"/checks/*/sha256", reasonUnindexedVersion},
-		{"/checks/*/results/*/check_words_moved", reasonUnindexedVersion},
+		{"/checks/*/sha256", reasonReindexedDigest},
+		{"/checks/*/results/*/check_words_moved", reasonReindexedDigest},
 	},
 
 	"GET /api/v1/search":         searchFields(),

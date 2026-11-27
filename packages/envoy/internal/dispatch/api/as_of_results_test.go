@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -330,6 +331,164 @@ func TestARespelledChecksWordsAtACutReadAsTheyReadThen(t *testing.T) {
 	if moved := wordsMoved(t, readAt(t, respelled)); !maps.Equal(moved, both(false)) {
 		t.Errorf("the read at the cut before the rewording answers check_words_moved %v after it, want false for both passes", moved)
 	}
+}
+
+// TestAChecksDigestThatAReindexChangedInPlaceIsLeftOutAtACut: a re-index of a stored version in
+// place, the block index's reconciliation of a document owed an index (docs' indexOwedDocument),
+// indexes the live text at that version and writes no version. Where it writes in this build's
+// spelling a check whose text another renderer version recorded, it keeps the check's changed
+// version, records no text and moves the check's digest (refs.BlockIndexing.KeepRespelled), and
+// no record gives the time. A read of the results at a cut taken before it gives the check's
+// sha256 as the read then gave it while the block index holds the version at the cut under that
+// digest. Once the re-index moved it, the read at the same cut leaves out the check's sha256 and
+// whether the words of its result moved, names both in Dispatch-As-Of-Absent, and keeps the
+// check's version, while the sibling check whose digest the re-index left alone keeps its
+// sha256 (clearReindexedDigests). Once the block index holds a later version, the check keeps
+// its changed version under the digest the re-index moved, which is no digest of the version at
+// the cut, so nothing is compared and the read at the cut gives the digest the read then gave.
+func TestAChecksDigestThatAReindexChangedInPlaceIsLeftOutAtACut(t *testing.T) {
+	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
+		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
+	issue := issueInRepository(t, handler, "RIDX", "acme/widgets", "Re-indexed in place")
+	owner := "/api/v1/issues/" + issue.Key
+	uploaded := uploadDocument(t, handler, owner, "verification.md", respelledCheck)
+	document, number := uploaded.Artifact.ID, uploaded.Version.Number
+	writeHead(t, database, "acme/widgets", 65, headCommit, "open", issue.Key)
+	respellVerification(t, database, document, number)
+	recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record a pass of k1: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	pass := decodeBody[recordedResult](t, recorded).Result
+	then := readResults(t, handler, issue.Key)
+	k1, k3 := checkOf(t, then, "k1"), checkOf(t, then, "k3")
+	if k1.Version != number || k1.SHA256 != refs.BlockTextSum(respelledCheckBlock) || pass.CheckSHA256 != k1.SHA256 {
+		t.Fatalf("before the cut check k1 reads version %d and sha256 %s and its pass sha256 %s, want version %d and the digest of %q",
+			k1.Version, k1.SHA256, pass.CheckSHA256, number, respelledCheckBlock)
+	}
+	cut := settledResultsCut(t, database, served)
+
+	// checkAtTheCut is one check of the read of the results at the cut: its place in the answer,
+	// its members as the answer's JSON gives them, and the members of each of its results.
+	type checkAtTheCut struct {
+		place   string
+		members map[string]any
+		results []map[string]any
+	}
+	readAt := func(t *testing.T) (map[string]checkAtTheCut, string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, withAsOf(t, owner+"/results", cut), nil, "alice")
+		if response.Code != http.StatusOK || response.Header().Get(contracts.DispatchAsOfHeader) != cut.String() {
+			t.Fatalf("the read at the cut: status=%d %s=%q body=%s", response.Code, contracts.DispatchAsOfHeader,
+				response.Header().Get(contracts.DispatchAsOfHeader), response.Body.String())
+		}
+		var answer struct {
+			Checks []map[string]any `json:"checks"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode the read at the cut: %v", err)
+		}
+		checks := map[string]checkAtTheCut{}
+		for index, members := range answer.Checks {
+			check := checkAtTheCut{place: "/checks/" + strconv.Itoa(index), members: members}
+			held, _ := members["results"].([]any)
+			for _, element := range held {
+				result, _ := element.(map[string]any)
+				check.results = append(check.results, result)
+			}
+			id, _ := members["block_id"].(string)
+			checks[id] = check
+		}
+		if _, held := checks["k3"]; !held || len(checks["k1"].results) != 1 {
+			t.Fatalf("the read at the cut holds no check k3, or no check k1 with the one pass recorded before the cut: %s", response.Body.String())
+		}
+		return checks, response.Header().Get(contracts.DispatchAsOfAbsentHeader)
+	}
+	version := float64(number)
+	// givesTheDigest fails unless the read at the cut gives check k1's version and sha256 as the
+	// read then gave them, and check_words_moved false for its pass, and names none of them absent.
+	givesTheDigest := func(t *testing.T, when string) {
+		t.Helper()
+		checks, absent := readAt(t)
+		check := checks["k1"]
+		if check.members["version"] != version || check.members["sha256"] != k1.SHA256 {
+			t.Errorf("%s, check k1 reads version %v and sha256 %v at the cut, want version %v and the sha256 %s the read then gave",
+				when, check.members["version"], check.members["sha256"], version, k1.SHA256)
+		}
+		if moved, given := check.results[0]["check_words_moved"]; !given || moved != false {
+			t.Errorf("%s, the pass of k1 reads check_words_moved %v at the cut, want false", when, moved)
+		}
+		for _, place := range []string{check.place + "/version", check.place + "/sha256", check.place + "/results/0/check_words_moved"} {
+			if namesAbsent(absent, place) {
+				t.Errorf("%s, %s %q names %s, which the read at the cut gives", when, contracts.DispatchAsOfAbsentHeader, absent, place)
+			}
+		}
+	}
+
+	// The control: the block index holds the version at the cut under the digest the read then
+	// gave.
+	givesTheDigest(t, "before the re-index")
+
+	// The re-index in place: the document is owed its block index, and the reconciliation indexes
+	// the live text, in this build's spelling, at the same version.
+	if _, err := database.Pool.Exec(t.Context(), `update document_block_versions set version = null where artifact_id = $1`, document); err != nil {
+		t.Fatalf("owe the document its block index: %v", err)
+	}
+	if _, err := served.deps.Docs.(*docs.Service).ReconcileBlockIndex(t.Context(), docs.BlockIndexCursors{}, nil); err != nil {
+		t.Fatalf("reconcile the block index: %v", err)
+	}
+	requireIndexedAt(t, database, document, number)
+	if latest := latestVersion(t, database, document).Number; latest != number {
+		t.Fatalf("the re-index wrote version %d, want none past version %d", latest, number)
+	}
+	var kept string
+	if err := database.Pool.QueryRow(t.Context(), `
+		select text from document_block_texts where artifact_id = $1 and block_id = 'k1' and version = $2
+	`, document, number).Scan(&kept); err != nil || kept != respelledCheckBlock {
+		t.Fatalf("after the re-index the text recorded of check k1 at version %d is %q (%v), want the other renderer's %q kept",
+			number, kept, err, respelledCheckBlock)
+	}
+	reindexed := readResults(t, handler, issue.Key)
+	if now := checkOf(t, reindexed, "k1"); now.Version != number || now.SHA256 == k1.SHA256 {
+		t.Fatalf("after the re-index the present read gives check k1 version %d and sha256 %s, want version %d under a sha256 other than %s",
+			now.Version, now.SHA256, number, k1.SHA256)
+	}
+	if now := checkOf(t, reindexed, "k3"); now.SHA256 != k3.SHA256 {
+		t.Fatalf("after the re-index the present read gives check k3 sha256 %s, want %s, which the re-index left alone", now.SHA256, k3.SHA256)
+	}
+
+	checks, absent := readAt(t)
+	check := checks["k1"]
+	if sha256, given := check.members["sha256"]; given {
+		t.Errorf("after the re-index check k1 reads sha256 %v at the cut, want it left out: no record gives the time of the re-index", sha256)
+	}
+	if moved, given := check.results[0]["check_words_moved"]; given {
+		t.Errorf("after the re-index the pass of k1 reads check_words_moved %v at the cut, want it left out with the digest it compares", moved)
+	}
+	for _, place := range []string{check.place + "/sha256", check.place + "/results/0/check_words_moved"} {
+		if !namesAbsent(absent, place) {
+			t.Errorf("after the re-index %s %q does not name %s", contracts.DispatchAsOfAbsentHeader, absent, place)
+		}
+	}
+	if check.members["version"] != version || namesAbsent(absent, check.place+"/version") {
+		t.Errorf("after the re-index check k1 reads version %v at the cut (%s %q), want version %v: the re-index kept its changed version",
+			check.members["version"], contracts.DispatchAsOfAbsentHeader, absent, version)
+	}
+	if sibling := checks["k3"]; sibling.members["version"] != float64(k3.Version) || sibling.members["sha256"] != k3.SHA256 {
+		t.Errorf("after the re-index check k3 reads version %v and sha256 %v at the cut, want version %d and sha256 %s, which the re-index left alone",
+			sibling.members["version"], sibling.members["sha256"], k3.Version, k3.SHA256)
+	}
+
+	// A later version, which rewords k3 alone: the block index holds it now, and check k1 keeps
+	// its changed version under the digest the re-index moved.
+	later := uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, "A sibling check nobody reworded.", "A sibling check, reworded.", 1))
+	requireIndexedAt(t, database, document, later.Version.Number)
+	if now := checkOf(t, readResults(t, handler, issue.Key), "k1"); now.Version != number || now.SHA256 == k1.SHA256 {
+		t.Fatalf("after the later version the present read gives check k1 version %d and sha256 %s, want version %d under a sha256 other than %s",
+			now.Version, now.SHA256, number, k1.SHA256)
+	}
+	givesTheDigest(t, "once the block index holds a later version")
 }
 
 // settledResultsCut waits for the database's document and background writes to settle, reads a cut
