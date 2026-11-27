@@ -88,7 +88,7 @@ func TestMain(m *testing.M) {
 	// `legion` whose test names a stand-in takes it below. Nor does its read with no credential ask
 	// github.com (leakguardtest.NoGitHub): a test's stand-in git answers that read, and the real git
 	// refuses the URL without a network.
-	leakguardCurl, leakguardLsRemoteOrigin = leakguardtest.NoCurl, leakguardtest.NoGitHub
+	leakguardCurl = leakguardtest.NoCurl
 	if os.Getenv(testMainEnv) == "1" {
 		// A test's stand-in shared check is no copy of the pinned one, so the test names the
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against

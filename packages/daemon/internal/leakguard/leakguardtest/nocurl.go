@@ -32,4 +32,4 @@ const NoGitHub = "file:///nonexistent/legion-test-names-no-github"
 // leakguardLsRemoteOrigin, which are empty in every other build): `go build -ldflags
 // <NoNetworkLinked>`. The linker applies only the last -ldflags of a build, so a build that links
 // other values passes them in the same -ldflags.
-const NoNetworkLinked = "-X main.leakguardCurl=" + NoCurl + " -X main.leakguardLsRemoteOrigin=" + NoGitHub
+const NoNetworkLinked = "-X main.leakguardCurl=" + NoCurl
