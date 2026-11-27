@@ -39,7 +39,9 @@ They are:
   `failures_measured_since` is the first UTC day they count, and a save whose settings hold a failure source must hold that day too, named in its body or kept from the stored settings.
 
 - **Targets** (`targets`): the target of each of the project's evals `deploy-frequency`, `change-fail-rate`, `merge-to-production`, `pr-open-to-merge`, `deploy-run-success`, `failed-deploy-recovery` and `unowned-p0`, a number or `"off"`.
-  A number there lies in the range its eval's unit holds, or the save is refused: from 0 to 1 for a share (`change-fail-rate` and `deploy-run-success`, so 90 percent is `0.9`), and 0 or more for a count or a duration.
+  A number there lies in the range of each statistic its eval's target judges, or the save is refused: from 0 to 1 for a rate (`change-fail-rate` and `deploy-run-success` judge a rate as seeded, so 90 percent is `0.9`), and 0 or more for a count or a duration.
+  The target of `failed-deploy-recovery`, and a target that names no statistic, lies in the range of its eval's unit instead.
+  The register write of the eval judges a target by the same rule (`evals.CheckTargetOf`).
   No settings column holds a target.
   A save writes each target it changes as a new version of the project's eval row, in the save's own transaction, and every read takes the target back from that row.
   A target the save leaves out, or one the eval holds already, writes nothing.

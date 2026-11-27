@@ -647,10 +647,11 @@ func appCannotRead(err error) bool {
 // target already, as actor (Registration.Target alone, so every other field is carried forward
 // from the eval's newest version), in deliverySettingsTargetSlugs' order, read before the save's
 // transaction opens; the transaction reads each target again (settingsSave.targetsMoved). A target
-// of an eval the project holds no version of, and a number its eval's unit cannot hold, are
-// refused, named: its evals are seeded when the project is made, and the range is the registry's
-// one rule for a target (evals.CheckTarget), read from the eval's own unit, which the catalogue
-// seeds, so it follows the eval rather than a list of slugs.
+// of an eval the project holds no version of, and a number outside its eval's range, are refused,
+// named: its evals are seeded when the project is made, and the range is the registry's one rule
+// for a target (evals.CheckTargetOf: the range of each statistic the eval's target judges, or else
+// its unit's), read from the eval's own definition, which the catalogue seeds, so it follows the
+// eval rather than a list of slugs, and the save refuses what the register write would.
 func (s *server) deliveryTargetChanges(ctx context.Context, project string, targets map[string]*float64, actor model.Actor) ([]evals.Registration, *delivery.SettingsError, error) {
 	if len(targets) == 0 {
 		return nil, nil, nil
@@ -669,7 +670,7 @@ func (s *server) deliveryTargetChanges(ctx context.Context, project string, targ
 		if !held {
 			return nil, delivery.InputRefusal(nil, "targets."+slug, "project %s holds no %s eval to set the target of", project, slug), nil
 		}
-		if err := evals.CheckTarget(entry.Definition.Unit, target); err != nil {
+		if err := evals.CheckTargetOf(entry.Definition, target); err != nil {
 			var refusal *evals.Error
 			if !errors.As(err, &refusal) {
 				return nil, nil, err

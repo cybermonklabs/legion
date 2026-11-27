@@ -396,10 +396,11 @@ func planEvents(spec Spec, history projectHistory) []plannedEvent {
 }
 
 // writeProject writes fixture's project, whose default repository is the first of its
-// repositories, its issues, events, handoffs and observations, and its legion_settings row, and
-// answers the history. The project names alice as its default assignee, the column every project
-// fills (store migration 20261111210103), as the smaller projects' Legion history does; no eval and
-// no count the load prints reads it.
+// repositories, its issues, events, handoffs and observations, and its legion_settings row
+// (evalfixture.PutLegionSettings, which writes it at a base older than main's Legion state intake
+// too), and answers the history. The project names alice as its default assignee, the column every
+// project fills (store migration 20261111210103), as the smaller projects' Legion history does; no
+// eval and no count the load prints reads it.
 //
 // The default is written where both heads read it, the project's default_repo (store migration
 // 20261119000230), which main has too. Main at the commit this head merges reads a project's
@@ -428,7 +429,7 @@ func writeProject(ctx context.Context, pool *store.Pool, spec Spec, fixture proj
 	if err := copyObservations(ctx, pool, history); err != nil {
 		return projectHistory{}, err
 	}
-	if _, err := legion.PutSettings(ctx, pool, fixture.key, evalfixture.StateURL, actor); err != nil {
+	if err := evalfixture.PutLegionSettings(ctx, pool, fixture.key, actor); err != nil {
 		return projectHistory{}, fmt.Errorf("write %s's legion_settings: %w", fixture.key, err)
 	}
 	return history, nil

@@ -82,7 +82,13 @@ func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testin
 // logged eval's own (`lines`, `Ratio` spelled otherwise), takes any finite number; no unit takes NaN
 // or an infinity; an off target is never refused. Every refusal is EVAL_FIELD_INVALID naming
 // target. Every unit of targetRanges has its rows, and every target the catalogue seeds is within
-// its unit's range.
+// its range. A target that names its judges lies in the range of each (deliveryJudgeRanges) rather
+// than its unit's: deploy-run-success, in ratio, takes 300, 262 and 100 judged by its counts and
+// refuses 300 judged by runs.rate, alone or beside runs.concluded; a rate judge takes 0 and 1 and
+// refuses a share past 1 or below 0 whatever the unit; a count judge, a sum or a quantile in minutes
+// refuses a target below 0 and takes any above; a judge with no range of its own holds the unit's;
+// and no judge makes NaN a target. Each refusal of a judged target names the judge or the unit
+// whose range it is outside.
 func TestATargetLiesInTheRangeItsEvalsUnitHolds(t *testing.T) {
 	t.Parallel()
 	frequency, success := entryOf(t, SlugDeployFrequency).definition.Unit, entryOf(t, SlugDeployRunSuccess).definition.Unit
@@ -132,10 +138,54 @@ func TestATargetLiesInTheRangeItsEvalsUnitHolds(t *testing.T) {
 	if err := CheckTarget(unitRatio, nil); err != nil {
 		t.Errorf("an off target in ratio is refused %v, want it taken", err)
 	}
+	if err := CheckTarget(unitRatio, nil, "runs.rate"); err != nil {
+		t.Errorf("an off target judged by runs.rate is refused %v, want it taken", err)
+	}
 	for _, unit := range slices.Sorted(maps.Keys(targetRanges)) {
 		if !below[unit] {
 			t.Errorf("no row refuses a target below the range of %q", unit)
 		}
+	}
+	// names is the judge or the unit a refusal names, "" where the target is taken.
+	judged := []struct {
+		unit   string
+		target float64
+		judges []string
+		names  string
+	}{
+		{success, 300, []string{"runs.concluded"}, ""},
+		{success, 262, []string{"runs.concluded"}, ""},
+		{success, 100, []string{"runs.reached_production", "runs.cancelled"}, ""},
+		{success, 300, []string{"runs.rate"}, "runs.rate"},
+		{success, 300, []string{"runs.concluded", "runs.rate"}, "runs.rate"},
+		{success, 300, []string{"runs.rate", "runs.concluded"}, "runs.rate"},
+		{success, 0, []string{"runs.rate"}, ""}, {success, 1, []string{"runs.rate"}, ""}, {success, 0.9, []string{"runs.rate", "runs.concluded"}, ""},
+		{success, 1.0001, []string{"runs.rate"}, "runs.rate"}, {success, -0.1, []string{"runs.rate"}, "runs.rate"},
+		{success, -1, []string{"runs.concluded"}, "runs.concluded"},
+		{unitRatio, 0.3, []string{"per_deploy.rate"}, ""}, {unitRatio, 2, []string{"per_deploy.rate"}, "per_deploy.rate"},
+		{unitRatio, 1.5, []string{"per_deploy.failed", "per_deploy.rate"}, "per_deploy.rate"}, {unitRatio, 12, []string{"per_deploy.total"}, ""},
+		{frequency, 1.5, []string{"per_deploy.rate"}, "per_deploy.rate"}, {frequency, 250, []string{"deploys.deploys"}, ""},
+		{frequency, -3, []string{"deploys.per_day"}, "deploys.per_day"},
+		{unitMinutes, 100, []string{"minutes.max", "minutes.median"}, ""}, {unitMinutes, -1, []string{"minutes.n"}, "minutes.n"},
+		{unitIssues, -1, []string{"issues.value"}, "issues.value"},
+		{success, 7, []string{"runs.mean"}, unitRatio}, {success, 0.5, []string{"runs.mean"}, ""},
+		{success, math.NaN(), []string{"runs.concluded"}, "no finite number"},
+	}
+	for _, row := range judged {
+		target := row.target
+		err := CheckTarget(row.unit, &target, row.judges...)
+		if row.names == "" {
+			if err != nil {
+				t.Errorf("a target of %v in %q judged by %v is refused %v, want it taken", row.target, row.unit, row.judges, err)
+			}
+			continue
+		}
+		var refused *Error
+		if !errors.As(err, &refused) || refused.Code != CodeFieldInvalid || refused.Field != fieldTarget || !strings.Contains(refused.Message, row.names) {
+			t.Errorf("a target of %v in %q judged by %v is answered %v, want %s naming %s and %s", row.target, row.unit, row.judges, err, CodeFieldInvalid, fieldTarget, row.names)
+			continue
+		}
+		t.Logf("%v in %q judged by %v: %s", row.target, row.unit, row.judges, refused.Message)
 	}
 	seeded := 0
 	for _, entry := range catalogue {
@@ -143,19 +193,55 @@ func TestATargetLiesInTheRangeItsEvalsUnitHolds(t *testing.T) {
 			continue
 		}
 		seeded++
-		if err := CheckTarget(entry.definition.Unit, entry.definition.Target); err != nil {
-			t.Errorf("the catalogue seeds %s with a target its unit %q cannot hold: %v", entry.definition.Slug, entry.definition.Unit, err)
+		if err := CheckTarget(entry.definition.Unit, entry.definition.Target, rangedJudges(entry.definition)...); err != nil {
+			t.Errorf("the catalogue seeds %s with a target outside its range in %q judged by %v: %v", entry.definition.Slug, entry.definition.Unit, entry.definition.TargetJudges, err)
 		}
 	}
-	t.Logf("%d targets checked, %d seeded targets within their units' ranges", len(rows), seeded)
+	t.Logf("%d targets checked, %d judged, %d seeded targets within their ranges", len(rows), len(judged), seeded)
+}
+
+// TestEveryDeliveryJudgeHasATargetRange checks the observable bounds of every statistic
+// a Delivery judge can name: rates are shares from 0 to 1, and every other statistic
+// is nonnegative. Use an unbounded unit so a missing judge range cannot pass by fallback.
+func TestEveryDeliveryJudgeHasATargetRange(t *testing.T) {
+	t.Parallel()
+	rates := []string{"per_deploy.rate", "runs.rate"}
+	taken := map[string]bool{}
+	for _, slug := range slices.Sorted(maps.Keys(deliveryJudges)) {
+		for _, judge := range deliveryJudges[slug] {
+			taken[judge] = true
+			below, edge, above := -1.0, 1.0, 2.0
+			if err := CheckTarget("", &below, judge); err == nil {
+				t.Errorf("%s accepted a negative target for %s", slug, judge)
+			}
+			if err := CheckTarget("", &edge, judge); err != nil {
+				t.Errorf("%s refused a target of 1 for %s: %v", slug, judge, err)
+			}
+			if err := CheckTarget("", &above, judge); (err != nil) != slices.Contains(rates, judge) {
+				t.Errorf("%s judged by %s at 2: %v; only a rate must refuse it", slug, judge, err)
+			}
+		}
+	}
+	for _, rate := range rates {
+		if !taken[rate] {
+			t.Errorf("the rate %s is no judge a delivery eval takes", rate)
+		}
+	}
+	t.Logf("%d delivery judges in %d evals, each with its range; %d of them rates", len(taken), len(deliveryJudges), len(rates))
 }
 
 // TestARegisterWriteOfATargetItsUnitCannotHoldIsRefused: the register write judges the target of
-// the version it leaves by the version's unit (CheckTarget), and a refused write stores nothing. On
-// the seeded evals, -3 deploys a day and a share of 7 are refused EVAL_FIELD_INVALID naming target
-// and a share of 1 is taken. A logged eval in `lines` takes a target of 5; a change of its unit to
-// ratio, which would carry that target forward, is refused naming target; and the same change with
-// a target of 0.5 is taken.
+// the version it leaves by the version's unit, or by the judges a delivery eval's target names
+// (CheckTarget, rangedJudges), and a refused write stores nothing. On the seeded evals, whose
+// targets name the catalogue's judges, -3 deploys a day and a share of 7 are refused
+// EVAL_FIELD_INVALID naming target and the judge each carries forward (deploys.per_day, runs.rate),
+// and a share of 1 is taken. deploy-run-success, in ratio, refuses 300 judged by runs.rate, alone or
+// beside runs.concluded, naming runs.rate, and takes 300 judged by runs.concluded, a count, which it
+// stores as its next version; a write of the judges alone that would leave that 300 judged by
+// runs.rate, or by no judge and so in ratio, is refused naming the judge or the unit, and the 300
+// judged by runs.concluded stands. A logged eval in `lines` takes a target of 5; a change of its
+// unit to ratio, which would carry that target forward, is refused naming target and ratio; and the
+// same change with a target of 0.5 is taken.
 func TestARegisterWriteOfATargetItsUnitCannotHoldIsRefused(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -166,14 +252,15 @@ func TestARegisterWriteOfATargetItsUnitCannotHoldIsRefused(t *testing.T) {
 	versions := func() int {
 		return r.count(t, `select count(*) from eval_versions where project_key = $1`, r.project)
 	}
-	refuse := func(what string, change Registration) {
+	// names is the judge or the unit whose range the refusal names.
+	refuse := func(what string, change Registration, names string) {
 		t.Helper()
 		change.Project, change.Caller = r.project, alice
 		before := versions()
 		_, err := r.registry.Register(ctx, change)
 		var refused *Error
-		if !errors.As(err, &refused) || refused.Code != CodeFieldInvalid || refused.Field != fieldTarget {
-			t.Errorf("%s: answered %v, want %s naming %s", what, err, CodeFieldInvalid, fieldTarget)
+		if !errors.As(err, &refused) || refused.Code != CodeFieldInvalid || refused.Field != fieldTarget || !strings.Contains(refused.Message, names) {
+			t.Errorf("%s: answered %v, want %s naming %s and %s", what, err, CodeFieldInvalid, fieldTarget, names)
 		}
 		if after := versions(); after != before {
 			t.Errorf("%s: the refused write stored %d versions", what, after-before)
@@ -188,15 +275,31 @@ func TestARegisterWriteOfATargetItsUnitCannotHoldIsRefused(t *testing.T) {
 		}
 		return registered
 	}
-	below, past, whole, lines, half := -3.0, 7.0, 1.0, 5.0, 0.5
-	refuse("-3 deploys a day", Registration{Slug: SlugDeployFrequency, Target: Set(&below)})
-	refuse("a share of 7", Registration{Slug: SlugDeployRunSuccess, Target: Set(&past)})
+	below, past, whole, lines, half, runs := -3.0, 7.0, 1.0, 5.0, 0.5, 300.0
+	refuse("-3 deploys a day", Registration{Slug: SlugDeployFrequency, Target: Set(&below)}, "deploys.per_day")
+	refuse("a share of 7", Registration{Slug: SlugDeployRunSuccess, Target: Set(&past)}, "runs.rate")
 	if registered := take("a share of 1", Registration{Slug: SlugDeployRunSuccess, Target: Set(&whole)}); registered.Definition.Target == nil || *registered.Definition.Target != 1 {
 		t.Errorf("a share of 1 left the target %v, want 1", registered.Definition.Target)
 	}
+	concluded, rate := []string{"runs.concluded"}, []string{"runs.rate"}
+	refuse("300 judged by runs.rate", Registration{Slug: SlugDeployRunSuccess, Target: Set(&runs), TargetJudges: Set(rate)}, "runs.rate")
+	refuse("300 judged by runs.concluded and runs.rate", Registration{Slug: SlugDeployRunSuccess, Target: Set(&runs), TargetJudges: Set([]string{"runs.concluded", "runs.rate"})}, "runs.rate")
+	counted := take("300 judged by runs.concluded", Registration{Slug: SlugDeployRunSuccess, Target: Set(&runs), TargetJudges: Set(concluded)})
+	standing := func(what string) {
+		t.Helper()
+		newest := r.versionsOf(t, counted.Definition.EvalID)[0]
+		if !counted.Wrote || newest.Version != counted.Definition.Version || newest.Target == nil || *newest.Target != runs || !slices.Equal(newest.TargetJudges, concluded) {
+			t.Errorf("%s: the write of 300 judged by runs.concluded wrote %t at version %d, and the newest version is %d with target %s judged by %v; want %d with 300 judged by %v",
+				what, counted.Wrote, counted.Definition.Version, newest.Version, showValue(newest.Target), newest.TargetJudges, counted.Definition.Version, concluded)
+		}
+	}
+	standing("once stored")
+	refuse("a write of runs.rate alone on 300 judged by runs.concluded", Registration{Slug: SlugDeployRunSuccess, TargetJudges: Set(rate)}, "runs.rate")
+	refuse("a write that clears the judges of 300 judged by runs.concluded", Registration{Slug: SlugDeployRunSuccess, TargetJudges: Set([]string{})}, unitRatio)
+	standing("after the refused judge writes")
 	take("a logged eval in lines with a target of 5", Registration{Slug: "diff-size", Unit: Set("lines"), Target: Set(&lines),
 		Series: []SeriesChange{{Series: "lines", Agg: Set(AggQuantile)}}})
-	refuse("a unit change that carries 5 into ratio", Registration{Slug: "diff-size", Unit: Set(unitRatio)})
+	refuse("a unit change that carries 5 into ratio", Registration{Slug: "diff-size", Unit: Set(unitRatio)}, unitRatio)
 	if registered := take("ratio with a target of 0.5", Registration{Slug: "diff-size", Unit: Set(unitRatio), Target: Set(&half)}); registered.Definition.Unit != unitRatio ||
 		registered.Definition.Target == nil || *registered.Definition.Target != half {
 		t.Errorf("the unit and target write left %q and %v, want ratio and 0.5", registered.Definition.Unit, registered.Definition.Target)

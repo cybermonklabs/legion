@@ -553,6 +553,32 @@ func TestARatioTargetOutside0To1IsRefused(t *testing.T) {
 	}
 }
 
+// A target judged by a count lies in the count's range whatever its eval's unit, as the register
+// write judges it (evals.CheckTargetOf): once ALPHA's deploy-run-success, in ratio, judges its
+// target by runs.concluded, a save of 250 is its next version and -1 is refused naming the target,
+// with nothing written; judged by runs.rate again, 250 is refused.
+func TestASettingsTargetLiesInTheRangeOfTheStatisticItJudges(t *testing.T) {
+	t.Parallel()
+	rig := newSavedDeliveryRig(t)
+	const slug = "deploy-run-success"
+	judge := func(key string, body map[string]any) {
+		t.Helper()
+		body["slug"] = slug
+		if written := evalRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/ALPHA/evals", body, key); written.Code != http.StatusCreated {
+			t.Fatalf("register %v on ALPHA: status %d, body %s", body, written.Code, written.Body.String())
+		}
+	}
+	judge("settings-judge-concluded", map[string]any{"target": 300, "target_judges": []string{"runs.concluded"}})
+	version, _ := evalVersion(t, rig, "ALPHA/"+slug)
+	savedProjectDelivery(t, rig.handler, "ALPHA", map[string]any{"targets": map[string]any{slug: 250}})
+	if after, held := evalVersion(t, rig, "ALPHA/"+slug); after != version+1 || held == nil || *held != 250 {
+		t.Errorf("a save of 250 judged by runs.concluded left version %d target %v, want version %d target 250", after, held, version+1)
+	}
+	requireInputRefused(t, rig, "ALPHA", map[string]any{"targets": map[string]any{slug: -1}}, "targets."+slug)
+	judge("settings-judge-rate", map[string]any{"target": 0.9, "target_judges": []string{"runs.rate"}})
+	requireInputRefused(t, rig, "ALPHA", map[string]any{"targets": map[string]any{slug: 250}}, "targets."+slug)
+}
+
 // A population author that is empty, or white space alone, is refused naming population_authors,
 // and writes nothing, the switch the body turns off included.
 func TestABlankPopulationAuthorIsRefused(t *testing.T) {

@@ -317,13 +317,22 @@ var thisHeadsMigrations = []int64{
 	20261123020640, 20261123041500, 20261123041501, 20261126090000, 20261126125956, 20261127022136,
 }
 
-// openBase is a database of the base's schema, main's at the commit this head merges: this tree's
-// runner makes its version table (the first migration), the table records thisHeadsMigrations as
+// legionStateIntake is main's migration 20261118212431_legion_events, which brought Dispatch's
+// Legion state intake (cybermonklabs/legion#4432): it creates legion_event_cursors and
+// legion_event_parts and adds columns to legion_reads and server_processes, and no migration after
+// it that this tree embeds names any of them. A base of main older than it, such as the one k8's
+// negative control loads, lacks all of them.
+const legionStateIntake int64 = 20261118212431
+
+// openBase is a database of main's schema less the migrations skipped, made once per key: this
+// tree's runner makes its version table (the first migration), the table records skipped as
 // applied with no identity, which the runner fills from its own files as it fills a row an older
 // runner wrote (pgmigrate.Reconcile), and the runner then applies every other migration it embeds.
-func openBase(t *testing.T) *store.Store {
+// thisHeadsMigrations leave main's schema at the commit this head merges; with legionStateIntake
+// beside them, main's before its Legion state intake.
+func openBase(t *testing.T, key string, skipped []int64) *store.Store {
 	t.Helper()
-	return storetest.OpenFrom(t, "main at the commit this head merges (evalfixture's openBase)", func(databaseURL string) error {
+	return storetest.OpenFrom(t, key, func(databaseURL string) error {
 		ctx := context.Background()
 		database, err := store.Open(ctx, databaseURL)
 		if err != nil {
@@ -333,31 +342,28 @@ func openBase(t *testing.T) *store.Store {
 		if err := database.MigrateThrough(ctx, 1); err != nil {
 			return err
 		}
-		if _, err := database.Pool.Exec(ctx, `insert into schema_migrations (version) select unnest($1::bigint[])`, thisHeadsMigrations); err != nil {
-			return fmt.Errorf("record this head's migrations as applied: %w", err)
+		if _, err := database.Pool.Exec(ctx, `insert into schema_migrations (version) select unnest($1::bigint[])`, skipped); err != nil {
+			return fmt.Errorf("record the migrations the base lacks as applied: %w", err)
 		}
 		return database.Migrate(ctx)
 	})
 }
 
 // TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema: -base refuses a database of this head,
-// writes into a database of main's schema at the commit this head merges (openBase) exactly the
-// rows -legion writes into this head's with the same -now, and -legion refuses that database, which
-// holds none of this head's tables.
+// writes into a database of main's schema (openBase) exactly the rows -legion writes into this
+// head's with the same -now, and -legion refuses that database, which holds none of this head's
+// tables. Main's schema is the one at the commit this head merges, and the one before its Legion
+// state intake (legionStateIntake), whose catalog lacks legion_event_cursors, which
+// legion.PutSettings writes: there too the project's legion_settings row stands, naming StateURL
+// (PutLegionSettings).
 func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 	ctx := t.Context()
-	head, base := storetest.Open(t), openBase(t)
+	head := storetest.Open(t)
 	if _, err := evalfixture.WriteBase(ctx, head.Pool, "LEGK", 240, now); err == nil || !strings.Contains(err.Error(), "eval_days") {
 		t.Fatalf("-base into this head's database answered %v, want a refusal naming eval_days", err)
 	}
-	if _, err := evalfixture.WriteLegion(ctx, base.Pool, "LEGK", 240, now); err == nil || !strings.Contains(err.Error(), "-base") {
-		t.Fatalf("-legion into the base's schema answered %v, want a refusal that names -base", err)
-	}
 	if _, err := evalfixture.WriteLegion(ctx, head.Pool, "LEGK", 240, now); err != nil {
 		t.Fatalf("write the Legion history into this head's database: %v", err)
-	}
-	if _, err := evalfixture.WriteBase(ctx, base.Pool, "LEGK", 240, now); err != nil {
-		t.Fatalf("write the Legion history into the base's schema: %v", err)
 	}
 	// Each table as the rows it holds, ids and the moment of the write left out.
 	digests := map[string]string{
@@ -369,19 +375,55 @@ func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 		"legion_settings":        `select md5(string_agg(project || state_url, ',' order by project)) from legion_settings`,
 		"delivery_pull_requests": `select md5(string_agg(repo || number || title || coalesce(issue_key, '') || coalesce(merged_at::text, ''), ',' order by repo, number)) from delivery_pull_requests`,
 	}
+	mine := map[string]string{}
 	for _, table := range evalfixture.LegionTables {
-		var mine, theirs string
-		if err := head.Pool.QueryRow(ctx, digests[table]).Scan(&mine); err != nil {
+		var digest string
+		if err := head.Pool.QueryRow(ctx, digests[table]).Scan(&digest); err != nil {
 			t.Fatalf("digest %s of this head's database: %v", table, err)
 		}
-		if err := base.Pool.QueryRow(ctx, digests[table]).Scan(&theirs); err != nil {
-			t.Fatalf("digest %s of the base's: %v", table, err)
-		}
-		if mine != theirs {
-			t.Errorf("%s differs between -legion's database (%s) and -base's (%s)", table, mine, theirs)
-		}
+		mine[table] = digest
 	}
-	t.Logf("-base wrote the %d tables %v as -legion does, into main's schema, which lacks the %d migrations this head adds", len(evalfixture.LegionTables), evalfixture.LegionTables, len(thisHeadsMigrations))
+	for _, base := range []struct {
+		name    string
+		skipped []int64
+		// intake is whether the base's catalog holds legion_event_cursors.
+		intake bool
+	}{
+		{"main at the commit this head merges", thisHeadsMigrations, true},
+		{"main before its Legion state intake", append(slices.Clone(thisHeadsMigrations), legionStateIntake), false},
+	} {
+		t.Run(base.name, func(t *testing.T) {
+			ctx := t.Context()
+			database := openBase(t, base.name+" (evalfixture's openBase)", base.skipped)
+			held, err := evalfixture.ExistingTables(ctx, database.Pool, []string{"legion_event_cursors"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if intake := len(held) > 0; intake != base.intake {
+				t.Fatalf("the base's catalog holds legion_event_cursors: %t, want %t", intake, base.intake)
+			}
+			if _, err := evalfixture.WriteLegion(ctx, database.Pool, "LEGK", 240, now); err == nil || !strings.Contains(err.Error(), "-base") {
+				t.Fatalf("-legion into the base's schema answered %v, want a refusal that names -base", err)
+			}
+			if _, err := evalfixture.WriteBase(ctx, database.Pool, "LEGK", 240, now); err != nil {
+				t.Fatalf("write the Legion history into the base's schema: %v", err)
+			}
+			for _, table := range evalfixture.LegionTables {
+				var theirs string
+				if err := database.Pool.QueryRow(ctx, digests[table]).Scan(&theirs); err != nil {
+					t.Fatalf("digest %s of the base's: %v", table, err)
+				}
+				if mine[table] != theirs {
+					t.Errorf("%s differs between -legion's database (%s) and -base's (%s)", table, mine[table], theirs)
+				}
+			}
+			var stateURL string
+			if err := database.Pool.QueryRow(ctx, `select state_url from legion_settings where project = $1`, "LEGK").Scan(&stateURL); err != nil || stateURL != evalfixture.StateURL {
+				t.Errorf("LEGK's legion_settings row names %q (%v), want %s", stateURL, err, evalfixture.StateURL)
+			}
+			t.Logf("-base wrote the %d tables %v as -legion does, into main's schema less %d of the migrations this tree embeds", len(evalfixture.LegionTables), evalfixture.LegionTables, len(base.skipped))
+		})
+	}
 }
 
 // TestTheAttributionModeWritesK15sCase: -attribution writes k15's case (verification version 26):
