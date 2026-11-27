@@ -130,7 +130,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	// the same actor.
 	//
 	// actingPerson is deliberately not called for it: it refuses a caller holding no `person`
-	// scope (server.go), and this route is scopeDeployment (routes_table.go) — the deployment's
+	// scope (server.go), and this route is scopeDeployment (its route file) — the deployment's
 	// own token creates projects, and that token holds no scope at all. Such a caller acts for
 	// nobody, so it must name the person itself, which is the refusal below. Whichever step
 	// answers, the login is held to somebody who has signed in, as PUT

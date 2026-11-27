@@ -101,7 +101,7 @@ func TestEverySingleValueQueryKeyRefusesARepeat(t *testing.T) {
 			continue
 		}
 		declared := slices.Collect(maps.Keys(keys))
-		if params := routeShapes[name].Params; params != nil {
+		if params := route.Shape.Params; params != nil {
 			declared = append(declared, queryKeysOf(params)...)
 		}
 		if slices.Contains(declared, repeatProbeKey) {
