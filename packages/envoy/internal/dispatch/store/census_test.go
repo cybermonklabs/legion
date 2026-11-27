@@ -2191,3 +2191,26 @@ func TestCensusOnAMigratedDatabaseHasNothingPending(t *testing.T) {
 		t.Errorf("report:\n%s", out)
 	}
 }
+
+// CONTROL ONLY (r62-record gd-ctl-handpredicate): a lock-wait read written by hand, once in each
+// form TestEveryTestReadsALockWaitThroughLockwaittest's documentation says it names. Each must be
+// named at its own line.
+var (
+	_ = "wait_event_type = 'Lock'"
+	_ = "'Lock' = wait_event_type"
+	_ = "wait_event_type in ('LWLock', 'Lock')"
+	_ = "'advisory' <> a.wait_event"
+	_ = "coalesce(a.wait_event_type, '')::text = 'Lock'"
+	_ = "wait_event_type not like 'Lock'"
+	_ = "lower(wait_event_type) = 'lock'"
+	_ = "'Lock' = (wait_event_type)"
+	_ = "wait_event_type = E'Lock'"
+	_ = `select count(*) from pg_stat_activity
+	where pid in (select pid from pg_locks where not granted)`
+	_ = "pid in (select pid from pg_locks where not granted and locktype = 'advisory')"
+	_ = "select pid from pg_locks where not granted"
+	_ = "pid not in (select pid from pg_locks where not granted)"
+	_ = "exists (select pid from pg_locks where not granted)"
+	_ = "with w as (select pid from pg_locks where not granted) select count(*) from w"
+	_ = "select 1; select pid from pg_locks where not granted"
+)
