@@ -24,7 +24,9 @@ GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
          {"mode": "build"}),
     ]),
 ], reads=reads(
-    ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")),
+    ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Build the dashboard") + " builds the SPA the rows read and "
+     + at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")
+     + " runs them, in packages/dispatch"),
     ("packages/proof-editor/**", "`packages/dispatch/web/vite.config.ts#alias` (build:web), whose @legion/proof-editor entries resolve into it"),
     # packages/contracts/src is no read of this gate's either: the filter's listed block holds
     # the modules dispatch_ui's tsc programs compile and the dispatch command the Go step runs

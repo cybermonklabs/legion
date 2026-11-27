@@ -20,6 +20,8 @@ import (
 // could reach no head either, and nor could any pass after it. At the floor the pass reads the
 // heads, learns their pages, and the pass after it paces itself by those again.
 func TestThePassAfterOneThatReadNoHeadWholeReadsAtTheFloor(t *testing.T) {
+	// Not parallel: its passes pace themselves on the wall clock (Pace) under real bounds of 1 s
+	// and 5 s (starveFirstPass, PassTimeout).
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
@@ -99,6 +101,8 @@ const starveMargin = 30 * time.Second
 // still in force as a pass began. Cleared by the limited pass, the floor would give way to the
 // arithmetic, which spreads the one identity read over the bound and lands on the ceiling again.
 func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T) {
+	// Not parallel: its passes pace themselves on the wall clock (Pace) under real bounds of 1 s
+	// and 5 s (starveFirstPass, PassTimeout).
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
@@ -147,6 +151,8 @@ func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T
 // A deployment that configures a pause below the floor keeps it for the pass after a starved one:
 // the floor never makes a pass slower than the pause configured.
 func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.T) {
+	// Not parallel: its passes pace themselves on the wall clock (Pace) under real bounds of 1 s
+	// and 5 s (starveFirstPass, PassTimeout).
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
@@ -172,6 +178,8 @@ func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.
 // place, the floor would hold every pass of a deployment whose passes end on their bound -- the
 // cursor's own case -- at ten requests a second for good.
 func TestAPassThatReachesAHeadAndThenEndsOnItsBoundClearsTheFloor(t *testing.T) {
+	// Not parallel: its passes pace themselves on the wall clock (Pace) under real bounds of 1 s
+	// and 5 s (starveFirstPass, PassTimeout), one of which GitHub holds a head past.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
@@ -220,6 +228,8 @@ func readBothHeads(t *testing.T, h *harness) {
 // pass's: the pace did not stop that pass, so the pass after it paces itself by the work the
 // Reconciler holds, not at the floor.
 func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
+	// Not parallel: its passes pace themselves on the wall clock (Pace) under a real bound of 5 s
+	// (readBothHeads), and a caller's deadline of 1 s ends one of them.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
@@ -256,6 +266,8 @@ func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
 // during that wait, whatever the machine's speed, once the limit's answer has come; the pass
 // after it paces itself by the work the Reconciler holds.
 func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
+	// Not parallel: its pass's real bound of 4 s must fall inside the limit's write, which waits
+	// 5 s (limitRecordTimeout), and its passes pace themselves on the wall clock (Pace).
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
@@ -301,6 +313,8 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 // it with no head reached, as a bound inside a head's reads is: the pass after it reads at the
 // floor.
 func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
+	// Not parallel: its passes pace themselves on the wall clock (Pace) under a real bound of 5 s
+	// (readBothHeads, PassTimeout).
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))

@@ -16,6 +16,7 @@ import { goBlankPattern } from "@legion/contracts/go-blank";
 import type { BunFile } from "bun";
 import { fileTextBytes, unstorableBytes } from "../dispatch-file-text";
 import {
+  DispatchAnswerMissingError,
   DispatchAnswerNotKeptError,
   type DispatchClient,
   DispatchServiceError,
@@ -302,12 +303,17 @@ async function askRoundTrip(
     if (!routeAbsent && error instanceof DispatchServiceError && error.textRefusal) {
       return { kind: "refused", refusal: error };
     }
+    // The round trip stores nothing, so a 2xx with no text in it (`DispatchAnswerMissingError`)
+    // says only that. Any other failure is named as it reads, its own final period left to the
+    // refusal's sentence (`storedTextCheckFailed`).
     return {
       kind: "unanswered",
       failure:
         error instanceof DispatchAnswerNotKeptError
           ? `${route} wrote nothing, and Dispatch kept no copy of its answer (${error.code})`
-          : `${route} failed with ${messageFor(error)}`,
+          : error instanceof DispatchAnswerMissingError
+            ? `${route} answered without the text it would store (${error.code})`
+            : `${route} failed with ${messageFor(error).replace(/\.$/, "")}`,
       error,
       routeAbsent,
     };
