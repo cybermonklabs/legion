@@ -65,12 +65,12 @@ type Config struct {
 	Steps          []record.DesignStep
 	ReviewRoundCap int
 	Linger         time.Duration
-	// ProductionCheckBound is how long a closed issue's production check waits for its deploy
-	// before its last look (config.Config.ProductionCheckBound, `production_check_hours`): the
-	// check's bound_at is its open plus this. Zero takes the shipped 14 days.
+	// ProductionCheckBound is how long a production check runs from its opening before its last
+	// look (config.Config.ProductionCheckBound, `production_check_hours`): the check's bound_at is
+	// its open plus this. Zero takes the shipped 14 days.
 	ProductionCheckBound time.Duration
 	// ProductionCheckRole is the project's `production_check` (config.Project.ProductionCheck):
-	// the role that works the production check a merge closing an issue opens, and empty for the
+	// the role that works the production check a merged issue's close waits for, and empty for the
 	// project that opens none. It decides the checks opened under this configuration, never one
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role

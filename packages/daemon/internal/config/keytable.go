@@ -349,7 +349,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "production_check_hours", Default: "`336`, fourteen days", RequiredBy: "no",
-			Description: "How many hours a closed issue's production check runs before its last look; decimals allowed.",
+			Description: "How many hours a merged issue's production check runs from its opening before its last look; decimals allowed.",
 			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.ProductionCheckBound = v }),
 		},
 		{

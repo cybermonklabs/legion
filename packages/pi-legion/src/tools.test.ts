@@ -2016,8 +2016,9 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
   });
 });
 
-/** LEGION-208 closed by its merge, with its production check open on its second look: `role` is
- * the role the check records as the one that works it, and `last` false says a look follows. */
+/** LEGION-208, which an earlier release closed at its merge, with its production check open on its
+ * second look: `role` is the role the check records as the one that works it, and `last` false says
+ * a look follows. */
 const openCheck = {
   repo: "acme/widgets",
   pullRequest: 1239,
@@ -2038,7 +2039,7 @@ const openCheck = {
 /** The time a pending report names for its next look. */
 const NEXT_LOOK = "2026-09-29T09:00:00Z";
 
-test("a report on its closed issue's production check carries a verdict and no commit, and a pending its next look", async () => {
+test("a report on its issue's production check carries a verdict and no commit, and a pending its next look", async () => {
   const completed: string[] = [];
   const { calls, daemon } = recordingDaemon({
     state: {

@@ -1879,7 +1879,7 @@ type CutoverMergerRepair struct{}
 
 func (CutoverMergerRepair) namedIssue() (string, bool) { return "", false }
 
-// CheckReport is the checking role's report on one look of its closed issue's production check:
+// CheckReport is the checking role's report on one look of its issue's production check:
 // the `legion` tool's `handoff_complete` on an issue whose check is open (api/handoff.go),
 // carrying no commit. Verdict is pass, pending or fail; Summary is what the agent saw. Look is
 // the look the route read as the check's current one, so a report of a look its bound or a hold
