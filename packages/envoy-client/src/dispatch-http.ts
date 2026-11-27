@@ -1032,12 +1032,10 @@ function isStoredKeyStatus(status: number): boolean {
 
 /**
  * The table's event for an answer (`WriteEvent`, write-outcome.ts).
- * - An answer Cipher's proxy wrote itself (`answer.proxy`, `proxyOwnAnswer`) is read by its headers
- *   alone, whatever its status or body (`proxyEvent`): one it wrote before any byte left it
- *   (`Cipher-Proxy-Forwarded: false`) is `proxy-failed` for an outage (`outage`: a 408, a 429 or a
- *   5xx) and `proxy-refused` for any other status, and one it wrote after the write may have
- *   reached Dispatch is `proxy-unsettled`. A service's answer it carried names no code, and is
- *   read as Dispatch's below.
+ * - An answer Cipher's proxy wrote itself, which `proxyOwnAnswer` reads once for every write
+ *   (`Cipher-Proxy-Code`), is read before anything else, by its headers alone and whatever its
+ *   status or body (`proxyEvent`), under the rule stated below. A service's answer it carried
+ *   names no code, and is read as Dispatch's.
  * - A 2xx is `applied` once its body was read whole, except where it is no answer of Dispatch's
  *   (`foreign-2xx`): its body is empty or not JSON-typed where its status carries one (`notJson`),
  *   a captive portal's 200 page for one; or it names no key back, or another request's, though
@@ -1073,13 +1071,11 @@ function isStoredKeyStatus(status: number): boolean {
  * attempt could land unkeyed. The key decides only how a final answer reads; every retry goes
  * regardless.
  *
- * An answer Cipher's proxy wrote itself, which `proxyOwnAnswer` reads once for every write
- * (`Cipher-Proxy-Code`), is read before anything else. One it wrote before any byte left it
+ * An answer Cipher's proxy wrote itself: one it wrote before any byte left it
  * (`Cipher-Proxy-Forwarded: false`) is `proxy-failed` for an outage (`outage`: a 408, a 429 or a
  * 5xx), which is asked again under the key, and `proxy-refused` for any other status, which the
  * same placeholder would get again. One it wrote after the write may have reached Dispatch
- * (`unknown`, or no such header) is `proxy-unsettled`. A service's answer it carried has no code,
- * and is read as Dispatch's.
+ * (`unknown`, or no such header) is `proxy-unsettled`.
  */
 function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent {
   const { status } = answer.response;

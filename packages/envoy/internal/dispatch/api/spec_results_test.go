@@ -794,7 +794,7 @@ func (r *specResultsRig) workflowsAsked() []string {
 // name, and a name may end in parentheses with no matrix behind them: the job foo is named
 // `foo (bar)` and has no matrix. Its check run writes the check that names the job `foo (bar)`,
 // with no leg. GitHub is asked for the run's workflow file once, which says that one job is named
-// `foo (bar)` and that no matrix job makes that name for a leg.
+// `foo (bar)` and that no matrix job can make that name for a leg.
 func TestAJobWhoseNameEndsInParenthesesWritesItsOwnCheck(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	result := stored201(t, rig.post(t, specResultsProject, rig.checkRunNamed(31, "foo (bar)"), passOf(parenthesizedCheck)))
@@ -876,6 +876,12 @@ func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
 	})
 }
 
+// job is one job of a workflow file, as the rows below write one: its id, whatever body the row
+// gives it (a name, a matrix, or neither), and the runner and the one step every such job has.
+func job(id, body string) string {
+	return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
+}
+
 // TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt: GitHub does not keep a name that ends in
 // parentheses for the legs of a matrix. A check run named `build (linux)` is a leg of the job
 // build only where the workflow file of the run at its commit makes build a matrix job, so the
@@ -885,9 +891,6 @@ func TestALegOfAMatrixJobWritesItsJobsCheck(t *testing.T) {
 // the file is over notes.MaxFileSize or does not read as a workflow file.
 func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit + " "
-	job := func(id, body string) string {
-		return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
-	}
 	matrix := "    strategy:\n      matrix:\n        os: [linux]\n"
 	for _, row := range []struct {
 		name, workflow, says string
@@ -928,9 +931,6 @@ func TestANameThatOnlyStartsWithAJobsNameIsNoLegOfIt(t *testing.T) {
 // that can make it: the leg writes build's check.
 func TestALegNameThatAnotherMatrixJobCanMakeSaysNoLeg(t *testing.T) {
 	const at = " in " + specResultsWorkflowPath + " at " + specResultsCommit
-	job := func(id, body string) string {
-		return "  " + id + ":\n" + body + "    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n"
-	}
 	build := job("build", "    strategy:\n      matrix:\n        os: [linux]\n")
 	for _, row := range []struct {
 		name, workflow, checkRun, says string

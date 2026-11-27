@@ -487,7 +487,8 @@ func githubReadRefusal(err error, what, why, notShown string, status int, unread
 
 // githubUnanswered is the 503 under code of a result whose read of what, GitHub's, failed with err
 // and was not answered: the result was not judged, so the 503 asks for the write again. Every 503
-// of the route is this one.
+// the route answers of a read of GitHub is this one; the 503s of the broker's token and of the
+// database (BROKER_UNAVAILABLE, DATABASE_UNAVAILABLE) are answered by the layers that read them.
 func githubUnanswered(what, code string, err error) *apiError {
 	return errorf(http.StatusServiceUnavailable, code, "GitHub did not answer the read of %s, so the result was not judged; write it again: %v", what, err)
 }
@@ -495,9 +496,10 @@ func githubUnanswered(what, code string, err error) *apiError {
 // jobOfCheckRun is the job and the leg that checkRun, this token's check run, ran, where the run's
 // workflow file at the run's commit shows that job to be the one check names (check being the
 // facts the files give the check of that id), or the refusal: 409 CHECK_NOT_THIS_JOBS saying why,
-// or githubReadRefusal's for the file. A check run is the job's when its name is the job's name and
-// the file shows no other job makes that name (workflowJobs.whyNotTheJob); or when its name is the
-// job's name and a leg in parentheses (legOf) and the file makes the job a matrix job
+// or githubReadRefusal's for the file. The file is read for either shape of name. A check run is
+// the job's when its name is the job's name and the file shows no other job can make that name
+// (workflowJobs.whyNotTheJob); or when its name is the job's name and a leg in parentheses
+// (legOf) and the file makes the job a matrix job and no other job can make the name
 // (workflowJobs.whyNotALeg). A name of neither shape is refused before the file is read.
 func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, run oauthwire.Run, checkRun githubapp.CheckRun, id string, check specCheckFacts) (job, leg string, err error) {
 	isLeg := false
@@ -554,14 +556,14 @@ func legOf(name, job string) (leg string, ok bool) {
 }
 
 // whyNotTheJob is why jobs, the jobs of the run's workflow file (where names that file at its
-// commit), do not show the check run called name to be the job of that very name, or "" where they
-// show it. They show it where exactly one job with no matrix is named name, no matrix job can make
-// that name for a leg, and no job's name holds an expression: a matrix job named name makes no
-// check run of that name, since every leg's name carries its values, while a second job of the
-// name, a matrix job J whose leg's name can be the name (legOf(name, J)), or a name a run
-// evaluates, can make a check run of that name whose job the name does not say. A matrix job's
-// legs are known only once a run expands its matrix, and Dispatch reads no matrix values, so the
-// leg's shape alone refuses the name.
+// commit), do not show the check run called name to be the job of that very name, or "" where
+// they show it. They show it where one job of the file is named name and it has no matrix, no
+// matrix job can make that name for a leg, and no job's name holds an expression. A matrix job
+// named name makes no check run of that name, since every leg's name carries its values, so a
+// second job of the name, of either kind (named counts both), means the name says nothing about
+// which ran; so does a matrix job J whose leg's name can be the name (legOf(name, J)), and so
+// does a name a run evaluates. A matrix job's legs are known only once a run expands its matrix,
+// and Dispatch reads no matrix values, so the leg's shape alone refuses the name.
 func (jobs workflowJobs) whyNotTheJob(name, where string) string {
 	switch {
 	case jobs.Problem != "":

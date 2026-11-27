@@ -9,6 +9,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
+import { callOf } from "@legion/envoy-client/test/fake-dispatch";
 import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { leastAnswerFor } from "@legion/envoy-client/test/route-answers";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -485,12 +486,10 @@ export function responseWithRegistration(
   init: RequestInit | undefined,
   fallback: unknown
 ): Response {
-  // The URL and the method are read off the call rather than from a `new Request(input, init)`,
-  // which TypeScript refuses for an input this wide: a Request names its own, and a string or a
-  // URL carries the method in `init` alone, defaulting to GET as fetch does.
-  const asRequest = typeof input === "string" || input instanceof URL ? undefined : input;
-  const path = new URL(asRequest?.url ?? input.toString()).pathname;
-  const method = (init?.method ?? asRequest?.method ?? "GET").toUpperCase();
+  // What the call asked for, read as envoy-client's fake Dispatch reads it (callOf): a Request
+  // names its own URL and method, and a string or a URL carries the method in `init` alone.
+  const { url, method } = callOf(input, init);
+  const path = url.pathname;
   const written =
     (method === "POST" || method === "PATCH") && path.startsWith("/api/v1/")
       ? leastAnswerFor(method, path)
