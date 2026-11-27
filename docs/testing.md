@@ -168,15 +168,17 @@ itself, whose tests import its sources by relative path.
   damage shows only where it is hardest to read.
 
 - Hand a child whose `HOME` the test replaces, and a stand-in that runs the real program, the
-  program itself: `realHostTool(name)` (`@legion/test-fixtures/host-tools`), read once at module
+  program itself: `hostTool(name)` (`@legion/test-fixtures/host-tools`), read once at module
   scope, before any directory of the test's own goes first on `PATH`, never `name` from `PATH`. On
   a machine where `name` on `PATH` is a mise shim, the shim reads its configuration from the
   child's `HOME` and from the directories above the child's working directory. Under a `HOME` of
   the test's own it refuses the real home's config as untrusted, or finds no version, and exits 1
   before the program runs; behind a stand-in of the same name first on `PATH` it falls back to the
   stand-in, which runs the shim again, and mise stops with "shim fallback recursion detected".
-  `realHostTool` takes what `mise which` names for a shim, or the program the shim would fall back
-  to, and skips the directory a stand-in lives in when it is given one.
+  `hostTool` takes what `mise which` names for a shim, or the program the shim would fall back
+  to, and skips the directory a stand-in lives in when it is given one. It is the only lookup of a
+  host program `@legion/test-fixtures/host-tools` has, so every gate and every PATH a test builds
+  from it holds real programs, and on a host without mise it runs no mise at all.
 
 - `mock.module` at module scope outlives the file that wrote it: a filtered run that selects no row
   of the file still applies it, Bun 1.4.4 has no API that takes a module mock off again, and every
