@@ -20,6 +20,7 @@ const projectReleaseVersion = 20261115073241
 // required columns reads back unfinished, unended and with an empty result; a boot is the one
 // thing its end may name.
 func TestTheProjectReleaseMigrationAppliesOverTodaysRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, projectReleaseVersion-1)

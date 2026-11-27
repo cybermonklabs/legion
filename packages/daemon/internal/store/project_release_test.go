@@ -134,6 +134,7 @@ func faultedStore(t *testing.T, st *Store) (*Store, *testdb.CommitFault) {
 // its tree, issue, role, session and state, in token order — and none that is queued, suspended,
 // failed or retired, and none of another project.
 func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 
@@ -277,6 +278,7 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 // A release's start refuses a release with no project, one with no clock to read its start from
 // and one bound before it starts, and writes nothing for any of them.
 func TestStartProjectReleaseRefusesAReleaseItCouldNotCarryOut(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	if _, _, _, err := st.StartProjectRelease(ctx, "", atReleaseStart, releaseLength); err == nil {
@@ -299,6 +301,7 @@ func TestStartProjectReleaseRefusesAReleaseItCouldNotCarryOut(t *testing.T) {
 // and its record is the project's one. The negative control is plain Transact: the start answers
 // ErrCommitOutcomeUnknown.
 func TestAProjectReleaseStartWhoseCommitReplyIsLostAnswersTheRunThatCommitted(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	token := seedProjectClaim(t, st, "legion", "LEGION-208", claim.RoleImplementer, supervise.StateWorking, "")
 	teardown := queueReleaseRow(t, st, "LEGION-210", "issue_release", `{"tree":"LEGION-208","generation":3,"treeGeneration":1}`)
@@ -342,6 +345,7 @@ func TestAProjectReleaseStartWhoseCommitReplyIsLostAnswersTheRunThatCommitted(t 
 // negative control is a start read once before the first run: the record then holds the first
 // run's start, a minute before the run that committed.
 func TestAProjectReleaseStartRunAgainCountsItsBoundFromTheRunThatCommitted(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	faulted, fault := faultedStore(t, st)
 
@@ -388,6 +392,7 @@ func TestAProjectReleaseStartRunAgainCountsItsBoundFromTheRunThatCommitted(t *te
 // what a read answers, a write after the finish is refused, and a boot ends every release of its
 // project that no boot ended and none of another project's.
 func TestAProjectReleasesRecordGrowsFinishesAndEndsAtTheBoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	if _, found, err := st.ReadProjectRelease(ctx, "legion"); err != nil || found {
@@ -469,6 +474,7 @@ func TestAProjectReleasesRecordGrowsFinishesAndEndsAtTheBoot(t *testing.T) {
 // before it sets its mark, and in the release's own transaction, which then records nothing: no
 // release, and no take-over of the idle release in flight.
 func TestAProjectReleaseIsRefusedWhileAPauseHoldsItsProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)
@@ -542,6 +548,7 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsItsProject(t *testing.T) {
 // nothing: no pause, no stop and no `pause_stop` row of the live roles. A pause is taken once the
 // release has finished, and once a boot ended a release that had not.
 func TestAPauseIsRefusedWhileAProjectReleaseRuns(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, end := range []struct {
 		name string

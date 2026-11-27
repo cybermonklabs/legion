@@ -63,6 +63,7 @@ func wantReleased(t *testing.T, g *rig, what string, err error) {
 // each refuses with runtime.ErrProjectReleased before it writes. With the mark clear the same act
 // goes through.
 func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
+	t.Parallel()
 	t.Run("a launch into an issue with no sandbox", func(t *testing.T) {
 		g, held := heldRig(t)
 		held.Store(true)
@@ -251,6 +252,7 @@ func TestProjectReleaseHoldsEverySandboxTheRuntimeWouldMake(t *testing.T) {
 // replacement for a launch that will be refused anyway. With the mark clear, the launch asks
 // RoundPodEnds and goes through.
 func TestProjectReleaseRefusesALaunchIntoACoveredPodBeforeRoundPodEnds(t *testing.T) {
+	t.Parallel()
 	var asked []roundAsk
 	g, held := heldRig(t, withRoundPodEnds(true, nil, &asked))
 	loc := g.spawn(workerSpec(t))
@@ -283,6 +285,7 @@ func TestProjectReleaseRefusesALaunchIntoACoveredPodBeforeRoundPodEnds(t *testin
 // deleted. The refusal names the Sandbox kept, and the Sandbox stays; the same delete of a Sandbox
 // unwritten since goes through.
 func TestAProjectReleaseDeleteRefusesASandboxWrittenSinceItWasRead(t *testing.T) {
+	t.Parallel()
 	cache := CacheSandboxName(testProject, cacheRepo)
 	for name, tc := range map[string]struct {
 		sandbox  string
@@ -360,6 +363,7 @@ func TestAProjectReleaseDeleteRefusesASandboxWrittenSinceItWasRead(t *testing.T)
 // by its labels as the store's list tells it, and leaves out one already being deleted and one of
 // another project.
 func TestProjectSandboxesFromAPIListsASandboxTheStoreHasNotHeardOf(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withoutController(), withLaggingSandboxInformer(time.Minute))
 	late := sandboxObject(t, "legion-legion-legion-300", "uid-late", modeSuspended,
 		map[string]string{labelProject: testProject, labelTree: "LEGION-300", labelIssue: "LEGION-300"})

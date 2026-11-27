@@ -442,6 +442,7 @@ func finishingRelease(done []api.ReleasedSandbox, claims []api.ReleasedClaim) *s
 // dispatch://INFRA-3583 R6: the command refuses to run without --operator-token-file, with the
 // usage error's exit 2, and reaches no daemon.
 func TestProjectReleaseRefusesToRunWithoutTheOperatorTokenFile(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	d := releaseDaemon(t, finishingRelease([]api.ReleasedSandbox{releasedCleanPod}, []api.ReleasedClaim{releasedArchitect}))
 	code, _, errb := d.projectRelease("--port", "1")
 	if code != 2 || !strings.Contains(errb, "--operator-token-file is required") {
@@ -454,6 +455,7 @@ func TestProjectReleaseRefusesToRunWithoutTheOperatorTokenFile(t *testing.T) {
 // LEGION_DAEMON_URL names on a pane, and --port over the configured bind otherwise; and it sends
 // the bearer, the bound and no dry run.
 func TestProjectReleaseFindsTheDaemonAsLegionStateDoes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable projectReleasePoll (releaseDaemon).
 	for name, reach := range map[string]func(t *testing.T, d *operatorDaemon) []string{
 		"--port": func(_ *testing.T, d *operatorDaemon) []string { return d.reach() },
 		"LEGION_DAEMON_URL": func(t *testing.T, d *operatorDaemon) []string {
@@ -483,6 +485,7 @@ func TestProjectReleaseFindsTheDaemonAsLegionStateDoes(t *testing.T) {
 // One line per Sandbox and one per claim the release stopped, each claim's line with its issue,
 // role and session and whether the next boot starts it; exit 0 for a release that left no Sandbox.
 func TestProjectReleasePrintsOneLinePerSandboxAndPerStoppedClaim(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	d := releaseDaemon(t, finishingRelease([]api.ReleasedSandbox{releasedCleanPod, releasedCache},
 		[]api.ReleasedClaim{releasedArchitect, releasedImplementer}))
 	code, out, errb := d.projectRelease(d.reach()...)
@@ -506,6 +509,7 @@ func TestProjectReleasePrintsOneLinePerSandboxAndPerStoppedClaim(t *testing.T) {
 
 // --json prints the release as the daemon served it, one JSON object.
 func TestProjectReleasePrintsOneJSONObject(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	release := finishingRelease([]api.ReleasedSandbox{releasedCleanPod}, []api.ReleasedClaim{releasedArchitect})
 	d := releaseDaemon(t, release)
 	code, out, errb := d.projectRelease(append(d.reach(), "--json")...)
@@ -527,6 +531,7 @@ func TestProjectReleasePrintsOneJSONObject(t *testing.T) {
 
 // A release that names a pod it left exits 1, and says which.
 func TestProjectReleaseExitsOneForALeftPod(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	left := api.ReleasedSandbox{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: api.ReleaseLeft,
 		Reason: "an operator suspended its implementer"}
 	held := api.ReleasedClaim{Token: "legion-legion-legion-209-implementer", Issue: "LEGION-209", Role: legionclaim.RoleImplementer,
@@ -548,6 +553,7 @@ func TestProjectReleaseExitsOneForALeftPod(t *testing.T) {
 // A release that deleted a pod with work lost exits 0, and its line names that workspace with its
 // count of unpushed commits, whether its working copy held a change, and the asked role's answer.
 func TestProjectReleaseExitsZeroWithWorkLostAndNamesTheWorkspace(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	commits, changed := 2, true
 	answered := time.Date(2026, 11, 15, 9, 4, 0, 0, time.UTC)
 	lost := api.ReleasedSandbox{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: api.ReleaseDeletedLost,
@@ -569,6 +575,7 @@ func TestProjectReleaseExitsZeroWithWorkLostAndNamesTheWorkspace(t *testing.T) {
 // and its line says the count is that earlier read's and gives the reason as it is, not as why a
 // pod was left.
 func TestProjectReleaseNamesTheReadAPodsCountIsFrom(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	commits, unchanged := 3, false
 	kept := api.ReleasedSandbox{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: api.ReleaseDeletedReadRefused,
 		Commits: &commits, WorkingCopyChanged: &unchanged, Reason: "no role process ran at the last read",
@@ -588,6 +595,7 @@ func TestProjectReleaseNamesTheReadAPodsCountIsFrom(t *testing.T) {
 // When --wait ends before the release finishes, the command prints the release as it stands,
 // exits 1 and says the release goes on.
 func TestProjectReleaseExitsOneWhenTheWaitEndsFirst(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
 		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
 	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{running}})
@@ -610,6 +618,7 @@ func TestProjectReleaseExitsOneWhenTheWaitEndsFirst(t *testing.T) {
 // ends inside the first read on every run; TestProjectReleaseExitsOneWhenTheWaitEndsFirst meets
 // the same cut only when a read happens to start just before its wait ends.
 func TestProjectReleasePrintsTheReleaseItHoldsWhenTheWaitCutsARead(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
 		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
 	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{running}, readTakes: 3 * time.Second})
@@ -625,6 +634,7 @@ func TestProjectReleasePrintsTheReleaseItHoldsWhenTheWaitCutsARead(t *testing.T)
 // A dry run whose request is not answered within --wait exits 1 saying that a dry run records and
 // starts nothing, not that a release goes on in the daemon: nothing was started.
 func TestProjectReleaseDryRunTheWaitEndsSaysNothingStarted(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	d := releaseDaemon(t, &scriptedRelease{startTakes: 3 * time.Second})
 	code, _, errb := d.projectRelease(append(d.reach(), "--dry-run", "--wait", "300ms")...)
 	if code != 1 || !strings.Contains(errb, "a dry run records and starts nothing") || strings.Contains(errb, "goes on in the daemon") {
@@ -636,6 +646,7 @@ func TestProjectReleaseDryRunTheWaitEndsSaysNothingStarted(t *testing.T) {
 // started and that the command run again starts it or reads it, not that it goes on in the daemon:
 // a request that ends before the release records itself has the daemon record and run nothing.
 func TestProjectReleaseTheWaitEndsBeforeTheStartIsAnsweredSaysItMayNotHaveStarted(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
 		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
 	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{running}, startTakes: 3 * time.Second})
@@ -652,6 +663,7 @@ func TestProjectReleaseTheWaitEndsBeforeTheStartIsAnsweredSaysItMayNotHaveStarte
 // release would do from the reads now, without the settle of replacement records: the roles it
 // would ask, the pod of another image, and the claims it would stop.
 func TestProjectReleaseDryRunExitsZeroWhenTheDaemonAnswers(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	commits, unchanged := 1, false
 	finished := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
 	release := &scriptedRelease{dry: api.ProjectReleaseResponse{DryRun: true, StartedAt: finished, BoundAt: finished.Add(30 * time.Minute),
@@ -684,6 +696,7 @@ func TestProjectReleaseDryRunExitsZeroWhenTheDaemonAnswers(t *testing.T) {
 // A daemon that refuses the release — one on the tmux runtime — makes the command exit 1 with the
 // daemon's sentence.
 func TestProjectReleaseExitsOneWhenTheDaemonRefuses(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	d := releaseDaemon(t, &scriptedRelease{noPod: true})
 	code, _, errb := d.projectRelease(d.reach()...)
 	if code != 1 || !strings.Contains(errb, "409") || !strings.Contains(errb, api.ProjectReleaseRunsNoPod) {
@@ -696,6 +709,7 @@ func TestProjectReleaseExitsOneWhenTheDaemonRefuses(t *testing.T) {
 // with the held pod, its claim to resume and the resume that ends the hold, and reading no
 // release after it.
 func TestProjectReleaseExitsOneWhenAPauseHoldsTheProject(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	refused := &store.ProjectPausedError{Project: "legion", Held: []store.HeldPausePod{{Issue: "LEGION-208", Pause: 7,
 		HeldAt: time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC), Claims: []legionclaim.Token{"legion-legion-legion-208-implementer"}}}}
 	release := &scriptedRelease{paused: refused}
@@ -719,6 +733,7 @@ func TestProjectReleaseExitsOneWhenAPauseHoldsTheProject(t *testing.T) {
 // the release while it runs, prints none of a dry run's words, says on stderr that the dry run
 // was answered with that release, and exits 1 for a pod the release left.
 func TestProjectReleaseDryRunAnsweredWithAReleaseReadsThatRelease(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	left := api.ReleasedSandbox{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: api.ReleaseLeft,
 		Reason: "an operator suspended its implementer"}
 	release := finishingRelease([]api.ReleasedSandbox{left, releasedCleanPod}, []api.ReleasedClaim{releasedArchitect})
@@ -753,6 +768,7 @@ func TestProjectReleaseDryRunAnsweredWithAReleaseReadsThatRelease(t *testing.T) 
 // and to run the command again — not that a dry run records and starts nothing, which is true of
 // no run that reads a release.
 func TestProjectReleaseDryRunAnsweredWithAReleaseSaysThatReleaseGoesOn(t *testing.T) {
+	// Not parallel: it sets the package variable projectReleasePoll (releaseDaemon).
 	running := releaseView(time.Hour, []api.ReleasedSandbox{{Name: releasedCleanPod.Name, Kind: "issue", Issue: "LEGION-208", Outcome: api.ReleaseWaiting}},
 		[]api.ReleasedClaim{{Token: releasedArchitect.Token, Issue: "LEGION-208", Role: legionclaim.RoleArchitect, Session: "ses_architect"}})
 	d := releaseDaemon(t, &scriptedRelease{ran: true, views: []api.ProjectReleaseResponse{running}, readTakes: 3 * time.Second})
@@ -766,6 +782,7 @@ func TestProjectReleaseDryRunAnsweredWithAReleaseSaysThatReleaseGoesOn(t *testin
 // that names the release, and each `legion claims` command exits 1 printing it. The routes' own
 // case is internal/api's TestProjectReleaseRefusesEveryStartAndPromptOfARole.
 func TestProjectReleaseRefusesTheOperatorsStartsThroughTheCommands(t *testing.T) {
+	t.Parallel()
 	released := &atomic.Bool{}
 	d := newOperatorDaemon(t, func(o *api.Options) { o.ProjectReleaseHolds = released.Load })
 	d.succeed(d.spawnArgs()...)

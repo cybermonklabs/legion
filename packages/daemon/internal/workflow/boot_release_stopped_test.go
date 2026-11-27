@@ -60,6 +60,7 @@ func seedReleaseStopped(t *testing.T, pool *pgxpool.Pool, issue string, role cla
 //
 // Every start this step writes carries the ruleResume mark and waits for no slot.
 func TestTheBootStartsEachClaimTheProjectReleaseStoppedOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := t.Context()
 	root := "LEGION-208"
@@ -205,6 +206,7 @@ func TestTheBootStartsEachClaimTheProjectReleaseStoppedOnce(t *testing.T) {
 // on; the work of its entry is admission's sweep's to send, as for an architect the resume by rule
 // leaves alone (TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting).
 func TestTheBootStartsAnArchitectTheProjectReleaseStoppedAtAdmittedWithNoTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,

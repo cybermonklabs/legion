@@ -18,6 +18,7 @@ import (
 // release holds none of this project's pods, and once a boot has ended the release the same
 // release starts as before.
 func TestAnIdleReleaseIsRefusedWhileAProjectReleaseNoBootEndedRuns(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
