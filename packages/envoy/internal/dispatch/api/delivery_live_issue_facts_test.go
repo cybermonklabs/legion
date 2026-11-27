@@ -45,19 +45,20 @@ func viewShowingIssues(spec deliveryLiveSpec, issues []string) *deliveryView {
 }
 
 // TestAnIssueFactsChangeTouchesTheLegionBoardOfItsProject: a write of one issue's stored Legion
-// facts moves the Legion board of that issue's project and no other view at all. The board's read
-// takes the rows of the issues it shows, every issue of each tree a card stands in among them
-// (legionfacts.Read), so a row of an issue the board names nowhere yet - a new member of a shown
-// tree, the first row of an issue, a row a build's whole read writes - moves its answer as much
-// as a row of an issue it already shows does, and a board that marked only the issues it names
-// would stand behind its GET until some other write woke it.
+// facts moves the Legion board of that issue's project and no other view at all. The board's reads
+// take the rows of the issues it shows, every issue of each tree a card stands in among them
+// (legionfacts.ReadShownClosed), and of every open issue (legionfacts.ReadOpen), so a row of an
+// issue the board names nowhere yet - a new member of a shown tree, the first row of an issue, a
+// row a build's whole read writes - moves its answer as much as a row of an issue it already
+// shows does, and a board that marked only the issues it names would stand behind its GET until
+// some other write woke it.
 //
-// No delivery view is woken, whichever issue it names: the stored facts have one reader
-// (legionfacts.Read, which the board calls), so no timeline, measures or pipeline answer can
-// move when a facts row does. That matters on a burst: a build's whole read of a project rewrites
-// every row whose values or writer moved, and the build a project's record names computes again
-// every row the other build of a roll wrote, and each rewrite logs a change, so one such pass
-// would otherwise force a whole Delivery recompute on every subscribed page.
+// No delivery view is woken, whichever issue it names: the stored facts have one reader (the
+// board, through those two reads), so no timeline, measures or pipeline answer can move when a
+// facts row does. That matters on a burst: a build's whole read of a project rewrites every row
+// whose values or writer moved, and the build a project's record names computes again every row
+// the other build of a roll wrote, and each rewrite logs a change, so one such pass would
+// otherwise force a whole Delivery recompute on every subscribed page.
 func TestAnIssueFactsChangeTouchesTheLegionBoardOfItsProject(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	change := issueFactsChange("INFRA", "INFRA-7", now.Add(-26*time.Hour), now.Add(-2*time.Hour))

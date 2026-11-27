@@ -276,10 +276,10 @@ func rowsToCompute(ctx context.Context, q Querier, project string, keys []string
 //
 // The statement names the project and closed_at IS NULL, a range of issue_facts_closed
 // (project_key, closed_at desc, migration 20261117100000), the index the board reads the same
-// rows through (shownWhere). It runs with the planner's settings as they stand, unlike the board's
+// rows through (openWhere). It runs with the planner's settings as they stand, unlike the board's
 // read (readByIndex), so where the open rows are a large share of the table the planner may scan
-// the table instead: Read records that scan at 6.3 to 10.0 ms and the range at 4.5 to 5.9 ms at
-// INFRA's size, and the pass then computes every one of those rows.
+// the table instead: ReadOpen records that scan at 6.3 to 10.0 ms and the range at 4.5 to 5.9 ms
+// at INFRA's size, and the pass then computes every one of those rows.
 func openRows(ctx context.Context, q Querier, project string) ([]string, error) {
 	rows, err := q.Query(ctx, openRowsQuery, project)
 	if err != nil {

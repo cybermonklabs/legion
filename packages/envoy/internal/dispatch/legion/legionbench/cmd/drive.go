@@ -55,9 +55,9 @@ import (
 //     server's `dispatch: delivery live recompute view=legion` lines the window logged, counted by
 //     cause with the median and the p90 of elapsed_ms, which fail under 50 recomputes. It reads the
 //     board's body, raw and under gzip at its default level, which fails over 300 KB with -facts.
-//  5. With -facts it takes the board's read of the stored facts from Postgres's statement log
-//     (captureFactsRead) and writes it to <out>/facts-read.json, the statement the facts read's
-//     measurement (TestFarmBoardFactsRead) explains.
+//  5. With -facts it takes the board's two reads of the stored facts from Postgres's statement log
+//     (captureFactsReads) and writes them to <out>/facts-read.json, the statements the facts
+//     reads' measurement (TestFarmBoardFactsRead) explains.
 //
 // It writes the arm's summary to <out>/<arm>-summary.json, which compare judges against the other
 // arm's.
@@ -283,18 +283,19 @@ func drive(args []string) error {
 
 	// 5. The facts read.
 	if o.facts {
-		read, err := captureFactsRead(ctx, pool, o.pgLog, func() error {
+		reads, err := captureFactsReads(ctx, pool, o.pgLog, func() error {
 			_, err := readBoard(ctx, o, token)
 			return err
 		})
 		if err != nil {
 			r.fail("facts_read: %v", err)
 		} else {
-			encoded, _ := json.MarshalIndent(read, "", "  ")
+			encoded, _ := json.MarshalIndent(reads, "", "  ")
 			if err := os.WriteFile(filepath.Join(o.out, "facts-read.json"), encoded, 0o644); err != nil {
 				return err
 			}
-			r.result("facts_read captured params=%d sql_bytes=%d", len(read.Params), len(read.SQL))
+			r.result("facts_read captured open_params=%d open_sql_bytes=%d closed_params=%d closed_sql_bytes=%d",
+				len(reads.Open.Params), len(reads.Open.SQL), len(reads.Closed.Params), len(reads.Closed.SQL))
 		}
 	}
 	encoded, err := json.MarshalIndent(sum, "", "  ")
@@ -720,10 +721,11 @@ func judgeFactsChanges(r *report, changes []factsChange, frames []frame) float64
 // recomputeLine matches the live hub's line for one recompute of a legion view up to its
 // elapsed_ms, which is all the drive reads of it. The line goes on, after its counts, with the
 // time of each stage of the recompute (read_ms, compute_ms, encode_ms, revision_ms and diff_ms),
-// the parts of its read (read_cards_ms, read_facts_ms, read_grow_ms, read_cursor_ms, read_wait_ms
-// and read_other_ms) and what marked the view (marks), the hub's finishRecompute, which a run's
-// server log keeps for whoever asks where a slow recompute's time went and what woke it; the
-// drive judges the whole recompute and leaves them.
+// the parts of its read (read_cards_ms, read_facts_ms, read_grow_ms, read_open_ms,
+// read_open_grow_ms, read_cursor_ms, read_wait_ms and read_other_ms) and what marked the view
+// (marks), the hub's finishRecompute, which a run's server log keeps for whoever asks where a
+// slow recompute's time went and what woke it; the drive judges the whole recompute and leaves
+// them.
 var recomputeLine = regexp.MustCompile(`dispatch: delivery live recompute view=legion cause=(\S+) elapsed_ms=(\d+)`)
 
 // readRecomputes reads the legion view's recompute lines the server logged between from and to,

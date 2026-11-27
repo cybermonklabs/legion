@@ -346,13 +346,13 @@ func boardColumnsOf(row Row) Row {
 	}
 }
 
-// TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero: the board's Read loads the columns the
-// board shows and leaves every other field of the row it answers at zero, for an open issue too,
-// whose stored growth names facts the read never loaded. The row here grows each hours fact an
-// hour an hour, its hours in backlog or icebox, its queued and slot-wait hours and its hours after
-// the first review among them, and a read two hours after the row's moment answers the facts the
-// board shows grown by two hours and each of the others at zero, not grown from a zero it never
-// read.
+// TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero: the board's read of the open rows
+// (ReadOpen) loads the columns the board shows and leaves every other field of the row it answers
+// at zero, for an open issue's row, whose stored growth names facts the read never loaded. The
+// row here grows each hours fact an hour an hour, its hours in backlog or icebox, its queued and
+// slot-wait hours and its hours after the first review among them, and a read two hours after the
+// row's moment answers the facts the board shows grown by two hours and each of the others at zero,
+// not grown from a zero it never read.
 func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 	seeded := seed(t, 1)
 	project, issue := seeded.fixture.Project, seeded.fixture.Keys[0]
@@ -381,7 +381,7 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 	}
 
 	readAt := asOf.Add(2 * time.Hour)
-	board, _, err := Read(t.Context(), seeded.database.Pool, project, []string{issue}, nil, readAt)
+	board, _, err := ReadOpen(t.Context(), seeded.database.Pool, project, readAt)
 	if err != nil {
 		t.Fatalf("read the facts as the board does: %v", err)
 	}
@@ -424,9 +424,10 @@ func readWhole(ctx context.Context, q Querier, project string) (map[string]Row, 
 	return rows, nil
 }
 
-// readStored is the board's Read of every stored row of the project, each as of at: Read given
-// every key the project holds a row of, so a check of what a pass stored reads it through the
-// board's own statement and columns, whichever of the rows a board would show.
+// readStored is the board's two reads of every stored row of the project, joined, each as of at:
+// ReadOpen, and ReadShownClosed given every key the project holds a row of, so a check of what a
+// pass stored reads it through the board's own statements and columns, whichever of the rows a
+// board would show.
 func readStored(ctx context.Context, pool *store.Pool, project string, at time.Time) (map[string]Row, error) {
 	result, err := pool.Query(ctx, `select issue_key from issue_facts where project_key = $1`, project)
 	if err != nil {
@@ -436,8 +437,15 @@ func readStored(ctx context.Context, pool *store.Pool, project string, at time.T
 	if err != nil {
 		return nil, err
 	}
-	rows, _, err := Read(ctx, pool, project, keys, nil, at)
-	return rows, err
+	open, _, err := ReadOpen(ctx, pool, project, at)
+	if err != nil {
+		return nil, err
+	}
+	closed, _, err := ReadShownClosed(ctx, pool, project, keys, nil, at)
+	if err != nil {
+		return nil, err
+	}
+	return Join(open, closed), nil
 }
 
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times

@@ -14,13 +14,15 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// The R8 Job's measurement of the board's read of the stored facts at root R14's size (spec
-// Design, "How R8 is measured"): the median execution time of the statement the board's request
-// ran (the drive takes it from Postgres's statement log, with its arguments, the board's keys and
-// roots) under its generic plan, over boardReadRuns EXPLAIN ANALYZE runs, as api's
-// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget measures it at the test rig's size;
-// and that plan, of which no arm may scan rows of issues the read does not answer. It runs in the
-// R8 Job only, built with the farm tag, against the Job's database:
+// The R8 Job's measurement of the board's reads of the stored facts at root R14's size (spec
+// Design, "How R8 is measured"): the median execution time of each of the two statements the
+// board's request ran (the drive takes them from Postgres's statement log, with their arguments:
+// the project for the read of the open rows, and the project and the board's keys and roots for
+// the read of the closed rows) under its generic plan, over boardReadRuns EXPLAIN ANALYZE runs,
+// and the two medians' sum, as api's TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget
+// measures them at the test rig's size; and their plans, of which no arm may scan rows of issues
+// the reads do not answer. It runs in the R8 Job only, built with the farm tag, against the Job's
+// database:
 //
 //	LEGIONBENCH_DATABASE_URL=<url> LEGIONBENCH_FACTS_READ=<drive's facts-read.json> \
 //	  go test -tags farm -run '^TestFarmBoardFactsRead$' -v ./internal/dispatch/legion/legionbench
@@ -84,17 +86,25 @@ func TestFarmBoardFactsRead(t *testing.T) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read the board's facts read: %v", err)
+		t.Fatalf("read the board's facts reads: %v", err)
 	}
-	var read struct {
+	type captured struct {
 		SQL    string   `json:"sql"`
 		Params []string `json:"params"`
 	}
-	if err := json.Unmarshal(data, &read); err != nil {
+	var reads struct {
+		Open   captured `json:"open"`
+		Closed captured `json:"closed"`
+	}
+	if err := json.Unmarshal(data, &reads); err != nil {
 		t.Fatalf("decode %s: %v", path, err)
 	}
-	if len(read.Params) != 3 || read.SQL == "" {
-		t.Fatalf("%s holds %d parameters, want the board read's project, keys and roots", path, len(read.Params))
+	if len(reads.Open.Params) != 1 || reads.Open.SQL == "" || len(reads.Closed.Params) != 3 || reads.Closed.SQL == "" {
+		t.Fatalf("%s holds reads of %d and %d parameters, want the read of the open rows' project and the read of the closed rows' project, keys and roots",
+			path, len(reads.Open.Params), len(reads.Closed.Params))
+	}
+	if reads.Open.Params[0] != reads.Closed.Params[0] {
+		t.Fatalf("%s holds reads of two projects, %s and %s", path, reads.Open.Params[0], reads.Closed.Params[0])
 	}
 	ctx := t.Context()
 	database, err := store.Open(ctx, url)
@@ -105,8 +115,7 @@ func TestFarmBoardFactsRead(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `analyze issue_facts`); err != nil {
 		t.Fatalf("analyze issue_facts: %v", err)
 	}
-	project, keys, roots := read.Params[0], read.Params[1]+"::text[]", read.Params[2]+"::text[]"
-	literals := []string{project, keys, roots}
+	project, keys, roots := reads.Closed.Params[0], reads.Closed.Params[1]+"::text[]", reads.Closed.Params[2]+"::text[]"
 	var rows int64
 	var sets armSets
 	if err := database.Pool.QueryRow(ctx, fmt.Sprintf(`
@@ -116,16 +125,25 @@ func TestFarmBoardFactsRead(t *testing.T) {
 		       (select count(*) from issue_facts where project_key = %[1]s and issue_key = any(%[2]s)),
 		       cardinality(%[2]s), cardinality(%[3]s)`, project, keys, roots)).
 		Scan(&rows, &sets.open, &sets.trees, &sets.cards, &sets.keys, &sets.roots); err != nil {
-		t.Fatalf("count the stored rows the read names: %v", err)
+		t.Fatalf("count the stored rows the reads name: %v", err)
 	}
 	connection, err := database.Pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire a connection for the generic plans: %v", err)
 	}
 	defer connection.Release()
-	generic := func(name, statement string) planNode {
-		plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, name, statement,
-			[]string{"text", "text[]", "text[]"}, literals, "set local enable_seqscan = off")
+	statements := []struct {
+		name, sql        string
+		types, literals  []string
+		median           float64
+		fastest, slowest float64
+		root             planNode
+	}{
+		{name: "open", sql: reads.Open.SQL, types: []string{"text"}, literals: []string{project}},
+		{name: "closed", sql: reads.Closed.SQL, types: []string{"text", "text[]", "text[]"}, literals: []string{project, keys, roots}},
+	}
+	generic := func(name, statement string, types, literals []string) planNode {
+		plan := explaintest.AnalyzedGenericPlan(t, ctx, connection, name, statement, types, literals, "set local enable_seqscan = off")
 		var root planNode
 		if err := json.Unmarshal(plan, &root); err != nil {
 			t.Fatalf("decode the plan: %v", err)
@@ -133,36 +151,47 @@ func TestFarmBoardFactsRead(t *testing.T) {
 		return root
 	}
 
-	taken := make([]float64, 0, boardReadRuns)
-	var root planNode
-	for run := range boardReadRuns {
-		root = generic(fmt.Sprintf("board_facts_read_%d", run), read.SQL)
-		taken = append(taken, root.Total)
+	var median, answered float64
+	var failures []string
+	for index := range statements {
+		statement := &statements[index]
+		taken := make([]float64, 0, boardReadRuns)
+		for run := range boardReadRuns {
+			statement.root = generic(fmt.Sprintf("board_facts_read_%s_%d", statement.name, run), statement.sql, statement.types, statement.literals)
+			taken = append(taken, statement.root.Total)
+		}
+		slices.Sort(taken)
+		statement.median, statement.fastest, statement.slowest = taken[len(taken)/2], taken[0], taken[len(taken)-1]
+		median += statement.median
+		answered += statement.root.Rows * statement.root.Loops
+		failures = append(failures, checkArms(statement.root, sets, true)...)
 	}
-	slices.Sort(taken)
-	median := taken[len(taken)/2]
-	fmt.Printf("RESULT r8 facts_read runs=%d median_ms=%.3f fastest_ms=%.3f slowest_ms=%.3f stored_rows=%d open_rows=%d keys=%d roots=%d tree_rows=%d card_rows=%d\n",
-		boardReadRuns, median, taken[0], taken[len(taken)-1], rows, sets.open, sets.keys, sets.roots, sets.trees, sets.cards)
-	fmt.Println("RESULT r8 facts_read plan (generic, the last run):")
-	var outline []string
-	root.outline(0, &outline)
-	for _, line := range outline {
-		fmt.Println("    " + line)
+	open, closed := statements[0], statements[1]
+	fmt.Printf("RESULT r8 facts_read runs=%d median_ms=%.3f open_median_ms=%.3f open_fastest_ms=%.3f open_slowest_ms=%.3f closed_median_ms=%.3f closed_fastest_ms=%.3f closed_slowest_ms=%.3f stored_rows=%d open_rows=%d keys=%d roots=%d tree_rows=%d card_rows=%d\n",
+		boardReadRuns, median, open.median, open.fastest, open.slowest, closed.median, closed.fastest, closed.slowest,
+		rows, sets.open, sets.keys, sets.roots, sets.trees, sets.cards)
+	for _, statement := range statements {
+		fmt.Printf("RESULT r8 facts_read plan of the %s rows' read (generic, the last run):\n", statement.name)
+		var outline []string
+		statement.root.outline(0, &outline)
+		for _, line := range outline {
+			fmt.Println("    " + line)
+		}
 	}
-	failures := checkArms(root, sets, true)
 	for _, failure := range failures {
 		fmt.Println("FAIL r8 facts_read " + failure)
 	}
-	fmt.Printf("RESULT r8 facts_read plan_verdict=%s answered_rows=%g\n", map[bool]string{true: "pass", false: "fail"}[len(failures) == 0], root.Rows*root.Loops)
+	fmt.Printf("RESULT r8 facts_read plan_verdict=%s answered_rows=%g\n", map[bool]string{true: "pass", false: "fail"}[len(failures) == 0], answered)
 
-	// The control: the same read with its trees' arm written so no index answers its list (the
-	// root key read through an expression), whose plan reads the project's rows past the trees the
-	// read names. The check must refuse that plan, or it cannot see the arm it is there to catch.
-	wide := strings.Replace(read.SQL, "root_key = any($3)", "root_key || '' = any($3)", 1)
-	if wide == read.SQL {
-		fmt.Println("FAIL r8 facts_read control: the read's text holds no `root_key = any($3)`, so the widened read was not built")
+	// The control: the read of the closed rows with its trees' arm written so no index answers its
+	// list (the root key read through an expression), whose plan reads the project's rows past the
+	// trees the read names. The check must refuse that plan, or it cannot see the arm it is there
+	// to catch.
+	wide := strings.Replace(closed.sql, "root_key = any($3)", "root_key || '' = any($3)", 1)
+	if wide == closed.sql {
+		fmt.Println("FAIL r8 facts_read control: the closed rows' read holds no `root_key = any($3)`, so the widened read was not built")
 		t.Fail()
-	} else if caught := checkArms(generic("board_facts_read_wide", wide), sets, false); len(caught) == 0 {
+	} else if caught := checkArms(generic("board_facts_read_wide", wide, closed.types, closed.literals), sets, false); len(caught) == 0 {
 		fmt.Println("FAIL r8 facts_read control: the plan check passed a read whose trees' arm reads past the trees it names")
 		t.Fail()
 	} else {

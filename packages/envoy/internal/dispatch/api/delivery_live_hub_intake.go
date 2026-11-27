@@ -414,21 +414,22 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
 		// One issue's stored Legion facts, which the Legion board is the one reader of
-		// (legionfacts.Read). The board's read takes the rows of every open issue and of the
-		// issues it shows, every issue of each tree a card stands in among them, so a row of an
-		// issue the board names nowhere yet - a new member of a shown tree, the first row of an
-		// issue, a row a build's whole read writes - moves its answer as a row of an issue it does
-		// name does: the change marks the board of its project, which the trigger carries in the
-		// change's repo (migration 20261117100002), and a closed row of a tree the board does not
-		// show is recomputed into the same body and sends nothing. No other kind of view reads a
-		// facts row, so every delivery view and every legion_issue view is left: a build's whole
-		// read rewrites every row of a project whose values or writer moved, and a timeline,
-		// measures or pipeline answer cannot move when one does.
+		// (legionfacts.ReadOpen and legionfacts.ReadShownClosed). The board's reads take the rows
+		// of every open issue and of the issues it shows, every issue of each tree a card stands
+		// in among them, so a row of an issue the board names nowhere yet - a new member of a shown
+		// tree, the first row of an issue, a row a build's whole read writes - moves its answer as
+		// a row of an issue it does name does: the change marks the board of its project, which
+		// the trigger carries in the change's repo (migration 20261117100002), and a closed row of
+		// a tree the board does not show is recomputed into the same body and sends nothing. No
+		// other kind of view reads a facts row, so every delivery view and every legion_issue view
+		// is left: a build's whole read rewrites every row of a project whose values or writer
+		// moved, and a timeline, measures or pipeline answer cannot move when one does.
 		return view.spec.kind == legionBoardView && view.spec.project == change.Repo
 	case delivery.ChangeKindIssueFilings:
 		// One filing of a Legion session. No view reads a filing: the Legion board reads the
-		// stored facts (legionfacts.Read) and the daemon's state, a legion_issue view its
-		// project's daemon and its runs, and the delivery views read the delivery rows alone.
+		// stored facts (legionfacts.ReadOpen and legionfacts.ReadShownClosed) and the daemon's
+		// state, a legion_issue view its project's daemon and its runs, and the delivery views
+		// read the delivery rows alone.
 		return false
 	default:
 		// A delivery row. A view that reads none moves by other things: a Legion board by a read

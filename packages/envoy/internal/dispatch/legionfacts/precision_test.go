@@ -16,14 +16,14 @@ import (
 const precisionTolerance = 1e-4 + 1e-9
 
 // TestAStoredRowGrownToAMomentIsTheComputationAtThatMomentToATenThousandthOfAnHour: a pass writes
-// the rows of the rig's open issues, and the board's read (Read) of each at a later moment, with no
-// input in between, gives every hours fact the board shows - the work time, the slot hours and the
-// hours of each column - within a ten-thousandth of an hour of the computation at that moment:
-// ProjectFactsClosed over the same inputs, grown to the moment (ClosedFacts.FactsAt, which
-// metrics' own precision test holds to the computation run at the moment). A read that grew a row
-// from another moment than the one its facts are closed at (its updated_at in place of its as_of)
-// runs ahead of or behind the computation by the time between the two, which this test fails.
-// It logs the largest difference it found.
+// the rows of the rig's open issues, and the board's read of the open rows (ReadOpen) of each at a
+// later moment, with no input in between, gives every hours fact the board shows - the work time,
+// the slot hours and the hours of each column - within a ten-thousandth of an hour of the
+// computation at that moment: ProjectFactsClosed over the same inputs, grown to the moment
+// (ClosedFacts.FactsAt, which metrics' own precision test holds to the computation run at the
+// moment). A read that grew a row from another moment than the one its facts are closed at (its
+// updated_at in place of its as_of) runs ahead of or behind the computation by the time between
+// the two, which this test fails. It logs the largest difference it found.
 func TestAStoredRowGrownToAMomentIsTheComputationAtThatMomentToATenThousandthOfAnHour(t *testing.T) {
 	t.Parallel()
 	run := newConsumer(t, 0)
@@ -40,7 +40,7 @@ func TestAStoredRowGrownToAMomentIsTheComputationAtThatMomentToATenThousandthOfA
 	largest, largestAt := 0.0, ""
 	for _, later := range []time.Duration{time.Minute, 90 * time.Minute, 30 * time.Hour} {
 		moment := run.now.Add(later)
-		rows, _, err := Read(t.Context(), pool, project, nil, nil, moment)
+		rows, _, err := ReadOpen(t.Context(), pool, project, moment)
 		if err != nil {
 			t.Fatalf("read the stored rows at %s: %v", moment, err)
 		}

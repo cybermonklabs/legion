@@ -147,15 +147,17 @@ func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
 	t.Logf("of 20,000 filings of five projects recorded under the running build, the read answered %v through %v", other, scans)
 }
 
-// TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone: Read, the Legion board's read of the facts,
-// answers the rows of the keys it is given, of every issue of the trees it is given and of every
-// open issue of the project, and no other row, and every arm of its statement (boardSelect and
-// shownWhere), three that share no row keyed on closed_at, reaches issue_facts through an index
-// keyed by its own condition: issue_facts_closed (migration 20261117100000) for the open rows,
-// under closed_at IS NULL and testing no list on them; issue_facts_root (the same migration) for
-// the closed rows of the trees; and the primary key for the closed rows of the keys; never a scan
-// of the table nor a read of the project's whole range filtered after it (dispatch://INFRA-2916,
-// k23 and round 15's cost design).
+// TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone: the Legion board's two reads of the facts
+// answer, joined (Join), the rows of the keys they are given, of every issue of the trees they are
+// given and of every open issue of the project, and no other row: ReadOpen the open rows alone,
+// whatever the board shows, and ReadShownClosed the closed rows of the keys and the trees alone.
+// Every arm of their statements (boardSelect with openWhere and with shownClosedWhere), three that
+// share no row keyed on closed_at, reaches issue_facts through an index keyed by its own
+// condition: issue_facts_closed (migration 20261117100000) for the open rows, under closed_at IS
+// NULL and testing no list on them; issue_facts_root (the same migration) for the closed rows of
+// the trees; and the primary key for the closed rows of the keys; never a scan of the table nor a
+// read of the project's whole range filtered after it (dispatch://INFRA-2916, k23 and round 15's
+// cost design). The open read's statement reads no closed row, and the closed read's no open one.
 //
 // The store has the shape at which the planner prices a scan of the whole table no dearer than the
 // open rows' index range: FC's 12,000 rows are most of it, beside four projects of 500, one row in
@@ -163,14 +165,14 @@ func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
 // of ten, and each row's bars has the shape a row Legion wrote holds, so a page holds four rows as
 // INFRA's pages hold four or five. It is analyzed. With sequential scans on, the open arm's plan
 // here is a Seq Scan of issue_facts with the values, whether the board names cards or none, so the
-// plans below hold Read's transaction (readByIndex) to what keeps that arm on its index. The board
-// of FC names 34 cards, 24 of them in the 12 trees it shows and 10 whose stored root is another,
-// and a key no row holds; a board that names no card answers the open rows alone.
+// plans below hold the reads' transaction (readByIndex) to what keeps that arm on its index. The
+// board of FC names 34 cards, 24 of them in the 12 trees it shows and 10 whose stored root is
+// another, and a key no row holds; a board that names no card answers the open rows alone.
 //
-// Every plan is taken in readByIndex's transaction, the one Read runs its statement in, and under
-// no setting of the test's own but the plan cache's mode: with the values, as the planner prices
-// them, for both boards; and as the generic plan pgx's cached statement settles on, which knows no
-// value of the lists.
+// Every plan is taken in readByIndex's transaction, the one each read runs its statement in, and
+// under no setting of the test's own but the plan cache's mode: with the values, as the planner
+// prices them, for both boards; and as the generic plan pgx's cached statement settles on, which
+// knows no value of the lists.
 func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 	ctx := t.Context()
 	pool := factsDatabase(t)
@@ -190,105 +192,147 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 		t.Fatalf("seed the facts: %v", err)
 	}
 	var roots, keys []string
-	want, open := map[string]bool{}, map[string]bool{}
+	// want is every row the two reads answer joined, open the open rows alone, and shown the closed
+	// rows of the trees and the keys: a row of FC is open where its number is a multiple of three.
+	want, open, shown := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	show := func(n int) {
+		want[fmt.Sprintf("FC-%d", n)] = true
+		if n%3 != 0 {
+			shown[fmt.Sprintf("FC-%d", n)] = true
+		}
+	}
 	for tree := range 12 {
 		root := 10*tree*3 + 1
 		roots = append(roots, fmt.Sprintf("FC-%d", root))
 		for n := root; n < root+10; n++ {
-			want[fmt.Sprintf("FC-%d", n)] = true
+			show(n)
 		}
 		keys = append(keys, fmt.Sprintf("FC-%d", root+tree%10), fmt.Sprintf("FC-%d", root+(tree+5)%10))
 	}
 	for n := 2001; n <= 2010; n++ {
-		keys, want[fmt.Sprintf("FC-%d", n)] = append(keys, fmt.Sprintf("FC-%d", n)), true
+		keys = append(keys, fmt.Sprintf("FC-%d", n))
+		show(n)
 	}
 	keys = append(keys, "FC-99999")
 	for n := 3; n <= 12000; n += 3 {
 		want[fmt.Sprintf("FC-%d", n)], open[fmt.Sprintf("FC-%d", n)] = true, true
 	}
 	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	rows, _, err := Read(ctx, pool, "FC", keys, roots, at)
+	openRows, _, err := ReadOpen(ctx, pool, "FC", at)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("ReadOpen: %v", err)
 	}
+	if got, wanted := slices.Sorted(maps.Keys(openRows)), slices.Sorted(maps.Keys(open)); !slices.Equal(got, wanted) {
+		t.Errorf("ReadOpen answered %d rows, want the %d open rows; it answered %v and missed %v",
+			len(got), len(wanted), absent(got, open), absent(wanted, openRows))
+	}
+	closedRows, _, err := ReadShownClosed(ctx, pool, "FC", keys, roots, at)
+	if err != nil {
+		t.Fatalf("ReadShownClosed: %v", err)
+	}
+	if got, wanted := slices.Sorted(maps.Keys(closedRows)), slices.Sorted(maps.Keys(shown)); !slices.Equal(got, wanted) {
+		t.Errorf("ReadShownClosed answered %d rows, want the %d closed rows of the keys and the trees; it answered %v and missed %v",
+			len(got), len(wanted), absent(got, shown), absent(wanted, closedRows))
+	}
+	openCount, closedCount := len(openRows), len(closedRows)
+	rows := Join(openRows, closedRows)
 	if got, wanted := slices.Sorted(maps.Keys(rows)), slices.Sorted(maps.Keys(want)); !slices.Equal(got, wanted) {
-		t.Errorf("Read answered %d rows, want the %d of the keys, the trees and the open rows; it answered %v and missed %v",
+		t.Errorf("the two reads joined answer %d rows, want the %d of the keys, the trees and the open rows; they answered %v and missed %v",
 			len(got), len(wanted), absent(got, want), absent(wanted, rows))
 	}
-	bare, _, err := Read(ctx, pool, "FC", nil, nil, at)
+	bare, _, err := ReadShownClosed(ctx, pool, "FC", nil, nil, at)
 	if err != nil {
-		t.Fatalf("Read with no card: %v", err)
+		t.Fatalf("ReadShownClosed with no card: %v", err)
 	}
-	if got, wanted := slices.Sorted(maps.Keys(bare)), slices.Sorted(maps.Keys(open)); !slices.Equal(got, wanted) {
-		t.Errorf("Read with no card answered %d rows, want the %d open rows; it answered %v and missed %v",
-			len(got), len(wanted), absent(got, open), absent(wanted, bare))
+	if len(bare) != 0 {
+		t.Errorf("ReadShownClosed with no card answered %d rows, want none", len(bare))
 	}
 
-	statement := boardSelect + shownWhere
-	keyedBy := []struct{ index, cond string }{{"issue_facts_pkey", "issue_key"}, {"issue_facts_root", "root_key"}, {"issue_facts_closed", "closed_at IS NULL"}}
-	judge := func(how string, plan json.RawMessage) []explaintest.IndexScan {
+	keyedBy := map[string][]struct{ index, cond string }{
+		"open":   {{"issue_facts_closed", "closed_at IS NULL"}},
+		"closed": {{"issue_facts_pkey", "issue_key"}, {"issue_facts_root", "root_key"}},
+	}
+	judge := func(read, how string, plan json.RawMessage) []explaintest.IndexScan {
 		t.Helper()
 		if explaintest.SeqScansRelation(t, plan, "issue_facts") {
-			t.Errorf("%s, the board's read scans issue_facts sequentially:\n%s", how, plan)
+			t.Errorf("%s, the board's %s read scans issue_facts sequentially:\n%s", how, read, plan)
 		}
 		if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
-			t.Errorf("%s, the board's read reads %v under no index condition:\n%s", how, unkeyed, plan)
+			t.Errorf("%s, the board's %s read reads %v under no index condition:\n%s", how, read, unkeyed, plan)
 		}
 		scans := explaintest.IndexScans(t, plan)
 		for _, scan := range scans {
-			if !slices.ContainsFunc(keyedBy, func(keyed struct{ index, cond string }) bool {
+			if !slices.ContainsFunc(keyedBy[read], func(keyed struct{ index, cond string }) bool {
 				return scan.Index == keyed.index && strings.Contains(scan.Cond, keyed.cond)
 			}) {
-				t.Errorf("%s, the board's read reads %s under %q; want each arm through its own index under its own condition, %v:\n%s", how, scan, scan.Cond, keyedBy, plan)
+				t.Errorf("%s, the board's %s read reads %s under %q; want each arm through its own index under its own condition, %v:\n%s", how, read, scan, scan.Cond, keyedBy[read], plan)
 			}
 		}
-		for _, keyed := range keyedBy {
+		for _, keyed := range keyedBy[read] {
 			if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == keyed.index }) {
-				t.Errorf("%s, the board's read reads %v; want %s under %s:\n%s", how, scans, keyed.index, keyed.cond, plan)
+				t.Errorf("%s, the board's %s read reads %v; want %s under %s:\n%s", how, read, scans, keyed.index, keyed.cond, plan)
+			}
+		}
+		filters := openRowFilters(t, plan)
+		switch {
+		case read == "closed" && len(filters) > 0:
+			t.Errorf("%s, the board's read of the closed rows reads the open rows through issue_facts_closed:\n%s", how, plan)
+		case read == "open" && len(filters) == 0:
+			t.Errorf("%s, the board's read of the open rows reads no open row through issue_facts_closed under closed_at IS NULL:\n%s", how, plan)
+		case read == "open":
+			if tested := slices.IndexFunc(filters, listTest.MatchString); tested >= 0 {
+				t.Errorf("%s, the board's read of the open rows tests a list on each of them (filter %q):\n%s", how, filters[tested], plan)
 			}
 		}
 		return scans
 	}
-	var withCards, noCard, generic json.RawMessage
+	openStatement, closedStatement := boardSelect+openWhere, boardSelect+shownClosedWhere
+	plans := map[string]map[string]json.RawMessage{"open": {}, "closed": {}}
 	var lines []string
 	if err := readByIndex(ctx, pool, func(tx pgx.Tx) error {
-		var raw []byte
-		if err := tx.QueryRow(ctx, "explain (analyze, format json) "+statement, "FC", keys, roots).Scan(&raw); err != nil {
-			return fmt.Errorf("explain the board's read: %w", err)
+		explain := func(statement string, args ...any) (json.RawMessage, error) {
+			var raw []byte
+			if err := tx.QueryRow(ctx, "explain (analyze, format json) "+statement, args...).Scan(&raw); err != nil {
+				return nil, err
+			}
+			return explaintest.OnePlan(t, raw), nil
 		}
-		withCards = explaintest.OnePlan(t, raw)
-		if err := tx.QueryRow(ctx, "explain (analyze, format json) "+statement, "FC", []string{}, []string{}).Scan(&raw); err != nil {
-			return fmt.Errorf("explain the board's read with no card: %w", err)
+		var err error
+		if plans["open"]["with the board's values"], err = explain(openStatement, "FC"); err != nil {
+			return fmt.Errorf("explain the board's read of the open rows: %w", err)
 		}
-		noCard = explaintest.OnePlan(t, raw)
-		text, err := tx.Query(ctx, "explain (analyze, buffers) "+statement, "FC", []string{}, []string{})
+		if plans["closed"]["with the board's values"], err = explain(closedStatement, "FC", keys, roots); err != nil {
+			return fmt.Errorf("explain the board's read of the closed rows: %w", err)
+		}
+		if plans["closed"]["with no card"], err = explain(closedStatement, "FC", []string{}, []string{}); err != nil {
+			return fmt.Errorf("explain the board's read of the closed rows with no card: %w", err)
+		}
+		text, err := tx.Query(ctx, "explain (analyze, buffers) "+openStatement, "FC")
 		if err != nil {
-			return fmt.Errorf("explain the board's read as text: %w", err)
+			return fmt.Errorf("explain the board's read of the open rows as text: %w", err)
 		}
 		if lines, err = pgx.CollectRows(text, pgx.RowTo[string]); err != nil {
-			return fmt.Errorf("explain the board's read as text: %w", err)
+			return fmt.Errorf("explain the board's read of the open rows as text: %w", err)
 		}
-		// The generic plan, in this transaction, so under readByIndex's settings and no setting of
-		// the test's own: GenericPlan forces the mode, since a test never executes the statement
+		// The generic plans, in this transaction, so under readByIndex's settings and no setting
+		// of the test's own: GenericPlan forces the mode, since a test never executes a statement
 		// often enough to reach it.
-		generic = explaintest.GenericPlan(t, ctx, tx, "board_facts", statement,
+		plans["open"]["under the generic plan"] = explaintest.GenericPlan(t, ctx, tx, "board_open_facts", openStatement,
+			[]string{"text"}, []string{"'FC'"})
+		plans["closed"]["under the generic plan"] = explaintest.GenericPlan(t, ctx, tx, "board_closed_facts", closedStatement,
 			[]string{"text", "text[]", "text[]"}, []string{"'FC'", "array['FC-1']", "array['FC-1']"})
 		return nil
 	}); err != nil {
-		t.Fatalf("take the board's plans as Read runs it: %v", err)
+		t.Fatalf("take the board's plans as its reads run them: %v", err)
 	}
-	cards := judge("with the board's values", withCards)
-	none := judge("with no card", noCard)
-	cached := judge("under the generic plan", generic)
-	for how, plan := range map[string]json.RawMessage{"with the board's values": withCards, "with no card": noCard, "under the generic plan": generic} {
-		if filters := openRowFilters(t, plan); len(filters) == 0 {
-			t.Errorf("%s, the board's read reads no open row through issue_facts_closed under closed_at IS NULL:\n%s", how, plan)
-		} else if tested := slices.IndexFunc(filters, listTest.MatchString); tested >= 0 {
-			t.Errorf("%s, the board's read tests a list on each open row (filter %q):\n%s", how, filters[tested], plan)
+	judged := map[string]map[string][]explaintest.IndexScan{"open": {}, "closed": {}}
+	for _, read := range []string{"open", "closed"} {
+		for how, plan := range plans[read] {
+			judged[read][how] = judge(read, how, plan)
 		}
 	}
-	t.Logf("of 14,000 rows of five projects, 4,000 of FC's 12,000 open, Read answered %d of FC for %d keys and %d trees and %d for no card, through %v (with the cards), %v (with none) and %v (generic); the plan with no card:\n%s",
-		len(rows), len(keys), len(roots), len(bare), cards, none, cached, strings.Join(lines, "\n"))
+	t.Logf("of 14,000 rows of five projects, 4,000 of FC's 12,000 open, the reads joined answered %d of FC for %d keys and %d trees (%d open, %d closed), and %d closed for no card; the open read through %v, the closed read through %v; the open read's plan:\n%s",
+		len(rows), len(keys), len(roots), openCount, closedCount, len(bare), judged["open"], judged["closed"], strings.Join(lines, "\n"))
 }
 
 // listTest matches a condition that tests a value against a list, `= ANY (…)` or `<> ALL (…)`.

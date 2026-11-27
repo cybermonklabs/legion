@@ -12,9 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
-// revisedEntry is the issues entry the board builds of row under key, closed at at as
-// legionfacts.Read closes it, with the revision the board gives it (legionBoardResponse's
-// mapRevisions), which it checks is the one the live hub's encoding holds the entry at.
+// revisedEntry is the issues entry the board builds of row under key, closed at at as the board's
+// reads of the facts close it (legionfacts.Row.At), with the revision the board gives it
+// (legionBoardResponse's mapRevisions), which it checks is the one the live hub's encoding holds
+// the entry at.
 func revisedEntry(t *testing.T, key string, row legionfacts.Row, at time.Time) (legionBoardFacts, string) {
 	t.Helper()
 	body := legionBoardCompute(&legionBoardPopulation{project: "INFRA", facts: map[string]legionfacts.Row{key: row.At(at)}}, at)
@@ -173,7 +174,7 @@ const (
 	infraClosedEntries = 10000
 )
 
-// infraSizedLegionRows is the stored rows of a board of INFRA's size as legionfacts.Read answers
+// infraSizedLegionRows is the stored rows of a board of INFRA's size as the board's reads answer
 // them at now: every open issue closed at now and growing its work time, its slot hours, its
 // implementing hours and the end of its open bar, and every closed issue standing still at its
 // close. The hours carry four decimals, as the computation rounds them, so each encodes as long

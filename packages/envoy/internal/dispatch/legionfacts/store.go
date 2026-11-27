@@ -469,20 +469,19 @@ func storedMap[V any](values map[string]V) map[string]V {
 	return values
 }
 
-// Read answers the stored rows the Legion board serves, by issue key, each as of at (Row.At):
-// every open row of the project; of every issue whose tree root is one of roots, the trees the
-// cards stand in; and the rows of keys, the issue of each card. No other row is read: a closed
-// issue of no shown tree is in no board's answer, so the read and the board's body follow the open
-// work and what the daemon runs, not every issue the project's Legion work ever covered. The read
-// is three index reads that share no row, keyed on closed_at: the open rows, the closed rows of the
-// trees by root, and the closed rows of the cards outside those trees by key (shownWhere), never
-// the project's rows filtered after they are read.
+// ReadOpen answers every open row of the project, by issue key, each as of at (Row.At): the rows
+// the Legion board serves of the open issues, which it serves whatever its cards show, so the read
+// names no card and the board runs it beside the reads its cards are placed from rather than after
+// them. ReadShownClosed is the board's other read of the rows, the closed rows of what it shows,
+// and Join puts the two answers together. Each is an index read of its own, keyed on closed_at so
+// the two share no row (openWhere and shownClosedWhere), never the project's rows filtered after
+// they are read.
 //
-// The statement runs in a read-only transaction of its own with sequential scans off
-// (readByIndex), because the planner left to itself reads the open rows by scanning the whole
-// table once they are a large share of it. At INFRA's size (13,105 rows, 2,621 of them open, on
-// 2,880 pages, as the measured fixture loaded it), the plan with the values of a board that names no card
-// was a Seq Scan of issue_facts that read all 2,880 pages and dropped the 10,484 closed rows by its
+// Each runs in a read-only transaction of its own with sequential scans off (readByIndex),
+// because the planner left to itself reads the open rows by scanning the whole table once they
+// are a large share of it. At INFRA's size (13,105 rows, 2,621 of them open, on 2,880 pages, as
+// the measured fixture loaded it), the plan with the values of a board that names no card was a
+// Seq Scan of issue_facts that read all 2,880 pages and dropped the 10,484 closed rows by its
 // filter, priced at 3,043.81 against 3,043.72 for the open rows' index range, a tie the planner may
 // break either way. With 4,272 of 13,103 rows open, on the build farm, it was a Seq Scan too, and a
 // partial index of the open rows did not move that plan (dispatch://INFRA-2916, k23, 2026-11-17).
@@ -490,13 +489,25 @@ func storedMap[V any](values map[string]V) map[string]V {
 // alike, whatever the estimate: the open arm read the 2,621 open rows from 1,663 heap pages in 4.5
 // to 5.9 ms, where the scan took 6.3 to 10.0 ms.
 //
-// It is the board's read of the facts: rows, and no computation but the close of each open part
+// Each is the board's read of the facts: rows, and no computation but the close of each open part
 // at the read's own clock, and of each row the columns the board shows (boardColumns), every other
 // field of the Row it answers left at its zero value (narrow). A reader of a window's closed
-// issues reads every column of their rows instead (ReadClosedIn). The duration is how long that
-// close of the rows took, after the statements and the scan of their rows, which the live hub's
-// recompute line reports apart from them (the board's read_grow_ms).
-func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []string, at time.Time) (map[string]Row, time.Duration, error) {
+// issues reads every column of their rows instead (ReadClosedIn). The duration each answers is
+// how long that close of its rows took, after its statement and the scan of its rows, which the
+// live hub's recompute line reports apart from them (the board's read_open_grow_ms and
+// read_grow_ms).
+func ReadOpen(ctx context.Context, pool *store.Pool, project string, at time.Time) (map[string]Row, time.Duration, error) {
+	return readBoardRows(ctx, pool, project, at, openWhere, project)
+}
+
+// ReadShownClosed answers the closed rows the Legion board shows, by issue key, each as of at
+// (Row.At): of every issue whose tree root is one of roots, the trees the cards stand in, and of
+// keys, the issue of each card. No other closed row is read: a closed issue of no shown tree is in
+// no board's answer, so the read and the board's body follow the open work and what the daemon
+// runs, not every issue the project's Legion work ever covered. It reads the trees' rows by root
+// and the rows of the cards outside those trees by key (shownClosedWhere), and what ReadOpen's doc
+// says of its transaction and of the rows it answers holds of this read as well.
+func ReadShownClosed(ctx context.Context, pool *store.Pool, project string, keys, roots []string, at time.Time) (map[string]Row, time.Duration, error) {
 	// A nil list goes to Postgres as null, which `= any` answers null for, and `not (null)` would
 	// leave out every closed row of a card; an empty array answers false.
 	if keys == nil {
@@ -505,9 +516,35 @@ func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []s
 	if roots == nil {
 		roots = []string{}
 	}
+	return readBoardRows(ctx, pool, project, at, shownClosedWhere, project, keys, roots)
+}
+
+// Join is the stored rows the board serves, by issue key: the open rows ReadOpen answered with the
+// closed rows ReadShownClosed answered. The two reads are two transactions, so an issue can close,
+// or open again, between them and stand in both answers, open in one and closed in the other: of
+// its two rows Join keeps the one with the newer updated_at, the row written last, which is the
+// issue as the later read found it. An issue whose close the open read already saw and that the
+// board does not show is in neither answer, which is right: a closed issue is in the board's map
+// only through a tree the board shows. One the closed read found open and a later open read found
+// closed is in neither too; the write that moved its row marks the board, which reads it again.
+// Join adds the closed rows into open, which it answers.
+func Join(open, closed map[string]Row) map[string]Row {
+	for key, row := range closed {
+		if held, both := open[key]; !both || row.UpdatedAt.After(held.UpdatedAt) {
+			open[key] = row
+		}
+	}
+	return open
+}
+
+// readBoardRows is one of the board's reads of the stored rows (ReadOpen, ReadShownClosed): the
+// rows where (a where clause completing boardSelect) selects with its arguments args, read by
+// index (readByIndex), each closed at at and narrowed to the board's columns, by issue key, and how
+// long that close took.
+func readBoardRows(ctx context.Context, pool *store.Pool, project string, at time.Time, where string, args ...any) (map[string]Row, time.Duration, error) {
 	var read []Row
 	if err := readByIndex(ctx, pool, func(tx pgx.Tx) (err error) {
-		read, err = readRows(ctx, tx, project, false, shownWhere, project, keys, roots)
+		read, err = readRows(ctx, tx, project, false, where, args...)
 		return err
 	}); err != nil {
 		return nil, 0, err
@@ -523,16 +560,16 @@ func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []s
 // readByIndex runs read in a read-only transaction of its own on pool whose first statement turns
 // the planner's sequential scans off and has it plan each statement with its values for that
 // transaction alone (`set local`), so nothing of it is left on the pooled connection once the
-// transaction ends. It is Read's transaction, and the one its plan test takes the board's plans
-// in, so the plans the test judges are the ones Read runs. It takes one connection and holds no
-// lock another read waits on, so it is one of the reads the board runs side by side
-// (store.ReadSideBySide), as the board's snapshot read is.
+// transaction ends. It is the transaction of each of the board's reads (readBoardRows), and the
+// one their plan test takes the board's plans in, so the plans the test judges are the ones the
+// reads run. It takes one connection and holds no lock another read waits on, so it is one of the
+// reads the board runs side by side (store.ReadSideBySide), as the board's snapshot read is.
 //
 // The plan with the values (`plan_cache_mode = force_custom_plan`) is the one a statement pgx
 // caches would otherwise leave after its fifth run for a generic plan, where `= any` over a
-// parameter scans the array for each row it tests rather than hashing it. shownWhere tests no
-// array on the open rows, so it costs a generic plan little, and the setting keeps the arms that
-// do test one (each bounded by the board's cards) on the values as well.
+// parameter scans the array for each row it tests rather than hashing it. openWhere tests no
+// array, so it costs a generic plan little, and the setting keeps the arms of shownClosedWhere,
+// which do test one (each bounded by the board's cards), on the values as well.
 func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) error) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -551,30 +588,33 @@ func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) err
 	return nil
 }
 
-// shownWhere is Read's clause, which completes boardSelect, as three reads of the project's rows
-// that share no row, keyed on closed_at: the open rows, the range of issue_facts_closed
-// (project_key, closed_at desc) where closed_at is null, which a btree answers as an index
-// condition, so the range holds the project's open rows alone and tests nothing of them; the
-// closed rows of the trees given, each root a range of issue_facts_root (project_key, root_key);
-// and the closed rows of the keys given whose root is none of those trees, each a probe of the
-// primary key (project_key, issue_key). Both indexes are migration 20261117100000's. The three
-// answer the open rows, the trees' rows and the cards' rows, each once, and only the last tests a
-// list on the rows it reads, the roots on each closed card's, which the cards bound. No arm tests
-// a list on every open row: under the generic plan a statement pgx caches can settle on, `<>
-// all($n)` scans the list for each row rather than hashing it, and over 15,803 rows of one
-// project, 4,300 of them open, a read that tested the cards and the trees on every open row took
-// 119 to 168 ms with 200 cards in 60 trees and 417 to 482 ms with 1,000 cards in 300 trees, where
-// this one takes 7 to 9 ms and 11 to 16 ms under either plan.
-// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget holds it to 20 ms.
+// openWhere and shownClosedWhere are the clauses of the board's two reads, ReadOpen's and
+// ReadShownClosed's, each completing boardSelect: three reads of the project's rows that share no
+// row, keyed on closed_at. The open rows are the range of issue_facts_closed (project_key,
+// closed_at desc) where closed_at is null, which a btree answers as an index condition, so the
+// range holds the project's open rows alone and tests nothing of them. The closed rows are those of
+// the trees given, each root a range of issue_facts_root (project_key, root_key), and those of the
+// keys given whose root is none of those trees, each a probe of the primary key (project_key,
+// issue_key). Both indexes are migration 20261117100000's. The three answer the open rows, the
+// trees' rows and the cards' rows, each once, and only the last tests a list on the rows it reads,
+// the roots on each closed card's, which the cards bound. No arm tests a list on every open row:
+// under the generic plan a statement pgx caches can settle on, `<> all($n)` scans the list for each
+// row rather than hashing it, and over 15,803 rows of one project, 4,300 of them open, a read that
+// tested the cards and the trees on every open row took 119 to 168 ms with 200 cards in 60 trees
+// and 417 to 482 ms with 1,000 cards in 300 trees, where the three arms in one statement took 7 to
+// 9 ms and 11 to 16 ms under either plan.
+// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget holds the two reads to 20 ms.
 //
-// The planner keeps the open arm on the index only because Read runs the statement with
-// sequential scans off (readByIndex): priced by itself, a scan of the whole table ties with the
-// range once the open rows are a large share of the table, and at INFRA's size the plan with the
-// values of a board of no card was that scan.
-const shownWhere = `where project_key = $1 and closed_at is null
-	union all ` + boardSelect + `where project_key = $1 and root_key = any($3) and closed_at is not null
+// The planner keeps the open arm on the index only because ReadOpen runs it with sequential scans
+// off (readByIndex): priced by itself, a scan of the whole table ties with the range once the open
+// rows are a large share of the table, and at INFRA's size the plan with the values of a board of
+// no card was that scan.
+const (
+	openWhere        = `where project_key = $1 and closed_at is null`
+	shownClosedWhere = `where project_key = $1 and root_key = any($3) and closed_at is not null
 	union all ` + boardSelect + `where project_key = $1 and issue_key = any($2) and closed_at is not null
 		and not (root_key = any($3))`
+)
 
 // ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
 // newest close first, through issue_facts_closed (migration 20261117100000), each as of at

@@ -396,7 +396,9 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// stored. An entry whose values grow carries its as_of and its growth, so a page closes the
 	// values it holds at its own clock by the rule the read closes them by; one whose values stand
 	// carries null for both. An entry that is sent goes whole, its values grown to the moment of
-	// the recompute that sent it.
+	// the recompute that sent it. The board encodes the map's entries itself as well
+	// (legionBoardResponse's encodedMap), and the hub writes the body from them, the one body the
+	// GET answers, so no entry is read back out of the body's encoding.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
 		maps: map[string][]string{"issues": nil},

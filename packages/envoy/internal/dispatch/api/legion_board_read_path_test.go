@@ -137,11 +137,11 @@ func boardFactsReads(ran []ranStatement) []ranStatement {
 	return reads
 }
 
-// TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts: the board's read of the stored facts reads
-// issue_facts through index ranges of the one project it names, in three arms that share no row
-// and are keyed on closed_at (R22), the arm of the open rows testing no list of cards or roots on
-// them; it scans the table nowhere and reads the project's range under no condition nowhere; and
-// it reads neither the event log nor the daemon's observations.
+// TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts: the board's reads of the stored facts read
+// issue_facts through index ranges of the one project they name, in three arms that share no row
+// and are keyed on closed_at (R22), the arm of the open rows a read of its own that tests no list
+// of cards or roots on them; they scan the table nowhere and read the project's range under no
+// condition nowhere; and they read neither the event log nor the daemon's observations.
 //
 // Which index serves each arm is the planner's at the size it is given, and this rig is the facts'
 // own (210 rows of the board's project, 42 of them open, beside nine other projects' 210): every
@@ -188,6 +188,7 @@ func TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts(t *testing.T) {
 		if err := database.Pool.QueryRow(t.Context(), `select count(*) from issue_facts`).Scan(&rows); err != nil {
 			t.Fatalf("count the stored rows: %v", err)
 		}
+		openReads := 0
 		for _, read := range reads {
 			explained := explainBoardRead(t, database, read)
 			examined++
@@ -217,7 +218,10 @@ func TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts(t *testing.T) {
 				}
 				t.Logf("the read takes %s, keyed by %s", scan, scan.Cond)
 			}
-			requireOpenRowsTestNoList(t, explained.plan, explained.text)
+			openReads += openRowsTestNoList(t, explained.plan, explained.text)
+		}
+		if population == "ten projects' rows" && openReads == 0 {
+			t.Errorf("over ten projects' rows no read of the board's request reads the open rows under a condition naming closed_at IS NULL")
 		}
 		if population == "one project's rows" {
 			seedOtherProjectsFacts(t, database, fixture.Project)
@@ -232,17 +236,17 @@ func TestTheBoardsFactsReadIsAnIndexReadOfIssueFacts(t *testing.T) {
 // listTest matches a condition that tests a value against a list, `= ANY (…)` or `<> ALL (…)`.
 var listTest = regexp.MustCompile(`\b(ANY|ALL) \(`)
 
-// requireOpenRowsTestNoList holds a plan of the board's read of the stored facts to answering the
-// open rows with no list tested on them: an open row is answered whatever cards and trees the
-// board shows, so its arm names neither list, and a filter that did would test each of the
-// project's open rows against every card or root, which under a generic plan scans the list for
-// each row rather than hashing it.
+// openRowsTestNoList holds a plan of one of the board's reads of the stored facts to answering the
+// open rows with no list tested on them, and answers how many of its nodes read them: an open row
+// is answered whatever cards and trees the board shows, so its read names neither list, and a
+// filter that did would test each of the project's open rows against every card or root, which
+// under a generic plan scans the list for each row rather than hashing it.
 //
 // The open arm is the node that names closed_at IS NULL, in its index condition where the index
 // answers it and in its filter where the node tests it (`closed_at IS NOT NULL`, the other arms',
 // holds no such text). Which index serves it is the planner's, so the node is found by that
 // condition and not by an index name.
-func requireOpenRowsTestNoList(t *testing.T, plan json.RawMessage, text string) {
+func openRowsTestNoList(t *testing.T, plan json.RawMessage, text string) int {
 	t.Helper()
 	open := 0
 	for _, node := range explaintest.Nodes(t, plan) {
@@ -256,13 +260,11 @@ func requireOpenRowsTestNoList(t *testing.T, plan json.RawMessage, text string) 
 				node, node.IndexCond, node.Filter, text)
 		}
 	}
-	if open == 0 {
-		t.Errorf("the board's read of the stored facts reads the open rows under no condition naming closed_at IS NULL:\n%s", text)
-	}
+	return open
 }
 
-// boardReadGenericBudget is the most the board's read of the stored facts may take at INFRA's size
-// under a generic plan, in milliseconds: the read of the three parts keyed on closed_at tests no
+// boardReadGenericBudget is the most the board's reads of the stored facts may take together at
+// INFRA's size under a generic plan, in milliseconds: the three parts keyed on closed_at test no
 // list on the open rows, so a statement pgx caches stays inside it whichever plan Postgres settles
 // on (dispatch://INFRA-2916, round 15's cost design, 1b).
 const boardReadGenericBudget = 20.0
@@ -305,35 +307,46 @@ func customBoardRead(t *testing.T, database *store.Store, ran ranStatement) json
 	return explaintest.OnePlan(t, raw)
 }
 
-// boardReadLiterals is the board read's three arguments, the project and the lists of the cards'
-// keys and of their trees' roots, written as the literals an EXECUTE of the prepared statement
-// takes, each quoted by Postgres itself.
-func boardReadLiterals(t *testing.T, database *store.Store, args []any) []string {
+// boardReadLiterals is a board read's arguments, written as the literals an EXECUTE of the
+// prepared statement takes, each quoted by Postgres itself, and their types: the project, for the
+// read of the open rows, and the project and the lists of the cards' keys and of their trees'
+// roots, for the read of the closed rows.
+func boardReadLiterals(t *testing.T, database *store.Store, args []any) (types, literals []string) {
 	t.Helper()
-	if len(args) != 3 {
-		t.Fatalf("the board's read of the stored facts ran with %d arguments, want the project, the keys and the roots", len(args))
+	switch len(args) {
+	case 1:
+		var project string
+		if err := database.Pool.QueryRow(t.Context(), `select quote_literal($1::text)`, args...).Scan(&project); err != nil {
+			t.Fatalf("quote the board read's argument: %v", err)
+		}
+		return []string{"text"}, []string{project}
+	case 3:
+		var project, keys, roots string
+		if err := database.Pool.QueryRow(t.Context(),
+			`select quote_literal($1::text), quote_literal($2::text[]::text), quote_literal($3::text[]::text)`,
+			args...).Scan(&project, &keys, &roots); err != nil {
+			t.Fatalf("quote the board read's arguments: %v", err)
+		}
+		return []string{"text", "text[]", "text[]"}, []string{project, keys + "::text[]", roots + "::text[]"}
 	}
-	var project, keys, roots string
-	if err := database.Pool.QueryRow(t.Context(),
-		`select quote_literal($1::text), quote_literal($2::text[]::text), quote_literal($3::text[]::text)`,
-		args...).Scan(&project, &keys, &roots); err != nil {
-		t.Fatalf("quote the board read's arguments: %v", err)
-	}
-	return []string{project, keys + "::text[]", roots + "::text[]"}
+	t.Fatalf("a board read of the stored facts ran with %d arguments, want the project alone or the project, the keys and the roots", len(args))
+	return nil, nil
 }
 
-// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget: the board's read of the stored
-// facts, the statement its request runs with its own arguments, takes at most
-// boardReadGenericBudget at INFRA's size under the generic plan a statement pgx caches can settle
-// on after its fifth run, as under the plan with its values. The read sets that plan itself
-// (legionfacts.readByIndex), and this holds the statement to its budget without the setting: an
-// earlier shape left the rows of the cards and the trees out of the open rows, which tested both
-// lists on every open row, and a generic plan scans a list for each row it tests rather than
-// hashing it.
+// TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget: the board's two reads of the
+// stored facts, the statements its request runs with their own arguments, the read of the open
+// rows and the read of the closed rows of what it shows, take at most boardReadGenericBudget
+// together at INFRA's size under the generic plan a statement pgx caches can settle on after its
+// fifth run, as under the plan with its values. The reads set that plan themselves
+// (legionfacts.readByIndex), and this holds the statements to their budget without the setting:
+// an earlier shape left the rows of the cards and the trees out of the open rows, which tested
+// both lists on every open row, and a generic plan scans a list for each row it tests rather than
+// hashing it. The two are held together, as the one read they were split from was, though the
+// board runs the open rows' read beside its card reads.
 //
-// Each mode runs boardReadRuns times, under the read's own settings, and its median execution is
-// what is held and recorded with the plan, so the record of each run says whether the plan mode
-// moves the read's cost.
+// Each read runs boardReadRuns times under each mode, under the reads' own settings, and its
+// median execution is what is held and recorded with the plan, so the record of each run says
+// whether the plan mode moves a read's cost.
 func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
 	log := &statementLog{}
 	handler, database, fixture := boardAtInfraSize(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), log)})
@@ -346,11 +359,9 @@ func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
 		t.Fatalf("GET the board: status=%d body=%s", response.Code, response.Body.String())
 	}
 	reads := boardFactsReads(log.statements())
-	if len(reads) != 1 {
-		t.Fatalf("the board's request ran %d statements naming issue_facts, want its one read of the stored facts", len(reads))
+	if len(reads) != 2 {
+		t.Fatalf("the board's request ran %d statements naming issue_facts, want its two reads of the stored facts", len(reads))
 	}
-	read := reads[0]
-	literals := boardReadLiterals(t, database, read.args)
 	var open, rows int
 	if err := database.Pool.QueryRow(ctx, `select count(*) filter (where closed_at is null), count(*) from issue_facts where project_key = $1`,
 		fixture.Project).Scan(&open, &rows); err != nil {
@@ -363,40 +374,47 @@ func TestTheBoardsFactsReadUnderAGenericPlanStaysWithinItsBudget(t *testing.T) {
 	defer connection.Release()
 
 	medians := map[string]float64{}
-	for _, mode := range []struct {
-		name string
-		plan func(run int) json.RawMessage
-	}{
-		{"custom", func(int) json.RawMessage { return customBoardRead(t, database, read) }},
-		{"generic", func(run int) json.RawMessage {
-			return explaintest.AnalyzedGenericPlan(t, ctx, connection, fmt.Sprintf("board_facts_read_%d", run), read.sql,
-				[]string{"text", "text[]", "text[]"}, literals, "set local enable_seqscan = off")
-		}},
-	} {
-		taken := make([]float64, 0, boardReadRuns)
-		var last json.RawMessage
-		for run := range boardReadRuns {
-			last = mode.plan(run)
-			taken = append(taken, planMilliseconds(t, last))
+	keys, roots := 0, 0
+	for index, read := range reads {
+		types, literals := boardReadLiterals(t, database, read.args)
+		if len(read.args) == 3 {
+			keys, roots = len(read.args[1].([]string)), len(read.args[2].([]string))
 		}
-		slices.Sort(taken)
-		medians[mode.name] = taken[len(taken)/2]
-		t.Logf("under the %s plan the board's read ran %d times, median %.3f ms, fastest %.3f ms, slowest %.3f ms; its last plan:\n%s",
-			mode.name, boardReadRuns, medians[mode.name], taken[0], taken[len(taken)-1], explaintest.Outline(t, last))
-		for _, node := range explaintest.Nodes(t, last) {
-			if node.Relation == "issue_facts" {
-				t.Logf("  %s: condition %q, filter %q, %g rows a loop over %g loops, %g removed by the filter a loop",
-					node, node.IndexCond, node.Filter, node.Rows, node.Loops, node.RowsRemovedByFilter)
+		for _, mode := range []struct {
+			name string
+			plan func(run int) json.RawMessage
+		}{
+			{"custom", func(int) json.RawMessage { return customBoardRead(t, database, read) }},
+			{"generic", func(run int) json.RawMessage {
+				return explaintest.AnalyzedGenericPlan(t, ctx, connection, fmt.Sprintf("board_facts_read_%d_%d", index, run), read.sql,
+					types, literals, "set local enable_seqscan = off")
+			}},
+		} {
+			taken := make([]float64, 0, boardReadRuns)
+			var last json.RawMessage
+			for run := range boardReadRuns {
+				last = mode.plan(run)
+				taken = append(taken, planMilliseconds(t, last))
+			}
+			slices.Sort(taken)
+			median := taken[len(taken)/2]
+			medians[mode.name] += median
+			t.Logf("under the %s plan the board's read\n%s\nran %d times, median %.3f ms, fastest %.3f ms, slowest %.3f ms; its last plan:\n%s",
+				mode.name, strings.TrimSpace(read.sql), boardReadRuns, median, taken[0], taken[len(taken)-1], explaintest.Outline(t, last))
+			for _, node := range explaintest.Nodes(t, last) {
+				if node.Relation == "issue_facts" {
+					t.Logf("  %s: condition %q, filter %q, %g rows a loop over %g loops, %g removed by the filter a loop",
+						node, node.IndexCond, node.Filter, node.Rows, node.Loops, node.RowsRemovedByFilter)
+				}
 			}
 		}
 	}
 	if medians["generic"] > boardReadGenericBudget {
-		t.Errorf("under a generic plan the board's read of the stored facts takes a median %.3f ms, above its %.0f ms budget",
+		t.Errorf("under a generic plan the board's reads of the stored facts take a median %.3f ms together, above their %.0f ms budget",
 			medians["generic"], boardReadGenericBudget)
 	}
-	t.Logf("project %s: %d stored rows, %d open; the read names %d card keys and %d roots (%s); median %.3f ms under the custom plan and %.3f ms under the generic plan, against the %.0f ms budget",
-		fixture.Project, rows, open, len(read.args[1].([]string)), len(read.args[2].([]string)), strings.TrimSpace(read.sql),
-		medians["custom"], medians["generic"], boardReadGenericBudget)
+	t.Logf("project %s: %d stored rows, %d open; the read of the closed rows names %d card keys and %d roots; medians %.3f ms together under the custom plan and %.3f ms under the generic plan, against the %.0f ms budget",
+		fixture.Project, rows, open, keys, roots, medians["custom"], medians["generic"], boardReadGenericBudget)
 }
 
 // eventLogRead and observationsRead match a statement that reads the event log and one that

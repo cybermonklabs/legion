@@ -95,12 +95,17 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 		t.Fatalf("write the project's facts: %v", err)
 	}
 	board := legionBoardOf(t, handler, fixture.Project)
-	// The rows of the issues the board carries as the board's read closed them, at the moment its
-	// body is computed as of: the one computation the read makes (legionfacts.Row.At).
-	stored, _, err := legionfacts.Read(t.Context(), database.Pool, fixture.Project, slices.Collect(maps.Keys(board.Issues)), nil, board.ComputedAt)
+	// The rows of the issues the board carries as the board's two reads closed them, at the moment
+	// its body is computed as of: the one computation the read makes (legionfacts.Row.At).
+	openRows, _, err := legionfacts.ReadOpen(t.Context(), database.Pool, fixture.Project, board.ComputedAt)
 	if err != nil {
-		t.Fatalf("read the facts back: %v", err)
+		t.Fatalf("read the open facts back: %v", err)
 	}
+	closedRows, _, err := legionfacts.ReadShownClosed(t.Context(), database.Pool, fixture.Project, slices.Collect(maps.Keys(board.Issues)), nil, board.ComputedAt)
+	if err != nil {
+		t.Fatalf("read the closed facts back: %v", err)
+	}
+	stored := legionfacts.Join(openRows, closedRows)
 	for _, key := range fixture.PhaseWork {
 		if _, has := board.Issues[key]; !has {
 			t.Errorf("%s carries Legion phase work and the board holds no entry of it", key)

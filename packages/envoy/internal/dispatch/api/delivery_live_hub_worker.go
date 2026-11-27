@@ -461,7 +461,9 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 //   - compute, the body built from what was read, and what the hub keeps of it beside the body
 //     (the issues an event marks the view by, the next expiry);
 //   - encode, the body's JSON encoding and its reading back into the list items, map entries,
-//     counts and fields a delta sends (encodeDeliveryBody), but for their revisions;
+//     counts and fields a delta sends (encodeDeliveryBody), but for their revisions; for a Legion
+//     board, its issues entries' own encodings and the body written from them and the rest
+//     (legionBoardResponse's encodedMap, composeDeliveryBody), of which only the rest is read back;
 //   - revision, the revisions of those (deliveryLiveRevision, deliveryLiveRevisionWithout, and a
 //     Legion board's own of its issues map, legionBoardResponse's mapRevisions), the timeline's
 //     maps and lists among them;
@@ -488,11 +490,12 @@ type deliveryRecomputeTimes struct {
 // millisecond, and a whole number would log it 0, as a stage that did not run is.
 //
 // After the stages come the parts of the read stage, to a tenth of a millisecond each, as
-// read_cards_ms, read_facts_ms, read_grow_ms, read_cursor_ms and read_wait_ms (a Legion board's,
-// legionBoardReadTimes, 0.0 for every other kind and for a board read that did not reach them),
-// and read_other_ms, the read stage less a board's cards, facts and grow, which run one after the
-// other: the change position, the project's own read (loadProject), the cursor's read where it
-// outlasts the other three beside it, and the whole of any other kind's reads. read_cursor_ms and
+// read_cards_ms, read_facts_ms, read_grow_ms, read_open_ms, read_open_grow_ms, read_cursor_ms and
+// read_wait_ms (a Legion board's, legionBoardReadTimes, 0.0 for every other kind and for a board
+// read that did not reach them), and read_other_ms, the read stage less a board's cards, facts and
+// grow, which run one after the other: the change position, the project's own read (loadProject),
+// the read of the open rows or of the cursor where either outlasts those three beside it, and the
+// whole of any other kind's reads. read_open_ms, read_open_grow_ms, read_cursor_ms and
 // read_wait_ms lie inside the other parts rather than beside them. Last comes marks, every mark
 // of the view the recompute took over (recomputeMarks), and expiry:1 for an expiry's, which
 // answers no mark.
@@ -500,10 +503,10 @@ func (h *deliveryHub) finishRecompute(spec deliveryLiveSpec, cause string, start
 	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 	board := times.board
 	other := times.read - board.cards - board.facts - board.grow
-	log.Printf("dispatch: delivery live recompute view=%s cause=%s elapsed_ms=%d prs=%d runs=%d subscribers=%d sent=%d read_ms=%.1f compute_ms=%.1f encode_ms=%.1f revision_ms=%.1f diff_ms=%.1f read_cards_ms=%.1f read_facts_ms=%.1f read_grow_ms=%.1f read_cursor_ms=%.1f read_wait_ms=%.1f read_other_ms=%.1f marks=%s",
+	log.Printf("dispatch: delivery live recompute view=%s cause=%s elapsed_ms=%d prs=%d runs=%d subscribers=%d sent=%d read_ms=%.1f compute_ms=%.1f encode_ms=%.1f revision_ms=%.1f diff_ms=%.1f read_cards_ms=%.1f read_facts_ms=%.1f read_grow_ms=%.1f read_open_ms=%.1f read_open_grow_ms=%.1f read_cursor_ms=%.1f read_wait_ms=%.1f read_other_ms=%.1f marks=%s",
 		spec.kind, cause, time.Since(started).Milliseconds(), prs, runs, subscribers, sent,
 		ms(times.read), ms(times.compute), ms(times.encode), ms(times.revision), ms(times.diff),
-		ms(board.cards), ms(board.facts), ms(board.grow), ms(board.cursor), ms(board.wait), ms(other),
+		ms(board.cards), ms(board.facts), ms(board.grow), ms(board.open), ms(board.openGrow), ms(board.cursor), ms(board.wait), ms(other),
 		recomputeMarks(marks))
 	h.note(deliveryHubNote{what: "recompute end", view: spec.key, cause: cause, sent: sent})
 }
