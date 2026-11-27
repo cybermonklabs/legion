@@ -103,20 +103,28 @@ const SCANNED_ROOTS = ["packages/dispatch/web/src", "packages/proof-editor/src"]
  *  covered box mounts - rather than a box of its own, so the walk reads no box out of it. */
 const SHARED_FIELD = "packages/dispatch/web/src/features/conversation/MentionField.tsx";
 
-/** One construct of a box the walk looks for, and the words a failure calls it by. */
+/** One construct of a box the walk looks for, as a file's syntax tree holds it
+ *  (`constructSitesOf`), and the words a failure calls it by. */
 interface Construct {
   readonly name: string;
-  readonly pattern: RegExp;
+  /** The functions a call of which is it, by the name its callee is written with
+   *  (`calleeNameOf`). */
+  readonly calls: readonly string[];
+  /** The elements that are it, by their tag (`tagNameOf`): an element whose tag is the name, or
+   *  a member, a namespace or a dashed name under it (`MentionField.Box`, `textarea-x`), and the
+   *  opening of one written in a string or a template (`"<textarea"`). */
+  readonly elements: readonly string[];
 }
 
 /** The two editors that host the picker in their own way: a document's body through
  *  `createProofEditor`, an agent's live conversation through assistant-ui's composer input. A box
  *  made of one picks its row beside the mount rather than on it (the document body's picker, the
- *  live conversation's triggers). The pattern skips `createProofEditor`'s own declaration in the
- *  editor package, which is no mount. */
+ *  live conversation's triggers). Only a call is a mount, so `createProofEditor`'s own
+ *  declaration in the editor package is none. */
 const EDITOR_MOUNT: Construct = {
+  calls: ["createProofEditor"],
+  elements: ["ComposerPrimitive.Input"],
   name: "an editor mount",
-  pattern: /(?<!function )\bcreateProofEditor\(|<ComposerPrimitive\.Input\b/,
 };
 
 /** The elements that mount the shared field, bare or through the composer that dresses it. A
@@ -126,12 +134,9 @@ const SHARED_FIELD_ELEMENTS: readonly string[] = ["MentionField", "MentionCompos
 /** What a box is made of: the plain textarea of a box that takes no picker, an editor that
  *  hosts the picker, and a mount of the shared field. */
 const WRITING_CONSTRUCTS: readonly Construct[] = [
-  { name: "a textarea element", pattern: /<textarea\b/ },
+  { calls: [], elements: ["textarea"], name: "a textarea element" },
   EDITOR_MOUNT,
-  {
-    name: "a mount of the shared field",
-    pattern: new RegExp(SHARED_FIELD_ELEMENTS.map((element) => `<${element}\\b`).join("|")),
-  },
+  { calls: [], elements: SHARED_FIELD_ELEMENTS, name: "a mount of the shared field" },
 ];
 
 /** What a reading surface is made of, as the walk finds it in a file's syntax tree: a mount of
@@ -315,7 +320,8 @@ const HAND_NAMED_TEXTS: readonly HandNamedText[] = [
 interface DeletedReader {
   /** What it read, for the failure to say. */
   readonly what: string;
-  /** The module it lived in, as an importer would write the end of the specifier. */
+  /** The module it lived in, as an importer would write the end of the specifier with no
+   *  extension (`modulesNamedIn`). */
   readonly module?: string;
   /** The names it exported, each a word no source file writes now. */
   readonly names: readonly string[];
@@ -374,88 +380,171 @@ function collectSourceFiles(root: string): string[] {
 
 const SCANNED_FILES = SCANNED_ROOTS.flatMap(collectSourceFiles).sort();
 
-/** What the scanner is reading at one character. */
-type Mode = "block" | "code" | "line" | "quoted";
-
-/**
- * One file's lines with every comment of `text` blanked, so prose that names a construct - a
- * `<textarea>` an interface documents, a `createProofEditor()` an explanation mentions - is not
- * read as a mount of it. Blanks rather than drops, so a line number below is the file's own.
- *
- * It reads character by character because a comment's opening characters are also ordinary text
- * inside a string: `path="/issues/:key/*"` in `app.tsx` opens no comment, and a regex that
- * swallowed everything after it to the next comment close would quietly stop this test from
- * seeing a hundred lines of the shell. A string's own characters are left as they are: no
- * construct is written in one, and the import check below reads module specifiers.
- */
-function sourceLines(text: string): string[] {
-  const chars = [...text];
-  let mode: Mode = "code";
-  let quote = "";
-  let at = 0;
-  while (at < chars.length) {
-    const char = chars[at] as string;
-    const pair = `${char}${chars[at + 1] ?? ""}`;
-    if (mode === "code") {
-      if (pair === "//" || pair === "/*") {
-        mode = pair === "//" ? "line" : "block";
-        chars[at] = " ";
-        chars[at + 1] = " ";
-        at += 2;
-        continue;
-      }
-      if (char === '"' || char === "'" || char === "`") {
-        mode = "quoted";
-        quote = char;
-      }
-    } else if (mode === "line") {
-      if (char === "\n") {
-        mode = "code";
-      } else {
-        chars[at] = " ";
-      }
-    } else if (mode === "block") {
-      if (pair === "*/") {
-        mode = "code";
-        chars[at] = " ";
-        chars[at + 1] = " ";
-        at += 2;
-        continue;
-      }
-      if (char !== "\n") {
-        chars[at] = " ";
-      }
-    } else if (char === "\\") {
-      at += 2;
-      continue;
-    } else if (char === quote || (char === "\n" && quote !== "`")) {
-      // Only a template literal holds a newline, so one ends a `'` that was an apostrophe in
-      // text rather than the opening of a string.
-      mode = "code";
-    }
-    at += 1;
-  }
-  return chars.join("").split("\n");
-}
-
-/** Each scanned file's own text, read once: the row checks below read a word anywhere in it,
- *  the walk of the boxes reads it with its comments blanked, the pick reader parses it
- *  (`picksOf`), and so do the walks of the reading list (`TREE_BY_FILE`). */
+/** Each scanned file's own text, read once: the row checks below read a word anywhere in it, the
+ *  pick reader parses it (`picksOf`), and so does every other walk (`TREE_BY_FILE`). */
 const TEXT_BY_FILE = new Map(
   SCANNED_FILES.map((file) => [file, readFileSync(join(REPO_ROOT, file), "utf8")] as const)
 );
 
-const LINES_BY_FILE = new Map(
-  SCANNED_FILES.map((file) => [file, sourceLines(TEXT_BY_FILE.get(file) ?? "")] as const)
+/** `source` parsed as what its name says it is, so the parser ends a string, a comment and a tag
+ *  where TypeScript does, escapes included. A `.ts` file is read as no TSX, since there
+ *  `<T>value` is a type assertion rather than an element. */
+function parseSource(file: string, source: string): ts.SourceFile {
+  const kind = file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, kind);
+}
+
+/** Each scanned file's syntax tree, parsed once for every walk below. */
+const TREE_BY_FILE = new Map(
+  SCANNED_FILES.map((file) => [file, parseSource(file, TEXT_BY_FILE.get(file) ?? "")] as const)
 );
+
+/** A comment, as it stands in code that holds no string, template, regex literal or JSX text. */
+const COMMENT = /\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$)/g;
+
+/**
+ * The lines of the file `tree` is with every comment blanked, so prose that names a deleted
+ * reader - its module in a sentence, its name in an explanation - is not read as a use of it.
+ * Blanks rather than drops, so a line number below is the file's own.
+ *
+ * The tree says where each string, template, regex literal and JSX text is, and their characters
+ * are left as they are: `path="/issues/:key/*"` in `app.tsx`, `/https?:\/\//` and `<p>see
+ * http://x</p>` open no comment. A comment is trivia between tokens, so it lies in the code
+ * between two of those, and there every `//` and `/*` opens one.
+ */
+function codeLines(tree: ts.SourceFile): string[] {
+  const literals: (readonly [number, number])[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxText(node)) {
+      // JSX text has no trivia before it: it starts where the tag or the `}` before it ends.
+      literals.push([node.pos, node.end]);
+    } else if (
+      ts.isStringLiteralLike(node) ||
+      ts.isTemplateLiteralToken(node) ||
+      ts.isRegularExpressionLiteral(node)
+    ) {
+      literals.push([node.getStart(tree), node.end]);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  const { text } = tree;
+  let code = "";
+  let at = 0;
+  for (const [start, end] of [...literals, [text.length, text.length] as const]) {
+    const between = text.slice(at, start);
+    code += between.replace(COMMENT, (comment) => comment.replace(/[^\n]/g, " "));
+    code += text.slice(start, end);
+    at = end;
+  }
+  return code.split("\n");
+}
+
+/** Each scanned file's lines of code (`codeLines`), read once for the deleted readers' check. */
+const LINES_BY_FILE = new Map(
+  [...TREE_BY_FILE].map(([file, tree]) => [file, codeLines(tree)] as const)
+);
+
+/** An element's tag as one name: a member's parts joined by dots and a namespace's by a colon,
+ *  with none of the spaces, line breaks or comments the source may write between them, so
+ *  `<ComposerPrimitive . Input />` is `ComposerPrimitive.Input`. */
+function tagNameOf(tag: ts.JsxTagNameExpression): string {
+  if (ts.isIdentifier(tag)) {
+    return tag.text;
+  }
+  if (ts.isPropertyAccessExpression(tag)) {
+    return `${tagNameOf(tag.expression)}.${tag.name.text}`;
+  }
+  if (ts.isJsxNamespacedName(tag)) {
+    return `${tag.namespace.text}:${tag.name.text}`;
+  }
+  return "this";
+}
+
+/** The name a call's callee is written with, under what `uncast` takes off: a function's own
+ *  (`createProofEditor(...)`) or a member's (`editors.createProofEditor(...)`,
+ *  `editors["createProofEditor"](...)`); `undefined` for a callee of any other shape. */
+function calleeNameOf(callee: ts.Expression): string | undefined {
+  const at = uncast(callee);
+  if (ts.isIdentifier(at)) {
+    return at.text;
+  }
+  if (ts.isPropertyAccessExpression(at)) {
+    return at.name.text;
+  }
+  if (ts.isElementAccessExpression(at)) {
+    const key = uncast(at.argumentExpression);
+    return ts.isStringLiteralLike(key) ? key.text : undefined;
+  }
+  return undefined;
+}
+
+/** Each place `tree` writes one of `constructs`, read from its syntax: an element whose tag is
+ *  one of a construct's elements, and a call or a `new` whose callee is one of its functions,
+ *  however the source spaces, breaks or types them (`createProofEditor<Schema>` with its
+ *  arguments on the next line). A string or a template that writes the opening of one of its
+ *  elements (`"<textarea"`) is a site too, on the line the opening is on, since HTML the page is
+ *  handed draws that element as JSX does. A comment and a regex literal hold no construct. A
+ *  construct written twice on one line is one site there. */
+function constructSitesOf(tree: ts.SourceFile, constructs: readonly Construct[]): Site[] {
+  const file = tree.fileName;
+  const sites = new Map<string, Site>();
+  const add = (construct: Construct, position: number): void => {
+    const at = `${file}:${tree.getLineAndCharacterOfPosition(position).line + 1}`;
+    sites.set(`${at} ${construct.name}`, { at, construct: construct.name, file });
+  };
+  // Each construct's element openings as a string writes them, each name a whole word
+  // (`<textarea` and `<textarea>`, not `<textareas`); none for a construct with no element. Of
+  // the characters a tag's name holds, only `$` and `.` mean anything else in a pattern.
+  const openings = constructs.map((construct) =>
+    construct.elements.length === 0
+      ? undefined
+      : new RegExp(
+          construct.elements.map((element) => `<${element.replace(/[$.]/g, "\\$&")}\\b`).join("|"),
+          "g"
+        )
+  );
+  const visit = (node: ts.Node): void => {
+    const tag =
+      ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)
+        ? tagNameOf(node.tagName)
+        : undefined;
+    const callee =
+      ts.isCallExpression(node) || ts.isNewExpression(node)
+        ? calleeNameOf(node.expression)
+        : undefined;
+    const written =
+      ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node)
+        ? node.getText(tree)
+        : undefined;
+    constructs.forEach((construct, index) => {
+      const isIt =
+        (tag !== undefined &&
+          construct.elements.some(
+            (element) =>
+              tag === element || (tag.startsWith(element) && /^\W/u.test(tag.slice(element.length)))
+          )) ||
+        (callee !== undefined && construct.calls.includes(callee));
+      if (isIt) {
+        add(construct, node.getStart(tree));
+      }
+      const opening = openings[index];
+      if (written !== undefined && opening !== undefined) {
+        for (const match of written.matchAll(opening)) {
+          add(construct, node.getStart(tree) + (match.index ?? 0));
+        }
+      }
+    });
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  return [...sites.values()];
+}
 
 /** Whether `file` holds any of `constructs`. */
 function holdsAny(file: string, constructs: readonly Construct[]): boolean {
-  return (
-    LINES_BY_FILE.get(file)?.some((line) =>
-      constructs.some((construct) => construct.pattern.test(line))
-    ) === true
-  );
+  const tree = TREE_BY_FILE.get(file);
+  return tree !== undefined && constructSitesOf(tree, constructs).length > 0;
 }
 
 /** Whether `file` writes `word`, comments included: a row's id is written at its site as a
@@ -573,40 +662,13 @@ interface Site {
   readonly file: string;
 }
 
-function sitesOf(constructs: readonly Construct[], skipped: ReadonlySet<string>): Site[] {
-  const sites: Site[] = [];
-  for (const file of SCANNED_FILES) {
-    if (skipped.has(file)) {
-      continue;
-    }
-    const lines = LINES_BY_FILE.get(file) ?? [];
-    lines.forEach((line, index) => {
-      for (const construct of constructs) {
-        if (construct.pattern.test(line)) {
-          sites.push({ at: `${file}:${index + 1}`, construct: construct.name, file });
-        }
-      }
-    });
-  }
-  return sites;
-}
-
-const WRITING_SITES = sitesOf(WRITING_CONSTRUCTS, new Set([SHARED_FIELD]));
+/** Every site of a box's construct, in every scanned file but the shared field's own
+ *  (`SHARED_FIELD`). */
+const WRITING_SITES = [...TREE_BY_FILE.values()]
+  .filter((tree) => tree.fileName !== SHARED_FIELD)
+  .flatMap((tree) => constructSitesOf(tree, WRITING_CONSTRUCTS));
 
 const WRITING_FILES = new Set(DISPATCH_WRITING_BOXES.flatMap((row) => row.files));
-
-/** `source` parsed as what its name says it is, so the parser ends a string, a comment and a tag
- *  where TypeScript does, escapes included. A `.ts` file is read as no TSX, since there
- *  `<T>value` is a type assertion rather than an element. */
-function parseSource(file: string, source: string): ts.SourceFile {
-  const kind = file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-  return ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, kind);
-}
-
-/** Each scanned file's syntax tree, parsed once for both walks of the reading list. */
-const TREE_BY_FILE = new Map(
-  SCANNED_FILES.map((file) => [file, parseSource(file, TEXT_BY_FILE.get(file) ?? "")] as const)
-);
 
 /** The line `node` starts on, counted from one as an editor counts it. */
 function lineOf(tree: ts.SourceFile, node: ts.Node): number {
@@ -2951,8 +3013,8 @@ describe("the walk reads the dashboard's source", () => {
   });
 
   test("finds a non-trivial number of boxes and surfaces", () => {
-    // A guard on the patterns themselves: were one to stop matching, every check below would
-    // pass over nothing at all.
+    // A guard on the reading of the constructs: were one to stop finding its sites, every
+    // check below would pass over nothing at all.
     expect(WRITING_SITES.length).toBeGreaterThan(15);
     expect(MOUNTS.length).toBeGreaterThan(40);
   });
@@ -3014,6 +3076,122 @@ describe("the walk reads the dashboard's source", () => {
     const lane = referencesLaneFiles().map((file) => `packages/dispatch/${file}`);
     expect(lane.length).toBeGreaterThan(10);
     expect(lane.filter((file) => !inReferenceFilter(file))).toEqual([]);
+  });
+});
+
+// ------------------------------------------------------------------------------------------
+// A box's construct is read from the syntax tree
+// ------------------------------------------------------------------------------------------
+
+describe("a box's construct is read from the syntax tree, however the source spells it", () => {
+  const sites = (lines: readonly string[]): string[] =>
+    constructSitesOf(parseSource("fixture.tsx", lines.join("\n")), WRITING_CONSTRUCTS).map(
+      (site) => `${site.at} ${site.construct}`
+    );
+
+  // Each a spelling the language allows: a call split, spaced or given a type argument, a tag
+  // whose name is on the line after its `<` or spaced round its dot, a construct after a regex
+  // literal that holds a comment's opening characters, and an element's opening written in a
+  // string or a template, which draws the element as HTML.
+  const spellings: readonly (readonly [string, readonly string[], string])[] = [
+    [
+      "createProofEditor's arguments on the line after its name",
+      ["const editor = createProofEditor", "  (root, options);"],
+      "fixture.tsx:1 an editor mount",
+    ],
+    [
+      "createProofEditor with a type argument",
+      ["const editor = createProofEditor<Schema>(root, options);"],
+      "fixture.tsx:1 an editor mount",
+    ],
+    [
+      "createProofEditor with a space before its paren",
+      ["const editor = createProofEditor (root, options);"],
+      "fixture.tsx:1 an editor mount",
+    ],
+    [
+      "a textarea whose name is on the line after its <",
+      ["export const Box = () => (", "  <", "    textarea value={text} />", ");"],
+      "fixture.tsx:2 a textarea element",
+    ],
+    [
+      "a MentionField whose name is on the line after its <",
+      ["export const Box = () => (", "  <", '    MentionField box="ask-answer" />', ");"],
+      "fixture.tsx:2 a mount of the shared field",
+    ],
+    [
+      "ComposerPrimitive.Input with spaces round its dot",
+      ["export const Box = () => <ComposerPrimitive . Input />;"],
+      "fixture.tsx:1 an editor mount",
+    ],
+    [
+      "a textarea after a regex literal that holds //",
+      ["const url = /https?:\\/\\//; export const Box = () => <textarea />;"],
+      "fixture.tsx:1 a textarea element",
+    ],
+    [
+      "a textarea on the line after a regex literal that holds /*",
+      ["const slashes = /\\/*/;", "export const Box = () => <textarea />;", "/** The end. */"],
+      "fixture.tsx:2 a textarea element",
+    ],
+    [
+      "a textarea's opening in a string",
+      ['const html = "<textarea rows=3></textarea>";'],
+      "fixture.tsx:1 a textarea element",
+    ],
+    [
+      "a MentionField's opening in a template with a substitution, on its second line",
+      [
+        "const html = `",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture's source holds a template literal
+        '  <MentionField box="${box}" />',
+        "`;",
+      ],
+      "fixture.tsx:2 a mount of the shared field",
+    ],
+    [
+      "a ComposerPrimitive.Input's opening in a template with no substitution",
+      ["const html = `<ComposerPrimitive.Input />`;"],
+      "fixture.tsx:1 an editor mount",
+    ],
+  ];
+
+  test.each(spellings)("%s", (_name, lines, site) => {
+    expect(sites(lines)).toEqual([site]);
+  });
+
+  test("each construct written on one line, as a person mostly writes it, is a site", () => {
+    expect(
+      sites([
+        "export const Box = () => (",
+        "  <>",
+        "    <textarea value={text} />",
+        '    <MentionField box="ask-answer" />',
+        "    <MentionComposer mutationKey={key} />",
+        "    <ComposerPrimitive.Input />",
+        "  </>",
+        ");",
+        "const editor = createProofEditor(root, options);",
+        "const other = editors.createProofEditor(root, options);",
+      ])
+    ).toEqual([
+      "fixture.tsx:3 a textarea element",
+      "fixture.tsx:4 a mount of the shared field",
+      "fixture.tsx:5 a mount of the shared field",
+      "fixture.tsx:6 an editor mount",
+      "fixture.tsx:9 an editor mount",
+      "fixture.tsx:10 an editor mount",
+    ]);
+  });
+
+  test("a comment and the editor's own declaration hold no construct", () => {
+    expect(
+      sites([
+        "// a <textarea> and createProofEditor() named in prose",
+        '/** <MentionField box="ask-answer" /> */',
+        "export function createProofEditor(root: Element) {}",
+      ])
+    ).toEqual([]);
   });
 });
 
@@ -4290,26 +4468,128 @@ describe("every row of the reading list is a surface the dashboard still draws",
 // No second reader came back
 // ------------------------------------------------------------------------------------------
 
+/** One module a file names, as `modulesNamedIn` reads it, and the line it is named on. */
+interface NamedModule {
+  readonly line: number;
+  readonly module: string;
+}
+
+/** Each module `tree` names: in an `import` or an `export` declaration, an `import x =
+ *  require(...)`, an `import(...)` of a value or of a type, and a `require(...)`, in whatever
+ *  quote, with its extension and a trailing `/index` taken off, so
+ *  `'../refs/ReferencePicker.tsx'` and `"../refs/ReferencePicker/index"` both name
+ *  `../refs/ReferencePicker`. */
+function modulesNamedIn(tree: ts.SourceFile): NamedModule[] {
+  const named: NamedModule[] = [];
+  const add = (specifier: ts.Node | undefined): void => {
+    if (specifier !== undefined && ts.isStringLiteralLike(specifier)) {
+      const module = specifier.text.replace(/\.[cm]?[jt]sx?$/u, "").replace(/\/index$/u, "");
+      named.push({ line: lineOf(tree, specifier), module });
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      add(node.moduleSpecifier);
+    } else if (ts.isExternalModuleReference(node)) {
+      add(node.expression);
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      add(node.argument.literal);
+    } else if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+    ) {
+      add(node.arguments[0]);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  return named;
+}
+
+/** Each line of `tree` that brings `reader` back, as `file:line`: one naming a module whose end
+ *  is the reader's (`modulesNamedIn`), and one whose code - `lines`, its comments blanked
+ *  (`codeLines`) - writes one of the reader's names as a word. */
+function deletedReaderUses(
+  tree: ts.SourceFile,
+  reader: DeletedReader,
+  lines: readonly string[] = codeLines(tree)
+): string[] {
+  const { module } = reader;
+  const found = new Set(
+    module === undefined
+      ? []
+      : modulesNamedIn(tree)
+          .filter((named) => named.module.endsWith(module))
+          .map((named) => named.line)
+  );
+  const namePatterns = reader.names.map((name) => new RegExp(`\\b${name}\\b`));
+  lines.forEach((line, index) => {
+    if (namePatterns.some((pattern) => pattern.test(line))) {
+      found.add(index + 1);
+    }
+  });
+  return [...found].sort((a, b) => a - b).map((line) => `${tree.fileName}:${line}`);
+}
+
 describe("no file imports a reader this change deleted", () => {
   test.each(
     DELETED_READERS.map((reader) => [reader.what, reader] as const)
   )("%s is imported nowhere", (_what: string, reader: DeletedReader) => {
-    // The patterns are the reader's own, so one is built per deleted reader rather than per
-    // line of every file the walk reads.
-    const importPattern =
-      reader.module === undefined ? undefined : new RegExp(`from "[^"]*${reader.module}"`);
-    const namePatterns = reader.names.map((name) => new RegExp(`\\b${name}\\b`));
-    const offenders: string[] = [];
-    for (const file of SCANNED_FILES) {
-      const lines = LINES_BY_FILE.get(file) ?? [];
-      lines.forEach((line, index) => {
-        const importsModule = importPattern?.test(line) === true;
-        const writesName = namePatterns.some((pattern) => pattern.test(line));
-        if (importsModule || writesName) {
-          offenders.push(`${file}:${index + 1}`);
-        }
-      });
-    }
+    const offenders = [...TREE_BY_FILE].flatMap(([file, tree]) =>
+      deletedReaderUses(tree, reader, LINES_BY_FILE.get(file))
+    );
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("a deleted reader is found however a file names it", () => {
+  const reader: DeletedReader = {
+    module: "refs/ReferencePicker",
+    names: ["referencePicker"],
+    what: "the fixture's reader",
+  };
+  const uses = (source: string): string[] =>
+    deletedReaderUses(parseSource("fixture.ts", source), reader);
+
+  // Each a way the language names a module, in either quote, with or without its extension or
+  // its `/index`, and the reader's name after a regex literal that holds a comment's opening
+  // characters.
+  const spellings: readonly (readonly [string, string])[] = [
+    ["a double-quoted import", 'import { ReferencePicker } from "../refs/ReferencePicker";'],
+    ["a single-quoted import", "import { ReferencePicker } from '../refs/ReferencePicker';"],
+    [
+      "an import naming the extension",
+      'import { ReferencePicker } from "../refs/ReferencePicker.tsx";',
+    ],
+    [
+      "an import of the module's index",
+      'import { ReferencePicker } from "../refs/ReferencePicker/index";',
+    ],
+    ["a dynamic import", 'const picker = await import("../refs/ReferencePicker");'],
+    ["a single-quoted re-export", "export { ReferencePicker } from '../refs/ReferencePicker';"],
+    ["a single-quoted side-effect import", "import '../refs/ReferencePicker';"],
+    ["a require", 'const picker = require("../refs/ReferencePicker");'],
+    ["an import-equals require", 'import picker = require("../refs/ReferencePicker");'],
+    ["a type's import", 'type Picker = typeof import("../refs/ReferencePicker");'],
+    [
+      "its name after a regex literal that holds //",
+      "const url = /https?:\\/\\//; const picked = referencePicker(url);",
+    ],
+  ];
+
+  test.each(spellings)("%s", (_name, source) => {
+    expect(uses(source)).toEqual(["fixture.ts:1"]);
+  });
+
+  test("a comment naming the reader or its module is no use of it", () => {
+    expect(
+      uses(
+        [
+          '// referencePicker came from "../refs/ReferencePicker"',
+          "/* import('../refs/ReferencePicker') */",
+        ].join("\n")
+      )
+    ).toEqual([]);
   });
 });
