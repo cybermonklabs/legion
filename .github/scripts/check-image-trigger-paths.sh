@@ -1264,9 +1264,10 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
         holds it to: `||` yields the first truthy operand, so one whose own last conjunct is
         the literal `'true'` either falls through to the reference or hands the job 'true',
         and the filter's match reaches the job's `if:` unnarrowed either way, whatever the
-        <term> reads - another step's output (ci.yaml's `steps.scope.outputs.every_job`), or
-        ANOTHER paths filter's verdict, as the own-packages term of ci.yaml's slow suites reads
-        `steps.own.outputs.x == 'true'`: a widening disjunct runs the job on more changes than
+        <term> reads. In ci.yaml one such term reads another step's output,
+        `.github/workflows/ci.yaml#steps.scope.outputs.every_job`, and the own-packages term of
+        its slow suites reads ANOTHER paths filter's verdict,
+        `.github/workflows/ci.yaml#steps.own.outputs.envoy_smoke`: a widening disjunct runs the job on more changes than
         its filter selects, never fewer, so it is no gate and the reference below is still the
         one this check reads. A widening disjunct reading the SAME step as the reference is
         refused all the same: the step would hand the job two filters' verdicts, and which

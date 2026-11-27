@@ -120,8 +120,8 @@ What it reads:
    route `repos/<repo>/activity?ref=refs/heads/main`. Main's commit dates are not read: the queue
    writes the commit when it builds the group. Then each commit of
    `git rev-list --first-parent --reverse <main then>..<main now>` is merged with the head, in
-   order, and the first that conflicts is the one. Its subject ends with `(#<n>)`, the pull request
-   the queue squashed into it. The cause is UNKNOWN when the activity cannot be read or holds no
+   order, and the first that conflicts is the one. Its subject ends with the pull request's number
+   in brackets, as the queue's squash writes it. The cause is UNKNOWN when the activity cannot be read or holds no
    move before `enqueuedAt`, when the head conflicted with main already when it was queued, or when
    the commit's subject names no pull request.
 
@@ -130,7 +130,8 @@ on 2026-11-27, with no fixture, showed it. Its head while it was queued was 1734
 2026-11-26T06:12:10Z from bafbb698 to ea7a5472, four commits in one push. git merge-tree of the
 head and bafbb698 exited 0, and of the head and ea7a5472 exited 1, naming `docs/kubernetes.md` and
 `packages/daemon/internal/store/store_test.go`. The commit-by-commit scan from main at its enqueue
-named be11d8db, `(#5310)`, the pull request the 2026-11-26 reading named too. ea7a5472, the move's
+named be11d8db, whose subject ends with #5310's number, the pull request the 2026-11-26 reading
+named too. ea7a5472, the move's
 `after`, is #5350's commit, so naming the pull request of a move's `after` would have named #5350.
 
 ## Why a workflow of its own, and how it is proved

@@ -41,8 +41,9 @@
 #   3. For each entry that conflicts, the pull request whose landing made it conflict: main as it
 #      was when the entry was queued (the `after` of the last move of main before that time, from
 #      the REST route repos/<repo>/activity, read once), then each commit of main after it, first
-#      parent first, until one conflicts with the head; that commit's subject ends with `(#<n>)`,
-#      the pull request the queue squashed into it. Main's own commit dates are not read: the queue
+#      parent first, until one conflicts with the head; the subject of that commit ends with the
+#      pull request's number in brackets, as the queue's squash writes it. Main's own commit dates
+#      are not read: the queue
 #      writes the commit when it builds the group.
 #
 # What it prints, on stdout:
