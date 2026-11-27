@@ -107,6 +107,8 @@ export const replyBlockFields = {
   removed: z.boolean(),
   edited_at: z.string().optional(),
   deleted_at: z.string().optional(),
+  quote: z.string().optional(),
+  occurrence: z.number().int().optional(),
 };
 
 /** An actor as the OpenAPI document reads it (`Actor`): a `kind` that is any string and one
@@ -132,13 +134,18 @@ const DocumentActorSchema = z.object({
 
 /** The block a reply answers: its node id (`comment/<uuid>#b2`, or `ask/<uuid>#b2` for a part of
  *  the ask the reply names), its reference (absent for a block of a direct message, which has no
- *  address), its id, its text cut to 480 characters (the last text it held once removed), and
- *  whether its item's current revision no longer holds it. `edited_at` is the time the quoted
- *  comment or message was last edited by its author, so a read that prints the reply without its
- *  parent still says the parent was edited; absent means nobody edited it. `deleted_at` and
- *  `deleted_by` are the mark of the quoted comment or message once its author deleted it: the
- *  block then reads removed with no text, and the mark says the post itself is gone; absent while
- *  the post stands. Every mark is absent on a part of an ask and from a Dispatch older than it. */
+ *  address), its id, its text cut to at most 480 characters, and earlier where a reference would
+ *  cross the cut (the last text it held once removed), and whether its item's current revision
+ *  no longer holds it. `edited_at` is the time the quoted comment or message was last edited by
+ *  its author, so a read that prints the reply without its parent still says the parent was
+ *  edited; absent means nobody edited it. `deleted_at` and `deleted_by` are the mark of the
+ *  quoted comment or message once its author deleted it: the block then reads removed with no
+ *  text, and the mark says the post itself is gone; absent while the post stands. Every mark is
+ *  absent on a part of an ask and from a Dispatch older than it.
+ *  `quote` and `occurrence` are the words of the block the reply quotes and which of their
+ *  matches in the block's plain text they are, counted from 0, as the reply stored them: both or
+ *  neither, absent on a reply that quotes nothing, from an answer where the quoted post is
+ *  deleted, and from a Dispatch older than them. */
 export const WrittenReplyBlockSchema = z
   .strictObject({ ...replyBlockFields, deleted_by: ActorSchema.optional() })
   .readonly();
@@ -146,8 +153,9 @@ export const WrittenReplyBlockSchema = z
 /** The block a reply answers, as a comment or message event payload carries it (`ReplyBlock`).
  *  An event recorded before the field, or by a Dispatch older than it, carries none. A reply's
  *  delete event (`comment.deleted`, `message.deleted`) carries it with every field but `text`,
- *  which is empty: a delete event carries no text of another post. A bus frame may carry a field
- *  this release does not know, so the inbound reading strips rather than refuses. */
+ *  `quote` and `occurrence`: `text` is empty and the other two absent, because a delete event
+ *  carries no text of another post. A bus frame may carry a field this release does not know, so
+ *  the inbound reading strips rather than refuses. */
 export const ReplyBlockSchema = z.object({
   ...replyBlockFields,
   deleted_by: DocumentActorSchema.optional(),

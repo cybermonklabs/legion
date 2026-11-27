@@ -4512,7 +4512,11 @@ test("a read that drops the focused comment's row leaves the focus on a row of t
 
     await page.route(`**/api/v1/issues/${seeded.key}/comments*`, async (route) => {
       const answer = await route.fetch();
-      const read = (await answer.json()) as Result<"/api/v1/issues/{key}/comments", "get">;
+      // The page reads the bare list, with no `order=activity`, which is what the route answers it.
+      const read = (await answer.json()) as Extract<
+        Result<"/api/v1/issues/{key}/comments", "get">,
+        unknown[]
+      >;
       await route.fulfill({
         json: read.filter((comment) => comment.id !== gone),
         response: answer,

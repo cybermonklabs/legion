@@ -624,8 +624,9 @@ async function scriptedModel(): Promise<never> {
 type IssuePage = Extract<Result<"/api/v1/issues", "get">, { issues: unknown }>;
 type ListedIssue = NonNullable<IssuePage["issues"]>[number];
 
-/** One comment of an issue's comments as Dispatch answers them. */
-type ListedComment = Result<"/api/v1/issues/{key}/comments", "get">[number];
+/** One comment of an issue's comments as Dispatch answers them: the bare list, which the route
+ *  answers to a read with no `order=activity`, where that one answers a page of threads. */
+type ListedComment = Extract<Result<"/api/v1/issues/{key}/comments", "get">, unknown[]>[number];
 
 /** What `comment-find` reads of the first comment of `comments` (an issue's comments as Dispatch
  *  answers them) whose body holds `wanted`: its id, and its author as Dispatch records a write

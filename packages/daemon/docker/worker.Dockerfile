@@ -260,8 +260,9 @@ ARG AZURE_CLI_PYTHON_VERSION=3.13.17
 # it against this SHA-256 before apt reads one index signed by it, so a rotated or re-exported key
 # fails the build and gets read by a person instead of being trusted.
 ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
-# The CodeGraph CLI and the Oh My Pi tool that wraps it are pinned to the versions the devbox runs
-# (`codegraph --version`, `omp/plugins/package.json`). Each one installs from a committed lockfile
+# The CodeGraph CLI is pinned here, and the dev box follows it: the worker image is the source of its
+# version. The Oh My Pi tool that wraps it is pinned to the version the devbox runs
+# (`omp/plugins/package.json`). Each one installs from a committed lockfile
 # in the plugin-deps stage: the tool, @bopstack/pi-codegraph, from packages/daemon/docker/omp-plugins,
 # and the CLI, @colbymchenry/codegraph, from packages/daemon/docker/codegraph. Each package.json
 # pins its one package, and each bun.lock pins everything Bun installs beside it, so, as for the

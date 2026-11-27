@@ -362,7 +362,7 @@ func maskText(text []byte) ([]byte, bool) {
 	covered, last := 0, -1
 	for _, o := range openingsIn(text, current.Load()) {
 		if o.kind && o.start > covered {
-			if r, _ := utf8.DecodeLastRune(text[:o.start]); asciiLetterOrDigit(r) {
+			if r, _ := utf8.DecodeLastRune(text[:o.start]); r < utf8.RuneSelf && placeholder.ASCIILetterOrDigit(byte(r)) {
 				continue
 			}
 		}
@@ -434,13 +434,6 @@ func mintedRun(text []byte, start int) (int, bool) {
 		end += size
 	}
 	return end, true
-}
-
-// asciiLetterOrDigit is whether r is an ASCII letter or digit, the characters that keep a kind's
-// prefix right after them from opening a placeholder. Every other character, ſ and the Kelvin
-// sign among them, leaves it open: the mask fails closed.
-func asciiLetterOrDigit(r rune) bool {
-	return 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9'
 }
 
 // minted is whether r is a character of a placeholder after its prefix: one of the alphabet the
