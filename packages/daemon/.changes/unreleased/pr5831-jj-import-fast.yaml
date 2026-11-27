@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    The worker image's jj is v0.46.0-sami.20261127-111037, in place of v0.46.0-sami.20261120-120102.
+    It carries sjawhar/jj#4 again: in a merge of two commits with more than one merge base, jj keeps
+    what both sides hold (jj-vcs/jj#6369), where v0.46.0-sami.20261120-120102 can merge such commits
+    back to the merge bases' text without a conflict. And it carries sjawhar/jj#5, so a `jj git
+    import` that brings in many conflicted merges of many commits finishes: the import of
+    cybermonklabs/oh-my-pi's 2,760 release refs takes 0.6 s, against 15 s for
+    v0.46.0-sami.20261120-120102 and about an hour for the earlier builds with sjawhar/jj#4
+    (INFRA-5926).
+time: 2026-11-27T11:47:21Z
+custom:
+    Issue: pr5831
