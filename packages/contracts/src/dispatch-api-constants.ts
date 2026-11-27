@@ -19,11 +19,12 @@
  * the package index: either would bring the area modules' schemas with the value.
  */
 
-// Types only: a type import is erased by the compiler, so it builds no edge a bundler would
-// follow back to the schemas.
+// Types only, but for `outage` of `http-status.ts`, which imports nothing: a type import is
+// erased by the compiler, so it builds no edge a bundler would follow back to the schemas.
 import type { CredentialPendingRow, MyReplyRow } from "./dispatch-api.generated";
 import type { EventType } from "./dispatch-api-events";
 import type { MyReplyAgentRow, MyReplyThreadRow } from "./dispatch-api-inbox";
+import { outage } from "./http-status";
 
 /** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson`,
  *  `model.ScopeApprove` and `model.ScopeP0` and the `agent_tokens.scopes` check that stores them.
@@ -398,19 +399,15 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 
 /**
  * Whether an attempt Dispatch answered with `status` (and `code`, its error body's) ended without
- * Dispatch's verdict on the key, so a client asks again under the same key: a 5xx, a 408 or a 429
- * (none of which Dispatch stores, `IDEMPOTENCY_KEY_HEADER`), or `409 IDEMPOTENCY_KEY_IN_FLIGHT`
- * (the first request under the key is still running). Any other answer is Dispatch's verdict, and
+ * Dispatch's verdict on the key, so a client asks again under the same key: an outage (`outage`: a
+ * 5xx, a 408 or a 429, none of which Dispatch stores, `IDEMPOTENCY_KEY_HEADER`), or
+ * `409 IDEMPOTENCY_KEY_IN_FLIGHT` (the first request under the key is still running), which is
+ * Dispatch's keyed-write layer rather than an outage. Any other answer is Dispatch's verdict, and
  * the same key would be answered with it again. The page and the `dispatch` command both retry by
  * this one rule.
  */
 export function retriesUnderKey(status: number, code: string | undefined): boolean {
-  return (
-    status >= 500 ||
-    status === 408 ||
-    status === 429 ||
-    (status === 409 && code === IDEMPOTENCY_KEY_IN_FLIGHT)
-  );
+  return outage(status) || (status === 409 && code === IDEMPOTENCY_KEY_IN_FLIGHT);
 }
 
 /**

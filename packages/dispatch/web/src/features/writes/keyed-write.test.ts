@@ -139,10 +139,12 @@ async function verdictAfter(
 }
 
 // A refusal says Dispatch made nothing only where no attempt went unanswered before it. An attempt
-// the page had no answer to - the connection failed, or Dispatch answered a 5xx - may have landed,
-// and a retry Dispatch then refuses says nothing of it: a snooze is a `PUT` and sends no key, so
-// its retry runs Dispatch's handler again, which refuses a moment that has passed or an ask that
-// has gone; and a second `401` refuses any write. That write's event may still come.
+// the page had no answer to - the connection failed - or one answered with a 5xx or a 408 may have
+// landed: a 5xx can come after Dispatch committed the write, and a proxy in front of Dispatch can
+// answer 408 after it forwarded the request. A retry Dispatch then refuses says nothing of it: a
+// snooze is a `PUT` and sends no key, so its retry runs Dispatch's handler again, which refuses a
+// moment that has passed or an ask that has gone; and a second `401` refuses any write. That
+// write's event may still come.
 test("a refusal after an attempt the page had no answer to is no verdict that nothing was made", async () => {
   // Each attempt's error is an object of its own, as each answer is.
   const pastMoment = () =>
@@ -160,6 +162,19 @@ test("a refusal after an attempt the page had no answer to is no verdict that no
       new ApiError(404, { code: "ASK_NOT_FOUND", error: "no such ask" }),
     ])
   ).toBe(false);
+  expect(
+    await verdictAfter([
+      new ApiError(408, { error: "request timeout" }),
+      new ApiError(404, { code: "ASK_NOT_FOUND", error: "no such ask" }),
+    ])
+  ).toBe(false);
+  // A 429 turns the request away before it runs, so the refusal after it is still a verdict.
+  expect(
+    await verdictAfter([
+      new ApiError(429, { code: "RATE_LIMITED", error: "slow down" }),
+      new ApiError(404, { code: "ASK_NOT_FOUND", error: "no such ask" }),
+    ])
+  ).toBe(true);
   expect(await verdictAfter([lost(), lapsed(), lapsed()])).toBe(false);
 });
 
