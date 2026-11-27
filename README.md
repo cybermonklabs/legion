@@ -162,6 +162,17 @@ gofmt -l packages/daemon packages/envoy
 bun run dispatch:local                                       # Dispatch, seeded and signed in
 ```
 
+In a Legion issue pod, the issue's roles share one memory limit, and a whole run can fill it for
+every role. So there `go -C packages/daemon test ./...`, `go -C packages/envoy test ./...`, the
+whole-package `(cd packages/<package> && bun run typecheck && bun run test)` and
+`.github/scripts/check-biome-tree.sh` are CI's work on the pull request, not the pod's. One named
+test or file stays in the pod: `go -C packages/daemon test ./internal/api -run '^TestName$'`,
+`(cd packages/<package> && bun test <file> -t '<test name>')` and `bun test scripts/<file>`.
+`skills/legion-worker/references/tools.md` sets this rule, where it says what runs in the pod and
+what runs on the pull request. It lets a role run `go -C packages/daemon vet -tags e2e ./...` in
+the pod, and CI's `typecheck` job runs it on the pull request. Where the project's deployment
+instructions send a compile out of the pod, those instructions win, and the vet is then CI's work.
+
 The Bun test scripts that run a package's files side by side name their worker count:
 `--parallel=4` in `packages/pi-legion`, and `--parallel=8` in `packages/dispatch`'s `test:web` and
 `test:harness`. A bare `--parallel` starts one worker per CPU. On a 180-CPU machine whose user may
