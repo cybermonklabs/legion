@@ -248,18 +248,25 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       for (const part of parts) {
         await nextTask();
         if (destroyed) return;
+        const start = performance.now();
         try {
           applyUpdate(doc, part, provider);
         } catch (error) {
           // As the provider's own apply of a SyncStep2 (y-protocols' `readSyncStep2`) reports it.
           console.error("Caught error while handling a Yjs update", error);
         }
+        performance.measure("block-editor-task", { start, end: performance.now() });
       }
+      // Reattaching the listeners and handing the held frames back to the provider is separate
+      // from applying the last part.
+      await nextTask();
       if (destroyed) return;
+      const start = performance.now();
       doc.on("update", provider.boundDocumentUpdateHandler);
       sync?.attachUpdates();
       firstSync = "applied";
       for (const frame of held.splice(0)) deliver(frame.socket, frame.data);
+      performance.measure("block-editor-task", { start, end: performance.now() });
     };
     const watchSocket = (
       socket: WebSocket,

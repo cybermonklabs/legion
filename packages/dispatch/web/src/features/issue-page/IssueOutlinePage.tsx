@@ -30,6 +30,7 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { IssueBlockRoom } from "./block-room";
 import { IssueContentsPane, PAGE_INSET } from "./contents-frame";
 import { useDrawerPage } from "./drawer-page";
 import { presetOf } from "./issue-address";
@@ -138,6 +139,7 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   return (
     <ProvidersSlot {...props}>
       <IssueTreeOwnerProvider issue={issue.data}>
+        <IssueBlockRoom issue={issue.data} />
         <HeaderSlot {...props} />
         <ViewRowSlot {...props} />
         <div className="flex min-w-0 items-start">

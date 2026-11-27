@@ -185,6 +185,7 @@ export function useDrawnInSlices<Row>({
       acts.current?.abort();
       ledger.cancel?.();
       ledger.cancel = undefined;
+      noteHeld(ledger, false);
     };
   }, [ledger]);
 
@@ -192,6 +193,7 @@ export function useDrawnInSlices<Row>({
   // stood, the screens still to fill are filled, and a slice is asked for the rows left.
   useLayoutEffect(() => {
     const { focused: holding, measure: topOf } = ledger;
+    noteHeld(ledger, mounted.current);
     keepReference(ledger, topOf, acts.current?.signal.aborted === true);
     ledger.drew.clear();
     ledger.drawnBefore = new Set(ledger.keys.filter((key) => !ledger.held.has(key)));
@@ -226,6 +228,34 @@ export function useDrawnInSlices<Row>({
 
 /** No key: one empty list for every render. */
 const NO_KEYS: readonly string[] = [];
+
+/** The ledgers of the mounted views that still hold a row back, and who to tell as that set
+ *  empties or fills: the page's end of the load waits for every row of the drawn pages to be in
+ *  the document (`load-end.ts`). */
+const viewsHolding = new Set<Ledger>();
+const viewsHoldingListeners = new Set<() => void>();
+
+/** Whether every row of every mounted view is in the document: no view's slices are left. */
+export function everyRowDrawn(): boolean {
+  return viewsHolding.size === 0;
+}
+
+/** Calls `listener` each time `everyRowDrawn` may have changed; answers how to stop. */
+export function onRowsDrawnChange(listener: () => void): () => void {
+  viewsHoldingListeners.add(listener);
+  return () => viewsHoldingListeners.delete(listener);
+}
+
+/** Takes `ledger` into the views that hold a row back, or out of them, as its rows stand after a
+ *  commit (`mounted`) or as its view leaves the page, and tells the listeners where that changed
+ *  the set. */
+function noteHeld(ledger: Ledger, mounted: boolean): void {
+  const holds = mounted && ledger.held.size > 0;
+  if (holds === viewsHolding.has(ledger)) return;
+  if (holds) viewsHolding.add(ledger);
+  else viewsHolding.delete(ledger);
+  for (const listener of viewsHoldingListeners) listener();
+}
 
 /**
  * Takes the rows' keys, in order, into `ledger`. Rows that share no key with the rows before are a
