@@ -16,6 +16,7 @@ import (
 // can lose an ack the connection had not yet sent, so the server delivers its message again, and
 // it is said at WARN; a drain with time left says nothing.
 func TestTheSessionConsumerDrainSaysWhenTheShutdownLeftItNoTime(t *testing.T) {
+	t.Parallel()
 	const undrained = "session consumer connection closed without a drain"
 	for _, test := range []struct {
 		name string

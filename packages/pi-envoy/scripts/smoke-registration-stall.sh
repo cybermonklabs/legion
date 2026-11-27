@@ -49,10 +49,8 @@ readonly script_dir
 repo_root="$(cd -- "${script_dir}/../../.." && pwd)"
 readonly repo_root
 
-# The loopback stack --local-stack brings up, shared with scripts/smoke-role-takeover.sh: the
-# ports, the two builds, what each service is run as and when it is up. `pick_port` reports an
-# exhausted range the way everything else here refuses.
-local_stack_fail=refuse
+# The loopback stack --local-stack brings up, shared with scripts/smoke-role-takeover.sh: the two
+# builds, what each service is run as, when it is up and the ports it reports it bound.
 # shellcheck source=packages/pi-envoy/scripts/local-stack.sh
 source "${script_dir}/local-stack.sh"
 
@@ -244,25 +242,28 @@ fi
 # stops both.
 nats_port=""
 if ((local_stack == 1)); then
-  port_range
   mkdir -p "${scratch}/bin"
   note "building natsd and the listener from ${repo_root}/packages/envoy"
   build_natsd "${repo_root}/packages/envoy" "${scratch}/bin/natsd" &&
     build_listener "${repo_root}/packages/envoy" "${scratch}/bin/listener" ||
     refuse "go build of natsd or the listener failed (the reason is above)"
-  pick_port nats_port
-  pick_port listener_port
-  set_natsd_argv "${scratch}/bin/natsd" "$nats_port" "" "${scratch}/nats-store"
+  # Each binds a port the kernel chooses and reports it, so no port of theirs is one this script
+  # picked and another process could have taken first.
+  set_natsd_argv "${scratch}/bin/natsd" "${scratch}/nats-store"
   env -i PATH="$PATH" HOME="${scratch}/nats-home" "${natsd_argv[@]}" \
     >"${scratch}/natsd.log" 2>&1 &
   nats_pid=$!
   poll_until 30 0.2 natsd_serving "${scratch}/natsd.log" ||
     refuse "natsd did not start: $(tail -n 5 "${scratch}/natsd.log")"
-  envoy_url="http://127.0.0.1:${listener_port}"
-  set_listener_env "$listener_port" "nats://127.0.0.1:${nats_port}" "smoke-registration-stall-$$"
+  natsd_port "${scratch}/natsd.log" client nats_port ||
+    refuse "natsd is serving but reported no client port: $(tail -n 5 "${scratch}/natsd.log")"
+  set_listener_env "nats://127.0.0.1:${nats_port}" "smoke-registration-stall-$$"
   env -i PATH="$PATH" HOME="${scratch}/listener-home" "${listener_env[@]}" \
     "${scratch}/bin/listener" >"${scratch}/listener.log" 2>&1 &
   listener_pid=$!
+  poll_until 60 0.2 listener_addr "${scratch}/listener.log" ||
+    refuse "the listener reported no address it serves on: $(tail -n 5 "${scratch}/listener.log")"
+  envoy_url="http://$(listener_addr "${scratch}/listener.log")"
   poll_until 60 0.2 listener_healthy "$envoy_url" ||
     refuse "the listener did not become healthy at ${envoy_url}: $(tail -n 5 "${scratch}/listener.log")"
   note "local stack: natsd (pid ${nats_pid}) on nats://127.0.0.1:${nats_port}, listener (pid ${listener_pid}) at ${envoy_url}"

@@ -136,8 +136,8 @@ func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
 				v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token + ".absent"
 			},
 			code: 3,
-			says: func(v *issueVolume) string {
-				return "LEGION_PROVISION_TOKEN_FILE names " + v.token + ".absent, which could not be read"
+			says: func(*issueVolume) string {
+				return "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: it does not exist"
 			},
 		},
 		{
@@ -447,8 +447,8 @@ func TestWorkspaceInitFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
 }
 
 // Neither a retried attempt's log line nor the final failure carries the provisioning token, even
-// where git echoes it: in a URL the userinfo that carries it is removed whole (the URL rule,
-// redact.Writer), and anywhere else the token says *** in its place.
+// where git echoes it: in a URL the authority that carries it is written as the mark of a URL with
+// credentials (the URL rule, redact.Writer), and anywhere else the token says *** in its place.
 func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
@@ -466,10 +466,10 @@ func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "ghs_test") {
 		t.Fatalf("the fetch logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
 	}
-	if want := "workspace-init fetch: clone attempt 1 failed; retrying in 5s: fatal: unable to access 'https://github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
+	if want := "workspace-init fetch: clone attempt 1 failed; retrying in 5s: fatal: unable to access 'https://[a URL with credentials]/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"; stdout != want {
 		t.Fatalf("stdout %q, want %q", stdout, want)
 	}
-	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://github.com/acme/widgets/'"} {
+	for _, says := range []string{"remote: Invalid username or token ***.", "fatal: Authentication failed for 'https://[a URL with credentials]/acme/widgets/'"} {
 		if !strings.Contains(stderr, says) {
 			t.Fatalf("stderr %q, want it to name %q", stderr, says)
 		}
@@ -826,7 +826,7 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 		{name: "an unreadable provisioning token", fetch: func(t *testing.T, v *issueVolume, _ *instantClock) []string {
 			v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token + ".absent"
 			return v.fetchArgs()
-		}, code: 3, says: "provision-token.absent, which could not be read"},
+		}, code: 3, says: "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: it does not exist"},
 		{name: "no git on PATH", fetch: func(t *testing.T, v *issueVolume, _ *instantClock) []string {
 			v.env["LEGION_PROVISION_TOKEN_FILE"] = v.token
 			v.env["PATH"] = t.TempDir()

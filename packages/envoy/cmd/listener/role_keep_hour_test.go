@@ -794,8 +794,9 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 	t.Run("e a copy that named no session and a copy the outbox wrote are counted and logged once with no dead letter", func(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-no-letter"
-		answer := rig.kept(rig.listeners[0], roleMessage(role, "", "a publish that names no session"))
-		unnamed := rig.copyOf(role, answer.EventID)
+		// A copy that names no session, as a listener before the publish route refused to keep one
+		// stored it: the route answers such a publish 404 now (roleSend.noHolder).
+		unnamed := rig.keep(role, listenerCopy(role, "", "a publish that names no session"))
 		outbox := rig.keep(role, outboxCopy(role, "ses_hour_outbox_sender", "a Dispatch event routed to the role"))
 		rig.startSweeps()
 		rig.letSweepsRun()
@@ -1515,6 +1516,7 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 // built as the outbox builds one (internal/dispatch/outbox envelope), from the event types
 // Dispatch writes: the whole event as its payload, and the head of what it carries in its summary.
 func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
+	t.Parallel()
 	const (
 		role         = "letter-role"
 		sender       = "ses_letter_sender"

@@ -325,8 +325,8 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // this listener connects with forbids the subject until an operator changes it. 403 says exactly
 // that - the request was understood and the server refuses to authorise it - where 400 would
 // blame the caller's bytes, which are fine, and where any 5xx would be retried:
-// packages/envoy-client/src/transport.ts retries every status at or past 500 and no status below
-// it. No Retry-After rides it for the same reason.
+// packages/envoy-client/src/transport.ts sends a request again on every 5xx and on a 408, and on
+// no other status. No Retry-After rides it for the same reason.
 //
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
@@ -1145,7 +1145,7 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 			// route has always answered, and it leaves no registration standing either, so its
 			// consumer goes too.
 			if err := d.sessions.Delete(ctx, sessionID); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
-				writeStoreError(ctx, w, err, http.StatusInternalServerError)
+				writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 				return
 			}
 			recordStop()
@@ -1155,7 +1155,7 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 		}
 		outcome, err := d.sessions.DeleteIf(ctx, sessionID, conditions)
 		if err != nil {
-			writeStoreError(ctx, w, err, http.StatusInternalServerError)
+			writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 			return
 		}
 		switch outcome {
@@ -1240,7 +1240,9 @@ const publishDedupePrefix = "publish."
 // passes keep: false, which keeps nothing and answers 404 unclaimed or holder_lapsed. It is read by
 // this route's give-up alone (roleSend.noHolder) and rides no envelope, which travels on to the
 // holder and back in the answer. A role token no claim can name keeps nothing either, which the
-// keep itself refuses, for this route and the role lane alike (keepForNextHolder).
+// keep itself refuses, for this route and the role lane alike (keepForNextHolder), and neither does
+// a send that names no source session, whose copy's expiry no dead letter could report
+// (roleSend.keepTellsNobody): both are answered that 404.
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()
@@ -1517,7 +1519,7 @@ func interestReadAnswered(err error) bool {
 // not the bus-unavailable 503: it is a 500 with no Retry-After, naming the session and the record,
 // as writeRoleClaimUnreadable answers an unreadable role claim.
 func writeInterestRecordUnreadable(w http.ResponseWriter, sessionID string, err error) {
-	writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf(
+	writeJSONError(w, listenerwire.FaultStatus, fmt.Sprintf(
 		"envoy: the interest record of session %s is unreadable: %s", sessionID, err,
 	))
 }
@@ -1622,7 +1624,7 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 			return
 		}
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			writeJSONError(w, listenerwire.FaultStatus, err.Error())
 			return
 		}
 		held, err := registry.RolesBySession()
@@ -1963,7 +1965,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 				return
 			}
 			if err != nil {
-				writeJSONError(w, http.StatusInternalServerError, err.Error())
+				writeJSONError(w, listenerwire.FaultStatus, err.Error())
 				return
 			}
 			rows := make([]listenerwire.InterestRow, 0, len(items))
@@ -2019,7 +2021,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 			// A deregistration answers no topic list, and this route's 204 carries no body
 			// to write one in, so the store's first answer is dropped here.
 			if _, err := registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{Force: true}); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
-				writeStoreError(ctx, w, err, http.StatusInternalServerError)
+				writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 				return
 			}
 			if removed != nil {
@@ -2581,7 +2583,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			if err != nil {
-				writeStoreError(ctx, w, err, http.StatusInternalServerError)
+				writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 				return
 			}
 			landed = true
@@ -3698,7 +3700,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// /v1/interests/<session_id> is the one that does.
 		removed, err := d.registry.Remove(ctx, body.SessionID, body.Topics, store.RoleReleaseAuthority{ClientInstanceID: body.ClientInstanceID})
 		if err != nil {
-			writeStoreError(ctx, w, err, http.StatusInternalServerError)
+			writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 			return
 		}
 		// The session now follows what is left of its topics: its known-session record says so,
