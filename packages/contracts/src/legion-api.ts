@@ -902,10 +902,10 @@ const legionIssue = z.object({
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
   /** The role of the deployment that works the issue's running step, where the issue stands at
-   * `step` or its hold took it out of `step` (contract 258): no phase names such a role, so the
-   * phase alone does not say who works the issue. Absent at every other phase, whose role the
-   * phase names, and from every issue of the body the route serves a caller before 258, which is
-   * served an issue at `step` as `implementing`. */
+   * `step` or its hold took it out of `step` (entry 20261125180539 (deployment-roles)): no phase
+   * names such a role, so the phase alone does not say who works the issue. Absent at every other
+   * phase, whose role the phase names, and from every issue of the body the route serves a caller
+   * below that entry, which is served an issue at `step` as `implementing`. */
   stepRole: stepRole.optional(),
   status: nonEmptyString.optional(),
   /** The key of the root of the issue's tree, equal to `key` on a root (contract 51). A child

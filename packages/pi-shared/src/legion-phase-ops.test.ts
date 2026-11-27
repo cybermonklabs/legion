@@ -843,7 +843,7 @@ test("ready_for_update signals without a head when the daemon does not answer th
   ]);
 });
 
-// Contract 221: a move back may name the step it returns to, `return_to`, which goes on the wire
+// Entry 20261125180539 (deployment-roles): a move back may name the step it returns to, `return_to`, which goes on the wire
 // as the daemon's `returnTo`, as a failed completion's does; a move that names none sends none.
 test("request_backward_move sends return_to as returnTo", async () => {
   const { ops, routes, posted } = runtime(checker, stateAtPhase("step"));
