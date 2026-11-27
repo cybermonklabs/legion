@@ -5,10 +5,10 @@ body: |-
   of 15 s and a `client_connection_check_interval` of 1 s. The keyword statement had no bound
   before. A statement that reaches the bound answers `503 SEARCH_TIMEOUT`, with a message that
   names the bound, in place of `500 INTERNAL`. Neither the web app nor the `dispatch` command
-  retries such a search automatically; the web app sends the search again only when something
-  asks for its answer again, for example a reader's Retry, its tab regaining focus, or a refresh
-  from the live feed. A search whose first statement found nothing
-  runs its broadened statement under the same bound again.
+  sends such a search again on its own: the web app gives it no automatic retry, and its tab
+  regaining focus, the network coming back and a refresh from the live feed do not send it
+  either; only a reader's Retry, or a changed query, sends a search again. A search whose first
+  statement found nothing runs its broadened statement under the same bound again.
 time: 2026-11-24T07:00:10Z
 custom:
     Issue: pr5293

@@ -5,7 +5,12 @@ import {
   SEARCH_OPERATOR_PHRASE,
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  focusManager,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
@@ -17,7 +22,9 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
+import { eventRefreshTargets } from "../../api/event-refresh";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
+import { refreshQueries } from "../../api/query-refresh";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -1367,11 +1374,19 @@ test("shows a retryable failure when the search request fails", async () => {
 });
 
 /** A `QueryClient` built as the app's is (`main.tsx`): a failed read is asked again twice unless
- *  `isRetryableQueryError` exempts it, each time after `queryRetryDelay`'s wait. The rows below
+ *  `isRetryableQueryError` exempts it, each time after `queryRetryDelay`'s wait, and a read is
+ *  stale 30 s after it answered and fetched again on the tab's focus once stale. The rows below
  *  count what the bar sends under it. */
 function appQueryClient(): QueryClient {
   return new DispatchQueryClient({
-    defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+    defaultOptions: {
+      queries: {
+        refetchOnWindowFocus: true,
+        retry: queryRetry,
+        retryDelay: queryRetryDelay,
+        staleTime: 30_000,
+      },
+    },
   });
 }
 
@@ -1412,13 +1427,53 @@ function searchTimedOut(): Promise<SearchResponse> {
   );
 }
 
+/** Dispatch's answer to a search its database was too busy to take, asking for a second's
+ *  wait. */
+function searchRefusedBusy(): Promise<SearchResponse> {
+  return Promise.reject(
+    new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" }, 1_000)
+  );
+}
+
+/** The reader comes back to the tab: hidden, then shown again, as TanStack hears the page's
+ *  `visibilitychange` (`focusManager`), and the clock moves `ms` on. A row that calls this gives
+ *  the focus back to the browser with `focusManager.setFocused(undefined)`. */
+async function refocusAndWait(ms: number): Promise<void> {
+  act(() => {
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+  });
+  await tick(ms);
+}
+
+/** The network drops and comes back, as TanStack hears the window's `offline` and `online`
+ *  (`onlineManager`), and the clock moves `ms` on. */
+async function reconnectAndWait(ms: number): Promise<void> {
+  act(() => {
+    onlineManager.setOnline(false);
+    onlineManager.setOnline(true);
+  });
+  await tick(ms);
+}
+
+/** The refresh the live feed makes for an edit of a comment, which reads every search answer the
+ *  cache holds again (`eventRefreshTargets`, through the scheduler every refresh of the feed goes
+ *  through, `refreshQueries`), and the clock moves `ms` on. */
+async function refreshForAnEditAndWait(queryClient: QueryClient, ms: number): Promise<void> {
+  const edit = correction("comment", "f6a7b8c9-d0e1-4f2a-8b3c-4d5e6f7a8b9c", true);
+  act(() => refreshQueries(queryClient, eventRefreshTargets(edit)));
+  await tick(ms);
+}
+
 // Automatic retry behavior for a search across the palette's states, on the app's own retry
-// policy. A search that ran past the server's bound (`503 SEARCH_TIMEOUT`) gets no automatic
-// retry: retrying it automatically costs the database the bound again and finds nothing more,
-// while a fresh search on window focus or an explicit Retry still asks again. Any other retryable
-// failure is retried automatically twice, as every read is. Each row moves the clock 6 s past the
-// keystroke, past the pause and every wait the policy takes (500 ms, or a 1 s Retry-After and up
-// to as much again), so an automatic retry the policy made would have been sent.
+// policy. A search that ran past the server's bound (`503 SEARCH_TIMEOUT`) is never sent again on
+// its own: no automatic retry, no focus of the tab, no return of the network and no refresh of the
+// live feed sends it, since each would cost the database the bound again and find nothing more,
+// while an explicit Retry still asks again. Any other retryable failure is retried automatically
+// twice, as every read is, and the tab's focus, the network's return and a refresh of the live
+// feed send it again, retries and all. Each row moves the clock 6 s past the keystroke, past the
+// pause and every wait the policy takes (500 ms, or a 1 s Retry-After and up to as much again),
+// so an automatic retry the policy made would have been sent.
 //
 // The bar shows the pause's answer only once it has one, and the keystroke's until then
 // (`useTieredSearch`), so a pause's search that fails leaves the keystroke's list up: the rows
@@ -1456,6 +1511,67 @@ test("a pause's search answered 503 SEARCH_TIMEOUT is sent once, and the bar sho
     expect(screen.getByRole("alert")).toHaveTextContent("Search failed.");
     expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
   } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a search answered 503 SEARCH_TIMEOUT is sent again on neither the tab's focus, the network's return nor a refresh of the live feed, and once on a click on Retry", async () => {
+  const user = userOnFakeClock();
+  const tiers = scriptedTiers(searchTimedOut, searchTimedOut);
+  const search = spyOn(api, "search").mockImplementation(tiers.answer);
+  const view = renderPalette({ queryClient: appQueryClient() });
+
+  try {
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(tiers.sent).toEqual({ fused: 1, words: 1 });
+
+    await refocusAndWait(6_000);
+    expect(tiers.sent).toEqual({ fused: 1, words: 1 });
+
+    await reconnectAndWait(6_000);
+    expect(tiers.sent).toEqual({ fused: 1, words: 1 });
+
+    await refreshForAnEditAndWait(view.queryClient, 6_000);
+    expect(tiers.sent).toEqual({ fused: 1, words: 1 });
+    expect(screen.getByRole("alert")).toHaveTextContent("Search failed.");
+
+    // The reader's own Retry still asks, once, for the search the list shows: the keystroke's.
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(6_000);
+    expect(tiers.sent).toEqual({ fused: 1, words: 2 });
+  } finally {
+    focusManager.setFocused(undefined);
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Each fetch the focus, the network's return and the refresh start is refused as the first was,
+// so each sends its two retries too: three requests for each of the two searches each time.
+test("a search answered 503 DATABASE_BUSY is sent again, retries and all, on the tab's focus, the network's return and a refresh of the live feed", async () => {
+  const user = userOnFakeClock();
+  const tiers = scriptedTiers(searchRefusedBusy, searchRefusedBusy);
+  const search = spyOn(api, "search").mockImplementation(tiers.answer);
+  const view = renderPalette({ queryClient: appQueryClient() });
+
+  try {
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(tiers.sent).toEqual({ fused: 3, words: 3 });
+
+    await refocusAndWait(6_000);
+    expect(tiers.sent).toEqual({ fused: 6, words: 6 });
+
+    await reconnectAndWait(6_000);
+    expect(tiers.sent).toEqual({ fused: 9, words: 9 });
+
+    await refreshForAnEditAndWait(view.queryClient, 6_000);
+    expect(tiers.sent).toEqual({ fused: 12, words: 12 });
+    expect(screen.getByRole("alert")).toHaveTextContent("Search failed.");
+  } finally {
+    focusManager.setFocused(undefined);
     search.mockRestore();
     view.unmount();
     view.queryClient.clear();

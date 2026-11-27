@@ -15,7 +15,7 @@ import {
 } from "@tanstack/react-query";
 
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
-import { ApiError, isEventHeadUnavailable, isRetryableQueryError } from "./client";
+import { ApiError, isEventHeadUnavailable, isRetryableQueryError, isSearchTimeout } from "./client";
 import type { DispatchEvent } from "./types";
 
 /** The wait before a failed read's retry when the server asked for none. */
@@ -67,6 +67,28 @@ export function queryRetryDelay(
 }
 
 /**
+ * `option`, a query's `staleTime` or `refetchInterval`, as `defaultQueryOptions` hands it to every
+ * query, but `held` for a query whose last answer was a search that ran past the server's bound
+ * (`503 SEARCH_TIMEOUT`, `isSearchTimeout`). Such a search is never sent again on its own: it gets
+ * no retry (`queryRetry`), and held static (`staleTime: "static"`), it is fetched again on no
+ * focus and no reconnect, `refetchQueries` passes it by and so does every invalidation, and so
+ * does every refresh of the live feed (`refreshQueries`); held at no interval, it is not polled.
+ * The reader's own fetch of it, the bar's Retry, still asks, and new words or filters are another
+ * query. The last answer is TanStack's `fetchFailureReason`: a fetch's start and its success clear
+ * it, and a write of the answer the query keeps (a post's correction, which the live feed writes
+ * into every search answer the cache holds) leaves it.
+ */
+function heldAfterSearchTimeout<
+  Q extends { readonly state: { readonly fetchFailureReason: unknown } },
+  V,
+>(option: V | ((query: Q) => V), held: V): (query: Q) => V {
+  return (query) => {
+    if (isSearchTimeout(query.state.fetchFailureReason)) return held;
+    return typeof option === "function" ? (option as (query: Q) => V)(query) : option;
+  };
+}
+
+/**
  * Dispatch's query client: TanStack's, except that no read ever has two requests in flight.
  * `refetchQueries` - and through it `invalidateQueries` and `resetQueries`, which TanStack routes
  * through this method - never cancels a running request. A query that is already fetching is
@@ -74,8 +96,9 @@ export function queryRetryDelay(
  * ends on the answer composed after the write, and the first request is not left running on the
  * server with its answer thrown away. Calls for one query while it waits share that one follow-up
  * fetch. Every mutation's own `invalidateQueries` call keeps its shape. It also tells whoever
- * listens each time a query calls its function (`onAttempt`), and holds back a read that a write's
- * optimistic value stands in for until Dispatch has taken that write (`holdBackReads`).
+ * listens each time a query calls its function (`onAttempt`), holds back a read that a write's
+ * optimistic value stands in for until Dispatch has taken that write (`holdBackReads`), and never
+ * sends again on its own a search that ran past the server's bound (`heldAfterSearchTimeout`).
  */
 export class DispatchQueryClient extends QueryClient {
   readonly #attempts = new Set<(queryHash: string) => void>();
@@ -97,7 +120,8 @@ export class DispatchQueryClient extends QueryClient {
    *  (`holdBackReads`); the wrapper hands the function its context and returns what the function
    *  returns, and a listener that throws fails no read. `skipToken`, an absent function and a
    *  wrapped one are left as they are. Each observer's render passes a function of its own, so a
-   *  wrapper is made for each call rather than kept. */
+   *  wrapper is made for each call rather than kept. The query's `staleTime` and interval are
+   *  held for a search that ran past its bound (`heldAfterSearchTimeout`). */
   override defaultQueryOptions<
     TQueryFnData = unknown,
     TError = DefaultError,
@@ -111,6 +135,13 @@ export class DispatchQueryClient extends QueryClient {
       | DefaultedQueryObserverOptions<TQueryFnData, TError, TData, TQueryData, TQueryKey>
   ): DefaultedQueryObserverOptions<TQueryFnData, TError, TData, TQueryData, TQueryKey> {
     const defaulted = super.defaultQueryOptions(options);
+    // An object already defaulted is this method's own, held when it was made.
+    if (defaulted !== options) {
+      defaulted.staleTime = heldAfterSearchTimeout(defaulted.staleTime ?? 0, "static");
+      if (defaulted.refetchInterval) {
+        defaulted.refetchInterval = heldAfterSearchTimeout(defaulted.refetchInterval, false);
+      }
+    }
     const { queryFn, queryHash } = defaulted;
     if (typeof queryFn !== "function" || this.#told.has(queryFn)) return defaulted;
     const telling: QueryFunction<TQueryFnData, TQueryKey> = (context) => {

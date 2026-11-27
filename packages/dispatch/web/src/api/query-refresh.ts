@@ -20,7 +20,10 @@ export function answeredNotFound(query: Pick<Query, "state">): boolean {
  * (`ownQuery`). It never cancels a request, and it fetches one query at most once a second:
  *
  * - an inactive query is marked stale only, and fetches when something mounts it; a query an
- *   owner holds, which no enabled observer renders, fetches only when its owner reads it;
+ *   owner holds, which no enabled observer renders, fetches only when its owner reads it; a
+ *   static query is marked stale only, and is never fetched here, which is how a search that
+ *   ran past the server's bound is never sent again on its own (`heldAfterSearchTimeout` in
+ *   `api/query-client.ts`);
  * - a query already fetching is fetched again once that fetch settles, so the answer composed
  *   after the event is the one shown, and the response already on its way is never discarded;
  * - a query whose last fetch began less than `MIN_REFETCH_INTERVAL_MS` ago is fetched at that

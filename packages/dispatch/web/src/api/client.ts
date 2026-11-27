@@ -470,9 +470,10 @@ export function isReferencesTimeout(error: unknown): boolean {
 }
 
 // A search whose keyword or meaning statement ran past the server's 15 s bound (`503
-// SEARCH_TIMEOUT`): a search that reaches the bound costs the database the whole of it, so an
-// automatic retry only multiplies that cost and finds nothing more. The bar offers its own Retry
-// instead.
+// SEARCH_TIMEOUT`): a search that reaches the bound costs the database the whole of it, so sending
+// it again on its own only multiplies that cost and finds nothing more. It gets no automatic retry
+// (`isRetryableQueryError`), and no focus, reconnect or refresh of the live feed sends it again
+// (`heldAfterSearchTimeout` in `api/query-client.ts`). The bar offers its own Retry instead.
 export function isSearchTimeout(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "SEARCH_TIMEOUT";
 }
