@@ -102,7 +102,7 @@ func TestANativesHomeOnAnotherFilesystemSymlinksTheCachedFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cached), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cached, []byte("native"), 0o500); err != nil {
+	if err := testexec.WriteFile(cached, []byte("native"), 0o500); err != nil {
 		t.Fatal(err)
 	}
 	failing := func(errno syscall.Errno) func(string, string) error {
