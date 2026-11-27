@@ -51,7 +51,7 @@ func TestAJudgeReadFollowsNoRedirect(t *testing.T) {
 	}
 	for _, c := range clients {
 		t.Run(c.name, func(t *testing.T) {
-			dispatch := NewDispatch(redirectstest.EchoBearer(t, location), ciphertoken.NewAccountToken(tokenFile(t, token)), c.client)
+			dispatch := NewDispatch(redirectstest.EchoBearer(t, location), ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, token)), c.client)
 			_, err := dispatch.Issue(t.Context(), testIssue)
 			text := sent()
 			redacttest.RequireNoPiece(t, "judge.redirect-followed/"+c.name, text, token)
@@ -75,7 +75,7 @@ func TestAJudgeReadFollowsNoRedirect(t *testing.T) {
 		})
 		for _, c := range clients {
 			t.Run(c.name+"-"+code, func(t *testing.T) {
-				dispatch := NewDispatch(moved(t, status), ciphertoken.NewAccountToken(tokenFile(t, token)), c.client)
+				dispatch := NewDispatch(moved(t, status), ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, token)), c.client)
 				_, err := dispatch.Issue(t.Context(), testIssue)
 				text := sent()
 				redacttest.RequireNoPiece(t, "judge.redirect-followed/"+c.name+"-"+code, text, token)

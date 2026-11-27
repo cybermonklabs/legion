@@ -128,9 +128,9 @@ func TestAStateReadGoesToTheRouteJoinedOntoTheDaemonURL(t *testing.T) {
 // TestTheStateHeadingNamesTheDaemonURLWithNoCredential: `legion state` names the daemon it read
 // in its heading on stdout, which, unlike its stderr, no writer passes through the URL rule
 // (newRoot). A daemon_url, which the daemon tells every pane as LEGION_DAEMON_URL, can carry user
-// information, made-up credentials here: the heading names the daemon by its scheme, host, port
-// and path alone (heading). The twin shows the daemon URL holds the credentials. Captures
-// legion.daemon-url/state-heading.
+// information, made-up credentials here: the heading names the daemon through redact.URL, by its
+// scheme, its authority as the mark of a URL with credentials, and its path (heading). The twin
+// shows the daemon URL holds the credentials. Captures legion.daemon-url/state-heading.
 func TestTheStateHeadingNamesTheDaemonURLWithNoCredential(t *testing.T) {
 	const credentials = "not-a-secret-user:not-a-secret-password"
 	daemon, _ := urlRecordingDaemon(t, `{}`)
@@ -150,7 +150,7 @@ func TestTheStateHeadingNamesTheDaemonURLWithNoCredential(t *testing.T) {
 		}
 		heading, _, _ := strings.Cut(out.String(), "\n")
 		oauth2calltest.RequireNoPiece(t, "legion.daemon-url/state-heading", heading)
-		if want := " on " + daemon.URL + "/daemon — "; !strings.Contains(heading, want) {
+		if want := " on http://[a URL with credentials]/daemon — "; !strings.Contains(heading, want) {
 			t.Errorf("the heading is %q, want it to name the daemon as %q", heading, want)
 		}
 	})
@@ -208,7 +208,7 @@ func TestADaemonURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 		{"operator-unparsed", unparsed, []string{"legion", "claims", "list", "--operator-token-file", tokenFile}, "legion claims list: " + refused},
 		{"state-unparsed", unparsed, []string{"legion", "state"}, "legion state: " + refused},
 		{"operator-reparsed", reparsed, []string{"legion", "claims", "list", "--operator-token-file", tokenFile}, "legion claims list: parse "},
-		{"state-reparsed", reparsed, []string{"legion", "state"}, "legion state: read http://[::%25%FD]/daemon/legion/v1/state: parse "},
+		{"state-reparsed", reparsed, []string{"legion", "state"}, "legion state: read http://[a URL with credentials]/daemon/legion/v1/state: parse "},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Chdir(t.TempDir())

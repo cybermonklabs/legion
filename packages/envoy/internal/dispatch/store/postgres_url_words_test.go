@@ -15,9 +15,13 @@ import (
 
 // TestAPostgresURLPgxCannotReadPrintsNoneOfIt: each read of a database URL this package makes -
 // Census, CheckVersions, Connect, and Open's two, declaresPoolSize's first and then the pool's own
-// - refuses one pgx cannot read in fixed words, "parse Postgres URL: pgx cannot read its
-// connection settings", which still unwrap to pgx's error. pgx's ParseConfigError quotes the URL
-// with its password masked but its user name and every other query pair kept, and the error it
+// - refuses one pgx cannot read in fixed words that quote none of it. Connect's are "parse Postgres
+// URL: pgx cannot read its connection settings"; every other read goes through pgdsn, which
+// refuses a query key no keyword has before pgx reads the URL (Refusal: "DATABASE_URL cannot be
+// read: a key of its query holds …") and names one pgx cannot parse by the setting
+// (ConnectError: "connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN; …"). Each
+// of those still unwraps to pgx's error where pgx read the URL. pgx's ParseConfigError quotes the
+// URL with its password masked but its user name and every other query pair kept, and the error it
 // wraps quotes a query key that has no "=" alone. Each site's two cases hold an sslmode or a pool
 // key pgx refuses beside one marker: the probe's token as a query key (query-key), and the probe's
 // user and password as the user information with its token as an access token's value (user). Open's
@@ -27,13 +31,15 @@ import (
 func TestAPostgresURLPgxCannotReadPrintsNoneOfIt(t *testing.T) {
 	t.Parallel()
 	const (
-		want     = "parse Postgres URL: pgx cannot read its connection settings"
-		userinfo = redacttest.User + ":" + redacttest.Password + "@"
-		token    = "access" + "_token=" + redacttest.Token
-		queryKey = "postgres://127.0.0.1:1/dispatch?sslmode=disable&" + redacttest.Token
-		user     = "postgres://" + userinfo + "127.0.0.1:1/dispatch?" + token + "&sslmode=not-a-mode"
-		poolKey  = "postgres://127.0.0.1:1/dispatch?sslmode=disable&" + redacttest.Token + "=1&pool_min_conns=not-a-number"
-		poolUser = "postgres://" + userinfo + "127.0.0.1:1/dispatch?" + token + "&sslmode=disable&pool_min_conns=not-a-number"
+		connectWords = "parse Postgres URL: pgx cannot read its connection settings"
+		keyRefused   = DSNSetting + " cannot be read: a key of its query holds a character no keyword or parameter name has (only ASCII letters, digits, \"_\", \".\" and, after the first, \"$\"), which Postgres sends the server as a parameter's name and the server can print whole; name each setting of the query by its keyword"
+		unparsed     = "connect to Postgres: " + DSNSetting + " cannot be parsed as a Postgres DSN; the driver's error is not printed, since it quotes the DSN"
+		userinfo     = redacttest.User + ":" + redacttest.Password + "@"
+		token        = "access" + "_token=" + redacttest.Token
+		queryKey     = "postgres://127.0.0.1:1/dispatch?sslmode=disable&" + redacttest.Token
+		user         = "postgres://" + userinfo + "127.0.0.1:1/dispatch?" + token + "&sslmode=not-a-mode"
+		poolKey      = "postgres://127.0.0.1:1/dispatch?sslmode=disable&" + redacttest.Token + "=1&pool_min_conns=not-a-number"
+		poolUser     = "postgres://" + userinfo + "127.0.0.1:1/dispatch?" + token + "&sslmode=disable&pool_min_conns=not-a-number"
 	)
 	ctx := context.Background()
 	pgxRead := func(raw string) error { _, err := pgx.ParseConfig(raw); return err }
@@ -61,17 +67,21 @@ func TestAPostgresURLPgxCannotReadPrintsNoneOfIt(t *testing.T) {
 		// declaresPoolSize makes first, which must take the URL so that Open reaches the pool's.
 		read, call func(string) error
 		pool       bool
+		// want is the refusal's whole text, and unwraps whether it still unwraps to pgx's error:
+		// pgdsn.Refusal refuses a query key before pgx reads the URL.
+		want    string
+		unwraps bool
 	}{
-		{"census-query-key", queryKey, []string{redacttest.Token}, pgxRead, census, false},
-		{"census-user", user, []string{redacttest.User, redacttest.Token}, pgxRead, census, false},
-		{"versions-query-key", queryKey, []string{redacttest.Token}, pgxRead, versions, false},
-		{"versions-user", user, []string{redacttest.User, redacttest.Token}, pgxRead, versions, false},
-		{"connect-query-key", queryKey, []string{redacttest.Token}, pgxRead, connect, false},
-		{"connect-user", user, []string{redacttest.User, redacttest.Token}, pgxRead, connect, false},
-		{"open-declares-query-key", queryKey, []string{redacttest.Token}, pgxRead, open, false},
-		{"open-declares-user", user, []string{redacttest.User, redacttest.Token}, pgxRead, open, false},
-		{"open-pool-query-key", poolKey, []string{redacttest.Token}, poolRead, open, true},
-		{"open-pool-user", poolUser, []string{redacttest.User, redacttest.Token}, poolRead, open, true},
+		{"census-query-key", queryKey, []string{redacttest.Token}, pgxRead, census, false, keyRefused, false},
+		{"census-user", user, []string{redacttest.User, redacttest.Token}, pgxRead, census, false, unparsed, true},
+		{"versions-query-key", queryKey, []string{redacttest.Token}, pgxRead, versions, false, keyRefused, false},
+		{"versions-user", user, []string{redacttest.User, redacttest.Token}, pgxRead, versions, false, unparsed, true},
+		{"connect-query-key", queryKey, []string{redacttest.Token}, pgxRead, connect, false, connectWords, true},
+		{"connect-user", user, []string{redacttest.User, redacttest.Token}, pgxRead, connect, false, connectWords, true},
+		{"open-declares-query-key", queryKey, []string{redacttest.Token}, pgxRead, open, false, keyRefused, false},
+		{"open-declares-user", user, []string{redacttest.User, redacttest.Token}, pgxRead, open, false, unparsed, true},
+		{"open-pool-query-key", poolKey, []string{redacttest.Token}, poolRead, open, true, keyRefused, false},
+		{"open-pool-user", poolUser, []string{redacttest.User, redacttest.Token}, poolRead, open, true, unparsed, true},
 	}
 	t.Run("twin", func(t *testing.T) {
 		for _, c := range cases {
@@ -101,11 +111,11 @@ func TestAPostgresURLPgxCannotReadPrintsNoneOfIt(t *testing.T) {
 			}
 			text := err.Error()
 			redacttest.RequireNoPiece(t, "store.postgres-url/"+c.name, text, redacttest.User, redacttest.Password, redacttest.Token)
-			if text != want {
-				t.Errorf("the refusal is %q; want %q", text, want)
+			if text != c.want {
+				t.Errorf("the refusal is %q; want %q", text, c.want)
 			}
 			var unread *pgconn.ParseConfigError
-			if !errors.As(err, &unread) {
+			if c.unwraps && !errors.As(err, &unread) {
 				t.Errorf("the refusal %q does not unwrap to pgx's *pgconn.ParseConfigError", text)
 			}
 		})

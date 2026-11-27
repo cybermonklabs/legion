@@ -106,8 +106,8 @@ the result as one comment), `OUTSIDE_LEGION_CHECKOUT` and `OUTSIDE_ALLOW_HTTP`.
 `OUTSIDE_FULL_COOKIE_FILE` holds a full member's browser session at Dispatch's private origin,
 `<name>=<value>` as the Cookie header carries it. The leg gives it to curl in a header file of mode
 0600 alone, with the origin's own `Origin` on every call, which Dispatch asks of a cookie's write.
-No broker token approves, so the positive controls of T3 and P7 read with it. The sweep's GitHub
-proxy reads use it where it is given, and else the full member's token
+No broker token a machine holds approves, so the positive controls of T3 and P7 read with it. The
+sweep's GitHub proxy reads use it where it is given, and else the full member's token
 (`OUTSIDE_SWEEP_FULL_TOKEN_FILE`): a build of Dispatch whose proxy reads a browser's person alone
 refuses that token (401 `NO_IDENTITY`, 403 `OAUTH_SCOPE_REQUIRED`), and the sweep row then reads
 UNKNOWN naming the refusal.
@@ -285,7 +285,10 @@ Every process the leg starts runs with `env -i`, a HOME of its own, and these se
 `AGENT_SECRETS_URL`, `AGENT_SECRETS_MACHINE_IDENTITY=device-login` and `AGENT_SECRETS_PROJECTS`,
 beside `OMP_SKIP_SETUP=1`, Oh My Pi's own switch that keeps its first-run setup wizard shut in a
 fresh HOME. The leg links the real `bun`, `omp` and `tmux` for them, because a version manager's
-shim finds its program through the caller's HOME.
+shim finds its program through the caller's HOME. A program it finds and cannot link reads P1
+UNKNOWN naming the program and the reason, and every row that starts a child under that PATH waits
+on P1. The tailnet leg reads every row from its pins on UNKNOWN the same way, and the Codex leg
+every one of its rows.
 
 | Row | It passes when |
 | --- | --- |
@@ -397,8 +400,9 @@ which says the two clocks disagree.
 A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads
 UNKNOWN when the peer did not start, the private listener did not list `<peer>-foreign`, or the
 edge admits that session's token, which puts it in the project. A PASS of P7 reads UNKNOWN when
-P7's control was not answered 201 and 200: no broker token approves, so the 403 the agent's token
-gets says something about that token only where a browser session is answered on the same routes.
+P7's control was not answered 201 and 200: no broker token a machine holds approves, so the 403
+the agent's token gets says something about that token only where a browser session is answered on
+the same routes.
 A FAIL of P5, P6 or P7 stands, because a missing refusal or a listed foreign session is evidence by
 itself, with one exception: where the edge admits `<peer>-foreign`'s token, P6's parts about that
 session (its listing and the send to it) are no evidence, since it is then in the project, and a

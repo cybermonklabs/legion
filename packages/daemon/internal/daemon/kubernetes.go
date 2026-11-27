@@ -172,13 +172,15 @@ func logProbeBudget(log *slog.Logger, cfg config.Config) {
 
 // logPlugins is the boot's one line on what this Kubernetes daemon will install for a
 // stale-plugin relaunch: an Info line naming the pair and where it came from, or, with none, the
-// Warn naming the gap: a stale claim is recorded and reported but never relaunched or refused.
+// Warn naming the gap: a stale claim is recorded and reported but never relaunched or refused. A
+// source in URL form is logged as the state shows it (api.PluginSourceOf), without the userinfo,
+// query or fragment a private or pre-signed tarball URL carries its credential in.
 func logPlugins(log *slog.Logger, plugins *runtime.PluginInstall, source string) {
 	if plugins == nil {
 		log.Warn("daemon: this daemon knows no plugin versions to relaunch a stale process onto; set runtime.kubernetes.plugins or run a release build")
 		return
 	}
-	log.Info("daemon: stale-plugin relaunches install", "piLegion", plugins.PiLegion, "piEnvoy", plugins.PiEnvoy, "source", source)
+	log.Info("daemon: stale-plugin relaunches install", "piLegion", api.PluginSourceOf(plugins.PiLegion), "piEnvoy", api.PluginSourceOf(plugins.PiEnvoy), "source", source)
 }
 
 // prepareSandbox is the runtime over readSandbox's client and Options, and the part of boot its

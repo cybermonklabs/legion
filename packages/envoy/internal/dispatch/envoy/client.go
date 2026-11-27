@@ -351,9 +351,7 @@ const CallWindow = 5 * time.Second
 // own context ended is not ErrCallWindow, so a caller tells its own bound's end from the window's.
 var ErrCallWindow = errors.New("envoy listener call window ended")
 
-// callWindowError is a call's error once its window ended and its caller's context had not. It
-// holds that error as redact.Cause prints it (windowEnded), since its Timeout makes redact print
-// its whole text as a transport failure's.
+// callWindowError is a call's error once its window ended and its caller's context had not.
 type callWindowError struct {
 	err    error
 	window time.Duration
@@ -371,13 +369,13 @@ func (e callWindowError) Timeout() bool { return true }
 // Temporary is true, as net/http's own timeout errors report it (net.Error).
 func (e callWindowError) Temporary() bool { return true }
 
-// windowEnded wraps err, as redact.Cause prints it, in a callWindowError when ctx, the call's
-// window, ended and parent, the caller's context, did not; otherwise it answers err as it is.
+// windowEnded wraps err in a callWindowError when ctx, the call's window, ended and parent, the
+// caller's context, did not; otherwise it answers err as it is.
 func (c *Client) windowEnded(err error, ctx, parent context.Context) error {
 	if err == nil || err == io.EOF || ctx.Err() == nil || parent.Err() != nil {
 		return err
 	}
-	return callWindowError{err: redact.Cause(err, c.baseURL), window: c.window}
+	return callWindowError{err: err, window: c.window}
 }
 
 // Option configures a Client.
@@ -491,7 +489,12 @@ func (b windowedBody) Close() error {
 // do makes one listener call, the request build makes, and returns the listener's answer or the
 // error that kept it from answering: build's own, an identity token that could not be presented
 // (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
-// ErrUnavailable, and ErrUnreachable where nothing answered).
+// ErrUnavailable, and ErrUnreachable where nothing answered). That failure reaches transport
+// through transportCause, so no part of ENVOY_URL's user info or query, which net/http's error
+// quotes, reaches Dispatch's log or an API answer that carries the error (a 503 ENVOY_UNAVAILABLE,
+// a 502 ENVOY_UNSUBSCRIBE_FAILED); redact.Cause says what prints in its place. Each caller
+// names the route itself. The error still unwraps to the failure, so errors.Is and errors.As
+// classify it as before.
 //
 // A client that presents Dispatch's identity (WithAccountTokenFile or WithGoogleIdentity) makes
 // the call on its identity token. A try whose token could not be presented, or that the listener
@@ -517,7 +520,7 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 		}
 		response, err := c.roundTrip(request)
 		if err != nil {
-			return nil, transport(err)
+			return nil, transport(c.transportCause(err))
 		}
 		return response, nil
 	}
@@ -541,14 +544,27 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 	return try(true)
 }
 
+// transportCause is err, a call's failure roundTrip answered, as do hands it to transport:
+// redact.Cause of it over the base URL, and where the client's window ended the call
+// (callWindowError), that cause under the window's own words, so the error still names
+// ErrCallWindow and its window and is still a timeout, with no part of the URL net/http's error
+// under it quotes.
+func (c *Client) transportCause(err error) error {
+	if window, ok := err.(callWindowError); ok {
+		return callWindowError{err: redact.Cause(window.err, c.baseURL), window: window.window}
+	}
+	return redact.Cause(err, c.baseURL)
+}
+
 // identityNotTaken reports whether a try on Dispatch's identity ended without the listener taking
 // that identity: its token could not be presented (ErrAccountToken), or the listener answered 401.
 func identityNotTaken(response *http.Response, err error) bool {
 	return errors.Is(err, ErrAccountToken) || (err == nil && response.StatusCode == http.StatusUnauthorized)
 }
 
-// identityRefusal is what a log line says of a try identityNotTaken reports: the error, which
-// names the token's file and never the token, or the listener's status.
+// identityRefusal is what a log line says of a try identityNotTaken reports: the error
+// (ErrAccountToken: accountTokenFromFile's, which names the file by its setting and never its
+// path or the token, or googleIdentity's, which names the audience), or the listener's status.
 func identityRefusal(response *http.Response, err error) string {
 	if err != nil {
 		return err.Error()
@@ -671,7 +687,7 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	response, err := c.do(route, false, func() (*http.Request, error) {
 		return c.newRequest(ctx, http.MethodPost, route, "/v1/interests/unsubscribe", bytes.NewReader(body))
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: %s: %w", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
+		return unreachable(fmt.Errorf("%w: %s: %w", ErrUnavailable, route, err))
 	})
 	if err != nil {
 		return nil, err
@@ -916,16 +932,14 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // get makes one authorized GET of route+query, the one shape every read of the listener takes.
 // route names the read in each error this returns, without query's selector, so the same read
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
-// both: no listener answered it (unreachable). Its text names the failure as redact.Cause prints
-// it, which for a request whose query Call does not print is the failure's class alone, and the
-// failure itself is wrapped, not formatted, as a send's is (sendTransportError): the class reads
-// a caller's cancel as "the request failed" and its deadline as "timed out", so errors.Is on the
-// chain is how a caller tells what ended the call.
+// both: no listener answered it (unreachable). Its text names the failure as do hands it over
+// (transportCause), and the failure itself is wrapped, not formatted, as a send's is
+// (sendTransportError), so errors.Is on the chain is how a caller tells what ended the call.
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
 	return c.do("GET "+route, false, func() (*http.Request, error) {
 		return c.newRequest(ctx, http.MethodGet, "GET "+route, route+query, nil)
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: GET %s: %w", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
+		return unreachable(fmt.Errorf("%w: GET %s: %w", ErrUnavailable, route, err))
 	})
 }
 
@@ -1034,7 +1048,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		// session is, with the envelope it built for this request, whose id names no stored copy.
 		request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
 		return request, nil
-	}, func(err error) error { return sendTransportError(redact.Cause(err, c.baseURL), written.Load()) })
+	}, func(err error) error { return sendTransportError(err, written.Load()) })
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -1080,7 +1094,7 @@ func keptSend(response *http.Response) (SendResult, error) {
 // and a same-mode retry is therefore safe. A connect that timed out wrote nothing, and reports
 // the same context deadline as a listener that went quiet, so the error cannot tell them apart;
 // requestWritten can. The cause is wrapped, not formatted, so a caller can ask the same question
-// again: its caller passes it through redact.Cause, which unwraps to the failure. Either way no
+// again: do hands it over through transportCause, which unwraps to the failure. Either way no
 // listener answered, so both are ErrUnreachable.
 func sendTransportError(err error, requestWritten bool) error {
 	var timeout net.Error

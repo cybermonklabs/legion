@@ -75,7 +75,9 @@ func newControllerStartCommand(stderr, attempts io.Writer) *cobra.Command {
 		}
 		code, err := controllerStart(ctx, *configPath, *daemonURL, stderr, attempts)
 		if err != nil {
-			fmt.Fprintf(stderr, "legion controller start: %v\n", err)
+			// Through the URL rule (printRefusal): a refusal that names the daemon names daemon_url
+			// as written, and a *url.Error masks only its password.
+			printRefusal(stderr, "legion controller start", err)
 			return 1
 		}
 		return code
@@ -259,7 +261,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 		return 0, err
 	}
 	fmt.Fprintf(stderr, "[legion] checking the controller's Oh My Pi (%s) in %s before the daemon mints a capability\n",
-		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
+		omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: attempts,
 		Contract: api.DaemonAPIVersion(), Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
@@ -340,7 +342,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	defer func() { _ = os.Remove(promptFile) }()
 	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(promptFile) +
 		" " + shellprefix.Word(daemon.ControllerStartCommand)
-	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, cfg.DaemonURL, stateDir)
+	// daemon_url without its userinfo (redact.URL, which reads it as a URL, so a "'" in a password
+	// does not end it early): the line is the operator's terminal's, and the scrollback outlives
+	// the run.
+	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, redact.URL(cfg.DaemonURL), stateDir)
 	// Interactive and in the foreground: the operator's terminal is Oh My Pi's. The child is not
 	// bound to ctx — a Ctrl-C reaches Oh My Pi through the terminal's process group and is its to
 	// handle, while this process, whose signals main has already caught, waits for its exit.
@@ -510,7 +515,7 @@ func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	daemon := operator{base: daemonURL}
 	answered, err := daemon.do(timed, http.MethodGet, route, nil)
 	if err != nil {
-		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemon.shownRoot(), err)
+		return fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	asked := daemon.shown(route)
 	if status := answered.Status(); status/100 != 2 {
@@ -575,7 +580,7 @@ func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string,
 	daemon := operator{base: daemonURL, bearer: operatorToken}
 	answered, err := daemon.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
-		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemon.shownRoot(), err)
+		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	asked := daemon.shown(route)
 	if status := answered.Status(); status/100 != 2 {

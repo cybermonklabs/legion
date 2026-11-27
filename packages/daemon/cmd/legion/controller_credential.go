@@ -93,7 +93,7 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 	daemon := operator{base: daemonURL}
 	answered, err := daemon.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
 	if err != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemon.shownRoot(), err)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	asked := daemon.shown(route)
 	if answered.Status()/100 != 2 {

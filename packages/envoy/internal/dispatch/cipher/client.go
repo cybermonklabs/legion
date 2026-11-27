@@ -80,11 +80,12 @@ func WithTimeout(timeout time.Duration) Option {
 // holding Dispatch's own projected Kubernetes ServiceAccount token, which every call presents:
 // the broker reads the calling service's identity from it (BROKER_API_ACCOUNTS) and then takes a
 // machine login's approver, and a revoke's, from the login Dispatch sends — resolved by
-// Dispatch's own session, not read from an env var here.
+// Dispatch's own session, not read from an env var here. A file it cannot read is named by its
+// setting, TokenFileSetting, never by its path.
 func New(baseURL, tokenFile string, options ...Option) *Client {
 	client := &Client{
 		URL:     baseURL,
-		Account: ciphertoken.NewAccountToken(tokenFile),
+		Account: ciphertoken.NewAccountToken(TokenFileSetting, tokenFile),
 		// The client follows no redirect: every call carries Dispatch's own token, and a Location
 		// is the answering party's words (redirects.Refused).
 		HTTP: redirects.Refused(&http.Client{Timeout: defaultTimeout}),
@@ -94,6 +95,10 @@ func New(baseURL, tokenFile string, options ...Option) *Client {
 	}
 	return client
 }
+
+// TokenFileSetting is the setting that holds the file New reads Dispatch's ServiceAccount token
+// from: cmd/dispatch reads the file's path from it, and names it in a refusal, by this constant.
+const TokenFileSetting = "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"
 
 // Error carries the broker's status and its {"code","error"} body so handlers can forward
 // both verbatim to the browser. Only a non-2xx broker response produces one; a call that stopped

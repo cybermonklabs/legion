@@ -53,8 +53,9 @@ const (
 // things, whether the issuer is still there.
 //
 // The error is nil only for ClientCheckReady. For the other two it says what happened, for the
-// caller's log; it never carries the client secret, and a caller publishing the check publishes
-// the word alone. The OAuth error it names is the closed set's reading of the code as it came
+// caller's log; it never carries the client secret, it names the issuer through redact.URL and a
+// transport failure as issuerError prints it, and a caller publishing the check publishes the word
+// alone. The OAuth error it names is the closed set's reading of the code as it came
 // (redact.RefusalCode), as every reader of a token endpoint's answer reads one (oauthrefusal) and
 // never from the answer's ErrorCode: a code the set does not name, and an answer that names
 // none, print as the set's own words for that case, so the text holds no word the issuer wrote.
@@ -75,15 +76,15 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		// plainly accepted the client, which is the one question this asks.
 		return ClientCheckReady, nil
 	case !errors.As(err, &retrieve) || retrieve.Response == nil:
-		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", redact.URL(issuer), issuerError(issuer, err))
 	case oauthrefusal.Refusal(err) == redact.InvalidGrant:
 		return ClientCheckReady, nil
 	case oauthrefusal.Refuses(retrieve.Response.StatusCode):
 		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: HTTP %d with the OAuth error %s",
-			issuer, clientID, retrieve.Response.StatusCode, redact.RefusalCode(err))
+			redact.URL(issuer), clientID, retrieve.Response.StatusCode, redact.RefusalCode(err))
 	case oauthrefusal.Outage(retrieve.Response.StatusCode):
-		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", issuer, retrieve.Response.StatusCode, err)
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", redact.URL(issuer), retrieve.Response.StatusCode, issuerError(issuer, err))
 	}
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %s and no refusal, which says nothing about the client: %w",
-		issuer, retrieve.Response.StatusCode, redact.RefusalCode(err), err)
+		redact.URL(issuer), retrieve.Response.StatusCode, redact.RefusalCode(err), issuerError(issuer, err))
 }

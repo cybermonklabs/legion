@@ -52,7 +52,7 @@ func TestRunesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			text:    strings.Repeat("w", 25) + " " + plantedURL,
 			n:       40,
 			planted: plantedUser,
-			want:    strings.Repeat("w", 25) + " https://h.exa…",
+			want:    strings.Repeat("w", 25) + " https://[a UR…",
 		},
 		{
 			name:    "a bound inside a URL's query",
@@ -106,7 +106,7 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			text:    strings.Repeat("w", 25) + " " + plantedURL,
 			n:       40,
 			planted: plantedUser,
-			want:    strings.Repeat("w", 25) + " https://h.exam",
+			want:    strings.Repeat("w", 25) + " https://[a URL",
 			wantCut: true,
 		},
 		{
@@ -172,15 +172,15 @@ func TestTailKeepsTheEndOfWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			n:       20,
 			planted: plantedQuery,
 			want:    strings.Repeat("p", 16) + " end",
-			wantCut: len("start https://h.example/") + 14,
+			wantCut: len("start https://"+URLWithCredentials+"/") + 14,
 		},
 		{
-			name:    "a window that starts inside a URL's user name",
+			name:    "a window that starts inside the mark of a URL's credentials",
 			text:    strings.Repeat("x", 30) + " https://" + plantedUser + "@h.example/" + path,
-			n:       len("ader@h.example/") + len(path),
+			n:       len("h credentials]/") + len(path),
 			planted: plantedUser,
-			want:    "ps://h.example/" + path,
-			wantCut: 34,
+			want:    "h credentials]/" + path,
+			wantCut: 49,
 		},
 		{
 			name:    "a window that starts inside a character",
@@ -255,7 +255,7 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 			name: "a read that stopped inside a run with no \"://\" after a URL",
 			text: "moved to " + plantedURL + " unfinish",
 			cut:  true,
-			want: "moved to https://h.example/p unfinish",
+			want: "moved to https://" + URLWithCredentials + "/p unfinish",
 		},
 		{
 			name: "a read that stopped inside a run with no end that holds \"://\"",
@@ -272,7 +272,7 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 		{
 			name: "a read its bound did not cut",
 			text: "moved to " + plantedURL,
-			want: "moved to https://h.example/p",
+			want: "moved to https://" + URLWithCredentials + "/p",
 		},
 		{
 			name: "a read its bound did not cut, with no end",

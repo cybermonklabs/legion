@@ -25,9 +25,10 @@ body: |-
     each query pair and the sslrootcert, sslcert and sslkey files it names`, and a file pgx could
     not open by the call and the system's reason alone: `pgx cannot read a file its connection
     settings name: open: no such file or directory`.
-  - The broker's database pool refused a `BROKER_DATABASE_URL` pgx cannot read in pgx's words. It
-    now prints `open the database BROKER_DATABASE_URL names: open Postgres pool: pgx cannot read its
-    connection settings`.
+  - The broker's start names the setting when it cannot open its database: `open the database
+    BROKER_DATABASE_URL names: ` comes before the store's refusal, such as `connect to Postgres:
+    BROKER_DATABASE_URL cannot be parsed as a Postgres DSN; the driver's error is not printed, since
+    it quotes the DSN`.
 time: 2026-11-26T04:06:45Z
 custom:
     Issue: broker-url-setting-words

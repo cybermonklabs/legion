@@ -338,7 +338,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-tailnet.XXXXXX") || work=''
 tools="$work/tools"
-[ -z "$work" ] || real_tools "$tools" bun omp tmux agent-secrets agent-secrets-helper
+# A program real_tools could not link holds every row from the pins on, as a missing scratch
+# directory does: the helper, the probe and the peer all start under that PATH.
+tools_problem=''
+[ -z "$work" ] || tools_problem=$(real_tools "$tools" bun omp tmux agent-secrets agent-secrets-helper)
 
 emit "row${tab}want${tab}got${tab}verdict"
 
@@ -395,6 +398,7 @@ want_pins="the broker's pin holds ${commit:-<OUTSIDE_ENROLL_REFUSAL_COMMIT>}; Di
 problem=$(lacking OUTSIDE_PINS OUTSIDE_ENROLL_REFUSAL_COMMIT OUTSIDE_DISPATCH_COMMITS OUTSIDE_TAILNET_DISPATCH_URL)
 [ -n "$project" ] || problem="${problem:+$problem; }the project key (\$1) is not given"
 [ -n "$work" ] || problem="${problem:+$problem; }mktemp -d made no scratch directory"
+[ -z "$tools_problem" ] || problem="${problem:+$problem; }$tools_problem"
 if [ -z "$problem" ] && [ ! -r "$OUTSIDE_PINS" ]; then
   problem="OUTSIDE_PINS names $OUTSIDE_PINS, which cannot be read"
 fi
@@ -638,10 +642,11 @@ EOF
 fi
 
 # --- The full member's browser session (OUTSIDE_FULL_COOKIE_FILE) at Dispatch's private origin.
-# No broker token approves, so the positive controls of T3 and P7 read with it; the browser gate's
-# owner acts are made with it where their commands are unset; and the sweep's GitHub proxy reads
-# use it where it is given and the full member's token (below) where it is not, which a build of
-# Dispatch that reads the proxy as a browser's person alone refuses. The cookie reaches curl in a
+# No broker token a machine holds approves, so the positive controls of T3 and P7 read with it; the
+# browser gate's owner acts are made with it where their commands are unset; and the sweep's GitHub
+# proxy reads use it where it is given and the full member's token (below) where it is not, which a
+# build of Dispatch that reads the proxy as a browser's person alone refuses. The cookie reaches curl
+# in a
 # header file of mode 0600 alone, never on a command line. whoami names the member, whose address
 # is the operator of the full member's helper (T3 and P7's control). The pins row has already held
 # OUTSIDE_TAILNET_DISPATCH_URL. ---
@@ -1134,10 +1139,11 @@ else
   esac
 fi
 
-# --- The full member's helper, the positive control of T3 and of P7. No broker token approves, the
-# full member's own included, so the 403 OAUTH_SCOPE_REQUIRED that P7 reads for the agent's token
-# says something about that token only where a browser session is answered on the same routes. The
-# full member's browser mints a personal agent token (201), revoked again at once, and approves a
+# --- The full member's helper, the positive control of T3 and of P7. No broker token a machine
+# holds approves, the full member's own included, so the 403 OAUTH_SCOPE_REQUIRED that P7 reads for
+# the agent's token says something about that token only where a browser session is answered on
+# the same routes. The full member's browser mints a personal agent token (201), revoked again at
+# once, and approves a
 # machine login (200) of a scratch helper whose operator is that member and whose broker is
 # OUTSIDE_TAILNET_BROKER_URL, the broker T2's scratch helper enrolls at. T3 enrolls through that
 # helper, and then its login is revoked and the helper stopped. T3 needs the helper alone

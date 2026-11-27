@@ -17,7 +17,7 @@ import (
 // token.
 func newDispatchClient(t *testing.T, d *dispatchStandIn, token string) Dispatch {
 	t.Helper()
-	return NewDispatch(d.server.URL, ciphertoken.NewAccountToken(tokenFile(t, token)), d.server.Client())
+	return NewDispatch(d.server.URL, ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, token)), d.server.Client())
 }
 
 // TestIssueReadsTheIssueAndItsSpecWithTheProjectedToken: two GETs, each presenting the token as
@@ -144,7 +144,7 @@ func TestIssueRefusesAnUnreadableToken(t *testing.T) {
 			}
 		})
 	}
-	missing := NewDispatch(stand.server.URL, ciphertoken.NewAccountToken(filepath.Join(t.TempDir(), "absent")), stand.server.Client())
+	missing := NewDispatch(stand.server.URL, ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", filepath.Join(t.TempDir(), "absent")), stand.server.Client())
 	if _, err := missing.Issue(t.Context(), testIssue); err == nil {
 		t.Error("Issue read an issue with no token file; want a refusal")
 	}

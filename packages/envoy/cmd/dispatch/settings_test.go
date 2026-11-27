@@ -980,9 +980,12 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			// A token file that could not be read is named by the variable and the system's reason,
+			// never its path: the path is where a person who pasted the token itself put it.
 			missing := filepath.Join(t.TempDir(), "missing")
-			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
-				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS)
+			if err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names a service token file that could not be read: open: no such file or directory") || strings.Contains(err.Error(), missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused by its variable and reason, not its path", err)
 			}
 			token := writeFile(t, "token", "a.b.c\n")
 			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
@@ -1633,7 +1636,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("Identity() = %q, want the endpoint's host", embedder.Identity())
 			}
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": ""}), "DISPATCH_AZURE_EMBED_ENDPOINT is required")
-			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "http://embed.example/models"}), "DISPATCH_AZURE_EMBED_ENDPOINT (expected an absolute https URL")
+			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "http://embed.example/models"}), "DISPATCH_AZURE_EMBED_ENDPOINT=")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "https://embed.example/models"}, "DISPATCH_AZURE_EMBED_ENDPOINT set, but DISPATCH_EMBEDDER is unset")
 		},
 		"DISPATCH_AZURE_EMBED_DEPLOYMENT": func(t *testing.T) {
@@ -1664,14 +1667,21 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY": "", "DISPATCH_AZURE_EMBED_KEY_FILE": file})); boot.Embedder.AzureKey != "file-key" {
 				t.Errorf("file alone: AzureKey = %q, want the file's", boot.Embedder.AzureKey)
 			}
-			// An unreadable or blank file refuses, naming both variables, rather than falling back to
-			// the bare key.
+			// An unreadable or blank file refuses, naming both variables and why, never the path,
+			// rather than falling back to the bare key. A made-up seed pasted where the path goes
+			// is named nowhere in the refusal.
 			missing := filepath.Join(t.TempDir(), "missing")
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": missing}),
-				"DISPATCH_AZURE_EMBED_KEY_FILE names "+missing+", which could not be read, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+			const pastedSeed = "SUAMADEUPPASTEDSEEDSHAPE0123456789ABCDEFGHIJKLMNOPQRSTUV"
+			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": pastedSeed}),
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+			if _, err := resolveBootConfig(bootEnvironment(azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": pastedSeed}))); err == nil || strings.Contains(err.Error(), pastedSeed[:10]) {
+				t.Errorf("a seed pasted as DISPATCH_AZURE_EMBED_KEY_FILE: err = %v, want a refusal holding none of it", err)
+			}
 			blank := writeFile(t, "blank", "\n")
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": blank}),
-				"DISPATCH_AZURE_EMBED_KEY_FILE names "+blank+", which is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY": "bare-key"}, "DISPATCH_AZURE_EMBED_KEY set, but DISPATCH_EMBEDDER is unset")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": file}, "DISPATCH_AZURE_EMBED_KEY_FILE set, but DISPATCH_EMBEDDER is unset")
 			if _, ok := azureEmbedderFor(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": file}).(*embed.AzureClient); !ok {
@@ -1736,7 +1746,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("Endpoint = %q, want the trimmed URL", boot.Answerer.Endpoint)
 			}
 			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": ""}), "DISPATCH_AZURE_CHAT_ENDPOINT is required")
-			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "http://chat.example/models"}), "DISPATCH_AZURE_CHAT_ENDPOINT (expected an absolute https URL")
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "http://chat.example/models"}), "DISPATCH_AZURE_CHAT_ENDPOINT=")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "https://chat.example/models"}, "DISPATCH_AZURE_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is unset")
 			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "https://chat.example/models"}), "DISPATCH_AZURE_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is endpoint")
 		},
@@ -1778,7 +1788,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("Endpoint = %q, want the trimmed URL", boot.Answerer.Endpoint)
 			}
 			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": ""}), "DISPATCH_CHAT_ENDPOINT is required")
-			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "http://chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT (expected an absolute https URL")
+			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "http://chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT=")
 			refusedWith(t, map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://chat.example/v1"}, "DISPATCH_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is unset")
 			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is azure")
 		},

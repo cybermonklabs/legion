@@ -11,25 +11,26 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
-// TestADSNPgxCannotReadPrintsNoneOfIt: a DSN pgx cannot read is refused as its address and fixed
-// words, "connect to Postgres at 127.0.0.1:1: pgx cannot read its connection settings", which still
-// unwrap to pgx's error, by both roads a refusal of one takes to ConnectError: Open's, through
-// PoolConfig, which the daemon's boot and `legion config check` (daemon.CheckStart) read
-// postgres_dsn by (open), and ConnectError of pgx.Connect's own error, as Oh My Pi's session
-// database is opened (ompsessions.ConnectURL; connect-error). pgx's ParseConfigError quotes the DSN
-// with its password masked but its user name and every other query pair kept, and the error it
-// wraps quotes a query key that has no "=" alone. Each case holds an sslmode pgx refuses beside one
-// marker: the probe's token as a query key (query-key), and the probe's user and password as the
-// user information with its token as an access token's value (user). The twin shows each DSN as
-// written, and pgx's own error of it, holds its markers. Captures store.dsn/<road>-<case>.
+// TestADSNPgxCannotReadPrintsNoneOfIt: a URL DSN pgx cannot read, holding a user name, a password
+// and a query value, is refused by its setting and fixed words, "connect to Postgres: postgres_dsn
+// (or LEGION_POSTGRES_DSN) cannot be parsed as a Postgres DSN; …", which still unwrap to pgx's
+// error, by both roads a refusal of one takes to pgdsn.ConnectError: Open's, through PoolConfig,
+// which the daemon's boot and `legion config check` (daemon.CheckStart) read postgres_dsn by
+// (open), and pgdsn.ConnectError of pgx.Connect's own error, as Oh My Pi's session database is
+// opened (ompsessions.ConnectURL; connect-error). pgx's ParseConfigError quotes the DSN with its
+// password masked but its user name and every other query pair kept. The case holds an sslmode pgx
+// refuses beside the probe's user and password as the user information and its token as an access
+// token's value (user); a query key no keyword has is refused before pgx reads it, by
+// pgdsn.Refusal, whose own tests read it. The twin shows each DSN as written, and pgx's own error
+// of it, holds its markers. Captures store.dsn/<road>-<case>.
 func TestADSNPgxCannotReadPrintsNoneOfIt(t *testing.T) {
 	t.Parallel()
 	const (
 		user, password = "not-a-secret-user", "not-a-secret-password"
-		want           = "connect to Postgres at 127.0.0.1:1: pgx cannot read its connection settings"
-		queryKey       = "postgres://127.0.0.1:1/legion?sslmode=disable&" + oauth2calltest.Token
+		want           = "connect to Postgres: " + DSNSetting + " cannot be parsed as a Postgres DSN; the driver's error is not printed, since it quotes the DSN"
 		userDSN        = "postgres://" + user + ":" + password + "@127.0.0.1:1/legion?access" + "_token=" + oauth2calltest.Token + "&sslmode=not-a-mode"
 	)
 	ctx := context.Background()
@@ -46,7 +47,7 @@ func TestADSNPgxCannotReadPrintsNoneOfIt(t *testing.T) {
 			conn.Close(ctx)
 			return nil
 		}
-		return ConnectError(dsn, err)
+		return pgdsn.ConnectError(DSNSetting, dsn, err)
 	}
 	poolRead := func(dsn string) error { _, err := pgxpool.ParseConfig(dsn); return err }
 	connRead := func(dsn string) error { _, err := pgx.ParseConfig(dsn); return err }
@@ -55,9 +56,7 @@ func TestADSNPgxCannotReadPrintsNoneOfIt(t *testing.T) {
 		markers    []string
 		read, call func(string) error
 	}{
-		{"open-query-key", queryKey, []string{oauth2calltest.Token}, poolRead, open},
 		{"open-user", userDSN, []string{user, oauth2calltest.Token}, poolRead, open},
-		{"connect-error-query-key", queryKey, []string{oauth2calltest.Token}, connRead, connectURL},
 		{"connect-error-user", userDSN, []string{user, oauth2calltest.Token}, connRead, connectURL},
 	}
 	t.Run("twin", func(t *testing.T) {

@@ -229,14 +229,14 @@ func refuseOpenCodeUserFile(oldPath, userPath string, deviceOf func(string) (uin
 	}
 }
 
-// applyEnvironmentOverrides applies DISPATCH_SERVER_URL and NATS_URLS over cfg. Each refusal names
-// the variable alone: the value as written is where a credential would be, a URL's user
-// information above all, which a NATS server reads as its user and password or its token.
+// applyEnvironmentOverrides applies DISPATCH_SERVER_URL and NATS_URLS. A refusal of either names
+// the variable, and a NATS_URLS entry by its position, never the value: a URL's userinfo is where
+// a person writes a credential, and these refusals reach Dispatch's log and natstail's stderr.
 func applyEnvironmentOverrides(cfg *EnvoyConfig, lookup func(string) (string, bool)) error {
 	if raw, set := lookup("DISPATCH_SERVER_URL"); set {
 		serverURL, err := dispatchServerURL(raw)
 		if err != nil {
-			return errors.New("DISPATCH_SERVER_URL (expected an absolute http(s) URL with no user information, path, query or fragment)")
+			return errors.New("DISPATCH_SERVER_URL is not an absolute http(s) URL without a path, a user name, a query or a fragment")
 		}
 		if cfg.Dispatch == nil {
 			cfg.Dispatch = &DispatchConfig{}
@@ -246,7 +246,7 @@ func applyEnvironmentOverrides(cfg *EnvoyConfig, lookup func(string) (string, bo
 	if raw, set := lookup("NATS_URLS"); set {
 		natsURLs, err := natsURLs(raw)
 		if err != nil {
-			return errors.New("NATS_URLS (expected a comma-separated list of NATS URLs, none of them empty)")
+			return fmt.Errorf("NATS_URLS %w (expected a comma-separated list of NATS URLs)", err)
 		}
 		cfg.Envoy.NatsURLs = natsURLs
 	}
@@ -264,12 +264,14 @@ func dispatchServerURL(raw string) (string, error) {
 	return serverURL, nil
 }
 
+// natsURLs is raw split on its commas, each entry trimmed; an empty entry is refused by its
+// position alone.
 func natsURLs(raw string) ([]string, error) {
 	values := strings.Split(raw, ",")
 	for i, value := range values {
 		values[i] = strings.TrimSpace(value)
 		if values[i] == "" {
-			return nil, errors.New("empty NATS URL")
+			return nil, fmt.Errorf("entry %d of %d is empty", i+1, len(values))
 		}
 	}
 	return values, nil

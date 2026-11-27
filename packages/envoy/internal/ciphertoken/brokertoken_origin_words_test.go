@@ -35,7 +35,7 @@ func TestNewRefusesAnOriginByItsPlaceAndPrintsNoneOfItsCredential(t *testing.T) 
 			}
 			_, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: "https://broker.test",
-				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+				Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 				Origins:   []string{dispatchOrigin, c.origin},
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   sourceAddress,

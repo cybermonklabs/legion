@@ -66,7 +66,7 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 	}
 	report, err := store.Census(ctx, databaseURL)
 	if err != nil {
-		writeCensusFailure(errOut, databaseURLRefusal(err))
+		writeCensusFailure(errOut, err)
 		return 2
 	}
 	report.Write(out)
@@ -103,12 +103,13 @@ func writeCensusFailure(errOut io.Writer, err error) {
 }
 
 // databaseURLRefusal is err with the setting's name, DATABASE_URL, before it where err is the
-// store's refusal of a DATABASE_URL pgx cannot read (a *pgconn.ParseConfigError in its chain): the
-// store names such a URL in fixed words alone ("parse Postgres URL: pgx cannot read its connection
-// settings"), which tell an operator nothing of which setting to fix. Every command that opens the
-// database DATABASE_URL names prints its refusal through it: the census in both forms, versions,
-// the server's boot and the database subcommands. Any other error, a connection's, a query's or a
-// migration's, is err as it came: it names what failed, and it is no fault of the setting's text.
+// store's refusal of a DATABASE_URL pgx cannot read (a *pgconn.ParseConfigError in its chain):
+// `census --store` opens its one connection through store.Connect, which names such a URL in fixed
+// words alone ("parse Postgres URL: pgx cannot read its connection settings"), and those tell an
+// operator nothing of which setting to fix. Every other command that opens the database
+// DATABASE_URL names reads it through pgdsn, whose refusal names the setting itself. Any other
+// error, a connection's or a query's, is err as it came: it names what failed, and it is no fault
+// of the setting's text.
 func databaseURLRefusal(err error) error {
 	var unread *pgconn.ParseConfigError
 	if errors.As(err, &unread) {
@@ -131,7 +132,7 @@ func versions(ctx context.Context, databaseURL string, out, errOut io.Writer) in
 	}
 	check, err := store.CheckVersions(ctx, databaseURL)
 	if err != nil {
-		fmt.Fprintf(errOut, "versions: %v\n", databaseURLRefusal(err))
+		fmt.Fprintf(errOut, "versions: %v\n", err)
 		return 2
 	}
 	check.Write(out)

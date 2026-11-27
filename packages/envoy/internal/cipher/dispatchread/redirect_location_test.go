@@ -41,7 +41,7 @@ func TestADispatchReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 		{"elsewhere", func(bearer string) string { return redirectstest.To(dead, bearer) }, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			reader := dispatchread.New(redirectstest.EchoBearer(t, c.location), ciphertoken.NewAccountToken(file), nil, 10*time.Second, 1<<20)
+			reader := dispatchread.New(redirectstest.EchoBearer(t, c.location), ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", file), nil, 10*time.Second, 1<<20)
 			answer, err := reader.Get(t.Context(), "/api/v1/projects/PRIV/repositories", nil)
 			// What a caller of the read prints of it: the status it handed back, or its error.
 			printed := fmt.Sprintf("%d %v", answer.Status, err)

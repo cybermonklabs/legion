@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -160,6 +161,30 @@ func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
 
 	if len(records) == 0 {
 		t.Fatal("expected a warning to be logged for the connection failure, got none")
+	}
+}
+
+// A BROKER_ENVOY_URL with a made-up user name and password that cannot be reached logs the failure
+// by its class, holding no part of either: Go's *url.Error quotes the URL with the user name.
+func TestNotifyLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
+	var records []slog.Record
+	logtest.SetDefault(t, capturingHandler{records: &records})
+	const password, user = "madeUpWakePassword0123", "madeUpWakeUser0123"
+	configured := "http://" + user + ":" + password + "@" + testport.Refused(t)
+	e := NewEnvoy(configured, staticAccount("tok"), &http.Client{})
+	e.Notify(context.Background(), "sess-123", "req-456", "approved")
+	if len(records) == 0 {
+		t.Fatal("expected a warning to be logged for the connection failure, got none")
+	}
+	var logged strings.Builder
+	for _, record := range records {
+		logged.WriteString(record.Message)
+		record.Attrs(func(a slog.Attr) bool { logged.WriteString(" " + a.Key + "=" + a.Value.String()); return true })
+	}
+	for _, secret := range []string{user, password} {
+		if strings.Contains(logged.String(), secret[:10]) {
+			t.Fatalf("the warning %q holds %q", logged.String(), secret[:10])
+		}
 	}
 }
 

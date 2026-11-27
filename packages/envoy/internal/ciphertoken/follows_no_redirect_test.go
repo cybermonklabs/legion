@@ -102,7 +102,7 @@ func TestAnIntrospectionFollowsNoRedirect(t *testing.T) {
 			broker := redirectstest.EchoBearer(t, location)
 			rig := newRig(t, func(o *ciphertoken.Options) {
 				o.BrokerURL = broker
-				o.Account = ciphertoken.NewAccountToken(file)
+				o.Account = ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", file)
 				o.HTTP = c.client
 			})
 			_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, "a-token-asked-about-at-a-redirect"))
@@ -135,7 +135,7 @@ func TestAnIntrospectionFollowsNoRedirect(t *testing.T) {
 				broker := moved(t, status)
 				rig := newRig(t, func(o *ciphertoken.Options) {
 					o.BrokerURL = broker
-					o.Account = ciphertoken.NewAccountToken(file)
+					o.Account = ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", file)
 					o.HTTP = c.client
 				})
 				_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, presented))

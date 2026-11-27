@@ -68,8 +68,7 @@ type Prober struct {
 // path; an Envoy URL that does not parse or names no host leaves it no lookup, and each probe then
 // answers Unknown in fixed words, since url.Parse's error quotes the URL whole. The lookup follows
 // no redirect (redirects.Refused): it carries the listener's bearer, which a followed redirect
-// would hand the host the Location names, and a 3xx is the listener's refusal, which the probe
-// reads as Unknown.
+// would hand the host the Location names, and a 3xx is an answer the probe reads as Unknown.
 func NewProber(opts ProberOptions) *Prober {
 	p := &Prober{
 		token:  opts.EnvoyToken,
@@ -164,7 +163,11 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		return Gone
 	}
 	if response.StatusCode != http.StatusOK {
+		// A redirect is an answer the client does not follow (NewProber), never a refusal.
 		reason := "the Envoy listener refused the controller role lookup"
+		if response.StatusCode >= 300 && response.StatusCode < 400 {
+			reason = "the Envoy listener answered the controller role lookup with a redirect, which the probe does not follow"
+		}
 		if p.token == "" {
 			reason += " with no bearer token sent"
 		}

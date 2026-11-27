@@ -28,6 +28,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/pgdsn"
+
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -83,6 +85,9 @@ func Clone(t testing.TB, prefix string) string {
 		t.Fatalf("clone %s from the template: %v", name, err)
 	}
 	t.Cleanup(func() { dropInBackground(name) })
+	if _, err := shared.admin.Exec(context.Background(), testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on the clone %s: %v", name, err)
+	}
 	return clone
 }
 
@@ -101,14 +106,15 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 // ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
 // since Clone registered that cleanup first. The pool is built from store.PoolConfig, as the
 // daemon's own is, so a test that wraps it with store.NewPool writes through the store's text
-// rule. Its refusal of a URL pgx cannot read prints through store.ConnectError, as the daemon's
-// does: pgx's own error quotes the URL with its user name and its query, and a CI log is public.
+// rule. Its refusal of a URL pgx cannot read prints through pgdsn.ConnectError, as the daemon's
+// does, naming LEGION_TEST_PG_DSN: pgx's own error quotes the URL with its user name and its
+// query, and a CI log is public.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
 	dsn := Clone(t, prefix)
 	config, err := store.PoolConfig(dsn)
 	if err != nil {
-		t.Fatalf("configure a pool on the cloned database: %v", store.ConnectError(dsn, err))
+		t.Fatalf("configure a pool on the cloned database: %v", pgdsn.ConnectError("LEGION_TEST_PG_DSN", dsn, err))
 	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
@@ -239,6 +245,9 @@ func prepare(dsn string) error {
 		return fmt.Errorf("create the template database: %w", err)
 	}
 	shared.template = name
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		return fmt.Errorf("turn JIT off on the template database: %w", err)
+	}
 	st, err := store.Open(ctx, templateURL)
 	if err != nil {
 		return fmt.Errorf("open the template database: %w", err)
@@ -260,8 +269,8 @@ func prepare(dsn string) error {
 // adminConfig is the admin pool's configuration on the server dsn names: that server's postgres
 // database through testdb.DatabaseURL, which takes out every pool key the DSN sets, and
 // adminConns connections, so dropSlots' count holds whatever pool size the DSN sets for the tests'
-// own pools. A URL pgx cannot read is refused through store.ConnectError, which names it by its
-// address alone: pgx's own error quotes it with its user name and its query.
+// own pools. A URL pgx cannot read is refused through pgdsn.ConnectError, which names it by its
+// setting alone: pgx's own error quotes it with its user name and its query.
 func adminConfig(dsn string) (*pgxpool.Config, error) {
 	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
 	if err != nil {
@@ -269,7 +278,7 @@ func adminConfig(dsn string) (*pgxpool.Config, error) {
 	}
 	config, err := pgxpool.ParseConfig(adminURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse the admin database URL LEGION_TEST_PG_DSN names: %w", store.ConnectError(adminURL, err))
+		return nil, fmt.Errorf("parse the admin database URL LEGION_TEST_PG_DSN names: %w", pgdsn.ConnectError("LEGION_TEST_PG_DSN", adminURL, err))
 	}
 	config.MaxConns = adminConns
 	return config, nil

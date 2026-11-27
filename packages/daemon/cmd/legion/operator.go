@@ -118,21 +118,22 @@ func (c *operatorCall) check(required ...string) (code int, ok bool) {
 
 // connect reads the bearer --operator-token-file names, when the command was given one, by
 // config.ReadPrivateSecretPointer's rules — a file that cannot be read, holds nothing, or that its
-// group or others can read is refused naming its path, never its contents — and finds the daemon
-// the way `legion state` does (daemonAddress).
+// group or others can read is refused, never naming its contents, and naming its path only once it
+// was opened — and finds the daemon the way `legion state` does (daemonAddress).
 func (c *operatorCall) connect() (operator, bool) {
 	var bearer string
 	if *c.tokenFile != "" {
 		read, err := config.ReadPrivateSecretPointer("--operator-token-file", *c.tokenFile)
 		if err != nil {
-			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
+			printRefusal(c.stderr, c.name(), err)
 			return operator{}, false
 		}
 		bearer = read
 	}
+	// The loader's refusal, through the URL rule as every command's (printRefusal).
 	address, err := daemonAddress(*c.configPath, *c.port)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
+		printRefusal(c.stderr, c.name(), err)
 		return operator{}, false
 	}
 	return operator{base: address, bearer: bearer}, true
@@ -226,16 +227,6 @@ func (op operator) shown(route string) string {
 		return "the daemon's URL (it does not parse, and is not printed)"
 	}
 	return redact.URLCredentials(asked.String())
-}
-
-// shownRoot is the API root as a line names it, as shown names a request's URL: through the URL
-// rule (redact.URLCredentials), and by what it is when it does not parse, since then the rule,
-// which reads a URL from its "://", may find none to read and would leave the root as written.
-func (op operator) shownRoot() string {
-	if _, err := op.urlOf("/"); err != nil {
-		return "the daemon's URL (it does not parse, and is not printed)"
-	}
-	return redact.URLCredentials(op.base)
 }
 
 // daemonClient is the client every request of the CLI to a daemon's API is made on (do, get):

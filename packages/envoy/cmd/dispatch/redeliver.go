@@ -81,9 +81,17 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 		fmt.Fprintln(out, "redeliver-webhooks: DATABASE_URL is required: the GitHub rate limits every process obeys live there")
 		return 2
 	}
+	// Before anything connects, as the server refuses it at boot (gitHubAPIBaseRefusal).
+	gitHubAPIBase := strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE"))
+	if gitHubAPIBase != "" {
+		if err := gitHubAPIBaseRefusal(gitHubAPIBase); err != nil {
+			fmt.Fprintf(out, "redeliver-webhooks: %v\n", err)
+			return 2
+		}
+	}
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
-		fmt.Fprintf(out, "redeliver-webhooks: open database: %v\n", databaseURLRefusal(err))
+		fmt.Fprintf(out, "redeliver-webhooks: open database: %v\n", err)
 		return 1
 	}
 	defer database.Pool.Close()
@@ -113,7 +121,7 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 		fmt.Fprintf(out, "redeliver-webhooks: load app credentials: %v\n", err)
 		return 1
 	}
-	sweeper, err := webhookSweeper(natsClient, database, app, strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")), replicas)
+	sweeper, err := webhookSweeper(natsClient, database, app, gitHubAPIBase, replicas)
 	if err != nil {
 		fmt.Fprintf(out, "redeliver-webhooks: %v\n", err)
 		return 1

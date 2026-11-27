@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/loadtest/listenerclient"
+	"github.com/sjawhar/envoy/natsconn"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -53,7 +54,7 @@ func (st *step) subscribeSessions() (*natsSessions, error) {
 	for i := range st.cfg.natsConns {
 		nc, err := nats.Connect(st.cfg.ep.nats, nats.Name(fmt.Sprintf("loadgen-%d", i)), nats.MaxReconnects(-1))
 		if err != nil {
-			return ns, fmt.Errorf("nats connect: %w", err)
+			return ns, fmt.Errorf("nats connect: %w", natsconn.ConnectionError(err))
 		}
 		ns.conns = append(ns.conns, nc)
 	}

@@ -33,7 +33,7 @@ func TestADispatchReadGoesToTheRouteJoinedOntoTheDispatchURL(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			stand := newJoinStandIn(t)
-			dispatch := NewDispatch(stand.server.URL+c.suffix, ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), stand.server.Client())
+			dispatch := NewDispatch(stand.server.URL+c.suffix, ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, "projected-token")), stand.server.Client())
 			if _, err := dispatch.Issue(t.Context(), testIssue); err != nil {
 				t.Errorf("Issue: %v", err)
 			}
@@ -80,7 +80,7 @@ func TestADispatchURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 	reparsed := "http://" + userinfo + "[::%25\xfd]/dispatch?" + param + "=" + redacttest.Token
 	read := func(t *testing.T, base string) string {
 		t.Helper()
-		_, err := NewDispatch(base, ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), nil).Issue(t.Context(), testIssue)
+		_, err := NewDispatch(base, ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, "projected-token")), nil).Issue(t.Context(), testIssue)
 		if err == nil {
 			t.Fatal("Issue read an issue at a Dispatch URL that does not parse")
 		}

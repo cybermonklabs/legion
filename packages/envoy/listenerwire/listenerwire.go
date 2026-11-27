@@ -156,7 +156,9 @@ type SendRequest struct {
 
 // PublishRequest is the body of POST /v1/messages/publish: a message for a topic, a role's among
 // them. Keep false asks the listener to refuse a role nobody holds with its 404 rather than keep
-// the message for the role's next holder, which is what it does when Keep is absent.
+// the message for the role's next holder, which is what it does when Keep is absent. A role
+// message whose MessageBody names no SourceSession is refused with that 404 whatever Keep says,
+// since the dead letter of a kept copy that expires goes to the source session alone.
 type PublishRequest struct {
 	MessageBody
 	Topic string `json:"topic,omitempty"`
@@ -636,15 +638,16 @@ type RoleHolderAs[Text, State any] struct {
 type RoleHolder = RoleHolderAs[string, SessionState]
 
 // RoleRefusalAs is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and
-// a role send through POST /v1/messages/publish that kept nothing answers, with each of its free
-// words held as Text, its Reason as Outcome and the holder's state as State. Reason is the
-// RoleState the resolution found, unclaimed or holder_lapsed. HolderState says which of the three
-// states the claim's holder is in, so a caller can tell a holder that is merely unresponsive -
-// stalled, still claiming, still being stored for - from one that is gone. ClaimReleased is on
-// every lapsed answer and is always false: a lookup takes nothing from a holder, whatever its
-// state, so a caller that used to read this answer as "the role is free now" is told plainly that
-// the claim still stands. A listener of an earlier release leaves some of the fields out, which
-// decodes as their zero values.
+// a role send through POST /v1/messages/publish that kept nothing answers (one with keep false,
+// one that names no source session, its Error says so, or one whose keep failed), with each of
+// its free words held as Text, its Reason as Outcome and the holder's state as State. Reason is
+// the RoleState the resolution found, unclaimed or holder_lapsed. HolderState says which of the
+// three states the claim's holder is in, so a caller can tell a holder that is merely
+// unresponsive - stalled, still claiming, still being stored for - from one that is gone.
+// ClaimReleased is on every lapsed answer and is always false: a lookup takes nothing from a
+// holder, whatever its state, so a caller that used to read this answer as "the role is free now"
+// is told plainly that the claim still stands. A listener of an earlier release leaves some of
+// the fields out, which decodes as their zero values.
 //
 // The listener writes it as RoleRefusal: every word a string, the reason a RoleState and the
 // holder's state a SessionState. A client that must not hold the listener's words as strings

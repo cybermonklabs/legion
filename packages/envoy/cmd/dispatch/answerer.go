@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -87,16 +88,18 @@ func resolveAnswerer(env settingValues, embedderPlace string) (answererConfig, e
 
 // chatEndpoint is the base URL /chat/completions is appended to, as the row name names it: it is
 // required, and an absolute https URL with a host and no query or fragment, since the client
-// builds the route and the query itself. Its refusal names the setting alone: the endpoint as
-// written is where a key or a token would be.
+// builds the route and the query itself.
 func chatEndpoint(env settingValues, name, place string) (string, error) {
 	endpoint := strings.TrimSpace(env.get(name))
 	if endpoint == "" {
 		return "", fmt.Errorf("%s is required when DISPATCH_ANSWERER is %s", name, place)
 	}
+	if err := credentialURLRefusal(name, "an endpoint's URL", endpoint); err != nil {
+		return "", err
+	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("%s (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name)
+		return "", fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name, redact.URL(endpoint))
 	}
 	return endpoint, nil
 }

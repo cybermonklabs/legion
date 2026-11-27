@@ -17,26 +17,25 @@ import (
 
 // TestConfigCheckNamesThePostgresDSNPgxCannotRead: `legion config check`'s reading of postgres_dsn
 // (daemon.CheckStart, which it runs on the configuration it loaded) refuses one pgx cannot read by
-// the setting's name before the store's fixed words, "postgres_dsn: connect to Postgres at
-// 127.0.0.1:1: pgx cannot read its connection settings", and the command prints that refusal as it
-// is. pgx's ParseConfigError quotes the DSN with its password masked but its user name and every
-// other query pair kept, and the error it wraps quotes a query key that has no "=" alone. Each
-// case holds one marker set: the probe's token as a query key (query-key), and the probe's user
-// and password as the user information beside a query that carries its token as an access
-// token's value and an sslmode pgx refuses (user). The capture is CheckStart's own error, which no
-// printer has read yet. The twin shows each DSN as written, and pgx's own error of it, holds its
-// markers. Captures legion.config-check-dsn/<case>.
+// the setting's name and the store's fixed words (pgdsn.ConnectError), "connect to Postgres:
+// postgres_dsn (or LEGION_POSTGRES_DSN) cannot be parsed as a Postgres DSN; …", and the command
+// prints that refusal as it is. pgx's ParseConfigError quotes the DSN with its password masked but
+// its user name and every other query pair kept. The case holds the probe's user and password as
+// the user information beside a query that carries its token as an access token's value and an
+// sslmode pgx refuses (user); a query key no keyword has is refused as the configuration loads, by
+// pgdsn.Refusal, whose own tests read it. The capture is CheckStart's own error, which no printer
+// has read yet. The twin shows the DSN as written, and pgx's own error of it, holds its markers.
+// Captures legion.config-check-dsn/<case>.
 func TestConfigCheckNamesThePostgresDSNPgxCannotRead(t *testing.T) {
 	legionState(t)
 	const (
 		user, password = "not-a-secret-user", "not-a-secret-password"
-		want           = "postgres_dsn: connect to Postgres at 127.0.0.1:1: pgx cannot read its connection settings"
+		want           = "connect to Postgres: postgres_dsn (or LEGION_POSTGRES_DSN) cannot be parsed as a Postgres DSN; the driver's error is not printed, since it quotes the DSN"
 	)
 	cases := []struct {
 		name, dsn string
 		markers   []string
 	}{
-		{"query-key", "postgres://127.0.0.1:1/legion?" + oauth2calltest.Token, []string{oauth2calltest.Token}},
 		{"user", "postgres://" + user + ":" + password + "@127.0.0.1:1/legion?access" + "_token=" + oauth2calltest.Token + "&sslmode=not-a-mode",
 			[]string{user, oauth2calltest.Token}},
 	}

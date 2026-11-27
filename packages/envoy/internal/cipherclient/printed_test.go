@@ -143,6 +143,30 @@ func TestASecretFileThatCannotBeReadIsNamedBySetting(t *testing.T) {
 	}
 }
 
+// TestASignInIssuerHoldingACredentialIsRefusedBySetting: AGENT_SECRETS_SIGNIN_ISSUER with
+// printedSecret written as its user name and password is refused naming the setting alone
+// (oidc.IssuerRefusal), before any request names it; a plain issuer is read.
+func TestASignInIssuerHoldingACredentialIsRefusedBySetting(t *testing.T) {
+	secretFile := filepath.Join(t.TempDir(), "client-secret")
+	if err := os.WriteFile(secretFile, []byte("example-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userinfo := "agent:" + printedSecret + "@"
+	env := map[string]string{
+		SignInClientIDVar:         "example-device-client",
+		SignInClientSecretFileVar: secretFile,
+		SignInIssuerVar:           "https://" + userinfo + "issuer.example",
+	}
+	_, err := SignInFlow(func(name string) string { return env[name] })
+	if want := SignInIssuerVar + " cannot be read: it holds a user name or a password, which no issuer URL has"; err == nil || err.Error() != want {
+		t.Fatalf("SignInFlow = %v, want %q", err, want)
+	}
+	env[SignInIssuerVar] = "https://issuer.example"
+	if flow, err := SignInFlow(func(name string) string { return env[name] }); err != nil || flow.Issuer != "https://issuer.example" {
+		t.Fatalf("SignInFlow = %+v, %v; want the plain issuer read", flow, err)
+	}
+}
+
 // TestARefusedSettingIsNamedAndNotEchoed: a value this package refuses from the environment - an
 // identity kind it does not know, a project list that is not one - is where a credential pasted
 // into the wrong variable shows up, so the refusal names the setting and what it takes, and not

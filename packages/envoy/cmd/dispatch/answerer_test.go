@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // azureChatEnvironment is a boot environment (signInEnvironment's) whose answerer is a chat
@@ -79,6 +80,12 @@ func TestResolveBootConfigRefusesEveryAnswererShapeItCannotUse(t *testing.T) {
 		return azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": value})
 	}
 	const endpointShape = "(expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)"
+	// withheld is how a refusal quotes an endpoint redact.URL does not print: one with no scheme or
+	// no host, since such a value could hold a credential no check can find.
+	const withheld = `="` + redact.NotPrinted + `" ` + endpointShape
+	// queried is the refusal of a query or a fragment, which credentialURLRefusal names by the
+	// setting alone, as it does a user name, a password and an "@" past the host.
+	const queried = " cannot be read: it holds a query or a fragment, which an endpoint's URL has none of"
 	const quotaShape = "(expected a positive integer, the deployment's tokens-per-minute quota)"
 	type refusal struct {
 		name   string
@@ -93,15 +100,15 @@ func TestResolveBootConfigRefusesEveryAnswererShapeItCannotUse(t *testing.T) {
 		{"azure without an endpoint", azureEndpoint(""),
 			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT is required when DISPATCH_ANSWERER is azure"}},
 		{"a plain-http azure endpoint", azureEndpoint("http://chat.example/models"),
-			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT " + endpointShape}},
+			[]string{`DISPATCH_AZURE_CHAT_ENDPOINT="http://chat.example/models" ` + endpointShape}},
 		{"a relative azure endpoint", azureEndpoint("chat.example/models"),
-			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT " + endpointShape}},
+			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT" + withheld}},
 		{"an azure endpoint with no host", azureEndpoint("https:///models"),
-			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT " + endpointShape}},
+			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT" + withheld}},
 		{"an azure endpoint with a query", azureEndpoint("https://chat.example/models?api-version=2024-05-01-preview"),
-			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT " + endpointShape}},
+			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT" + queried}},
 		{"an azure endpoint with a fragment", azureEndpoint("https://chat.example/models#chat"),
-			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT " + endpointShape}},
+			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT" + queried}},
 		{"azure without a deployment", azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_DEPLOYMENT": ""}),
 			[]string{"DISPATCH_AZURE_CHAT_DEPLOYMENT is required when DISPATCH_ANSWERER is azure"}},
 		{"azure without a quota", quota(""),
@@ -120,11 +127,11 @@ func TestResolveBootConfigRefusesEveryAnswererShapeItCannotUse(t *testing.T) {
 		{"endpoint without an endpoint", chatEndpoint(""),
 			[]string{"DISPATCH_CHAT_ENDPOINT is required when DISPATCH_ANSWERER is endpoint"}},
 		{"a plain-http endpoint", chatEndpoint("http://chat.example/v1"),
-			[]string{"DISPATCH_CHAT_ENDPOINT " + endpointShape}},
+			[]string{`DISPATCH_CHAT_ENDPOINT="http://chat.example/v1" ` + endpointShape}},
 		{"a relative endpoint", chatEndpoint("chat.example/v1"),
-			[]string{"DISPATCH_CHAT_ENDPOINT " + endpointShape}},
+			[]string{"DISPATCH_CHAT_ENDPOINT" + withheld}},
 		{"an endpoint with a query", chatEndpoint("https://chat.example/v1?model=chat-model"),
-			[]string{"DISPATCH_CHAT_ENDPOINT " + endpointShape}},
+			[]string{"DISPATCH_CHAT_ENDPOINT" + queried}},
 		{"endpoint without a token file", endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_TOKEN_FILE": ""}),
 			[]string{"DISPATCH_CHAT_TOKEN_FILE is required when DISPATCH_ANSWERER is endpoint"}},
 		{"endpoint without a model", endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_MODEL": ""}),

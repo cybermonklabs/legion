@@ -148,9 +148,9 @@ type Settings struct {
 // its authority by setting, the name of the setting that holds urls, alone. An entry's user
 // information is a NATS credential and its query can carry one. A "/", "?" or "#" written into the
 // user information ends the authority there, so the host url.Parse reads is a piece of the
-// credential, and nothing tells that entry from one whose path, query or fragment holds an "@", as
-// the bus names a server (natsServerName). An entry that does not parse is never printed either,
-// since nothing can say which part of it is the host.
+// credential, and nothing tells that entry from one whose path, query or fragment holds an "@". An
+// entry that does not parse is never printed either, since nothing can say which part of it is the
+// host.
 func HubHosts(setting string, urls []string) string {
 	hosts := make([]string, len(urls))
 	for i, entry := range urls {
@@ -317,7 +317,7 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
 		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithPromptReconnect())
 	if err != nil {
-		// The bus names an entry that does not parse by its class alone, so err quotes no entry.
+		// The bus names an entry it cannot read by its position and a fixed reason, so err quotes no entry.
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", HubHosts("BROKER_NATS_URLS", settings.URLs), err)
 	}
 	s := &Service{

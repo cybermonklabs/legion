@@ -1,11 +1,10 @@
 kind: Fixed
 body: |-
   More refusals name a setting, never its value: the broker's refusal of a plain-http
-  `BROKER_EDGE_URL` or `BROKER_EDGE_MACHINE_LOGIN_URL` outside a local run, Dispatch's refusal of a
-  `DISPATCH_SIGNIN_DOMAIN` beside another `DISPATCH_SIGNIN_ISSUER`, and the dev sign-in's refusal
-  of a dashboard origin off this machine. The NATS callout no longer prints a service token's
-  unverified `iss` claim when it refuses the token, and delivery no longer prints a pull request's
-  URL from GitHub when it cannot read it or cannot resolve its issue.
+  `BROKER_EDGE_URL` or `BROKER_EDGE_MACHINE_LOGIN_URL` outside a local run, and the dev sign-in's
+  refusal of a dashboard origin off this machine. The NATS callout no longer prints a service
+  token's unverified `iss` claim when it refuses the token, and delivery no longer prints a pull
+  request's URL from GitHub when it cannot read it or cannot resolve its issue.
 time: 2026-11-25T07:30:27Z
 custom:
     Issue: pr4368

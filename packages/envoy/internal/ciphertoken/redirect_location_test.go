@@ -56,7 +56,7 @@ func TestARedirectOfAnIntrospectionPrintsNoLocationOfIt(t *testing.T) {
 	broker := unparsedEcho(t)
 	rig := newRig(t, func(o *ciphertoken.Options) {
 		o.BrokerURL = broker
-		o.Account = ciphertoken.NewAccountToken(file)
+		o.Account = ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", file)
 	})
 	_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, "a-token-asked-about-at-a-redirect"))
 	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) {

@@ -442,6 +442,13 @@ utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # however long a loaded machine took between that write and this read.
 now() { printf %s "$EPOCHSECONDS"; }
 
+# timer_now WHAT: sets NOW to the second, $EPOCHSECONDS, that a bounded wait of a step's stop
+# (runner_wait, pg_disk_watch_stop) judges its bound by; each of those reads its clock only
+# through this, once per judgment, and WHAT says which wait reads it and what it judges. A test
+# that sources this file replaces it to keep each reading, so it holds a wait to its bound by the
+# wait's own clock rather than its own (cluster.test.sh's (dd) and (ee)).
+timer_now() { NOW=$EPOCHSECONDS; }
+
 # kube ARGS: kubectl in the copy's namespace, bounded by timeout (never --request-timeout, which
 # drops a pod's in-cluster config: kubernetes/kubernetes#93474). kube_for SECONDS ARGS: the same
 # with its own bound.
@@ -1609,13 +1616,15 @@ pg_disk_watch() {
 # path out of a step hangs on a watcher that is stuck. The line it writes names the step, since
 # a watcher killed there left whatever it was doing in the copy half done.
 pg_disk_watch_stop() {
-  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=()
+  local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline kids=() NOW
   [ -n "$pid" ] || return 0
   PG_DISK_WATCHER="" PG_DISK_WATCH_STEP=""
   kill -- "$pid" 2>/dev/null || true
-  deadline=$((EPOCHSECONDS + PG_DISK_STOP_SECONDS))
+  timer_now "stop $name term"
+  deadline=$((NOW + PG_DISK_STOP_SECONDS))
   while kill -0 -- "$pid" 2>/dev/null; do
-    if ((EPOCHSECONDS >= deadline)); then
+    timer_now "stop $name poll deadline=$deadline"
+    if ((NOW >= deadline)); then
       read -ra kids <"/proc/$pid/task/$pid/children" 2>/dev/null || true
       kill -KILL -- "$pid" "${kids[@]}" 2>/dev/null || true
       note "step $name: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed"
@@ -2001,7 +2010,9 @@ runner_stop() {
 # the run alive the heartbeat stops renewing the lock at its next pass -- rather than a step polling
 # on for an exit status nothing is left to record.
 runner_wait() {
-  local name=$1 deadline=$((EPOCHSECONDS + $2)) log_dir=${3:-$RUN_DIR/logs} pid=${4:-} start=${5:-} rc guard
+  local name=$1 deadline log_dir=${3:-$RUN_DIR/logs} pid=${4:-} start=${5:-} rc guard NOW
+  timer_now "wait $name start"
+  deadline=$((NOW + $2))
   # signal is the stop that falls due next (TERM, then KILL, then none once both left this pod),
   # and due is when it falls due: the deadline for the TERM, a grace after the TERM left for the
   # KILL. Each signal gets one grace from due before the wait gives up on it. Once both have left
@@ -2017,7 +2028,8 @@ runner_wait() {
       ((sent == 0)) || rc=timeout
       break
     fi
-    if [ -n "$signal" ] && ((EPOCHSECONDS >= due)); then
+    timer_now "wait $name poll signal=${signal:-none} due=$due"
+    if [ -n "$signal" ] && ((NOW >= due)); then
       guard=0
       runner_stop "$name" "$signal" || guard=$?
       case $guard in
@@ -2030,7 +2042,8 @@ runner_wait() {
           signal=""
         fi
         sent=1
-        due=$((EPOCHSECONDS + RUNNER_STOP_GRACE_SECONDS))
+        timer_now "wait $name sent"
+        due=$((NOW + RUNNER_STOP_GRACE_SECONDS))
         ;;
       1)
         note "job $name: the wait ends, sending no SIG$signal and giving no exit status"
@@ -2038,14 +2051,15 @@ runner_wait() {
         ;;
       2) note "job $name: no read of the lock answered, so the wait sends no SIG$signal at this poll; it reads the lock again at the next one" ;;
       *)
-        ((EPOCHSECONDS - due < RUNNER_STOP_GRACE_SECONDS)) || {
+        timer_now "wait $name unsent due=$due"
+        ((NOW - due < RUNNER_STOP_GRACE_SECONDS)) || {
           note "job $name: no SIG$signal reached the runner job within $RUNNER_STOP_GRACE_SECONDS s of when it fell due, because kubectl could not exec into the runner pod; the wait ends and gives no exit status"
           return 1
         }
         note "job $name: kubectl could not send the runner job its SIG$signal; the wait tries again at its next poll"
         ;;
       esac
-    elif [ -z "$signal" ] && ((EPOCHSECONDS >= due)); then
+    elif [ -z "$signal" ] && ((NOW >= due)); then
       note "job $name: no exit status was read from the runner pod within $RUNNER_STOP_GRACE_SECONDS s of the SIGKILL; the wait ends and gives no exit status"
       return 1
     fi

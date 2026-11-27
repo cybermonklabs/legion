@@ -57,7 +57,7 @@ func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
 	client := *dispatch.server.Client()
 	transport := &boundTransport{inner: client.Transport}
 	client.Transport = transport
-	opts.Dispatch = NewDispatch(dispatch.server.URL, ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), &client)
+	opts.Dispatch = NewDispatch(dispatch.server.URL, ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, "projected-token")), &client)
 	before := time.Now()
 	New(t.Context(), opts).consider(t.Context(), pending())
 	after := time.Now()

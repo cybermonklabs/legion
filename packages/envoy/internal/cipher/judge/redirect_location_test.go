@@ -30,7 +30,7 @@ func TestAJudgeReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 		{"elsewhere", func(bearer string) string { return redirectstest.To(dead, bearer) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			dispatch := NewDispatch(redirectstest.EchoBearer(t, c.location), ciphertoken.NewAccountToken(tokenFile(t, token)), &http.Client{})
+			dispatch := NewDispatch(redirectstest.EchoBearer(t, c.location), ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, token)), &http.Client{})
 			_, err := dispatch.Issue(t.Context(), testIssue)
 			if err == nil {
 				t.Fatal("the issue read answered no error")

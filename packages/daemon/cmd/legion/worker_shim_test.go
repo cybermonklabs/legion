@@ -535,9 +535,9 @@ exit 9
 
 // The shim's lines and its refusals pass the URL rule. An Oh My Pi extension that failed on a
 // URL carrying a user name and a token in its query is shown on the pane as the shim summarizes
-// an extension_error event (internal/shim's summarize), keeping the URL's host and path, and a
-// --connect the shim refuses is refused naming the flag alone: neither the user name nor the token
-// reaches the pane.
+// an extension_error event (internal/shim's summarize), naming the URL by its scheme, the mark of
+// a URL with credentials and its path, and a --connect the shim refuses is refused naming the flag
+// alone: neither the user name nor the token reaches the pane.
 func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 	// Not parallel: it runs `legion worker-shim` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	dir := t.TempDir()
@@ -566,7 +566,7 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 			name:   "the agent's extension_error, summarized on the pane",
 			args:   []string{"--connect", "unix://" + socket, "--boot-token-file", token, "--", "sh", "-c", `printf '%s\n' "$0"; exit 7`, failed},
 			daemon: true, code: 7,
-			shown: "fetch https://daemon.example/legion/v1/claims failed", planted: "planted-query-token-1",
+			shown: "fetch https://[a URL with credentials]/legion/v1/claims failed", planted: "planted-query-token-1",
 		},
 		{
 			name:  "a --connect the shim refuses",

@@ -339,7 +339,7 @@ func main() {
 	if cfg.SignInOff {
 		slog.Info("approval sign-in off", "detail", "BROKER_SIGNIN=off: no approval page is served, and a request a person would approve is denied at once")
 	} else {
-		slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
+		slog.Info("approval sign-in on", "issuer", redact.URL(cfg.SignIn.Issuer), "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
 	}
 	// The database, and with it the AWS config loaded once when anything needs it: an IAM-form
 	// BROKER_DATABASE_URL, whose connections sign in with RDS IAM tokens minted from it, and the
@@ -523,8 +523,7 @@ func main() {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
 	if started.EdgeListener != nil {
-		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
-			"verification_uri", "(the page BROKER_EDGE_MACHINE_LOGIN_URL names; not printed)", "workspace_domains", cfg.WorkspaceDomains())
+		logEdgeListening(started.EdgeListener.Addr().String(), &cfg)
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
@@ -613,7 +612,7 @@ func main() {
 		// (store.SignInTrade.EndUnrecorded); unset, such a sign-in goes on as before.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
 		exchangeConfig.PersonSignIns = enroll.PersonSignIns(endUnrecordedSignIns(projectAccess))
-		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
+		slog.Info("google person sign-in", "issuer", redact.URL(cfg.GoogleOIDCIssuer), "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
 		// The GitHub issuer has no second reader, so it keeps a key source of its own, read here
@@ -711,7 +710,7 @@ func main() {
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
-		w := wake.NewEnvoy(cfg.EnvoyURL, ciphertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), &http.Client{Timeout: 10 * time.Second})
+		w := wake.NewEnvoy(cfg.EnvoyURL, ciphertoken.NewAccountToken("BROKER_ENVOY_ACCOUNT_TOKEN_FILE", cfg.EnvoyAccountTokenFile), &http.Client{Timeout: 10 * time.Second})
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's
 			if sid == "" {
@@ -1613,7 +1612,7 @@ func projectAccessClients(baseURL, tokenFile string) (*projectaccess.Client, api
 	if baseURL == "" {
 		return nil, nil
 	}
-	account := ciphertoken.NewAccountToken(tokenFile)
+	account := ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", tokenFile)
 	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
 }
 
@@ -1705,7 +1704,7 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 	if cfg.JudgeDispatchURL == "" {
 		return nil
 	}
-	dispatch := judge.NewDispatch(cfg.JudgeDispatchURL, ciphertoken.NewAccountToken(cfg.JudgeDispatchTokenFile), &http.Client{Timeout: judgeDispatchTimeout})
+	dispatch := judge.NewDispatch(cfg.JudgeDispatchURL, ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", cfg.JudgeDispatchTokenFile), &http.Client{Timeout: judgeDispatchTimeout})
 	return &dispatch
 }
 
@@ -1868,7 +1867,7 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		return verifiers{}, err
 	}
 	services := slices.Sorted(maps.Values(cfg.VMServicesByAccount))
-	slog.Info("google machine identity", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.GoogleOIDCAudience,
+	slog.Info("google machine identity", "issuer", redact.URL(cfg.GoogleOIDCIssuer), "audience", cfg.GoogleOIDCAudience,
 		"services", strings.Join(slices.Compact(services), ","), "fleets", len(cfg.ExchangeGoogleAccounts))
 	found.GoogleKeys = googleKeys
 	// One verifier on that key set, for a listed caller that holds a Google identity rather
@@ -1983,10 +1982,10 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 	switch {
 	case check == oidc.ClientCheckReady && logged.notReady != "":
-		slog.Info(clientCheckReadyMessage, "issuer", signIn.Issuer, "was", logged.notReady)
+		slog.Info(clientCheckReadyMessage, "issuer", redact.URL(signIn.Issuer), "was", logged.notReady)
 		logged.notReady = ""
 	case check != oidc.ClientCheckReady && check != logged.notReady:
-		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", signIn.Issuer, "error", err)
+		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", redact.URL(signIn.Issuer), "error", redact.Error(err, signIn.Issuer))
 		logged.notReady = check
 	}
 	err = st.RecordClientCheck(ctx, string(check), time.Now())
@@ -2041,6 +2040,15 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s, and broker with no argument serves\n",
 		args[0], endSessionsCommand, versionsCommand, profilesCheckForm)
 	return 2
+}
+
+// logEdgeListening logs the edge's bind, BROKER_EDGE_URL through redact.URL, and the page
+// BROKER_EDGE_MACHINE_LOGIN_URL names by that setting alone, as the machine login line names
+// BROKER_MACHINE_LOGIN_URL's: redact.URL prints a plain path as written, and a login page's path is
+// where a credential would be.
+func logEdgeListening(addr string, cfg *config.Config) {
+	slog.Info("broker edge listening", "addr", addr, "url", redact.URL(cfg.EdgeURL),
+		"verification_uri", "(the page BROKER_EDGE_MACHINE_LOGIN_URL names; not printed)", "workspace_domains", cfg.WorkspaceDomains())
 }
 
 // versions prints what broker_schema_migrations records of each version against the migrations

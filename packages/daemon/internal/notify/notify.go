@@ -255,6 +255,11 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 //     — the claim a released role leaves standing until the listener's reaper frees it — keeping
 //     nothing, as it answers keep: false: ErrHolderUnresponsive for a holder_state of
 //     unresponsive, and ErrNoHolder for any other state, gone among them.
+//   - 404 unclaimed or holder_lapsed is also what a listener that keeps nothing for a publish
+//     naming no source session answers a role no live session holds, since no notice of an expired
+//     copy could reach the sender; this publisher names none, so against such a listener this is
+//     the answer for every role with no live holder, read as above (ErrNoHolder or
+//     ErrHolderUnresponsive), and the caller is the message's keeper.
 //   - Every other answer is the error Publish makes of it.
 //
 // A repeat of the same dedupe key while its copy is still on the lane inside its hour is answered

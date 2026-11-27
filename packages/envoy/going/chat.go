@@ -142,6 +142,9 @@ type HTTPConfig struct {
 // POST per turn does not need a vendor SDK, and reading the stream frame by frame is what lets
 // the answer reach the reader while the model is still writing it.
 type HTTPClient struct {
+	// endpoint is the configured endpoint, and url the route the client posts to; a transport
+	// failure is printed through redact.CauseAt over both.
+	endpoint string
 	url      string
 	identity string
 	model    string
@@ -179,6 +182,7 @@ func NewHTTPClient(cfg HTTPConfig) (*HTTPClient, error) {
 		target.RawQuery = url.Values{"api-version": {cfg.APIVersion}}.Encode()
 	}
 	return &HTTPClient{
+		endpoint: cfg.Endpoint,
 		url:      target.String(),
 		identity: cfg.Place + ":" + strings.ToLower(endpoint.Host) + "/" + cfg.Model,
 		model:    cfg.Model,
@@ -321,7 +325,12 @@ func (c *HTTPClient) Chat(ctx context.Context, request ChatRequest, onText func(
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("going: chat completions: %w", redact.Cause(err, c.url))
+		// net/http's error quotes the request URL with only a password masked. CauseAt prints the
+		// failure without that quote: its own text when the endpoint is a clean http(s) URL and the
+		// URL net/http names is this client's own (a refused dial's address, a TLS failure by
+		// redact's fixed words for it), and its class alone otherwise, a redirect's target or an
+		// endpoint holding a credential among them (boot refuses one).
+		return nil, fmt.Errorf("going: chat completions: %w", redact.CauseAt(err, c.endpoint, c.url))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {

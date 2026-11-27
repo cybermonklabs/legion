@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	dispatchcipher "github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/dashboard"
@@ -66,6 +67,8 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 const (
@@ -424,7 +427,7 @@ func main() {
 
 	database, err := store.Open(ctx, boot.DatabaseURL)
 	if err != nil {
-		slog.Error("dispatch: open database", "error", databaseURLRefusal(err))
+		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)
 	}
 	if err := database.Migrate(ctx); err != nil {
@@ -580,7 +583,7 @@ func main() {
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
-		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		logServiceTokens(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -1518,6 +1521,52 @@ func dispatchStreamOptions(boot bootConfig, env settingValues) []bus.ConnectOpti
 	}
 }
 
+// credentialURLRefusal is why raw, the value of the setting named setting, is refused as a URL
+// that can carry a credential, or nil: one with a user name or a password, an "@" after its host
+// (natsurl.UserinfoPastHost: where a credential holding a "/", "?" or "#" written as the user
+// lands), a query or a fragment, each named by the setting alone, as the daemon refuses them in
+// agent_secrets.url. what names the URL the setting holds, which has none of them. A value that
+// does not parse is nil here: the caller's shape check names it through redact.URL. Dispatch
+// builds every request to such a URL on it, and net/http masks a password but not a user name or
+// a query in the errors it returns, which reach Dispatch's log and, from the Envoy listener's
+// client, its API's answers.
+func credentialURLRefusal(setting, what, raw string) error {
+	parsed, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return nil
+	case parsed.User != nil:
+		return fmt.Errorf("%s cannot be read: it holds a user name or a password, which %s has none of", setting, what)
+	case natsurl.UserinfoPastHost(parsed):
+		return errors.New(setting + " cannot be read: " + natsurl.UserinfoPastHostReason)
+	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(raw, "#"):
+		return fmt.Errorf("%s cannot be read: it holds a query or a fragment, which %s has none of", setting, what)
+	}
+	return nil
+}
+
+// gitHubAPIBaseRefusal is why raw, DISPATCH_GITHUB_API_BASE's value, is refused, or nil: one
+// credentialURLRefusal refuses, and one that is no absolute http(s) URL with a host, named through
+// redact.URL, as ENVOY_URL's shape refusal is. credentialURLRefusal reads only a value net/url
+// parses as a URL with an authority, so the shape check refuses what it cannot read: a value that
+// does not parse (an unencoded "%" or a space in its password), and one with no "//" after its
+// scheme (`ghuser:<token>@ghe.example/api/v3`, read as the scheme `ghuser` and an opaque rest). The
+// GitHub App client builds every request on the base and names the request's URL in its own
+// words on a failed call (githubapp's `<method> <target>: …`), password and all, which reaches
+// the 502 of the App installation route, a CI check's detail and the GitHub read record /healthz
+// serves. The server and redeliver-webhooks each read it. A base with a path (GitHub Enterprise's
+// `/api/v3`) loads.
+func gitHubAPIBaseRefusal(raw string) error {
+	if err := credentialURLRefusal("DISPATCH_GITHUB_API_BASE", "the GitHub API's base URL", raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("DISPATCH_GITHUB_API_BASE=%q (expected an absolute http(s) URL with a host)", redact.URL(raw))
+	}
+	return nil
+}
+
 // resolveBootConfig is the server's configuration from what the settings table read (env),
 // checked before anything connects. It holds the settings main hands on as values; three groups
 // reach their readers from env instead, through the table's lookup: the GitHub App credentials
@@ -1551,6 +1600,16 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	// Before the dev sign-in fence parses it (loopbackDatabase), which would print part of a
+	// password a refused DSN leaves in its host or in pgx's quote of it.
+	if err := pgdsn.Refusal(store.DSNSetting, boot.DatabaseURL); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.GitHubAPIBase != "" {
+		if err := gitHubAPIBaseRefusal(boot.GitHubAPIBase); err != nil {
+			return bootConfig{}, err
+		}
 	}
 	if fallback := boot.ProjectOwnerFallback; fallback != "" {
 		if err := principal.CheckPersonLogin(fallback); err != nil {
@@ -1700,11 +1759,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if envoyURL == "" {
 		envoyURL = defaultEnvoyURL
 	}
-	// Both of ENVOY_URL's refusals name the setting alone: the URL as written is where a
-	// credential would be, in its user information or its query.
+	if err := credentialURLRefusal("ENVOY_URL", "the Envoy listener's URL", envoyURL); err != nil {
+		return bootConfig{}, err
+	}
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return bootConfig{}, errors.New("ENVOY_URL (expected an absolute http(s) URL)")
+		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", redact.URL(envoyURL))
 	}
 	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
 
@@ -1729,9 +1789,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_URL (expected an absolute http(s) URL with no user information, path, query or fragment)")
 		}
 		boot.AgentSecretsURL = agentSecretsURL
-		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"))
+		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get(dispatchcipher.TokenFileSetting))
 		if boot.AgentSecretsTokenFile == "" {
-			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
+			return bootConfig{}, errors.New(dispatchcipher.TokenFileSetting + " is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
 	}
 	// The value is strict, as DISPATCH_DEV_SIGNIN's is: a misspelt `on` must refuse the boot, not
@@ -1805,7 +1865,7 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 		}
 	}
 	if !routes.LoopbackURL(boot.EnvoyURL) {
-		return errors.New("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL must name 127.0.0.1, [::1] or localhost")
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", redact.URL(boot.EnvoyURL))
 	}
 	return nil
 }
@@ -1843,13 +1903,12 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a
 // dev-sign-in server serves to any local process must be a scratch database here. pgx parses
 // both the URL and the key=value forms, multi-host lists included, exactly as store.Open will. A
-// DATABASE_URL pgx cannot read is refused by its setting in fixed words (redact.Masked): pgx's
-// ParseConfigError quotes the URL with its password masked but its user name and every other
-// query pair kept, and the error it wraps can quote a query key alone.
+// DSN pgx cannot parse is named through pgdsn.ConnectError, never by pgx's text, which quotes it;
+// resolveBootConfig has refused one whose host would hold part of a password (pgdsn.Refusal).
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL: %w", redact.Masked(err, "pgx cannot read its connection settings"))
+		return pgdsn.ConnectError(store.DSNSetting, databaseURL, err)
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {
@@ -2402,6 +2461,13 @@ func (g *gitHubReads) member() *gitHubReadsMember {
 	}
 }
 
+// logServiceTokens logs the issuer and audience boot verifies service-account tokens under, the
+// issuer through redact.URL: oidc.IssuerRefusal has refused a credential in its userinfo, past its
+// host, or in its query or fragment, and redact.URL prints none of a value that is no plain URL.
+func logServiceTokens(boot bootConfig) {
+	slog.Info("dispatch: verifying service-account tokens", "issuer", redact.URL(boot.OIDCIssuer), "audience", boot.OIDCAudience)
+}
+
 // serviceTokenVerifier is the verifier of the projected service-account tokens boot's
 // DISPATCH_OIDC_ISSUER issues to DISPATCH_OIDC_AUDIENCE, nil when boot configures none. It reads
 // nothing: the issuer is discovered in the background (oidc.LazyVerifier.Run, which main starts at
@@ -2441,7 +2507,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	}
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
-		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
+		Account:   ciphertoken.NewAccountToken(dispatchcipher.TokenFileSetting, boot.AgentSecretsTokenFile),
 		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and

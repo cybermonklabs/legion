@@ -2,8 +2,7 @@ kind: Fixed
 body: |-
   A refused URL setting is named, never printed as written: the broker's refusal of
   `BROKER_PUBLIC_URL`, `BROKER_EDGE_URL` and `BROKER_SIGNIN_ISSUER`, Dispatch's of
-  `DISPATCH_CHAT_ENDPOINT`, `DISPATCH_AZURE_CHAT_ENDPOINT`, `DISPATCH_AZURE_EMBED_ENDPOINT`,
-  `DISPATCH_AGENT_SECRETS_URL`, `ENVOY_URL`, `DISPATCH_SERVER_URL` and `NATS_URLS`, and the
+  `DISPATCH_AGENT_SECRETS_URL`, `DISPATCH_SERVER_URL` and `NATS_URLS`, and the
   broker's refusal of a subject token issuer configured in part, which now says which of its
   parts are set. Each quoted the value, where a key, a password or a token can be written. The
   broker's approval page, refusing a `BROKER_PUBLIC_URL` that is no absolute http or https URL,

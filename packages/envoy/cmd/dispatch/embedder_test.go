@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // testAzureKey is the API key azureEmbedEnvironment sets, which no log line or refusal may carry.
@@ -85,6 +86,12 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 		return azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE": value})
 	}
 	const endpointShape = "(expected an absolute https URL with a host and no query or fragment, the base URL the embeddings route is appended to)"
+	// withheld is how a refusal quotes an endpoint redact.URL does not print: one with no scheme or
+	// no host, since such a value could hold a credential no check can find.
+	const withheld = `="` + redact.NotPrinted + `" ` + endpointShape
+	// queried is the refusal of a query or a fragment, which credentialURLRefusal names by the
+	// setting alone, as it does a user name, a password and an "@" past the host.
+	const queried = "DISPATCH_AZURE_EMBED_ENDPOINT cannot be read: it holds a query or a fragment, which an endpoint's URL has none of"
 	const quotaShape = "(expected a positive integer, the deployment's tokens-per-minute quota)"
 	type refusal struct {
 		name   string
@@ -99,17 +106,17 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 		{"azure without an endpoint", endpoint(""),
 			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT is required when DISPATCH_EMBEDDER is azure"}},
 		{"a plain-http endpoint", endpoint("http://embed.example/models"),
-			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT " + endpointShape}},
+			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="http://embed.example/models" ` + endpointShape}},
 		{"a relative endpoint", endpoint("embed.example/models"),
-			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT " + endpointShape}},
+			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT" + withheld}},
 		{"an endpoint with no host", endpoint("https:///models"),
-			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT " + endpointShape}},
+			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT" + withheld}},
 		{"an endpoint with a query", endpoint("https://embed.example/models?api-version=2024-05-01-preview"),
-			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT " + endpointShape}},
+			[]string{queried}},
 		{"an endpoint with an empty query", endpoint("https://embed.example/models?"),
-			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT " + endpointShape}},
+			[]string{queried}},
 		{"an endpoint with a fragment", endpoint("https://embed.example/models#embeddings"),
-			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT " + endpointShape}},
+			[]string{queried}},
 		{"azure without a quota", quota(""),
 			[]string{"DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE is required when DISPATCH_EMBEDDER is azure"}},
 		{"a zero quota", quota("0"), []string{`DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE="0" ` + quotaShape}},
@@ -127,9 +134,9 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 		{"the keyless sign-in without its token file", azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_FEDERATED_TOKEN_FILE": ""})),
 			[]string{"DISPATCH_AZURE_TENANT_ID, DISPATCH_AZURE_CLIENT_ID set, DISPATCH_AZURE_FEDERATED_TOKEN_FILE missing"}},
 		{"an unreadable key file", azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY": "", "DISPATCH_AZURE_EMBED_KEY_FILE": missing}),
-			[]string{"DISPATCH_AZURE_EMBED_KEY_FILE names " + missing + ", which could not be read, and DISPATCH_AZURE_EMBED_KEY is not read in its place"}},
+			[]string{"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place"}},
 		{"a blank key file beside a bare key", azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": blank}),
-			[]string{"DISPATCH_AZURE_EMBED_KEY_FILE names " + blank + ", which is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place"}},
+			[]string{"DISPATCH_AZURE_EMBED_KEY_FILE names a file that is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place"}},
 	}
 	// Every DISPATCH_AZURE_EMBED_ variable, a _FILE form included, is refused under Bedrock,
 	// whether DISPATCH_EMBEDDER says so or is unset.

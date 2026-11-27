@@ -1,9 +1,5 @@
 kind: Fixed
 body: |-
-  `legion state`'s first line names the daemon it read by the URL rule: its scheme, host, port and
-  path, with no user information. That line is on standard output, which the URL rule does not pass,
-  and it printed `LEGION_DAEMON_URL` as it was set, a password in its user information included.
-
   `legion`'s refusal of a daemon answer that does not decode names the failure in the fixed text the
   answer reader uses (`oauth2call.DecodeError`: the type, the member of it that did not decode and
   the JSON kind it held, never a value or a member name the answer wrote). An answer that decodes

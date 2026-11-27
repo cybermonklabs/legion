@@ -68,7 +68,7 @@ func storedOrder(ctx context.Context, args []string, databaseURL string, out io.
 	}
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
-		fmt.Fprintf(out, "stored-order: open database: %v\n", databaseURLRefusal(err))
+		fmt.Fprintf(out, "stored-order: open database: %v\n", err)
 		return 1
 	}
 	defer database.Pool.Close()

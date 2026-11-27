@@ -61,7 +61,7 @@ func TestADispatchReadFollowsNoRedirect(t *testing.T) {
 	}
 	for _, c := range clients {
 		t.Run(c.name, func(t *testing.T) {
-			reader := dispatchread.New(redirectstest.EchoBearer(t, location), ciphertoken.NewAccountToken(file), c.client, 10*time.Second, 1<<20)
+			reader := dispatchread.New(redirectstest.EchoBearer(t, location), ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", file), c.client, 10*time.Second, 1<<20)
 			answer, err := reader.Get(t.Context(), path, nil)
 			text := sent()
 			redacttest.RequireNoPiece(t, "dispatchread.redirect-followed/"+c.name, text, token)
@@ -85,7 +85,7 @@ func TestADispatchReadFollowsNoRedirect(t *testing.T) {
 		})
 		for _, c := range clients {
 			t.Run(c.name+"-"+code, func(t *testing.T) {
-				reader := dispatchread.New(moved(t, status), ciphertoken.NewAccountToken(file), c.client, 10*time.Second, 1<<20)
+				reader := dispatchread.New(moved(t, status), ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", file), c.client, 10*time.Second, 1<<20)
 				answer, err := reader.Get(t.Context(), path, nil)
 				text := sent()
 				redacttest.RequireNoPiece(t, "dispatchread.redirect-followed/"+c.name+"-"+code, text, token)

@@ -21,7 +21,7 @@ func accountFile(t *testing.T, token string) ciphertoken.Account {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return ciphertoken.NewAccountToken(file)
+	return ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", file)
 }
 
 // asked is what one read reached the stand-in with.
