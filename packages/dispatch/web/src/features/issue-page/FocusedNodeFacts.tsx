@@ -22,6 +22,9 @@ import {
   pageRowAct,
 } from "../../theme/classes";
 import { storedMessages } from "../agent-view/stored-messages";
+import { AskEditHistory } from "../ask-body/AskCompletionCard";
+import { AskHandOn } from "../ask-body/AskHandOn";
+import { markdownText } from "../ask-body/ask-text";
 import {
   type DeliveryOutcome,
   deliveryMode,
@@ -33,8 +36,6 @@ import {
   rowAnsweredWithError,
   withGuidance,
 } from "../conversation/delivery";
-import { AskEditHistory } from "../inbox/AskCompletionCard";
-import { AskHandOn } from "../inbox/AskHandOn";
 import { AskRecipients } from "../inbox/AskRecipients";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
@@ -263,7 +264,7 @@ function AskThreadFacts({
           {/* Marked as a node's words, so any link `AskEditHistory`'s renderer draws inside an
               earlier wording of the question takes the words' own ink, never the old application's
               link blue. `AskRecipients` draws no renderer or row chip. */}
-          <AskEditHistory ask={ask} edits={thread.edits ?? []} />
+          <AskEditHistory ask={ask} edits={thread.edits ?? []} renderText={markdownText} />
           <AskRecipients
             askId={ask.id}
             claimant={thread.claimant}

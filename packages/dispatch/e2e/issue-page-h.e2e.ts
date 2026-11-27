@@ -25,7 +25,7 @@ import { setLiveSessions } from "./agents";
 import {
   createPriority,
   getIssue,
-  getLegionIssue,
+  getIssueLegion,
   patchIssue,
   putProjectDefaultRepository,
 } from "./api";
@@ -355,7 +355,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
       // its links on GitHub.
       await page.setViewportSize(viewportAt(1440));
       const traffic = watchRequests(page);
-      await gotoIssue(page, `/issues/${one}`);
+      await gotoIssue(page, `/issues/${one}/conversation`);
       await expect(marginSlot(page)).toHaveCount(1);
       await expect
         .poll(() => traffic.settled(), { message: "the load's reads never ended" })
@@ -462,7 +462,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
     // (4) On a phone: Escape in a box, the three sections inside Details' width, and a pin's
     // and a document's link that close it.
     await page.setViewportSize(viewportAt(390));
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
     // Escape in the blocked-by box leaves the box's editor and goes no further: the sheet stays.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
@@ -530,7 +530,7 @@ test("every property with a value is visible in Details at every width @phone", 
     // (5) Every width: the rows' order, the twenty labels whole, and each value in its row.
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${one}`);
+      await gotoIssue(page, `/issues/${one}/conversation`);
       await openDetails(page);
       // The labels of Development's rows, in the order they stand (`details-leaves.tsx`'s `Row`).
       await expect(
@@ -818,7 +818,7 @@ test("every property with a value is visible in Details at every width @phone", 
     // (6) Blocks, and Files and documents, draw their first `PAGE_SIZE` entries and under them
     // Show more, which says how many are left, read on a phone.
     await page.setViewportSize(viewportAt(390));
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
     const oneLeft = showMoreName(ONE_PAST_PAGE - PAGE_SIZE);
     const blocking = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link");
@@ -880,7 +880,7 @@ test("every property with a value is visible in Details at every width @phone", 
     if (!desktopProject) return;
     // (7) At 1440 px, the prototype's sizes and the page's own colours.
     await page.setViewportSize(viewportAt(1440));
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
     const row = await detailsRow(page, PROPERTY_LABELS.parent).evaluate((element) => {
       const style = getComputedStyle(element);
@@ -1034,7 +1034,7 @@ test("a label of the most characters Dispatch takes is whole in Details at every
     const desktopProject = test.info().project.name !== "iphone";
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${two}`);
+      await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.labels);
       const label = row.getByText(LONGEST_LABEL, { exact: true });
@@ -1069,7 +1069,7 @@ test("a repository of a long name is whole in Details at every width @phone", as
     const desktopProject = test.info().project.name !== "iphone";
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${two}`);
+      await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.repository);
       const repository = row.getByText(LONG_REPOSITORY, { exact: true }).first();
@@ -1107,7 +1107,7 @@ test("Add brings a control it reaches into view, so its popover opens under Deta
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { two } = seeded.keys;
     await page.setViewportSize({ height: 400, width: 390 });
-    await gotoIssue(page, `/issues/${two}`);
+    await gotoIssue(page, `/issues/${two}/conversation`);
     await openDetails(page);
     const labelsControl = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
       name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
@@ -1144,7 +1144,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one, three, two } = seeded.keys;
     const reopen = async (key: string) => {
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       await openDetails(page);
     };
 
@@ -1656,7 +1656,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       // still drawn once ONE's own priority is removed.
       const inherited = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
       await patchIssue(parent, { advances: [inherited.id] });
-      await gotoIssue(page, `/issues/${one}`);
+      await gotoIssue(page, `/issues/${one}/conversation`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
       await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
@@ -1697,7 +1697,7 @@ test.describe("the shared controls of Details keep the focus while their write l
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { one } = seeded.keys;
       await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
-      await gotoIssue(page, `/issues/${one}`);
+      await gotoIssue(page, `/issues/${one}/conversation`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
       const trigger = advances.getByRole("button", { name: priorityTriggerName(one, false) });
@@ -1748,7 +1748,7 @@ test.describe("the shared controls of Details keep the focus while their write l
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { three, two } = seeded.keys;
-      await gotoIssue(page, `/issues/${two}`);
+      await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
       const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
@@ -1788,7 +1788,7 @@ test.describe("the shared controls of Details keep the focus while their write l
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { three, two } = seeded.keys;
-      await gotoIssue(page, `/issues/${two}`);
+      await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
       const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
@@ -1838,7 +1838,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
   test.setTimeout(120_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { three } = seeded.keys;
-    await gotoIssue(page, `/issues/${three}`);
+    await gotoIssue(page, `/issues/${three}/conversation`);
     await openDetails(page);
     const addPriority = priorityLine(page).getByRole("button", {
       name: priorityTriggerName(three, true),
@@ -1878,7 +1878,7 @@ test("Details' priority picker's removal of an issue's last priority keeps the f
   test.setTimeout(120_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one } = seeded.keys;
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
     const trigger = detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
       name: priorityTriggerName(one, false),
@@ -1955,7 +1955,7 @@ test("the Details panel holds the Legion block with the phase, every role and th
     await openDetails(page);
     const block = legionBlock(page);
     await expect(block, `Details holds no block named ${LEGION.heading}`).toBeVisible();
-    const read = await getLegionIssue(one);
+    const read = await getIssueLegion(one);
     if (read.state === null || read.read === null) throw new Error(`${one} read no Legion state`);
 
     // The phase and since when, every role with its word, the place and the read's time.
@@ -2256,7 +2256,7 @@ test("the Legion block names the place, the wait and a failed read in each state
       ),
       { timeout: 5_000 }
     );
-    const failed = await getLegionIssue(one);
+    const failed = await getIssueLegion(one);
     await expect(readLine.locator("time")).toHaveAttribute("datetime", failed.read?.at ?? "");
     await expect(block, "the block draws the read's error text").not.toContainText("refused");
     await expect(legionLine(page, "phase")).toHaveText(

@@ -418,9 +418,9 @@ export function getIssueDecisions(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
 }
 
-/** `GET /api/v1/issues/{key}/legion`: where Legion stands on the issue, the body the Legion
- *  block's live view snapshots. */
-export function getLegionIssue(key: string, options: ApiOptions = {}) {
+/** `GET /api/v1/issues/{key}/legion`: the issue's Legion state as the sampler recorded the daemon
+ *  of its project, which Dashboard's track and agents part draw from. */
+export function getIssueLegion(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/legion", { params: { key } }, options);
 }
 

@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import type { Actor, AskResolution } from "../../api/types";
+import * as askBodyWords from "../ask-body/ask-body-words";
+import * as decisionCardWords from "../decision-card/decision-card-words";
 import { compiledBlockSchema } from "../doc/schema";
 import { ASK_RESOLUTION_WORDS, askResolutionBadge } from "../refs/actor";
 import * as pageStructure from "./page-structure";
@@ -403,8 +405,9 @@ test("every answer to the reader's own act is one sentence with no schema token"
   ).toEqual([]);
 });
 
-test("the five controls are named in the order the row draws them, and none is called Tree", () => {
+test("the six controls are named in the order the row draws them, and none is called Tree", () => {
   expect(PRESET_ORDER.map((preset) => PRESET_NAMES[preset])).toEqual([
+    "Dashboard",
     "Conversation",
     "Spec",
     "Verification",
@@ -557,6 +560,17 @@ test("DECLARED_WORDS holds every declared word and no other", () => {
   // Verification is the filter's name, his word for what draws the checks (R2, the Design's
   // "The words"), and no longer a word the page holds back.
   expect(DECLARED_WORDS).toContain("verification");
+
+  // The ask body's list and the decision card's are taken in whole (R13): every word of each of
+  // their tables is a declared word, though Dashboard's part file splits a table between what the
+  // page draws on load and what it says only in answer to the reader's act.
+  const lists = [...Object.values(askBodyWords), ...Object.values(decisionCardWords)];
+  expect(
+    lists
+      .flatMap(phrasesOf)
+      .flatMap(wordsIn)
+      .filter((word) => !DECLARED_WORDS.includes(word))
+  ).toEqual([]);
 });
 
 // An internal word is how the model or the code spells a thing, not how a person says it: a
