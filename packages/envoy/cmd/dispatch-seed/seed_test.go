@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -14,10 +16,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -84,6 +88,15 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
+	})
+	t.Run("the answers read finds the seed's deliveries", func(t *testing.T) {
+		assertAnswersReadFindsTheDeliveries(t, first, firstRun)
+	})
+	t.Run("every answer and decline names its ask after the ask's opening event", func(t *testing.T) {
+		assertAnswersAndDeclinesNameTheirAsks(t, first)
+	})
+	t.Run("the newest status move of every issue in backlog or icebox is into the status it stands in", func(t *testing.T) {
+		assertStatusMovesEndInTheStatus(t, first)
 	})
 	t.Run("every project's default assignee is a person who has signed in", func(t *testing.T) {
 		var unknown int
@@ -433,7 +446,7 @@ var checksums = []struct {
 	{"comment_block_refs", `comment_id::text, block_id, from_node, to_kind, to_id, kind, created_at`},
 	{"message_block_refs", `message_id::text, block_id, from_node, to_kind, to_id, kind, created_at`},
 	{"events", `id, issue_key, artifact_id::text, project_key, seq, type, actor::text, payload::text,
-		notify, published_at, created_at`},
+		notify, published_at, created_at, published_destinations::text`},
 	{"embeddings", `kind, id, content_hash, embedded_hash, model, embedded_at, md5(embedding::text)`},
 	{"search_term_stats", `project_key, lexeme, ndoc`},
 	{"search_term_totals", `project_key, items`},
@@ -567,6 +580,287 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 	if len(missing) > 0 {
 		t.Errorf("%d of %d asks have no opening event, the first few: %v",
 			len(missing), len(askIDs), missing[:min(5, len(missing))])
+	}
+}
+
+// assertAnswersReadFindsTheDeliveries holds the seed's deliveries to the agents' answers read
+// (sessionanswers.List), over the window's start by its one rule (answerswindow.StartQuery).
+// Each of the five types the read lists has a person's event delivered to a session; the read
+// lists at least one item for each of the three sessions the report names, and the three
+// together list every kind of item; and the old session holds at least OldDeliveries of those
+// events before the window, which the read must not read. The report's subjects are logged, as
+// the command prints them.
+func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, run *seedRun) {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := database.Pool.Query(ctx, `select e.type, count(*) from events e where `+answerswindow.DeliveredPersonEvent+` group by e.type`)
+	if err != nil {
+		t.Fatalf("count the deliveries by type: %v", err)
+	}
+	delivered := map[string]int{}
+	for rows.Next() {
+		var eventType string
+		var count int
+		if err := rows.Scan(&eventType, &count); err != nil {
+			t.Fatalf("count the deliveries by type: %v", err)
+		}
+		delivered[eventType] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the deliveries by type: %v", err)
+	}
+	t.Logf("person events delivered to a session, by type: %v", delivered)
+	for _, eventType := range deliveryTypes {
+		if delivered[eventType] == 0 {
+			t.Errorf("no person's %s event names a session among its destinations", eventType)
+		}
+	}
+
+	subjects, err := answerswindow.Read(ctx, database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subjects.Since.IsZero() {
+		t.Fatal("the answers window has no start: no event delivers a person's words to a session")
+	}
+	report := *run
+	var printed bytes.Buffer
+	report.out = &printed
+	if err := report.reportSubjects(ctx); err != nil {
+		t.Fatalf("print the subjects: %v", err)
+	}
+	t.Logf("the report's subjects:%s", printed.String())
+
+	kinds := map[string]int{}
+	for _, subject := range []struct {
+		name    string
+		subject answerswindow.Subject
+	}{{"old", subjects.Old}, {"most", subjects.Most}, {"fewest", subjects.Fewest}} {
+		if subject.subject.Session == "" {
+			t.Errorf("the seed holds no %s session for the answers read", subject.name)
+			continue
+		}
+		items, err := sessionanswers.List(ctx, database.Pool, subject.subject.Session, subjects.Since)
+		if err != nil {
+			t.Fatalf("list the answers of the %s session %s: %v", subject.name, subject.subject.Session, err)
+		}
+		listed := map[string]int{}
+		for _, item := range items {
+			listed[item.Kind]++
+			kinds[item.Kind]++
+		}
+		t.Logf("the %s session %s: %d deliveries in the window, %d before it; the read lists %v",
+			subject.name, subject.subject.Session, subject.subject.InWindow, subject.subject.BeforeWindow, listed)
+		if len(items) == 0 {
+			t.Errorf("the answers read lists nothing for the %s session %s since %s",
+				subject.name, subject.subject.Session, subjects.Since.Format(time.RFC3339))
+		}
+	}
+	for _, kind := range []string{model.SessionAnswerKindAnswer, model.SessionAnswerKindComment,
+		model.SessionAnswerKindMessage, model.SessionAnswerKindDeclined} {
+		if kinds[kind] == 0 {
+			t.Errorf("the answers read lists no %s item for any of the three sessions", kind)
+		}
+	}
+
+	if before := subjects.Old.BeforeWindow; before < run.sizes.OldDeliveries {
+		t.Errorf("the old session %s holds %d deliveries before the window, want at least %d",
+			subjects.Old.Session, before, run.sizes.OldDeliveries)
+	}
+}
+
+// assertAnswersAndDeclinesNameTheirAsks holds every ask.answered and ask.resolved event to the
+// ask it carries. Its payload decodes as its type's payload, with no field the type does not
+// know: model.AskAnsweredEventPayload for an answer and model.AskEventPayload for a decline,
+// whose resolution is of kind declined. It names an ask the database holds, whose row holds the
+// answer or the resolution the event carries. And its id is above the id of the ask's identity
+// event as events.OpenedEventIDs resolves it, the lowest id of the ask's events, so the ask's
+// ask.opened stays that event: an event numbered below its ask.opened resolves to itself, and
+// fails.
+func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	type closing struct {
+		id       int64
+		kind     string
+		payload  []byte
+		askID    string
+		askHeld  bool
+		rowAgree bool
+	}
+	rows, err := database.Pool.Query(ctx, `
+		select e.id, e.type, e.payload::text, coalesce(e.payload->>'id', ''),
+		       a.id is not null,
+		       coalesce(case e.type when 'ask.answered' then a.answer = e.payload->'answer'
+		                            else a.resolution = e.payload->'resolution' end, false)
+		from events e
+		left join asks a on a.id::text = e.payload->>'id'
+		where e.type in ('ask.answered', 'ask.resolved')
+		order by e.id
+	`)
+	if err != nil {
+		t.Fatalf("read the answers and declines: %v", err)
+	}
+	closings, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closing, error) {
+		var read closing
+		var payload string
+		err := row.Scan(&read.id, &read.kind, &payload, &read.askID, &read.askHeld, &read.rowAgree)
+		read.payload = []byte(payload)
+		return read, err
+	})
+	if err != nil {
+		t.Fatalf("read the answers and declines: %v", err)
+	}
+	askIDs := make([]string, 0, len(closings))
+	for _, read := range closings {
+		askIDs = append(askIDs, read.askID)
+	}
+	openedEventIDs, err := events.OpenedEventIDs(ctx, database.Pool, askIDs)
+	if err != nil {
+		t.Fatalf("resolve the asks' identity events: %v", err)
+	}
+	written := map[string]int{}
+	for _, read := range closings {
+		written[read.kind]++
+		decoder := json.NewDecoder(bytes.NewReader(read.payload))
+		decoder.DisallowUnknownFields()
+		var ask model.Ask
+		if read.kind == "ask.answered" {
+			var payload model.AskAnsweredEventPayload
+			err = decoder.Decode(&payload)
+			ask = payload.Ask
+		} else {
+			var payload model.AskEventPayload
+			err = decoder.Decode(&payload)
+			ask = payload.Ask
+			if err == nil && (ask.Resolution == nil || ask.Resolution.Kind != model.AskResolutionDeclined) {
+				t.Errorf("ask.resolved event %d carries resolution %+v, not a decline", read.id, ask.Resolution)
+			}
+		}
+		opened, resolved := openedEventIDs[read.askID]
+		switch {
+		case err != nil:
+			t.Errorf("%s event %d does not decode as its payload: %v\n%s", read.kind, read.id, err, read.payload)
+		case ask.ID == "" || !read.askHeld:
+			t.Errorf("%s event %d names ask %q, which the database does not hold", read.kind, read.id, ask.ID)
+		case !read.rowAgree:
+			t.Errorf("%s event %d carries an answer or a resolution that ask %s's row does not hold", read.kind, read.id, ask.ID)
+		case !resolved || opened >= read.id:
+			t.Errorf("%s event %d of ask %s is not after the ask's ask.opened event (%d)", read.kind, read.id, ask.ID, opened)
+		}
+	}
+	for _, kind := range []string{"ask.answered", "ask.resolved"} {
+		if written[kind] == 0 {
+			t.Errorf("the seed wrote no %s event, so this check proves nothing of it", kind)
+		}
+	}
+}
+
+// assertStatusMovesEndInTheStatus holds the seed's status moves to what the backlog move read
+// (api's backlogMoveLateral) finds of them. A status move is an `issue.updated` event whose payload
+// names `status` in `changed`, which are the lateral's own conditions beside the status. Every
+// issue that stands in `backlog` or `icebox` has a status move, and its newest one, by seq, is into
+// the status the issue stands in: so the event the lateral stops at is the issue's newest move.
+// Every other issue's newest move, where it has one, is into its status too. At least one issue in
+// backlog or icebox holds newer events after its newest move, so a read that stops at the move
+// reads fewer events than one that reads all of them, and at least one move into backlog or icebox
+// is on an issue that stands elsewhere now. Each move's payload decodes as the payload of the
+// status write (model.IssueEventPayload), with no field the type does not know, and names its
+// issue, its status, the status alone in `changed`, and its own seq as the issue's last_seq.
+func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	type issueRow struct {
+		status  string
+		lastSeq int
+	}
+	rows, err := database.Pool.Query(ctx, `select key, status, last_seq from issues`)
+	if err != nil {
+		t.Fatalf("read the issues: %v", err)
+	}
+	issues := map[string]issueRow{}
+	for rows.Next() {
+		var key string
+		var row issueRow
+		if err := rows.Scan(&key, &row.status, &row.lastSeq); err != nil {
+			t.Fatalf("read the issues: %v", err)
+		}
+		issues[key] = row
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the issues: %v", err)
+	}
+
+	type move struct {
+		seq    int
+		status string
+	}
+	newest := map[string]move{}
+	var moves, backlogElsewhere int
+	rows, err = database.Pool.Query(ctx, `
+		select e.issue_key, e.seq, e.payload->>'status', e.payload::text from events e
+		where `+statusMoveEvent+`
+		order by e.issue_key, e.seq
+	`)
+	if err != nil {
+		t.Fatalf("read the status moves: %v", err)
+	}
+	for rows.Next() {
+		var key, status, raw string
+		var seq int
+		if err := rows.Scan(&key, &seq, &status, &raw); err != nil {
+			t.Fatalf("read the status moves: %v", err)
+		}
+		moves++
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		var payload model.IssueEventPayload
+		switch err := decoder.Decode(&payload); {
+		case err != nil:
+			t.Errorf("the status move of %s at seq %d does not decode as the status write's payload: %v\n%s", key, seq, err, raw)
+		case payload.Key != key || payload.Status != status || payload.LastSeq != seq ||
+			!slices.Equal(payload.Changed, []string{"status"}):
+			t.Errorf("the status move of %s at seq %d names issue %s, status %s, last_seq %d and changed %v",
+				key, seq, payload.Key, payload.Status, payload.LastSeq, payload.Changed)
+		}
+		if slices.Contains(model.IssueStatusesBacklogOrIcebox, status) && !slices.Contains(model.IssueStatusesBacklogOrIcebox, issues[key].status) {
+			backlogElsewhere++
+		}
+		newest[key] = move{seq: seq, status: status}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the status moves: %v", err)
+	}
+
+	var inBacklog, followed int
+	for key, issue := range issues {
+		last, moved := newest[key]
+		if !slices.Contains(model.IssueStatusesBacklogOrIcebox, issue.status) {
+			if moved && last.status != issue.status {
+				t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
+			}
+			continue
+		}
+		inBacklog++
+		switch {
+		case !moved:
+			t.Errorf("%s stands in %s and has no status move", key, issue.status)
+		case last.status != issue.status:
+			t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
+		case issue.lastSeq > last.seq:
+			followed++
+		}
+	}
+	t.Logf("%d status moves, %d of them into backlog or icebox on an issue that stands elsewhere; %d issues in backlog or icebox, %d with newer events after their newest move",
+		moves, backlogElsewhere, inBacklog, followed)
+	if inBacklog == 0 {
+		t.Fatal("no seeded issue stands in backlog or icebox, so this check proves nothing")
+	}
+	if followed == 0 {
+		t.Error("no issue in backlog or icebox holds an event newer than its newest status move")
+	}
+	if backlogElsewhere == 0 {
+		t.Error("no move into backlog or icebox is on an issue that stands elsewhere now")
 	}
 }
 
