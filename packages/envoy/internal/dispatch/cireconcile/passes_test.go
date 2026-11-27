@@ -3,6 +3,7 @@ package cireconcile
 import (
 	"context"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,9 +177,10 @@ func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 // writing the row at the start of the pass rather than at its end -- a person who asks why
 // nothing has settled wants to know that a pass is running now, not only what the last one did.
 //
-// The pass here is held open by a GitHub that does not answer the second page of the repository,
-// and it is run under its lease exactly as the loop runs it (duty.Exclusive), so the lease the
-// read asks about is held by the pass itself.
+// The pass here is held open by a GitHub that does not answer the second page of the repository.
+// The test waits for that request before reading its row or ending its bound: the row is opened
+// before the pass binds its writer or reads GitHub, so a running row alone is not the stall.
+// It runs under its lease exactly as the loop runs it (duty.Exclusive).
 func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, reviewerAppID)
@@ -191,8 +193,12 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h.reconciler.PassTimeout = 10 * time.Second
 	h.boundByTheTest()
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	stalled := make(chan struct{})
+	var once sync.Once
+	h.github.atStall(func() { once.Do(func() { close(stalled) }) })
 
 	_, _, finished := holdLease(t, h.pool, h.reconciler.Pass)
+	testwait.Receive(t, "GitHub holding the second-page query open", stalled)
 	id := waitForRow(t, h.pool, instance)
 
 	running := waitForPass(t, h.pool, id, PassStateRunning)
