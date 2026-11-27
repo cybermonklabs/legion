@@ -131,7 +131,10 @@ def testdata_dirs(packages: list, module: Path) -> list:
         testdata = Path(package["Dir"]) / "testdata"
         if not testdata.is_dir():
             continue
-        for current, _subdirs, names in os.walk(testdata):
+        for current, subdirs, names in os.walk(testdata):
+            if os.path.isfile(os.path.join(current, "go.mod")):
+                subdirs[:] = []  # a nested module: go list of this module cannot load its packages
+                continue
             if any(name.endswith(".go") and not name.endswith("_test.go") for name in names):
                 dirs.add("./" + os.path.relpath(current, module))
     return sorted(dirs)

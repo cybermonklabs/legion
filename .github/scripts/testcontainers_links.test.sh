@@ -182,6 +182,23 @@ check "names the testdata command and its chain" \
 check "counts it beside cmd/seed, and not the excluded generator" \
   "$(contains "$out" '^standins: 1 of 2 binaries link no testcontainers-go (2 commands, 0 self-starting test binaries)$')"
 
+echo "case: a testdata directory with its own go.mod is a separate module, pruned with its subtree"
+# A testdata fixture that holds its own go.mod is the root of a different module (as #4240's
+# internal/dispatch/specgraph/testdata/citations/repo is): its packages belong to that module, so
+# `go list` of this module cannot load them. The walk prunes such a directory and its whole subtree
+# before go list sees it, so the check neither refuses nor reads into the fixture. Without the
+# prune this case refuses, which is how the next person who widens the walk learns the rule.
+shapes "$work" nestedmod
+gofile "$work/nestedmod/internal/client/testdata/repo/go.mod" 'module example.com/fixture' '' 'go 1.22'
+gofile "$work/nestedmod/internal/client/testdata/repo/repo.go" 'package repo' '' 'func Fixture() string { return "x" }'
+gofile "$work/nestedmod/internal/client/testdata/repo/inner/inner.go" 'package inner' '' 'func V() int { return 1 }'
+run_check nestedmod
+check "exits 0" "$(is "$status" 0)"
+check "does not read into the nested module's subtree" \
+  "$(is "$(contains "$out" 'testdata/repo')" false)"
+check "counts the module's own command" \
+  "$(contains "$out" '^nestedmod: 1 of 1 binaries link no testcontainers-go')"
+
 echo "case: a module with no main package has not passed"
 module "$work" nomain
 gofile "$work/nomain/lib/lib.go" 'package lib'
