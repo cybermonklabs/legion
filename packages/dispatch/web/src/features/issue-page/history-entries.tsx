@@ -30,14 +30,14 @@ import { Identifier, plannedStepsName, Time } from "../steps/StepsTab";
 import type { PlannedStep, ShownState, StepRow } from "../steps/steps-model";
 import { type HandoffFold, HistoryHandoff, NoValue } from "./HistoryHandoff";
 import type { HandoffBodyReads } from "./handoff-band";
-import {
-  type HistoryBlock,
-  type HistoryDay,
-  type HistoryEntry,
-  type HistoryTurn,
-  handoffLine,
-  type NamedBlock,
+import type {
+  HistoryBlock,
+  HistoryDay,
+  HistoryEntry,
+  HistoryTurn,
+  NamedBlock,
 } from "./history-model";
+import { handoffLine } from "./history-runs";
 import { useMarginDrawer } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { useOutlineWriter } from "./outline-writer";

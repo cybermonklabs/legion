@@ -33,11 +33,9 @@ import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
 import {
   addressedPlace,
   buildHistory,
-  comparePlaces,
   HISTORY_EXCLUDED_TYPES,
   HISTORY_PAGE,
   type HistoryInput,
-  type HistoryPlace,
   type HistoryTurn,
   historyBlocks,
   historyDownTo,
@@ -45,6 +43,7 @@ import {
   threadOf,
   turnPlace,
 } from "./history-model";
+import { comparePlaces, type HistoryPlace } from "./history-place";
 import { useMarginDrawer } from "./margin-slot";
 import { LANDING_WAIT_MS, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";

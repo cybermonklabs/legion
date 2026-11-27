@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -15,6 +15,7 @@ import type {
 import { dayLabel } from "../activity/activity-model";
 import { buildIssuePath, parseNodeReference, referenceHref } from "../refs/routes";
 import { stepRecord } from "../steps/step-record-fixture";
+import * as stepsModel from "../steps/steps-model";
 import { stepTasks } from "../steps/steps-model";
 import capturedRun from "./fixtures/step-with-report.json";
 import {
@@ -101,6 +102,14 @@ function comment(id: string, at: string, author: Actor, over: Partial<Comment> =
 
 const flat = (days: readonly HistoryDay[]): HistoryEntry[] => days.flatMap((day) => day.entries);
 
+/** The runs, the handoffs and the issue's start of a case about neither runs nor handoffs: their
+ *  reads have not answered, so the history holds no run and no handoff. */
+const NO_RUNS_READ: Pick<HistoryInput, "handoffs" | "issueCreatedAt" | "runs"> = {
+  handoffs: undefined,
+  issueCreatedAt: "2026-11-01T00:00:00Z",
+  runs: undefined,
+};
+
 /** A message of the issue by `author`, at `at`. */
 function message(
   id: string,
@@ -170,6 +179,7 @@ test("the history leaves out every event of a row the outline draws, and a docum
       blocks: new Map(),
       comments: [comment("c1", "2026-11-15T09:05:00Z", PERSON)],
       events,
+      ...NO_RUNS_READ,
       lastReadSeq: 0,
       messages: [],
       today: "2026-11-15",
@@ -196,6 +206,7 @@ test("the history keeps the events of an approval request, which the outline dra
       blocks: new Map(),
       comments: [],
       events,
+      ...NO_RUNS_READ,
       lastReadSeq: 0,
       messages: [],
       today: "2026-11-15",
@@ -229,6 +240,7 @@ test("the history keeps an approval request's followers added and removed", () =
       blocks: new Map(),
       comments: [],
       events,
+      ...NO_RUNS_READ,
       lastReadSeq: 0,
       messages: [],
       today: "2026-11-15",
@@ -262,6 +274,7 @@ test("one author's uploads within a minute are one entry that opens each file", 
         blocks: new Map(),
         comments: [],
         events,
+        ...NO_RUNS_READ,
         lastReadSeq: 0,
         messages: [],
         today: "2026-11-15",
@@ -303,6 +316,7 @@ function uploadRuns(events: readonly DispatchEvent[]): { files: number[]; id: st
       blocks: new Map(),
       comments: [],
       events,
+      ...NO_RUNS_READ,
       lastReadSeq: 0,
       messages: [],
       today: "2026-11-15",
@@ -425,6 +439,7 @@ test("a thread agents wrote among themselves is one entry with its replies, unti
         blocks: new Map(),
         comments,
         events: [],
+        ...NO_RUNS_READ,
         lastReadSeq: 0,
         messages: [daemon],
         today: "2026-11-15",
@@ -605,6 +620,7 @@ test("each day is headed, newest first, and the read mark falls between read and
     blocks: new Map(),
     comments: [],
     events,
+    ...NO_RUNS_READ,
     lastReadSeq: 2,
     messages: [],
     today: "2026-11-15",
@@ -640,6 +656,7 @@ test("the read mark falls inside a day where that day holds read and unread entr
     blocks: new Map(),
     comments: [],
     events,
+    ...NO_RUNS_READ,
     lastReadSeq: 1,
     messages: [],
     today: "2026-11-15",
@@ -663,6 +680,7 @@ test("a thread that began before the oldest event read so far waits for its page
         blocks: new Map(),
         comments: [old, recent],
         events,
+        ...NO_RUNS_READ,
         lastReadSeq: 0,
         ...(loadedFrom === undefined ? {} : { loadedFrom }),
         messages: [],
@@ -695,6 +713,7 @@ function daysOf(
     blocks: new Map(),
     comments,
     events,
+    ...NO_RUNS_READ,
     lastReadSeq,
     messages,
     today: "2026-11-15",
@@ -726,6 +745,7 @@ test("the history is drawn 20 entries at a time, a thread and a run of uploads o
     blocks: new Map(),
     comments: [thread, ...replies],
     events,
+    ...NO_RUNS_READ,
     lastReadSeq: 32,
     messages: [],
     today: "2026-11-15",
@@ -844,6 +864,7 @@ test("a delivery and a resolution of an agents' thread are lines of the history"
       blocks: new Map(),
       comments: [among, mine],
       events,
+      ...NO_RUNS_READ,
       lastReadSeq: 0,
       messages: [],
       today: "2026-11-15",
@@ -882,6 +903,7 @@ test("a delivery of an agents' thread names its agent, never its address", () =>
       blocks: new Map(),
       comments: [among],
       events,
+      ...NO_RUNS_READ,
       lastReadSeq: 0,
       messages: [],
       today: "2026-11-15",
@@ -915,6 +937,7 @@ test("an approval request's line keeps its question as one part the renderer dra
       blocks: new Map(),
       comments: [],
       events,
+      ...NO_RUNS_READ,
       lastReadSeq: 0,
       messages: [],
       today: "2026-11-15",
@@ -987,6 +1010,7 @@ function blockLines(
       blocks,
       comments: [],
       events,
+      ...NO_RUNS_READ,
       lastReadSeq: 0,
       messages: [],
       today: "2026-11-15",
@@ -1189,6 +1213,7 @@ test("a thread whose created event is left out of the log is new where it began 
         blocks: new Map(),
         comments: [before, after],
         events,
+        ...NO_RUNS_READ,
         lastReadSeq: 1,
         messages: [],
         today: "2026-11-15",
@@ -1351,6 +1376,80 @@ describe("the timeline holds each run and the handoff it reports", () => {
       "run:reported": "2026-11-15T12:00:00Z",
       "run:reports-unknown": "2026-11-15T13:00:00Z",
     });
+  });
+
+  // A run is its record with the row the steps model reads from it, found by the record's id,
+  // never by its place: where the steps model gives its tasks, or a task's rows, in another order
+  // than the server lists the records, each run still stands at its own record's time and holds
+  // the handoff its own record reports.
+  test("each run takes its own record's time and report, in whatever order the steps model gives its rows", () => {
+    seq = 0;
+    const runs = stepsOf(
+      [
+        runOf("plan", null, { report: "plan-handoff" }),
+        runOf("wait", null),
+        runOf("build", "2026-11-15T10:00:00Z"),
+      ],
+      [runOf("docs", "2026-11-15T11:00:00Z", { report: "docs-handoff" }, "docs")]
+    );
+    const handoffs = [
+      handoffOf("plan-handoff", "2026-11-15T09:00:00Z"),
+      handoffOf("docs-handoff", "2026-11-15T11:30:00Z"),
+    ];
+    const read = stepTasks;
+    const reordered = spyOn(stepsModel, "stepTasks").mockImplementation((steps) =>
+      read(steps)
+        .reverse()
+        .map((task) => ({ ...task, rows: [...task.rows].reverse() }))
+    );
+    try {
+      const drawn = flat(timelineDays({ handoffs, runs })).flatMap((entry) =>
+        entry.kind === "run"
+          ? [
+              {
+                at: entry.at,
+                handoff: entry.handoff?.id,
+                id: entry.id,
+                row: entry.row.id,
+                task: entry.task,
+              },
+            ]
+          : []
+      );
+      expect(reordered, "the steps model's rows were not read in another order").toHaveBeenCalled();
+      expect(drawn).toEqual([
+        {
+          at: "2026-11-15T11:00:00Z",
+          handoff: "docs-handoff",
+          id: "run:docs",
+          row: "docs",
+          task: "docs",
+        },
+        {
+          at: "2026-11-15T10:00:00Z",
+          handoff: undefined,
+          id: "run:wait",
+          row: "wait",
+          task: "default",
+        },
+        {
+          at: "2026-11-15T10:00:00Z",
+          handoff: undefined,
+          id: "run:build",
+          row: "build",
+          task: "default",
+        },
+        {
+          at: "2026-11-15T09:00:00Z",
+          handoff: "plan-handoff",
+          id: "run:plan",
+          row: "plan",
+          task: "default",
+        },
+      ]);
+    } finally {
+      reordered.mockRestore();
+    }
   });
 
   // The record a running Dispatch answered with (`fixtures/step-with-report.json`): its entry

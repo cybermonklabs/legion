@@ -24,8 +24,10 @@ import {
   sessionOfAddress,
 } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { type StepRow, stepTasks } from "../steps/steps-model";
+import type { StepRow } from "../steps/steps-model";
 import { agentsOnlyIds } from "./agents-only";
+import { comparePlaces, type HistoryPlace } from "./history-place";
+import { addressedEntry, runsOf } from "./history-runs";
 import { CONTROL_LABELS, issueStatusWord, NODE_TYPE_NAMES } from "./page-words";
 
 /**
@@ -198,15 +200,15 @@ export interface HistoryInput {
   readonly today: string;
   /** The runs of the issue's steps (`GET /issues/{key}/steps`), or undefined while that read
    *  holds no answer: each run is one entry, which holds the handoff it reports (`runsOf`). */
-  readonly runs?: IssueSteps | undefined;
+  readonly runs: IssueSteps | undefined;
   /** Every handoff of the issue as its list answers it, with no body
    *  (`GET /issues/{key}/handoffs`), or undefined while that read holds no answer. A handoff is
    *  drawn from its entry here, never from its event: in the entry of the run that reports it,
    *  else in an entry of its own. */
-  readonly handoffs?: readonly HandoffSummary[] | undefined;
+  readonly handoffs: readonly HandoffSummary[] | undefined;
   /** When the issue was made, where a run stands that holds no time, reports no handoff of the
    *  list and has no later run in its task (`runsOf`). */
-  readonly issueCreatedAt?: string;
+  readonly issueCreatedAt: string;
   /** What an address names in the history: a handoff, whose entry - its own or the run's that
    *  holds it - stands in the history however old it is, and `/steps`, whose newest run does. */
   readonly addressed?:
@@ -319,7 +321,7 @@ const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "suggestion.rejected": true,
 };
 
-type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
+export type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
 
 /** A line of the history (`historyLine`): its parts, and the block it names by its node's words,
  *  where it names one. */
@@ -430,27 +432,6 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
  *  draws: a thread with every turn of it is one entry, a run of uploads is one, and the line that
  *  says what is new is none (`historyDownTo`). */
 export const HISTORY_PAGE = 20;
-
-/** Where an entry stands in the history, newest first: when it happened, for one instant its
- *  place in the log (`buildHistory`), and for one place its id - two threads whose first turns'
- *  events the log read does not hold share place 0. The panel draws the history down to the
- *  place of the last entry it draws, so an entry that arrives above that place is drawn and
- *  takes none of the entries drawn out. */
-export interface HistoryPlace {
-  readonly at: string;
-  readonly id: string;
-  readonly seq: number;
-}
-
-/** How `one` stands to `other` in the history: above it (more than 0) where it is newer, at the
- *  same place (0), or under it (less than 0). */
-export function comparePlaces(one: HistoryPlace, other: HistoryPlace): number {
-  return (
-    compareTimestamps(one.at, other.at) ||
-    one.seq - other.seq ||
-    (one.id < other.id ? -1 : one.id > other.id ? 1 : 0)
-  );
-}
 
 /** The entries of `days` in the order the history draws them, newest first, with no read mark. */
 function datedIn(days: readonly HistoryDay[]): Dated[] {
@@ -650,144 +631,6 @@ function threadEntry(
     root,
     seq: 0,
   };
-}
-
-/** Where a run stands that holds no time, reports no handoff of the list and has no later run in
- *  its task, where the issue's own start is not given: before every time a record holds. */
-const BEFORE_ALL = new Date(0).toISOString();
-
-/**
- * The runs and the handoffs of the timeline (the plan's D9): each run of `input.runs` one entry,
- * whose place is its time with sequence 0, so runs at one instant stand in the order of their ids
- * (`comparePlaces`); and each handoff of `input.handoffs` that no run holds one entry at its own
- * time. A run stands at its start; where its record holds none, at its end; then at the time of
- * the handoff it reports, where the list holds it; then at the place of the next run of its task
- * in the server's order; then at the issue's own start. It holds the handoff its `report` names
- * where the list holds it, and where two runs report one, the newer holds it: the one that stands
- * higher. The handoff's own event (`recorded`) gives the entry that holds the handoff its
- * Pin, and an entry of the handoff alone its place in the log. A run or a handoff older than what
- * the log has read waits for its page, as a thread does (`threadsOf`), all but the entry an
- * address names (`HistoryInput.addressed`).
- */
-function runsOf(input: HistoryInput, recorded: ReadonlyMap<string, DispatchEvent>): Dated[] {
-  const handoffs = new Map((input.handoffs ?? []).map((handoff) => [handoff.id, handoff]));
-  const runs: { at: string; id: string; report: string | null; row: StepRow; task: string }[] = [];
-  if (input.runs !== undefined) {
-    for (const [index, { rows, task }] of stepTasks(input.runs).entries()) {
-      const records = input.runs.tasks?.[index]?.steps ?? [];
-      // Each run's place, from the task's last run back, so that a run with no time of its own
-      // finds the place of the run after it.
-      const places: string[] = [];
-      let next: string | undefined;
-      for (let place = records.length - 1; place >= 0; place -= 1) {
-        const record = records[place];
-        const reported =
-          record?.report == null ? undefined : handoffs.get(record.report)?.created_at;
-        next =
-          record?.started_at ??
-          record?.ended_at ??
-          reported ??
-          next ??
-          input.issueCreatedAt ??
-          BEFORE_ALL;
-        places[place] = next;
-      }
-      for (const [place, row] of rows.entries()) {
-        runs.push({
-          at: places[place] ?? BEFORE_ALL,
-          id: `run:${row.id}`,
-          report: records[place]?.report ?? null,
-          row,
-          task,
-        });
-      }
-    }
-  }
-  // The run that holds each handoff the list holds and a run reports: the one that stands higher.
-  const placeOfRun = (run: (typeof runs)[number]): HistoryPlace => ({
-    at: run.at,
-    id: run.id,
-    seq: 0,
-  });
-  const holders = new Map<string, number>();
-  for (const [index, run] of runs.entries()) {
-    if (run.report === null || !handoffs.has(run.report)) continue;
-    const holder = runs[holders.get(run.report) ?? -1];
-    if (holder === undefined || comparePlaces(placeOfRun(run), placeOfRun(holder)) > 0) {
-      holders.set(run.report, index);
-    }
-  }
-  const entries: Dated[] = runs.map((run, index) => {
-    const handoff =
-      run.report !== null && holders.get(run.report) === index
-        ? handoffs.get(run.report)
-        : undefined;
-    return {
-      at: run.at,
-      handoff,
-      id: run.id,
-      kind: "run",
-      recorded: handoff === undefined ? undefined : recorded.get(handoff.id)?.id,
-      row: run.row,
-      seq: 0,
-      task: run.task,
-    };
-  });
-  for (const handoff of handoffs.values()) {
-    if (holders.has(handoff.id)) continue;
-    const event = recorded.get(handoff.id);
-    entries.push({
-      at: handoff.created_at,
-      handoff,
-      id: `handoff:${handoff.id}`,
-      kind: "handoff",
-      recorded: event?.id,
-      seq: event?.seq ?? 0,
-    });
-  }
-  const from = input.loadedFrom;
-  if (from === undefined) return entries;
-  const named = addressedEntry(entries, input.addressed);
-  return entries.filter((entry) => entry.id === named || compareTimestamps(entry.at, from) >= 0);
-}
-
-/** The id of the entry of `entries` that `addressed` names: the one that holds the handoff, or the
- *  newest run, the first of the runs that stand highest. */
-function addressedEntry(
-  entries: readonly Dated[],
-  addressed: HistoryInput["addressed"]
-): string | undefined {
-  if (addressed === undefined) return undefined;
-  let named: Dated | undefined;
-  for (const entry of entries) {
-    if (addressed.kind === "handoff") {
-      if (
-        (entry.kind === "run" || entry.kind === "handoff") &&
-        entry.handoff?.id === addressed.id
-      ) {
-        return entry.id;
-      }
-    } else if (entry.kind === "run" && (named === undefined || comparePlaces(entry, named) > 0)) {
-      named = entry;
-    }
-  }
-  return named?.id;
-}
-
-/** The line of a handoff of the list, which names its phase and its version, in the words of
- *  `main`'s line of its event (`activityDescription`), which carries the same three members: the
- *  handoff's entry is drawn from the list, never from that event. */
-export function handoffLine(handoff: HandoffSummary): SentencePart[] {
-  return activityDescription({
-    actor: handoff.author,
-    created_at: handoff.created_at,
-    id: 0,
-    issue_key: handoff.issue_key,
-    notify: false,
-    payload: { handoff_id: handoff.id, phase: handoff.phase, version: handoff.version },
-    seq: 0,
-    type: "handoff.recorded",
-  });
 }
 
 /**
