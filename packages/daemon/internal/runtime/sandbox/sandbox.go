@@ -1151,9 +1151,10 @@ func (r *Runtime) controllerSandbox(ctx context.Context, token claim.Token) (*sa
 	return s, nil
 }
 
-// AdoptWorkingCopy has the agent's shim set its working copy's author (the shared `jj metaedit
-// --update-author`, run in the pod's own workspace on the issue's volume) over the claim's
-// connection. The recorded process must still be the claim's running pod: the connection is its.
+// AdoptWorkingCopy has the agent's shim set its working copy's author (`jj --ignore-working-copy
+// metaedit --update-author`, or `jj --ignore-working-copy new` over a described `@`, run in the
+// pod's own workspace on the issue's volume) over the claim's connection. The recorded process
+// must still be the claim's running pod: the connection is its.
 // That is the one rule for a request a role's shim answers in the issue's workspace
 // (runningProcessConn), and each of its refusals opens with "adopt <claim>'s working copy".
 func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {

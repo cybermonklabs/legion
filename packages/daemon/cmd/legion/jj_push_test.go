@@ -60,7 +60,7 @@ func rolePushAuthorRows() []rolePushRow {
 			f.bookmark("legion/K-1", "@")
 			return rolePushSends("legion/K-1", f.read("@"), "implementer", impl)
 		}},
-		// The adoption is that metaedit (shim/commands.go adoptionArgs).
+		// The adoption runs that metaedit with --ignore-working-copy (shim/commands.go adoptionArgs).
 		{name: "author set by the other role's metaedit", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			c := f.commitOn(impl, impl, "main", rolePushMessage("work", "implementer"))
 			f.jj(rev, "metaedit", "--update-author", "-r", c.commit)

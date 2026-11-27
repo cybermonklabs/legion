@@ -172,17 +172,25 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	s.toDaemon(result)
 }
 
+// The adoption's commands, adoptionArgs, describedArgs and runAdoption's `jj new`, each run with
+// --ignore-working-copy, for every project: none of them snapshots the working copy, which on a
+// checkout of some 342,000 files took most of the adoption's budget, and none of them writes the
+// working copy's files or its state. So the adoption must keep the tree of the working-copy
+// commit: jj finds a working copy fresh only while that tree does not change, and a command that
+// changed it would leave the role's next jj command facing a stale working copy. The metaedit
+// rewrites the author alone, and `jj new` starts an empty commit on @, so both keep the tree.
+
 // adoptionArgs is the adoption's change of an undescribed working copy, in the one adoption the
 // daemon asks a role's shim to run before a phase task (runAdoption): its author becomes the
 // identity in the command's environment, and only while it is undescribed — a described working
 // copy is a previous phase's work and keeps its author.
 func adoptionArgs(jj, dir string) []string {
-	return []string{jj, "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", dir}
+	return []string{jj, "--ignore-working-copy", "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", dir}
 }
 
 // describedArgs prints the working copy's commit id when it is described, and nothing otherwise.
 func describedArgs(jj, dir string) []string {
-	return []string{jj, "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", dir}
+	return []string{jj, "--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", dir}
 }
 
 // runAdoption runs the adoption under the requested identity and budget, in the workspace the
@@ -192,14 +200,23 @@ func describedArgs(jj, dir string) []string {
 // kept as it is, and the incoming role starts on a fresh one of its own (`jj new`): otherwise its
 // work would land in the previous role's commit, authored by the previous role's App. One read
 // decides which of the two changes the working copy needs, and only that one runs: `jj metaedit
-// --update-author` on an undescribed @ (adoptionArgs), `jj new` on a described one. That read, like
-// any jj command run without --ignore-working-copy, first snapshots the working copy. Both commands
-// run in the workspace itself, never in the shim's own directory: jj reads the repository of the
-// directory it runs in, whatever -R names, and migrates that repository's legacy configuration
-// (workspace.RunCommand). A failure is answered in workspace.RunCommand's words, which name the
-// command and its exit or its timeout, with jj's standard error: the daemon decides what a failed
-// adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and refuses; a
-// PATH without jj refuses naming jj and the PATH searched (openWorkspace).
+// --update-author` on an undescribed @ (adoptionArgs), `jj new` on a described one.
+//
+// No command of the adoption snapshots the working copy (--ignore-working-copy, above adoptionArgs),
+// and that moves four things. An edit on disk that no jj command recorded is taken in by the role's
+// next ordinary jj command, so on the `jj new` branch it lands in the incoming role's new commit,
+// not in the described one. The adoption imports neither git's HEAD nor its refs, which a snapshot
+// does, so a role's `git commit` reaches jj at its next ordinary command. A stale git index.lock
+// fails the adoption only where its second command writes an operation, after which jj resets git's
+// HEAD state and index (the metaedit's `Failed to reset Git HEAD state`); the read writes neither.
+// And the commands take no working-copy lock, so nothing holds a jj command the role runs meanwhile.
+//
+// Both commands run in the workspace itself, never in the shim's own directory: jj reads the
+// repository of the directory it runs in, whatever -R names, and migrates that repository's legacy
+// configuration (workspace.RunCommand). A failure is answered in workspace.RunCommand's words,
+// which name the command and its exit or its timeout, with jj's standard error: the daemon decides
+// what a failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
+// refuses; a PATH without jj refuses naming jj and the PATH searched (openWorkspace).
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond)
@@ -214,7 +231,8 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	}
 	change := adoptionArgs(jj, dir)
 	if described != "" {
-		change = []string{jj, "new", "-R", dir}
+		// --ignore-working-copy as above adoptionArgs: the new commit is empty, so it keeps @'s tree.
+		change = []string{jj, "--ignore-working-copy", "new", "-R", dir}
 	}
 	_, err = run(nil, change...)
 	return err

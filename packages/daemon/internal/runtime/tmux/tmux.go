@@ -864,9 +864,10 @@ func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnat
 	}
 }
 
-// AdoptWorkingCopy has the agent's shim set the author of its working copy — the shared
-// `jj metaedit --update-author` run in the pane's own workspace — over the claim's connection,
-// bounded by the adoption timeout. The recorded process must still verify: the connection is its.
+// AdoptWorkingCopy has the agent's shim set the author of its working copy (`jj
+// --ignore-working-copy metaedit --update-author`, or `jj --ignore-working-copy new` over a
+// described `@`, run in the pane's own workspace) over the claim's connection, bounded by the
+// adoption timeout. The recorded process must still verify: the connection is its.
 func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
 	pane, inc, err := r.paneOf(loc)
 	if err != nil {

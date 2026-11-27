@@ -1406,8 +1406,8 @@ Under tmux the `jj` in the state directory's `bin/` does, or the image's wrapper
 
 **The adoption sets the author of `@`.**
 Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
-The shim runs `jj log` on `@`, which snapshots the working copy.
-Then it runs `jj metaedit --update-author` on an `@` that has no description, or `jj new` on an `@` that has one.
+The shim runs `jj --ignore-working-copy log` on `@` without snapshotting the working copy.
+Then it runs `jj --ignore-working-copy metaedit --update-author` on an `@` that has no description, or `jj --ignore-working-copy new` on an `@` that has one.
 The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author.
 `jj git push` refuses such a commit, unless the push step first gives it the author of the role that its `Legion-Role` trailer names.
 An adoption can also make one role the author of edits that another role left in `@`.

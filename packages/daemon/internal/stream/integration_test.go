@@ -545,10 +545,9 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	// process's directory to the closest .jj and write that repository (docs/testing.md).
 	fixturegit.Isolated(t, home).With("JJ_USER=implementer", "JJ_EMAIL=implementer@example.test").
 		Run(workspace, append([]string{jj}, fixturegit.JJInit(workspace, true)[1:]...)...)
-	// A file the adoption's first jj snapshots, so that jj rewrites the git index it cannot lock.
-	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("smoke\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// The adoption's commands take no snapshot (--ignore-working-copy); changing @'s author from
+	// implementer to legion-implementer[bot] writes an operation whose Git HEAD reset writes the
+	// git index it cannot lock.
 	lock := filepath.Join(workspace, ".git", "index.lock")
 	if err := os.WriteFile(lock, nil, 0o644); err != nil {
 		t.Fatal(err)

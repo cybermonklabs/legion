@@ -838,9 +838,9 @@ func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
 
 // An update round's asks adopt nothing, so none of them waits on another role's turn or moves the
 // working copy under one. Every role of an issue works one jj workspace, and a task that adopts it
-// snapshots that workspace and then runs `jj metaedit --update-author` or `jj new` on its `@`
-// under whoever is working there, so the daemon adopts only for a task that names a phase and
-// holds such a task while another claim of the issue is in a turn (supervise's adopts
+// runs `jj --ignore-working-copy metaedit --update-author` or `jj --ignore-working-copy new` on
+// its `@` under whoever is working there, so the daemon adopts only for a task that names a phase
+// and holds such a task while another claim of the issue is in a turn (supervise's adopts
 // and sendPending). A round's ask is no task at all: the sweep publishes it to each role's own
 // Envoy topic (askRound, record.UpdateAsk), so it queues nothing on a claim, prompts no process
 // and adopts nothing, whoever is in a turn. So with the implementer in the turn of its own phase

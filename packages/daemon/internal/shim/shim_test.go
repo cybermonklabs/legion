@@ -1128,6 +1128,14 @@ printf 'JJ_USER=%s\nJJ_EMAIL=%s\n' "$JJ_USER" "$JJ_EMAIL" >> "$FAKE_JJ_RECORD"
 case "$FAKE_JJ_MODE" in
 fail) echo "Error: the working copy is stale" >&2; exit 3 ;;
 hang) exec sleep 30 ;;
+described)
+	for arg in "$@"; do
+		if [ "$arg" = "log" ]; then
+			echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+			break
+		fi
+	done
+	;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
@@ -1163,14 +1171,14 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 			name:     "jj fails",
 			mode:     "fail",
 			request:  shimwire.AdoptWorkingCopy{ID: "a2", JJUser: "u", JJEmail: "u@example.test", TimeoutMs: 5000},
-			errorHas: []string{"Command failed (exit 3)", "jj log", "the working copy is stale"},
+			errorHas: []string{"Command failed (exit 3)", "jj --ignore-working-copy log", "the working copy is stale"},
 			ranJJ:    true,
 		},
 		{
 			name:     "jj outlives the budget",
 			mode:     "hang",
 			request:  shimwire.AdoptWorkingCopy{ID: "a3", JJUser: "u", JJEmail: "u@example.test", TimeoutMs: 200},
-			errorHas: []string{"Command timed out after 0.2 s", "jj log"},
+			errorHas: []string{"Command timed out after 0.2 s", "jj --ignore-working-copy log"},
 			ranJJ:    true,
 		},
 		{
@@ -1224,8 +1232,8 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 					t.Fatalf("jj never ran: %v", err)
 				}
 				identity := []string{"JJ_USER=" + tc.request.JJUser, "JJ_EMAIL=" + tc.request.JJEmail}
-				read := append([]string{"log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace}, identity...)
-				metaedit := append([]string{"metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace}, identity...)
+				read := append([]string{"--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace}, identity...)
+				metaedit := append([]string{"--ignore-working-copy", "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace}, identity...)
 				want := read
 				if tc.ok {
 					// The fake prints no commit id: the working copy is undescribed, so it is re-authored.
@@ -1240,6 +1248,88 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 			p.next(t)
 			if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
 				t.Fatalf("OMP read %v; adopt-working-copy is the shim's own", got)
+			}
+		})
+	}
+}
+
+// Every jj command the adoption runs — the describe read (describedArgs), the metaedit of an
+// undescribed working copy (adoptionArgs), and the `jj new` over a described one — carries
+// --ignore-working-copy, for every project, with no switch and no fallback.
+func TestAdoptWorkingCopyRunsEveryCommandWithoutASnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mode      string
+		wantLists []string
+	}{
+		{name: "an undescribed working copy", wantLists: []string{"describe list (describedArgs)", "metaedit list (adoptionArgs)"}},
+		{name: "a described working copy", mode: "described", wantLists: []string{"describe list (describedArgs)", "jj new list"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := fakeJJ(t)
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t)
+			cfg := config(t, path, child)
+			workspace := t.TempDir()
+			cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
+				"FAKE_OMP_LOG="+child.log, "FAKE_JJ_RECORD="+record, "FAKE_JJ_MODE="+tc.mode, "LEGION_WORKSPACE="+workspace)
+			run(t, cfg, newClock())
+			p := daemon.accept(t)
+			p.open(t)
+
+			p.send(t, shimwire.AdoptWorkingCopy{ID: "no-snapshot", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test", TimeoutMs: 5000})
+			if got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult); !ok || !got.OK {
+				t.Fatalf("the shim answered %#v, want a successful adoption", got)
+			}
+
+			raw, err := os.ReadFile(record)
+			if err != nil {
+				t.Fatalf("jj never ran: %v", err)
+			}
+			var commands [][]string
+			var current []string
+			for line := range strings.SplitSeq(strings.TrimSuffix(string(raw), "\n"), "\n") {
+				switch {
+				case strings.HasPrefix(line, "JJ_USER="):
+				case strings.HasPrefix(line, "JJ_EMAIL="):
+					commands = append(commands, current)
+					current = nil
+				default:
+					current = append(current, line)
+				}
+			}
+			if len(commands) != len(tc.wantLists) {
+				t.Fatalf("the adoption ran %d jj commands (%q), want %d (%v)", len(commands), commands, len(tc.wantLists), tc.wantLists)
+			}
+			listOf := func(cmd []string) string {
+				for _, arg := range cmd {
+					if strings.HasPrefix(arg, "-") {
+						continue
+					}
+					switch arg {
+					case "log":
+						return "describe list (describedArgs)"
+					case "metaedit":
+						return "metaedit list (adoptionArgs)"
+					case "new":
+						return "jj new list"
+					default:
+						return "unknown jj command"
+					}
+				}
+				return "unknown jj command"
+			}
+			var gotLists []string
+			for _, cmd := range commands {
+				list := listOf(cmd)
+				gotLists = append(gotLists, list)
+				if !slices.Contains(cmd, "--ignore-working-copy") {
+					t.Errorf("%s ran without --ignore-working-copy: %q", list, cmd)
+				}
+			}
+			if !reflect.DeepEqual(gotLists, tc.wantLists) {
+				t.Fatalf("the adoption ran %v, want %v", gotLists, tc.wantLists)
 			}
 		})
 	}
@@ -1336,8 +1426,8 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 				t.Fatalf("the PATH's jj never ran: %v", err)
 			}
 			identity := []string{"JJ_USER=" + request.JJUser, "JJ_EMAIL=" + request.JJEmail}
-			read := append([]string{"log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace}, identity...)
-			metaedit := append([]string{"metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace}, identity...)
+			read := append([]string{"--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace}, identity...)
+			metaedit := append([]string{"--ignore-working-copy", "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace}, identity...)
 			if want := strings.Join(append(read, metaedit...), "\n") + "\n"; string(invocation) != want {
 				t.Fatalf("the PATH's jj ran as\n%s\nwant the read, then the shared metaedit, under the requested identity\n%s", invocation, want)
 			}
@@ -1366,9 +1456,9 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 		reauthored bool     // whether the adoption re-authors that working copy rather than start a fresh one
 		ran        string
 	}{
-		{name: "a described working copy", leave: []string{"describe", "-m", "feat: the pushed change"}, pushed: "@", ran: "log\nnew\n"},
-		{name: "an undescribed working copy", reauthored: true, ran: "log\nmetaedit\n"},
-		{name: "an empty working copy a split left", leave: []string{"split", "-m", "feat: the pushed change", "README.md"}, pushed: "@-", empty: true, reauthored: true, ran: "log\nmetaedit\n"},
+		{name: "a described working copy", leave: []string{"describe", "-m", "feat: the pushed change"}, pushed: "@", ran: "--ignore-working-copy log\n--ignore-working-copy new\n"},
+		{name: "an undescribed working copy", reauthored: true, ran: "--ignore-working-copy log\n--ignore-working-copy metaedit\n"},
+		{name: "an empty working copy a split left", leave: []string{"split", "-m", "feat: the pushed change", "README.md"}, pushed: "@-", empty: true, reauthored: true, ran: "--ignore-working-copy log\n--ignore-working-copy metaedit\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The test process's environment (a devbox's jj configuration, a pod's workspace and
@@ -1412,7 +1502,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			// wrapper looking jj up on PATH never finds this one again.
 			record := filepath.Join(t.TempDir(), "jj-commands")
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
+			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1551,19 +1641,27 @@ func treeOf(t *testing.T, root string) map[string]string {
 // and it is more than 15 minutes old (internal/launcher's gitLockSweep). The failure names the
 // lock and how long ago it was last written, says what that sweep does and how long it takes,
 // tells the role to run the command again, and says what holds under tmux, whether jj's own git
-// backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
-// or a git command jj ran; and the lock stays.
+// backend reported it (the git HEAD state and index jj resets when the adoption's metaedit writes
+// an operation) or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 	jj := fixturegit.CompiledJJ(t)
 	for _, tc := range []struct {
 		name string
 		// script is the PATH's jj, given the real jj and the lock.
 		script func(jj, lock string) string
+		extra  []string
 	}{
-		{"jj's own index write", func(jj, _ string) string { return "#!/bin/sh\nPATH=\"${PATH#*:}\" exec " + jj + " \"$@\"\n" }},
-		{"a git jj ran", func(_, lock string) string {
-			return "#!/bin/sh\necho \"fatal: Unable to create '" + lock + "': File exists.\" >&2\nexit 1\n"
-		}},
+		{
+			name:   "jj's own index write",
+			script: func(jj, _ string) string { return "#!/bin/sh\nPATH=\"${PATH#*:}\" exec " + jj + " \"$@\"\n" },
+			extra:  []string{"jj --ignore-working-copy metaedit", "Failed to reset Git HEAD state"},
+		},
+		{
+			name: "a git jj ran",
+			script: func(_, lock string) string {
+				return "#!/bin/sh\necho \"fatal: Unable to create '" + lock + "': File exists.\" >&2\nexit 1\n"
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -1572,10 +1670,9 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 			// the test process's directory to the closest .jj and write that repository.
 			fixturegit.Isolated(t, home).With("JJ_USER=implementer", "JJ_EMAIL=implementer@example.test").
 				Run(workspace, append([]string{jj}, fixturegit.JJInit(workspace, true)[1:]...)...)
-			// A file the adoption's first jj snapshots, so jj rewrites the git index.
-			if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("smoke\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			// The adoption's commands take no snapshot (--ignore-working-copy); the read writes
+			// nothing, and the metaedit's operation reset of Git HEAD state writes the index under
+			// the identity change from implementer to tester.
 			lock := filepath.Join(workspace, ".git", "index.lock")
 			if err := os.WriteFile(lock, nil, 0o644); err != nil {
 				t.Fatal(err)
@@ -1604,14 +1701,14 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 			if !ok || got.OK {
 				t.Fatalf("the shim answered %#v, want a failed adoption", got)
 			}
-			for _, want := range []string{
+			for _, want := range append([]string{
 				"Command failed (exit 1)",
 				"git lock " + lock + " was last written 31m",
 				"The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute.",
 				"Run the command again in about 16 minutes.",
 				"Under the tmux runtime nothing removes it",
 				"If the lock is still there after that time, tell the issue's architect.",
-			} {
+			}, tc.extra...) {
 				if !strings.Contains(got.Error, want) {
 					t.Errorf("the result's error %q does not mention %q", got.Error, want)
 				}
