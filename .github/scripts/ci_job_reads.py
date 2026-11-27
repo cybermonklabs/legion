@@ -670,22 +670,28 @@ edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
 go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked. The
-# three calls run at once, each reading its own pattern before any of them starts, each output
-# printed whole under its own heading, and the step failing by name when any of them failed
+# three calls run at once: every pattern is read in the first loop, before any run starts, each
+# run's output is printed whole under its own heading as that run ends, and the step fails by
+# name when any of them failed
 # (.github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests).
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
+INFRA_NATSLIVE_NAMES = " ".join(p.removeprefix("./") for p in INFRA_NATSLIVE_PACKAGES)
 INFRA_NATSLIVE_SCRIPT = f"""\
-declare -A pid=()
-for pkg in {" ".join(p.removeprefix("./") for p in INFRA_NATSLIVE_PACKAGES)}; do
-  pattern=$(../../../{TAGGED_TESTS} natslive "./$pkg")
-  go test -count=1 -timeout 30m -tags natslive -run "$pattern" "./$pkg" > "$RUNNER_TEMP/natslive-$pkg.txt" 2>&1 &
-  pid[$pkg]=$!
+declare -A pattern=() running=()
+for pkg in {INFRA_NATSLIVE_NAMES}; do
+  pattern[$pkg]=$(../../../{TAGGED_TESTS} natslive "./$pkg")
+done
+for pkg in {INFRA_NATSLIVE_NAMES}; do
+  go test -count=1 -timeout 25m -tags natslive -run "${{pattern[$pkg]}}" "./$pkg" > "$RUNNER_TEMP/natslive-$pkg.txt" 2>&1 &
+  running[$!]=$pkg
 done
 failed=()
-for pkg in {" ".join(p.removeprefix("./") for p in INFRA_NATSLIVE_PACKAGES)}; do
+while [ ${{#running[@]}} -gt 0 ]; do
   status=0
-  wait "${{pid[$pkg]}}" || status=$?
+  wait -n -p ended "${{!running[@]}}" || status=$?
+  pkg=${{running[$ended]}}
+  unset "running[$ended]"
   echo "::group::$pkg (exit $status)"
   cat "$RUNNER_TEMP/natslive-$pkg.txt"
   echo "::endgroup::"

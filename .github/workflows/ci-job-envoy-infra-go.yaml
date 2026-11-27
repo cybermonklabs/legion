@@ -98,32 +98,44 @@ jobs:
         # install first, minutes on a cold cache, so the package gets more than go test's 10 m.
         # One call per package, never one union -run over the three: a name an untagged test of
         # one package shares with a natslive test of another would then run a second time with
-        # nothing to say so. Each assignment is a line of its own, so under bash -e an empty or
-        # refused list fails the step instead of running -run "", which matches every test.
+        # nothing to say so. Each pattern is read in the first loop, before any run starts, so
+        # under bash -e an empty or refused list fails the step with no test running, rather than
+        # leaving the runs already started with nobody to wait for them.
         #
         # The three calls run at once, not one after another. Each package's tests wait on real
-        # servers rather than compute - alone, core keeps 0.44 of a core busy and gcp 0.66 of the
-        # runner's four - so run in series they took 239 + 1 + 402 s while three of the four cores
-        # sat idle, and run together they take about 428 s, the longest of them plus the little
-        # they take from each other (run 45953651943, job 140355033892, ubuntu-24.04-arm). Each
-        # has servers, ports and temporary directories of its own, and none opens this job's
-        # database, since the job has no service. The pattern of each is read before any run
-        # starts, so a refused list still fails the step before a test runs; each run's output
-        # goes to a file and is printed whole under its own heading once it ends, so two runs
-        # never interleave their lines; and the step fails when any of them failed, naming each.
-        # Waiting is by process id: `wait` with no argument, and `wait %1`, would also wait for
-        # anything else the shell has in the background.
+        # servers rather than compute - alone, core keeps 0.44 of one core busy and gcp 0.66 of
+        # one, of the runner's four - so run in series they took 239, 1 and 400 s with three
+        # cores idle (run 45950904157, job 140346269806), and run together the step takes about
+        # 457 s, the longest of them plus the little they take from each other (run 45961370168,
+        # job 140379968057). Each has servers, ports and temporary directories of its own; core
+        # starts a Postgres container of its own (testpg) and the three share the runner's Docker
+        # daemon, and none of them opens a database of this job, which carries no service.
+        #
+        # Each run's output goes to a file and is printed whole under its own heading as that run
+        # ends (wait -n -p), so two runs never interleave their lines and a package that finishes
+        # early is read early; the step fails when any of them failed, naming each. Waiting is by
+        # process id, one run at a time, because `wait` with no argument returns 0 whatever the
+        # runs exited with, and would pass the step with a package red.
+        #
+        # 25m, not go test's 10 m default nor the 30m this ran at first: each go test's -timeout
+        # must fire before the runner cancels the job, which it does at this job's 32 minutes, so
+        # that a hung test prints the dump that names it
+        # (.github/workflows/ci-job-envoy-go.yaml's own note). gcp, the longest, takes about 430 s.
         run: |
-          declare -A pid=()
+          declare -A pattern=() running=()
           for pkg in core seed gcp; do
-            pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "./$pkg")
-            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "./$pkg" > "$RUNNER_TEMP/natslive-$pkg.txt" 2>&1 &
-            pid[$pkg]=$!
+            pattern[$pkg]=$(../../../.github/scripts/go-tagged-tests.sh natslive "./$pkg")
+          done
+          for pkg in core seed gcp; do
+            go test -count=1 -timeout 25m -tags natslive -run "${pattern[$pkg]}" "./$pkg" > "$RUNNER_TEMP/natslive-$pkg.txt" 2>&1 &
+            running[$!]=$pkg
           done
           failed=()
-          for pkg in core seed gcp; do
+          while [ ${#running[@]} -gt 0 ]; do
             status=0
-            wait "${pid[$pkg]}" || status=$?
+            wait -n -p ended "${!running[@]}" || status=$?
+            pkg=${running[$ended]}
+            unset "running[$ended]"
             echo "::group::$pkg (exit $status)"
             cat "$RUNNER_TEMP/natslive-$pkg.txt"
             echo "::endgroup::"

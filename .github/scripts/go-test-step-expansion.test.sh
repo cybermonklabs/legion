@@ -259,6 +259,58 @@ EOF
 check "a line the reader cannot read is refused, by step and line" \
   "$(is "$(reader_refusals "$fixture")" ".github/workflows/ci-job-envoy-go.yaml's envoy-go / Time-box the tests: this script cannot read \`timeout 60 go test ./internal/bus/\`")"
 
+# A step that runs its packages at once rather than one after another (envoy-infra-go's natslive
+# step) reads every pattern into an array before it starts any run, sends each run to the
+# background with its output in a file, and waits for them one at a time. The reader reads those
+# shapes and skips the lines that only keep house around them; this case holds it to the go test
+# commands that step runs, and to refusing a go test hidden in a bookkeeping line, which is the
+# way this reading could go wrong quietly.
+echo "case: a step that runs its packages at once is read as those runs"
+# read_lines <script>: the packages and -run of each go test the reader finds in a script, with
+# the tagged-tests call standing in for its answer.
+read_lines() { py 'step = ex.Step(workflow="w.yaml", job="j", name="n", workdir="packages/envoy/infra",
+                   script=sys.argv[1], row="")
+ex.go = lambda *a, **k: (_ for _ in ()).throw(AssertionError("the reader ran go"))
+ex.shell = lambda script, cwd, what: "^(TestA|TestB)$"
+try:
+    for command in ex.commands_of(step):
+        print(" ".join(command.packages), command.run)
+except ex.Refused as refusal:
+    print("refused: " + str(refusal))' "$1"; }
+at_once='declare -A pattern=() running=()
+for pkg in core seed gcp; do
+  pattern[$pkg]=$(../../../.github/scripts/go-tagged-tests.sh natslive "./$pkg")
+done
+for pkg in core seed gcp; do
+  go test -count=1 -timeout 25m -tags natslive -run "${pattern[$pkg]}" "./$pkg" > "$RUNNER_TEMP/natslive-$pkg.txt" 2>&1 &
+  running[$!]=$pkg
+done
+failed=()
+while [ ${#running[@]} -gt 0 ]; do
+  status=0
+  wait -n -p ended "${!running[@]}" || status=$?
+  pkg=${running[$ended]}
+  unset "running[$ended]"
+  echo "::group::$pkg (exit $status)"
+  cat "$RUNNER_TEMP/natslive-$pkg.txt"
+  echo "::endgroup::"
+  [ "$status" -eq 0 ] || failed+=("$pkg (exit $status)")
+done
+if [ ${#failed[@]} -ne 0 ]; then
+  echo "::error::the natslive tests failed in: ${failed[*]}"
+  exit 1
+fi'
+check "its three runs are read, each with the pattern its own call printed" \
+  "$(is "$(read_lines "$at_once")" "./core ^(TestA|TestB)\$
+./seed ^(TestA|TestB)\$
+./gcp ^(TestA|TestB)\$")"
+for hidden in 'echo "$(go test ./core)"' 'wait "$p" || go test ./core' 'unset "x[$(go test ./core)]"'; do
+  check "a go test in a bookkeeping line is refused, not skipped: $hidden" \
+    "$(contains "$(read_lines "$hidden")" "keeps house and runs a command")"
+done
+check "a line of neither kind is still refused" \
+  "$(contains "$(read_lines 'curl http://example')" "this script cannot read")"
+
 # AUDITED_SCRIPTS holds a person's reading of each script, pinned by its SHA-256, and the script
 # refuses a step whose script's text has moved on. The script runs by hand, so nothing else tells
 # the pull request that edits an audited script: #2856 changed database-skips.sh's
