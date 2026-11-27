@@ -136,11 +136,12 @@ export function historyHoldsReply(
  * The asks of an issue that tell a question from an approval request: `openAsks`, the asks the
  * issue read holds open (`IssueDetails.open_asks`), then `asks`, the asks read, `undefined` while
  * it has not answered. The rule above reads this one list wherever it is read (`agentsOnlyIds`'
- * `asks`) - the outline (`tree-drafts.ts`), which draws its questions from it too, the history
- * (`IssueHistory.tsx`), the address of one of these items (`address-target.ts`) and the landing
- * of a write from the line at the foot (`outline-writer.tsx`) - so no turn is in both the outline
- * and the history or in neither, and no landing is left by both. While the asks read is out or
- * has failed, the list is the open asks alone, and every reader of it takes the same asks for
+ * `asks`): the history (`IssueHistory.tsx`) and the landing of a write from the line at the foot
+ * (`outline-writer.tsx`) take it from here, and the outline (`tree-drafts.ts`), which draws its
+ * questions from it too, and the address of one of these items (`address-target.ts`) write the
+ * same list by hand, the open asks and then the asks read - so no turn is in both the outline and
+ * the history or in neither, and no landing is left by both. While the asks read is out or has
+ * failed, the list is the open asks alone, and every reader of it takes the same asks for
  * questions: the questions the issue holds open, and no other ask.
  */
 export function issueAsks<Open, Read>(

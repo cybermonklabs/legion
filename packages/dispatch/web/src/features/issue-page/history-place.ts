@@ -1,10 +1,10 @@
 import { compareTimestamps } from "../../lib/timestamps";
 
 /** Where an entry stands in the history, newest first: when it happened, for one instant its
- *  place in the log (`buildHistory`), and for one place its id - two threads whose first turns'
- *  events the log read does not hold share place 0. The panel draws the history down to the
- *  place of the last entry it draws, so an entry that arrives above that place is drawn and
- *  takes none of the entries drawn out. */
+ *  place in the log (`buildHistory`), and for one place its id - every thread stands at place 0,
+ *  as the log read holds no thread's first turn, and so does every run of a step, which no event
+ *  of the log dates. The panel draws the history down to the place of the last entry it draws, so
+ *  an entry that arrives above that place is drawn and takes none of the entries drawn out. */
 export interface HistoryPlace {
   readonly at: string;
   readonly id: string;

@@ -1,4 +1,9 @@
-import type { PlanRecordInput, PlanTaskInput, StepExperimentInput } from "@legion/contracts";
+import type {
+  ArtifactWithTrees,
+  PlanRecordInput,
+  PlanTaskInput,
+  StepExperimentInput,
+} from "@legion/contracts";
 import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
 import { routeUrl } from "../web/src/api/paths";
@@ -6,7 +11,7 @@ import type { GraphReferences, HandoffBodies } from "../web/src/api/types";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
-import { baseUrl, e2eAgentToken } from "./api";
+import { baseUrl, e2eAgentToken, getIssue } from "./api";
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
 import { focusRow, nodeRow, unfoldEveryBranch } from "./issue-page-g";
 import { focusedNodeId, openEveryDeeperBranch } from "./issue-page-i";
@@ -24,20 +29,21 @@ import { settledState } from "./settled";
  * part L's rows of the box do its `daemonOf` (`e2e/issue-page-l.ts`'s `seedHistoryTurns`) and its
  * `historyItem` (`e2e/issue-page-l.e2e.ts`): it imports the readers of `e2e/issue-page.ts`,
  * `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`, `settledState` of `e2e/settled.ts`, and
- * `baseUrl` and `e2eAgentToken` of `e2e/api.ts`, and copies none of them.
+ * `baseUrl`, `e2eAgentToken` and `getIssue` of `e2e/api.ts`, and copies none of them.
  *
  * The DOM a row reads, all of it inside Details (`[data-testid="desktop-margin-shell"]`):
  *
  * - **The history** `[data-testid="issue-history"]`, a `section` named "History"
  *   (`IssueHistory.tsx`). Each day is `[data-history-day="<YYYY-MM-DD>"]`, drawn open under its
  *   line, a `p` that names the day; each entry carries `data-history-entry` and `data-event-seq`
- *   (0 for a thread whose first turn's event is on a page not read yet); a turn of an agents'
- *   thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]` and its time the link
- *   `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`. Under the last entry
- *   drawn stands one control, Show more, "Show more (<n> left)" while entries read are left to
- *   draw, its count `[data-history-left]` and "<n>+" while an older page of the log is unread; a
- *   press that would leave no entry read and not drawn reads that page first, the control reading
- *   "Loading older" meanwhile, and the control goes once the whole log is drawn.
+ *   (0 for every thread, whose first turn's event the history's read of the log leaves out); a
+ *   turn of an agents' thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]`
+ *   and its time the link `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`.
+ *   Under the last entry drawn stands one control, Show more, "Show more (<n> left)" while entries
+ *   read are left to draw, its count `[data-history-left]` and "<n>+" while an older page of the
+ *   log is unread; a press that would leave no entry read and not drawn reads that page first,
+ *   the control reading `loading_older`, "Loading…", meanwhile, and the control goes once the
+ *   whole log is drawn.
  * - **The facts** `[data-testid="focused-node-facts"]`, carrying `data-focused-node` with the
  *   focused node's id, or the issue's key with no node focused (`FocusedNodeFacts.tsx`); its
  *   deliveries are `[data-deliveries] li`, its controls `[data-focused-controls]`, and what
@@ -89,7 +95,7 @@ export function historyShowMore(page: Page): Locator {
 }
 
 /** Show more's name where its press reads the log's next page before it draws: "Show more
- *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so fewer entries are read and not drawn than a
+ *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so no more entries are read and not drawn than a
  *  press draws. */
 const READS_FIRST = new RegExp(
   `^${literally(CONTROL_LABELS.show_more)} \\((?:${Array.from({ length: PAGE_SIZE }, (_, index) => index + 1).join("|")})\\+ ${literally(CONTROL_LABELS.show_more_left)}\\)$`,
@@ -279,6 +285,13 @@ export async function focusedRowFacts(page: Page, id: string): Promise<Locator> 
  *  are there. */
 export function askFacts(page: Page, issueKey: string, askId: string): Promise<Locator> {
   return rowFacts(page, issueKey, askId);
+}
+
+/** The primary spec of issue `key`, read through `getIssue`; throws when the issue holds none. */
+export async function primarySpec(key: string): Promise<ArtifactWithTrees> {
+  const spec = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
+  if (spec === undefined) throw new Error(`${key} holds no spec`);
+  return spec;
 }
 
 /** One run of the issue's steps, by its record's id: its entry in the history. */

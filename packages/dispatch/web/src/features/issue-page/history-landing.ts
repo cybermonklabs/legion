@@ -1,10 +1,15 @@
-import { type RefObject, useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 import { useNavigationType } from "react-router-dom";
 
+import { whoAmIQuery } from "../../api/queries";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
+import { EVENT_FRESH } from "../refs/reference-target";
 import type { ViewportAnchor } from "../shell/ViewportAnchor";
-import type { HistoryInput } from "./history-model";
+import { ENTRY_CONTROLS } from "./details-leaves";
+import { type HistoryDay, type HistoryInput, type HistoryTurn, threadOf } from "./history-model";
+import { LANDING_WAIT_MS, type LandingSight, newOwnNode, useOutlineWriter } from "./outline-writer";
 import { scrollingAncestor } from "./scroll-box";
 
 /** The event the history's heading raises, bubbling, once a following of `/activity`
@@ -31,7 +36,7 @@ export type AddressedHistory = NonNullable<HistoryInput["addressed"]> & {
 
 /** The turn `id` as the history drawn under `root` draws it, where it has a box: undefined where
  *  it is not drawn yet, and where Details is still closed around the list, which gives it none.
- *  The address's landing finds it (`item`) and so does a write's (`landing`). */
+ *  The address's landing finds it (`item`) and so does a write's (`useHistoryLanding`). */
 export function drawnTurn(root: ParentNode | null, id: string): HTMLElement | undefined {
   const turn = root?.querySelector<HTMLElement>(`[data-history-item="${CSS.escape(id)}"]`);
   return turn == null || turn.getClientRects().length === 0 ? undefined : turn;
@@ -199,4 +204,83 @@ export function useHistoryLandings({
     landEntry(anchor.current, line ?? entry, entry);
   });
   return () => turnLanding.settled() && headingLanding.settled() && entryLanding.settled();
+}
+
+/**
+ * Lands a write from the line at the foot that answered a turn of a thread the history drawn in
+ * `list` holds, which is the history's to land (`HeldLanding.in`), as every other write's is the
+ * outline's: the reader is taken to their new turn in that thread - or, for a `self` landing, back
+ * to the turn they answered - focused, and wholly in Details' view by the least scroll of
+ * Details' box, never of the page, as a hand-on brings what it focuses there (`handTo`), the turn
+ * first (`bringIntoBox`) and then its first control, which takes the focus. The send has landed
+ * when the line asks, but the read that draws the new turn is still out, so the turns the thread
+ * holds are noted first, and the reader's turn that is new is gone to once a read has brought it
+ * and the list has drawn it, by the one rule the outline goes to their new row by
+ * (`newOwnNode`). A landing the writer already holds as the history mounts was asked for while it
+ * was not drawn, with Details shut, and the reader has been elsewhere since, unless the writer
+ * opened Details for it, on a phone, where a turn's Reply shut it (`HeldLanding.opensDetails`):
+ * the history is drawn from the commit that holds that landing, down to the thread the landing
+ * answers (`IssueHistory`'s `landingPlace`), and lands it as one asked for while it is drawn. One
+ * asked for while Details is shut around the list (`open`) has no turn on screen to go to, and nor
+ * has one whose thread this history no longer holds, as an agents' post a person wrote in, which
+ * the outline draws from then on. Each of these ends with the focus where it is, as the outline
+ * ends a landing under a node it draws no row of, but for one whose reply takes that node out of
+ * this history (`HeldLanding.leavesHistory`), and so does one whose new turn no read has drawn
+ * once the read's wait is out (`LANDING_WAIT_MS`).
+ */
+export function useHistoryLanding({
+  bringIntoBox,
+  days,
+  handTo,
+  list,
+  open,
+}: {
+  readonly bringIntoBox: (element: HTMLElement) => void;
+  readonly days: readonly HistoryDay[];
+  readonly handTo: (element: HTMLElement) => void;
+  readonly list: RefObject<HTMLElement | null>;
+  readonly open: boolean;
+}): void {
+  const writer = useOutlineWriter();
+  const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
+  const endLanding = writer?.landed;
+  const landingAtMount = useRef(landing);
+  const endsAtMount = landing === landingAtMount.current && landing?.opensDetails !== true;
+  const landingFrom = useRef<LandingSight | undefined>(undefined);
+  // The reader, whose own new turn a landing goes to, as the outline reads them: read only while
+  // a landing waits, and answered by the shell's own read of them.
+  const signedIn = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH, enabled: landing !== undefined });
+  const reader = signedIn.data?.login;
+  useLayoutEffect(() => {
+    if (landing === undefined || endLanding === undefined) return;
+    const answered = landing.under?.id;
+    const thread = answered === undefined ? undefined : threadOf(days, answered);
+    if (endsAtMount || !open || thread === undefined) {
+      endLanding();
+      return;
+    }
+    const turns = [thread.root, ...thread.replies];
+    let to: HistoryTurn | undefined;
+    if (landing.to === "self") {
+      to = turns.find((turn) => turn.id === answered);
+    } else {
+      const look = newOwnNode(landing, landingFrom.current, turns, reader);
+      if ("sight" in look) {
+        landingFrom.current = look.sight;
+        return;
+      }
+      to = look.made;
+    }
+    const landedOn = to === undefined ? undefined : drawnTurn(list.current, to.id);
+    if (landedOn === undefined) return;
+    endLanding();
+    bringIntoBox(landedOn);
+    const control = landedOn.querySelector<HTMLElement>(ENTRY_CONTROLS);
+    if (control !== null) handTo(control);
+  });
+  useEffect(() => {
+    if (landing === undefined || endsAtMount || endLanding === undefined) return;
+    const late = window.setTimeout(endLanding, LANDING_WAIT_MS);
+    return () => window.clearTimeout(late);
+  }, [endLanding, endsAtMount, landing]);
 }

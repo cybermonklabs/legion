@@ -8,7 +8,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
-import { handoffsQuery, issueResultsQuery, issueStepsQuery, whoAmIQuery } from "../../api/queries";
+import { handoffsQuery, issueResultsQuery, issueStepsQuery } from "../../api/queries";
 import type { IssueDetails, UserState } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
@@ -16,7 +16,6 @@ import { dateKey } from "../activity/activity-model";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
-import { isViewer } from "../refs/actor";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { overlaps, ViewportAnchor } from "../shell/ViewportAnchor";
 import { useCatchUp } from "../steps/StepsTab";
@@ -29,7 +28,7 @@ import { Entry, runKeys } from "./history-entries";
 import {
   type AddressedHistory,
   type AddressedTurn,
-  drawnTurn,
+  useHistoryLanding,
   useHistoryLandings,
 } from "./history-landing";
 import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
@@ -38,16 +37,14 @@ import {
   buildHistory,
   HISTORY_EXCLUDED_TYPES,
   HISTORY_PAGE,
-  type HistoryTurn,
   historyBlocks,
   historyDownTo,
   placeUnder,
-  threadOf,
   turnPlace,
 } from "./history-model";
 import { comparePlaces, type HistoryPlace } from "./history-place";
 import { HistoryTasks } from "./history-tasks";
-import { LANDING_WAIT_MS, useOutlineWriter } from "./outline-writer";
+import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { nearestScroll, scrollingAncestor } from "./scroll-box";
@@ -103,7 +100,12 @@ const DAY_LINE = `py-[5px] text-xs leading-[18px] font-semibold ${pageMutedText}
  * On a phone Details is a sheet over the page, and a link followed in it closes it
  * (`Margin.tsx`), so a link of the history that leaves it - a file, a document, a row of the
  * outline - closes it. A turn's own time is that turn's address, which opens Details here, so
- * it keeps Details open (`KEEPS_DETAILS_ATTRIBUTE`); a turn's Reply, a button, closes it itself.
+ * it keeps Details open (`KEEPS_DETAILS_ATTRIBUTE`); a turn's Reply, a button, closes it itself,
+ * so that the line at the foot can take the focus. What the line then sends opens it again where
+ * its landing is the history's (`HeldLanding.opensDetails`), and the history, which the close took
+ * off the page with how far it was drawn, is drawn down to the thread the reply answers to land
+ * it there; a reply that lands in the outline, as a person's reply to an agents' comment tied to
+ * no text does (decision 573), leaves Details shut.
  */
 export function IssueHistory({
   activityFollowing,
@@ -164,8 +166,9 @@ export function IssueHistory({
       ),
   });
   // The first event of the whole log past the reader's read mark, shared with the Conversation
-  // tab under its key: a thread whose created event the filtered log left out carries `seq` 0,
-  // so its `created_at` against this moment tells whether the thread is new (`history-model.ts`).
+  // tab under its key: every thread carries `seq` 0, since the filtered log leaves out the events
+  // that write a post, so its first turn's `created_at` against this moment tells whether the
+  // thread is new (`history-model.ts`).
   const unreadBoundary = useQuery({
     ...issueUnreadBoundaryQuery(issueKey, visitMark),
     enabled: visitMark > 0 && issue.last_seq > visitMark,
@@ -330,15 +333,33 @@ export function IssueHistory({
     keptPlace !== undefined &&
     loadedFrom !== undefined &&
     compareTimestamps(keptPlace.at, loadedFrom) < 0;
+  // The thread a landing the writer opened Details for answers (`HeldLanding.opensDetails`), which
+  // is drawn however far under the entries drawn it stands, as the thread of the turn an address
+  // names is: on a phone a turn's Reply closed Details, which took this list off the page with how
+  // far Show more had drawn it, so the list mounts again over its first entries, and a thread under
+  // them would draw no turn for the landing to go to (`useHistoryLanding`).
+  const writerLanding = useOutlineWriter()?.landing;
+  const reopenedFor =
+    writerLanding?.in === "history" && writerLanding.opensDetails
+      ? writerLanding.under?.id
+      : undefined;
+  const landingPlace = useMemo(
+    () => (reopenedFor === undefined ? undefined : turnPlace(days, reopenedFor)),
+    [days, reopenedFor]
+  );
   const drawn = useMemo(() => historyDownTo(days, shownEnd), [days, shownEnd]);
+  // Whether a press of Show more reads the log's next page before it draws the next entries:
+  // while an older page is unread and `HISTORY_PAGE` or fewer entries are read and not drawn.
+  const pressReads = older && drawn.left <= HISTORY_PAGE;
   // Whether the history reads the log's next page before it draws on. Its first entries wait
   // until it holds more than `HISTORY_PAGE`, and the next ones a press asks for until more than
-  // `HISTORY_PAGE` are read and not drawn, or in either case until the log has ended: so every
-  // draw leaves an entry read and not drawn while an older page is unread, and Show more says
-  // how many. A history drawn down to every entry read, as to the turn an address names, reads
-  // on as well, but for one drawn down to the entry a handoff's address or `/steps` names that
-  // stands older than the log read so far (`keptBeyond`), whose pages between are read at a press.
-  const short = older && (asked ? drawn.left <= HISTORY_PAGE : drawn.left === 0 && !keptBeyond);
+  // `HISTORY_PAGE` are read and not drawn (`pressReads`), or in either case until the log has
+  // ended: so every draw leaves an entry read and not drawn while an older page is unread, and
+  // Show more says how many. A history drawn down to every entry read, as to the turn an address
+  // names, reads on as well, but for one drawn down to the entry a handoff's address or `/steps`
+  // names that stands older than the log read so far (`keptBeyond`), whose pages between are read
+  // at a press.
+  const short = asked ? pressReads : older && drawn.left === 0 && !keptBeyond;
   // A failed read of the log stops the reading on: the history draws what it holds, and the next
   // page's Retry reads on from there (`failed` below).
   const stopped = log.isError && !log.isFetching;
@@ -364,6 +385,11 @@ export function IssueHistory({
     (shownEnd === undefined || comparePlaces(keptPlace, shownEnd) < 0)
   ) {
     nextEnd = keptPlace;
+  } else if (
+    landingPlace !== undefined &&
+    (shownEnd === undefined || comparePlaces(landingPlace, shownEnd) < 0)
+  ) {
+    nextEnd = landingPlace;
   } else if (end === undefined && settled && (!short || stopped)) {
     nextEnd = shownEnd;
   }
@@ -451,9 +477,8 @@ export function IssueHistory({
   // The history is newest first, so every event the feed prepends lands above a reader who is
   // down in it: the anchor holds the entry they are on where it was, in the box it scrolls in -
   // Details' own, or the document outside the shell. It follows each entry's own id
-  // (`data-history-entry`), not its `data-event-seq`: a thread whose created event the filtered
-  // log leaves out carries seq 0, beside every other such thread, so its seq names neither one
-  // entry nor the same entry before and after that page.
+  // (`data-history-entry`), not its `data-event-seq`: every thread carries seq 0, since the
+  // filtered log leaves out the events that write a post, so a thread's seq names no one entry.
   // That box is found once the list is drawn; moving the panel to another host remounts it.
   const anchorRoot = useRef<HTMLElement | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
@@ -519,7 +544,7 @@ export function IssueHistory({
         readonly before: HeldParts;
         readonly control: Element;
         readonly kind: "more";
-        /** Whether the press reads older pages of the log before it draws (`short`). */
+        /** Whether the press reads older pages of the log before it draws (`pressReads`). */
         readonly reads: boolean;
       }
     | { readonly control: Element; readonly kind: "retry" }
@@ -561,9 +586,9 @@ export function IssueHistory({
   useEffect(() => () => focusKept.current?.abort(), []);
   // Brings `element` wholly into Details' view by the least scroll, the one `block: "nearest"`
   // makes (`nearestScroll`): each hand-on of a press below (`handTo`), and the landing of a write
-  // that answered a turn here (`landing`), which brings the turn there before its control takes
-  // the focus. The scroll is of Details' box alone, never of the page under it, and the history's
-  // anchor takes it for its own (`scrollBox`), so its event records no place.
+  // that answered a turn here (`useHistoryLanding`), which brings the turn there before its
+  // control takes the focus. The scroll is of Details' box alone, never of the page under it, and
+  // the history's anchor takes it for its own (`scrollBox`), so its event records no place.
   const bringIntoBox = (element: HTMLElement) => {
     const box = scroller.current;
     if (box === null) return;
@@ -650,66 +675,8 @@ export function IssueHistory({
     anchor.current?.keepRow(null);
   });
   // A write from the line at the foot that answered a turn of a thread this history holds is the
-  // history's to land (`HeldLanding.in`), as every other write's is the outline's: the reader is
-  // taken to their new turn in that thread - or, for a `self` landing, back to the turn they
-  // answered - focused, and wholly in Details' view by the least scroll of Details' box, never of
-  // the page, as a hand-on brings what it focuses there (`handTo`), the turn first and then its
-  // first control, which takes the focus. The send has landed when the line asks, but the read
-  // that draws the new turn is still out, so the turns the thread holds are noted first, and the
-  // reader's turn that is new is gone to once a read has brought it and the list has drawn it, as
-  // the outline goes to their new row (`IssueTree.tsx`). A landing the writer already holds as the
-  // history mounts was asked for while it was not drawn, with Details shut, and the reader has
-  // been elsewhere since; one asked for while Details is shut around the list has no turn on
-  // screen to go to, and nor has one whose thread this history no longer holds, as an agents' post
-  // a person wrote in, which the outline draws from then on. Each of these ends with the focus
-  // where it is, as the outline ends a landing under a node it draws no row of, but for one whose
-  // reply takes that node out of this history (`HeldLanding.leavesHistory`), and so does one
-  // whose new turn no read has drawn once the read's wait is out (`LANDING_WAIT_MS`).
-  const writer = useOutlineWriter();
-  const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
-  const endLanding = writer?.landed;
-  const landingAtMount = useRef(landing);
-  const landingFrom = useRef<
-    { readonly before: ReadonlySet<string>; readonly landing: object } | undefined
-  >(undefined);
-  // The reader, whose own new turn a landing goes to, as the outline reads them: read only while
-  // a landing waits, and answered by the shell's own read of them.
-  const signedIn = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH, enabled: landing !== undefined });
-  const reader = signedIn.data?.login;
-  useLayoutEffect(() => {
-    if (landing === undefined || endLanding === undefined) return;
-    const answered = landing.under?.id;
-    const thread = answered === undefined ? undefined : threadOf(days, answered);
-    if (landing === landingAtMount.current || !open || thread === undefined) {
-      endLanding();
-      return;
-    }
-    const turns = [thread.root, ...thread.replies];
-    let to: HistoryTurn | undefined;
-    if (landing.to === "self") {
-      to = turns.find((turn) => turn.id === answered);
-    } else {
-      const held = landingFrom.current;
-      if (held?.landing !== landing) {
-        landingFrom.current = { before: new Set(turns.map((turn) => turn.id)), landing };
-        return;
-      }
-      to = turns.find((turn) => !held.before.has(turn.id) && isViewer(turn.author, reader));
-    }
-    const landedOn = to === undefined ? undefined : drawnTurn(anchorRoot.current, to.id);
-    if (landedOn === undefined) return;
-    endLanding();
-    bringIntoBox(landedOn);
-    const control = landedOn.querySelector<HTMLElement>(ENTRY_CONTROLS);
-    if (control !== null) handTo(control);
-  });
-  useEffect(() => {
-    if (landing === undefined || landing === landingAtMount.current || endLanding === undefined) {
-      return;
-    }
-    const late = window.setTimeout(endLanding, LANDING_WAIT_MS);
-    return () => window.clearTimeout(late);
-  }, [endLanding, landing]);
+  // history's to land (`useHistoryLanding`).
+  useHistoryLanding({ bringIntoBox, days, handTo, list: anchorRoot, open });
   // The history draws the log it holds whatever the last read's outcome. The log's own line
   // stands under the heading, in place of the loading line, while the log stands failed
   // (`standsFailed`). A failed next page is said where Show more is, below the pages held, and
@@ -834,14 +801,13 @@ export function IssueHistory({
             // button that turns disabled to the page: a press then joins the read of the page
             // that is out (`readOlderPage`), and keeps the first press's hold. It draws the next
             // entries at once where more than `HISTORY_PAGE` are read and not drawn, or the log
-            // has ended, and else reads older pages first until it can (`short`).
+            // has ended, and else reads older pages first until it can (`pressReads`, `short`).
             const control = event.currentTarget;
-            const reads = log.hasNextPage && drawn.left <= HISTORY_PAGE;
             if (document.activeElement === control && pressed.current?.control !== control) {
-              pressed.current = { before: heldParts(), control, kind: "more", reads };
+              pressed.current = { before: heldParts(), control, kind: "more", reads: pressReads };
             }
             keepEntryBeside("under");
-            if (reads) {
+            if (pressReads) {
               setAsked(true);
               readOlderPage();
             } else {

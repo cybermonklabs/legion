@@ -191,9 +191,9 @@ export interface HistoryInput {
    *  left out until its page is read: its place among events not read yet is not known. */
   readonly loadedFrom?: string;
   /** When the first event of the whole log past the read mark was made, where the log holds
-   *  one; undefined where it holds none, or while that is not known. A thread whose first turn's
-   *  event the log read does not hold is new where it began at that time or later, as the
-   *  Conversation tab says a post is new (`conversation-model.ts`). */
+   *  one; undefined where it holds none, or while that is not known. A thread, whose first turn's
+   *  event the log read never holds (`HISTORY_EXCLUDED_TYPES`), is new where that turn was made at
+   *  that time or later, as the Conversation tab says a post is new (`conversation-model.ts`). */
   readonly unreadFrom?: string;
   readonly messages: readonly MessageRead[] | undefined;
   /** Local YYYY-MM-DD. */
@@ -383,11 +383,13 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
 
   // Newest first, by when each happened; one instant by the log's own order, then by id.
   entries.sort((one, other) => comparePlaces(other, one));
-  // Whether an entry is new to the reader: by its place in the log where the log read holds it,
-  // past the read mark or not; else - a thread whose first turn's event the log read does not
-  // hold, `seq` 0 - by when it began (`unreadFrom`), and neither while that is not known.
+  // Whether an entry is new to the reader: an event, a run of uploads or a handoff whose recorded
+  // event the log holds by its place in the log, past the read mark or not; a thread, whose first
+  // turn's event the log read never holds (`seq` 0) and which is dated by that turn, and a run of
+  // a step, which no event of the log dates (`seq` 0), by when it was made (`unreadFrom`), and
+  // neither while that is not known.
   const isNew = (entry: Dated): boolean | undefined => {
-    if (entry.seq > 0) return entry.seq > input.lastReadSeq;
+    if (entry.kind !== "thread" && entry.seq > 0) return entry.seq > input.lastReadSeq;
     if (input.unreadFrom === undefined) return undefined;
     return compareTimestamps(entry.at, input.unreadFrom) >= 0;
   };
