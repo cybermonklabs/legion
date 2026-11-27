@@ -17,6 +17,7 @@ import (
 // published, and 200 "serving" once both are and the bus answers: a starting listener is unhealthy
 // to the balancer until /v1 serves, as /healthz answers it 503 "starting" until the pod can serve.
 func TestHealthzReadyzAnswers503UntilTheV1GateOpens(t *testing.T) {
+	t.Parallel()
 	gate := newStartingGate("v1", logging.NewWithWriter("test-machine", io.Discard))
 	var served atomic.Pointer[listenerDeps]
 	handler := readyzHandler(gate, &served)

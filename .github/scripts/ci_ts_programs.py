@@ -106,8 +106,8 @@ LISTED = [
     ("dispatch_ui", "packages/contracts/src", ("dispatch_ui",),
      "the dashboard's and the proof editor's typechecks, tests and SPA build compile the contracts modules "
      'these two programs import and what those import, and no other: `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, '
-     '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` '
-     "alias the three entries the dashboard imports to the same sources"),
+     '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` '
+     'and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the four entries the dashboard imports to the same sources'),
     # The browser suite has no tsc program of its own. Its rows drive the SPA built from
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles: that
@@ -118,9 +118,9 @@ LISTED = [
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
-    # which bundles the three entries the dashboard imports (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
-    # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"` and `packages/dispatch/web/vite.config.ts#"@legion/contracts"`
-    # alias the same three) and so compiles nothing outside dispatch_ui's set: not
+    # which bundles the four entries the dashboard imports (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
+    # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"`
+    # and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four) and so compiles nothing outside dispatch_ui's set: not
     # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
     # change that breaks the package's full `build` fails the contracts job's own
     # `Build contracts` step, whose filter takes the whole tree.

@@ -164,6 +164,7 @@ func receivedNotice(t *testing.T, rig *relayRig, standIn *sessionStandIn, sessio
 // session follows does, and still delivers nothing. Control: the same session holding the role is
 // counted and receives the notice.
 func TestAPublishOnALaneNoConsumerFiltersOnCountsNoRecipient(t *testing.T) {
+	t.Parallel()
 	t.Run("control: the session holds the role", func(t *testing.T) {
 		rig := newLostLaneRig(t)
 		const sessionID = "ses_lost_lane_held"
@@ -229,6 +230,7 @@ func TestAPublishOnALaneNoConsumerFiltersOnCountsNoRecipient(t *testing.T) {
 // every publish on the lane counted it for those 30 days. Control: while its claim still stands it
 // is counted, stopped and not running, since its filter keeps the lane when it returns.
 func TestAStoppedFormerHolderIsNoRecipientOfItsLostLane(t *testing.T) {
+	t.Parallel()
 	for _, takenOver := range []bool{false, true} {
 		name := "control: its claim still stands"
 		if takenOver {
@@ -267,6 +269,7 @@ func TestAStoppedFormerHolderIsNoRecipientOfItsLostLane(t *testing.T) {
 // to a heartbeat (90 s) later, or until its relay restarted, and received the new holder's notices
 // in that window. Control: with no takeover the holder receives the notice.
 func TestATakeoverNarrowsTheFormerHoldersFilterAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, takenOver := range []bool{false, true} {
 		name := "control: no takeover"
 		if takenOver {
@@ -324,6 +327,8 @@ func TestATakeoverNarrowsTheFormerHoldersFilterAtOnce(t *testing.T) {
 // failed narrowing said nothing that named the role or the lane. Control: with the lock free the
 // same takeover narrows the filter and logs no such line.
 func TestATakeoverThatLeavesTheFormerHoldersFilterSaysSo(t *testing.T) {
+	// Not parallel: it requires the claim to answer within 1 s past sendRequestBudget (3.5 s),
+	// the budget its narrowing waits out on the former holder's lock.
 	const message = "listener role takeover left the former holder's consumer filter unnarrowed; the role's notice lane may reach that session until its next registration or relay restart"
 	for _, held := range []bool{false, true} {
 		name := "control: the former holder's lock is free"

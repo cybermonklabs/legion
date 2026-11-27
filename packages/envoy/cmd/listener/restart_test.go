@@ -24,6 +24,7 @@ import (
 // fails the test.
 // It must not run in parallel: the cache must list each write within 3 s of it.
 func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "restart-test")
 	listener.waitHealthy(t)

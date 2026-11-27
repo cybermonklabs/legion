@@ -34,8 +34,8 @@ import (
 // process at production's pool sizes; every CI lane's server allows it (its command line,
 // .github/scripts/postgres-service-settings.sh, which .github/scripts/pg-connection-ceiling.sh
 // checks), so CI tests the pools production runs. A smaller server, such as a pod's test server
-// (legion-testpg's, testlimits.ServerConnections, one connection per process short) or a Postgres
-// at its default of 100, gives each process its share of the server, which the start hands the
+// (legion-testpg's, testlimits.ServerConnections, one connection per process short), gives each
+// process its share of the server, which the start hands the
 // process as DISPATCH_TEST_POOL_BUDGET and the process scales its pools to (store.OpenWithin). A
 // server too small for even the smallest pools refuses the start, naming the max_connections it
 // needs. A row that needs production's sizes says so (requireProductionPools) and is refused, by

@@ -555,6 +555,7 @@ func (clock *listenerAcknowledgementClock) CancelAll() {
 // Before team topics were stored the route published them over core NATS, which hands a message
 // only to whoever holds the subject at that moment, so this message would have reached nobody.
 func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
+	// Not parallel: it requires the publish to a team topic to answer within 1 s of its start.
 	const topic = "notifications.team.deploy-squad"
 	harness := newListenerDeliveryHarness(t)
 	client := harness.client
@@ -4708,6 +4709,8 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 // deleted one after another, and each rebuild repairs its fault. No fault outlives its recovery,
 // so the monitor must not count them as one persistent failure and terminate the listener.
 func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *testing.T) {
+	// Not parallel: each fault lands 50 ms after its repair, which the monitor's probe right
+	// after the rebuild must beat, and four rebuilds must come within a 1.4 s time.After deadline.
 	const interval = 100 * time.Millisecond
 	faults := []error{
 		errors.New("ci KV watcher stopped"),
@@ -5044,17 +5047,18 @@ func setupTestNATS(t *testing.T) *bus.Client {
 }
 
 // listenerTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel. Every untagged test calls t.Parallel except those that change or read back
-// something the whole process shares (t.Setenv, the log package's output, the default logger, the
-// entries of takeoverUnrecordedWarnings a test asserts on) or that hold a wall-clock bound within a
+// names no -parallel. Every test, in each build (natslive, odatrace and serverchange included),
+// calls t.Parallel except those that change or read back something the whole process shares
+// (t.Setenv, the log package's output, the default logger, the left-out log limiters and the
+// entries of takeoverUnrecordedWarnings a test asserts on, every goroutine's stack,
+// testing.AllocsPerRun, testnats.Hook) or that hold a wall-clock bound or a quiet window within a
 // second or two of what they wait for (a close, a probe count, a recovery, a relay's receipt wait
-// of 500 ms), which stay serial and run before the rest. The natslive rows keep the choice each
-// already made: the nine of relay_socket_live_test.go are parallel, the others serial. A test here
-// spends most of its time waiting on NATS, a listener process or Postgres, not on a core, and each
-// has a JetStream account of its own (testnats.URL) or a server of its own. go test's default of
-// GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's account, rig
-// and Dispatch database at once would swamp the one shared server. TestMain (testmain_test.go)
-// sets it.
+// of 500 ms); those stay serial, run before the rest, and say why on their first line in a
+// `// Not parallel:` comment. A test here spends most of its time waiting on NATS, a listener
+// process or Postgres, not on a core, and each has a JetStream account of its own (testnats.URL)
+// or a server of its own. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds
+// on a dev box, where every test's account, rig and Dispatch database at once would swamp the one
+// shared server. TestMain (testmain_test.go) sets it.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const listenerTestParallelism = 8

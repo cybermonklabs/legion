@@ -1035,7 +1035,7 @@ name carries the lane, as the embedder job's build step's does, for the reason
 The stack's connection limit, read outside the browser steps' budgets, where
 e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as the
 visual job reads it. Two processes fit in it: it is testlimits.FullSizeServerConnections,
-sized for four (testlimits.MaxProcessesAtOnce), with the server's superuser reserve on top.
+sized for eight (testlimits.MaxProcessesAtOnce), with the server's superuser reserve on top.
 
 ## What the two-process dashboard step runs against
 

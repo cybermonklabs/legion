@@ -177,6 +177,8 @@ func (r *subjectStallRelay) close() {
 // It must not run in parallel: /healthz must answer within 3.5 s, 0.5 s past healthzBudget, and its
 // test lease lapses if one renewal is 300 ms late.
 func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.T) {
+	// Not parallel: it requires /healthz on a stalled JetStream to answer inside healthzWithin
+	// (3.5 s), half a second past its 3 s healthzBudget.
 	for _, stall := range []struct {
 		name      string
 		machineID string

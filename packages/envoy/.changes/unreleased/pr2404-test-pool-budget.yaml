@@ -3,8 +3,8 @@ body: |-
     `DISPATCH_TEST_POOL_BUDGET` sets how many connections a Dispatch test process may open to
     Postgres in all; its pools are scaled to fit, each scaled down toward, never below, the smallest
     size that still serves its callers, so the processes a test suite starts fit a test server
-    smaller than production's pool sizes need, such as one at Postgres's default `max_connections`
-    of 100. It is a test-only setting: it needs `DISPATCH_TEST_HOOKS=1`, takes a whole number of at
+    smaller than production's pool sizes need, such as a pod's test server (`legion-testpg`). It is
+    a test-only setting: it needs `DISPATCH_TEST_HOOKS=1`, takes a whole number of at
     least 18, and a deployment never sets it, so every deployment's pool sizes are unchanged. The
     Dispatch test harness sets it itself on a server that allows fewer connections than production's
     sizes need. It refuses, by name, a server too small for even the smallest pools. On a server

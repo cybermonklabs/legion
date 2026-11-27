@@ -9,11 +9,12 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // reconnectErrEvery is how often one connection reports a failed reconnect attempt. nats.go
@@ -157,7 +158,7 @@ func connectInBackground(logger *slog.Logger, name string, urls []string, refusa
 				<-*gate
 			}
 			refusals.reset()
-			logger.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+			logger.Info("envoy nats connected", slog.String("name", name), slog.String("server", natsconn.ServerPosition(urls, nc.ConnectedUrl())))
 			if connected != nil {
 				connected(nc)
 			}
@@ -301,13 +302,13 @@ func refusalItself(err error) bool {
 	return false
 }
 
-// logRefusal writes the line a refused credential is reported with, naming the servers as the
-// reconnect failure's line does (serverList).
+// logRefusal writes the line a refused credential is reported with, naming the servers by their
+// count and the refusal by its class (natsconn.ConnectionClass), as the reconnect failure's line does.
 func logRefusal(logger *slog.Logger, name string, urls []string, err error) {
 	logger.Error("envoy nats authorization refused",
 		slog.String("name", name),
-		slog.String("servers", serverList(urls)),
-		slog.String("error", err.Error()))
+		slog.Int("servers", len(urls)),
+		slog.String("error", natsconn.ConnectionClass(err)))
 }
 
 // handshaking says whether nc is in a reconnect's handshake (CONNECTING) or between its attempts
@@ -328,16 +329,6 @@ func handshaking(nc *nats.Conn) bool {
 func handshakeReadFailed(err error) bool {
 	var readErr *net.OpError
 	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &readErr)
-}
-
-// serverList is urls as a log line names them: comma-separated, each without its userinfo
-// (natsURLWithoutUserinfo).
-func serverList(urls []string) string {
-	servers := make([]string, len(urls))
-	for i, raw := range urls {
-		servers[i] = natsURLWithoutUserinfo(raw)
-	}
-	return strings.Join(servers, ",")
 }
 
 // connectCallbacks are what a connection tells its client of its own events. nats.go runs every
@@ -368,7 +359,6 @@ type connectCallbacks struct {
 	// and nats.Conn.Status waits for it.
 	state func(*nats.Conn, bool)
 }
-
 // options starts from nats.GetDefaultOptions: Connect fills in only some zero fields, and the
 // defaults are what turn on reconnecting, the client's pings and the drain and flusher timeouts. A
 // lost server is reconnected in place, forever, so JetStream handles taken from the connection
@@ -413,7 +403,9 @@ func options(logger *slog.Logger, name string, urls []string, callbacks connectC
 	opts.DisconnectedErrCB = func(nc *nats.Conn, err error) {
 		note(nc, false)
 		if err != nil {
-			logger.Info("envoy nats disconnected", slog.String("name", name), slog.String("error", err.Error()))
+			// The cause by its class (natsconn.ConnectionClass): a dial or a read through the
+			// SOCKS5 proxy names the server by the host its URL spells.
+			logger.Info("envoy nats disconnected", slog.String("name", name), slog.String("error", natsconn.ConnectionClass(err)))
 		} else {
 			logger.Info("envoy nats disconnected", slog.String("name", name))
 		}
@@ -422,29 +414,25 @@ func options(logger *slog.Logger, name string, urls []string, callbacks connectC
 		}
 	}
 	// A reconnect attempt that fails is otherwise silent: nats.go retries in place forever, so a
-	// broker that is down leaves no line at all in the process's log. The servers come from urls,
-	// the list this client was configured with, never from the connection: nc.ConnectedUrl() is
-	// empty while reconnecting. The line goes to logger, the client's (WithLogger), which in a
-	// deployed process is followsDefault and so writes where slog.Default() points, like every
-	// other bus line, because a listener process test fails if a bus line stops being Go's text
-	// format (cmd/listener/startup_test.go, TestListenerLogsFromOtherPackagesKeepTheirHandlers,
-	// names the deployed metric filters). Each server is written without its userinfo
-	// (natsURLWithoutUserinfo), because nats.go authenticates with a URL's userinfo, a token or a
-	// user and password, when the URL carries one. The NATS credential never reaches a line:
-	// options never sees it, since credential is applied to the options value afterwards
-	// (connect.go, connectTrying) and holds a public key and a signer, or a token reader, only.
+	// broker that is down leaves no line at all in the process's log. The line names how many
+	// servers this client was configured with (urls) and the failure's class (natsconn.ConnectionClass),
+	// never a server's URL or the error's text, which names the server it failed at by its host
+	// (refuseRemoteNATS says why that host can be a piece of a credential). The line goes to
+	// logger, the client's (WithLogger), which in a deployed process is followsDefault and so
+	// writes where slog.Default() points, like every other bus line, because a listener process
+	// test fails if a bus line stops being Go's text format (cmd/listener/startup_test.go,
+	// TestListenerLogsFromOtherPackagesKeepTheirHandlers, names the deployed metric filters). The
+	// NATS credential never reaches a line: options never sees it, since credential is applied to
+	// the options value afterwards (connect.go, connectTrying) and holds a public key and a signer,
+	// or a token reader, only.
 	reconnectAttemptFailed := func(err error) {
 		if !throttle.allow() {
 			return
 		}
-		text := "unknown"
-		if err != nil {
-			text = err.Error()
-		}
 		logger.Warn("envoy nats reconnect attempt failed",
 			slog.String("name", name),
-			slog.String("servers", serverList(urls)),
-			slog.String("error", text))
+			slog.Int("servers", len(urls)),
+			slog.String("error", natsconn.ConnectionClass(err)))
 	}
 	opts.ReconnectErrCB = func(_ *nats.Conn, err error) { reconnectAttemptFailed(err) }
 	opts.ReconnectedCB = func(nc *nats.Conn) {
@@ -453,9 +441,9 @@ func options(logger *slog.Logger, name string, urls []string, callbacks connectC
 		// what is left of the previous outage's minute.
 		throttle.reset()
 		// ConnectedUrl is the server's URL.String(), userinfo and all, and a server nats.go
-		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl);
-		// ConnectedUrlRedacted keeps a token, which is a user name alone.
-		logger.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
+		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl), so the line names
+		// the server by its position alone (natsconn.ServerPosition).
+		logger.Info("envoy nats reconnected", slog.String("name", name), slog.String("server", natsconn.ServerPosition(urls, nc.ConnectedUrl())))
 		if callbacks.reconnected != nil {
 			callbacks.reconnected(nc)
 		}
@@ -501,10 +489,13 @@ func options(logger *slog.Logger, name string, urls []string, callbacks connectC
 			// subscribes to it.
 			level = slog.LevelWarn
 		}
+		// The error by its class (natsconn.ConnectionClass), as every bus line names one: nats.go's
+		// own fixed words and a server's refusal print as they are, and an error nats.go formatted
+		// from what the server sent, or any other, by a fixed class.
 		if sub != nil {
-			logger.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("subject", sub.Subject), slog.String("error", err.Error()))
+			logger.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("subject", sub.Subject), slog.String("error", natsconn.ConnectionClass(err)))
 		} else {
-			logger.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("error", err.Error()))
+			logger.Log(context.Background(), level, "envoy nats async error", slog.String("name", name), slog.String("error", natsconn.ConnectionClass(err)))
 		}
 		if callbacks.asyncErr != nil {
 			callbacks.asyncErr(nc, err)
@@ -547,7 +538,9 @@ func connect(logger *slog.Logger, name string, urls []string, settings nats.Opti
 // dial error comes back with the proxy's address but not the setting, and a refused dial as
 // nats.go's ErrNoServers alone, which names neither, so the proxy's own dial error stands in for
 // it. The address carries no credentials: CheckSOCKS5Proxy admits only an IP address with no zone
-// or a DNS name.
+// or a DNS name. A failed connect prints as its class alone (natsconn.ConnectionError): a
+// dial's error names the server by the host its URL spells, the proxy's among them, and that host
+// can be a piece of a credential (refuseRemoteNATS).
 func connectWithContext(ctx context.Context, logger *slog.Logger, name string, urls []string, settings nats.Option, dialer *socks5Dialer, callbacks connectCallbacks, now func() time.Time) (*nats.Conn, error) {
 	return connectTrying(ctx, connectTries, connectRetryWait, logger, name, urls, settings, dialer, callbacks, now)
 }
@@ -641,5 +634,5 @@ func connectTrying(ctx context.Context, tries int, wait time.Duration, logger *s
 	if dialer != nil && errors.Is(lastErr, nats.ErrNoServers) {
 		lastErr = cmp.Or(dialer.LastError(), lastErr)
 	}
-	return nil, lastErr
+	return nil, natsconn.ConnectionError(lastErr)
 }

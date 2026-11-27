@@ -1152,6 +1152,7 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 // the record seedDueCIRecord leaves settles: the settlement reaches the stream and the record is
 // marked settled. It is the positive control for the test above.
 func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
@@ -1325,6 +1326,8 @@ const v1OpenWithoutTheBucket = 5000
 // bucket out, keeps running, and opens the bucket itself once the grant arrives - the order
 // production applies them in - with no restart.
 func TestTheListenerOpensV1AndPicksUpTheBucketItMayNotOpenYet(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, grantBeforeKnownSessions()...)
 	t.Setenv("NATS_NKEY_SEED", seed)

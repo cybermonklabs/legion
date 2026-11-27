@@ -291,6 +291,8 @@ func TestTheRoutesServeAListenerWithNoKnownSessionStore(t *testing.T) {
 // the store it holds there is open for business in every way but the bucket.
 // It must not run in parallel: it sets NATS_NKEY_SEED with t.Setenv.
 func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
 	t.Setenv("NATS_NKEY_SEED", seed)

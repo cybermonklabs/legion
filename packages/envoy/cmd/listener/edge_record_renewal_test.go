@@ -96,6 +96,7 @@ func (r *edgeRig) requireShown(t *testing.T, token, sender, when, other string) 
 // record an earlier build wrote, is hidden until it claims a role under its own PRIV token, and
 // then shown, since the renewal writes that token's projects.
 func TestARenewalBindsNoCopiedRecord(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const priv, pub, source, peer, heir = "ses_renew_priv", "ses_renew_pub", "ses_renew_source", "ses_renew_peer", "ses_renew_heir"
 	token := rig.personToken(priv, "PRIV")
@@ -147,6 +148,7 @@ func TestARenewalBindsNoCopiedRecord(t *testing.T) {
 // case writing the claim token's projects in place of the record's, the refresh stores the bare
 // claim's [].
 func TestARoleClaimRefreshKeepsTheLeaderRecordsProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_d1t_claimant"
 	rig.placeElsewhere(t, claimant, "PRIV", "PUB")
@@ -168,6 +170,7 @@ func TestARoleClaimRefreshKeepsTheLeaderRecordsProjects(t *testing.T) {
 // PutClearingGap's case of a record naming no key keeping that record's projects keeps the no-key
 // record's [PUB].
 func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_d1r_claimant"
 	rig.placeElsewhere(t, claimant, "PRIV", "PUB")
@@ -196,6 +199,7 @@ func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
 // the row. Control: carrying any one field in PutClearingGap's case of a record no writer's stands
 // for fails the compare.
 func TestARoleClaimRefreshClearsAForgedRecordsFields(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_h1_claimant"
 	rig.placeElsewhere(t, claimant, "PRIV")

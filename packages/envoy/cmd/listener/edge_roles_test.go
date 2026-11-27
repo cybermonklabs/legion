@@ -497,7 +497,7 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 }
 
 // A role send whose window ends after its last forward ended while an earlier forward under its
-// Nats-Msg-Id was still in process (roleSend.endedInProcess) names no holder the edge does not
+// Nats-Msg-Id was still in process (roleSend.maybeStored) names no holder the edge does not
 // show either. That forward's error can name the holder's agent subject: a send of it after the
 // stream's in-process refusal that publishConfirmed could not confirm carries the subject it went
 // to. So at the edge the answer for a holder the scope does not show is the listener's own text,
@@ -508,6 +508,7 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 // a holder the scope shows (edgeScope.holderConfirmed) finds a writer's record. Control: with edge
 // mode off, the scope shows every holder and the row fails.
 func TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const hidden, shown = "ses_edge_in_process_pub", "ses_edge_in_process_priv"
 	for _, holder := range []struct {
@@ -604,9 +605,10 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 // record names its own key, and the scope is shown to name it before the send
 // (edgeScope.namesHolderConfirmed), so a judgment by the later holder would let the error through.
 // Controls: with edge mode off, the scope shows every holder and the row fails; with the error
-// judged when the window ends, by the holder the send resolved last (endedInProcess calling
+// judged when the window ends, by the holder the send resolved last (the 503's builder calling
 // shownForwardError, as the edge-mode change had it before its fix), the row fails.
 func TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo(t *testing.T) {
+	t.Parallel()
 	const hidden, shown = "ses_edge_moved_in_process_pub", "ses_edge_moved_in_process_priv"
 	body := sendEndingInProcess(t, newEdgeRig(t), "legion-priv-priv-7-tester", hidden, "PUB", shown)
 	requireNamesNone(t, "the send's answer after the role moved", body, hidden)
@@ -623,6 +625,7 @@ func TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo(t *test
 // (edgeScope.holderConfirmed, edgeScope.namesHolderConfirmed) finds a writer's record. Control:
 // with edge mode off, the scope shows every holder and the row fails.
 func TestAnEdgeEchoJudgesAnUnreadStoredForwardByTheEarlierHolderItWentTo(t *testing.T) {
+	t.Parallel()
 	const hidden, sender, role = "ses_edge_echo_unread_pub", "ses_edge_echo_unread_priv", "legion-priv-priv-8-tester"
 	rig := newEdgeRig(t)
 	var scope *edgeScope

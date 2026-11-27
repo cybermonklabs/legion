@@ -19,7 +19,7 @@ func newDispatchClient(t *testing.T, d *dispatchStandIn, token string) Dispatch 
 	t.Helper()
 	return Dispatch{
 		BaseURL: d.server.URL,
-		Account: ciphertoken.NewAccountToken(tokenFile(t, token)),
+		Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, token)),
 		HTTP:    d.server.Client(),
 	}
 }
@@ -154,7 +154,7 @@ func TestIssueRefusesAnUnreadableToken(t *testing.T) {
 	}
 	missing := Dispatch{
 		BaseURL: stand.server.URL,
-		Account: ciphertoken.NewAccountToken(filepath.Join(t.TempDir(), "absent")),
+		Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", filepath.Join(t.TempDir(), "absent")),
 		HTTP:    stand.server.Client(),
 	}
 	if _, err := missing.Issue(t.Context(), testIssue); err == nil {

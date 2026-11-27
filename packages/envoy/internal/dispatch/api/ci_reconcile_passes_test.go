@@ -214,6 +214,7 @@ func TestCIReconcilePassesShowsARunningPass(t *testing.T) {
 // without completing. Only the heartbeat can decide this one, and the route decides nothing of
 // its own -- this is the cireconcile rule reaching a caller through HTTP.
 func TestCIReconcilePassesShowsAKilledPassAsEndedWithoutCompleting(t *testing.T) {
+	// Not parallel: it writes the package variable processes.LiveWindow.
 	handler, database := newTestHandlerWithStore(t)
 	was := processes.LiveWindow
 	processes.LiveWindow = time.Second

@@ -1,12 +1,13 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
 // of package specgraph, lists what changed between two such directories, compares one with an
 // approved spec and prints the approved text, checks that no CI file of a repository runs that
-// comparison, and derives the states of a scenario. It reads the directory as the Dispatch
-// server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file directly in it,
-// within the size bound, and passes over every other entry. Every rule of the spec files and of a
-// scenario is specgraph's (Parse, Validate, Compare, ReadScenario, Derive and WaitCycle); the
-// command states none of its own. The rule of guard is the command's (cifiles.go), since it reads
-// CI files and no spec file.
+// comparison, derives the states of a scenario, names each program check that CI refuses at a
+// commit, and lists the files that changed between two commits. It reads the directory as the
+// Dispatch server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file
+// directly in it, within the size bound, and passes over every other entry. Every rule of the spec
+// files and of a scenario is specgraph's (Parse, Validate, Compare, ReadScenario, Derive,
+// WaitCycle and Citations); the command states none of its own. The rule of guard is the
+// command's (cifiles.go), since it reads CI files and no spec file.
 //
 // Usage:
 //
@@ -24,8 +25,11 @@
 //	  planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
 //	  and a failing example that the test caught, or a run of the test of a program check of
 //	  production or of the graph, counts at another commit only when the check's tie is known at both
-//	  and no path that changed between them is covered by the tie at either; one that the test missed
-//	  never counts at another commit)
+//	  and no path that changed between them reaches the tie at either (a path reaches a tie that
+//	  covers it or holds a path under it); one that the test missed never counts at another commit)
+//	spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
+//	    --reports <dir> --needs <file> [--json <file>] [--allow-empty]
+//	spec-check changed --repo <root> --base <commit> [--head <commit>]
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -165,10 +169,22 @@
 // the commit that it read, and a failing example at the commit that it counts from, its planted_on
 // for a program check of the code; a failing example that its test caught, or a run of the test of
 // a program check of production or of the graph, counts at another commit only when the check's tie
-// is known at both commits and no path that changed between them is covered by the tie at either
-// commit, and one that its test missed never counts at another commit; the reader refuses a commit
-// of ties.json of no letter and no digit, as it refuses such a commit of a subject, and names the
-// form that ties.json needs when a value in it is of another type, such as ties by check alone.
+// is known at both commits and no path that changed between them reaches the tie at either commit
+// (a path reaches a tie that covers it or holds a path under it), and one that its test missed
+// never counts at another commit; the reader refuses a commit of ties.json of no letter and no
+// digit, as it refuses such a commit of a subject, and names the form that ties.json needs when a
+// value in it is of another type, such as ties by check alone.
+//
+// citations names each program check that CI must refuse at the commit of --repo
+// (specgraph.Citations, R48): its test is not in the code, its selector picks two tests, its job is
+// not in the workflow or the citations job does not wait for it, or code that its test reads
+// changed and the job's report does not show the test run. A report counts a run only after the
+// run's package ends, and a run that go test replayed from its cache did not run. changed writes
+// the line "base <commit>" and then each path that differs between two commits, the list that
+// citations --changed reads. Both refuse a --repo that is not the top of its git clone. citations
+// runs go list and .github/scripts/go-test-reads.sh in <root>, and for a tie at the base the
+// base's own script in a temporary checkout; changed runs git. runCitations and runChanged give
+// each exit status.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on
@@ -195,6 +211,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -218,8 +235,11 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
          planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
          and a failing example that the test caught, or a run of the test of a program check of
          production or of the graph, counts at another commit only when the check's tie is known at both
-         and no path that changed between them is covered by the tie at either; one that the test missed
-         never counts at another commit)`
+         and no path that changed between them reaches the tie at either (a path reaches a tie that
+         covers it or holds a path under it); one that the test missed never counts at another commit)
+       spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
+           --reports <dir> --needs <file> [--json <file>] [--allow-empty]
+       spec-check changed --repo <root> --base <commit> [--head <commit>]`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
 // checks and of state, the blocks of print, and the statement, check and wait lines of state.
@@ -228,13 +248,15 @@ const prefix = "spec-check: "
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers
 // the exit status.
 var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
-	"tree":    runTree,
-	"changes": runChanges,
-	"checks":  runChecks,
-	"compare": runCompare,
-	"print":   runPrint,
-	"guard":   runGuard,
-	"state":   runState,
+	"tree":      runTree,
+	"changes":   runChanges,
+	"checks":    runChecks,
+	"compare":   runCompare,
+	"print":     runPrint,
+	"guard":     runGuard,
+	"state":     runState,
+	"citations": runCitations,
+	"changed":   runChanged,
 }
 
 func main() {
@@ -324,6 +346,21 @@ func absolute(stderr io.Writer, path string) (string, bool) {
 	return abs, true
 }
 
+// isDirectory is whether path is a directory; when not, it has written the line that says why.
+func isDirectory(stderr io.Writer, path string) bool {
+	switch info, err := os.Stat(path); {
+	case errors.Is(err, fs.ErrNotExist):
+		say(stderr, "%s: does not exist", path)
+	case err != nil:
+		say(stderr, "%s: cannot be read: %s", path, err)
+	case !info.IsDir():
+		say(stderr, "%s: is not a directory", path)
+	default:
+		return true
+	}
+	return false
+}
+
 // judged is one directory of spec files, read and judged: its tree, every problem of Parse and,
 // for judge, of Validate in one list, sorted by file, line, node, rule and detail, and how many
 // files it held.
@@ -396,8 +433,8 @@ func cannotJudge(stderr io.Writer, dir string, err error) int {
 
 // noSpecFile reports whether read, which answered j and err, found no spec file in its directory,
 // and the words that name the case: "does not exist" for notes.ErrNoDirectory, and "holds no spec
-// file" for a directory with none. tree and compare refuse such a directory without --allow-empty,
-// and read it as the empty tree with it.
+// file" for a directory with none. tree, compare and citations refuse such a directory without
+// --allow-empty, and read it as the empty tree with it.
 func noSpecFile(j judged, err error) (string, bool) {
 	switch {
 	case errors.Is(err, notes.ErrNoDirectory):

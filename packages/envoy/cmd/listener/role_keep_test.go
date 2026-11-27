@@ -134,7 +134,7 @@ func TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason(t *testing.T) {
 	const role = "kept-unclaimed"
 
 	recorder, answer := publishToRole(t, d, role,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"nobody holds this yet"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"nobody holds this yet"}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202", recorder.Code, recorder.Body.String())
 	}
@@ -221,7 +221,7 @@ func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
 			}
 
 			recorder, answer := publishToRole(t, d, role,
-				`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"is the holder still there?"}`)
+				`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"is the holder still there?"}`)
 			if recorder.Code != http.StatusAccepted {
 				t.Fatalf("publish to a lapsed claim: status %d, body %s; want 202 with the message kept", recorder.Code, recorder.Body.String())
 			}
@@ -462,7 +462,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	)
 
 	recorder, answer := publishToRole(t, d, role,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"nobody holds this yet","keep":true}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"nobody holds this yet","keep":true}`)
 	if recorder.Code != http.StatusAccepted || !answer.Kept {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202 kept", recorder.Code, recorder.Body.String())
 	}
@@ -521,7 +521,7 @@ func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T
 	)
 
 	recorder, answer := publishToRole(t, d, role,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"wait for the next holder"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"wait for the next holder"}`)
 	if recorder.Code != http.StatusAccepted || !answer.Kept {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202 kept", recorder.Code, recorder.Body.String())
 	}
@@ -1044,7 +1044,7 @@ func TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing(t *testing.T) {
 	const role = "legion-infra-INFRA-839-architect"
 
 	recorder, _ := publishThrough(d,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"a token no claim can name"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","source_session":"ses_kept_sender","message":"a token no claim can name"}`)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish to a role no claim can name: status %d, body %s; want 404", recorder.Code, recorder.Body.String())
 	}

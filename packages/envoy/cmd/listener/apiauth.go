@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -820,7 +821,7 @@ func describeListenerAPIAuth(auth listenerAPIAuth, issuer string) string {
 		named = append(named, "shared token")
 	}
 	if issuer != "" {
-		described := "oidc " + issuer
+		described := "oidc " + redact.URL(issuer)
 		if len(auth.accounts) > 0 {
 			described += " for " + strings.Join(auth.accounts, ", ")
 		}

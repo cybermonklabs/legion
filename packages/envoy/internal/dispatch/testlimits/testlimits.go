@@ -37,17 +37,28 @@ import (
 // first (dispatchSlots, cmd/dispatch/process_slots_test.go, says how), and a test that asks for
 // more at once is refused by name.
 //
+// Eight, so that cmd/dispatch's parallel tests do not queue for a slot. At 4, its tests waited
+// 201 s and 216 s for slots in two runs, all starts summed, and a test whose own work was 0.3 s
+// read 37 s; at 8 the waits summed 2 s and 0 s. The package's wall was the same at both: its
+// serial tests run first, one at a time, and the parallel phase ends with its longest test.
+// Two runs each at 4, 6 and 8, interleaved in one 4-CPU pod with Postgres in it, CI's service
+// flags and no test failing: package 243.6/291.3 s, 251.0/226.7 s and 236.9/237.8 s, using 8-19%
+// of the CPUs. The server cost is connections: 8 x store.ConnectionsPerTestProcess +
+// SuiteHeadroom + 3 reserved = 975 for production's pool sizes (FullSizeServerConnections), under
+// the 1000 every CI lane's service allows (.github/scripts/postgres-service-settings.sh), and
+// 8 x store.ConnectionsPerProcess + SuiteHeadroom + 3 = 967 on a pod's test server
+// (ServerConnections), where each process's pools scale by one connection (PoolBudget).
+//
 // Every binary of cmd/dispatch, each tagged one included, holds
-// TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget (connection_budget_test.go has
-// no build tag), which runs this many on purpose, so every binary can reach 4. A tagged lane runs
+// TestEveryProcessOnTheSmallestServerASuiteRunsOnStaysWithinItsBudget (connection_budget_test.go
+// has no build tag), which runs this many on purpose, so every binary can reach 8. A tagged lane runs
 // only the rows its tag adds (.github/scripts/go-tagged-tests.sh), so that row runs in the no-tag
-// lane alone, and the peaks of the rows each lane runs are: 4 with no tag, in that row, and with
-// the memory tag, and in both lanes parallel tests share the slots; 3 with multiprocess
+// lane alone. The peak of each binary of cmd/dispatch with a tag: 3 with multiprocess
 // (TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables); 2 with twobuild. No CI job
 // runs the basebuild rows (a pod runs them one at a time and by name, store_census_test.go), and
-// they peak at 2. A test that comes to need more is refused by name, and this number is raised to
-// what it runs.
-const MaxProcessesAtOnce = 4
+// they peak at 2. A test that comes to need more than this is refused by name, and this number is
+// raised to what it runs.
+const MaxProcessesAtOnce = 8
 
 // RequiredConnections is what MaxProcessesAtOnce Dispatch processes would open together at
 // production's pool sizes as a deployment runs them, store.ConnectionsPerProcess each: without the
@@ -87,8 +98,8 @@ func MinServerConnections() int { return MaxProcessesAtOnce*store.MinBudget() + 
 // allows FullSizeServerConnections beyond its reserve, as every CI lane's does that runs these
 // tests: there every process runs production's pool sizes, beside the test hooks' listener of
 // each process started with DISPATCH_TEST_HOOKS=1 (the memory harness's processes hold none). On
-// a smaller server, such as a pod's test server (ServerConnections) or a Postgres at its default
-// of 100, it is that server's share for one of MaxProcessesAtOnce processes beside SuiteHeadroom,
+// a smaller server, such as a pod's test server (ServerConnections), it is that server's share
+// for one of MaxProcessesAtOnce processes beside SuiteHeadroom,
 // (maxConnections - reserved - SuiteHeadroom) / MaxProcessesAtOnce rounded down, which the test
 // harness hands each process it starts through startDispatchProcessWith
 // (DISPATCH_TEST_POOL_BUDGET) and the process scales its pools to (store.OpenWithin). The memory

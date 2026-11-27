@@ -353,6 +353,8 @@ func triesWaits(t *testing.T, tries []*natsserver.ConnInfo, n int) []time.Durati
 // (connectListener), each try logging streamRefusedLine at ERROR with the server's violation, with
 // the same waits, /healthz 503 starting and /livez 204, until the reload grants the read.
 func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// bus.NkeySeedEnvVar in each row's subtest).
 	const (
 		reloadAt = 30 * time.Second
 		watchdog = 90 * time.Second
@@ -519,6 +521,8 @@ func edgeStartRun(t *testing.T, uri string) (config.Service, *edgeGrant) {
 // (edgeStreamPresent), and /healthz answers 503 starting, as before any refusal. Without the wait
 // the start ends with the refusal after those ten tries, about ten seconds.
 func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// bus.NkeySeedEnvVar).
 	const (
 		reloadAt = 20 * time.Second
 		watchdog = 60 * time.Second
@@ -577,6 +581,8 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 // at its first try. The fourth has the refusal reach the read as the connection's last error, an
 // authorization violation, rather than as the read's own error, and waits it out too.
 func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// bus.NkeySeedEnvVar) and swaps the default logger (logtest.SetDefault).
 	const watchdog = 60 * time.Second
 	readRefusal := `Permissions Violation for Publish to "` + streamInfoSubject + `"`
 	refusingRead := func(public, fallback string) string {
@@ -888,6 +894,8 @@ type memberReload struct {
 // rotations of the forwarder after its reload. Without the wait the start ends after main's ten
 // tries, before any server reloads.
 func TestTheListenerStartConnectsOnceTheServersHaveReloaded(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// bus.NkeySeedEnvVar in each row's subtest).
 	const watchdog = 120 * time.Second
 	for _, row := range []struct {
 		name    string
@@ -1070,6 +1078,9 @@ func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStar
 // startSessionDelivery hand to the role lane's and the session consumers' connects:
 // bus.WithCredentialWait has one call outside tests, natsStart.option in cmd/listener.
 func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
+	// Not parallel: it holds the child's waits between tries to credentialWaitTolerance (500 ms)
+	// of 1 and 2 s, and a start of ten failed dials to mainsEndMargin (500 ms) past main's connect
+	// beside it (requireMainsEnd).
 	if seedFile, child := os.LookupEnv(startChildSeedFile); child {
 		runStartChild(seedFile)
 	}

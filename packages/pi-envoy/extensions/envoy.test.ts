@@ -13332,10 +13332,10 @@ console.log(JSON.stringify(args));
   });
 
   test("a regain hook that never settles does not block the next heartbeat tick's registration", async () => {
-    // The hook is legion.ts's daemon round-trip (`claims/ready`, retried on a 5xx or a transport
-    // failure), which this side cannot bound. The heartbeat's healing latch must release once
-    // registration and the claim are settled, or a stuck hook would stop re-registration and
-    // let the session's registry entry lapse.
+    // The hook is legion.ts's daemon round-trip (`claims/ready`, retried on an outage or a
+    // transport failure), which this side cannot bound. The heartbeat's healing latch must
+    // release once registration and the claim are settled, or a stuck hook would stop
+    // re-registration and let the session's registry entry lapse.
     const role = "legion-controller";
     let listenerHoldsClaim = true;
     let registrations = 0;

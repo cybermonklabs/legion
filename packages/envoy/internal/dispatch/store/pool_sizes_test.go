@@ -18,9 +18,9 @@ func TestPoolSizesHoldEveryPoolConnectionsPerProcessCounts(t *testing.T) {
 
 // A budget scales every pool between its minimum and its production size and uses the whole
 // budget, the test hooks' listener counted; a budget that holds production's sizes gets exactly
-// them; and one below the minimums is refused. A Postgres at its default of 100 connections gives
-// each process 19 (testlimits.PoolBudget): every pool at its minimum, and the one connection left
-// over to the shared pool, which gives up the most of production's size.
+// them; and one below the minimums is refused. A budget of 19 holds every pool at its minimum, and
+// gives the one connection left over to the shared pool, which gives up the most of production's
+// size.
 func TestScaledPoolSizesUseTheBudgetAndKeepEveryMinimum(t *testing.T) {
 	production := ConnectionsPerTestProcess
 	for budget := MinBudget(); budget <= production+10; budget++ {

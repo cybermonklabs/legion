@@ -267,6 +267,7 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 // before the loss (loseRoleFromCopy), so the watcher's delivery of the claim's own record cannot
 // put it back first.
 func TestARoleCopyLostClaimIsBackInTheSessionsRowsAndTheRegistryWithinTheBound(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_role_copy_lost_rows"
 		role   = "role-copy-lost-rows"

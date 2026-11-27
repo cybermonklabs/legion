@@ -22,11 +22,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 )
 
-// postgresDefaultMaxConnections is the max_connections a Postgres starts with when nothing sets
-// it: what a developer's own server, or a pod's test server started before legion-testpg was sized
-// from testlimits, allows.
-const postgresDefaultMaxConnections = 100
-
 // budgetSampleEvery is how often the row below reads its relays' counts and pg_stat_activity.
 const budgetSampleEvery = 100 * time.Millisecond
 
@@ -38,11 +33,12 @@ const budgetSampleEvery = 100 * time.Millisecond
 const budgetTakeOverWithin = 15 * time.Second
 
 // testlimits.MaxProcessesAtOnce Dispatch processes on one database and one NATS server, each with
-// its pools scaled to the budget a Postgres of the default 100 connections gives it
-// (testlimits.PoolBudget: 19 with the default superuser reserve of 3), boot, serve load at once,
-// hand both delivery intakes' durables over from a dead holder, and drain the outbox, and none
-// opens more than that budget: read every 100 ms from before the first start until the outbox has
-// drained, no process ever holds more connections to Postgres at once than its budget.
+// its pools scaled to the budget the smallest server a suite runs on gives it
+// (testlimits.MinServerConnections plus the server's superuser reserve, where testlimits.PoolBudget
+// gives store.MinBudget, every pool at its smallest), boot, serve load at once, hand both delivery
+// intakes' durables over from a dead holder, and drain the outbox, and none opens more than that
+// budget: read every 100 ms from before the first start until the outbox has drained, no process
+// ever holds more connections to Postgres at once than its budget.
 //
 // Each process reaches Postgres through a relay of its own (connectionRelay), and a process's
 // count is the connections its relay holds open to the server: each from the moment the relay's
@@ -56,21 +52,21 @@ const budgetTakeOverWithin = 15 * time.Second
 // dispatch-compaction, the same in every process (store.Pool.openSeparateLocked) - and its shared
 // listener and room-sync sender by a process id it mints at boot (store.Pool.Dedicated,
 // docs.ListenerApplicationPrefix). So pg_stat_activity gives the row only the database's total,
-// which it logs. The processes together stay inside the 100 less the reserve and the suite's own
-// testlimits.SuiteHeadroom whenever each stays inside its budget, since PoolBudget gives each at
-// most a quarter of that, so the row counts them one by one.
+// which it logs. The processes together stay inside that server's connections less the reserve and
+// the suite's own testlimits.SuiteHeadroom whenever each stays inside its budget, since PoolBudget
+// gives each at most a MaxProcessesAtOnce-th of that, so the row counts them one by one.
 //
 // On a server that small the connection guard gives every process that budget itself
 // (requireConnectionCeiling); on a larger one, as every CI lane's, the row gives it, so the claim is
 // held wherever the suite runs. What reaches each pool:
 //   - The load. Every process holds a live socket on the event feed and a document's room open in
 //     an editor that types into it, and serves many more requests at once than its shared pool has
-//     connections - issue reads, renames and document reads - each of which must succeed. The four
+//     connections - issue reads, renames and document reads - each of which must succeed. The
 //     processes' requests start together, released at once when every process is set up.
 //   - The outbox. Whichever process holds it publishes the renames' events to the stream, every
 //     one of them by the row's end.
 //   - The intake take-over. Process 0 boots first, with the GitHub App, and binds both delivery
-//     durables; process 1 has the App too and stands by for both; processes 2 and 3 have none, so
+//     durables; process 1 has the App too and stands by for both; the other processes have none, so
 //     their intakes are idle. Process 0 is killed, and while its holds lapse the row holds both
 //     hold rows locked, so process 1's two takings of them (duty.TryHold) queue and are let go at
 //     one moment, and its two take-overs run at once: each holds its consumer lease's connection
@@ -79,7 +75,7 @@ const budgetTakeOverWithin = 15 * time.Second
 //     budgetTakeOverWithin of the release.
 //
 // None of the processes' logs may show the server out of connections (53300).
-func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing.T) {
+func TestEveryProcessOnTheSmallestServerASuiteRunsOnStaysWithinItsBudget(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	seedDeliverySettings(t, database)
@@ -98,12 +94,13 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 	}
 	t.Cleanup(func() { _ = sampler.Close(context.Background()) })
 	reserve := serverInt(t, sampler, "superuser_reserved_connections")
-	budget, err := testlimits.PoolBudget(postgresDefaultMaxConnections, reserve)
+	smallest := testlimits.MinServerConnections() + reserve
+	budget, err := testlimits.PoolBudget(smallest, reserve)
 	if err != nil {
-		t.Fatalf("the budget of a %d-connection server: %v", postgresDefaultMaxConnections, err)
+		t.Fatalf("the budget of a %d-connection server: %v", smallest, err)
 	}
 	t.Logf("a %d-connection server with %d reserved gives each of %d processes %d connections",
-		postgresDefaultMaxConnections, reserve, testlimits.MaxProcessesAtOnce, budget)
+		smallest, reserve, testlimits.MaxProcessesAtOnce, budget)
 
 	relays := make([]*connectionRelay, testlimits.MaxProcessesAtOnce)
 	for i := range relays {
@@ -179,7 +176,7 @@ func TestEveryProcessAHundredConnectionServerRunsStaysWithinItsBudget(t *testing
 	loaded := time.Now()
 	goAhead()
 	load.Wait()
-	t.Logf("the four processes served their load in %v", time.Since(loaded).Round(time.Millisecond))
+	t.Logf("the processes served their load in %v", time.Since(loaded).Round(time.Millisecond))
 
 	// The holder dies with both holds live, as a task killed mid-deploy does, so they lapse rather
 	// than being released (a stopped process releases them, and the standby's polls find them free

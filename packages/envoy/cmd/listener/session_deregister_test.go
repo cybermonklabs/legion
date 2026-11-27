@@ -215,6 +215,7 @@ func TestAPublishToALaneTheListenerOwnsIsRefused(t *testing.T) {
 // ends at 5 s (LISTENER_CALL_TIMEOUT_MS) and the route promises an answer inside it. The
 // consumer goes once the wait ends, so nothing is given up for the earlier answer.
 func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_deregister_answers_first"
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],

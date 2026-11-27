@@ -321,6 +321,8 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 // /v1/roles/<role> gives the same stalled read - the bus-unavailable 503 with Retry-After: 1,
 // naming the read - rather than holding the sender past its window.
 func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
+	// Not parallel: it requires the 503 at sendRequestBudget (3.5 s) and inside 4.5 s, a bound
+	// one second past what it waits for.
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {

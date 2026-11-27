@@ -12,7 +12,8 @@ import (
 // process runs production's pool sizes; a smaller one gives each of MaxProcessesAtOnce processes its
 // share beside SuiteHeadroom, rounded down; and one whose share is below the smallest pools is
 // refused, naming the max_connections it needs. A Postgres at its default of 100, with the default
-// reserve of 3, gives each process (100 - 3 - 20) / 4 = 19.
+// reserve of 3, would leave each process (100 - 3 - 20) / 8 = 9, below store.MinBudget, so it is
+// refused too.
 func TestPoolBudgetIsEachProcessesShareOfTheServer(t *testing.T) {
 	const reserve = postgresSuperuserReserve
 	for _, row := range []struct {
@@ -23,7 +24,6 @@ func TestPoolBudgetIsEachProcessesShareOfTheServer(t *testing.T) {
 		{"a server sized for production's pools", FullSizeServerConnections + reserve, 0},
 		{"a larger one", FullSizeServerConnections + reserve + 100, 0},
 		{"one connection short of production's pools", FullSizeServerConnections + reserve - 1, (FullSizeServerConnections - 1 - SuiteHeadroom) / MaxProcessesAtOnce},
-		{"Postgres's default of 100", 100, 19},
 		{"the smallest server the suite runs on", MinServerConnections() + reserve, store.MinBudget()},
 	} {
 		got, err := PoolBudget(row.maxConnections, reserve)
@@ -33,7 +33,8 @@ func TestPoolBudgetIsEachProcessesShareOfTheServer(t *testing.T) {
 	}
 
 	smallest := MinServerConnections() + reserve
-	for _, maxConnections := range []int{smallest - 1, 50, 0} {
+	// 100 is Postgres's default max_connections.
+	for _, maxConnections := range []int{smallest - 1, 100, 50, 0} {
 		_, err := PoolBudget(maxConnections, reserve)
 		if err == nil || !strings.Contains(err.Error(), "-c max_connections="+strconv.Itoa(smallest)+" ") {
 			t.Errorf("max_connections=%d: PoolBudget's error = %v, want a refusal naming max_connections=%d", maxConnections, err, smallest)
@@ -87,9 +88,9 @@ func processConnections(budget int) int {
 // (FullSizeServerConnections, which internal/dispatch/store/cmd/connections prints, plus the
 // server's reserve), runs every process at production's sizes: PoolBudget answers 0 there.
 //
-// A threshold that did not count the hooks' listener would answer 0 at 495, and four processes at
-// production's sizes, 119 connections each with that listener, and the suite's 20 would need 496
-// of the 492 the server leaves beside its reserve.
+// A threshold that did not count the hooks' listener would answer 0 at 967, and eight processes
+// at production's sizes, 119 connections each with that listener, and the suite's 20 would need
+// 972 of the 964 the server leaves beside its reserve.
 func TestAPodsTestServerScalesEachProcessByTheHooksListener(t *testing.T) {
 	const reserve = postgresSuperuserReserve
 	pod := ServerConnections + reserve

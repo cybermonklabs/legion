@@ -94,6 +94,8 @@ func requireMainsEnd(t *testing.T, what string, took time.Duration, mains <-chan
 // option, the one try the step makes each time;
 // TestAListenerWhoseLaterConnectionsCannotDialWaitsForThemThenServes holds the retry.
 func TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries(t *testing.T) {
+	// Not parallel: it requires the role lane's connect to end within mainsEndMargin (500 ms) of
+	// main's connect beside it (requireMainsEnd).
 	start := newNATSStart(listenerCredentialWait)
 	start.once.Do(func() { start.began = time.Now().Add(-listenerCredentialWait + 500*time.Millisecond) })
 	cfg := config.Service{MachineID: "start-near-the-bound", NATSURLs: []string{"nats://" + testport.Refused(t)}, NATSReplicas: 1}
@@ -141,6 +143,8 @@ func TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries(t *testing.T
 // main ended the start with stepFailed's line; once the server grants the subscription, the step
 // returns its lane.
 func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// bus.NkeySeedEnvVar).
 	seed, public := testnats.User(t)
 	_, fallback := testnats.User(t)
 	server, uri := testnats.StartConfig(t, nkeyAuthorization(fallback), []string{"-js"}, true)
@@ -223,6 +227,8 @@ const laterConnectRefusedFor = 15 * time.Second
 // /healthz answers 503 starting, as before any refusal. A later connect without the wait ends with
 // the refusal after its ten tries, before the server admits the nkey again.
 func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// bus.NkeySeedEnvVar in each row's subtest).
 	const watchdog = 60 * time.Second
 	logger := logging.NewWithWriter("test", io.Discard)
 	for _, row := range []struct {

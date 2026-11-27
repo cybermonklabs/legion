@@ -4414,7 +4414,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       const regained = regain === undefined ? undefined : legionRoleClaimBridge().regained;
       if (regain !== undefined && regained !== undefined) {
         // Detached from the heartbeat chain: the hook is a daemon round-trip this side cannot
-        // bound (`claims/ready`, retried on a 5xx or a transport failure), and the chain's
+        // bound (`claims/ready`, retried on an outage or a transport failure), and the chain's
         // `healing` latch must release as soon as registration and the claim are settled, or the
         // next tick could never register. `Promise.resolve().then` also catches a synchronous
         // throw.

@@ -55,6 +55,8 @@ func startListenerStream(t *testing.T, cfg config.Service) *bus.Client {
 // in its subjects, its age or its duplicate window keeps the three copies, the byte limit and the
 // id, and corrects the subjects, the age, the window and discard, to DiscardNew.
 func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsTheStream(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// listenerSettings).
 	for _, drift := range bustest.StreamDrifts() {
 		t.Run(drift.Name, func(t *testing.T) {
 			cluster := testnats.StartCluster(t, 3)
@@ -78,6 +80,8 @@ func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 // replica count of its own, moves to three copies with it.
 // It must not run in parallel: it sets the listener's settings with t.Setenv (listenerSettings).
 func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// listenerSettings).
 	cluster := testnats.StartCluster(t, 3)
 	js := cluster.JetStream(t)
 	first := listenerSettings(t, cluster.URL(), nil)

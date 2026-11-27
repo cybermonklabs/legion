@@ -101,10 +101,11 @@ const (
 	computeClassKey     = "cloud.google.com/compute-class"
 )
 
-// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler stop-eviction annotation
-// keys podTemplate sets unconditionally (probeManifest sets only the first): Karpenter's own
-// (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request for
-// extended-duration protection.
+// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler annotation keys:
+// Karpenter's own (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request
+// for extended-duration protection. podTemplate sets both against eviction, unconditionally;
+// probeManifest sets only the first; and cachePodTemplate sets the first and the second as "true",
+// so the cluster autoscaler may move a cache pod and remove the node it held.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
@@ -1446,15 +1447,42 @@ func (r *Runtime) mountsProviders() bool {
 	return len(r.providerKeys) > 0 || len(r.providersSecrets) > 0 || r.sessionStore.DSNSecretKey() != ""
 }
 
-// providersKeys are the providers Secret's keys every pod mounts, sorted: what the image probe
-// names when the kubelet cannot mount one.
-func (r *Runtime) providersKeys() []string {
-	keys := slices.Concat(slices.Collect(maps.Values(r.providerKeys)), r.providersSecrets)
-	if key := r.sessionStore.DSNSecretKey(); key != "" {
-		keys = append(keys, key)
+// providersEntries name the settings whose keys of the providers Secret every pod mounts, sorted:
+// what the image probe names when the kubelet cannot mount one. A provider key is named by its
+// variable (provider_keys.<VAR>) and the session database's URL by its setting, never by the key
+// of the Secret that holds it: a provider_keys value can be the provider's key itself, pasted
+// where its name goes, and this refusal is printed as it is. A providers secret is a launch
+// secret's fixed name.
+func (r *Runtime) providersEntries() []string {
+	entries := slices.Concat(slices.Collect(maps.Keys(r.providerKeys)), r.providersSecrets)
+	for i, entry := range entries[:len(r.providerKeys)] {
+		entries[i] = "provider_keys." + entry
 	}
-	slices.Sort(keys)
-	return keys
+	if r.sessionStore.DSNSecretKey() != "" {
+		entries = append(entries, "runtime.kubernetes.session_dsn_secret")
+	}
+	slices.Sort(entries)
+	return entries
+}
+
+// providersEntryOf is the settings whose key of the providers Secret is key, by providersEntries'
+// names, sorted and joined with " and ", so two provider_keys variables that read one key are
+// both named the same way each run; or "" when none is.
+func (r *Runtime) providersEntryOf(key string) string {
+	var entries []string
+	for variable, secretKey := range r.providerKeys {
+		if secretKey == key {
+			entries = append(entries, "provider_keys."+variable)
+		}
+	}
+	if slices.Contains(r.providersSecrets, key) {
+		entries = append(entries, key)
+	}
+	if dsn := r.sessionStore.DSNSecretKey(); dsn != "" && dsn == key {
+		entries = append(entries, "runtime.kubernetes.session_dsn_secret")
+	}
+	slices.Sort(entries)
+	return strings.Join(entries, " and ")
 }
 
 // sessionDSNPointer is OMP_SESSION_SQL_DSN_FILE naming the mounted session database URL, none
@@ -1801,8 +1829,9 @@ func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
 // workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
 // repository's size, and the three run one after the other: workspace-fetch's whole budget (its
-// wait for the repository cache, then one FetchTimeout for the verification of what the cache
-// streamed, then one of its own for the delta from GitHub), workspace-init's shared clone of
+// wait for the repository cache, then one BucketFetchTimeout for its attempt on the cache's
+// bucket, then one FetchTimeout for the verification of what the cache's /tar streamed when that
+// attempt failed, then one of its own for the delta from GitHub), workspace-init's shared clone of
 // the feed, whose size-following steps share one CloneTimeout, and the issue's own checkout, the
 // one command that writes the whole working copy (`jj sparse reset`, workspace.Provision), under
 // CheckoutTimeout. It is how much longer than the boot timeout a launch may wait for its pod's

@@ -303,6 +303,8 @@ func awaitNoRelaySubscriber(t *testing.T, uri, sessionID string) {
 // can only come from the closed connection. The plugin's connection runs through a proxy, whose
 // cut closes it as a network that ends it does.
 func TestASendReadsASessionWhoseConnectionClosedAsStopped(t *testing.T) {
+	// Not parallel: it requires the send to answer within 1.5 s of a session whose connection
+	// closed, half a second past the probe's 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 
@@ -357,6 +359,8 @@ func asListenerUser(t *testing.T, uri string) string {
 // answer and not a reply's.
 // It must not run in parallel: the denied probe must answer within 1.5 s.
 func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
+	// Not parallel: it requires the send whose probe the server denies to answer within 1.5 s,
+	// half a second past the probe's 1 s connectionProbeTimeout.
 	_, uri := testnats.StartConfig(t, listenerGrantConfig(bus.DeliverSubjectPrefix+">"), []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -392,6 +396,8 @@ func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
 // control is the same session registered in consumer mode, its entry now recording consumer
 // delivery, with still nothing on its relay subject: that one is probed, and reads stopped.
 func TestASendToAnEntryWithoutConsumerDeliveryIsNotProbed(t *testing.T) {
+	// Not parallel: it requires the send to an entry it must not probe to answer within 900 ms,
+	// just under the probe's 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 
@@ -420,6 +426,8 @@ func TestASendToAnEntryWithoutConsumerDeliveryIsNotProbed(t *testing.T) {
 // probe is sent: the one header Envoy-Probe: 1, none of a relay frame's headers - which would have
 // it decode as a frame and move the session's resume point - and no body.
 func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
+	// Not parallel: it requires the send to answer within the 3.5 s sendRequestBudget after a
+	// probe that waits out its 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 

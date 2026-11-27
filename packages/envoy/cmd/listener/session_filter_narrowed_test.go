@@ -48,6 +48,9 @@ import (
 // and a topic under it is one the deployed stream captures and this build does not store. Each
 // step reports its own result, so a step that fails does not hide the steps after it.
 func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing.T) {
+	// Not parallel: it requires the listener's client to read a narrowing of the stream within 2 s,
+	// inside the 5 s a fenced filter write has (sessionConsumerCallTimeout), and holds a 500 ms
+	// quiet window after each consumer's wanted messages in which no other may arrive (delivered).
 	const (
 		teamT      = "notifications.team.t"
 		teamU      = "notifications.team.u"
