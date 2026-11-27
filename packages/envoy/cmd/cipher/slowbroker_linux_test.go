@@ -51,6 +51,9 @@ func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.
 		PeerOf:   helper.PeerOf,
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 		MinRenew: 50 * time.Millisecond,
+		// Past every call this package's tests make of it (untilGiveUp): a call is not dropped
+		// because the machine held its client between its connect and its write.
+		ExchangeBound: untilGiveUp(t),
 	}
 	sock := filepath.Join(shortTempDir(t), "helper.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})

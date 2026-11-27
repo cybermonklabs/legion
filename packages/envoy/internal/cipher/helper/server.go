@@ -52,6 +52,15 @@ type Server struct {
 	// Zero, which is what cmd/cipher-helper leaves it, means DefaultBrokerCallBound; a row that
 	// reads the bound sets one short enough to be quick.
 	BrokerCallBound time.Duration
+	// ExchangeBound is how long a connection's exchange may take beside any wait its op has: from
+	// the moment its handler starts, the read of the request, an op that waits on nothing and the
+	// write of its answer; after a register's wait_seconds, the write of that answer. A client
+	// that has sent no whole line by then is hung up on with no answer. Zero, which is what
+	// cmd/cipher-helper leaves it, means DefaultExchangeBound, the 5 s every release has set, so a
+	// deployment's helper does what it always did; a test's rig that serves the socket sets the
+	// test binary's deadline, since a client of its own that the machine's load holds between its
+	// connect and its write is not what any row reads (dispatch://INFRA-3904).
+	ExchangeBound time.Duration
 	// calls counts the connections Serve accepted that may still owe a broker call's answer, and
 	// pending is the same count as a number, for the "connections" attribute of the line Serve
 	// logs while it waits on calls: each connection counts from its accept until its handler has
@@ -115,7 +124,8 @@ type Server struct {
 // an Add that moves a WaitGroup's count up from zero must come before the Wait it would hold, and
 // the handler gives the count back as soon as it has read a request that is not a broker call: no
 // other op holds the stop, whatever it waits on (a register's wait_seconds does not watch ctx). A
-// connection whose request is still being read holds it for at most that read's 5 s deadline.
+// connection whose request is still being read holds it for at most the Server's exchange bound
+// (ExchangeBound, DefaultExchangeBound's 5 s in a deployment).
 //
 // It then waits for the revokes it fired off (awaitRevokes), the one piece of work that outlives
 // the answer it belongs to (retire). A helper whose process exits when Serve returns would
@@ -188,7 +198,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 	release := sync.OnceFunc(s.doneCall)
 	defer release()
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(s.exchangeBound()))
 	line, err := bufio.NewReaderSize(conn, maxLine).ReadBytes('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return
@@ -220,7 +230,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		// A new session keeps its pidfd; every other path closes it before returning.
 		wait := time.Duration(req.WaitSeconds) * time.Second
 		if wait > 0 {
-			_ = conn.SetDeadline(time.Now().Add(wait + 5*time.Second))
+			_ = conn.SetDeadline(time.Now().Add(wait + s.exchangeBound()))
 		}
 		sessionID := ""
 		if req.SessionID != nil {
@@ -324,6 +334,15 @@ func (s *Server) brokerCallBound() time.Duration {
 		return s.BrokerCallBound
 	}
 	return DefaultBrokerCallBound
+}
+
+// exchangeBound is this Server's bound on a connection's exchange beside its op's wait:
+// ExchangeBound when it is set, DefaultExchangeBound otherwise.
+func (s *Server) exchangeBound() time.Duration {
+	if s.ExchangeBound > 0 {
+		return s.ExchangeBound
+	}
+	return DefaultExchangeBound
 }
 
 // brokerCallTimerSlack is how long after the bound this Server's brokerCall timer answers:

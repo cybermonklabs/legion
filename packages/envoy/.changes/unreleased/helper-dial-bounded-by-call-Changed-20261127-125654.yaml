@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    A command's call to `agent-secrets-helper` no longer gives up on its dial of the helper's socket at 2 seconds: the dial is bounded by the call's own timeout alone, which is 2 s for `agent-secrets-helper install`'s drain and session reads and for `agent-secrets`' identity question, 5 s for a sign and for `agent-secrets-helper sessions`, 10 s for a machine login's status, 30 s for a machine login, an enroll and an unenroll, and the `--wait` seconds plus 10 s for a register. A dial of that socket answers at once whatever is there: a missing socket, one no one listens on and a helper whose backlog is full are refused at once, as before. Only a command that is itself held up inside the dial, on a loaded machine, waits longer now, up to its call's timeout, where before it failed after 2 s although its call had time left.
+time: 2026-11-27T12:56:54Z
+custom:
+    Issue: helper-dial-bounded-by-call

@@ -359,17 +359,26 @@ const BrokerCallWait = 30 * time.Second
 
 // DefaultBrokerCallBound is how long the helper lets one broker-call op run before it answers
 // (Server.BrokerCallBound): 20 s, set from BrokerCallWait so that the answer reaches every client
-// inside that wait. A client spends up to 2 s on the dial (Call). The op then runs for at most
-// the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
-// for its read and its write: the op's requests end with its context at the bound, and the helper
-// answers at the bound plus DefaultBrokerCallSlack (1 s) whatever the op is doing. 2 s + 20 s + 5 s
-// is 27 s, under 30 s. A released agent-secrets that asks enroll-session-key and
-// unenroll-session-key (every release from legion-envoy-v10.0.0) also waits 30 s for them
+// inside that wait. A client's dial answers at once (Call). The op then runs for at most the
+// bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
+// for its read and its write: the op's requests end with its context at
+// the bound, and the helper answers at the bound plus DefaultBrokerCallSlack (1 s) whatever the op
+// is doing. 20 s + 5 s is 25 s, under 30 s. A released agent-secrets that asks enroll-session-key
+// and unenroll-session-key (every release from legion-envoy-v10.0.0) also waits 30 s for them
 // (BrokerCallWait), so it gets this helper's answer and not an empty reply. Its machine login
 // waits 10 s, so a broker slower than about 8 s can still outlast it. A healthy broker answers in
 // a fraction of a second (DefaultFirstConfirmBound); the slow answers that were measured took 5 s
 // and 8 s.
 const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
+
+// DefaultExchangeBound is how long a connection's exchange may take beside any wait its op has,
+// when the Server names no other (Server.ExchangeBound): 5 s, the deadline the helper has always
+// set. From the moment its handler starts, it is the whole of an exchange whose op waits on
+// nothing (the read of the request, the op, the write of the answer), and it follows a register's
+// wait_seconds for the write of that answer. A client that has sent no whole line by then is hung
+// up on with no answer, so a connection that sends nothing holds a handler, and the helper's stop
+// (Serve), no longer than this.
+const DefaultExchangeBound = 5 * time.Second
 
 // DefaultBrokerCallSlack is how long after an op's bound brokerCall's timer answers it, when the
 // Server names no other (Server.brokerCallSlack, which only tests set).
@@ -379,7 +388,7 @@ const DefaultBrokerCallSlack = time.Second
 // `agent-secrets-helper install` runs after a drain. The restart's stop sends the running helper
 // SIGTERM, and that helper exits once every broker-call op it accepted has answered, at most
 // DefaultBrokerCallBound plus DefaultBrokerCallSlack, or a connection still being read reaches its
-// 5 s read deadline (Server.Serve): 21 s at the most. The start is done once systemd has forked
+// DefaultExchangeBound (Server.Serve): 21 s at the most. The start is done once systemd has forked
 // the helper, since the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to
 // queue and fork on a loaded machine. A restart still running at the bound is one install stops
 // waiting for, and systemd keeps its job: install reads the unit's main process, and sends
@@ -414,14 +423,18 @@ func (e *noReplyError) Error() string { return e.err.Error() }
 
 func (e *noReplyError) Unwrap() []error { return []error{e.err, ErrNoReply} }
 
-// Call sends one request and reads one reply, all within timeout, the dial included (the dial
-// alone also gives up after 2 s). A register with wait_seconds needs that much plus slack. An
-// error after the whole request was written (no reply line within the timeout, or a reply that
-// is not one JSON object) also matches ErrNoReply, because the helper may have acted on the
-// request. A failed dial, marshal or write does not: the helper did not get the whole request.
+// Call sends one request and reads one reply, all within timeout, the dial included. The dial has
+// no bound of its own: a dial of the helper's unix socket answers at once whatever is there (a
+// path with no file, a socket no one listens on and a listener whose backlog is full refuse it,
+// and a listener with room accepts it), so only a caller held up inside the dial itself spends
+// time there, and a fixed bound there would fail a call its caller gave more time to
+// (dispatch://INFRA-3904). A register with wait_seconds needs that much plus slack. An error after
+// the whole request was written (no reply line within the timeout, or a reply that is not one JSON
+// object) also matches ErrNoReply, because the helper may have acted on the request. A failed
+// dial, marshal or write does not: the helper did not get the whole request.
 func Call(sock string, req Request, timeout time.Duration) (Response, error) {
 	deadline := time.Now().Add(timeout)
-	conn, err := (&net.Dialer{Timeout: 2 * time.Second, Deadline: deadline}).Dial("unix", sock)
+	conn, err := (&net.Dialer{Deadline: deadline}).Dial("unix", sock)
 	if err != nil {
 		return Response{}, err
 	}
