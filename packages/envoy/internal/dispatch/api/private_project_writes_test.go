@@ -946,11 +946,14 @@ func TestAParentStatusConflictLeavesOutAPrivateProjectsIssue(t *testing.T) {
 
 // TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild: an acceptance write, a PATCH of an
 // issue's status to done that carries refuse_open_foreign_children, on an issue of the token's own
-// project whose open child is in the private project, answers 409 FOREIGN_CHILD_OPEN with the
-// child absent from issues and from the message, and changes nothing: the child is open, so the
-// write is refused with no child listed. The token that names the private project, and a person,
-// get the same 409 with the child listed. The parent status rule is off, since with it on R24
-// refuses a close over an open child first
+// project whose open child is in the private project. The token that names the private project,
+// and a person, are refused 409 FOREIGN_CHILD_OPEN listing the child and naming it in the message,
+// and nothing is written. The token that names another project does not see the child, so the
+// open-child check reads it as no child (refuseOpenForeignChildren, the rule F11 gives every read
+// of a write's issues): a refusal decided by the child would tell the token that an open issue it
+// may not see is under its issue. Its write is taken, the issue closed and the child as it was,
+// and its answer names the child nowhere. It runs last, since it closes the issue. The parent
+// status rule is off, since with it on R24 refuses a close over an open child first
 // (TestTheParentStatusRuleDecidesBeforeTheOpenForeignChildCheck).
 func TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild(t *testing.T) {
 	t.Parallel()
@@ -964,17 +967,13 @@ func TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild(t *testing.T) {
 	for _, write := range []struct {
 		name string
 		send func(t *testing.T) *httptest.ResponseRecorder
-		want []string
 	}{
-		{"the token that names another project", func(t *testing.T) *httptest.ResponseRecorder {
-			return rig.send(t, scopedToken, http.MethodPatch, "/api/v1/issues/"+parent, body)
-		}, []string{}},
 		{"the token that names the private project", func(t *testing.T) *httptest.ResponseRecorder {
 			return rig.send(t, namingToken, http.MethodPatch, "/api/v1/issues/"+parent, body)
-		}, listed},
+		}},
 		{"a person", func(t *testing.T) *httptest.ResponseRecorder {
 			return rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+parent, body)
-		}, listed},
+		}},
 	} {
 		t.Run(write.name, func(t *testing.T) {
 			before := rig.written(t, parent, child)
@@ -990,16 +989,24 @@ func TestAnAcceptanceWriteLeavesOutAPrivateProjectsOpenChild(t *testing.T) {
 			for _, issue := range refusal.Issues {
 				got = append(got, issue.Key+" "+issue.Project+" "+issue.Status)
 			}
-			if refusal.Code != "FOREIGN_CHILD_OPEN" || !slices.Equal(got, write.want) {
-				t.Errorf("the refusal lists %v, want FOREIGN_CHILD_OPEN listing %v: %s", got, write.want, response.Body.String())
+			if refusal.Code != "FOREIGN_CHILD_OPEN" || !slices.Equal(got, listed) {
+				t.Errorf("the refusal lists %v, want FOREIGN_CHILD_OPEN listing %v: %s", got, listed, response.Body.String())
 			}
-			names := strings.Contains(response.Body.String(), child) || strings.Contains(response.Body.String(), childTitle)
-			if len(write.want) == 0 && names {
-				t.Errorf("the refusal names the private child %s: %s", child, response.Body.String())
-			}
-			if len(write.want) > 0 && !strings.Contains(refusal.Error, child) {
+			if !strings.Contains(refusal.Error, child) {
 				t.Errorf("the refusal's message %q does not name the child %s", refusal.Error, child)
 			}
 		})
 	}
+	t.Run("the token that names another project", func(t *testing.T) {
+		kept := privateRow(rig.written(t, child))
+		response := rig.send(t, scopedToken, http.MethodPatch, "/api/v1/issues/"+parent, body)
+		requireTaken(t, "the acceptance write over a child the token does not see", response, http.StatusOK)
+		if strings.Contains(response.Body.String(), child) || strings.Contains(response.Body.String(), childTitle) {
+			t.Errorf("the write's answer names the private child %s: %s", child, response.Body.String())
+		}
+		if after := privateRow(rig.written(t, child)); after != kept {
+			t.Errorf("the write changed the private child from %s to %s, want it as it was", kept, after)
+		}
+		ruleRig{database: rig.database}.requireIssue(t, parent, "done", "")
+	})
 }

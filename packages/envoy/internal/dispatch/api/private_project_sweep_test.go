@@ -298,7 +298,11 @@ func foreignKeys[T any](issues []T, key func(T) string) []string {
 
 // TestAnAcceptanceListsOnlyThePublicChild: a PATCH to retro that carries refuse_open_foreign_children
 // over open children of a private and of a public project is 409 FOREIGN_CHILD_OPEN listing the
-// public child alone, and over a private child alone lists none; each refuses the write.
+// public child alone, which decides the refusal. Over a private child alone it is taken, naming
+// the child nowhere and leaving it as it was: the token's reader does not see the child, so the
+// open-child check reads it as no child (refuseOpenForeignChildren, the rule F11 gives every read
+// of a write's issues), and a refusal decided by it would tell the token that an open issue it may
+// not see is under its issue.
 func TestAnAcceptanceListsOnlyThePublicChild(t *testing.T) {
 	t.Parallel()
 	rig := newCascadeRig(t)
@@ -310,13 +314,17 @@ func TestAnAcceptanceListsOnlyThePublicChild(t *testing.T) {
 	rig.makePrivate(t)
 
 	body := map[string]any{"status": "retro", "refuse_open_foreign_children": true}
+	kept := privateRow(rig.written(t, secret))
 	only := rig.send(t, scopedToken, http.MethodPatch, "/api/v1/issues/"+privateOnly, body)
-	answer := decodeBody[foreignChildOpenError](t, only)
-	if only.Code != http.StatusConflict || answer.Code != "FOREIGN_CHILD_OPEN" || len(answer.Issues) != 0 || strings.Contains(only.Body.String(), secret) {
-		t.Errorf("over a private child alone: status=%d body=%s", only.Code, only.Body.String())
+	if only.Code != http.StatusOK || strings.Contains(only.Body.String(), secret) || strings.Contains(only.Body.String(), "Secret retro child") {
+		t.Errorf("over a private child alone: status=%d body=%s, want 200 naming the child nowhere", only.Code, only.Body.String())
 	}
+	if after := privateRow(rig.written(t, secret)); after != kept {
+		t.Errorf("over a private child alone: the write changed the private child from %s to %s, want it as it was", kept, after)
+	}
+	ruleRig{database: rig.database}.requireIssue(t, privateOnly, "retro", "")
 	pair := rig.send(t, scopedToken, http.MethodPatch, "/api/v1/issues/"+mixed, body)
-	answer = decodeBody[foreignChildOpenError](t, pair)
+	answer := decodeBody[foreignChildOpenError](t, pair)
 	keys := foreignKeys(answer.Issues, func(child foreignChildOpen) string { return child.Key })
 	if pair.Code != http.StatusConflict || answer.Code != "FOREIGN_CHILD_OPEN" || !slices.Equal(keys, []string{publicChild}) || strings.Contains(pair.Body.String(), secretChild) {
 		t.Errorf("over a public and a private child: status=%d keys=%v body=%s", pair.Code, keys, pair.Body.String())
