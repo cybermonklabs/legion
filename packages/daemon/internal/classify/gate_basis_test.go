@@ -112,13 +112,13 @@ func TestLatestReviewReadsThePersonsOwnReviewsOnABasis(t *testing.T) {
 		})
 	}
 
-	if ApprovalFollows(kept, 3, record.EventMark{Seq: 20}) {
+	if ReviewSuperseded(kept, 3, record.EventMark{Seq: 20}) {
 		t.Fatalf("a changes request of version 3 reads as followed by an approval on a step a basis opened at version 4, want it the person's to tell: no person approved version 4")
 	}
-	if !ApprovalFollows(kept, 1, record.EventMark{Seq: 5}) {
+	if !ReviewSuperseded(kept, 1, record.EventMark{Seq: 5}) {
 		t.Fatalf("a changes request of version 1 reads as followed by nothing, want it followed by the person's own approval of version 2")
 	}
-	if ApprovalFollows(none, 3, record.EventMark{Seq: 20}) {
+	if ReviewSuperseded(none, 3, record.EventMark{Seq: 20}) {
 		t.Fatalf("a changes request reads as followed by an approval on a step no person approved")
 	}
 }

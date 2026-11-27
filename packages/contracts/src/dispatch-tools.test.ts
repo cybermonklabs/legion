@@ -1713,11 +1713,12 @@ describe("dispatchToolSpecs", () => {
     ["dispatch_priorities", ["backlog", "icebox"]],
     ["dispatch_review", ["approve"]],
   ];
-  test.each(
-    descriptionNames
-  )("%s's description, which --help prints, names each name its rules are about", (name, names) => {
-    expect(namesMissing(specFor(name).description, names)).toEqual([]);
-  });
+  test.each(descriptionNames)(
+    "%s's description, which --help prints, names each name its rules are about",
+    (name, names) => {
+      expect(namesMissing(specFor(name).description, names)).toEqual([]);
+    }
+  );
 
   // Every kind the tool takes but `resolved`, which stands twice in the description: by the rule
   // above, a check of it would still pass if the clause that lists the kinds stopped naming it.
@@ -1750,12 +1751,13 @@ describe("dispatchToolSpecs", () => {
       ],
     ],
   ];
-  test.each(
-    referenceForms
-  )("%s's %s flag help names each form of reference it takes", (name, field, forms) => {
-    const description = argumentDescription(name, field);
-    expect(namesMissing(description, forms)).toEqual([]);
-  });
+  test.each(referenceForms)(
+    "%s's %s flag help names each form of reference it takes",
+    (name, field, forms) => {
+      const description = argumentDescription(name, field);
+      expect(namesMissing(description, forms)).toEqual([]);
+    }
+  );
 
   test("points dispatch_issue's spec and dispatch_doc_edit at the skill that writes specs", () => {
     const issue = dispatchToolSpecs.find((spec) => spec.name === "dispatch_issue");
@@ -1790,15 +1792,16 @@ describe("dispatchToolSpecs", () => {
     ]);
   });
 
-  test.each(
-    BODY_WRITING_TOOLS
-  )("%s's %s gives the server's two body bounds and names the decision block it refuses", (name, field) => {
-    const flag = argumentDescription(name, field);
-    expect(flag, `${name} --${field}`).toContain(`${DISPATCH_BLOCK_UNITS} characters`);
-    expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);
-    expect(flag, `${name} --${field}`).toContain(":::ask");
-    expect(flag, `${name} --${field}`).toContain("`dispatch ask`");
-  });
+  test.each(BODY_WRITING_TOOLS)(
+    "%s's %s gives the server's two body bounds and names the decision block it refuses",
+    (name, field) => {
+      const flag = argumentDescription(name, field);
+      expect(flag, `${name} --${field}`).toContain(`${DISPATCH_BLOCK_UNITS} characters`);
+      expect(flag, `${name} --${field}`).toContain(`${DISPATCH_ITEM_BLOCKS} blocks`);
+      expect(flag, `${name} --${field}`).toContain(":::ask");
+      expect(flag, `${name} --${field}`).toContain("`dispatch ask`");
+    }
+  );
 
   test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {
     const schema = schemaFor("dispatch_follow");
@@ -1938,42 +1941,42 @@ describe("the bounds and refusals each tool states beside its arguments", () => 
   // field states, and takes what the route takes; JavaScript's trim would read U+0085 and U+FEFF
   // the other way. The field's description holds the refusal's text, both copies of one constant,
   // so the test reads the rule from the refusal and holds the description to it, not to a copy.
-  test.each([
-    "dispatch_issue",
-    "dispatch_issue_update",
-  ] as const)("%s refuses the components parseIssueComponents refuses, in the rule its field states", (name) => {
-    const schema = schemaFor(name);
-    const refusals = new Set<string>();
-    for (const components of [
-      { mode: "explicit" },
-      { mode: "none" },
-      { mode: "none", reason: " \n" },
-      { mode: "none", reason: "\u0085" },
-    ]) {
-      const result = schema.safeParse({ ...validCalls[name], components });
-      expect(result.success, JSON.stringify(components)).toBe(false);
-      const messages = result.error?.issues.map((issue) => issue.message) ?? [];
-      expect(messages, JSON.stringify(components)).toHaveLength(1);
-      for (const message of messages) refusals.add(message);
+  test.each(["dispatch_issue", "dispatch_issue_update"] as const)(
+    "%s refuses the components parseIssueComponents refuses, in the rule its field states",
+    (name) => {
+      const schema = schemaFor(name);
+      const refusals = new Set<string>();
+      for (const components of [
+        { mode: "explicit" },
+        { mode: "none" },
+        { mode: "none", reason: " \n" },
+        { mode: "none", reason: "\u0085" },
+      ]) {
+        const result = schema.safeParse({ ...validCalls[name], components });
+        expect(result.success, JSON.stringify(components)).toBe(false);
+        const messages = result.error?.issues.map((issue) => issue.message) ?? [];
+        expect(messages, JSON.stringify(components)).toHaveLength(1);
+        for (const message of messages) refusals.add(message);
+      }
+      // The four calls get one refusal, the rule, and it is not empty.
+      expect(refusals.size).toBe(1);
+      const [rule = ""] = refusals;
+      expect(rule.trim()).not.toBe("");
+      const empty = { mode: "explicit", ids: [] };
+      expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
+      for (const components of [
+        { mode: "inherit" },
+        { mode: "explicit", ids: ["web"] },
+        { mode: "none", reason: "hiring" },
+        { mode: "none", reason: "\uFEFF" },
+      ]) {
+        const result = schema.safeParse({ ...validCalls[name], components });
+        expect(result.success, JSON.stringify(components)).toBe(true);
+      }
+      const description = argumentDescription(name, "components");
+      expect(description).toContain(rule);
     }
-    // The four calls get one refusal, the rule, and it is not empty.
-    expect(refusals.size).toBe(1);
-    const [rule = ""] = refusals;
-    expect(rule.trim()).not.toBe("");
-    const empty = { mode: "explicit", ids: [] };
-    expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
-    for (const components of [
-      { mode: "inherit" },
-      { mode: "explicit", ids: ["web"] },
-      { mode: "none", reason: "hiring" },
-      { mode: "none", reason: "\uFEFF" },
-    ]) {
-      const result = schema.safeParse({ ...validCalls[name], components });
-      expect(result.success, JSON.stringify(components)).toBe(true);
-    }
-    const description = argumentDescription(name, "components");
-    expect(description).toContain(rule);
-  });
+  );
 
   // POST /api/v1/issues refuses the import of a GitHub issue already imported into another
   // project with 400 EXTERNAL_PROJECT_MISMATCH (createIssue).

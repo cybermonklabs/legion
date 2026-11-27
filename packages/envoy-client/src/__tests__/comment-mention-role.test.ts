@@ -101,30 +101,33 @@ describe("dispatch comment --mention-role", () => {
       ],
       ["role:legion-acme-controller", "session:ses_01-AB", "role:legion-acme-architect"],
     ],
-  ] as const)("%s go to Dispatch as mentions, in the order given", async (_label, flags, targets) => {
-    const { code, stdout } = await run([
-      "comment",
-      "--issue",
-      "DSP-1",
-      "--body",
-      "Over to you.",
-      ...flags,
-    ]);
+  ] as const)(
+    "%s go to Dispatch as mentions, in the order given",
+    async (_label, flags, targets) => {
+      const { code, stdout } = await run([
+        "comment",
+        "--issue",
+        "DSP-1",
+        "--body",
+        "Over to you.",
+        ...flags,
+      ]);
 
-    expect(code, stdout).toBe(0);
-    expect(stdout).toStartWith("Posted comment comment-1");
-    const posted = requests.filter((request) => request.method === "POST");
-    expect(posted).toEqual([
-      {
-        method: "POST",
-        path: "/api/v1/issues/DSP-1/comments",
-        body: expect.objectContaining({
-          body: "Over to you.",
-          mentions: targets.map((target) => ({ target })),
-        }),
-      },
-    ]);
-  });
+      expect(code, stdout).toBe(0);
+      expect(stdout).toStartWith("Posted comment comment-1");
+      const posted = requests.filter((request) => request.method === "POST");
+      expect(posted).toEqual([
+        {
+          method: "POST",
+          path: "/api/v1/issues/DSP-1/comments",
+          body: expect.objectContaining({
+            body: "Over to you.",
+            mentions: targets.map((target) => ({ target })),
+          }),
+        },
+      ]);
+    }
+  );
 
   // R1: an empty name would send `role:` alone, which names nobody. It is a usage error, beside a
   // good name too, and nothing is sent: not the comment, not any read.

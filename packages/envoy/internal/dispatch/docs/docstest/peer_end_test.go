@@ -1,0 +1,111 @@
+package docstest
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	gws "github.com/gorilla/websocket"
+	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/encoding"
+	ygsync "github.com/reearth/ygo/sync"
+
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// stubRoom is a websocket server that reads the peer's first frame, its sync step 1, and then
+// does what act says with the connection.
+func stubRoom(t *testing.T, act func(*gws.Conn)) string {
+	t.Helper()
+	upgrader := gws.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer connection.Close()
+		if _, _, err := connection.ReadMessage(); err != nil {
+			t.Errorf("read the peer's sync step 1: %v", err)
+			return
+		}
+		act(connection)
+	}))
+	testcleanup.Add(t, server.Close)
+	return "ws" + strings.TrimPrefix(server.URL, "http")
+}
+
+// A frame the reader cannot apply stops it with the socket still open, and the peer says so: a
+// test that sees Ended must not read that as a connection that ended.
+func TestAReaderThatCannotApplyAFrameGivesUpWithItsSocketOpen(t *testing.T) {
+	t.Parallel()
+	// The stub room's read of the peer's next frame, whatever it ends in: a read that fails sends
+	// its error, so the wait below ends either way and the failure is named.
+	type read struct {
+		message []byte
+		err     error
+	}
+	received := make(chan read, 1)
+	url := stubRoom(t, func(connection *gws.Conn) {
+		frame := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+			encoder.WriteVarString("doc")
+			encoder.WriteVarUint(messageSync)
+			encoder.WriteRaw([]byte{0xff, 0xff, 0xff}) // no sync message decodes from this
+		})
+		if err := connection.WriteMessage(gws.BinaryMessage, frame); err != nil {
+			t.Errorf("send the frame: %v", err)
+			return
+		}
+		// No deadline of its own: the read ends on the peer's write, or on the peer's close at
+		// the test's end.
+		_, message, err := connection.ReadMessage()
+		received <- read{message: message, err: err}
+	})
+	peer := Dial(t, url, nil, "doc", crdt.New())
+	testwait.Receive(t, "the peer's reader to stop on the frame it cannot apply", peer.Ended)
+	gaveUp, err := peer.ReaderGaveUp()
+	if !gaveUp || err == nil || !strings.Contains(err.Error(), "sync frame it could not apply") {
+		t.Fatalf("ReaderGaveUp() = %t, %v; want true and the sync frame it could not apply", gaveUp, err)
+	}
+	if code := peer.CloseCode(); code != 0 {
+		t.Errorf("CloseCode() = %d, want 0: no connection ended", code)
+	}
+	if dropped, _ := peer.DroppedWithoutCloseFrame(); dropped {
+		t.Error("DroppedWithoutCloseFrame() = true for a socket that is still open")
+	}
+	if err := peer.AskForDocument(); err != nil {
+		t.Fatalf("write on the socket the reader gave up on: %v", err)
+	}
+	got := testwait.Receive(t, "the room's read of the peer's write on the socket the reader gave up on", received)
+	if got.err != nil {
+		t.Fatalf("the room's read of the peer's write returned an error: %v", got.err)
+	}
+	// AskForDocument sends a sync step 1 naming no state, in the peer's Hocuspocus frame.
+	want := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString("doc")
+		encoder.WriteVarUint(messageSync)
+		encoder.WriteRaw(ygsync.EncodeSyncStep1(crdt.New()))
+	})
+	if !bytes.Equal(got.message, want) {
+		t.Fatalf("the room read %x, want the peer's sync step 1 frame %x", got.message, want)
+	}
+}
+
+// A room that drops the connection ends it: the reader did not give up, and the drop is named.
+func TestAConnectionTheRoomDropsIsNoReaderThatGaveUp(t *testing.T) {
+	t.Parallel()
+	url := stubRoom(t, func(connection *gws.Conn) {
+		connection.UnderlyingConn().Close() // no close frame
+	})
+	peer := Dial(t, url, nil, "doc", crdt.New())
+	testwait.Receive(t, "the peer's reader to end on the dropped connection", peer.Ended)
+	if gaveUp, err := peer.ReaderGaveUp(); gaveUp {
+		t.Fatalf("ReaderGaveUp() = true (%v) for a connection the room dropped", err)
+	}
+	if dropped, err := peer.DroppedWithoutCloseFrame(); !dropped {
+		t.Fatalf("DroppedWithoutCloseFrame() = false (%v), want true", err)
+	}
+}

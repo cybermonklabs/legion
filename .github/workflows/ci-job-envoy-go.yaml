@@ -379,13 +379,17 @@ jobs:
   envoy-go-race-impossible:
     name: envoy-go (race-impossible)
     runs-on: ubuntu-24.04-arm
-    # The step's two lines run one after another, each under its own 10-minute -timeout, after
-    # about 2 minutes of setup, so 25.
+    # The step's three lines run one after another, each under its own 10-minute -timeout, 30
+    # minutes at most after about 2 of setup and the pg_stat_statements Postgres's own
+    # timeout-minutes of 3, so 35 (2100 s).
     #
-    # Budget (ci-budgets.md's Budgets note): 1500 s, the 25 minutes main's #5576 gives this job,
-    # plus its slowest retried step alone — the ci-ok report's 2460 s, above packages/envoy's
-    # `go mod download` at 5 x 180 + 150 = 1050 s. 1500 + 2460 = 3960 s -> 67 min.
-    timeout-minutes: 67
+    # Its key is the larger sum of .github/ci-budgets.md#the-budgets-note, and its slowest
+    # retried step is the ci-ok report, 2460 s (ci-budgets.md's Budgets note, "The ci-ok report"),
+    # above packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s. The first sum is
+    # 2100 + 2460 = 4560 s. The steps before the report are the 2100 s above, derived with no
+    # module download step, so that step counts at its 1050 s: 3150 s, and with the report's
+    # rounded limit of 43 minutes, 2580 s, the second sum is the larger. 3150 + 2580 = 5730 s -> 96 min.
+    timeout-minutes: 96
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -404,7 +408,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 67 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 96 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -449,30 +453,18 @@ jobs:
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
-      # The tests the race detector makes impossible that measure no time, which the race job of
-      # each of these packages therefore cannot make, so envoy-go keeps a plain run of exactly
-      # them: internal/bus counts HoldsSeed's allocations, which the race runtime's own
-      # allocations would be counted into; and the documents package measures the heap a room
-      # keeps, which the detector's shadow memory and instrumentation move. Those are out of the
-      # race build altogether (//go:build !race), and the two render-reuse storms run fewer seeds
-      # and fewer edits under it (raceEnabled), so this is their full-size run. The documents
-      # package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as
-      # envoy-go-race-docs' run of the rest of it does, since it is the one package that registers
-      # a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and with -v, so its TestMain's count of
-      # services left alive prints. The rows of that run that measure time (the xid window tests,
-      # the xid rig, the API's issue-list bound and the auth service's restart storm) run alone in
-      # envoy-go-alone. The API's mention sender claim model is out of the race build too, and
-      # runs in a job of its own, envoy-go-claim-model; the API's nine source guards, and
-      # one_expression_guard_test.go beside them, carry that tag as well and are deliberately not
-      # here: they read the module's source, the text-check job runs their twenty-two tests by
-      # name, and ci_job_reads.py's CLAIM_MODEL_TESTS and TEXT_CHECK_TESTS leave exactly those
-      # tests out of this step rather than have each of them run twice. The -run lists are derived
-      # in .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
-      # //go:build !race and raceEnabled, so a test added to either and missing here fails the
-      # ci-filters job naming this step. 10 minutes each is ample.
+      # why: .github/ci-notes/ci.md#why-envoy-go-race-impossible-runs-three-plain-suites-and-a-second-postgres
+      - name: Start a Postgres that preloads pg_stat_statements
+        timeout-minutes: 3
+        run: |
+          docker run -d --name pg-stat-statements -e POSTGRES_PASSWORD=ci -p 5433:5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 -c shared_preload_libraries=pg_stat_statements -c max_connections=200
+          for _ in $(seq 1 60); do docker exec pg-stat-statements pg_isready -q -U postgres -h 127.0.0.1 && break; sleep 2; done
+          docker exec pg-stat-statements psql -U postgres -h 127.0.0.1 -Atc 'show shared_preload_libraries' | grep -qx pg_stat_statements
+      # why: .github/ci-notes/ci.md#why-envoy-go-race-impossible-runs-three-plain-suites-and-a-second-postgres
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5433/postgres?sslmode=disable' go test -count=1 -timeout 10m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed|TestThePrioritiesReadWalksIssuesOnceOnTheCorpus)$' ./internal/dispatch/api
           GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run

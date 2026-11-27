@@ -129,9 +129,11 @@ import {
   agentSubject,
   DISPATCH_ISSUE_TOPIC_PREFIX,
   dispatchIssueSubject,
+  LEGION_STATE_SUFFIX,
   legacyAgentSubject,
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
+  legionStateSubject,
   legionWakeSubject,
   MESSAGE_NOT_SENT_PREFIX,
   NO_PROJECT,
@@ -279,6 +281,10 @@ const roleSubjectText = goConcat(
 );
 const legionWakeSubjectText = goConcat(
   splitAtSentinels(legionWakeSubject(projectSentinel), projectSentinel),
+  ["token"]
+);
+const legionStateSubjectText = goConcat(
+  splitAtSentinels(legionStateSubject(projectSentinel), projectSentinel),
   ["token"]
 );
 
@@ -890,6 +896,19 @@ func RoleSubject(project, role string) string {
 
 func LegionWakeSubject(token string) string {
 	return ${legionWakeSubjectText}
+}
+
+// LegionStateSuffix ends the state lane of every Legion deployment, so that a reader of every
+// deployment's state lane names them all with one pattern, LegionNoticeTopicPrefix + "*" +
+// LegionStateSuffix, as Dispatch's durable does. LegionStateSubject is the state lane of the
+// Legion deployment whose project token is token: the daemon publishes its state events there,
+// one message per committed transaction. Generated from LEGION_STATE_SUFFIX and
+// legionStateSubject in packages/contracts, so the daemon's publish and Dispatch's filter name
+// one lane.
+const LegionStateSuffix = ${JSON.stringify(LEGION_STATE_SUFFIX)}
+
+func LegionStateSubject(token string) string {
+	return ${legionStateSubjectText}
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

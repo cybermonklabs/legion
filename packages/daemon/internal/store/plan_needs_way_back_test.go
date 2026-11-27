@@ -85,6 +85,7 @@ func decodedBeforeTheNeeds(payload []byte) (planRecordBeforeTheNeeds, error) {
 // is the fault the way back answers. After it, each LEGION row decodes to the plan queued, and
 // OTHER's row still carries its needs. A second run changes nothing.
 func TestThePlanNeedsWayBackLetsTheReleaseBeforeDecodeItsProjectsPlanRecords(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	at := time.Date(2026, 11, 21, 22, 0, 0, 0, time.UTC)
 	steps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}

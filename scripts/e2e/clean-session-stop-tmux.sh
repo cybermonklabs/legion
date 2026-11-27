@@ -117,13 +117,10 @@
 # takes a work directory of its own each time and inherits no DISPATCH_*, ENVOY_*, LEGION_*,
 # NATS_*, OMP*, PI_*, TMUX*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR, PGSERVICE or PGSERVICEFILE
 # variable of the caller's.
-# Several runs at once out of one jj checkout leave divergent commits behind, whatever that
-# checkout's own state. The build step reads the working copy with jj to report what it built
-# from (lib/built-from.sh), and jj snapshots the working copy at every read; the plugin pack
-# before it rewrites packages/<plugin>/package.json in place and puts it back (lib/pack-plugin.sh),
-# so each run has a window in which a tracked file differs. Two runs snapshotting that window at
-# once leave the checkout with divergent working-copy commits for someone to abandon by hand.
-# Commit the tree before the runs and expect to check `jj log` after them.
+# The build step reads the working copy with jj to report what it built from (lib/built-from.sh),
+# and jj snapshots the working copy at every read. The plugin pack writes nothing in the checkout
+# (lib/pack-plugin.sh packs a staged copy of the package), so it opens no window in which a tracked
+# file differs for several runs out of one jj checkout to snapshot at once.
 set -Eeuo pipefail
 
 # This script's own inputs are read first: the sweep below drops every variable of those families
