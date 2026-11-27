@@ -17,6 +17,7 @@
  */
 
 import { freeze } from "./page-structure";
+import * as partDashboard from "./page-words-dashboard";
 import * as partJ from "./page-words-j";
 import * as partL from "./page-words-l";
 import * as partM from "./page-words-m";
@@ -116,8 +117,8 @@ export interface WordClash {
   readonly files: readonly [string, string];
 }
 
-/** The file of each part, in the order of the parts' letters. The join reads them in this
- *  order. */
+/** The file of each part, in the order of the parts' letters, then Dashboard's
+ *  (dispatch://INFRA-5702). The join reads them in this order. */
 export const WORD_FILES = [
   { file: "page-words-j.ts", module: partJ },
   { file: "page-words-l.ts", module: partL },
@@ -130,6 +131,7 @@ export const WORD_FILES = [
   { file: "page-words-x.ts", module: partX },
   { file: "page-words-y.ts", module: partY },
   { file: "page-words-z.ts", module: partZ },
+  { file: "page-words-dashboard.ts", module: partDashboard },
 ] as const satisfies readonly WordFile[];
 
 /** The type of the words that `File` adds to the table `Name`, or `unknown` if it adds none. */

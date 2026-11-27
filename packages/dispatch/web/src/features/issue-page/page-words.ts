@@ -80,6 +80,7 @@ import {
 } from "./page-structure";
 import { joinWords, PART_ANSWER_SOURCES, PART_UNASKED_SOURCES } from "./page-words-parts";
 
+export * from "./page-words-dashboard";
 export * from "./page-words-j";
 export * from "./page-words-l";
 export * from "./page-words-m";
@@ -698,6 +699,14 @@ export const ANSWER_LINES = joinWords("ANSWER_LINES", {
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
+  /** What the history says where the handoff an address names is no handoff of the issue, and
+   *  when the list of the issue's handoffs, which Details opening reads, could not be read
+   *  (`IssueHistory.tsx`). */
+  handoff_missing: "No such handoff exists.",
+  handoffs_unreadable: "Could not load the handoffs.",
+  /** What the Legion block says when the page's own read of the issue's Legion state, which
+   *  Details opening subscribes, failed, with Retry beside it (`LegionBlock.tsx`). */
+  legion_unreadable: "Could not load the Legion status.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
@@ -1006,6 +1015,32 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Opens the list of the page's keys, at the right of the filter row (the 1440 px picture):
    *  what `?` opens. */
   keys: "Keys",
+  /** The Legion block of Details, above the history (dispatch://INFRA-4870/spec#b-r-block), in
+   *  the words of the parent's "Words for the state" (dispatch://INFRA-1336/spec). Its heading is
+   *  no part of `collaborators_legion`'s. The time the phase began follows "since", or "since
+   *  before" where Dispatch did not see the phase start. Its place: "At work" while the issue
+   *  holds a slot; "3rd of 5 in line", its place in the line, as a number with the ending
+   *  English gives it (`legion-block.ts`'s `ordinalEnding`), and the line's length; "Waits for"
+   *  and the keys of the issues it waits on; "Waits on a person"; "Past review" in `accepting`,
+   *  `retro` and `merging`; "Not started" in `admitted` with none of these. Its read: "Read from
+   *  Legion at" and the time, or, where that read failed, "Legion's read at", the time and
+   *  "failed". Each number, key and time is the author's text. The phase's word and each claim
+   *  state's word are `PHASE_WORDS` and `ROLE_STATE_WORDS` (`page-words-dashboard.ts`). */
+  legion: {
+    heading: "Legion status",
+    since: "since",
+    since_before: "since before",
+    at_work: "At work",
+    place_of: "of",
+    in_line: "in line",
+    ordinal_endings: { one: "st", two: "nd", three: "rd", other: "th" },
+    waits_for: "Waits for",
+    waits_on_person: "Waits on a person",
+    past_review: "Past review",
+    not_started: "Not started",
+    read_at: "Read from Legion at",
+    read_failed: { before: "Legion's read at", after: "failed" },
+  },
   /** Lets a node kept open close again (R2). */
   let_close: "Let it close",
   /** Says what the reader may do with their pins, which the panel lists (R14). */

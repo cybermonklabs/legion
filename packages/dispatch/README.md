@@ -1029,7 +1029,8 @@ Each open part of the new issue page adds its words in `page-words-<letter>.ts`,
 beside `web/src/features/issue-page/page-words.ts`. A part's `page-words-<letter>.ts` holds the
 tables that the part adds, each a named export that it lists in `unasked` or `answers`. Under
 `add`, it holds the part's new keys for a table that `page-words.ts` declares. The open parts are
-J, L, M, N, S, T, U, W, X, Y and Z.
+J, L, M, N, S, T, U, W, X, Y and Z. Dashboard keeps its words the same way in
+`page-words-dashboard.ts`.
 
 A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
 from any pull request. TypeScript reads the keys of a table where the table is declared. The tables

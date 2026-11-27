@@ -891,10 +891,11 @@ test("the join adds each file's keys after the table's own, nested as the table 
   });
 });
 
-// A part's file that the join does not read fails here. So does a part that has no file.
+// A part's file that the join does not read fails here. So does a part that has no file. The
+// open parts are lettered, and Dashboard's part (dispatch://INFRA-5702) is named.
 test("each open part of the page has its own words file, which the join reads", () => {
-  const letters = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z"];
-  const expected = letters.map((letter) => `page-words-${letter.toLowerCase()}.ts`);
+  const parts = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z", "Dashboard"];
+  const expected = parts.map((part) => `page-words-${part.toLowerCase()}.ts`);
   const read: readonly string[] = WORD_FILES.map(({ file }) => file);
   expect(read).toEqual(expected);
   const inDirectory = readdirSync(import.meta.dir).filter(
