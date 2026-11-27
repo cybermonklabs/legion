@@ -4722,6 +4722,49 @@ test("a registry refilling from the first read shows the refilling notice, not a
   }
 });
 
+// A list that has only failed goes back to pending, with no error of its own, while a poll's read
+// is out. The page keeps what the first read settled through such a poll, one that never answers
+// here: the refilling note, the header and the Agents region, and no loading skeleton.
+test("a registry refused as refilling at its first read keeps the note, the header and the region through a poll that never answers", async () => {
+  const page = renderAgents();
+  page.listAgents.mockRejectedValue(refillingError());
+
+  try {
+    await screen.findByTestId("agent-list-refilling");
+    page.listAgents.mockReturnValue(new Promise<Agent[]>(() => undefined));
+    act(() => {
+      void page.queryClient.refetchQueries({ exact: true, queryKey: ["agents"] });
+    });
+    await waitFor(() =>
+      expect(page.queryClient.getQueryState(["agents"])?.fetchStatus).toBe("fetching")
+    );
+    expect(page.queryClient.getQueryState(["agents"])?.status).toBe("pending");
+    expect(page.queryClient.getQueryState(["agents"])?.error).toBeNull();
+    await afterFrameAndTasks();
+    expect(screen.queryByRole("status", { name: "Loading agents" })).toBeNull();
+    expect(screen.getByTestId("agent-list-refilling").textContent).toBe(AGENT_LIST_REFILLING);
+    expect(screen.getByRole("heading", { level: 1, name: "Agents" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Agents" })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("before a first read of the agent list settles the page draws the loading skeleton", async () => {
+  const page = renderAgents();
+  page.listAgents.mockReturnValue(new Promise<Agent[]>(() => undefined));
+
+  try {
+    await waitFor(() => expect(page.listAgents).toHaveBeenCalled());
+    expect(await screen.findByRole("status", { name: "Loading agents" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // A row whose session leaves the registry unmounts; the send it had out is the held-send store's,
 // which holds it for the session. The row that comes back shows that send, held - its picker and
 // its draft - until it lands, and then they are the reader's.

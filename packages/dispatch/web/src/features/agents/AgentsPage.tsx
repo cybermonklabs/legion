@@ -1876,6 +1876,8 @@ export function AgentsPage(): ReactNode {
       agentRow(item.agent, item.group, false)
     );
 
+  // The skeleton holds only until a first read of the list settles (`useAgents`): a poll that is
+  // out keeps the page the last read settled, its header, its rows and its note of a failure.
   if (isPending) return <LoadingSkeleton label="Loading agents" />;
   // A refresh that fails keeps the list it has: unmounting every row would throw away what each
   // holds - a draft, a send's refusal, an upload. With no rows there is nothing to keep. A list
