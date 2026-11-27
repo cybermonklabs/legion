@@ -522,7 +522,7 @@ func (n *graphNodeRead) shape(reader *displayTreeReader, footnotes graphFootnote
 		source.markdown = pin.Text
 		registerBlockTree(reader, &n.Pin.TextTree, source)
 	}
-	source := footnotes.latest[graphNodeText]
+	source := footnotes.node
 	source.markdown = n.GraphNode.Text
 	registerBlockTree(reader, &n.TextTree, source)
 }
@@ -561,13 +561,13 @@ type graphEdgeRead struct {
 // a name, which no writer stores a tree of: registered with the request's reader it would be
 // asked of the table and stored there, one row for every distinct excerpt that no reader of a
 // stored text ever takes. An excerpt of a document's block is read with the footnotes it calls
-// that its document defines outside the block (graphFootnotes, registerBlockTree). Being a cut,
-// such an excerpt can stop inside a block whose end the cut leaves out, a fenced code block among
-// them, which then holds the stand-in definitions read after it, so its tree does not end in them
-// and is set nowhere, with no warning, since its source is a cut (blockTreeSource): that excerpt
-// is read again from its text alone, since every excerpt with a text carries a tree
-// (graphExcerptRead).
-func graphEdgeReads(edges []model.GraphEdge, trees bool, footnotes graphFootnotes) []graphEdgeRead {
+// that its document defines outside the block, its source in excerpts under the edge's index
+// (graphFootnotes, registerBlockTree). Being a cut, such an excerpt can stop inside a block whose
+// end the cut leaves out, a fenced code block among them, which then holds the stand-in
+// definitions read after it, so its tree does not end in them and is set nowhere, with no
+// warning, since its source is a cut (blockTreeSource): that excerpt is read again from its text
+// alone, since every excerpt with a text carries a tree (graphExcerptRead).
+func graphEdgeReads(edges []model.GraphEdge, trees bool, excerpts map[int]blockTreeSource) []graphEdgeRead {
 	if edges == nil {
 		return nil
 	}
@@ -581,13 +581,13 @@ func graphEdgeReads(edges []model.GraphEdge, trees bool, footnotes graphFootnote
 			}
 			if edge.Excerpt != nil {
 				read.Excerpt = &graphExcerptRead{GraphExcerpt: *edge.Excerpt}
-				source := footnotes.latest[index]
+				source := excerpts[index]
 				source.markdown, source.cut = edge.Excerpt.Text, true
 				registerBlockTree(reader, &read.Excerpt.TextTree, source)
 			}
 		}
 	})
-	if len(footnotes.latest) == 0 {
+	if len(excerpts) == 0 {
 		return reads
 	}
 	shapeBuilt(trees, func(reader *displayTreeReader) {

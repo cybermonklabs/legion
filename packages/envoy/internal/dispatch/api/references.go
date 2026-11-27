@@ -181,27 +181,26 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	trees := wantsDisplayTrees(r)
 	footnotes := s.readGraphFootnotes(r.Context(), node, edges, trees)
 	reader := s.readDisplayTrees(r.Context(), trees)
-	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: graphEdgeReads(edges, trees, footnotes), UnknownKinds: unknownKinds}
+	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: graphEdgeReads(edges, trees, footnotes.excerpts), UnknownKinds: unknownKinds}
 	answer.Node.shape(reader, footnotes)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// graphNodeText is the key readGraphFootnotes reads the queried node's own text under, beside
-// each edge's excerpt under the edge's index, which is never negative.
+// graphNodeText is the key readGraphFootnotes reads the queried node's own text under, in the one
+// call that reads it with each edge's excerpt under the edge's index, which is never negative.
 const graphNodeText = -1
 
 // graphFootnotes is, for a read of the reference graph, the source of the tree of each text of a
 // document's block the read draws but its markdown (blockTreeSource): the document's id, the
-// block's id and the footnotes the text calls that the document defines outside the block.
-// latest holds the queried node's own text, under graphNodeText, and each edge's excerpt, under
-// the edge's index, read with the definitions of the document as it stands; pin is the text the
-// node's pin recorded, read with the definitions of the version it pins. A text with no source,
-// and every text of a node that is no document's block, is drawn from its text alone
-// (registerBlockTree).
+// block's id and the footnotes the text calls that the document defines outside the block. node
+// is the queried node's own text and excerpts each edge's excerpt, by the edge's index, both read
+// with the definitions of the document as it stands; pin is the text the node's pin recorded,
+// read with the definitions of the version it pins. A text with no source, and every text of a
+// node that is no document's block, is drawn from its text alone (registerBlockTree).
 type graphFootnotes struct {
-	latest map[int]blockTreeSource
-	pin    blockTreeSource
+	node, pin blockTreeSource
+	excerpts  map[int]blockTreeSource
 }
 
 // readGraphFootnotes is the footnotes of the texts of documents' blocks that a read of the
@@ -245,7 +244,9 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 		}
 	}
 	if texts != nil {
-		footnotes.latest = calledFootnotes(ctx, s, texts, documents, 0)
+		footnotes.excerpts = calledFootnotes(ctx, s, texts, documents, 0)
+		footnotes.node = footnotes.excerpts[graphNodeText]
+		delete(footnotes.excerpts, graphNodeText)
 	}
 	if pin := node.Pin; documentBlock && pin != nil && strings.Contains(pin.Text, "[^") {
 		pinned := calledFootnotes(ctx, s, map[int]string{graphNodeText: pin.Text},

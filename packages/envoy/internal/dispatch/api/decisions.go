@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -255,7 +253,9 @@ func (s *server) specOpenQuestions(
 //
 // Each decision's text is registered with the footnotes it calls that the document defines
 // outside it (decisionFootnotes, registerBlockTree), as the batched reference read registers a
-// block's, so its tree reads each call as the document does.
+// block's, so its tree reads each call as the document does. The labels are read from what the
+// process keeps of the document's parse by the markdown's sum (footnoteParses), so a view of a
+// markdown an earlier read parsed parses none of it again for them either.
 func (s *server) readDecisions(
 	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader, mark bool,
 ) ([]model.Decision, error) {
@@ -329,11 +329,14 @@ func (s *server) readDecisions(
 		decisions = append(decisions, decision)
 		markable = markable || len(decision.Links) > 0 || decision.WaitingReview && decision.Kept != nil
 	}
-	called := decisionFootnotes(document.ID, markdown, decisions, reader)
-	for index := range decisions {
-		source := called[index]
-		source.markdown = decisions[index].Text
-		registerBlockTree(reader, &decisions[index].TextTree, source)
+	if reader != nil {
+		// Keep passes no reader: it answers no tree, so no footnote is read for it.
+		called := decisionFootnotes(document.ID, markdown, decisions)
+		for index := range decisions {
+			source := called[index]
+			source.markdown = decisions[index].Text
+			registerBlockTree(reader, &decisions[index].TextTree, source)
+		}
 	}
 	if !mark || !markable {
 		return decisions, nil
@@ -370,14 +373,12 @@ func (s *server) readDecisions(
 // are read from the parse of markdown as the batched reference read reads a block's
 // (footnotesCalledIn): a decision's heading is no typed block, so the rendering writes no id for it
 // and no node of the parse holds it, and its labels are each label the document defines that its
-// text writes as a call, up to case. markdown is parsed once, and only for a reader that reads
-// trees and where some decision's text holds a call at all (`[^`): Keep passes no reader, and a
-// decision that calls no footnote has no labels to read. A markdown the parser refuses leaves
-// every decision the tree of its text alone; the failure is logged.
-func decisionFootnotes(artifactID, markdown string, decisions []model.Decision, reader *displayTreeReader) map[int]blockTreeSource {
-	if reader == nil {
-		return nil
-	}
+// text writes as a call, up to case. markdown's parse is read only where some decision's text
+// holds a call at all (`[^`), since a decision that calls no footnote has no labels to read, and
+// what the labels are read from is kept, so a markdown an earlier read parsed is parsed again by
+// none (footnoteParses). A markdown the parser refuses leaves every decision the tree of its text
+// alone; the failure is logged.
+func decisionFootnotes(artifactID, markdown string, decisions []model.Decision) map[int]blockTreeSource {
 	var keys []int
 	for index := range decisions {
 		if strings.Contains(decisions[index].Text, "[^") {
@@ -387,11 +388,6 @@ func decisionFootnotes(artifactID, markdown string, decisions []model.Decision, 
 	if len(keys) == 0 {
 		return nil
 	}
-	tree, err := pmdoc.ParseRendering(markdown)
-	if err != nil {
-		slog.Warn("dispatch: parse a document's footnote definitions for its blocks' trees", "artifact", artifactID, "error", err)
-		return nil
-	}
 	texts := make(map[int]string, len(keys))
 	documents := make(map[int]refs.DocumentBlock, len(keys))
 	for _, index := range keys {
@@ -399,7 +395,7 @@ func decisionFootnotes(artifactID, markdown string, decisions []model.Decision, 
 		documents[index] = refs.DocumentBlock{ArtifactID: artifactID, BlockID: decisions[index].BlockID}
 	}
 	called := make(map[int]blockTreeSource, len(keys))
-	footnotesCalledIn(tree, artifactID, keys, texts, documents, called)
+	footnotesCalledIn(markdown, artifactID, keys, texts, documents, called)
 	return called
 }
 

@@ -1,9 +1,7 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -13,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -863,21 +860,19 @@ func TestTheReferencesReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testin
 		reference, around...)
 
 	cutter := createReferenceAPIComment(t, handler, issue.Key, "Read "+refs.BlockRef(notesRef, codeID)+".")
+	cutRead := "/api/v1/references?" + url.Values{
+		"from": {"dispatch://" + issue.Key + "/comment/" + cutter.ID}, "kind": {"mentions"},
+	}.Encode()
 	cut := decodeBody[struct {
 		Edges []struct {
 			Excerpt *graphExcerptRead `json:"excerpt"`
 		} `json:"edges"`
-	}](t, treesRequest(t, handler, "/api/v1/references?"+url.Values{
-		"from": {"dispatch://" + issue.Key + "/comment/" + cutter.ID}, "kind": {"mentions"},
-	}.Encode(), true)).Edges
+	}](t, treesRequest(t, handler, cutRead, true)).Edges
 	if len(cut) != 1 || cut[0].Excerpt == nil || !strings.Contains(cut[0].Excerpt.Text, "[^k1]") ||
 		strings.HasSuffix(cut[0].Excerpt.Text, "```") {
 		t.Fatalf("the code block's edges = %#v, want one whose excerpt writes the call and stops before the closing fence", cut)
 	}
-	if excerpt := cut[0].Excerpt; excerpt.TextTree == nil || !bytes.Equal(sameShape(t, json.RawMessage(excerpt.TextTree)),
-		sameShape(t, pmdoc.DisplayJSON(excerpt.Text, pmdoc.DisplayLatest))) {
-		t.Errorf("the code block's excerpt %q carries the tree %s, want the tree of its text alone", excerpt.Text, excerpt.TextTree)
-	}
+	requireDisplayTree(t, handler, cutRead, "edges.0.excerpt.text", "edges.0.excerpt.text_tree")
 
 	uploadIssueDocument(t, handler, issue.Key, "notes.md", "Intro paragraph.\n\n"+paragraph+"\n")
 	requireFootnotedTree(t, "the pin's text_tree",

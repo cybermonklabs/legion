@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -295,10 +297,11 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // answers that markdown itself, without rendering the document, where that version is still the
 // document's state and a room of this process holds it, and from the read cache by the
 // document's stamp where no room holds it; Text renders a room's tree on every read. Any other
-// version's markdown is the one that version stored (footnotedMarkdown). The markdown is parsed
-// as a rendering, and the labels are read from that parse (footnotesCalledIn). A text whose
-// document cannot be read or parsed has no entry and keeps the tree of its stored text alone; the
-// failure is logged.
+// version's markdown is the one that version stored (documentMarkdownAt). The labels are read
+// from the markdown's parse as a rendering (footnotesCalledIn), and what they are read from is
+// kept by the markdown's sum (footnoteParses), so no read parses a markdown again while its entry
+// stays kept. A text whose document cannot be read or parsed has no entry and keeps the tree of
+// its stored text alone; the failure is logged.
 func calledFootnotes[K comparable](ctx context.Context, s *server, texts map[K]string, documents map[K]refs.DocumentBlock, version int) map[K]blockTreeSource {
 	// wanted is the keys to read, by their document's id.
 	wanted := map[string][]K{}
@@ -312,27 +315,22 @@ func calledFootnotes[K comparable](ctx context.Context, s *server, texts map[K]s
 	}
 	called := map[K]blockTreeSource{}
 	for artifactID, keys := range wanted {
-		markdown, err := s.footnotedMarkdown(ctx, artifactID, version)
+		markdown, err := s.documentMarkdownAt(ctx, artifactID, version)
 		if err != nil {
 			slog.Warn("dispatch: read a document's footnote definitions for its blocks' trees", "artifact", artifactID, "error", err)
 			continue
 		}
-		tree, err := pmdoc.ParseRendering(markdown)
-		if err != nil {
-			slog.Warn("dispatch: parse a document's footnote definitions for its blocks' trees", "artifact", artifactID, "error", err)
-			continue
-		}
-		footnotesCalledIn(tree, artifactID, keys, texts, documents, called)
+		footnotesCalledIn(markdown, artifactID, keys, texts, documents, called)
 	}
 	return called
 }
 
-// footnotedMarkdown is the markdown of version of the document artifactID that calledFootnotes
+// documentMarkdownAt is the markdown of version of the document artifactID that calledFootnotes
 // reads the document's footnote definitions from: the document as it stands for version 0
 // (TextWithToken), and for any other the markdown that version stored (versionsMarkdown), which
 // the block index cut that version's texts of its blocks from. A version the document does not
 // hold is an error.
-func (s *server) footnotedMarkdown(ctx context.Context, artifactID string, version int) (string, error) {
+func (s *server) documentMarkdownAt(ctx context.Context, artifactID string, version int) (string, error) {
 	if version == 0 {
 		markdown, _, err := s.deps.Docs.TextWithToken(ctx, artifactID)
 		return markdown, err
@@ -350,52 +348,102 @@ func (s *server) footnotedMarkdown(ctx context.Context, artifactID string, versi
 
 // footnotesCalledIn enters into called, for each of keys, the source of the tree of its text of
 // texts but its markdown, where the block of the document artifactID that documents places it at
-// is read from tree, the parse of the markdown the text was cut from. A typed block is the first
-// node of the parse holding its id, as typedBlocksIn finds one, since the rendering writes a typed
-// block's id into its opening line, and its labels are the ones its node calls
-// (pmdoc.CalledFootnoteLabels), as the coverage and the results reads take them. Any other block -
-// a paragraph, a heading, a list item - has no id in the rendering, so the parse gives it another,
-// and so has a block its document no longer holds: no node holds its id, and its labels are each
-// label the document defines that its text writes as a call, up to case
-// (pmdoc.FootnoteDefinitionLabels, pmdoc.WrittenFootnoteLabels). Such a text can write a call that
-// reads as text, escaped or in code, or one of a label it defines itself, which resolves to its
-// own definition first; the stand-in of that label is then one nothing refers to, which is taken
-// out of the tree with the rest (registerBlockTree). A text that calls no such label has no entry.
-func footnotesCalledIn[K comparable](tree *pmdoc.Node, artifactID string, keys []K, texts map[K]string, documents map[K]refs.DocumentBlock, called map[K]blockTreeSource) {
-	// nodes is, by each block id keys place a text at, the labels the first node of the parse
-	// holding that id calls, and whether a node holds it at all.
-	type nodeLabels struct {
-		labels []string
-		held   bool
+// is read from markdown, the markdown the text was cut from, as its parse as a rendering reads it
+// (footnoteParseOf). A typed block is the first node of the parse holding its id, as typedBlocksIn
+// finds one, since the rendering writes a typed block's id into its opening line, and its labels
+// are the ones its node calls (pmdoc.CalledFootnoteLabels), as the coverage and the results reads
+// take them. Any other block - a paragraph, a heading, a list item - has no id in the rendering,
+// so the parse gives it another, and so has a block its document no longer holds: no node holds
+// its id, and its labels are each label the document defines that its text writes as a call, up
+// to case (pmdoc.FootnoteDefinitionLabels, pmdoc.WrittenFootnoteLabels). Such a text can write a
+// call that reads as text, escaped or in code, or one of a label it defines itself, which resolves
+// to its own definition first; the stand-in of that label is then one nothing refers to, which is
+// taken out of the tree with the rest (registerBlockTree). A text that calls no such label has no
+// entry, and neither has a text of a markdown the parser refuses.
+func footnotesCalledIn[K comparable](markdown, artifactID string, keys []K, texts map[K]string, documents map[K]refs.DocumentBlock, called map[K]blockTreeSource) {
+	parse := footnoteParseOf(markdown, artifactID)
+	if !parse.Read {
+		return
 	}
-	nodes := make(map[string]nodeLabels, len(keys))
-	for _, key := range keys {
-		nodes[documents[key].BlockID] = nodeLabels{}
-	}
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-		if found, wanted := nodes[id]; wanted && !found.held {
-			nodes[id] = nodeLabels{labels: pmdoc.CalledFootnoteLabels(node), held: true}
-		}
-		return true
-	})
-	var defined []string
-	definedRead := false
 	for _, key := range keys {
 		block := documents[key]
-		node := nodes[block.BlockID]
-		labels := node.labels
-		if !node.held {
-			if !definedRead {
-				defined, definedRead = pmdoc.FootnoteDefinitionLabels(tree), true
-			}
-			labels = pmdoc.WrittenFootnoteLabels(texts[key], defined)
+		labels, held := parse.Called[block.BlockID]
+		if !held {
+			labels = pmdoc.WrittenFootnoteLabels(texts[key], parse.Defined)
 		}
 		if len(labels) > 0 {
 			called[key] = blockTreeSource{artifactID: artifactID, blockID: block.BlockID, labels: labels}
 		}
 	}
 }
+
+// footnoteParse is what footnotesCalledIn reads of the parse of one markdown as a rendering: Read,
+// whether the parser read the markdown at all; Called, by the id of each typed block of the parse,
+// the labels the first node holding that id calls (pmdoc.CalledFootnoteLabels), a block that calls
+// none held with no labels; and Defined, the labels the document defines
+// (pmdoc.FootnoteDefinitionLabels). Only a typed block's markdown writes its id, and every other
+// block's id is one the parse mints, which names no block a text is cut from and would make the
+// entry depend on more than the markdown, so Called holds the typed blocks alone.
+type footnoteParse struct {
+	Read    bool                `json:"read"`
+	Called  map[string][]string `json:"called,omitempty"`
+	Defined []string            `json:"defined,omitempty"`
+}
+
+// footnoteParseOf is the footnoteParse of markdown, a markdown of the document artifactID: the one
+// footnoteParses keeps for it, else its parse as a rendering, which is then kept, a refusal
+// included, so a markdown is parsed at most once while its entry stays kept. A refusal is logged,
+// with artifactID, by the parse that meets it. Two reads that miss one markdown at once both parse
+// it, and the entry the first keeps stands.
+func footnoteParseOf(markdown, artifactID string) footnoteParse {
+	sum := sha256.Sum256([]byte(markdown))
+	if held, ok := footnoteParses.Get(sum); ok {
+		var parse footnoteParse
+		if json.Unmarshal(held, &parse) == nil {
+			return parse
+		}
+	}
+	var parse footnoteParse
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		slog.Warn("dispatch: parse a document's footnote definitions for its blocks' trees", "artifact", artifactID, "error", err)
+	} else {
+		parse = footnoteParse{Read: true, Called: map[string][]string{}, Defined: pmdoc.FootnoteDefinitionLabels(tree)}
+		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+			if !pmdoc.IsTypedBlock(node.Type) {
+				return true
+			}
+			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+			if _, found := parse.Called[id]; id != "" && !found {
+				parse.Called[id] = pmdoc.CalledFootnoteLabels(node)
+			}
+			return true
+		})
+	}
+	if encoded, err := json.Marshal(parse); err == nil {
+		footnoteParses.PutSize(sum, encoded, int64(len(encoded))+footnoteParseEntryBytes)
+	}
+	return parse
+}
+
+// footnoteParseEntryBytes is what one entry of footnoteParses is charged beside its encoding: its
+// sum, and the map entry, list element and cache entry that hold it, rounded up.
+const footnoteParseEntryBytes = 128
+
+// footnoteParsesBytes bounds the entries footnoteParses keeps: 1 MiB. An entry holds labels and
+// ids, not a tree or a markdown: about 45 bytes for each typed block of its document, the block's
+// id (a UUID) with the labels it calls, beside the labels the document defines and the charge for
+// the entry itself (footnoteParseEntryBytes). So the bound holds the entries of more than 500
+// documents of 40 typed blocks each, and of thousands with few, each of which saves a parse of
+// 8.5 to 13.4 ms for a document of 25 to 43 KB (decisionCuts). It is a sliver of the bounds the
+// display trees (pmdoc.DisplayCacheBytes) and the decision cuts (documentCutsBytes) of the same
+// process are held to.
+const footnoteParsesBytes = 1 << 20
+
+// footnoteParses is the footnoteParse of each markdown footnotesCalledIn has read, by its SHA-256:
+// what it holds is a property of the markdown its key hashes alone, so no entry goes stale, and
+// one leaves only to make room for another.
+var footnoteParses = bytelru.New[[32]byte, []byte](footnoteParsesBytes)
 
 // blockTextContent is the markdown a block's text_tree is read from, given the block's whole
 // text as the index holds it and whether the block is a document's (the target kind "block")
