@@ -578,7 +578,6 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: repositoryCorrectionContract, issue: withoutRepositoryCorrection,
 		dropped: "the issues' repoBefore, repoCorrectedAt, repoChangePending and repoChangeReason"},
-	{contract: waitContract, issue: withoutWaitAndHold, dropped: "the claim views' wait and hold"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -879,25 +878,6 @@ const quietTimeContract = 111
 // with this change's own number, as the arrival contracts of this change's two new answers do
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 193
-
-// waitContract is the daemon contract this change lands under (version.go's 212,
-// dispatch://INFRA-2040), and the contract that added two keys to each claim view: `wait`, the
-// wait the claim's worker declared, while it stands (workflow.WaitStands), and `hold`, the closed
-// design gate that holds a merger, while the hold stands (workflow.HeldByDesignGate). A plugin
-// built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
-// whole body for either key, and one built after strips a key it does not name, so the band is
-// what keeps the two keys from a caller that did not ask for them rather than what keeps such a
-// caller reading at all: a caller below this contract is served every claim view without them, on
-// the state and on the issue record alike (withoutWaitAndHold). The same two keys arrived on the
-// owed answer at this contract, and a caller below it is served that answer without them
-// (withoutOwedWaitAndHold). The words of `hold.step` arrived with the key at this contract
-// (answers.go's holdSteps), so no value strip is needed.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys arrived at stays where it is. It moves only with
-// this change's own number, as the arrival contracts of this change's two new answers do
-// (answers.go's AnswerWait and AnswerWaitNews).
-const waitContract = 212
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on

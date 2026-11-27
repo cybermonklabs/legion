@@ -164,21 +164,5 @@
     ],
     "since": 206,
     "noBody": false
-  },
-  {
-    "id": "wait",
-    "routes": [
-      "POST /legion/v1/claims/wait"
-    ],
-    "since": 212,
-    "noBody": false
-  },
-  {
-    "id": "wait-news",
-    "routes": [
-      "POST /legion/v1/claims/wait-news"
-    ],
-    "since": 212,
-    "noBody": false
   }
 ]
