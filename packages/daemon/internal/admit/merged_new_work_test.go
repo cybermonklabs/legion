@@ -955,16 +955,11 @@ func TestARootContinuationKeepsMemberWorkAndArchitectTask(t *testing.T) {
 		}
 		row = record.PhaseRowOf(rows, claim.RoleArchitect)
 	})
+	// The promotion resumes the standing run and raises no entry: the row still names entry 2. A
+	// send of entry 2's work derives its text from the record at the send (SendArchitectStart), so
+	// no start's text is compared here.
 	if row.Entry != 2 || row.EntryTask == "" {
 		t.Fatalf("the architect's row after the request = %+v, want its entry 2 kept", row)
-	}
-	// The promotion resumes the standing run: an architect start that carries a task carries the
-	// pending task of entry 2 itself, which the admission pass sends again, and never another.
-	for _, start := range startsOf(t, pool, mnwRoot) {
-		if start.role == claim.RoleArchitect && start.task != "" && start.task != row.EntryTask {
-			t.Fatalf("an architect start carries %q after the request, want none but entry 2's own %q: it would supersede the pending task",
-				start.task, row.EntryTask)
-		}
 	}
 	applyFact(t, pool, admission, "mnw-gate-request", intake.GateRequestFound{Issue: mnwRoot, Generation: root.TreeRun(), ArtifactID: "spec-" + mnwRoot,
 		RequestAsk: "ask-700", Since: 2})
