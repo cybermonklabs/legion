@@ -36,7 +36,7 @@ import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { PriorityChip } from "../priorities/PriorityChip";
-import { AgentName } from "../refs/AgentName";
+import { AgentName, useAgentText } from "../refs/AgentName";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
@@ -275,20 +275,29 @@ function pageLongest(table: Table<Item>): number {
   return longest;
 }
 
-/** Who created the issue, at most `clamp` two lines. A server of the release before the one that
+/** Who created the issue. Where its table clamps (`clamp`), the cell takes two lines at most, and
+ *  three for a session whose name holds a "·" ("Legion architect · INFRA-3320"): the key after
+ *  the dot names the issue its creator worked on, and the name draws each "·" on the line of the
+ *  word before it (`AgentName`), so a name whose dot ends the second line puts that key on a third
+ *  line, which a clamp at two would cut with no tooltip to give it back. A person, a session whose
+ *  name has no "·" and the unknown creator keep two. A server of the release before the one that
  *  added `created_by` sends none, so the cell asks `createdBy`: an absent creator reads as the
  *  unknown one rather than reaching `AgentName` as undefined, which would throw and take the
  *  whole table with it. Without it, `IssuesTable.test.tsx`'s "a row a server sends without
  *  created_by or created_at renders, with no author and no time" fails in `AgentName`. */
 function Author({ issue, clamp }: { issue: IssueSummary; clamp: boolean }): ReactNode {
+  const text = useAgentText();
   const actor = createdBy(issue);
   if (actor === null) return <span className={textSecondaryOnCanvas}>Unknown</span>;
-  return clamp ? (
-    <span className="line-clamp-2 break-words">
+  if (!clamp) return <AgentName actor={actor} />;
+  // Whole class names, which Tailwind reads as written. `label` spells the name the cell draws,
+  // all but the no-break space `AgentName` draws before each "·".
+  const lines =
+    actor.kind === "session" && text.label(actor).includes("·") ? "line-clamp-3" : "line-clamp-2";
+  return (
+    <span className={`${lines} break-words`}>
       <AgentName actor={actor} />
     </span>
-  ) : (
-    <AgentName actor={actor} />
   );
 }
 
@@ -473,7 +482,8 @@ const renderings = ({
     header: "Created by",
     accessorFn: (item) => item.author,
     // A session's long name ends on its second line, as the title does, so the row stays as
-    // tall as its title.
+    // tall as its title; one whose name holds a "·" ends on its third, so the key after the dot
+    // is drawn whole (`Author`).
     cell: ({ row }) => <Author clamp issue={row.original.issue} />,
   },
   labels: {

@@ -2206,7 +2206,7 @@ function createdByLines(
       const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
         // The box that clips this text: its nearest ancestor, the cell at the farthest, whose
-        // overflow is not visible, such as the cell's `line-clamp-2`.
+        // overflow is not visible, such as the cell's line clamp.
         let clip: DOMRect | undefined;
         for (let box = node.parentElement; box !== null; box = box.parentElement) {
           const style = getComputedStyle(box);
@@ -2254,25 +2254,30 @@ function createdByLines(
   }, ids);
 }
 
-// dispatch://INFRA-3221 (the architect's decision of comment 2b0fd08c): a Legion session's title
-// parts its words with a "·" of its own ("Legion planner · INFRA-455"), and the Issues tab draws
-// it in the Created by cell, at two lines at most. At 1440 by 900, 44 creators' titles each put
-// their first "·" one letter further along than the last, from inside the cell's first line to
-// past its end, so one of them ends that line just where only the " ·" overflows it; no line of
-// any cell starts with "·", read off the characters the cell draws inside its clamp. The sweep's
-// letters (s, t, r, i, c, l, y) are each narrower than a space and a "·" side by side in Arial,
-// Liberation Sans and DejaVu Sans, so no step jumps past that place. Some cell takes two lines,
-// the clamp cuts each at two, and the first line of some cell holds a "·" and of another holds
-// none, so the sweep crosses the first line's end.
-// SLOW(>=2s): 44 issues written by 44 sessions, and the table read a part at a time as it scrolls.
-test('no line of a Created by cell at 1440 starts with the "·" of its creator\'s title', async ({
+// dispatch://INFRA-3221 (the architect's decisions of comments 2b0fd08c and b45e5326): a Legion
+// session's title parts its words with a "·" of its own ("Legion planner · INFRA-455"), and the
+// key after it names the issue its creator worked on. The Issues tab's Created by cell draws each
+// "·" on the line of the word before it, and clamps a name that holds one at three lines rather
+// than two, so the key is drawn whole where the dot ends the second line. At 1440 by 900, 25
+// creators' titles each put their "·" one letter further along than the last, from inside the
+// cell's first line to past its end, so one of them ends that line just where only the " ·"
+// overflows it. The 25th's word and dot still stand on one line (160 px of the clamp's 164 in a
+// builds Job), so each title takes three lines at most: "Legion", the word and the dot, then the
+// key. A longer word and its dot fit on no line, and the cell then breaks the word anywhere, before
+// its dot too. The sweep's letters (s, t, r, i, c, l, y) are each narrower than a space and a "·"
+// side by side in Arial, Liberation Sans and DejaVu Sans, so no step jumps past that place. Read
+// off the characters each cell draws inside its clamp: no line starts with "·", every cell draws
+// the whole key, some cell takes three lines and none more, and the first line of some cell holds
+// a "·" and of another holds none, so the sweep crosses the first line's end.
+// SLOW(>=2s): 25 issues written by 25 sessions, and the table read a part at a time as it scrolls.
+test('a Created by cell at 1440 draws its creator\'s key whole, and no line of it starts with the "·" of the title', async ({
   browser,
 }) => {
   await createProject({ key: PLAIN, name: "Plain" });
-  const sweep = "strictly".repeat(6);
-  const creators = Array.from({ length: 44 }, (_, at) => ({
+  const sweep = "strictly".repeat(4);
+  const creators = Array.from({ length: 25 }, (_, at) => ({
     id: `created-by-dot-${at + 1}`,
-    title: `Legion ${sweep.slice(0, at + 1)} · INFRA-455 · the layout rule's browser test`,
+    title: `Legion ${sweep.slice(0, at + 1)} · INFRA-455`,
   }));
   // Each issue title a word of its own, since the server refuses a near copy of a title it holds.
   for (let batch = 0; batch < creators.length; batch += 11) {
@@ -2331,12 +2336,12 @@ test('no line of a Created by cell at 1440 starts with the "·" of its creator\'
       "each creator's Created by cell draws its name"
     ).toEqual([]);
     soft(
-      read.filter((one) => one.lines.length >= 2).length,
-      `a Created by cell ${wide} takes two lines`
+      read.filter((one) => one.lines.length === 3).length,
+      `a Created by cell ${wide} takes three lines`
     ).toBeGreaterThan(0);
     soft(
-      read.filter((one) => one.lines.length > 2).map(drawn),
-      `the clamp of each Created by cell ${wide} cuts it at two lines`
+      read.filter((one) => one.lines.length > 3).map(drawn),
+      `no Created by cell ${wide} takes more than three lines`
     ).toEqual([]);
     soft(
       read.some((one) => one.lines[0]?.includes("·") === true) &&
@@ -2346,6 +2351,10 @@ test('no line of a Created by cell at 1440 starts with the "·" of its creator\'
     soft(
       read.filter((one) => one.lines.some((line) => line.startsWith("·"))).map(drawn),
       `no line of a Created by cell ${wide} starts with "·"`
+    ).toEqual([]);
+    soft(
+      read.filter((one) => !one.lines.join("").includes("INFRA-455")).map(drawn),
+      `each Created by cell ${wide} draws the whole key INFRA-455`
     ).toEqual([]);
   } finally {
     await context.close();
