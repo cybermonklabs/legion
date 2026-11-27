@@ -12,6 +12,7 @@ import { nextFrames } from "./frames";
 import { specBlockRef } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import { DESKTOP, PHONE, rowWords } from "./issue-page-g";
+import { readMarginTree } from "./issue-page-margin";
 import {
   approvalWords,
   approveDocuments,
@@ -1000,44 +1001,103 @@ test("a block indents, outdents and moves by key while its text is edited @phone
   });
 });
 
+/** How many short comments the fourth row posts on the issue: with the seed's own children of the
+ *  issue, the tree read's first page holds more than 50 of them ahead of the place a taken answer
+ *  past that page gets there. */
+const SHORT_COMMENTS = 52;
+
+/** About 59,000 characters. The page reads the tree with display trees (`Dispatch-Trees`), so a
+ *  comment's words stand four times in the page's JSON - the comment's text and tree and its
+ *  block's - and `LONG_COMMENTS` of these, about 2,850,000 bytes after the short ones, put the
+ *  issue's own blocks on the second page of the read, which the server cuts a page at 2,000,000
+ *  bytes of (`issueTreePageBytes` in `api/issue_tree_json.go`). */
+const LONG_COMMENT = "A long comment fills the first page of the tree read. ".repeat(1_100);
+
+/** How many long comments the fourth row posts on the issue, after the short ones. */
+const LONG_COMMENTS = 12;
+
+/** One read of Graph's outline the page sent: a read's first page, with no cursor, or a next
+ *  page; and whether its answer has loaded, or failed. */
+interface GraphRead {
+  answered: boolean;
+  readonly page: "first" | "next";
+}
+
+/**
+ * Keeps each read of issue `key`'s Graph outline the page sends from now on - the tree route with
+ * no `view=`, no `kind=` and no `comments_before=` - in the order sent, each marked answered once
+ * its answer has loaded or failed. `afterAnswer` answers the reads sent after the answer of the
+ * first `PATCH` of node `id` came, undefined until it came: the count is taken in the browser's
+ * own order of events, as that answer arrives, so no read the page sent before it is among them.
+ */
+function watchGraphReads(
+  page: Page,
+  key: string,
+  id: string
+): { readonly afterAnswer: () => readonly GraphRead[] | undefined } {
+  const tree = `/api/v1/issues/${encodeURIComponent(key)}/tree`;
+  const nodes = `/api/v1/issues/${encodeURIComponent(key)}/nodes/`;
+  const reads = new Map<object, GraphRead>();
+  let answeredAt: number | undefined;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    const { searchParams } = url;
+    if (request.method() !== "GET" || url.pathname !== tree) return;
+    if (["view", "kind", "comments_before"].some((name) => searchParams.has(name))) return;
+    reads.set(request, { answered: false, page: searchParams.has("cursor") ? "next" : "first" });
+  });
+  const answered = (request: object) => {
+    const read = reads.get(request);
+    if (read !== undefined) read.answered = true;
+  };
+  page.on("requestfinished", answered);
+  page.on("requestfailed", answered);
+  page.on("response", (response) => {
+    const request = response.request();
+    const { pathname } = new URL(request.url());
+    if (answeredAt !== undefined || request.method() !== "PATCH") return;
+    if (!pathname.startsWith(nodes)) return;
+    if (decodeURIComponent(pathname.slice(nodes.length)) === id) answeredAt = reads.size;
+  });
+  return {
+    afterAnswer: () =>
+      answeredAt === undefined ? undefined : [...reads.values()].slice(answeredAt),
+  };
+}
+
 // c-move, fourth row: a move by key that puts the node past its parent's first 50 drawn children
-// ("N more rows") draws the rows up to it and keeps the caret in its text, so the next typed
-// letter lands in its block, and after a reload the node stands where the answer put it.
-// SLOW(>=2s): a seed grown past 50 children under the issue, a landing, a move by key answered, a
-// letter typed and stored, and a reload.
+// ("N more rows") and on a page of the tree read the page has not loaded draws the rows up to it
+// and keeps the caret in its text. The row starts on a fresh load of the address of the comment on
+// the issue, the moved block's parent, so the read holds its first page alone: the page reads the
+// next pages up to the node's place before R7's re-read, which then reads as far, so the row and
+// the caret stay after it (R4, R12). The next typed letter lands in its block, and after a reload
+// the node stands where the answer put it. The address names the comment and not the block: the
+// node an address names stays drawn wherever it moves (`address-target.ts` resolves it again on
+// each tree, and `treeRows` draws a `named` node past its parent's drawn children), so a landing
+// on the block could not show the rows drawn up to the node after the move.
+// SLOW(>=2s): a seed grown past one page of the tree read - three paragraphs of the issue's own
+// fragment, `SHORT_COMMENTS` short comments and `LONG_COMMENTS` long ones on the issue, about
+// 3,000,000 bytes of the page's JSON before the issue's own blocks - a landing, a move by key
+// answered, the next page and R7's re-read waited out, a letter typed and stored, and a reload.
 test("a move that puts the node past the drawn rows draws the rows up to it and keeps the caret", async ({
   browser,
 }) => {
-  test.setTimeout(360_000);
+  test.setTimeout(600_000);
   await phase(browser, seedGraphEdit, async (page, seed) => {
     owedUnless(await roomWriteGate(page, seed.key));
     const ids = await graphEditIds(page, seed);
     const key = seed.key;
-    // More than 50 ranked paragraphs under the issue so an outdent from the issue's comment puts
-    // the moved block past the issue's first 50 drawn rows.
-    const count = 55;
-    const prefix = "Past-rows filler paragraph";
-    const filler = Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}.`).join(
-      "\n\n"
-    );
+    // The issue's own fragment: two paragraphs, which stay its blocks under the issue, and the
+    // block the row moves, placed under the comment on the issue. The seed's prose block stands
+    // under the criterion, so the second paragraph is the last of the issue's own blocks.
+    const lastOwnWords = "The issue's last own paragraph.";
     const movedWords = "The prose block moved past the drawn rows.";
-    await insertInto(seed.tree, "end", `${filler}\n\n${movedWords}\n`);
-    await expect
-      .poll(
-        async () => {
-          const nodes = (await treeOf(key)).nodes ?? [];
-          return nodes.filter(
-            (node) =>
-              node.kind === "block" &&
-              node.supertag === "block" &&
-              node.text.includes(prefix) &&
-              node.rank !== null &&
-              typeof node.placement_seq === "number"
-          ).length;
-        },
-        { message: "the issue's filler paragraphs did not all gain ranks", timeout: PLACED_MS }
-      )
-      .toBe(count);
+    await insertInto(
+      seed.tree,
+      "end",
+      `The issue's first own paragraph.\n\n${lastOwnWords}\n\n${movedWords}\n`
+    );
+    const lastOwn = await rankedProse(key, lastOwnWords);
     const moved = await rankedProse(key, movedWords);
     const placedUnderComment = await moveNode(key, moved.id, moved.placement_seq ?? 0, {
       parent: `comment/${ids.issueComment}`,
@@ -1046,10 +1106,43 @@ test("a move that puts the node past the drawn rows draws the rows up to it and 
       placedUnderComment.status,
       `placing the prose block under the issue's comment: ${JSON.stringify(placedUnderComment.body)}`
     ).toBe(200);
+    // Under the issue the walk stands its comments, by when each was made, before its ranked
+    // blocks: the comment on the issue and the block under it first, then the short comments,
+    // then the long ones, which carry the read past its first page before the issue's own blocks.
+    for (let at = 1; at <= SHORT_COMMENTS; at += 1) {
+      await createComment(key, { body: `Past-rows comment ${at}.` });
+    }
+    for (let at = 1; at <= LONG_COMMENTS; at += 1) {
+      await createComment(key, { body: `Long comment ${at}. ${LONG_COMMENT}` });
+    }
+
+    // The first page as the page reads it, with display trees and no cursor.
+    await expect
+      .poll(async () => (await readMarginTree(key)).cursor ?? null, {
+        message: "the first page of the tree read names no cursor",
+        timeout: 120_000,
+      })
+      .not.toBeNull();
+    const first = await readMarginTree(key);
+    const firstIds = new Set((first.nodes ?? []).map((node) => node.id));
+    expect(
+      { comment: firstIds.has(ids.issueComment), placed: firstIds.has(moved.id) },
+      "the first page lacks the issue's comment or the block placed under it"
+    ).toEqual({ comment: true, placed: true });
+    expect(
+      childIds(first, ids.issue).length,
+      "the first page holds fewer than 51 children of the issue"
+    ).toBeGreaterThanOrEqual(51);
+    expect(firstIds.has(lastOwn.id), "the first page holds the issue's last own block").toBe(false);
+
+    await seedEventsLanded(page);
     const sent = watchNodeRequests(page, key);
-    // Land on the comment rather than on the block itself, so the address never names the block
-    // and cannot keep its row drawn past the issue's first 50 children after the outdent.
+    const traffic = watchApiRequests(page);
+    const reads = watchGraphReads(page, key, moved.id);
     await landOn(page, key, ids.issueComment, "the comment on the issue");
+    // No read of Graph's tree is out as the PATCH goes: the page would give it up and owe it, one
+    // more read after the move.
+    await expectLoadSettled(traffic);
     await focusOn(readRow(page, moved.id).first(), "the prose block under the comment");
     await page.keyboard.press("Enter");
     await expect
@@ -1068,6 +1161,34 @@ test("a move that puts the node past the drawn rows draws the rows up to it and 
         { message: "the moved row is drawn and holds the caret" }
       )
       .toEqual({ caret: moved.id, drawn: true });
+
+    // R7's re-read is a read from the first page; once it is sent, a quiet page has read its
+    // last page, since each next page goes as the page before it lands.
+    await expect
+      .poll(() => reads.afterAnswer()?.some((read) => read.page === "first") ?? false, {
+        message: "no read of the tree from its first page follows the move",
+        timeout: 60_000,
+      })
+      .toBe(true);
+    await expectLoadSettled(traffic);
+    const afterMove = reads.afterAnswer() ?? [];
+    await expect
+      .poll(
+        async () => ({
+          caret: await caretRowReadId(page),
+          drawn: (await readRow(page, moved.id).count()) > 0,
+        }),
+        { message: "the moved row stays after the re-read" }
+      )
+      .toEqual({ caret: moved.id, drawn: true });
+    expect(
+      {
+        answered: afterMove.every((read) => read.answered),
+        pages: afterMove.map((read) => read.page).join(" "),
+      },
+      "after the move the page reads the next pages up to the node's place, then R7's re-read"
+    ).toEqual({ answered: true, pages: expect.stringMatching(/^(?:next )+first(?: next)+$/u) });
+
     const letter = " x";
     await page.keyboard.type(letter);
     await expect

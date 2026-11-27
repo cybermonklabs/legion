@@ -64,10 +64,13 @@ import {
  *
  * Once a node's chain is empty after a taken act, or after a refusal that says the page read a
  * stale tree or a node that is gone (412, `409 NODE_GONE`, 404), the page reads each outline read
- * it holds again, once, its loaded pages included (`readOutlinesAgain`). After any other refusal
- * it reads nothing. A retype, a write of the room that sends no request, has them read again once
- * it is taken, or once its node's chain is empty where one waits (`readAfterRoomWrite`). No word
- * of this file is a literal: each is `ANSWER_LINES`' or `CONTROL_LABELS`', from `page-words-r.ts`.
+ * it holds again, once, its loaded pages included (`readOutlinesAgain`). Where the newest taken
+ * answer of the chain put the node at a place none of the loaded pages holds, and a next page
+ * remains, it first reads the next pages until one holds that place (R4, `readToPlace`), so the
+ * read again reads as far and still holds the node. After any other refusal it reads nothing. A
+ * retype, a write of the room that sends no request, has them read again once it is taken, or
+ * once its node's chain is empty where one waits (`readAfterRoomWrite`). No word of this file is
+ * a literal: each is `ANSWER_LINES`' or `CONTROL_LABELS`', from `page-words-r.ts`.
  */
 
 /** The route of a node's move and of its delete (dispatch://INFRA-1253 R7). */
@@ -227,12 +230,21 @@ interface PlaceAct {
 
 type Act = MoveAct | DeleteAct | PlaceAct;
 
+/** A node's place as a taken answer names it (`NodeMoved`): under `parent`, right after the
+ *  sibling `after` names, first in its band where `after` is null. */
+type Place = Pick<NodeMoved, "after" | "parent">;
+
 /** The acts of one node of one issue, in press order, the first of them the one whose turn it
  *  is. */
 interface Chain {
   readonly issue: string;
   readonly node: string;
   readonly acts: Act[];
+  /** The place the newest taken move or placing of the chain put its node at, where none of the
+   *  pages Graph's held read holds held that place and a next page remained: what the chain
+   *  reads the next pages for once it is empty, before the outline reads are read again
+   *  (`readToPlace`). */
+  place: Place | undefined;
   /** Whether an act of the chain was taken, or refused with an answer that says the tree is
    *  stale: what reads the outline reads again once the chain is empty. */
   reads: boolean;
@@ -502,17 +514,60 @@ function movedIn(held: TreeAnswer, node: string, answer: NodeMoved): TreeAnswer 
   return { ...held, nodes: [...rest.slice(0, to), ...subtree, ...rest.slice(to)] };
 }
 
-/** Writes the taken move of `node` into Graph's held read of `issue` (`movedIn`), keeping the
- *  stale mark an event or a write put on it, as `readNextTreePage` does. */
-function placeHeld(client: QueryClient, issue: string, node: string, answer: NodeMoved): void {
+/** Writes `answer` as Graph's held read of `issue`, keeping the stale mark an event or a write
+ *  put on it, as `readNextTreePage` does. */
+function writeHeld(client: QueryClient, issue: string, answer: TreeAnswer): void {
   const { queryKey } = outlineQuery(issue, "graph");
-  const held = client.getQueryData<TreeAnswer>(queryKey);
-  if (held === undefined) return;
   const stale = client.getQueryCache().find({ exact: true, queryKey })?.state.isInvalidated;
-  client.setQueryData(queryKey, movedIn(held, node, answer));
+  client.setQueryData(queryKey, answer);
   if (stale === true) {
     void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
   }
+}
+
+/** Writes the taken move of `node` into Graph's held read of `issue` (`movedIn`). */
+function placeHeld(client: QueryClient, issue: string, node: string, answer: NodeMoved): void {
+  const held = heldRead(client, issue);
+  if (held !== undefined) writeHeld(client, issue, movedIn(held, node, answer));
+}
+
+/** Whether `held` names a next page and lacks `place`: no node it holds is the one `parent`
+ *  names, or, where `after` names one, the one `after` names. */
+function lacksPlace(held: TreeAnswer, { after, parent }: Place): boolean {
+  if (nextTreeCursor(held) === undefined) return false;
+  const nodes = held.nodes ?? [];
+  return (
+    !nodes.some((node) => names(node, parent)) ||
+    (after !== null && !nodes.some((node) => names(node, after)))
+  );
+}
+
+/** The place `answer` put the node at, where Graph's held read of `issue`, with the answer
+ *  written into it, lacks it (`lacksPlace`); else undefined, and so for a landing with no answer,
+ *  which says nothing of the place. */
+function owedPlace(
+  client: QueryClient,
+  issue: string,
+  answer: NodeMoved | null
+): Place | undefined {
+  const held = heldRead(client, issue);
+  if (answer === null || held === undefined) return undefined;
+  const place: Place = { after: answer.after, parent: answer.parent };
+  return lacksPlace(held, place) ? place : undefined;
+}
+
+/** `held` without the copy of `node`'s subtree that `movedIn` placed after the last child the
+ *  pages held before a next page merged into it, where that page holds the node too: the run of
+ *  the subtree from the node's first place, where that stands before `before`, the length of the
+ *  answer held before the page was read, and the node stands again at or past it. Undefined where
+ *  `held` holds no such copy. No other node held twice is touched: a node placed in two places is
+ *  held twice. */
+function withoutMovedCopy(held: TreeAnswer, node: string, before: number): TreeAnswer | undefined {
+  const nodes = held.nodes ?? [];
+  const first = nodes.findIndex((each) => each.id === node);
+  if (first < 0 || first >= before) return undefined;
+  if (!nodes.some((each, at) => at >= before && each.id === node)) return undefined;
+  return { ...held, nodes: [...nodes.slice(0, first), ...nodes.slice(subtreeEnd(nodes, first))] };
 }
 
 /** Sets the line of `node` on `issue`'s rows, or clears it, and tells each hook. A line that says
@@ -648,8 +703,10 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
  * Runs `chain` from the act whose turn it is: drops each act that goes unsent, and sends the
  * first that goes, or first reads the page it needs, and is run again from that answer's own
  * reaction. Nothing awaits between an answer and the next act going out, so no tree read the
- * store's hold would let go is sent between two acts. Once the chain is empty it leaves the
- * client, and reads the outline reads again where an act of it asked for that.
+ * store's hold would let go is sent between two acts. Once the chain is empty it first reads the
+ * next pages up to the place its newest taken answer put the node at, where Graph's held read
+ * lacks that place (`readToPlace`); then it leaves the client, and reads the outline reads again
+ * where an act of it asked for that.
  */
 function advance(client: QueryClient, chain: Chain): void {
   for (let act = chain.acts[0]; act !== undefined; act = chain.acts[0]) {
@@ -676,10 +733,47 @@ function advance(client: QueryClient, chain: Chain): void {
       refuse(client, chain, error);
     }
   }
+  const held = heldRead(client, chain.issue);
+  if (chain.place !== undefined && held !== undefined && lacksPlace(held, chain.place)) {
+    readToPlace(client, chain, held);
+    return;
+  }
+  chain.place = undefined;
   const { chains } = stateOf(client);
   const id = hashKey([chain.issue, chain.node]);
   if (chains.get(id) === chain) chains.delete(id);
   if (chain.reads) readOutlinesAgain(client, chain.issue);
+}
+
+/**
+ * Reads the page after the pages `held`, Graph's held read of the chain's issue, holds, as the
+ * chain's newest taken answer put its node at a place they lack (`Chain.place`), and runs the
+ * chain again from that page's own reaction: so the next pages are read one at a time until one
+ * holds the place or none remains, and an act pressed meanwhile waits on the chain, as behind any
+ * act. A page that holds the node merges after the copy `movedIn` placed after the last child the
+ * pages held, so that copy is taken out as the page lands (`withoutMovedCopy`), before TanStack
+ * tells an observer of the merge, which it does in a later task: no render draws the node twice.
+ */
+function readToPlace(client: QueryClient, chain: Chain, held: TreeAnswer): void {
+  const before = held.nodes?.length ?? 0;
+  void readNextTreePage(client, chain.issue, "graph").then(
+    () => {
+      try {
+        const merged = heldRead(client, chain.issue);
+        const kept =
+          merged === undefined ? undefined : withoutMovedCopy(merged, chain.node, before);
+        if (kept !== undefined) writeHeld(client, chain.issue, kept);
+      } finally {
+        advance(client, chain);
+      }
+    },
+    () => {
+      // A refused page ends the reads, and R7's re-read goes as after any taken act: it reads the
+      // tree again from its first page, and its answer decides where the node is drawn.
+      chain.place = undefined;
+      advance(client, chain);
+    }
+  );
 }
 
 /** The write of one act of `chain`, as the store makes and keeps it: on the node's own line, its
@@ -735,6 +829,7 @@ function sendMove(
         // A landing with no answer to give says nothing of the place: the next act goes from the
         // read as it stands, and its refusal reads the tree again.
         if (answer !== null) placeHeld(client, chain.issue, chain.node, answer);
+        chain.place = owedPlace(client, chain.issue, answer);
       } finally {
         advance(client, chain);
       }
@@ -790,7 +885,7 @@ function press(client: QueryClient, issue: string, node: string, act: Act): void
     chain.acts.push(act);
     return;
   }
-  const begun: Chain = { acts: [act], issue, node, reads: false };
+  const begun: Chain = { acts: [act], issue, node, place: undefined, reads: false };
   chains.set(id, begun);
   advance(client, begun);
 }

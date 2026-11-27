@@ -27,7 +27,7 @@ import { KEY } from "../decisions-filter/decisions-fixtures";
 import { waitInAct } from "../outline-fixtures";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
-import { fixture, renamed, signedIn } from "./graph-edit-fixtures";
+import { fixture, nodeOf, renamed, signedIn } from "./graph-edit-fixtures";
 import {
   drawNewRow,
   NEW_ROW_READ_MS,
@@ -1200,4 +1200,185 @@ test("a tree read out as a move's PATCH goes is given up and its answer stands",
   expect<unknown>(heldNode(client, STATEMENT)?.placement_seq).toBe(
     moved.move_up.body.placement_seq
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// A taken move to a place the held pages lack (R4, R12): R7's re-read reads as many pages as the
+// page had loaded, so where the answer's place stands on a page the page has not read, the page
+// first reads the next pages until one holds it, and the re-read reads as far. The paragraph of
+// the issue's own fragment that the fixture's second page holds stands here under the question,
+// at the end of the issue's subtree on the first page, as the page held it before an outdent;
+// outdented, it goes under the issue at the end of the issue's own blocks, right after the code
+// block, which only the second page holds.
+// ---------------------------------------------------------------------------------------------
+
+/** The last block of the issue's own fragment, which only the fixture's second page holds. */
+const LAST_OWN = "<tree/code_block>";
+
+const pagedParagraph = nodeOf(secondPage, PAGED);
+
+const firstNodes = firstPage.nodes ?? [];
+
+/** Where the context the first page carries starts, after the issue's subtree. */
+const contextAt = firstNodes.findIndex((node) => node.role === "context");
+
+/** The first page as the page held it before the outdent: the paragraph under the question, at
+ *  the end of the issue's subtree, after the criterion's. */
+const underQuestion: TreeAnswer = {
+  ...firstPage,
+  nodes: [
+    ...firstNodes.slice(0, contextAt),
+    { ...pagedParagraph, parent: nodeOf(firstPage, "<criterion>").parent },
+    ...firstNodes.slice(contextAt),
+  ],
+};
+
+/** The server's second page once the outdent is taken: the paragraph right after the code block. */
+const outdentedSecond: TreeAnswer = {
+  ...secondPage,
+  nodes: (secondPage.nodes ?? [])
+    .filter((node) => node.id !== PAGED)
+    .flatMap((node) =>
+      node.id === LAST_OWN ? [node, { ...pagedParagraph, rank: "<rank:8>" }] : [node]
+    ),
+};
+
+/** The server's answer to the outdent of the paragraph: under the issue, right after the sibling
+ *  `after` names, under its next placement_seq. */
+function outdentedTo(after: string): Exchange {
+  return {
+    body: { after, parent: "issue/<issue>", placement_seq: "<seq:tree/paragraph>@2" },
+    status: 200,
+  };
+}
+
+/** Answers each read of the issue's tree as the server does once the outdent is taken: the first
+ *  page where the read names no cursor, once `first` settles, and `next` for the page its cursor
+ *  names, or a 503 where `next` is `refused`. Keeps each read's cursor, null where it names none. */
+function answerOutdentedReads(
+  next: TreeAnswer | "refused",
+  first: Promise<void> = Promise.resolve()
+): { readonly cursors: (string | null)[] } {
+  const cursors: (string | null)[] = [];
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, async ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      cursors.push(cursor);
+      if (cursor === null) {
+        await first;
+        return Response.json(firstPage);
+      }
+      if (next === "refused") {
+        return Response.json({ code: "UNAVAILABLE", error: "unavailable" }, { status: 503 });
+      }
+      return Response.json(next);
+    })
+  );
+  return { cursors };
+}
+
+// The outdent's answer puts the paragraph after the code block, which the first page lacks: the
+// page reads the next page before R7's re-read, which then reads as far. R7's re-read is held at
+// its first page, so the held read is read as that next page left it: the paragraph once, at the
+// page's place, the copy the answer put after the last child of the issue the first page held
+// taken out.
+test("a taken move to a place the held pages lack reads the next page before R7's re-read", async () => {
+  expect(underQuestion.cursor, "the first page names no next page").toBeString();
+  expect(nodeOf(underQuestion, PAGED).parent?.id, "the paragraph stands under no question").toBe(
+    "<question>"
+  );
+  expect(
+    underQuestion.nodes?.some((node) => node.id === LAST_OWN),
+    "the first page holds the code block"
+  ).toBe(false);
+  const reread = Promise.withResolvers<void>();
+  const reads = answerOutdentedReads(outdentedSecond, reread.promise);
+  const patches = answerPatches(outdentedTo(LAST_OWN));
+  const { client, writes } = mount(underQuestion);
+  try {
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await writes().move(PAGED, "outdent");
+    });
+    expect(outcome).toMatchObject({ status: "taken" });
+    expect(
+      patches.calls.map((call) => call.body),
+      "the outdent names the issue alone"
+    ).toEqual([{ parent: `issue/${KEY}` }]);
+    await waitFor(() =>
+      expect(reads.cursors, "the reads after the outdent").toEqual([firstPage.cursor, null])
+    );
+    const ids = (
+      client.getQueryData<TreeAnswer>(outlineQuery(KEY, "graph").queryKey)?.nodes ?? []
+    ).map((node) => node.id);
+    expect(
+      ids.filter((id) => id === PAGED),
+      "the held read holds the paragraph but once"
+    ).toHaveLength(1);
+    expect(ids.indexOf(PAGED), "the paragraph stands right after the code block").toBe(
+      ids.indexOf(LAST_OWN) + 1
+    );
+    expect(heldNode(client, PAGED)?.parent?.id).toBe(KEY);
+  } finally {
+    reread.resolve();
+  }
+  await waitFor(() =>
+    expect(reads.cursors, "R7's re-read reads as far as the pages held").toEqual([
+      firstPage.cursor,
+      null,
+      firstPage.cursor,
+    ])
+  );
+  await waitFor(() =>
+    expect(
+      client.getQueryState(outlineQuery(KEY, "graph").queryKey)?.fetchStatus,
+      "R7's re-read never landed"
+    ).toBe("idle")
+  );
+  expect(heldNode(client, PAGED)?.parent?.id, "R7's re-read lost the paragraph").toBe(KEY);
+});
+
+// The reads go only where the held pages lack the answer's place. The same outdent answered with
+// a place the first page holds, right after the memo, reads no next page: R7's re-read is the one
+// read, of the first page alone. Answered with the end of the issue's own blocks, which only the
+// next page holds, it reads that page first.
+test("the same move with a place the held read holds sends no next-page read", async () => {
+  for (const [after, expected] of [
+    ["<memo>", [null]],
+    [LAST_OWN, [firstPage.cursor, null, firstPage.cursor]],
+  ] as const) {
+    const reads = answerOutdentedReads(outdentedSecond);
+    answerPatches(outdentedTo(after));
+    const { view, writes } = mount(underQuestion);
+    await act(async () => {
+      await writes().move(PAGED, "outdent");
+    });
+    await waitFor(() => expect(reads.cursors, `the reads after ${after}`).toEqual(expected));
+    await waitInAct(50);
+    expect(reads.cursors, `a read more after ${after}`).toEqual(expected);
+    view.unmount();
+  }
+});
+
+// A refused next page ends the reads, and R7's re-read still goes, of the first page alone since
+// the page loaded no other: its answer decides what is drawn, so the paragraph, which that page
+// lacks, leaves the held read. The chain ends with no line on the row, and the refused page is
+// not read again.
+test("a refused next page before R7's re-read still ends in the re-read", async () => {
+  const reads = answerOutdentedReads("refused");
+  answerPatches(outdentedTo(LAST_OWN));
+  const { client, writes } = mount(underQuestion);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await writes().move(PAGED, "outdent");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  await waitFor(() =>
+    expect(reads.cursors, "the reads after the outdent").toEqual([firstPage.cursor, null])
+  );
+  await waitFor(() => expect(heldNode(client, PAGED), "R7's re-read did not land").toBeUndefined());
+  await waitInAct(50);
+  expect(reads.cursors, "a refused page was read again").toEqual([firstPage.cursor, null]);
+  expect(writes().busy(PAGED), "the chain is busy once the re-read went").toBe(false);
+  expect(writes().lines.get(PAGED), "the row draws a line").toBeUndefined();
 });
