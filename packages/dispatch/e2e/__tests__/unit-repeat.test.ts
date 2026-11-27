@@ -811,16 +811,19 @@ function asSubreaper(): string[] {
  *  that nothing has killed or is ending as `left: <pid> <command line>`, then `left behind: <n>`.
  *  A process counts as killed once SIGKILL stands in its shared pending set (`ShdPnd`, where a kill
  *  of a process or a group puts it, and where it stays until the process is gone), and as ended
- *  once its stat, read after its status, is gone (no file, or a read that fails and leaves no
- *  file), says Z or X, or carries PF_EXITING in its flags. So a process that ends while the walk
+ *  once its stat, read after its status, says Z or X or carries PF_EXITING in its flags, or once
+ *  its stat does not read and its pid's directory is gone. So a process that ends while the walk
  *  reads it is ended, whatever its status read gave: no file, an empty text (a read after the
- *  process is gone fails with ESRCH), or a text cut short. A stat that is there but does not read,
- *  as one the reader may not read, says nothing of whether the process ended. Each process left is
- *  then killed, so the row leaves nothing running. The walk reads with builtins only, so it starts
- *  no process that it would count itself, and it reads no process outside the driver's own tree.
- *  `count` walks the tree again until a walk finds no process it has not seen: a process that ends
- *  while the walk reads its tree hands its children to the driver, the tree's subreaper, whose list
- *  the walk may have read already.
+ *  process is gone fails with ESRCH), or a text cut short. A file that does not read while its
+ *  pid's directory is there, as one the reader may not read, says nothing of whether it ended.
+ *  The walk reads with builtins only, so it starts no process that it would count itself, and it
+ *  reads no process outside the driver's own tree.
+ *
+ *  `count` kills each process it finds that has not ended as soon as it has read it, so no process
+ *  it has seen can start or adopt another (the kernel gives orphans to no reaper that is exiting),
+ *  and the children of a process that ends go to the driver: each walk reads the driver's list
+ *  again at its end, until that read finds no process the walk has not listed. So once a walk
+ *  finds no process the walks before it had not seen, it has seen every process below the driver.
  *
  *  `shdpnd` reads a status whole, with one buffered `mapfile`, which never seeks back. A `read` per
  *  line seeks back after each line, and the kernel writes a status anew at each seek, so where a
@@ -831,20 +834,24 @@ function asSubreaper(): string[] {
  *  process wakes. A process reads its own `State` as R, so `SigQ` moving is the explanation that
  *  reproduces harness lane job 140222405203 (run 45912026705), where the driver read `no ShdPnd:
  *  line` in its own status on a kernel whose status has that line; no record shows the runner's
- *  `SigQ` at that moment.
+ *  `SigQ` at that moment. A children list is read with `read`, whose error lands in `$err`: a
+ *  read that fails after the list opened is no empty list.
  *
  *  It fails closed, printing `left behind: unknown: <why>`, wherever it could not tell: `capable`,
  *  before the driver starts anything, where the driver's own status has no `ShdPnd:` line, as
  *  under gVisor, or cannot be read, or its own children list is missing; `seen`, where that list
  *  does not show the pid the driver started, as `$1`; and `count`, where a process that has not
  *  ended has a status with no `ShdPnd:` line, which is unknown and not gone, where a status, a
- *  stat or a children list that is there cannot be read, or where the tree still changed after 10
- *  walks. `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the driver's own pid) are for the
- *  row that reads a stub process tree. Each redirection of a read goes after its `2>/dev/null`,
- *  since bash applies them in order and reports a file it cannot open before a later `2>` applies. */
+ *  stat or a children list cannot be read while its process's directory is there, or where the
+ *  tree still changed after 10 walks. `PROC_ROOT` (default `/proc`) and `WALK_ROOT` (default the
+ *  driver's own pid) are for the row that reads a stub process tree. Each redirection of a read
+ *  goes after its `2>`, since bash applies them in order and reports a file it cannot open before
+ *  a later `2>` applies. */
 const leftBehind = `
 proc=\${PROC_ROOT:-/proc}
 root=\${WALK_ROOT:-$$}
+err=$(mktemp) || { echo "left behind: unknown: no scratch file for read errors"; exit 2; }
+trap 'rm -f "$err"' EXIT
 shdpnd() {
   local line status=()
   shd=""
@@ -856,7 +863,7 @@ shdpnd() {
 ended() {
   local stat fields
   if ! read -r stat 2>/dev/null <"$proc/$1/stat"; then
-    [ -e "$proc/$1/stat" ] && return 2
+    [ -e "$proc/$1" ] && return 2
     return 0
   fi
   fields=(\${stat##*) })
@@ -879,23 +886,60 @@ seen() {
   done
   return 1
 }
-walk() {
-  local queue=("$root") p t k c=()
-  tree=() hidden=()
-  while ((\${#queue[@]})); do
-    p=\${queue[0]}; queue=("\${queue[@]:1}")
-    for t in "$proc/$p"/task/*/children; do
-      c=()
-      if ! mapfile -t c 2>/dev/null <"$t"; then
-        [ -e "$t" ] && hidden+=("$t")
-        continue
-      fi
-      for k in \${c[*]}; do tree+=("$k"); queue+=("$k"); done
-    done
+children() {
+  local d c
+  kids=""
+  for d in "$proc/$1"/task/*; do
+    if [ "$d" = "$proc/$1/task/*" ]; then
+      [ -e "$proc/$1" ] && hidden+=("$proc/$1/task")
+      return
+    fi
+    c=""
+    read -r c 2>"$err" <"$d/children"
+    if [ -s "$err" ]; then
+      [ -e "$d" ] && hidden+=("$d/children")
+      continue
+    fi
+    kids+=" $c"
   done
 }
+take() {
+  local k
+  for k in $kids; do
+    case $listed in *" $k "*) ;; *) listed+="$k "; tree+=("$k"); queue+=("$k") ;; esac
+  done
+}
+walk() {
+  local queue=("$root") p kids listed=" " again=0
+  tree=() hidden=()
+  while :; do
+    while ((\${#queue[@]})); do
+      p=\${queue[0]}; queue=("\${queue[@]:1}")
+      children "$p"
+      take
+    done
+    children "$root"
+    take
+    ((\${#queue[@]})) && ((++again <= 10)) || break
+  done
+}
+judge() {
+  local shd
+  if ! shdpnd "$1"; then
+    ended "$1"
+    case $? in 0) verdict=ended ;; *) verdict=unread; unreadable+=("$proc/$1/status") ;; esac
+    return
+  fi
+  if [ -n "$shd" ] && ((0x$shd & 0x100)); then verdict=killed; return; fi
+  ended "$1"
+  case $? in
+    0) verdict=ended ;;
+    2) verdict=unread; unreadable+=("$proc/$1/stat") ;;
+    *) if [ -n "$shd" ]; then verdict=left; else verdict=unknown; fi ;;
+  esac
+}
 count() {
-  local p t shd walks=0 counted=" " fresh unknown=() unread=() unreadable=() changing=no
+  local p t line verdict walks=0 counted=" " fresh argv lines=() unknown=() unread=() unreadable=() changing=no
   left=()
   while :; do
     walk
@@ -905,26 +949,21 @@ count() {
     ((\${#fresh[@]})) || break
     ((++walks > 10)) && { changing=yes; break; }
     for p in "\${fresh[@]}"; do
-      if ! shdpnd "$p"; then
-        ended "$p" || { unread+=("$p"); unreadable+=("$proc/$p/status"); }
-        continue
-      fi
-      [ -n "$shd" ] && ((0x$shd & 0x100)) && continue
-      ended "$p"
-      case $? in
-        0) continue ;;
-        2) unread+=("$p"); unreadable+=("$proc/$p/stat"); continue ;;
-      esac
-      [ -n "$shd" ] || { unknown+=("$p"); continue; }
-      left+=("$p")
+      judge "$p"
+      case $verdict in ended | killed) continue ;; esac
+      argv=(); line=""
+      mapfile -d '' -t argv 2>/dev/null <"$proc/$p/cmdline"
+      ((\${#argv[@]})) && printf -v line '%s ' "\${argv[@]}"
+      lines+=("left: $p $line")
+      kill -KILL "$p" 2>/dev/null
+      case $verdict in left) left+=("$p") ;; unknown) unknown+=("$p") ;; unread) unread+=("$p") ;; esac
     done
   done
-  for p in "\${left[@]}" "\${unknown[@]}" "\${unread[@]}"; do echo "left: $p $(tr '\\0' ' ' 2>/dev/null <"$proc/$p/cmdline")"; done
+  for line in "\${lines[@]}"; do echo "$line"; done
   ((\${#unknown[@]})) && echo "left behind: unknown: no ShdPnd: line in the status of \${unknown[*]}"
   ((\${#unreadable[@]})) && echo "left behind: unknown: could not read \${unreadable[*]}"
   [ "$changing" = no ] || echo "left behind: unknown: the tree under $root still changed after 10 walks"
   ((\${#unknown[@]} + \${#unreadable[@]})) || [ "$changing" = yes ] || echo "left behind: \${#left[@]}"
-  for p in "\${left[@]}" "\${unknown[@]}" "\${unread[@]}"; do kill -KILL "$p" 2>/dev/null; done
 }
 `;
 
@@ -1593,43 +1632,79 @@ test(
     const unstated = await run(unstat, "count");
     expect(unstated).toContain(`left behind: unknown: could not read ${unstat}/9000006/stat\n`);
     expect(() => leftOf(unstated, "")).toThrow("could not list what the leg left behind");
-    // A children list that is there but does not open hides every process below it. Mode 000
-    // denies it to any reader but root, which reads it; so the case holds where it is denied.
-    const hidden = join(directory, "hidden");
-    stubTree(hidden, { driver: "0000000000000000", below: "0000000000000000" });
-    const list = join(hidden, "9000005", "task", "9000005", "children");
-    chmodSync(list, 0o000);
-    const denied = (() => {
+    // Mode 000 on a file, or 0600 on a directory, denies it to any reader but root, which reads
+    // it anyway; so the two cases that need a denial hold where the denial holds.
+    const denies = (path: string, mode: number, probe: string) => {
+      chmodSync(path, mode);
       try {
-        readFileSync(list);
+        readFileSync(probe);
         return false;
       } catch {
         return true;
       }
-    })();
-    if (denied) {
+    };
+    // A children list that is there but does not open hides every process below it.
+    const hidden = join(directory, "hidden");
+    stubTree(hidden, { driver: "0000000000000000", below: "0000000000000000" });
+    const list = join(hidden, "9000005", "task", "9000005", "children");
+    if (denies(list, 0o000, list)) {
       const behind = await run(hidden, "count");
       expect(behind).toContain(`left behind: unknown: could not read ${list}\n`);
       expect(() => leftOf(behind, "")).toThrow("could not list what the leg left behind");
     }
     chmodSync(list, 0o644);
+    // So does one that opens and then fails to read (here a directory, whose read fails with
+    // EISDIR for root too, as a read the kernel fails with ENOMEM would).
+    const unlisted = join(directory, "unlisted");
+    stubTree(unlisted, { driver: "0000000000000000", below: "0000000000000000" });
+    const opened = join(unlisted, "9000005", "task", "9000005", "children");
+    rmSync(opened);
+    mkdirSync(opened);
+    const unlistedRun = await run(unlisted, "count");
+    expect(unlistedRun).toContain(`left behind: unknown: could not read ${opened}\n`);
+    expect(() => leftOf(unlistedRun, "")).toThrow("could not list what the leg left behind");
+    // A pid's directory that the reader may not search: its files do not read, and that is no
+    // sign that the process ended.
+    const unsearched = join(directory, "unsearched");
+    stubTree(unsearched, { driver: "0000000000000000", below: "0000000000000000" });
+    const pidDirectory = join(unsearched, "9000006");
+    if (denies(pidDirectory, 0o600, join(pidDirectory, "stat"))) {
+      const behind = await run(unsearched, "count");
+      expect(behind).toContain(
+        `left behind: unknown: could not read ${pidDirectory}/task ${pidDirectory}/status\n`
+      );
+      expect(() => leftOf(behind, "")).toThrow("could not list what the leg left behind");
+    }
+    chmodSync(pidDirectory, 0o755);
     // A process the first walk did not find, as the children of a process that ended during it
     // move to the driver's list after the walk read that list, is counted from the next walk.
-    // Here `walk` finds 9000006 from its second call on.
+    // Here `walk` finds 9000006 from its second call on; `calls` is the stand-in's own count.
     const later =
-      "walks=0; walk() { walks=$((walks + 1)); hidden=(); tree=(9000005); ((walks == 1)) || tree+=(9000006); }; count";
-    expect(leftOf(await run(marked, later), "")).toEqual([
-      "9000005 stub 9000005 ",
-      "9000006 stub 9000006 ",
-    ]);
-    // A tree that shows a new process at every walk is not counted.
+      'calls=0; walk() { calls=$((calls + 1)); hidden=(); tree=(9000005); ((calls == 1)) || tree+=(9000006); }; count; echo "walk calls: $calls"';
+    const laterRun = await run(marked, later);
+    expect(leftOf(laterRun, "")).toEqual(["9000005 stub 9000005 ", "9000006 stub 9000006 "]);
+    expect(laterRun).toEndWith("left behind: 2\nwalk calls: 3\n");
+    // A tree that shows a new process at every walk is not counted: ten walks are judged, and
+    // the eleventh, which still finds a new one, ends it.
     const growing =
-      "walks=0; walk() { walks=$((walks + 1)); hidden=(); tree=($((9000100 + walks))); }; count";
+      'calls=0; walk() { calls=$((calls + 1)); hidden=(); tree=($((9000100 + calls))); }; count; echo "walk calls: $calls"';
     expect(await run(marked, growing)).toBe(
-      "left behind: unknown: the tree under 9000001 still changed after 10 walks\n"
+      "left behind: unknown: the tree under 9000001 still changed after 10 walks\nwalk calls: 11\n"
     );
   },
-  rowLimit("short", "short", "short", "short", "short", "short", "short", "short", "short")
+  rowLimit(
+    "short",
+    "short",
+    "short",
+    "short",
+    "short",
+    "short",
+    "short",
+    "short",
+    "short",
+    "short",
+    "short"
+  )
 );
 
 driverRow(
@@ -1670,6 +1745,53 @@ driverRow(
     expect(stdout.split("\n").filter(Boolean)).toEqual(
       Array.from({ length: 50 }, () => "left behind: 4")
     );
+  },
+  rowLimit("short")
+);
+
+driverRow(
+  "a process whose parent ends while the walk reads the tree is still listed, and killed",
+  async () => {
+    // The lie: a process that ends hands its children to the driver, its subreaper, and a walk
+    // that read the driver's list before that move and the ended process's list after it lists
+    // neither, so a process the leg left reads as nothing left. Here the driver is a subreaper,
+    // as in `stoppedLeg`, and each of 20 rounds starts ten subshells that each start a `sleep 30`
+    // and end by themselves within 5 ms, while `count` reads the tree. `count` kills each
+    // process it lists, so a sleep that still runs after it, with no SIGKILL pending and not
+    // exiting, is one it missed. On a development box on 2026-11-27 main's one walk missed a
+    // sleep in 146 of 300 such rounds, and this driver in none of 600.
+    const directory = scratch();
+    const check = `
+mkfifo "$NEVER" || exit 2
+for ((r = 0; r < 20; r++)); do
+  : >"$PIDS"
+  for j in 1 2 3 4 5 6 7 8 9 10; do
+    (sleep 30 & echo "$!" >>"$PIDS"; read -t "0.00$((RANDOM % 5))$((RANDOM % 10))" -u 9; exit 0) 9<>"$NEVER" &
+  done
+  count >/dev/null
+  wait
+  while read -r p; do
+    stat=""; read -r stat 2>/dev/null <"/proc/$p/stat" || continue
+    f=(\${stat##*) })
+    [ "\${f[0]}" = Z ] && continue
+    ((f[6] & 4)) && continue
+    shdpnd "$p"; [ -n "$shd" ] && ((0x$shd & 0x100)) && continue
+    echo "missed: $p"; kill -KILL "$p"
+  done <"$PIDS"
+done
+echo "rounds: $r"
+`;
+    const { stdout } = await runBounded({
+      argv: [...asSubreaper(), "bash", "-c", leftBehind + check],
+      bound: "short",
+      env: {
+        PATH: process.env.PATH ?? "",
+        NEVER: join(directory, "never"),
+        PIDS: join(directory, "pids"),
+      },
+      from: import.meta.url,
+    });
+    expect(stdout).toBe("rounds: 20\n");
   },
   rowLimit("short")
 );
