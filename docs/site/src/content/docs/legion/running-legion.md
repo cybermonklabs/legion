@@ -713,12 +713,14 @@ What each part is for:
   to, one or more of `implementer`, `tester`, `reviewer`, `planner`, `merger` and the roles of `roles` (`architect` is
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
-  name `moves`, the moves it counts, each written `<from>-<to>` with two workflow phases, which
-  differ but in `step-step`, or the word `any`, which is also what a hook that leaves the key out
-  takes. A pair names a move back some task's line can make: from a step to any step before it in
-  the task's order (`testing-implementing`, `reviewing-implementing`, or `testing-reviewing` on a
-  task whose reviewer step comes before its tester step), and from the retro or the merge to any
-  step, or from the merge to the retro (`merging-implementing`, `merging-retro`). A step of a role
+  name `moves`, the moves it counts, each written `<from>-<to>` of two workflow phases, which
+  differ but in `step-step` (`testing-implementing`, `merging-implementing`, or any other of the
+  41 moves back a task's line can make), or the word `any`, which is also what a hook that leaves
+  the key out takes. A pair names a move back some task's line can make: from a step to any step
+  before it in the task's order (`testing-implementing`, `reviewing-implementing`, or
+  `testing-reviewing` on a task whose reviewer step comes before its tester step), and from the
+  retro or the merge to any step, or from the merge to the retro (`merging-implementing`,
+  `merging-retro`). A step of a role
   a deployment defines runs as `step` and may stand at any place of a task, so the pairs into and
   out of `step`, and `step-step` from one such step back to another, are moves back too; the
   loader takes them whatever roles this deployment defines. A pair that no line makes as a move
@@ -1404,11 +1406,13 @@ Closing the terminal leaves the project without one, and the daemon logs
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
    first step back, on their kept sessions, at its next first phase start, and each other agent at
    the start of its step. A claim whose session supervise's `forgetSession` has dropped comes back
-   in a new session instead. The daemon suspends or ends claims only when an issue leaves the
+   in a new session instead. The daemon suspends or ends claims when an issue leaves the
    workflow, when a claim moves to another tree, for a production check after the issue is done,
    or when an agent's next step is of another role than the one its claim holds: the start of that
    step suspends the claim at the end of its turn, keeping its session, gives it the step's role
-   and resumes it on the same session. A phase start gives its task to that live claim. At boot
+   and resumes it on the same session. A phase start gives its task to that live claim. The daemon
+   also suspends each live claim of an issue pod it releases as idle, and the next wake for that
+   role resumes it. At boot
    the daemon resumes by rule a suspended worker that still owns its issue's phase and that the
    daemon itself suspended, but never an agent the operator or the project's controller
    suspended: a start for an agent either of them holds waits instead, until a resume lifts the
