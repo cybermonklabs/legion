@@ -1017,7 +1017,9 @@ func TestTheLoadProbeRefusesAPluginLoadedFromAnotherRoot(t *testing.T) {
 }
 
 // A probe that ran and did not see the plugin load is an answer, not a failure to retry: the
-// plugin is installed and disabled, or not registered.
+// plugin is installed and disabled, or not registered. no-then-hang answers and then hangs, and
+// only the gate's budget ends it. Each row runs under testwait.Context, so a budget that never
+// fires fails the row by name before the test binary's deadline, and does not hang the binary.
 func TestTheLoadProbeRefusesAPluginOhMyPiDidNotLoad(t *testing.T) {
 	t.Parallel()
 	for _, step := range []string{"no", "silent", "no-then-hang"} {
@@ -1025,7 +1027,7 @@ func TestTheLoadProbeRefusesAPluginOhMyPiDidNotLoad(t *testing.T) {
 			f := newFakeOmp(t, step)
 			gate, _ := gateUnder(t, f, contractCurrent)
 
-			err := gate.verify(context.Background())
+			err := gate.verify(testwait.Context(t))
 
 			want := "pi-legion 1.57.0 is installed but not loaded by omp (disabled or unregistered): run OMP_PROFILE=gate omp plugin list"
 			if err == nil || err.Error() != want {
