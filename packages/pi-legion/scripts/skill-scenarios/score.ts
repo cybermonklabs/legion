@@ -3880,7 +3880,7 @@ function agentParts(runDir: string): { tool: string | undefined; args: unknown; 
   return [session(runDir), ...subagentSessions(runDir).map((sub) => sub.entries)].flatMap(
     (entries) =>
       entries.flatMap((entry) =>
-        entry.message?.role !== "assistant"
+        !["assistant", "toolResult"].includes(entry.message?.role ?? "")
           ? []
           : (entry.message.content ?? []).flatMap((part) => {
               if (part.type === "toolCall")
