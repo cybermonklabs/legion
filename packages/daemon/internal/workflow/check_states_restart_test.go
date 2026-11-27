@@ -29,6 +29,13 @@ func TestARestartOfTheTesterLeavesNoCompletionTheStatesDecideOn(t *testing.T) {
 	if row := phaseRowOf(t, r.pool, claim.RoleTester); row.Completed() {
 		t.Fatalf("the restarted tester's row reads completed (commit %q, record %q), want no completion until it completes again", row.HandoffCommit, row.HandoffRecord)
 	}
-	r.complete(headOne, 2)
+	// The restarted tester writes its own record, as a phase's completion always names a new one.
+	completed, err := intake.ApplyFact(context.Background(), r.pool, "api", "test-restarted", intake.HandoffComplete{
+		Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "Every check passes.",
+		Commit: headOne, HandoffRecord: "test-2", HandoffVersion: 2, StatesSerial: 2,
+	}, r.engine, admissionStub{})
+	if err != nil || completed.Refusal != nil {
+		t.Fatalf("apply the restarted tester's completion: %+v, %v", completed.Refusal, err)
+	}
 	assertPhase(t, r.pool, phase.Reviewing)
 }

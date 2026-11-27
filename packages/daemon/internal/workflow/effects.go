@@ -628,6 +628,10 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // sends it decorated: with the base-merge sentence where the issue is a parent in testing
 // (withBaseMergeRun) and, for the reviewer, the round's sentences the queue adds (queuedRow). So a
 // held start keeps neither, and the return decorates it once.
+//
+// A tester started again loses the handoff it reported before (clearHandoff's fields): the testing
+// move decides on the tester's completion, so a completion that stayed would move the issue on the
+// old record at the next state event while the restarted tester works.
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -643,6 +647,13 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return err
+	}
+	// The tester's completion is what the testing move decides on (decideTesting, checkState), so
+	// a tester started again holds no earlier one: its handoff is cleared as a new phase's start
+	// clears it (clearHandoff), and the next state event moves nothing until the restarted tester
+	// completes. The other roles' completions move nothing after the fact, so theirs stay.
+	if role == claim.RoleTester {
+		row = phaseHandoff{}.onto(row)
 	}
 	work := told(at)
 	row.Given = record.GivenTask{Task: work, Entry: row.Entry, Generation: issue.Generation}

@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A restart of the tester, by the operator's `legion claims retry` or the architect's retry of a
+  hold, clears the tester's earlier completion (its commit, its handoff record, the record's check
+  states serial, the step it named to return to and its summary), as a new phase's start clears
+  it. Before, the completion stayed, so the next `check.state_changed` moved the issue out of
+  testing on the old record while the restarted tester worked, and the restarted tester's
+  completion then met an issue that had left testing.
+time: 2026-11-27T08:05:54Z
+custom:
+  Issue: check-states-tester-restart
