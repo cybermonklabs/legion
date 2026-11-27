@@ -641,7 +641,7 @@ const theTag = "leak-check-v15"
 // installedFiles are the files of the stand-in check every install here holds: a launcher whose
 // --help names both shapes, and the other files of its manifest.
 var installedFiles = map[string]string{
-	leakguardtest.CheckName:    "#!/bin/sh\n" + leakguardtest.AnswersHelp(os.DevNull),
+	leakguardtest.CheckName:    "#!/bin/sh\n[ ! -e \"$HOME/stall\" ] || sleep 11\n" + leakguardtest.AnswersHelp(os.DevNull),
 	leakguardtest.ProgramName:  leakguardtest.Program,
 	leakguardtest.ReadmeName:   leakguardtest.Readme,
 	leakguardtest.MustPassName: leakguardtest.MustPass,
@@ -674,8 +674,16 @@ func installedCheck(t *testing.T, tag string) string {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "leak-check")
+	// CONTROL: the install's --help run stalls 11 s, standing in for a loaded machine.
+	stall := filepath.Join(filepath.Dir(dir), "stall")
+	if err := os.WriteFile(stall, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ctx := testwait.Context(t)
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(stall); err != nil {
 		t.Fatal(err)
 	}
 	return dir
