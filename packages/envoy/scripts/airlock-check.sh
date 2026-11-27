@@ -1183,9 +1183,9 @@ EOF
 	judge "$([ "$t_leaf" = "$t_own" ] && contains "the-bytes-the-command-sent" "$(printf '%s' "$t_recs" | jq -r '[.[] | .body] | join(" ")')" && echo 0 || echo 1)" \
 		"T presents its own certificate and gets the bytes the command sent" \
 		"T's leaf is its own certificate file, and its record holds the bytes the command POSTed"
-	judge "$(! contains "CONNECT tunnel failed" "${K4[svc]}" && contains "the .svc stand-in answered" "${K4[svc]}" && contains "curl:" "${K4[tsnet]}" && ! contains "CONNECT tunnel failed" "${K4[tsnet]}" && contains "curl:" "${K4[curl10]}" && ! contains "CONNECT tunnel failed" "${K4[curl10]}" && contains "error after" "${K4[go10]}" && echo 0 || echo 1)" \
+	judge "$(! contains "CONNECT tunnel failed" "${K4[svc]}" && contains "the .svc stand-in answered" "${K4[svc]}" && contains "curl:" "${K4[tsnet]}" && ! contains "CONNECT tunnel failed" "${K4[tsnet]}" && contains "curl:" "${K4[curl10]}" && ! contains "CONNECT tunnel failed" "${K4[curl10]}" && contains "dial tcp 10.11.12.13:443" "${K4[go10]}" && echo 0 || echo 1)" \
 		"the .svc and .ts.net calls and the 10.x calls of curl and of a Go program do not reach the proxy port" \
-		".svc reached this run's own stand-in directly; .ts.net, curl's 10.x and Go's 10.x failed to connect or resolve with no answer from a proxy"
+		".svc reached this run's own stand-in directly; .ts.net and curl's 10.x failed with a curl error and no proxy CONNECT, and Go's 10.x failed dialling 10.11.12.13:443 itself (dial tcp 10.11.12.13:443) - the error a bypassed proxy gives, not the proxy's own refusal a reached call would show"
 	judge "$(contains "Proxy response (403)" "${K4[node10]}" && contains "private" "${K4[private]}" && echo 0 || echo 1)" \
 		"Node's 10.x call reaches the proxy and is refused with an error that names the private address" \
 		"undici reported '${K4[node10]}', so the proxy answered its CONNECT 403; undici does not show a proxy's body, and the same address asked of the proxy with curl is refused '${K4[private]}'"
