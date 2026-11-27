@@ -515,7 +515,7 @@ const decisionStepOwedMovers = `('artifact.created', 'artifact.version', 'ask.an
 // then, and no version lists one: a document enters that list only as its row is stored, under
 // its artifact.created, a mover of its own. No write changes a stored document's slug, issue or
 // kind or undoes its retirement, and the repair that gives a stored document the role it lacks
-// gives the one its slug names (api's documentRole), which leaves a decisions-md document listed
+// gives the one its slug names (api's documentRole), which leaves a decisions document listed
 // as it was, by its slug. So the version of a decisions document a count of zero can meet follows
 // that document's artifact.created, which moves the count already, and the one document whose
 // version can move a zero count is an issue's spec, which can leave an answered ask's block out
