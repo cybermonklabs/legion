@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  A read-only personal token of a restricted member, minted while they were a full member, lists no
+  project, and Dispatch takes no edit of a read-only token (`400 TOKEN_SCOPES_INPUT`). So its use is
+  `403 RESTRICTED_MEMBER` saying to revoke it at the browser (`DELETE /api/v1/me/agent-tokens/{id}`)
+  and mint a token naming the member's one project, not to name its project with an edit, which
+  would fail. The token list (`GET /api/v1/me/agent-tokens`) answers such a token holding `read`
+  alone, so Settings can tell it is read-only: its row says it works nowhere and how to replace it,
+  shows no project and offers no picker. Every other token of a restricted member is listed holding
+  no scope, as before.
+time: 2026-11-27T06:34:01Z
+custom:
+    Issue: restricted-read-only-token
