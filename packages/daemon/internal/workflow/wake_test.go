@@ -955,3 +955,53 @@ func TestAWakeOfARoleWhoseStartIsQueuedTakesNothing(t *testing.T) {
 		})
 	}
 }
+
+// A tree root's architect starts at the tree's run, which a next change of the root leaves behind
+// the root's own generation (record.Issue.GenerationOf). A cancelled release queued the
+// architect's start at that run, as the daemon's builder writes it (outbox.releaseResume), so a
+// role message for the architect takes nothing: the wake looks for the start at the run it serves
+// (wakeReleased, Pods.StartQueued), records no resume and queues no second start. The control is
+// the implementer, whose start serves the root's own generation.
+func TestAWakeOfARootsArchitectWhoseStartIsQueuedAtTheTreesRunTakesNothing(t *testing.T) {
+	t.Parallel()
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer} {
+		t.Run(string(role), func(t *testing.T) {
+			t.Parallel()
+			rig := newWakeRig(t)
+			ctx := context.Background()
+			if _, err := rig.pool.Exec(ctx, `update issues set generation = $2 where key = $1`, "LEGION-208", wakeIssueGeneration+1); err != nil {
+				t.Fatalf("move the root's generation on: %v", err)
+			}
+			root := record.Issue{Key: "LEGION-208"}
+			var generation, treeGeneration int64
+			if err := rig.pool.QueryRow(ctx, `select tree, generation, tree_generation from issues where key = 'LEGION-208'`).Scan(
+				&root.Tree, &generation, &treeGeneration); err != nil {
+				t.Fatalf("read the root: %v", err)
+			}
+			root.Generation, root.TreeGeneration = uint64(generation), uint64(treeGeneration)
+			if root.Tree != "LEGION-208" || root.Generation != wakeIssueGeneration+1 || root.TreeGeneration != wakeIssueGeneration {
+				t.Fatalf("the root after its next change = %+v, want its own generation %d and its tree's run %d: the case's premise",
+					root, wakeIssueGeneration+1, wakeIssueGeneration)
+			}
+			resume, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
+				Role: role, Generation: root.GenerationOf("start", role)}, wakeAt)
+			if err != nil {
+				t.Fatalf("encode the cancel's resume: %v", err)
+			}
+			if _, err := rig.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+				values ($1, 'LEGION-208', $2, 0, now(), '', '')`, string(resume.Kind), string(resume.Payload)); err != nil {
+				t.Fatalf("queue the cancel's resume: %v", err)
+			}
+
+			token := wakeToken(t, role)
+			rig.apply("role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(token), At: wakeAt, Report: "report-1"})
+
+			if starts := wakeStarts(t, rig.pool); len(starts) != 1 || starts[0] != (wakeStart{Role: role}) {
+				t.Errorf("supervise start rows = %+v, want the cancel's one start of the %s: the wake queues no second one", starts, role)
+			}
+			if resumes := wakeResumes(t, rig.pool); len(resumes) != 0 {
+				t.Errorf("pod resumes = %v, want none: the pod never went away", resumes)
+			}
+		})
+	}
+}

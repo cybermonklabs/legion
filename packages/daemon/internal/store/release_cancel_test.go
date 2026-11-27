@@ -573,3 +573,71 @@ func TestACancelResumesARoleItsMarkDoesNotRecordThatNoStartBringsBack(t *testing
 		})
 	}
 }
+
+// nextChangeOfTheRoot moves the root's own generation on to 2, as a next change of the root does,
+// and leaves its tree's run (issues.tree_generation) at 1. It answers the root as the record then
+// holds it, and fails the test unless the two differ.
+func nextChangeOfTheRoot(t *testing.T, st *Store) record.Issue {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.Pool().Exec(ctx, `update issues set generation = 2 where key = $1`, rootIssue); err != nil {
+		t.Fatalf("move the root's generation on: %v", err)
+	}
+	root := record.Issue{Key: rootIssue}
+	var generation, treeGeneration int64
+	if err := st.Pool().QueryRow(ctx, `select tree, generation, tree_generation from issues where key = $1`,
+		rootIssue).Scan(&root.Tree, &generation, &treeGeneration); err != nil {
+		t.Fatalf("read the root: %v", err)
+	}
+	root.Generation, root.TreeGeneration = uint64(generation), uint64(treeGeneration)
+	if root.Tree != rootIssue || root.Generation != 2 || root.TreeGeneration != 1 {
+		t.Fatalf("the root after its next change = %+v, want its own generation 2 and its tree's run 1: the case's premise", root)
+	}
+	return root
+}
+
+// A tree root's architect starts at the tree's run, which a next change of the root leaves behind
+// the root's own generation (claim.StartGeneration). The release's stop suspends the architect as
+// `released` and does not record it on the mark (unrecordedStops). A wake of the architect queues
+// its start at the tree's run, as workflow's wakeRow writes it. That start is the architect's one
+// start, so the cancel looks for it at the run it serves (IssueRun.StartOf), queues no second
+// start and answers no resume. The control is the implementer in the same trace, whose start
+// serves the root's own generation.
+func TestACancelFindsTheQueuedStartOfARootsArchitectAtTheTreesRun(t *testing.T) {
+	t.Parallel()
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer} {
+		t.Run(string(role), func(t *testing.T) {
+			t.Parallel()
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			root := nextChangeOfTheRoot(t, st)
+			rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+			rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+			releaseTwoRolesThroughTheStore(t, st)
+			// The role's stop suspended its claim and did not record the role on the mark, so its
+			// row stays queued.
+			releasedClaim(t, st, role)
+			token := claim.Token("legion-legion-legion-208-" + string(role))
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, token, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
+				t.Fatalf("take the %s's wake = %t, %v; want it taken", role, taken, err)
+			}
+			queueSupervise(t, st, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: role,
+				Generation: root.GenerationOf("start", role), Task: "the wake's task",
+				WakeKind: pods.WakeRoleMessage, WakeDetail: "the wake's detail"})
+
+			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+				ReleaseCancelPause{At: time.Now().UTC()})
+			if err != nil {
+				t.Fatalf("CancelIssueRelease: %v", err)
+			}
+			if len(cancelled.Resumed) != 0 || len(cancelled.Stopped) != 0 {
+				t.Errorf("CancelIssueRelease = %+v; want no role resumed or stopped: the wake's start brings the %s back", cancelled, role)
+			}
+			want := []string{string(role) + "||the wake's task|" + pods.WakeRoleMessage + "||"}
+			if got := startsOfTheRoot(t, st); !slices.Equal(got, want) {
+				t.Errorf("queued starts after the cancel = %q, want %q: the %s starts once", got, want, role)
+			}
+		})
+	}
+}
