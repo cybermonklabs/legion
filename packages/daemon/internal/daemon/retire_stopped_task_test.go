@@ -57,13 +57,14 @@ func TestTheMovesRetirementLeavesNoTaskOfTheStoppedPhase(t *testing.T) {
 		t.Fatalf("pending after the start = %+v, want the phase's task held for the worker coming up", p)
 	}
 
-	// The move: the parent waits on its children, and its row retires the stopped phase's task.
+	// The move: the parent waits on its children, and its row retires the stopped phase's task. The
+	// row names the stopped worker's claim, as StopForChildren writes it.
 	waiting := issue
 	waiting.Phase = phase.AwaitingChildren
 	waiting.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: stopped, Reason: "a child is open", Since: time.Now()}
 	putOutboxIssue(t, pool, records, waiting)
 	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{
-		Op: "retire_task", Tree: issue.Tree, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing, Entry: 1,
+		Op: "retire_task", Tree: issue.Tree, Role: claim.RoleImplementer, Claim: token, Generation: 1, Phase: phase.Implementing, Entry: 1,
 	}, time.Now())); err != nil {
 		t.Fatalf("run the retirement: %v", err)
 	}

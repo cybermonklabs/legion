@@ -27,12 +27,9 @@ func (r *outbox) readyClaimForStart(ctx context.Context, machine *supervise.Mach
 	issue record.Issue, payload record.SuperviseRequest, work supervise.StartWork) error {
 	// A start of no entry — a wake, a resume, a role admission brings back — starts the claim
 	// with the role it holds; the steps of one key are one claim, and its next step may be of
-	// another role.
+	// another role. Whether the start leaves a session is suspendToLeave's one test.
 	step := stepStart(payload)
 	rerole := step && machine.Claim().Role != payload.Role
-	if !rerole && (!machine.Leaves(work) || machine.Claim().RunsNothing()) {
-		return nil
-	}
 	if step {
 		ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
 	}
