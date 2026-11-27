@@ -28,10 +28,13 @@
 #              by when it was asked, so signals asked one after the other (CONT, then TERM) reach
 #              the child in that order; the supervisor sends each and removes it, and exec removes
 #              any left from an earlier child before it asks
-#   container  what the kernel holds the supervisor's container to, written when the supervisor
-#              starts: the CPUs its processes may run on (cpus), its cgroup's CPU quota in
-#              millicores (cpu_limit_m) and its memory limit in MiB (memory_limit_mi), none where
-#              the cgroup sets no limit; job.sh prints it in its SHAPE line
+#   container  what the kernel holds a process to, written for the supervisor itself when it starts
+#              and for each child as the supervisor starts it, before pid: the process's cgroup
+#              (cgroup, its path in /proc/<pid>/cgroup), that cgroup's CPU quota and period
+#              (cpu.max) and memory limit in bytes (memory.max) as cgroup v2 writes them, max where
+#              it sets none (cgroup v1's limits, in the same form, where there is no v2 hierarchy),
+#              and the CPUs it may run on (cpus); exec removes it before it asks, and run.sh prints
+#              the server's at each start and job.sh Postgres's in its SHAPE line
 #
 # A supervisor serves one driver. Whoever starts the supervisors holds the driver lock,
 # driver.lock beside <dir>, for as long as they serve it: the pod's driver container (job.yaml), or
@@ -57,29 +60,31 @@ send() {
   put "$1/signal.${EPOCHREALTIME/./}.$$" "$2"
 }
 
-# limits prints what the kernel holds this container to (the header's container file), from the
-# cgroup v2 files or, where there are none, from cgroup v1's.
-limits() {
-  local cpu=none memory=none quota period bytes
-  if [ -r /sys/fs/cgroup/cpu.max ]; then
-    read -r quota period </sys/fs/cgroup/cpu.max
-    bytes=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
+# cgroup prints what the kernel holds process $1 to (the header's container file): the cgroup v2
+# files of its own cgroup or, where it has none, cgroup v1's quota, period and memory limit, written
+# as cgroup v2 writes them.
+cgroup() {
+  local path quota period memory
+  path=$(sed -n 's/^0:://p' "/proc/$1/cgroup" 2>/dev/null || true)
+  if [ -n "$path" ] && [ -r "/sys/fs/cgroup${path%/}/cpu.max" ]; then
+    read -r quota period <"/sys/fs/cgroup${path%/}/cpu.max"
+    memory=$(cat "/sys/fs/cgroup${path%/}/memory.max" 2>/dev/null || echo unread)
   else
-    quota=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo -1)
-    period=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo 100000)
-    bytes=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo max)
+    quota=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo unread)
+    period=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo unread)
+    memory=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo unread)
+    [ "$quota" != -1 ] || quota=max
+    # cgroup v1 writes a huge number where no limit is set: more than 2^60 bytes is none.
+    case "$memory" in '' | *[!0-9]*) ;; *) [ "${#memory}" -lt 19 ] || memory=max ;; esac
   fi
-  case "$quota" in '' | max | -*) ;; *) cpu=$((quota * 1000 / period)) ;; esac
-  # cgroup v1 writes a huge number where no limit is set: more than 2^60 bytes is none.
-  case "$bytes" in '' | max | *[!0-9]*) ;; *) [ "${#bytes}" -ge 19 ] || memory=$((bytes / 1048576)) ;; esac
-  echo "cpus=$(nproc) cpu_limit_m=$cpu memory_limit_mi=$memory"
+  echo "cgroup=${path:-v1} cpu.max=\"$quota $period\" memory.max=$memory cpus=$(nproc)"
 }
 
 serve() {
   local dir=$1 lock child="" lockfd="" next=0 code sig request
   lock=$(dirname "$dir")/driver.lock
   mkdir -p "$dir"
-  put "$dir/container" "$(limits)"
+  put "$dir/container" "$(cgroup $$)"
   # Each child runs in a process group of its own (job control), so a child that is stopped
   # leaves no orphaned group the kernel hangs up, and a child takes INT as any process does.
   set -m
@@ -109,6 +114,7 @@ serve() {
       else
         bash "$dir/command" &
         child=$!
+        put "$dir/container" "$(cgroup "$child")"
         put "$dir/pid" "$child"
       fi
     fi
@@ -143,10 +149,11 @@ stand_in() {
     echo "supervise.sh: $dir runs pid $(<"$dir/pid") already" >&2
     return 2
   fi
-  # A request left from an earlier child is no request of this one's. The directory may come
-  # before its supervisor does, which then finds the request waiting.
+  # A request left from an earlier child is no request of this one's, and its container reading is
+  # none of this one's. The directory may come before its supervisor does, which then finds the
+  # request waiting.
   mkdir -p "$dir"
-  rm -f "$dir/exit" "$dir"/signal.*
+  rm -f "$dir/exit" "$dir/container" "$dir"/signal.*
   put "$dir/command" "exec $(printf '%q ' "$@")>>$(printf '%q' "$log") 2>&1"
   for signal in TERM INT HUP QUIT USR1 USR2; do
     # shellcheck disable=SC2064 # the trap names this signal and this directory now
