@@ -75,7 +75,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		var err error
 		page, err = parseThreadPage(r.URL.Query(), "in")
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}

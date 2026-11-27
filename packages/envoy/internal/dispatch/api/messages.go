@@ -1079,13 +1079,13 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := parseThreadPage(r.URL.Query(), "in", "none")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if page != nil {
 		result, err := s.readMessageThreadPage(r.Context(), who, r.PathValue("key"), *page, wantsDisplayTrees(r))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, result)

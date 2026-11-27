@@ -1581,7 +1581,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := replyQuoteRefusal("INVALID_COMMENT", "reply_to_block", input.ReplyToBlock, input.Quote, input.Occurrence); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The mention the reply answers and the session its attempt names are read before the

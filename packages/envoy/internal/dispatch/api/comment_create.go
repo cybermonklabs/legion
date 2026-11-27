@@ -909,7 +909,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	if err := replyQuoteRefusal("INVALID_COMMENT", "reply_to_block", input.ReplyToBlock, input.Quote, input.Occurrence); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A mention is a reference, so who this comment names is in its body (R4): the parties are
@@ -1071,7 +1071,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		// stores the words of it the reply quotes from what it carries (queueCommentRow).
 		issueKey, project, slug, err := s.ownerAddress(r.Context(), tx, owner)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		comment.ReplyBlock = threadTarget.ReplyBlock.replyBlock(issueKey, project, slug)

@@ -902,7 +902,7 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := parseThreadPage(r.URL.Query())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	who, ok := s.actingReader(w, r)
@@ -912,7 +912,7 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	if page != nil {
 		result, err := s.readAskThreadPage(r.Context(), who, r.PathValue("key"), state, *page, withThread, wantsDisplayTrees(r))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, result)

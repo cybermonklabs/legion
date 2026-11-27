@@ -1125,7 +1125,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := replyQuoteRefusal("INVALID_MESSAGE", "in_reply_to_block", input.InReplyToBlock, input.Quote, input.Occurrence); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
