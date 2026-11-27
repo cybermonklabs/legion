@@ -3528,7 +3528,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       code: 1,
       line: `checked ${run(2)}: rig error: ${fault}`,
       // Run 2 is in no cell, but run 1 of its case is, so the case is covered and no run counts here.
-      last: "check-stored: 1 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 runs are of a case the logs name no count for, 0 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+      last: "check-stored: 1 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 cases the logs name no count for, 0 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
     const row = JSON.parse(readFileSync(path.join(changed, "checked", run(2), "row.json"), "utf8"));
     expect(row).toEqual({
@@ -3725,7 +3725,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         `UNKNOWN: ${run(6)}.row.json in ${extra}/runs is no run's object: it is left out`,
         `UNKNOWN: ${run(7)}.tar.gz in ${extra}/runs is no run's object: it is left out`,
       ],
-      last: "check-stored: 0 of 2 runs are rig errors of the store, 5 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 runs are of a case the logs name no count for, 0 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 5 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 cases the logs name no count for, 0 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
 
     // A pack with no row beside it and no line in any log: its run is named by the pack, and is a
@@ -3769,11 +3769,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       last: uncounted.stdout.at(-1),
     }).toEqual({
       code: 1,
-      said: [1, 2].map(
-        () =>
-          "UNKNOWN: the Job's logs name no count for head root-B-claude, so its cell is measured against nothing"
-      ),
-      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 2 runs are of a case the logs name no count for, 0 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+      said: [
+        "UNKNOWN: the Job's logs name no count for head root-B-claude, so its cell is measured against nothing",
+      ],
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 1 cases the logs name no count for, 0 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
 
     // Two logs naming different counts for one case: a contradiction, not a tie the order of the
@@ -3814,9 +3813,9 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     }).toEqual({
       rule: "clash-read",
       code: 1,
-      said: [clash, clash],
+      said: [clash],
       cells: [],
-      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 runs are of a case the logs name no count for, 2 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 cases the logs name no count for, 1 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
 
     // Scored runs beyond the count: the cell takes its first `count` scored runs, so the rest
@@ -3902,10 +3901,9 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       said: foreign.stdout.filter((line) => line.includes("name no count for head root-B-claude")),
     }).toEqual({
       code: 1,
-      said: [1, 2].map(
-        () =>
-          "UNKNOWN: the Job's logs name no count for head root-B-claude, so its cell is measured against nothing"
-      ),
+      said: [
+        "UNKNOWN: the Job's logs name no count for head root-B-claude, so its cell is measured against nothing",
+      ],
     });
 
     // The row beside the pack is not the row inside it, with both sha256 as the log names them:
@@ -4065,7 +4063,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         () =>
           "UNKNOWN: no cell covers head child-B-claude: its runs are in none, so nothing was measured of it"
       ),
-      last: "check-stored: 0 of 5 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 3 runs are in no cell, 0 runs are of a case the logs name no count for, 0 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+      last: "check-stored: 0 of 5 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 3 runs are in no cell, 0 cases the logs name no count for, 0 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
 
     // A control form's run is covered by its form's cell, not by a cell of its case: cells() keys

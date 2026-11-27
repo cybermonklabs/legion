@@ -2965,26 +2965,31 @@ cmd_check_stored() {
     # rig error stores two runs of the case and is no fault.
     outcome=$(jq -r '.outcome // empty' "$dir/checked/$run/row.json" 2>/dev/null)
     [ "$outcome" != scored ] || scored[$key]=$((${scored[$key]:-0} + 1))
-    if [ -z "${ran[$key]:-}" ]; then
-      echo "UNKNOWN: the Job's logs name no count for $label $kase, so its cell is measured against nothing"
-      nocount=$((nocount + 1))
-    elif [ -n "${clash_key[$key]:-}" ]; then
-      echo "UNKNOWN: $label $kase: the Job's logs name the counts $(sorted_counts "${saw[$key]}") for it, so no count of its own decides it, and no cell of it is read"
-      clashed=$((clashed + 1))
-    fi
     # cells() keys a control form's cell by the form, every other by the case.
     jq -e -n --slurpfile cell <(printf '%s\n' "$cells") --arg label "$label" --arg case "$kase" --arg form "$form" \
       '[$cell[] | select(.label == $label and ((.cell | endswith("/" + $case)) or (.cell | endswith("/" + $form))))] | length > 0' >/dev/null && continue
     echo "UNKNOWN: no cell covers $label $kase: its runs are in none, so nothing was measured of it"
     uncovered=$((uncovered + 1))
   done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
+  # Every fault of a count is a fault of its CASE, so each is read once for the case and counted
+  # once, never once for each run of it. The keys are sorted, since the order an associative
+  # array hands them back is its own and the reading must not depend on it.
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if [ -z "${ran[$key]:-}" ]; then
+      echo "UNKNOWN: the Job's logs name no count for ${key/$'\t'/ }, so its cell is measured against nothing"
+      nocount=$((nocount + 1))
+    elif [ -n "${clash_key[$key]:-}" ]; then
+      echo "UNKNOWN: ${key/$'\t'/ }: the Job's logs name the counts $(sorted_counts "${saw[$key]}") for it, so no count of its own decides it, and no cell of it is read"
+      clashed=$((clashed + 1))
+    fi
+  done < <(printf '%s\n' "${!seen[@]}" | LC_ALL=C sort)
   # A case with scored runs beyond its count has runs the cell drops with nothing said, which is
   # the fault the per-case count exists to stop; and a case a cell line names that no run of the
-  # download or the logs holds was measured by nothing at all.
-  # A case whose logs disagree has no count of its own, so nothing below reads one for it: the
-  # disagreement is its reading, and a count taken from it would be the last log's, which is to
-  # say the order the caller named the logs in.
-  for key in "${!ran[@]}"; do
+  # download or the logs holds was measured by nothing at all. A case whose logs disagree has no
+  # count of its own, so nothing here reads one for it.
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
     if [ -z "${seen[$key]:-}" ]; then
       echo "UNKNOWN: the Job's logs name the count $(sorted_counts "${saw[$key]}") for ${key/$'\t'/ }, and no run of it is in the download or the logs"
       unrun=$((unrun + 1))
@@ -2994,12 +2999,12 @@ cmd_check_stored() {
       echo "UNKNOWN: ${key/$'\t'/ }: the Job's logs name the count ${ran[$key]}, and the store holds ${scored[$key]} scored runs of it, so $((${scored[$key]} - ${ran[$key]})) of them would be dropped"
       surplus=$((surplus + 1))
     fi
-  done
+  done < <(printf '%s\n' "${!ran[@]}" | LC_ALL=C sort)
   # Each kind of fault is counted by its own name: four of them would otherwise share one
   # sentence, and a reader of this line could not tell which rule fired.
   if [ "$faulted" != 0 ] || [ "$left" != 0 ] || [ "$unknown" != 0 ] || [ "$uncovered" != 0 ] ||
     [ "$nocount" != 0 ] || [ "$clashed" != 0 ] || [ "$surplus" != 0 ] || [ "$unrun" != 0 ]; then
-    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, $unknown cells are UNKNOWN at the counts the Job ran, $uncovered runs are in no cell, $nocount runs are of a case the logs name no count for, $clashed runs are of a case whose logs name two counts, $surplus cases hold scored runs beyond their count, and $unrun cases a cell line names have no run"
+    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, $unknown cells are UNKNOWN at the counts the Job ran, $uncovered runs are in no cell, $nocount cases the logs name no count for, $clashed cases whose logs name two counts, $surplus cases hold scored runs beyond their count, and $unrun cases a cell line names have no run"
     return 1
   fi
 }

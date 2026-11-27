@@ -9,9 +9,11 @@ body: |-
   `score.ts cells <runs dir> <scenario> [<counts json>]`), never from the caller: a Job runs each
   case to its form's runs, so one number for the whole Job reads an honest Job as broken and a
   short one as clean. A case whose count no log names is a fault, a case whose logs name different
-  counts is a fault whose reading does not depend on the order the logs were given in, and a case
-  whose count is below the runs the store holds of it is a fault, since the rest would be dropped
-  with nothing said. A case a cell line names with no run anywhere is a fault too. It exits 1 on
+  counts is a fault whose whole reading does not depend on the order the logs were given in (it is
+  left out of the counts and no cell of it is read), and a case with scored runs beyond its count
+  is a fault, since the rest would be dropped with nothing said; a run the rig failed is stored
+  and is no scored run. A case a cell line names with no run anywhere is a fault too. Each kind is
+  read once for its case and named on its own in the summary. It exits 1 on
   any rig error, on any entry that is no run's object, on any cell short of its case's count, on
   any case with no cell, and on a download with no `runs/` directory. The pack of a scored run
   leaves out every directory named `home`, nested ones too. `score.ts runs` refuses a scenario it
