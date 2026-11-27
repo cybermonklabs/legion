@@ -1032,8 +1032,9 @@ type Config struct {
 	// workflow listed twice under one pattern, and one BROKER_EXCHANGE_WORKFLOWS lists too, are
 	// refused. Needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens
 	// its runs present, and BROKER_PROFILES_FILE, whose profile DISPATCH_RESULTS_TOKEN the start
-	// checks (ResultsEntryRules, ProxyMintedRules): its proxy block is of kind dpop and binds one
-	// exact host, a BROKER_PROXY_PRIVATE_UPSTREAM entry's. Unset, no run is granted a placeholder.
+	// needs (ResultsEntryRules) and holds as it holds every dpop block (ProxyMintedRules): one
+	// exact host, a BROKER_PROXY_PRIVATE_UPSTREAM entry's. That its proxy block is of kind dpop is
+	// the profiles parser's rule (policy.ParseProfiles). Unset, no run is granted a placeholder.
 	ExchangeResultWorkflows []exchange.ResultWorkflowEntry
 	// BROKER_RESULT_GRANT_TEST_SECONDS: how long a result grant lasts, 1 to 900 seconds, in place
 	// of the production lifetime (fifteen minutes, or BROKER_ACCESS_TOKEN_SECONDS when that is
@@ -3517,7 +3518,8 @@ func Load(getenv func(string) string) (Config, error) {
 	// A result entry's run is granted a placeholder that only the proxy block of the profile
 	// DISPATCH_RESULTS_TOKEN makes worth anything, so a broker with result workflows and no
 	// profiles file would grant placeholders no proxy honours. The profile itself is checked where
-	// the file is read (ResultsEntryRules), since Load reads no file.
+	// the file is read, since Load reads no file: its shape by the profiles parser
+	// (policy.ParseProfiles), and that result entries have it by ResultsEntryRules.
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ProfilesFile == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted a proxy placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.WayDPoP)
 	}

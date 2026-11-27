@@ -43,8 +43,10 @@ page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
 `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>] [--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]`
 reads a profiles file with the broker's own code and exits 1, naming the kind or the profile and
-the field, or the parse position, when the broker would not serve that file, or when its start
-check of the results profile `DISPATCH_RESULTS_TOKEN`, of kind `dpop`, refuses it.
+the field, or the parse position, when the broker would not serve that file: its parser holds the
+results profile `DISPATCH_RESULTS_TOKEN` to a name and a proxy block of kind `dpop`, and the
+start's check of every `dpop` block holds each to one exact host, an allow list and the
+`Authorization` header alone.
 In a file that declares a kind, a `proxy` block of any kind but `dpop` is refused, naming `kinds`,
 which replaced it. A file that declares no kind is read as the broker before the kinds read it,
 until every deployment's file declares kinds: each block of no kind, `aws` or `azure` serves its

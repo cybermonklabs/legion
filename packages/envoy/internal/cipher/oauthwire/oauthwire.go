@@ -391,16 +391,18 @@ func CIRunOf(claim any) (*CIRun, error) {
 }
 
 // Run is a CIRun read whole by ParseCIRun: each field in the form the broker mints it in, the
-// workflow's path read out of its workflow_ref, and its three numbers read as numbers. It is the
-// one validated form of a run, which every reader takes its numbers and its workflow from rather
+// workflow's path read out of its workflow_ref, and its three numbers read as numbers, each held
+// once. It is the one validated form of a run, which every reader takes its fields from rather
 // than parsing the strings again.
 type Run struct {
-	// CIRun is the run as its token's claims spell it.
-	CIRun
+	// Repository, WorkflowRef, Ref, SHA, EventName and RunnerEnvironment are the run's fields of
+	// those names as its token's claims spell them (CIRun).
+	Repository, WorkflowRef, Ref, SHA, EventName, RunnerEnvironment string
 	// Workflow is the path, inside the repository, of the run's workflow file (WorkflowPath).
 	Workflow string
-	// ID, Attempt and CheckRun are RunID, RunAttempt and CheckRunID read as numbers: each
-	// positive, and no larger than a resource server's bigint.
+	// ID, Attempt and CheckRun are CIRun's RunID, RunAttempt and CheckRunID read as numbers: each
+	// positive, and no larger than a resource server's bigint. A reader that writes one as text
+	// writes it in decimal (strconv.FormatInt), the one spelling ParseCIRun reads.
 	ID, Attempt, CheckRun int64
 }
 
@@ -426,7 +428,10 @@ func ParseCIRun(run CIRun) (Run, error) {
 	if !isCommit(run.SHA) {
 		return Run{}, fmt.Errorf("sha claim is not 40 lowercase hex digits")
 	}
-	read := Run{CIRun: run, Workflow: workflow}
+	read := Run{
+		Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, SHA: run.SHA,
+		EventName: run.EventName, RunnerEnvironment: run.RunnerEnvironment, Workflow: workflow,
+	}
 	for _, field := range []struct {
 		claim, value string
 		into         *int64

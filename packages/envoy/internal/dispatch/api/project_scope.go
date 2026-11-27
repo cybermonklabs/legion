@@ -370,10 +370,11 @@ func unaddressed(err error) bool {
 // For a caller whose credential names no project, a covered route costs one header read and
 // calls the handler. For one that names a project, the check resolves the target's project and
 // that project's visibility. A target of a project that access.CredentialCovers covers reaches
-// the handler, whichever project the credential names, but for a results token, whose one
-// project narrows every project it reaches: it writes the results of that project alone. A
-// target that resolves to no project or to nothing is refused, so the check fails closed, and an
-// object of a private project that the credential does not name gets that same refusal.
+// the handler, whichever project the credential names. A results token's credential is read as
+// restricted there, so its one project narrows every project it reaches: it writes the results of
+// that project alone. A target that resolves to no project or to nothing is refused, so the check
+// fails closed, and an object of a private project that the credential does not name gets that
+// same refusal.
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	switch route.Scope {
 	case scopeProject:
@@ -399,11 +400,12 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				handler(w, r)
 				return
 			}
-			// A results token's one project narrows every project it reaches, private or not: the
-			// broker minted it for one CI run of one project, and that run writes the results of
-			// its own project alone (resultsScopeRoutes, spec_results.go). A named token's list
-			// narrows the private projects alone, as the file comment says.
-			narrowed := resultsOnlyRequest(r)
+			// A results token's one project narrows every project it reaches, private or not, as a
+			// restricted member's list does (access.CredentialCovers): the broker minted it for one
+			// CI run of one project, and that run writes the results of its own project alone
+			// (resultsScopeRoutes, spec_results.go). A named token's list narrows the private
+			// projects alone, as the file comment says.
+			credential := access.Credential{Listed: []string{covers}, Restricted: resultsOnlyRequest(r)}
 			belongsTo, private, err := resolve(r.Context(), s.deps.Store.Pool, r)
 			if err != nil {
 				s.writeHandlerError(w, err)
@@ -414,8 +416,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			// private project that the credential does not name gets the same answer, so the
 			// caller cannot tell it from an id nobody holds. The check does not hide which ids
 			// exist, and it does not claim to (the file comment).
-			if belongsTo == "" || (narrowed && belongsTo != covers) ||
-				!access.CredentialCovers(access.Credential{Listed: []string{covers}}, belongsTo, private) {
+			if belongsTo == "" || !access.CredentialCovers(credential, belongsTo, private) {
 				s.writeHandlerError(w, outsideProjectScopeError(covers))
 				return
 			}
@@ -425,8 +426,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					s.writeHandlerError(w, err)
 					return
 				}
-				if checkProject == "" || (narrowed && checkProject != covers) ||
-					!access.CredentialCovers(access.Credential{Listed: []string{covers}}, checkProject, checkPrivate) {
+				if checkProject == "" || !access.CredentialCovers(credential, checkProject, checkPrivate) {
 					s.writeHandlerError(w, outsideProjectScopeError(covers))
 					return
 				}

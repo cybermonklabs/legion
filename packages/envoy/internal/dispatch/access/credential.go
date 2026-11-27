@@ -4,11 +4,12 @@ import "slices"
 
 // Credential is Dispatch's rule over a person already resolved: PersonSees is what the
 // credential's person sees (Resolve of that person at a browser). The write checks in
-// internal/dispatch/api build a Credential with Listed alone, since CredentialCovers reads no
-// person's limit. Listed is the credential's list of projects, Person whether it acts for a
-// person, Browser whether it is the person's own cookie, and Restricted whether its person is a
-// restricted member, which decides whether its list narrows every project it reaches or only the
-// private ones (CredentialCovers).
+// internal/dispatch/api build a Credential with Listed, and Restricted for a results token alone,
+// since CredentialCovers reads no person's limit. Listed is the credential's list of projects,
+// Person whether it acts for a person, Browser whether it is the person's own cookie, and
+// Restricted whether its list narrows every project it reaches or only the private ones
+// (CredentialCovers): a restricted member's list narrows every one, and so does a results token's
+// one project, the project of the CI run it was minted for (api's withinProjectScope).
 type Credential struct {
 	Listed, PersonSees          []string
 	Person, Browser, Restricted bool
@@ -23,7 +24,9 @@ type Credential struct {
 // it: a list decides only which private projects they reach. A restricted member's credential that
 // lists projects is covered for those alone, private or public: its list narrows what its person
 // sees further. One that lists none is covered as a full member's is, for the projects that are
-// not private. A browser lists nothing and is its person, so it is covered everywhere.
+// not private. A results token's credential is covered for its one project alone, as a restricted
+// member's that lists that project is. A browser lists nothing and is its person, so it is covered
+// everywhere.
 //
 // It decides projects only. A write of the whole deployment is no project's, and a later slice
 // decides what a credential that lists projects may write of it: a list decides which private
@@ -31,18 +34,18 @@ type Credential struct {
 // an unlisted credential's.
 //
 // VisibleProjectsSQL is its SQL twin for reads, which TestTheListRuleIsOneInGoAndSQL holds equal to
-// it over every combination. Each write check in internal/dispatch/api calls it with Listed
-// alone, the project each write names, and that project's visibility, which each check reads in
-// the statement or the transaction that reads the project, before the write. The project check of
-// a retraction asks it once more, for the check's issue, before any other layer reads the request
-// (api's secondProjectResolverFor), and a status change asks it once more for the issue it names,
-// under its planner's owner locks (api's planStatusChangeUnderLocks). seenBy calls it the same way
-// to leave out of an answer each issue that the caller cannot see: the issues of a 409
-// PARENT_STATUS_CONFLICT (seenConflictIssues), the children of a 409 FOREIGN_CHILD_OPEN and the
-// checks that a result's check value matches. No caller builds a restricted member's credential,
-// so the change that turns on restricted member kinds for writes must change each of these calls:
-// each write check, the retraction's second check, the status change's check of its named issue
-// and seenBy.
+// it over every combination. Each write check in internal/dispatch/api calls it with Listed, and
+// Restricted for a results token alone, the project each write names, and that project's
+// visibility, which each check reads in the statement or the transaction that reads the project,
+// before the write. The project check of a retraction asks it once more, for the check's issue,
+// before any other layer reads the request (api's secondProjectResolverFor), and a status change
+// asks it once more for the issue it names, under its planner's owner locks (api's
+// planStatusChangeUnderLocks). seenBy calls it the same way to leave out of an answer each issue
+// that the caller cannot see: the issues of a 409 PARENT_STATUS_CONFLICT (seenConflictIssues), the
+// children of a 409 FOREIGN_CHILD_OPEN and the checks that a result's check value matches. No
+// caller builds a restricted member's credential, so the change that turns on restricted member
+// kinds for writes must change each of these calls: each write check, the retraction's second
+// check, the status change's check of its named issue and seenBy.
 func CredentialCovers(cred Credential, project string, private bool) bool {
 	if cred.Browser {
 		return true

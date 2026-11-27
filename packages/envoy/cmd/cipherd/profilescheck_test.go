@@ -610,8 +610,8 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 	}{
 		{"a *. host", file(resultsProfileOf(name, `"*.ci-results.test"`, headers, allow, "dpop")), []string{name, `"*.ci-results.test"`}, []string{"must bind one exact host"}},
 		{"two hosts", file(resultsProfileOf(name, bound+`, "`+otherResultsHost+`"`, headers, allow, "dpop")), []string{name, otherResultsHost}, []string{"must bind one exact host"}},
-		{"no kind", file(resultsProfileOf(name, bound, headers, allow, "")), []string{name}, []string{"no longer read", "kinds"}},
-		{"kind aws", file(resultsProfileOf(name, bound, headers, allow, "aws")), []string{name}, []string{"no longer read", "kinds"}},
+		{"no kind", file(resultsProfileOf(name, bound, headers, allow, "")), []string{name}, []string{"must be a proxy block of kind dpop"}},
+		{"kind aws", file(resultsProfileOf(name, bound, headers, allow, "aws")), []string{name}, []string{"must be a proxy block of kind dpop"}},
 		{"no allow list", file(resultsProfileOf(name, bound, headers, "", "dpop")), []string{name}, []string{"non-empty allow list"}},
 		{"an empty allow list", file(resultsProfileOf(name, bound, headers, "[]", "dpop")), []string{name}, []string{"non-empty allow list"}},
 		{"the header X-Token", file(resultsProfileOf(name, bound, `["X-Token"]`, allow, "dpop")), []string{name, "X-Token"}, []string{"Authorization header alone"}},

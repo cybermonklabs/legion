@@ -48,21 +48,23 @@ prints `{"write_outcome_unknown":"<code>"}`, the code of its last failure such a
 each result. The command refuses an empty `--project`, `--check` or `--commit` before any request,
 with exit 2, and names the flag. An empty variable of the step gives such a value.
 
-The airlock proxy can refuse the write itself, and then nothing reached Dispatch. A tunnel it
-refuses at the CONNECT reaches the command as Bun's `ERR_PROXY_TUNNEL`, whose message carries the
-status line: a 407 for a grant that ended, or a proxy password that names none, ends the write at
-once and prints `AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy
-Authentication Required); nothing was sent to Dispatch`, and a 5xx, such as a 503, is a
-connection that never opened, asked again within the write's bound as a refused connection is,
-and then printed the same way. An answer the proxy gives itself inside an open connection, before
-any byte of the write left it, carries `Cipher-Proxy-Forwarded: false` and its
-`Cipher-Proxy-Code`: it prints `<code>: <the proxy's words>; nothing was stored`, the words
-quoted through the client's bounded excerpt, one line with each piece of the placeholder
-redacted; a 4xx of it ends the write at once, and a 5xx (`503
-GRANT_UNREADABLE`, `502 UPSTREAM_UNREACHABLE` for a dial to Dispatch that failed) is asked again
-within the bound first, since nothing reached Dispatch and the write is keyed. Each exits 1, and
-none is a `write_outcome_unknown`, but where an earlier attempt of the same write may have
-reached Dispatch, which leaves its outcome unknown. An answer the proxy gives itself after the
+The airlock proxy can refuse the write itself, and then nothing reached Dispatch. Before any byte
+of the write left the proxy, an outage (`outage`: a 408, a 429 or a 5xx) is asked again within
+the write's bound, and every other status ends the write at once. A tunnel it refuses at the
+CONNECT reaches the command as Bun's `ERR_PROXY_TUNNEL`, whose message carries the status line: a
+407 for a grant that ended, or a proxy password that names none, ends the write at once and prints
+`AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy Authentication
+Required); nothing was sent to Dispatch`, and an outage, such as a 503, is a connection that never
+opened, asked again within the write's bound as a refused connection is, and then printed the same
+way. An answer the proxy gives itself inside an open connection, before any byte of the write
+left it, carries `Cipher-Proxy-Forwarded: false` and its `Cipher-Proxy-Code`: it prints `<code>:
+<the proxy's words>; nothing was stored`, the words quoted through the client's bounded excerpt,
+one line with each piece of the placeholder redacted; an outage of it (`503 GRANT_UNREADABLE`,
+`502 UPSTREAM_UNREACHABLE` for a dial to Dispatch that failed) is asked again within the bound
+first, since nothing reached Dispatch and the write is keyed, and any other status ends the write
+at once. Each exits 1, and none is a `write_outcome_unknown`, but where an earlier attempt of the
+same write may have reached Dispatch, which leaves its outcome unknown. An answer the proxy gives
+itself after the
 write may have reached Dispatch, a connection to Dispatch that broke after the write was sent
 (`502 UPSTREAM_UNREACHABLE`) or a grant that ended while Dispatch held the call (`407
 GRANT_NOT_LIVE`), carries `Cipher-Proxy-Forwarded: unknown` and its `Cipher-Proxy-Code`: the

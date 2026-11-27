@@ -1284,15 +1284,24 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("decode blob %s (%s): %w", ShownBody(sha), ShownBody(path), ShownErr(err))
 	}
-	if payload.Encoding != "base64" {
-		return nil, fmt.Errorf("blob %s (%s) has encoding %q, want base64", ShownBody(sha), ShownBody(path), ShownBody(payload.Encoding))
+	return decodeContent(fmt.Sprintf("blob %s (%s)", ShownBody(sha), ShownBody(path)), path, payload.Encoding, payload.Content)
+}
+
+// decodeContent is the bytes of a file GitHub answers as content in encoding, the one form a blob
+// read (blob) and a contents read (File) both answer a file in: base64, wrapped at 60 characters.
+// what names the answer in an error, written by the caller with GitHub's text as ShownBody shows
+// it, and path names the file in notes.CheckSize's, which this shows so. An encoding other than
+// base64, content that is not base64, and content that decodes past notes.MaxFileSize are errors.
+func decodeContent(what, path, encoding, content string) ([]byte, error) {
+	if encoding != "base64" {
+		return nil, fmt.Errorf("%s has encoding %q, want base64", what, ShownBody(encoding))
 	}
-	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(content, "\n", ""))
 	if err != nil {
-		return nil, fmt.Errorf("decode blob %s (%s) content: %w", ShownBody(sha), ShownBody(path), err)
+		return nil, fmt.Errorf("decode the content of %s: %w", what, err)
 	}
-	if err := notes.CheckSize(ShownBody(path), int64(len(content))); err != nil {
+	if err := notes.CheckSize(ShownBody(path), int64(len(decoded))); err != nil {
 		return nil, err
 	}
-	return content, nil
+	return decoded, nil
 }

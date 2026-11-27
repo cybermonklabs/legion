@@ -260,10 +260,11 @@ func main() {
 	// The dpop blocks, checked on every broker whatever capabilities it grants
 	// (config.ResultsEntryRules, config.ProxyMintedRules): every broker with an airlock port serves
 	// every minted grant of the database it shares, so a pod that grants none still sends a
-	// grant's token, and a proof of its own key, to every host a dpop block binds. The results
-	// profile DISPATCH_RESULTS_TOKEN is of kind dpop, and result entries need it; each dpop block
-	// binds one exact host, a private destination's, with an allow list, in Authorization alone,
-	// and no kind binds that host; each destination needs a dpop block to bind its host.
+	// grant's token, and a proof of its own key, to every host a dpop block binds. Result entries
+	// need the results profile DISPATCH_RESULTS_TOKEN, whose kind, dpop, the profiles parser holds
+	// it to (policy.ParseProfiles); each dpop block binds one exact host, a private destination's,
+	// with an allow list, in Authorization alone, and no kind binds that host; each destination
+	// needs a dpop block to bind its host.
 	fatal(config.ResultsEntryRules(fileRules, len(cfg.ExchangeResultWorkflows) > 0))
 	fatal(config.ProxyMintedRules(fileRules, cfg.ProxyPrivateUpstreams))
 	// And the results entry this broker grants and serves result grants under (resultEntryDigest):

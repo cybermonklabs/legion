@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { runDispatchCli } from "../dispatch-cli";
 
 const directory = temporaryDirectories("dispatch-deploy");
@@ -44,22 +45,26 @@ async function cli(argv: readonly string[]) {
       readText: () => {
         throw new Error("this call reads no file");
       },
+      // The deploy write is keyed, so the stand-in answers behind Dispatch's keyed layer, which
+      // names the write's key back on each 2xx, as Dispatch's own answers do.
       fetchImpl: Object.assign(
-        async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-          const request = new Request(input, init);
-          const url = new URL(request.url);
-          requests.push({
-            method: request.method,
-            path: url.pathname,
-            query: url.search,
-            body: request.method === "POST" ? await request.json() : null,
-          });
-          if (url.pathname !== "/api/v1/deploys")
-            return Response.json({ error: "unexpected route" }, { status: 500 });
-          return request.method === "POST"
-            ? Response.json({ deploy }, { status: 201 })
-            : Response.json({ repo: deploy.repo, deploys: [deploy] });
-        },
+        keyedLayer(
+          async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+            const request = new Request(input, init);
+            const url = new URL(request.url);
+            requests.push({
+              method: request.method,
+              path: url.pathname,
+              query: url.search,
+              body: request.method === "POST" ? await request.json() : null,
+            });
+            if (url.pathname !== "/api/v1/deploys")
+              return Response.json({ error: "unexpected route" }, { status: 500 });
+            return request.method === "POST"
+              ? Response.json({ deploy }, { status: 201 })
+              : Response.json({ repo: deploy.repo, deploys: [deploy] });
+          }
+        ),
         { preconnect: fetch.preconnect }
       ),
     }

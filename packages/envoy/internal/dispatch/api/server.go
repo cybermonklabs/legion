@@ -1714,7 +1714,7 @@ func (s *server) refuseLimitedToken(name string, entry readEntry, resultsListed,
 	answersACut := name == whoamiRoute
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.resolvePersonalToken(r)
-		if credential := resolvedCredential(r.Context()); !resultsListed && credential != nil && credential.ResultsOnly {
+		if !resultsListed && resultsOnlyRequest(r) {
 			writeError(w, codeResultsOnlyToken, http.StatusForbidden, resultsOnlyRefusal)
 			return
 		}
@@ -1756,8 +1756,9 @@ func approveOnlyRequest(r *http.Request) bool {
 
 // resultsOnlyRequest reports whether decideBrokerToken resolved r's caller to a results
 // credential (model.Credential.ResultsOnly), read as approveOnlyRequest reads an approve-only
-// one. The project check reads it to hold such a caller to the one project its run writes the
-// results of (withinProjectScope).
+// one. The limited-token gate holds such a caller to the results list with it
+// (refuseLimitedToken), and the project check to the one project its run writes the results of
+// (withinProjectScope).
 func resultsOnlyRequest(r *http.Request) bool {
 	credential := resolvedCredential(r.Context())
 	return credential != nil && credential.ResultsOnly

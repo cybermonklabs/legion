@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -354,7 +355,7 @@ type resolvedCaller struct {
 // caller resolved, and nil otherwise: for a context that carries no caller, for a caller whose
 // credential did not resolve (resolvedCaller.err), and for a caller with no credential. It is the
 // one read of the caller the limited-token gate's three checks share (refuseLimitedToken):
-// readOnlyCredential, approveOnlyRequest and the results-only check.
+// readOnlyCredential, approveOnlyRequest and resultsOnlyRequest.
 func resolvedCredential(ctx context.Context) *model.Credential {
 	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
 	if caller.err != nil {
@@ -646,7 +647,7 @@ func requestKeyLogin(actor model.Actor, human bool) string {
 	case human:
 		return model.CanonicalLogin(actor.ID)
 	case actor.Credential != nil && actor.Credential.ResultsOnly && actor.Credential.CI != nil:
-		return "ci-run:" + actor.Credential.CI.Repository + "#" + actor.Credential.CI.CheckRunID
+		return "ci-run:" + actor.Credential.CI.Repository + "#" + strconv.FormatInt(actor.Credential.CI.CheckRun, 10)
 	case actor.Owner != nil:
 		return model.CanonicalLogin(*actor.Owner)
 	case actor.Service != nil:

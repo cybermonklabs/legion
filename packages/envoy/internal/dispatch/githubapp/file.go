@@ -2,7 +2,6 @@ package githubapp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -59,15 +58,5 @@ func (c *Client) File(ctx context.Context, token, owner, repo, sha, path string)
 	if err := notes.CheckSize(ShownBody(path), answer.Size); err != nil {
 		return nil, err
 	}
-	if answer.Encoding != "base64" {
-		return nil, fmt.Errorf("%s of %s at %s has encoding %q, want base64", ShownBody(path), repoFull, sha, ShownBody(answer.Encoding))
-	}
-	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(answer.Content, "\n", ""))
-	if err != nil {
-		return nil, fmt.Errorf("decode the content of %s of %s at %s: %w", ShownBody(path), repoFull, sha, err)
-	}
-	if err := notes.CheckSize(ShownBody(path), int64(len(content))); err != nil {
-		return nil, err
-	}
-	return content, nil
+	return decodeContent(fmt.Sprintf("%s of %s at %s", ShownBody(path), repoFull, sha), path, answer.Encoding, answer.Content)
 }
