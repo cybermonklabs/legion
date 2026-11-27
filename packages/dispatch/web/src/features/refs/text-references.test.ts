@@ -132,13 +132,16 @@ test.each([
     false,
   ],
   ["hyphens", (run: number) => `${origin}/issues/CORE-1?x=y${"-".repeat(run)}`, true],
-] as const)("an address whose query holds a run of %s is read in one pass", (_name, body, trails) => {
-  const run = 1 << 15;
-  const { references } = expectOnePass((n) => readTextReferences(body(n), { origin }), run / 4);
-  expect(references.map(({ named, reference }) => ({ named, reference }))).toEqual([
-    { named: trails ? body(0).length : undefined, reference: "dispatch://CORE-1" },
-  ]);
-});
+] as const)(
+  "an address whose query holds a run of %s is read in one pass",
+  (_name, body, trails) => {
+    const run = 1 << 15;
+    const { references } = expectOnePass((n) => readTextReferences(body(n), { origin }), run / 4);
+    expect(references.map(({ named, reference }) => ({ named, reference }))).toEqual([
+      { named: trails ? body(0).length : undefined, reference: "dispatch://CORE-1" },
+    ]);
+  }
+);
 
 // The pills under a draft read it through this reader, each reference with the page it opens
 // (`draft-pills.tsx`). A project's own page is no node a text can name, so a pasted URL of it

@@ -1158,7 +1158,9 @@ test("a reading costs the listings and a GraphQL call per hundred runs of a work
     });
     const batches = server.seen
       .filter((request) => request.path === "/graphql")
-      .map((request) => (request.variables?.ids as unknown[]).length);
+      .map((request) => request.variables?.ids)
+      .filter(Array.isArray)
+      .map((ids) => ids.length);
     expect(batches.sort((a, b) => a - b)).toEqual([3, 50, 100, 100]);
   } finally {
     server.stop();

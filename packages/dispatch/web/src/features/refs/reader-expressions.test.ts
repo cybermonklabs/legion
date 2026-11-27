@@ -22,11 +22,12 @@ function verdict(expression: { readonly flags: string; readonly source: string }
 // Every expression the one-pass rows' reads run over a text at least as long as their floor
 // (`__tests__/reader-expressions.ts`), which `expectOnePass` holds each one-pass row's reader to
 // (`Unfurl.test.tsx`, `party-references.test.ts`, `text-references.test.ts`).
-test.each(
-  readerExpressions
-)("the expression of %s reads a text in one pass", (_name, expression) => {
-  expect(verdict(expression)).toMatchObject({ checker: "automaton", status: "safe" });
-});
+test.each(readerExpressions)(
+  "the expression of %s reads a text in one pass",
+  (_name, expression) => {
+    expect(verdict(expression)).toMatchObject({ checker: "automaton", status: "safe" });
+  }
+);
 
 // The control of the rows above: the expressions those readers replaced, which the same check
 // calls vulnerable. The unfurl cards once matched a body against the first, which splits a body
@@ -47,13 +48,16 @@ test.each([
     { degree: 2, type: "polynomial" },
   ],
   ["the end of a mention", { flags: "", source: "[_-]+$" }, { degree: 2, type: "polynomial" }],
-] as const)("the check calls the old expression for %s vulnerable", (_name, expression, complexity) => {
-  expect(verdict(expression)).toMatchObject({
-    checker: "automaton",
-    complexity,
-    status: "vulnerable",
-  });
-});
+] as const)(
+  "the check calls the old expression for %s vulnerable",
+  (_name, expression, complexity) => {
+    expect(verdict(expression)).toMatchObject({
+      checker: "automaton",
+      complexity,
+      status: "vulnerable",
+    });
+  }
+);
 
 // What holds a reader to the list sees every way a string or an expression runs a match, so a
 // reader cannot run an expression past it by calling another method.
