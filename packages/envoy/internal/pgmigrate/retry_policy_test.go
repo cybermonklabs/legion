@@ -25,93 +25,173 @@ func TestPolicyFromContextDefaultsToProductionAndRoundTrips(t *testing.T) {
 	}
 }
 
-// A counted policy applies its fixed number of attempts whatever the context's deadline, so
-// production's bound does not move when a caller holds a deadline. A deadline policy applies as many
-// attempts as fit before the deadline, and none-capped (0) where the context has no deadline.
-func TestMaxAttempts(t *testing.T) {
+// retryMode is a counted cap for a counted policy whatever the context's deadline; deadline mode for
+// a deadline policy on a context with a deadline; and a LockTimeoutAttempts cap, not deadline mode,
+// for a deadline policy on a context with no deadline, so a benchmark's endless context gives up
+// rather than retrying for ever.
+func TestRetryMode(t *testing.T) {
 	t.Parallel()
-	short, cancelShort := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancelShort()
-	long, cancelLong := context.WithTimeout(context.Background(), time.Hour)
-	defer cancelLong()
-	tooShortForOne, cancelTiny := context.WithTimeout(context.Background(), LockTimeout-time.Second)
-	defer cancelTiny()
-	twentySeconds, cancelTwenty := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelTwenty()
+	withDeadline, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
 
-	// A counted policy ignores the deadline.
-	if got := ProductionRetryPolicy.maxAttempts(context.Background()); got != LockTimeoutAttempts {
-		t.Errorf("ProductionRetryPolicy.maxAttempts(no deadline) = %d, want %d", got, LockTimeoutAttempts)
+	if dm, cap, _ := ProductionRetryPolicy.retryMode(context.Background()); dm || cap != LockTimeoutAttempts {
+		t.Errorf("ProductionRetryPolicy.retryMode(no deadline) = (deadlineMode %v, cap %d), want (false, %d)", dm, cap, LockTimeoutAttempts)
 	}
-	if got := ProductionRetryPolicy.maxAttempts(short); got != LockTimeoutAttempts {
-		t.Errorf("ProductionRetryPolicy.maxAttempts(2s deadline) = %d, want %d: a counted policy does not shrink under a short deadline", got, LockTimeoutAttempts)
+	if dm, cap, _ := ProductionRetryPolicy.retryMode(withDeadline); dm || cap != LockTimeoutAttempts {
+		t.Errorf("ProductionRetryPolicy.retryMode(1h deadline) = (deadlineMode %v, cap %d), want (false, %d): a counted policy does not become deadline mode under a deadline", dm, cap, LockTimeoutAttempts)
 	}
-
-	// A deadline policy with no deadline is uncapped, so the runner retries until the context is
-	// cancelled (as under -timeout 0).
-	if got := DeadlineRetryPolicy().maxAttempts(context.Background()); got != 0 {
-		t.Errorf("DeadlineRetryPolicy().maxAttempts(no deadline) = %d, want 0 (no cap)", got)
+	if dm, _, d := DeadlineRetryPolicy().retryMode(withDeadline); !dm || d.IsZero() {
+		t.Errorf("DeadlineRetryPolicy().retryMode(1h deadline) = (deadlineMode %v, d.IsZero %v), want deadline mode carrying the deadline", dm, d.IsZero())
 	}
-	// A deadline with no room for even one full attempt still makes one.
-	if got := DeadlineRetryPolicy().maxAttempts(tooShortForOne); got != 1 {
-		t.Errorf("DeadlineRetryPolicy().maxAttempts(%s deadline) = %d, want 1", LockTimeout-time.Second, got)
-	}
-	// A long deadline buys far more attempts than production's fixed bound: the point of the policy.
-	if got := DeadlineRetryPolicy().maxAttempts(long); got <= LockTimeoutAttempts {
-		t.Errorf("DeadlineRetryPolicy().maxAttempts(1h deadline) = %d, want more than production's %d", got, LockTimeoutAttempts)
-	}
-	// 20 s holds floor(20/(5+2)) = 2 whole attempt-and-pause cycles; allow a clock tick either way.
-	if got := DeadlineRetryPolicy().maxAttempts(twentySeconds); got < 2 || got > 4 {
-		t.Errorf("DeadlineRetryPolicy().maxAttempts(20s deadline) = %d, want about 2", got)
+	if dm, cap, _ := DeadlineRetryPolicy().retryMode(context.Background()); dm || cap != LockTimeoutAttempts {
+		t.Errorf("DeadlineRetryPolicy().retryMode(no deadline) = (deadlineMode %v, cap %d), want the counted fallback (false, %d), not retry-for-ever", dm, cap, LockTimeoutAttempts)
 	}
 }
 
-// attemptsField logs the cap for a counted policy and names the deadline for an uncapped one, so a
+// attemptsField logs the cap for a counted bound and names the deadline in deadline mode, so a
 // production give-up still logs attempts=3 (an int) exactly as before.
 func TestAttemptsField(t *testing.T) {
 	t.Parallel()
-	if got := attemptsField(LockTimeoutAttempts); got != LockTimeoutAttempts {
-		t.Errorf("attemptsField(%d) = %v, want the int %d (production's log must not move)", LockTimeoutAttempts, got, LockTimeoutAttempts)
+	if got := attemptsField(false, LockTimeoutAttempts); got != LockTimeoutAttempts {
+		t.Errorf("attemptsField(false, %d) = %v, want the int %d (production's log must not move)", LockTimeoutAttempts, got, LockTimeoutAttempts)
 	}
-	if got := attemptsField(0); got != "until the context's deadline" {
-		t.Errorf("attemptsField(0) = %v, want the deadline note", got)
+	if got := attemptsField(true, 0); got != "until the context's deadline" {
+		t.Errorf("attemptsField(true, 0) = %v, want the deadline note", got)
 	}
 }
 
-// Finding A (reviewer, #5806): a public policy can set Pause to -LockTimeout, which would make
-// maxAttempts divide by zero. pause() clamps a negative Pause to 0, so the helper survives it.
-func TestMaxAttemptsSurvivesANegativePause(t *testing.T) {
+// validate refuses a negative Attempts by name before any attempt runs — the same unusable-field
+// class as a negative Pause, which pause() clamps — and retryLockTimeouts refuses it without running
+// the attempt.
+func TestValidateRefusesNegativeAttempts(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
-	defer cancel()
-	p := RetryPolicy{Attempts: 0, Pause: -LockTimeout} // without the clamp, cycle == 0 and maxAttempts panics
-	if p.pause() != 0 {
-		t.Errorf("pause() with Pause=-LockTimeout = %s, want 0", p.pause())
+	if err := (RetryPolicy{Attempts: -1}).validate(); err == nil {
+		t.Error("validate(Attempts -1) = nil, want a refusal naming the field")
 	}
-	if got := p.maxAttempts(ctx); got <= 0 {
-		t.Errorf("maxAttempts with Pause=-LockTimeout = %d, want a positive count and no panic", got)
+	for _, p := range []RetryPolicy{ProductionRetryPolicy, DeadlineRetryPolicy()} {
+		if err := p.validate(); err != nil {
+			t.Errorf("validate(%+v) = %v, want nil", p, err)
+		}
+	}
+	ran := false
+	err := retryLockTimeouts(WithRetryPolicy(context.Background(), RetryPolicy{Attempts: -2}),
+		"a migration", "migration", "0001_x.up.sql",
+		func(error) bool { return true },
+		func(context.Context) error { ran = true; return nil })
+	if err == nil {
+		t.Error("retryLockTimeouts with Attempts -2 = nil, want the validate refusal")
+	}
+	if ran {
+		t.Error("retryLockTimeouts with Attempts -2 ran the attempt, want refusal before the first attempt")
 	}
 }
 
-// Finding B (reviewer, #5806): an attempt the context cuts short must come back in the runner's
-// named "after N attempts" form, not as a bare context error, so a deadline-bounded run keeps the
-// named-error promise while errors.Is still finds the context error.
-func TestRetryWrapsAContextErrorInTheNamedForm(t *testing.T) {
+// A negative Pause has no meaning and is clamped to 0, so the runner does not wait a negative time
+// (there is no longer a precomputed count for it to divide by zero).
+func TestNegativePauseIsClamped(t *testing.T) {
+	t.Parallel()
+	if got := (RetryPolicy{Attempts: 2, Pause: -LockTimeout}).pause(); got != 0 {
+		t.Errorf("pause() with Pause=-LockTimeout = %s, want 0", got)
+	}
+}
+
+// Finding 2: under the production default a non-timeout error that merely arrives while the context
+// is done — a boot stopped by SIGTERM mid-migration, or a real migration error racing the deadline —
+// comes back unchanged, not in the "after N attempts" give-up form, so production's error text does
+// not move and a real error is not misread as the deadline's.
+func TestProductionDefaultDoesNotWrapAContextOrMigrationError(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // the context is done, as a caller's deadline firing mid-attempt leaves it
-	ctx = WithRetryPolicy(ctx, DeadlineRetryPolicy())
+	cancel()
 	notALockTimeout := func(error) bool { return false }
-	err := retryLockTimeouts(ctx, "a migration", "migration", "0001_x.up.sql", notALockTimeout, func(context.Context) error {
-		return context.DeadlineExceeded
-	})
-	if err == nil {
-		t.Fatal("retryLockTimeouts returned nil, want a wrapped context error")
+
+	sentinel := errors.New("a real migration error")
+	if err := retryLockTimeouts(ctx, "a migration", "migration", "0001_x.up.sql", notALockTimeout,
+		func(context.Context) error { return sentinel }); !errors.Is(err, sentinel) || strings.Contains(err.Error(), "after") {
+		t.Errorf("err = %q, want the migration's own error unwrapped under the production default", err)
 	}
+	if err := retryLockTimeouts(ctx, "a migration", "migration", "0001_x.up.sql", notALockTimeout,
+		func(context.Context) error { return context.Canceled }); strings.Contains(err.Error(), "after") {
+		t.Errorf("production default wrapped a context.Canceled as %q, want it unwrapped (a SIGTERM'd boot keeps its own error)", err)
+	}
+}
+
+// Finding 7 (was TestRetryWrapsAContextErrorInTheNamedForm): in deadline mode an attempt the context
+// cuts short comes back in the named "after N attempts" form with errors.Is still holding; a
+// non-timeout, non-context error comes back unwrapped. The past deadline makes the attempt's error
+// and ctx.Err() agree, rather than cancelling before the first attempt.
+func TestDeadlineModeWrapsAContextErrorAndPassesOthersThrough(t *testing.T) {
+	t.Parallel()
+	past, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	past = WithRetryPolicy(past, DeadlineRetryPolicy())
+	err := retryLockTimeouts(past, "a migration", "migration", "0001_x.up.sql",
+		func(error) bool { return false },
+		func(context.Context) error { return context.DeadlineExceeded })
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want errors.Is(context.DeadlineExceeded) to hold", err)
 	}
 	if !strings.Contains(err.Error(), "after 1 attempts") {
 		t.Errorf("err = %q, want the named \"after N attempts\" form, not a bare context error", err)
+	}
+
+	live, cancelLive := context.WithTimeout(context.Background(), time.Hour)
+	defer cancelLive()
+	live = WithRetryPolicy(live, DeadlineRetryPolicy())
+	sentinel := errors.New("a real migration error")
+	if err := retryLockTimeouts(live, "a migration", "migration", "0001_x.up.sql",
+		func(error) bool { return false },
+		func(context.Context) error { return sentinel }); !errors.Is(err, sentinel) || strings.Contains(err.Error(), "after") {
+		t.Errorf("err = %v, want a non-timeout error on a live context back unwrapped", err)
+	}
+}
+
+// Finding 1: a deadline policy reads each attempt's own duration instead of a count computed up front
+// from a nominal LockTimeout cycle, so a migration with a short lock_timeout keeps retrying until
+// little of the deadline is left, and the give-up carries the *LockTimeoutError named rather than a
+// bare context error. The up-front count would have allowed about one attempt for this 600ms span.
+func TestDeadlineModeReadsEachAttemptAndGivesUpNamed(t *testing.T) {
+	t.Parallel()
+	lte := &LockTimeoutError{Migration: "0001_x.up.sql"}
+	timedOut := func(err error) bool { var e *LockTimeoutError; return errors.As(err, &e) }
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	ctx = WithRetryPolicy(ctx, RetryPolicy{Pause: 10 * time.Millisecond})
+	attempts := 0
+	err := retryLockTimeouts(ctx, "a migration", "migration", "0001_x.up.sql", timedOut,
+		func(context.Context) error {
+			attempts++
+			time.Sleep(20 * time.Millisecond)
+			return lte
+		})
+	if attempts < 5 {
+		t.Errorf("made %d attempts, want many: a short-lock_timeout attempt keeps retrying to the deadline, not the ~1 a LockTimeout-cycle count gives for 600ms", attempts)
+	}
+	var got *LockTimeoutError
+	if !errors.As(err, &got) {
+		t.Errorf("err = %v, want the *LockTimeoutError carried through (a named give-up, not a bare context error)", err)
+	}
+	if !strings.Contains(err.Error(), "after") {
+		t.Errorf("err = %q, want the named \"after N attempts\" form", err)
+	}
+}
+
+// Finding 3: a deadline policy on a context with no deadline falls back to the counted
+// LockTimeoutAttempts cap, so a benchmark's endless context gives up with the named error rather than
+// retrying for ever.
+func TestDeadlineModeWithoutDeadlineGivesUp(t *testing.T) {
+	t.Parallel()
+	lte := &LockTimeoutError{Migration: "0001_x.up.sql"}
+	timedOut := func(err error) bool { var e *LockTimeoutError; return errors.As(err, &e) }
+	ctx := WithRetryPolicy(context.Background(), RetryPolicy{Pause: 0})
+	attempts := 0
+	err := retryLockTimeouts(ctx, "a migration", "migration", "0001_x.up.sql", timedOut,
+		func(context.Context) error { attempts++; return lte })
+	if attempts != LockTimeoutAttempts {
+		t.Errorf("made %d attempts on an endless context, want the counted fallback %d (not retry for ever)", attempts, LockTimeoutAttempts)
+	}
+	var got *LockTimeoutError
+	if !errors.As(err, &got) {
+		t.Errorf("err = %v, want the *LockTimeoutError named", err)
 	}
 }

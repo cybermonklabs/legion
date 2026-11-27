@@ -157,8 +157,10 @@ func currentSettings(ctx context.Context, conn *pgx.Conn, names []string) ([]set
 	return current, nil
 }
 
+// LockTimeoutAttempts and LockTimeoutRetryPause are the default retry bound — the one
+// ProductionRetryPolicy uses, and the one the retry helpers apply when a context carries no policy.
 // LockTimeoutAttempts is how many times RetryLockTimeouts applies a migration whose lock wait
-// outlasts its lock_timeout before the runner gives up and fails. LockTimeoutRetryPause is how long
+// outlasts its lock_timeout before the runner gives up and fails; LockTimeoutRetryPause is how long
 // it waits between attempts, holding nothing: the attempt's transaction has rolled back, so the
 // reads and writes that queued behind the migration's lock request run. A holder that ends within
 // the pause, or soon after, lets the next attempt through; one that outlives every attempt fails
@@ -174,12 +176,14 @@ const (
 // the seam INFRA-3904 adds so a test harness, where a contended lock is a peer runner migrating its
 // own template and sure to finish rather than a stray holder that will not, can wait rather than
 // fail, without moving production's numbers. A context carries one through WithRetryPolicy; a
-// context with none uses ProductionRetryPolicy, so every production caller and every test that
-// drives a runner directly keeps the fixed bound unchanged.
+// context with none uses ProductionRetryPolicy, so every production caller, and every test that sets
+// no policy, keeps the fixed bound; the store test harnesses pass a deadline policy on the context
+// they give Migrate.
 type RetryPolicy struct {
-	// Attempts caps the tries. Zero means retry until the context's deadline — as many attempts
-	// as fit before it, then the runner's own give-up error, and no cap at all where the context
-	// has no deadline (DeadlineRetryPolicy).
+	// Attempts caps the tries: a positive count is that many attempts whatever the context's
+	// deadline. Zero means deadline mode — retry until the context's deadline, then the runner's own
+	// give-up error — falling back to LockTimeoutAttempts where the context has no deadline
+	// (DeadlineRetryPolicy). A negative count is refused (validate).
 	Attempts int
 	// Pause is how long the runner holds nothing between attempts.
 	Pause time.Duration
@@ -194,12 +198,13 @@ var ProductionRetryPolicy = RetryPolicy{Attempts: LockTimeoutAttempts, Pause: Lo
 
 // DeadlineRetryPolicy retries until the context's deadline, pausing LockTimeoutRetryPause between
 // attempts and giving up — with the runner's named give-up error, not a bare context error — when
-// too little of the deadline is left for another attempt. A loaded test suite, where the lock is
-// held by a peer runner migrating its own template and not by a stray holder, waits for it instead
-// of failing after the production policy's fixed span; a lock held to the binary's deadline still
-// ends the runner with the named error, before go test's alarm, rather than by it. A test harness
-// passes it through the context it gives Migrate; production passes ProductionRetryPolicy, so its
-// behaviour does not move.
+// too little of the deadline is left for another attempt, measured from the attempt just made. A
+// loaded test suite, where the lock is held by a peer runner migrating its own template and not by a
+// stray holder, waits for it instead of failing after the production policy's fixed span; a lock held
+// to the binary's deadline still ends the runner with the named error, before go test's alarm, rather
+// than by it. Where the context has no deadline (a benchmark), it falls back to LockTimeoutAttempts
+// rather than retrying for ever. A test harness passes it through the context it gives Migrate;
+// production passes no policy, so it uses ProductionRetryPolicy and its behaviour does not move.
 func DeadlineRetryPolicy() RetryPolicy {
 	return RetryPolicy{Attempts: 0, Pause: LockTimeoutRetryPause}
 }
@@ -221,33 +226,34 @@ func policyFromContext(ctx context.Context) RetryPolicy {
 	return ProductionRetryPolicy
 }
 
-// maxAttempts is how many times RetryLockTimeouts applies a migration under policy p before the
-// runner gives up: p.Attempts for a counted policy; for a deadline policy (Attempts 0) as many as
-// fit before ctx's deadline — each a LockTimeout wait with a Pause between — and 0, no cap, where
-// ctx has no deadline, so the runner then retries until ctx is cancelled.
-func (p RetryPolicy) maxAttempts(ctx context.Context) int {
+// retryMode decides how policy p retries under ctx: a counted cap (p.Attempts), or deadline mode,
+// which reads each attempt's own duration rather than a fixed count. A deadline policy (Attempts 0)
+// is deadline mode when ctx has a deadline; where ctx has none — a benchmark's context never ends —
+// it falls back to a LockTimeoutAttempts cap, so the runner gives up rather than retry for ever.
+// deadline is meaningful only when deadlineMode is true.
+func (p RetryPolicy) retryMode(ctx context.Context) (deadlineMode bool, attemptCap int, deadline time.Time) {
 	if p.Attempts > 0 {
-		return p.Attempts
+		return false, p.Attempts, time.Time{}
 	}
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return 0
+	if d, ok := ctx.Deadline(); ok {
+		return true, 0, d
 	}
-	// As many whole attempt-and-pause cycles as fit before the deadline, and at least one, so the
-	// last attempt's lock_timeout ends — and its named give-up returns — at least Pause before the
-	// deadline. cycle uses pause(), never negative, so no caller can set Pause to -LockTimeout and
-	// divide this by zero.
-	cycle := LockTimeout + p.pause()
-	if remaining := time.Until(deadline); remaining > cycle {
-		return int(remaining / cycle)
+	return false, LockTimeoutAttempts, time.Time{}
+}
+
+// validate refuses, by name and before the first attempt, a policy a runner cannot use: a negative
+// Attempts has no meaning — a runner cannot try fewer than no times. A negative Pause is the same
+// class, but pause() clamps it to 0, so it needs no refusal here.
+func (p RetryPolicy) validate() error {
+	if p.Attempts < 0 {
+		return fmt.Errorf("pgmigrate: RetryPolicy.Attempts is %d: a retry count cannot be negative", p.Attempts)
 	}
-	return 1
+	return nil
 }
 
 // pause is the policy's wait between attempts, never negative: a negative Pause has no meaning — a
-// runner cannot wait less than no time — and at Pause == -LockTimeout would divide maxAttempts by
-// zero, so it is clamped to 0. The public Pause field keeps the caller's value; only its use is
-// clamped, so a mis-set policy degrades to no pause rather than panicking the helper.
+// runner cannot wait less than no time — so it is clamped to 0. The public Pause field keeps the
+// caller's value; only its use is clamped, so a mis-set policy degrades to no pause.
 func (p RetryPolicy) pause() time.Duration {
 	if p.Pause < 0 {
 		return 0
@@ -255,23 +261,25 @@ func (p RetryPolicy) pause() time.Duration {
 	return p.Pause
 }
 
-// attemptsField is the value the retry logs under "attempts": the cap, or that it retries until the
-// context's deadline where a deadline policy has none.
-func attemptsField(maxAttempts int) any {
-	if maxAttempts == 0 {
+// attemptsField is the value the retry logs under "attempts": the cap for a counted bound, or a note
+// that it retries until the context's deadline in deadline mode.
+func attemptsField(deadlineMode bool, attemptCap int) any {
+	if deadlineMode {
 		return "until the context's deadline"
 	}
-	return maxAttempts
+	return attemptCap
 }
 
 // RetryLockTimeouts runs attempt, which applies the migration named migration in a transaction of
-// its own, until it succeeds, fails with anything but a *LockTimeoutError, or has timed out
-// LockTimeoutAttempts times. It logs each timed-out attempt at WARN with its error, which names the
-// lock, the sessions holding it and their diagnoses (LockTimeoutError), and pauses
-// LockTimeoutRetryPause before the next. The last attempt's error comes back, wrapped with the
-// number of attempts, so errors.As still finds the *LockTimeoutError. A runner that applies every
-// migration in one transaction cannot use it: rolling back an attempt there would roll back the
-// earlier migrations too, and retrying inside it would hold their locks across the pause.
+// its own, until it succeeds, fails with anything but a *LockTimeoutError, or the context's retry
+// policy says to give up — LockTimeoutAttempts timed-out attempts by default, or, under a deadline
+// policy, when too little of the deadline is left for another attempt. It logs each timed-out
+// attempt at WARN with its error, which names the lock, the sessions holding it and their diagnoses
+// (LockTimeoutError), and pauses LockTimeoutRetryPause before the next. The last attempt's error
+// comes back, wrapped with the number of attempts, so errors.As still finds the *LockTimeoutError. A
+// runner that applies every migration in one transaction cannot use it: rolling back an attempt
+// there would roll back the earlier migrations too, and retrying inside it would hold their locks
+// across the pause.
 func RetryLockTimeouts(ctx context.Context, migration string, attempt func(context.Context) error) error {
 	return retryLockTimeouts(ctx, "a migration", "migration", migration, func(err error) bool {
 		var lockTimeout *LockTimeoutError
@@ -282,11 +290,11 @@ func RetryLockTimeouts(ctx context.Context, migration string, attempt func(conte
 // RetryVersionTableLockTimeouts runs attempt, which readies a runner's version table table in a
 // transaction of its own (the one-time ALTER TABLE that adds the identity columns, and the reads
 // around it), as RetryLockTimeouts runs a migration: again after LockTimeoutRetryPause, while it
-// fails with a lock timeout (SQLSTATE 55P03), up to LockTimeoutAttempts times. A boot that starts
-// while a pg_dump or a census holds a lock on the table then waits the holder out, within the same
-// bound a migration has, rather than fail on its first wait. The last attempt's error comes back,
-// wrapped with the number of attempts, so a timeout that persists still reads as one and not as a
-// refusal.
+// fails with a lock timeout (SQLSTATE 55P03), under the context's retry policy — LockTimeoutAttempts
+// attempts by default, or until a deadline policy's deadline. A boot that starts while a pg_dump or
+// a census holds a lock on the table then waits the holder out, within the same bound a migration
+// has, rather than fail on its first wait. The last attempt's error comes back, wrapped with the
+// number of attempts, so a timeout that persists still reads as one and not as a refusal.
 func RetryVersionTableLockTimeouts(ctx context.Context, table string, attempt func(context.Context) error) error {
 	return retryLockTimeouts(ctx, "a runner's step on its version table", "table", table, func(err error) bool {
 		var lockTimeout *LockTimeoutError
@@ -297,32 +305,55 @@ func RetryVersionTableLockTimeouts(ctx context.Context, table string, attempt fu
 
 // retryLockTimeouts is RetryLockTimeouts' loop for what, named name under the log key key, retried
 // while timedOut says its error is a lock timeout. It follows the RetryPolicy ctx carries
-// (policyFromContext): ProductionRetryPolicy's fixed LockTimeoutAttempts by default, or as many
-// attempts as a deadline policy's deadline allows (maxAttempts).
+// (policyFromContext): ProductionRetryPolicy's fixed LockTimeoutAttempts by default, or, under a
+// deadline policy, as many attempts as the deadline allows — deciding on each attempt's own measured
+// duration, not a precomputed count, so a migration with a short lock_timeout keeps retrying to the
+// deadline and a lock held to the deadline ends with its holder named rather than cut, unnamed, by
+// the context.
 func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut func(error) bool, attempt func(context.Context) error) error {
 	policy := policyFromContext(ctx)
-	maxAttempts := policy.maxAttempts(ctx)
+	if err := policy.validate(); err != nil {
+		return err
+	}
+	deadlineMode, attemptCap, deadline := policy.retryMode(ctx)
+	attempts := attemptsField(deadlineMode, attemptCap)
+	hadTimeout := false
 	for n := 1; ; n++ {
+		start := time.Now()
 		err := attempt(ctx)
 		if err == nil {
 			return nil
 		}
 		if !timedOut(err) {
-			// A non-timeout error while the context is done is the caller's deadline or
-			// cancellation cutting the attempt short, not the migration's own failure; return it in
-			// the named form, wrapped with the attempt count, so a deadline-bounded run ends with
-			// the runner's give-up (and errors.Is(err, context.DeadlineExceeded) still holds), not a
-			// bare context error. Any other non-timeout error is the migration's and comes back as is.
-			if ctx.Err() != nil {
+			// A context error (the caller's deadline or cancellation) that cut an attempt short comes
+			// back in the runner's named "after N attempts" form only in deadline mode or once a lock
+			// timeout has already made the runner retry — never under the production default on an
+			// attempt no lock timeout reached, whose context (a SIGTERM'd boot) must return its own
+			// error unchanged. Test the error itself, not ctx.Err(), so a real migration error that
+			// merely arrives while the context is done is not misread as the deadline's. Any other
+			// non-timeout error is the migration's and comes back as is.
+			if (deadlineMode || hadTimeout) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				return fmt.Errorf("after %d attempts: %w", n, err)
 			}
 			return err
 		}
-		if maxAttempts != 0 && n == maxAttempts {
-			slog.Warn("pgmigrate: "+what+" gave up waiting for a lock on its last attempt; the runner fails", key, name, "attempt", n, "attempts", maxAttempts, "reason", err.Error())
+		hadTimeout = true
+		took := time.Since(start)
+		// Give up with the lock timeout's own named error — never a bare context error — when no more
+		// attempts are allowed: a counted bound has reached its cap, or (deadline mode) too little of
+		// the deadline is left for another attempt and its pause. In deadline mode the decision reads
+		// this attempt's measured duration (took: the migration's lock_timeout, the holder diagnosis
+		// and the fresh connections), not a LockTimeout cycle, so a short lock_timeout keeps retrying
+		// and a lock held to the deadline ends here, named, rather than being cut by the context.
+		if !deadlineMode && n == attemptCap {
+			slog.Warn("pgmigrate: "+what+" gave up waiting for a lock on its last attempt; the runner fails", key, name, "attempt", n, "attempts", attempts, "reason", err.Error())
 			return fmt.Errorf("after %d attempts: %w", n, err)
 		}
-		slog.Warn("pgmigrate: "+what+" gave up waiting for a lock; the runner tries it again", key, name, "attempt", n, "attempts", attemptsField(maxAttempts), "pause", policy.pause(), "reason", err.Error())
+		if deadlineMode && time.Until(deadline) < policy.pause()+took {
+			slog.Warn("pgmigrate: "+what+" gave up waiting for a lock with too little of the deadline left for another attempt; the runner fails", key, name, "attempt", n, "attempts", attempts, "reason", err.Error())
+			return fmt.Errorf("after %d attempts: %w", n, err)
+		}
+		slog.Warn("pgmigrate: "+what+" gave up waiting for a lock; the runner tries it again", key, name, "attempt", n, "attempts", attempts, "pause", policy.pause(), "reason", err.Error())
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("after %d attempts: %w", n, err)
