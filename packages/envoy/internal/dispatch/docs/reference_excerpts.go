@@ -369,6 +369,23 @@ func deferredBlockIndex(ctx context.Context) bool {
 	return marked
 }
 
+// retiredBlockIndexKey marks the context of the issue conversion's retirement of a document's own
+// block index (withRetiredBlockIndex).
+type retiredBlockIndexKey struct{}
+
+// withRetiredBlockIndex marks ctx as the context of the pass that retires a converted document's
+// own block index into its issue's room (issueConversion.retireDocuments): its blocks leave the
+// document, and each version keeps its record of the texts it held (refs.VersionBlocks.Retires).
+func withRetiredBlockIndex(ctx context.Context) context.Context {
+	return context.WithValue(ctx, retiredBlockIndexKey{}, true)
+}
+
+// retiredBlockIndex reports whether the conversion marked ctx (withRetiredBlockIndex).
+func retiredBlockIndex(ctx context.Context) bool {
+	marked, _ := ctx.Value(retiredBlockIndexKey{}).(bool)
+	return marked
+}
+
 // indexVersion is indexDocument for a version of artifactID its writer wrote outside an issue
 // room's settlement (writeVersionTx): the document's own pass where it is a room of its own with
 // no other fragment, and otherwise its room's one pass over every fragment (indexDocumentInRoom),
@@ -663,6 +680,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 		ArtifactID: artifactID, Record: record, Versions: versions,
 		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
 		ServerURL: s.serverURL, Typed: facts, Beside: removalsOfVersions(ctx, versions),
+		Retires: retiredBlockIndex(ctx),
 	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err

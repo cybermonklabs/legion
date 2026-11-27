@@ -1159,6 +1159,10 @@ provider_keys:
   every pane carries and a key whose `_FILE` pointer every pane carries.
   The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
   `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
+  The variable must be upper case (upper-case letters, digits and underscores, not starting with
+  a digit), as every provider's variable is: one with a lowercase letter refuses the load as
+  `provider_keys entry <n>: its key (the variable OMP reads) must be an upper-case environment
+  variable name …`, so rename it, and the `models.yml` or overlay that reads it, to upper case.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs

@@ -500,7 +500,7 @@ begin gate-refuses-a-skill-only-a-role-prompt-loads
 # refusal of the plugin without legion-controller names roles/controller-root.md, which only a gate
 # that reads the daemon's own role prompts can name.
 mv "$work/pi-legion/dist/skills/legion-controller" "$work/controller-skill.aside"
-expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-worker/references/findings.md, roles/controller-root.md)"
+expect_refusal prompt-only-skill "finds no skill legion-controller (loaded by dist/skills/legion-architect/references/operations.md, roles/controller-root.md)"
 mv "$work/controller-skill.aside" "$work/pi-legion/dist/skills/legion-controller"
 [ -f "$work/pi-legion/dist/skills/legion-controller/SKILL.md" ] || fail "the legion-controller skill was not restored"
 pass

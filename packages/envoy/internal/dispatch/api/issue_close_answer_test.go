@@ -17,24 +17,33 @@ import (
 
 // TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted drives a close and a reopen whose
 // asks' document write queues an event of its own - the refresh of a comment whose stored quote is
-// stale - before the status event. The patch's response, the status event's stored payload and a
-// later read of the issue must all name the sequence that event took, which a count of the events
-// the route itself queued answers short. Each move runs while the release before serves
-// (whileTheReleaseBeforeServes): on a fleet of one build no block holds an ask's state, so the
-// close and the reopen write nothing into the asks' documents (docs.WriteIssueAskStates), and only
-// while a build that reads an ask's state from its block serves do they write each ask's state into
-// its blocks, the write that refreshes the stale anchor. That write also arms each document's room
-// settlement, and a settlement that ran between the patch and the read of the issue would append
-// its own artifact.version and block.repaired events on the issue and move its last_seq past the
-// status event. The settle delay is an hour, so no room timer runs while the test does: the test
-// runs each settlement itself (SettleIssueDocuments) after the move's checks, as
-// TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem does, and the reopen starts from
-// the settled documents the timer would have left. The reopen moves the issue the close left done,
-// so the two moves run in order against the one issue, not as subtests a reader could run alone,
-// and each failure names the move it came from.
+// stale - before the status event. The patch's response and the status event's stored payload
+// must name the sequence that event took, which a count of the events the route itself queued
+// answers short. A later read of the issue names one sequence more: the close withdraws the
+// issue's open questions and the reopen restores them, and the decisions query takes each of
+// them, so the move's write marks the issue's queries owed and its drain, once the move has
+// committed and before the route answers, writes that query's next version (R14,
+// docs.Service.DrainOwedQueries), whose artifact.version is the one event past the status event,
+// as TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem reads it too. Each move runs
+// while the release before serves (whileTheReleaseBeforeServes): on a fleet of one build no block
+// holds an ask's state, so the close and the reopen write nothing into the asks' documents
+// (docs.WriteIssueAskStates), and only while a build that reads an ask's state from its block
+// serves do they write each ask's state into its blocks, the write that refreshes the stale
+// anchor. That write also arms each document's room settlement, and a settlement that ran between
+// the patch and the read of the issue would append its own artifact.version and block.repaired
+// events on the issue and move its last_seq past the drain's. The settle delay is an hour, so no
+// room timer runs while the test does: the test runs each settlement itself (SettleIssueDocuments)
+// after the move's checks, as TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem does,
+// and the reopen starts from the settled documents the timer would have left. The reopen moves the
+// issue the close left done, so the two moves run in order against the one issue, not as subtests
+// a reader could run alone, and each failure names the move it came from.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
 	t.Parallel()
 	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
+	decisionsQuery, _ := decisionsQueryVersions(t, f.database, f.issue)
+	if decisionsQuery == "" {
+		t.Fatalf("%s holds no decisions query node: the issue is not born converted, so no move drains a version of it", f.issue)
+	}
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",
 		"anchor": map[string]any{"artifact": "spec", "quote": "Context"},
@@ -64,11 +73,15 @@ func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T
 			t.Fatalf("%s appended %d comment.anchor_refreshed events of its own, want 1: the stale quote no longer makes the asks' document write queue one",
 				move.name, refreshes)
 		}
-		detail := readIssueDetail(t, f.handler, f.issue)
-		if response.LastSeq != event.seq || event.payloadLastSeq != event.seq || detail.LastSeq != event.seq {
-			t.Fatalf("%s answered last_seq %d and stored %s at seq %d with payload last_seq %d, and a read of the issue answers %d: want all four at %d, the sequence the write phase committed",
-				move.name, response.LastSeq, move.eventType, event.seq, event.payloadLastSeq, detail.LastSeq, event.seq)
+		if response.LastSeq != event.seq || event.payloadLastSeq != event.seq {
+			t.Fatalf("%s answered last_seq %d and stored %s at seq %d with payload last_seq %d: want all three at %d, the sequence the write phase committed",
+				move.name, response.LastSeq, move.eventType, event.seq, event.payloadLastSeq, event.seq)
 		}
+		if detail := readIssueDetail(t, f.handler, f.issue); detail.LastSeq != event.seq+1 {
+			t.Fatalf("%s: a read of the issue answers last_seq %d, want %d: the sequence the write phase committed, %d, and the one event the move's drain appends past it",
+				move.name, detail.LastSeq, event.seq+1, event.seq)
+		}
+		requireDecisionsVersionEventAt(t, f.database, f.issue, event.seq+1, decisionsQuery)
 		// The settlement the move's write left owed, which the room timer would run.
 		if err := f.documents.SettleIssueDocuments(context.Background(), f.issue); err != nil {
 			t.Fatalf("%s: settle the issue's documents: %v", move.name, err)

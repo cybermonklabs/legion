@@ -658,10 +658,11 @@ func copiedFromTuples(ctx context.Context, q Queryer, doc string, blocks []strin
 // whatever the block's type now: the copied_from each such node holds as it stands now, keyed by
 // block id, with the node the row names. Settlement reads it once, in its read phase, before its
 // own block index is written, to retract the copied_from of each block that is no longer an ask
-// block (docs' claimCopies): one a person retyped, or one the settlement's version drops, whose
-// row and node the read still names. A block of a retired document of an issue room is left out:
-// its fragment left the room, so no settlement claims it, and every pass over the room keeps its
-// row and its node as the retirement left them (BlockIndexing.retained).
+// block (docs' claimCopies): one a person retyped. A block a version drops has its row deleted and
+// its copied_from retracted by the index pass of that version (heldCopiedFrom), so it needs no
+// read of the rows. A block of a retired document of an issue room is left out: its fragment left
+// the room, so no settlement claims it, and every pass over the room keeps its row and its node as
+// the retirement left them (BlockIndexing.retained).
 func DocumentCopiedFrom(ctx context.Context, q Queryer, doc string) (map[string]BlockCopiedFrom, error) {
 	return readCopiedFrom(ctx, q, doc, "$1::uuid", ` and not `+retiredDocumentSQL(graphstore.RoomBlockRowSQL("d.artifact_id", "d.block_id")))
 }

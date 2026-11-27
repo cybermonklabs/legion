@@ -62,7 +62,7 @@ import {
   stableSourceOf,
   type TreeContext,
 } from "../tree-drafts";
-import { splitPosition } from "./comment-positions";
+import { nextTreeCursor, splitPosition } from "./comment-positions";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
 /**
@@ -379,9 +379,12 @@ const NO_ASK_IDS: ReadonlyMap<string, string> = new Map();
  * `specSummary` - reads the tree by the ids it read before, a block by its id in its document
  * (`block_id`):
  *
- * - **A node of another issue** - the read marks it with that issue (`issue`) - is its block id,
- *   even where its `document` names a document: a child's documents carry its parent's slugs, so
- *   the outline's `<slug>#b-<block id>` would name a block of this issue.
+ * - **A node of another issue** - the read marks it with that issue (`issue`) - is the read's id,
+ *   which holds its issue, even where its `document` names a document: a block id is unique
+ *   inside one document alone, and every plan names its tasks `t1`, `t2`, so two issues under
+ *   this one can each hold a `t1`; and a child's documents carry its parent's slugs, so the
+ *   outline's `<slug>#b-<block id>` would name a block of this issue. The Plan view finds a task
+ *   one of them needs by that same id (`plan-filter/plan-order.ts`' `neededId`).
  * - **The issue itself** is its key, which is the outline's root.
  * - **A typed block of one of this issue's documents** is the outline's `blockNodeId` of the
  *   slug its `document` names and its block id.
@@ -395,8 +398,8 @@ export function treeIdOfNode(
   key: string,
   askIds: ReadonlyMap<string, string> = NO_ASK_IDS
 ): string {
+  if (isForeign(node, key)) return node.id;
   const blockId = blockIdOfNode(node);
-  if (isForeign(node, key)) return blockId;
   // The issue the read is of is the outline's root, the parent of every top-level node.
   if (node.supertag === "issue" && (node.id === key || node.parent === null)) return key;
   if (node.document !== undefined) return blockNodeId(node.document.slug, blockId);
@@ -667,8 +670,8 @@ function draftResult(
  * nobody. A person's Change the read hangs under it says it waits on its agent
  * (`decisionNodeChanges`), and it waits on the reader by the outline's review list rule
  * (`inReviewList`), where a link ties it to a statement the coverage read holds. Where the
- * answer names an older comment page that may hold its Change, its state says so
- * (`markChangeUnread`).
+ * answer names a next page or an older comment page that may hold its Change, its state says so
+ * (`markChangeUnread`), and it waits on no reader until that page is read (`changeUnread`).
  *
  * An agent's decision of the decisions read that is no node of the answer - a section of
  * `decisions.md` a server of the release before answers - is drawn as the outline draws it, by
@@ -701,14 +704,15 @@ function draftDecision(
   draft.state = decisionState(decision, changed);
   markKeptAndUnsure(draft, decision);
   draft.replaced = decision.replaced === true;
-  // A decision the read hangs no Change under may have one on a comment page not read yet.
-  markChangeUnread(draft, decision, answer);
+  // A decision the read hangs no Change under may have one on a page the read has not loaded, and
+  // waits on no reader until it is read.
+  markChangeUnread(draft, decision, changed, answer);
   draft.waiting =
     context.viewer !== undefined &&
     inReviewList(
       { shaped: links, waiting_review: decision.waiting_review === true },
       (reference) => context.kept.requirements.has(context.nodeIdOf(reference) ?? ""),
-      changed
+      changed || draft.changeUnread === true
     );
   return draft;
 }
@@ -1522,18 +1526,6 @@ export function nodesRemaining(answer: TreeAnswer): number | undefined {
   return nextTreeCursor(answer) !== undefined && typeof remaining === "number"
     ? remaining
     : undefined;
-}
-
-/**
- * The cursor of the page after `page` in its read, or undefined where `page` is the last: one
- * whose cursor is null, left out of the body, or empty, as a server that drops an empty field
- * writes it. The one rule every walk of the read ends by: the page's own (`tree-read.ts`'
- * `readTree`) and the e2e helpers', which load this module and not that one, as they do for
- * `mergeTreePages`.
- */
-export function nextTreeCursor(page: TreeAnswer): string | undefined {
-  const { cursor } = page;
-  return typeof cursor === "string" && cursor !== "" ? cursor : undefined;
 }
 
 /**

@@ -14,7 +14,7 @@
 -- The comment's anchored_in and its part_of to that node are what the store holds of it; the
 -- column is their projection, which graphstore.CommentAnchoredInSQL reads and the census
 -- comment_anchor_block compares with the tuples. No head row reads it, so no trigger of
--- 20261123180100_issue_tree_head names it.
+-- 20261127120803_issue_tree_head names it.
 --
 -- The column is nullable and has no default, so the ALTER is a catalog change: no stored row is
 -- rewritten or read, and every row comments holds reads null in it.

@@ -126,7 +126,8 @@ func IsConversationNode(ctx context.Context, q Queryer, kind, id string, at time
 // loadCommentNodes, loadMessageNodes and the item block loaders), with the parent its loader
 // names and the excerpt an edge at it shows, as ExcerptedNodes answers each, cut around the
 // dashboard URLs of the deployment at serverURL (excerptOf). A node who may not see is left out,
-// as every loader leaves it out, and so are the blocks of an item left out.
+// as every loader leaves it out, and so are the blocks of an item left out, and every item that
+// stands under a node left out, with its blocks (leftOutThreads).
 func ConversationNodes(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, serverURL string) ([]ExcerptedNode, error) {
 	return conversationNodes(ctx, q, who, issueKey, at, nil, serverURL)
 }
@@ -243,22 +244,89 @@ func scanConversationItems(rows pgx.Rows, issueKey string) ([]edgeRow, map[strin
 // conversationAnswer is the conversation's nodes: each item of kept that resolved holds, in
 // kept's order, followed by each of its blocks resolved holds, in their order, each with the
 // excerpt an edge at it shows, cut around the dashboard URLs of the deployment at serverURL
-// (excerptOf), and an ask with its kind (askKindOf).
+// (excerptOf), and an ask with its kind (askKindOf). An item that stands under a node of the
+// conversation the answer leaves out is left out too, with its blocks (leftOutThreads).
 func conversationAnswer(kept []edgeRow, blocks map[[2]string][]edgeRow, resolved map[[2]string]resolvedNode, askKinds map[string]string, serverURL string) []ExcerptedNode {
+	left := leftOutThreads(kept, blocks, resolved)
 	nodes := make([]ExcerptedNode, 0, len(resolved))
 	for _, item := range kept {
-		node, found := resolved[[2]string{item.otherKind, item.otherID}]
-		if !found {
+		key := [2]string{item.otherKind, item.otherID}
+		node, found := resolved[key]
+		if !found || left[key] {
 			continue
 		}
 		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL), AskKind: askKindOf(item, askKinds)})
-		for _, block := range blocks[[2]string{item.otherKind, item.otherID}] {
+		for _, block := range blocks[key] {
 			if node, found := resolved[[2]string{block.otherKind, block.otherID}]; found {
 				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)})
 			}
 		}
 	}
 	return nodes
+}
+
+// leftOutThreads is each item of kept that resolved holds but that stands under a node of the
+// conversation the answer leaves out. The answer leaves out each item of kept that resolved does
+// not hold - an ask a stored value of which does not decode (loadAskNodes), a node the reader may
+// not see - with its blocks, and each block of an item that resolved does not hold. It leaves out
+// too each item whose loader names as its parent one of those, or an item it leaves out so, or a
+// block of either. So a reply in the thread of an ask its loader left out, and a reply to that
+// reply, leave the answer with the ask: kept, they would stand under a node the answer does not
+// hold, and a walk of the issue's tree would hang them under the issue instead (docs'
+// placeItems). It is nil, and builds nothing, where resolved holds every node of the conversation.
+func leftOutThreads(kept []edgeRow, blocks map[[2]string][]edgeRow, resolved map[[2]string]resolvedNode) map[[2]string]bool {
+	var out [][2]string
+	for _, item := range kept {
+		key := [2]string{item.otherKind, item.otherID}
+		_, found := resolved[key]
+		if !found {
+			out = append(out, key)
+		}
+		for _, block := range blocks[key] {
+			if _, held := resolved[[2]string{block.otherKind, block.otherID}]; !found || !held {
+				out = append(out, [2]string{block.otherKind, block.otherID})
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	children := map[[2]string][][2]string{}
+	for _, item := range kept {
+		key := [2]string{item.otherKind, item.otherID}
+		if node, found := resolved[key]; found && node.Parent != nil {
+			parent := conversationParentKey(node.Parent)
+			children[parent] = append(children[parent], key)
+		}
+	}
+	left := map[[2]string]bool{}
+	for len(out) > 0 {
+		parent := out[len(out)-1]
+		out = out[:len(out)-1]
+		for _, item := range children[parent] {
+			if left[item] {
+				continue
+			}
+			left[item] = true
+			out = append(out, item)
+			for _, block := range blocks[item] {
+				out = append(out, [2]string{block.otherKind, block.otherID})
+			}
+		}
+	}
+	return left
+}
+
+// conversationParentKey is the parent a loader names as the key of the conversation's node it is,
+// the kind and id resolveNodes keys it by: an item by its kind and uuid, and a block of one, which
+// a loader names as a block (`<kind>/<uuid>#<block id>`), by its storage kind and node id.
+func conversationParentKey(parent *model.NodeParent) [2]string {
+	if parent.Kind == BlockNodeKind {
+		if kind, _, _, ok := ParseItemBlockNode(parent.ID); ok {
+			return [2]string{kind.BlockKind(), parent.ID}
+		}
+	}
+	return [2]string{parent.Kind, parent.ID}
 }
 
 // askKindOf is the kind of the ask item is, as the items read answered its row (askKinds, by the

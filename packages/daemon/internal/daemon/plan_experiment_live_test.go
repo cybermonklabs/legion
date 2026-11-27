@@ -11,7 +11,7 @@
 // Nothing of the draw's path is stood in for. Dispatch is the real server this checkout builds
 // (startScratchDispatchOn), on a database of its own, its events on the script's broker, which the
 // daemon consumes, as the person's handover proof runs it (personHandoverRig). The daemon is the
-// whole daemon (run, through startDaemonWithin) with dispatch_url at that server. Each issue is
+// whole daemon (run, through startDaemonLogging) with dispatch_url at that server. Each issue is
 // created and handed to Legion as the person's todo through Dispatch's API, as at the dashboard;
 // its owner writes its plan as the document plan.md with the real `dispatch artifact`
 // (packages/envoy-client/bin/dispatch.ts under bun), as its prompt tells it to, and gives it with
@@ -75,6 +75,7 @@ type experimentIssue struct {
 // the operator's line after the second boot shows, and each record of a step names the variant of
 // its issue, which `dispatch steps` prints.
 func TestExperimentLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	natsURL := os.Getenv(liveNATSURLEnv)
 	if natsURL == "" {

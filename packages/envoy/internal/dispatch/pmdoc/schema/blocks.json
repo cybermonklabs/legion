@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -104,8 +104,8 @@
         },
         "shaped": {
           "kind": "block[]",
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         }
       }
     },
@@ -117,14 +117,14 @@
         "serves": {
           "kind": "block[]",
           "targets": ["criterion", "requirement"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 9,
+          "creatable_since": 9
         },
         "parent": {
           "kind": "block[]",
           "items": ["ask", "comment", "message"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 9,
+          "creatable_since": 9
         }
       },
       "since": 3,
@@ -143,7 +143,7 @@
           "kind": "block[]",
           "targets": ["plan_task"],
           "items": ["issue"],
-          "item_versions": { "issue": { "since": 8, "creatable_since": 8 } }
+          "item_versions": { "issue": { "since": 9, "creatable_since": 9 } }
         },
         "steps": {
           "kind": "string",
@@ -152,24 +152,24 @@
         },
         "size": {
           "kind": "minutes",
-          "since": 8,
-          "creatable_since": 8
+          "since": 9,
+          "creatable_since": 9
         },
         "skills": {
           "kind": "string[]",
-          "since": 8,
-          "creatable_since": 8
+          "since": 9,
+          "creatable_since": 9
         },
         "docs": {
           "kind": "string[]",
-          "since": 8,
-          "creatable_since": 8
+          "since": 9,
+          "creatable_since": 9
         },
         "parent": {
           "kind": "block[]",
           "items": ["ask", "comment", "message"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 9,
+          "creatable_since": 9
         }
       },
       "since": 3,
@@ -204,11 +204,22 @@
           "since": 4,
           "creatable_since": 4
         },
+        "subject": {
+          "kind": "enum",
+          "choices": ["code", "production", "graph"],
+          "since": 6,
+          "creatable_since": 10
+        },
+        "program": {
+          "kind": "string",
+          "since": 6,
+          "creatable_since": 10
+        },
         "parent": {
           "kind": "block[]",
           "items": ["ask", "comment", "message"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 9,
+          "creatable_since": 9
         }
       },
       "since": 3,
@@ -222,54 +233,54 @@
         "uncertainty": {
           "kind": "enum",
           "choices": ["low", "medium", "high"],
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "uncertainty_reason": {
           "kind": "string",
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "shaped": {
           "kind": "block[]",
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "from_ask": {
           "kind": "ask",
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "replaced": {
           "kind": "bool",
           "default": false,
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "decided_by": {
           "kind": "actor",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "kept_by": {
           "kind": "actor",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         },
         "kept_text_sum": {
           "kind": "string",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 7
+          "since": 7,
+          "creatable_since": 8
         }
       },
-      "since": 6,
-      "creatable_since": 7
+      "since": 7,
+      "creatable_since": 8
     },
     {
       "name": "reading",
@@ -277,8 +288,8 @@
       "render": "host",
       "attributes": {},
       "parents": ["decision", "ask"],
-      "since": 6,
-      "creatable_since": 7
+      "since": 7,
+      "creatable_since": 8
     },
     {
       "name": "criterion",
@@ -288,12 +299,12 @@
         "parent": {
           "kind": "block[]",
           "items": ["ask", "comment", "message"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 9,
+          "creatable_since": 9
         }
       },
-      "since": 8,
-      "creatable_since": 8
+      "since": 9,
+      "creatable_since": 9
     }
   ]
 }

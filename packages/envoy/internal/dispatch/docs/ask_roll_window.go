@@ -32,11 +32,18 @@ import (
 // anotherBuildServes reports whether processes.Live, read through q, lists a process of a build
 // that still reads an ask's state and answer from the attributes of its block: one whose
 // registered schema version is below the version at which answers left the markdown
-// (answersLeftTheMarkdown). That version is fixed at 6. A process of schema version 5 still
-// reads block attributes, as does an older process whose row holds the default schema version,
-// 0 (processes.Process.PredatesFleetColumns). Processes on version 6 or later read every answer
-// from the server, so this guard treats them as one build even if their commits or schema versions
-// differ. The issue-tree schema at version 8 does not reopen the roll window with version 7 or 6.
+// (answersLeftTheMarkdown). That version is fixed: the `decision` type's since, 7, the version of
+// slice 2 (legion/INFRA-5570), which took the answer out of the markdown. This build is block
+// schema version 9 (pmdoc/schema/blocks.json), the issue tree's, and the release before this one
+// reads version 6, so a process of the release before makes two builds, and so does a process of
+// a build older still, which registers no schema number at all and whose row holds the column's
+// default, 0 (processes.Process.PredatesFleetColumns). A process at version 7 or past it - slice
+// 2's, one at 8, and this build's at 9 - reads every answer from the server, as this build does,
+// so to this guard the fleet is one build however many commits and schema versions it serves:
+// the issue tree's version 9 does not reopen the roll window with a process at 8 or 7, and a
+// later release, at the version dispatch://INFRA-5571 sets next, which still holds this guard,
+// reads a process of this release as one of its own fleet rather than as a reader of block
+// attributes, and writes them back into nobody's documents.
 //
 // The rule reads the schema numbers, never the commits among themselves, for two reasons. This
 // process writes documents before it registers - main restores the decided wordings, repairs the
@@ -66,10 +73,16 @@ func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) 
 }
 
 // answersLeftTheMarkdown is the schema version from which no build reads an ask's answer from
-// its block. It reads the `decision` type's `since`, 6, which remains fixed when a later schema
-// changes the version at which an element can be created. A manifest that declares no
-// `decision` type - only one a test installs in place of this build's - bounds the fleet at its
-// own version. It serves anotherBuildServes alone, and goes with it.
+// its block: the version that introduced the `decision` type, read off the installed schema (its
+// since), which is 7, the version of slice 2 (legion/INFRA-5570), the one that took the answer
+// out of the markdown. This build is version 9 (pmdoc/schema/blocks.json) and the release before
+// reads 6, so the rule bounds the fleet at the `decision` type's since and not at this build's
+// own version: a process at 7 reads every answer from the server and counts as this fleet, and
+// one at 6 or below does not. A later schema keeps that since as it keeps every element's, also
+// where it changes the version at which an element can be created, so the number does not move
+// with the build reading it. A manifest that declares no `decision` type - only one a test
+// installs in place of this build's - bounds the fleet at its own version. It serves
+// anotherBuildServes alone, and goes with it.
 //
 // kept for one release: roll-window-attributes
 // kept for one release: stored-ask-state

@@ -718,7 +718,9 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 		}
 	}
 	// A block a person decided is theirs and waits for nobody's review, whatever its Keep; one a
-	// session decided, or that no decided_by names, is an agent's. Kind stays the node's shape.
+	// session decided, or that no decided_by names, is an agent's. Kind stays the node's shape. The
+	// decisions step credits a decision it converts to a session alone and never to a person (docs'
+	// creditSectionAuthors), so a decided_by naming a person is one that person's own write gave.
 	decidedByPerson := decider != nil && decider.toKind == graphstore.KindPerson
 	decision.WaitingReview = decision.Kind == "agent" && !decidedByPerson && !decision.Replaced &&
 		(decision.Kept == nil || decision.Kept.TextSHA256 != decision.TextSHA256)

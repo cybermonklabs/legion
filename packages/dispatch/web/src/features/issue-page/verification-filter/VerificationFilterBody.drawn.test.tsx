@@ -2915,7 +2915,9 @@ function layOut(height: number): () => void {
     configurable: true,
     get: () => height,
   });
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+  // On Element, which owns the method: a spy on HTMLElement leaves an own property behind once
+  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`).
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 600, height)
   );
   return () => {

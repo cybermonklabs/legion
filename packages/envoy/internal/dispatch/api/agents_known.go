@@ -87,9 +87,9 @@ const knownSessionIDMax = text.MaxTargetBytes
 // in one statement), naming each in `id`, 1 to contracts.KnownSessionsMax times.
 //
 // It answers only what its caller could already learn, so it admits exactly the callers GET
-// /api/v1/agents/{session_id}/messages admits: the `person` scope its row names (routeScopes),
-// and actingPerson, which that read opens with too. That read already tells such a caller whether
-// a session has a conversation, one id per request. So `session` means here what it means on
+// /api/v1/agents/{session_id}/messages admits: the `person` scope its declaration names
+// (OAuthScopes), and actingPerson, which that read opens with too. That read already tells such a
+// caller whether a session has a conversation, one id per request. So `session` means here what it means on
 // every route, the session the request acts for, and a credential that proved a session is
 // refused one naming another (403 ACTOR_SESSION_MISMATCH).
 //

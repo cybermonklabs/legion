@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A write that moves a query of a converted issue (an edit, a node move or delete, a node's state, a
+  result and its retraction, an ask's follower, a decision's keep) no longer holds its answer for as
+  long as something else holds the issue's owner lock. After the write's COMMIT, its fill of the
+  owed record digests and its drain of the owed query versions each wait at most 5 seconds for a
+  lock. A drain that meets that bound leaves the issue's queries owed and logs a warning naming the
+  issue and the bound, and the write answers. The block-index tick then writes the versions, within
+  its 30-second interval once the lock is free. A drain inside the bound still writes the versions
+  before the write answers, as before.
+time: 2026-11-27T12:00:00Z
+custom:
+    Issue: INFRA-1253

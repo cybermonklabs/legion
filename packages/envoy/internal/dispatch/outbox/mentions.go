@@ -1253,30 +1253,18 @@ type fallbackEvent struct {
 
 // fallbackRecord is what a fallback pass came to for one row: settled, and published when it
 // published the copy; failed when its decision or publish failed, which counts an attempt on the
-// row and backs it off (failedFallbackCopy). A record neither settled nor failed releases the
-// row's claim for a later pass, counting no attempt, and delay is how long the row waits before
-// it is due again: mentionPendingDelay while its mention is still being sent, retry.BaseDelay
-// while NATS is unreachable, and none at all when the publisher hold's deadline fenced the send
-// or the process is stopping, where whatever pass runs next takes the row at once.
+// row and backs it off, logged at the dead-letter threshold (failedAttempt). A record neither
+// settled nor failed releases the row's claim for a later pass, counting no attempt, and delay is
+// how long the row waits before it is due again: mentionPendingDelay while its mention is still
+// being sent, retry.BaseDelay while NATS is unreachable, and none at all when the publisher hold's
+// deadline fenced the send or the process is stopping, where whatever pass runs next takes the row
+// at once.
 type fallbackRecord struct {
 	held      fallbackCopy
 	settled   bool
 	published bool
 	failed    bool
 	delay     time.Duration
-}
-
-// failedFallbackCopy is the record of a row whose decision or publish failed: one more attempt
-// counted on it, and its next attempt retry.Delay of that count away, the schedule an event backs
-// off by (backOff). Nothing about a publish failing is permanent, so the row is never given up:
-// the attempt that brings its count to retry.DeadLetterAttempts, the threshold the event scan logs
-// at, is logged at Error, and the row is retried on the same schedule after it.
-func failedFallbackCopy(held fallbackCopy) fallbackRecord {
-	if attempts := held.attempts + 1; attempts == retry.DeadLetterAttempts {
-		slog.Error("dispatch outbox: fallback copy reached dead-letter threshold",
-			"comment_id", held.commentID, "destination", held.destination, "attempts", attempts)
-	}
-	return fallbackRecord{held: held, failed: true}
 }
 
 // publishFallbackCopies is the fallback pass. This is the one description of how a mentioned
@@ -1365,7 +1353,7 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // on the row (attempt_count) and moves its next_attempt_at out by retry.Delay of that count, the
 // schedule an event backs off by, so it is decided again once that passes; nothing about a publish
 // failing is permanent, so the row is never given up, and the attempt that brings the count to
-// retry.DeadLetterAttempts is logged at Error (failedFallbackCopy). One cut short by NATS being
+// retry.DeadLetterAttempts is logged at Error (failedAttempt). One cut short by NATS being
 // unreachable counts nothing - the outage is no fault of the row, as it is none of an event whose
 // send met the connection (settleEvent) - and releases the claim for retry.BaseDelay, the wait a
 // scan that failed is tried again after: the holder gives the hold up for NATS lost, and the
@@ -1473,7 +1461,8 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			release(held, 0)
 			return
 		}
-		records = append(records, failedFallbackCopy(held))
+		failedAttempt(held.attempts+1, "fallback copy", "comment_id", held.commentID, "destination", held.destination)
+		records = append(records, fallbackRecord{held: held, failed: true})
 	}
 	events, err := loadFallbackEvents(ctx, deps, copies)
 	if err != nil {
@@ -1537,54 +1526,23 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		}
 	}
 	for _, item := range sent {
-		var err error
-		// An answer already in is read before ctx is: a stopping process records what NATS
-		// accepted.
-		select {
-		case err = <-item.answer:
-		default:
-			select {
-			case err = <-item.answer:
-			case <-ctx.Done():
-				err = ctx.Err()
-			}
-		}
-		switch {
-		case err == nil:
-		case errors.Is(err, bus.ErrRefused):
-			deps.countPublishFailure("refused")
-			slog.Error("dispatch outbox: fallback copy refused", "comment_id", item.held.commentID, "destination", item.held.destination, "error", err)
-		case errors.Is(err, bus.ErrWindowDeadline):
-			// The hold's deadline refused the send: it never left this process, so it is no
-			// failure of the row and counts nothing. The row is released due at once, which the
-			// record writes while the publisher hold is still this process's on the database's
-			// clock - the deadline is the margin ahead of that - and leaves to whoever holds it
-			// otherwise (recordFallbackCopies): either way the next pass to claim it decides it.
-			release(item.held, 0)
+		err := awaitAnswer(ctx, item.answer)
+		// A send's answer is read, counted and logged by the one rule both passes share
+		// (judgeSend). A role forward its holder's resolution held pending sent nothing at all
+		// and is counted under that holder.
+		verdict := judgeSend(ctx, deps, err, item.out.forward, "fallback copy",
+			"comment_id", item.held.commentID, "destination", item.held.destination)
+		switch verdict.outcome {
+		case sendReached, sendRefused:
+			// A refused copy settles as a sent one: nothing a later send does would be taken.
+		case sendReleased:
+			// The record writes the release while the publisher hold is still this process's on
+			// the database's clock, and leaves it to whoever holds it otherwise
+			// (recordFallbackCopies): either way the next pass to claim it decides it.
+			release(item.held, verdict.delay)
 			continue
 		default:
-			// Counted as a batch counts a destination that did not reach NATS, by the batch's
-			// own rule (sendChains, forwardUnanswered): a role forward its holder's resolution
-			// held pending sent nothing at all and is counted under that holder, a forward the
-			// stream never acknowledged is unanswered, and a send the server refused under this
-			// connection's own publish permissions is a denial. An answer a stopping process
-			// stopped waiting for says nothing of NATS and counts nothing.
-			switch forward := item.out.forward; {
-			case errors.Is(err, bus.ErrPublishDenied):
-				deps.countPublishFailure("denied")
-			case forward != nil && forward.err != nil:
-				deps.countPublishFailure("holder")
-			case forwardUnanswered(forward != nil, err):
-				deps.countPublishFailure("unanswered")
-			case !lostToContextEnd(ctx, err):
-				deps.countPublishFailure("failed")
-			}
-			slog.Error("dispatch outbox: publish fallback copy", "comment_id", item.held.commentID, "destination", item.held.destination, "error", err)
-			if errors.Is(err, bus.ErrUnavailable) {
-				release(item.held, retry.BaseDelay)
-			} else {
-				fail(item.held)
-			}
+			fail(item.held)
 			continue
 		}
 		records = append(records, fallbackRecord{held: item.held, settled: true, published: true})
@@ -1992,7 +1950,7 @@ const fallbackRecordAnswer = `
 
 // recordFallbackCopies writes what a fallback pass came to, in one statement: each row settled is
 // marked so, published when it published the copy; each failed row counts one more attempt and
-// waits retry.Delay of its new count from now (failedFallbackCopy); and each row left for a later
+// waits retry.Delay of its new count from now (failedAttempt); and each row left for a later
 // pass has its claim replaced by the wait it was released with, which counts no attempt, or
 // cleared when that wait is none (fallbackRecord). It reports whether instance, the process the
 // pass ran in (Outbox.serve), holds the publisher hold still.

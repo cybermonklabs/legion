@@ -78,7 +78,9 @@ loopback_database_url "$database_url" || {
   printf '%s: DATABASE_URL names no single loopback database\n' "$driver" >&2
   exit 2
 }
-readonly login="$DEV_SIGNIN_LOGIN" reader=bob
+# Not readonly: lib-tree.sh's tree_sign_in takes a local of that name.
+login="$DEV_SIGNIN_LOGIN"
+readonly reader=bob
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="tree-read-views-$stamp"
@@ -164,6 +166,31 @@ tree_read_views_opener() {
   tree_want 200 "$1" "read $3 of $2"
   tree_value="$(jq -r '.markdown' "$work/body" | grep -m1 -E "^:{3,}[a-z_]+\\{#$4[ }]")" ||
     fail "$1" "find the opening line of $4 in $3 of $2" "$(body)"
+}
+
+# tree_read_views_reopen SECTION AS ISSUE BLOCK OPENER: AS (agent or person) writes the spec of
+# ISSUE again, whole, with the opening line of its typed block BLOCK read as OPENER and the rest of
+# its text as it now reads. An edit's replace finds the words of a block's text and never its
+# opening line (404 TARGET_NOT_FOUND: "quotes match the block text as rendered"), so a change of a
+# typed block's pointer attributes is a write of the whole text, as the seed writes the reading g2.
+tree_read_views_reopen() {
+  local section="$1" as="$2" issue="$3" block="$4" opener="$5" token
+  tree_send GET "/api/v1/issues/$issue/artifacts/spec/text"
+  tree_want 200 "$section" "read the spec of $issue"
+  tree_field "$section" "read the token of the spec of $issue" .token
+  token="$tree_value"
+  jq -r '.markdown' "$work/body" | awk -v id="$block" -v line="$opener" '
+    !done && $0 ~ ("^:::+[a-z_]+[{]#" id "[ }]") { print line; done = 1; next }
+    { print }' >"$work/reopened.md"
+  grep -qxF -- "$opener" "$work/reopened.md" ||
+    fail "$section" "rewrite the opening line of $block in the spec of $issue" "the spec holds no opening line of $block: $(head -c 600 "$work/reopened.md")"
+  if [[ "$as" == agent ]]; then
+    corpus_upload "$section" "$issue" spec "$work/reopened.md"
+    return
+  fi
+  jq -cn --rawfile c "$work/reopened.md" --arg t "$token" '{name: "spec", content: $c, precondition: {document: $t}}' >"$work/reopened.json"
+  tree_person_send POST "/api/v1/issues/$issue/artifacts" "@$work/reopened.json"
+  tree_want 201 "$section" "$login writes the spec of $issue again with the opening line of $block"
 }
 
 # tree_read_views_comment SECTION ISSUE BODY [ANCHOR]: alice comments on ISSUE, anchored by the JSON
@@ -448,11 +475,18 @@ tree_kept_expect "$work/a-plan.json" parent "?view=plan answers them in one orde
    | [($tasks | all(.plan != null and (.plan | has("position") and has("needs") and has("size")))),
       ([$tasks[] | .plan.position] as $p | ($p | all(. != null)) and $p == ($p | sort))]'
 tree_read_views_get parent agent "/api/v1/issues/$key/tree?view=verification" "$work/a-verification.json"
+# The child's check stands in the answer under the parent's requirement it serves (R30), while its
+# stored part_of hangs from the child issue (R3).
 tree_kept_expect "$work/a-verification.json" parent \
-  "?view=verification answers the child's check through serves, marked with the child, with the child issue as its parent, and its result" \
-  "$(jq -cn --arg c "$child" --arg r "$child_result" '[[$c, "issue", $c], [$r]]')" \
+  "?view=verification answers the child's check through serves, marked with the child, with r1 as its parent in the answer, and its result" \
+  "$(jq -cn --arg c "$child" --arg q "$requirement_node" --arg r "$child_result" '[[$c, "block", $q], [$r]]')" \
   --arg r "$child_result" '[([.nodes[] | select(.block_id == "cc1") | [.issue, .parent.kind, .parent.id]] | first),
     [.nodes[] | select(.kind == "result" and .id == $r) | .id]]'
+child_check="$(jq -r '[.nodes[] | select(.block_id == "cc1") | .id][0] // empty' "$work/a-verification.json")"
+tree_node_far parent "$child_check" part_of
+[[ "$answer" == "issue/$child" ]] ||
+  fail parent "the child's check $child_check hangs from $child in the store" "its stored part_of names '$answer'"
+pass parent "the child's check $child_check hangs from $child in the store, under r1 in the answer"
 tree_kept_expect "$work/a-verification.json" parent \
   "?view=verification answers the parent's check and its result as the query's and the requirement above them as context" \
   '[["check","query"],["requirement","context"],["result","query"]]' --arg r "$first_result" \
@@ -571,8 +605,8 @@ tree_read_views_version version "$spec"
 readonly tied_version="$newest_version"
 tree_read_views_opener version "$key" spec d1
 opener="$tree_value"
-corpus_edit version "retract the shaped tuple of d1" "$spec" \
-  "$(jq -cn --arg f "$opener" '[{op: "replace", find: $f, with: "::::decision{#d1}"}]')"
+tree_read_views_reopen version agent "$key" d1 "$(sed -E 's/ shaped="[^"]*"//' <<<"$opener")"
+pass version "retract the shaped tuple of d1"
 tree_read_views_get version agent "/api/v1/issues/$key/tree?view=spec&v=$tied_version" "$work/a-spec-then.json"
 tree_read_views_get version agent "/api/v1/issues/$key/tree?view=spec" "$work/a-spec-now.json"
 for read in "then:$work/a-spec-then.json:1" "now:$work/a-spec-now.json:0"; do
@@ -586,8 +620,8 @@ tree_want 404 version "a version the spec query does not have is refused"
 expect version "a version the spec query does not have answers QUERY_VERSION_NOT_FOUND" '"QUERY_VERSION_NOT_FOUND"' '.code'
 tree_read_views_opener version "$key" spec d1
 opener="$tree_value"
-corpus_edit version "write the shaped tuple of d1 again" "$spec" \
-  "$(jq -cn --arg f "$opener" --arg s "$shaped_pointer" '[{op: "replace", find: $f, with: ($f | sub("}$"; " shaped=\"" + $s + "\"}"))}]')"
+tree_read_views_reopen version agent "$key" d1 "${opener%\}} shaped=\"$shaped_pointer\"}"
+pass version "write the shaped tuple of d1 again"
 
 # --- comments, the decision's review state and its Keep ------------------------------------------
 
@@ -729,8 +763,8 @@ readonly shaping_ask="$tree_value"
 corpus_answer ask "$shaping_ask" "The oldest breaks a tie." Oldest
 tree_read_views_opener ask "$key" spec a3
 opener="$tree_value"
-tree_person_edit ask "$login gives a3 a shaped tuple to r1" "$spec" \
-  "$(jq -cn --arg f "$opener" --arg s "$shaped_pointer" '[{op: "replace", find: $f, with: ($f | sub("}$"; " shaped=\"" + $s + "\"}"))}]')"
+tree_read_views_reopen ask person "$key" a3 "${opener%\}} shaped=\"$shaped_pointer\"}"
+pass ask "$login gives a3 a shaped tuple to r1"
 tree_read_views_get ask agent "/api/v1/issues/$key/tree?view=spec" "$work/a-spec.json"
 tree_kept_expect "$work/a-spec.json" ask "?view=spec answers the answered ask a3 as context, with its shaped tuple to r1" '[["context"],1]' \
   --arg a "$shaping_ask" --arg r "$requirement_node" \
@@ -762,25 +796,26 @@ request "cookie:$login" POST /api/v1/going/requests "$(jq -cn --arg p "$project"
 tree_last_request="POST /api/v1/going/requests as $login"
 tree_want 201 run "$login starts a run of the command bar"
 tree_field run "$login starts a run of the command bar" .id
-readonly run="$tree_value"
-request "cookie:$login" POST "/api/v1/issues/$key/comments" '{"body": "The run says the plan holds the order."}' "$run"
-tree_last_request="POST /api/v1/issues/$key/comments as $login under the run $run"
+# Not `run`: lib.sh's request takes a local of that name, which a readonly variable refuses.
+readonly going_run="$tree_value"
+request "cookie:$login" POST "/api/v1/issues/$key/comments" '{"body": "The run says the plan holds the order."}' "$going_run"
+tree_last_request="POST /api/v1/issues/$key/comments as $login under the run $going_run"
 tree_want 201 run "$login comments on $key under the run's header"
 tree_field run "$login comments on $key under the run's header" .id
 readonly run_comment="$tree_value"
 tree_read_views_get run "$login" "/api/v1/issues/$key/tree" "$work/a-alice.json"
-held="$(jq -c --arg r "$run" --arg c "$run_comment" --arg k "$key" '[[.nodes[] | select(.kind == "interaction" and .id == $r) | .role],
+held="$(jq -c --arg r "$going_run" --arg c "$run_comment" --arg k "$key" '[[.nodes[] | select(.kind == "interaction" and .id == $r) | .role],
   ([.tuples[] | select(.kind == "changed_by_run" and .from.kind == "comment" and .from.id == $c and .to.id == $r)] | length),
   ([.tuples[] | select(.kind == "changed_by_run" and .from.kind == "issue" and .from.id == $k and .to.id == $r)] | length)]' "$work/a-alice.json")"
 [[ "$held" == '[["context"],1,0]' ]] ||
   fail run "$login's read answers the run's interaction as context, with the comment's changed_by_run and none from the issue" \
-    "the run $run reads $held (interaction roles, the comment's tuples, the issue's tuples)"
-pass run "$login's read answers the run $run as context with the comment's changed_by_run tuple, and the issue holds none"
+    "the run $going_run reads $held (interaction roles, the comment's tuples, the issue's tuples)"
+pass run "$login's read answers the run $going_run as context with the comment's changed_by_run tuple, and the issue holds none"
 tree_read_views_get run "$reader" "/api/v1/issues/$key/tree" "$work/a-bob.json"
 tree_kept_expect "$work/a-bob.json" run "$reader's read answers the comment and neither the tuple nor the interaction" '[1,0]' \
-  --arg r "$run" --arg c "$run_comment" '[([.nodes[] | select(.kind == "comment" and .id == $c)] | length),
+  --arg r "$going_run" --arg c "$run_comment" '[([.nodes[] | select(.kind == "comment" and .id == $c)] | length),
     ([.nodes[] | select(.id == $r)] + [.tuples[] | select(.to.id == $r or .from.id == $r)] | length)]'
-! grep -qF -- "$run" "$work/a-bob.json" || fail run "$reader's answer names the run nowhere" "it names $run"
+! grep -qF -- "$going_run" "$work/a-bob.json" || fail run "$reader's answer names the run nowhere" "it names $going_run"
 
 # --- an issue that has not converted ------------------------------------------------------------
 
@@ -907,12 +942,29 @@ tree_kept_expect "$work/a-decisions.json" decisions-read \
 # planted caller in a scratch copy of one file first, so a search that matched nothing cannot read as
 # a clean tree. A caller is a line of a source file that names the route's path, the issue's key a
 # parameter of it, and is no comment; a test's file, which stands a fake route up and calls none, is
-# no caller.
+# no caller. A caller whose line or the line above it carries the marker `kept for one release:
+# decisions-route`, the id last on its line, is the fallback kept for one release for a Dispatch of
+# the release before, which serves no tree read (root-deletes.txt lists the id), and is admitted, not
+# printed: the rule issue-relations-read.sh and decisions-gone.sh read a marker by.
 readonly caller_pattern='issues/(\{[a-zA-Z_]+\}|\$\{[^}]+\}|:[a-zA-Z_]+|%[sv])/decisions([?"'"'"'`]|$)'
 tree_read_views_callers() {
-  grep -rnE --include='*.ts' --include='*.tsx' --include='*.go' --exclude-dir=__tests__ \
-    --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*_test.go' -- "$caller_pattern" "$@" |
-    grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)' || true
+  local hit path rest number from marked
+  while IFS= read -r hit; do
+    path="${hit%%:*}"
+    rest="${hit#*:}"
+    number="${rest%%:*}"
+    from=$((number - 1))
+    [[ "$from" -ge 1 ]] || from=1
+    marked="$(sed -n "${from},${number}p" "$path" |
+      sed -nE 's/.*kept for one release: ([a-z0-9-]+)[[:space:]]*$/\1/p' | tail -n 1)"
+    if [[ "$marked" != decisions-route ]]; then
+      printf '%s\n' "$hit"
+    fi
+  done < <(
+    grep -rnE --include='*.ts' --include='*.tsx' --include='*.go' --exclude-dir=__tests__ \
+      --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*_test.go' -- "$caller_pattern" "$@" |
+      grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)' || true
+  )
 }
 scratch="$(mktemp -d "$work/callers.XXXXXX")"
 cp "$packages_dir/envoy-client/src/dispatch-owner.ts" "$scratch/dispatch-owner.ts"

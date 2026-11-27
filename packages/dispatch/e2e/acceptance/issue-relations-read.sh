@@ -30,7 +30,9 @@
 #      neither of them a query node.
 #   R8 It searches packages/dispatch/web/src, packages/envoy-client/src and packages/daemon for a
 #      reader of either field, after finding a reader it plants in a scratch copy of one file, and
-#      finds none.
+#      finds none that is not marked `kept for one release: role-artifact-ids` on its line or the
+#      line above: the fallback each keeps for one release where an issue read carries no
+#      `queries`, as a Dispatch of the release before answers it.
 #
 # Inputs: DATABASE_URL (the database the server serves, on this machine: the driver reads the store
 # through psql and stands R7's process row there), DISPATCH_URL (the server), DISPATCH_TOKEN or
@@ -185,15 +187,33 @@ issue_relations_read_release_room() {
 # or plan_artifact_id under DIR, as file:line:text: a line of a TypeScript or Go file that is no
 # test and no comment and reads either field as a member (`.field`, `?.field`), names it in quotes
 # (a Pick of the type, a Go json tag) or destructures it, leaving out the results read's own member
-# of that name (`results.verification_artifact_id`, GET /api/v1/issues/{key}/results).
+# of that name (`results.verification_artifact_id`, GET /api/v1/issues/{key}/results). A reader
+# whose line or the line above it carries the marker `kept for one release: role-artifact-ids`,
+# the id last on its line, is the fallback R8 keeps for one release for a Dispatch of the release
+# before, which answers no `queries` (root-deletes.txt lists the id), and is admitted, not printed:
+# the rule decisions-gone.sh's kept_comment_id reads a marker by.
 issue_relations_read_readers() {
-  grep -rnE --include='*.ts' --include='*.tsx' --include='*.go' \
-    --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*_test.go' --exclude-dir=__tests__ \
-    --exclude-dir=node_modules \
-    '\??\.(verification_artifact_id|plan_artifact_id)\b|"(verification_artifact_id|plan_artifact_id)[",]|\b(verification_artifact_id|plan_artifact_id)\b[^:]*\}[[:space:]]*=' \
-    "$@" 2>/dev/null |
-    grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/?\*|#)' |
-    grep -vE 'results(\.data)?\??\.verification_artifact_id' || true
+  local hit path rest number from marked
+  while IFS= read -r hit; do
+    path="${hit%%:*}"
+    rest="${hit#*:}"
+    number="${rest%%:*}"
+    from=$((number - 1))
+    [[ "$from" -ge 1 ]] || from=1
+    marked="$(sed -n "${from},${number}p" "$path" |
+      sed -nE 's/.*kept for one release: ([a-z0-9-]+)[[:space:]]*$/\1/p' | tail -n 1)"
+    if [[ "$marked" != role-artifact-ids ]]; then
+      printf '%s\n' "$hit"
+    fi
+  done < <(
+    grep -rnE --include='*.ts' --include='*.tsx' --include='*.go' \
+      --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*_test.go' --exclude-dir=__tests__ \
+      --exclude-dir=node_modules \
+      '\??\.(verification_artifact_id|plan_artifact_id)\b|"(verification_artifact_id|plan_artifact_id)[",]|\b(verification_artifact_id|plan_artifact_id)\b[^:]*\}[[:space:]]*=' \
+      "$@" 2>/dev/null |
+      grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|/?\*|#)' |
+      grep -vE 'results(\.data)?\??\.verification_artifact_id' || true
+  )
 }
 
 # --- R1: the issues, the items and the relations of the create -------------------------------------
@@ -408,7 +428,7 @@ issue_relations_read_release_room
 want_value R7 "the process $stood_in the driver stood in is gone" 0 \
   "select count(*) from server_processes where instance = '$stood_in'"
 
-# --- R8: no page, CLI or daemon reads either field ---------------------------------------------------
+# --- R8: no page, CLI or daemon reads either field but through a kept fallback ----------------------
 
 mkdir "$work/planted"
 readonly planted_from="$repo_root/packages/envoy-client/src/dispatch-commands/issues.ts"
@@ -426,7 +446,7 @@ for tree in packages/dispatch/web/src packages/envoy-client/src packages/daemon;
 done
 readers="$(issue_relations_read_readers "${searched[@]}")"
 [[ -z "$readers" ]] ||
-  fail R8 "no page, CLI or daemon reads verification_artifact_id or plan_artifact_id of the issue read" "$readers"
-pass R8 "no file of packages/dispatch/web/src, packages/envoy-client/src or packages/daemon reads verification_artifact_id or plan_artifact_id of the issue read"
+  fail R8 "no page, CLI or daemon reads verification_artifact_id or plan_artifact_id of the issue read but through a reader marked kept for one release (role-artifact-ids)" "$readers"
+pass R8 "no file of packages/dispatch/web/src, packages/envoy-client/src or packages/daemon reads verification_artifact_id or plan_artifact_id of the issue read but through a reader marked kept for one release (role-artifact-ids)"
 
 pass "$driver" "complete 8 sections"

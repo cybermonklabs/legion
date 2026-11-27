@@ -83,6 +83,8 @@ func TestBlocksListATablesRowsAndCellsWhereTheBlockRoutePlacesThem(t *testing.T)
 // Owner spanning nothing, so its Oct 1 is under Due where the first one's is under Owner; and
 // delete_row on one of its listed rows removes that row.
 func TestBlocksOfAHeldDocumentShareOneSpanBudget(t *testing.T) {
+	// Not parallel: it reads the whole process's heap statistics (runtime.ReadMemStats, TotalAlloc)
+	// around its request, which every goroutine's allocations move.
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Spanned tables", "Intro.\n")
 	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)

@@ -300,8 +300,8 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	}
 	stopProcess(t, previous)
 
-	// This head writes a third document holding a reading inside an answered ask: at block schema
-	// version 7 it creates reading blocks.
+	// This head writes a third document holding a reading inside an answered ask: a build creates
+	// reading blocks from block schema version 8, and this head is at version 9.
 	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
 	current.waitHealthy(t)
 	readingAsk := ":::ask{#read-it urgency=\"med\" multiple=\"false\"}\nRead it?\n\n- Yes: Now.\n- No: Later.\n:::\n"

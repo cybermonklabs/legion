@@ -206,7 +206,10 @@ $second_words
 :::
 SPEC
 conversation_view_create seed "The conversation holds the discussion" "$work/spec.md"
-readonly key="$corpus_key" spec="$corpus_spec"
+# Not readonly: seed-corpus.sh's corpus_large_issue, which the large section runs, takes a local of
+# that name.
+key="$corpus_key"
+readonly spec="$corpus_spec"
 tree_keep seed "/api/v1/issues/$key/tree" "$work/tree-first.json"
 tree_kept_expect "$work/tree-first.json" seed "$key is born converted and holds its tree" '[true,true]' \
   '[.converted, (.tree | type == "string")]'
@@ -224,7 +227,9 @@ head_block="$(jq -r '.blocks[0].ref // empty' "$work/head-blocks.json")"
 [[ -n "$head_block" ]] || fail seed "read the first block of the comment $head" "no ref: $(head -c 600 "$work/head-blocks.json")"
 readonly head_block
 corpus_comment person seed "$key" "And the replies a person wrote under it." "$head"
-readonly reply="$corpus_item"
+# Not `reply`: seed-corpus.sh's corpus_comment and corpus_message take a local of that name, which a
+# readonly variable refuses.
+readonly person_reply="$corpus_item"
 corpus_comment agent seed "$key" "The agent answers inside the person's thread." "$head"
 readonly agent_reply="$corpus_item"
 corpus_comment agent seed "$key" "Status: the agent is seeding the conversation."
@@ -234,7 +239,7 @@ readonly remark="$corpus_item"
 corpus_ask seed "$key" "Which store holds the conversation?"
 readonly ask="$corpus_item"
 corpus_answer seed "$ask" "Postgres, the database the pod runs." Postgres
-pass seed "wrote the thread $head with the replies $reply and $agent_reply, the status $status_comment, the remark $remark and the ask $ask"
+pass seed "wrote the thread $head with the replies $person_reply and $agent_reply, the status $status_comment, the remark $remark and the ask $ask"
 
 # The criterion the person wrote in that exchange, into the issue's tree under the thread's first
 # block; the requirement under it; the decision an agent recorded; the check and the plan task.
@@ -264,6 +269,7 @@ Walk the conversation from the issue.
 :::
 PLAN
 corpus_upload seed "$key" plan.md "$work/plan.md"
+readonly plan="$corpus_doc"
 printf '# Notes\n\nThe first version of the notes.\n' >"$work/notes.md"
 corpus_upload seed "$key" notes.md "$work/notes.md"
 readonly notes="$corpus_doc"
@@ -306,7 +312,7 @@ pass seed "the person approved version $approved_version of the spec $spec; the 
 tree_section kinds
 tree_keep kinds "/api/v1/issues/$key/tree" "$work/tree.json"
 tree_keep kinds "/api/v1/issues/$key/artifacts/spec/text?blocks=true" "$work/spec-blocks.json"
-for node in "comment:$head:the head of the person's thread" "comment:$reply:the person's reply" \
+for node in "comment:$head:the head of the person's thread" "comment:$person_reply:the person's reply" \
   "comment:$agent_reply:the agent's reply in the person's thread" "ask:$ask:the ask"; do
   IFS=: read -r kind id what <<<"$node"
   conversation_view_present kinds "$work/tree.json" "the read with no view answers $what as a node of the tree" "$kind" "$id" tree
@@ -324,9 +330,20 @@ tree_kept_expect "$work/tree.json" kinds \
   '[.nodes[] | select(.block_id == "k-discussion" or .block_id == "r-discussion" or .block_id == "d-discussion"
      or .block_id == "c-discussion" or .block_id == "t-discussion") | [.block_id, .supertag, .role]] | sort'
 # Nothing of the workflow and nothing that is no part of the discussion: no artifact, no document
-# version, no prose block of a role document.
-outside="$(jq -r --argjson typed "$typed_blocks" '.nodes[]
-  | select(.kind == "artifact" or .kind == "version" or (.kind == "block" and (.supertag as $s | $typed | index($s)) == null))
+# version, no prose block of a role document. A role document's prose is each block the blocks read
+# of the spec, verification.md or plan.md lists that is no typed block, a typed block's own
+# paragraph among them. The room's own fragment is no role document: the paragraph of the criterion
+# written into the tree is prose of that fragment, a node of the tree (R2, R16).
+role_prose='[]'
+for document in "$spec" "$verification" "$plan"; do
+  tree_keep kinds "/api/v1/artifacts/$document/blocks" "$work/role-blocks.json"
+  role_prose="$(jq -c --argjson typed "$typed_blocks" --argjson held "$role_prose" \
+    '$held + [.[] | select((.type as $t | $typed | index($t)) == null) | .id]' "$work/role-blocks.json")"
+done
+[[ "$role_prose" != '[]' ]] ||
+  fail kinds "read the prose blocks of the role documents of $key" "the blocks reads of $spec, $verification and $plan list none"
+outside="$(jq -r --argjson prose "$role_prose" '.nodes[]
+  | select(.kind == "artifact" or .kind == "version" or (.kind == "block" and (.block_id as $b | $prose | index($b)) != null))
   | "\(.kind) \(.id) (\(.supertag))"' "$work/tree.json")"
 [[ -z "$outside" ]] || fail kinds "the read answers no artifact, no document version and no prose block of a role document" \
   "it answers ${outside//$'\n'/, }, nodes the graph must not hold"
@@ -376,8 +393,12 @@ requirement_node="$(jq -r '[.nodes[] | select(.block_id == "r-discussion") | .id
   fail kinds "the agent's comment on the requirement's text is answered under the requirement as context" \
     "the answer holds the comment $on_text as $held, want it once as context under $requirement_node"
 pass kinds "the agent's comment $on_text on the requirement's text is answered under the requirement as context"
-tree_kept_expect "$work/tree.json" kinds "no node of the read stands under the agent's comment on the text" '[]' \
-  --arg i "$on_text" '[.nodes[] | select(.parent != null and .parent.kind == "comment" and .parent.id == $i) | {kind, id}]'
+# The comment's own blocks, its text, stand with it (R8: "An item's own blocks stand with their
+# item"; "Under a conversation item, the item's own blocks come first"); no other node hangs under
+# it, since no node hangs under a comment on text but its replies, and nobody replied.
+tree_kept_expect "$work/tree.json" kinds "no node of the read but the comment's own blocks stands under the agent's comment on the text" '[]' \
+  --arg i "$on_text" '[.nodes[] | select(.parent != null and .parent.kind == "comment" and .parent.id == $i)
+    | select((.kind == "comment_block" and (.id | startswith("comment/" + $i + "#"))) | not) | {kind, id}]'
 tree_kept_expect "$work/tree.json" kinds "the read answers the memo callout first, before any conversation node" \
   '["memo","callout"]' '[.nodes[] | select(.role != "context" and .parent != null)][0] | [.block_id, .supertag]'
 

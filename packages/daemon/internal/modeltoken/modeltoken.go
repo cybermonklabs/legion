@@ -31,6 +31,7 @@ import (
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // maxResponseBytes caps one Cognito response: both answers fit in a few KiB, so a longer one is a
@@ -121,7 +122,7 @@ func signIn(ctx context.Context, cfg Config, client *http.Client, answer string)
 		AuthParameters: map[string]string{"USERNAME": cfg.Username},
 	})
 	if err != nil {
-		return "", cognitoError("InitiateAuth", err)
+		return "", cognitoError("InitiateAuth", cfg.Endpoint, err)
 	}
 	if started.ChallengeName != types.ChallengeNameTypeCustomChallenge {
 		return "", fmt.Errorf("Cognito InitiateAuth answered %s, not CUSTOM_CHALLENGE", challenge(started.ChallengeName))
@@ -133,7 +134,7 @@ func signIn(ctx context.Context, cfg Config, client *http.Client, answer string)
 		ChallengeResponses: map[string]string{"USERNAME": cfg.Username, "ANSWER": answer},
 	})
 	if err != nil {
-		return "", cognitoError("RespondToAuthChallenge", err)
+		return "", cognitoError("RespondToAuthChallenge", cfg.Endpoint, err)
 	}
 	token := ""
 	if result := answered.AuthenticationResult; result != nil {
@@ -159,10 +160,12 @@ func challenge(name types.ChallengeNameType) string {
 
 // cognitoError reports a failed Cognito call in words this package chooses: the error code of a
 // refusal when it has the shape of one, the HTTP status of an answer that is not Cognito's, or a
-// dial failure to the operator's configured endpoint. The endpoint's message, request id, body and
-// certificate never appear, since a hostile endpoint could echo the service-account token into any
-// of them.
-func cognitoError(operation string, err error) error {
+// dial failure to the endpoint. The endpoint's message, request id, body and certificate never
+// appear, since a hostile endpoint could echo the service-account token into any of them. A dial
+// failure to an endpoint the operator set (--endpoint) is named through redact.RequestError: such
+// a URL can carry a user name and a password, and the dial's error names the host and the port,
+// which are a password's tail when it holds an unencoded "@".
+func cognitoError(operation, endpoint string, err error) error {
 	var refusal smithy.APIError
 	var certificate *tls.CertificateVerificationError
 	var response *smithyhttp.ResponseError
@@ -184,6 +187,9 @@ func cognitoError(operation string, err error) error {
 	case errors.Is(err, context.Canceled):
 		return fmt.Errorf("Cognito %s: sign-in was canceled", operation)
 	case errors.As(err, &dial) && dial.Op == "dial":
+		if endpoint != "" {
+			return fmt.Errorf("Cognito %s: %w", operation, redact.RequestError("the Cognito endpoint", endpoint, dial))
+		}
 		return fmt.Errorf("Cognito %s: %w", operation, dial)
 	default:
 		// The endpoint may have answered with bytes net/http could not parse, so use fixed wording.

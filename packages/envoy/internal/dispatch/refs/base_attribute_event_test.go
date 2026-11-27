@@ -42,6 +42,7 @@ import (
 // event. Under the key this build ships the log holds both values; under the key it replaces
 // the restore is dropped and the node row reads live while the log's newest value reads gone.
 func TestTwoValuesOfOneBaseAttributeUnderOneEventAreBothHeld(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := parentDatabase(t)
 	writer := model.Actor{Kind: "user", ID: "alice"}

@@ -300,6 +300,19 @@ func (f *QuoteFinder) blockRange(blockID string) (Range, bool) {
 	return block, held
 }
 
+// FindPlain finds quote in the document's plain text exactly, as a reply's quote of a block names
+// it: the characters of the text runs joined, so markdown in the quote, a leading `#` and a run of
+// white space the text does not hold are the characters they are, and never Find's markdown,
+// heading or normalized match. Matches overlap (findAll), and occurrence counts them from 0 as
+// Find's does; a miss or an occurrence past the last match is *ErrQuoteNotFound, and several
+// matches with no occurrence *ErrTargetAmbiguous.
+func (f *QuoteFinder) FindPlain(quote string, occurrence *int) (Range, error) {
+	if err := f.prepare(); err != nil {
+		return Range{}, err
+	}
+	return f.choose(quote, exactQuoteMatches(f.text, quote), occurrence, nil)
+}
+
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the
 // items it selects (listItemQuoteMatches), choosing among them as Find chooses among a quote's
 // matches; a quote that selects no item is Find's miss. Only a document edit asks it, after Find

@@ -14,12 +14,12 @@
 # beside it (tree_boot_head, with the settings that hold R6's conversion step), each on a port
 # held-port.py holds. It waits for the backfill as the Verification preamble states. While both
 # processes are live it creates the issue through this head's POST /api/v1/issues, with an empty
-# spec, and adds its Verification document and its plan by a title alone through this head's POST
-# /api/v1/issues/{key}/artifacts: the release before lists no issue_room, so the issue is not born
-# converted, and each document keeps a room of its own. It writes no block while the release
-# before is live, and then stops it. Through this head alone it writes every block a case moves
-# and makes every move. Before the first block and after the last move it reads no document_rooms
-# row of the issue.
+# spec: the release before lists no issue_room, so the issue is not born converted. It writes no
+# block while the release before is live, and then stops it. Through this head alone it writes
+# every block a case moves, adding the Verification document and the plan with their blocks
+# through this head's POST /api/v1/issues/{key}/artifacts - a create with no content takes no
+# role document's name - each a document with a room of its own, and makes every move. Before
+# the first block and after the last move it reads no document_rooms row of the issue.
 #
 # A case that writes a version - rewritten, gained, dropped, list, order, callout, list paragraph -
 # has an approval request open on the document it writes before the move, and reads after it one
@@ -519,15 +519,16 @@ readonly spec_doc="$tree_value"
 tree_read person "$key"
 tree_want 200 "$section" "read the tree of $key"
 expect "$section" "$key, created beside a process that lists no issue_room, is not converted" false .converted
-tt_upload_empty() {
-  tree_person_send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "$2" '{name: $n}')"
-  tree_want 201 "$1" "add $2 to $key by a title alone"
-  tree_field "$1" "add $2 to $key by a title alone" .artifact.id
+# tt_upload SECTION NAME MARKDOWN: the person adds the issue's document NAME with MARKDOWN through
+# this head's POST /api/v1/issues/{key}/artifacts; its id in tree_value. A role document is added
+# with its blocks, once the release before has stopped: a create with no content takes no name of
+# a document Dispatch makes itself (400 ARTIFACT_ROLE_NAME, createRoleNameRefusal in
+# api/artifacts.go), and the driver writes no block while that release is live.
+tt_upload() {
+  tree_person_send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg n "$2" --arg c "$3" '{name: $n, content: $c}')"
+  tree_want 201 "$1" "add $2 to $key with its blocks"
+  tree_field "$1" "add $2 to $key with its blocks" .artifact.id
 }
-tt_upload_empty "$section" verification.md
-readonly verification_doc="$tree_value"
-tt_upload_empty "$section" plan.md
-readonly plan_doc="$tree_value"
 tt_rooms "$section" "before the first block"
 baseline_stop_server
 pass "$section" "the release before stopped; this head alone serves the database"
@@ -537,8 +538,12 @@ cases=$((cases + 1))
 
 section=blocks
 tt_write "$section" "alice writes the blocks of the text cases into the spec of $key" "$spec_doc" "$(tt_spec_markdown)"
-tt_write "$section" "alice writes the checks into the Verification document of $key" "$verification_doc" "$(tt_verification_markdown)"
-tt_write "$section" "alice writes the plan task into the plan of $key" "$plan_doc" "$(tt_plan_markdown)"
+tt_upload "$section" verification.md "$(tt_verification_markdown)"
+readonly verification_doc="$tree_value"
+pass "$section" "alice adds the Verification document of $key with its checks"
+tt_upload "$section" plan.md "$(tt_plan_markdown)"
+readonly plan_doc="$tree_value"
+pass "$section" "alice adds the plan of $key with its plan task"
 tt_quiet "$section"
 tt_request "$section" "$spec_doc"
 readonly spec_ask="$tt_ask"

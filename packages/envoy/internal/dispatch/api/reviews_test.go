@@ -628,8 +628,8 @@ func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testi
 // The version a review names is read only once the credential is known to be that of a person who
 // may review (recordArtifactReview), so a caller who may not review is told that, and never that
 // its {number} is no version. A credential without the person scope - a machine's broker token
-// that names no person, or a personal token holding no scope - and a person's broker token, which
-// holds the person scope and never approve (brokerTokenActor), are each refused 403
+// that names no person, or a personal token holding no scope - and a person's broker token on a
+// machine, which holds the person scope and never approve (brokerTokenActor), are each refused 403
 // OAUTH_SCOPE_REQUIRED by the row's scope gate (gateRouteScopes), which runs before the handler.
 // A personal token of the same person holding approve passes that gate and is refused 400
 // INVALID_REVIEW, so the number check is live for the callers the 403 turned away. None of them
@@ -683,7 +683,7 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 				code: codeScopeRequired,
 			},
 			{
-				caller: "a person's broker token, which never holds approve",
+				caller: "a person's broker token on a machine, which never holds approve",
 				send: func() *httptest.ResponseRecorder {
 					return rig.serve(caller.presenting(t, http.MethodPost, path, personToken, body))
 				},

@@ -47,10 +47,12 @@ The contract below is shared by three packages and every future consumer must fo
   `LEGION_CONTROLLER_SECRET_FILE` — never `DISPATCH_TOKEN`, `LEGION_BOOT_TOKEN`,
   `LEGION_CONTROLLER_SECRET`.
 - Consumer precedence: `X_FILE` set → trimmed file contents; unreadable or blank → an error
-  **naming the variable and the path** (`X_FILE names <path>, which could not be read: <cause>` /
-  `…, which is empty`), **never** a fallback to `X` or to a config file. `X_FILE` unset → `X`
-  exactly as before. Both set → `X_FILE` wins silently. A set pointer is a claim the daemon made;
-  falling back would hide a daemon bug behind a stale operator export.
+  **naming the setting and why, never the path** (`X_FILE names a file that cannot be read: it
+  does not exist` / `… that is empty`; the Go helper is `github.com/sjawhar/envoy/fileerr`), since
+  the path is where a person who pasted the secret itself puts it; **never** a fallback to `X` or
+  to a config file. `X_FILE` unset → `X` exactly as before. Both set → `X_FILE` wins silently. A
+  set pointer is a claim the daemon made; falling back would hide a daemon bug behind a stale
+  operator export.
 
 ## Where each consumer reports the failure — and why they differ
 

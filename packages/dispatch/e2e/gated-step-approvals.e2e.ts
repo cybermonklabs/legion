@@ -284,6 +284,39 @@ test("one request over two documents reads the same on both steps, and one Reque
   }
 });
 
+// A step's Approve is the header's own action on that step's document: a press of it writes the
+// review to the server, and the step then reads its document as approved at that version.
+test("Approve on the spec step of today's issue header approves the spec on the server", async ({
+  browser,
+}) => {
+  await createProject({ key: "GATEAPPR", name: "Approve a step" });
+  await setGatedSteps("GATEAPPR", ["criteria", "spec"]);
+  const issue = await createIssue({
+    project: "GATEAPPR",
+    spec: "The plan.",
+    title: "Approve the spec step",
+  });
+  expect((await requestApproval(issue.primary_artifact_id, {}, session)).version).toBe(1);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    const spec = stepEntry(page, "spec");
+    await expect(spec.getByRole("button", { name: "Awaiting approval" })).toBeVisible();
+
+    await spec.getByRole("button", { exact: true, name: "Approve" }).click();
+
+    await expect
+      .poll(async () => (await getArtifact(issue.primary_artifact_id, { login: "alice" })).approval)
+      .toMatchObject({ state: "approved", version: 1 });
+    await expect(spec.getByRole("button", { name: "Approved v1" })).toBeVisible();
+    await expect(spec.getByRole("button", { exact: true, name: "Approve" })).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
 // The phone reads the whole of a reviewer's reason: it is the one thing on this header with no
 // bound on its length, and the iPhone 13's own 390 px layout is the narrowest width any project
 // draws this header at before the widths below are set. @phone

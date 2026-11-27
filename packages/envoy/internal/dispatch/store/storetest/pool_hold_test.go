@@ -95,6 +95,9 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool(t *testing
 		if _, err := shared.admin.Exec(ctx, "create database "+names[i]+" strategy file_copy"); err != nil {
 			t.Fatalf("create a database to drop: %v", err)
 		}
+		if _, err := shared.admin.Exec(ctx, testdb.WithoutJIT(names[i])); err != nil {
+			t.Fatalf("turn JIT off on a database to drop: %v", err)
+		}
 	}
 	testcleanup.Add(t, func() {
 		if !dropped {

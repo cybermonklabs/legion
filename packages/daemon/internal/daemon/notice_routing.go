@@ -193,15 +193,15 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 }
 
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's
-// rule holds (record.HoldsRole: it has not ended, and it is not suspended unless the idle release
-// suspended it), and that decision is not stopping its process for good (supervise.ClaimView's
-// Stopping) — a suspension, a failure, a release. The owner walk reads it, so no notice but a
-// catch-up is routed to a sub-architect whose session is being stopped: such a notice goes on up
-// the tree while the stop runs. It goes on up after the stop too, unless the stop is the idle
-// release's, whose released claim holds its role again (record.HoldsRole). A catch-up waits for
-// the architect of its own issue (noticeArchitect).
+// rule holds (supervise.HoldsRole: it has not ended, and it is not suspended unless the idle
+// release suspended it), and that decision is not stopping its process for good
+// (supervise.ClaimView's Stopping) — a suspension, a failure, a release. The owner walk reads it,
+// so no notice but a catch-up is routed to a sub-architect whose session is being stopped: such a
+// notice goes on up the tree while the stop runs. It goes on up after the stop too, unless the
+// stop is the idle release's, whose released claim holds its role again (supervise.HoldsRole). A
+// catch-up waits for the architect of its own issue (noticeArchitect).
 func holdsRole(held supervise.ClaimView) bool {
-	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
+	return supervise.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }
 
 // claimEnded is whether a claim in state will not hold its role again: this daemon does not

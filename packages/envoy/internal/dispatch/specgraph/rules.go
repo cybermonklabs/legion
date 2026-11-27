@@ -30,7 +30,8 @@ type Options struct {
 //     components);
 //   - a check: check-serves (not exactly one statement), no-claim, no-procedure,
 //     no-failing-example, bad-subject, bad-procedure, no-test and no-job (a program check without
-//     its test part), test-on-non-program, bad-selector (a go selector that picks no one test);
+//     its test part: a runner, selector or job with no letter or digit is missing), test-on-non-program,
+//     bad-selector (a go selector that picks no one test);
 //   - a component: bad-component (no name, a purpose that is not one sentence, a parent that is no
 //     component, or joins on a component that is no interface) and bad-interface (fewer than two
 //     components joined, or a joined node that is no component);
@@ -242,14 +243,14 @@ func (v *validator) check(c Check) {
 	switch c.Procedure {
 	case ProcedureProgram:
 		switch {
-		case c.Test == nil || c.Test.Runner == "" || c.Test.Selector == "":
+		case c.Test == nil || !hasWord(c.Test.Runner) || !hasWord(c.Test.Selector):
 			v.problem(c.Pos, c.ID, "no-test: a program check names its runner and its selector")
 		case c.Test.Runner == "go":
 			if _, _, err := ParseSelector(c.Test.Selector); err != nil {
 				v.problem(c.Pos, c.ID, `bad-selector: a go selector is "<import path> <TopLevelTestName>"`)
 			}
 		}
-		if c.Test != nil && c.Test.Job == "" {
+		if c.Test != nil && !hasWord(c.Test.Job) {
 			v.problem(c.Pos, c.ID, "no-job: a program check names the job that runs its test")
 		}
 	case ProcedureQuery, ProcedureAgent:
@@ -264,7 +265,7 @@ func (v *validator) check(c Check) {
 		v.problem(c.Pos, c.ID, fmt.Sprintf("bad-procedure: %q is not program, query or agent", c.Procedure))
 	}
 	v.code(c.Pos, c.ID, "claim", c.Claim)
-	v.code(c.Pos, c.ID, "procedure", c.ProcedureText)
+	v.codeNames(c.Pos, c.ID, "procedure", procedureCodeNames(c))
 	v.code(c.Pos, c.ID, "failing example", c.FailingExample)
 }
 
@@ -315,7 +316,28 @@ func (v *validator) component(c Component) {
 
 // code records code-in-text when text, the field of node, names code.
 func (v *validator) code(pos Position, node, field, text string) {
-	if names := CodeNames(text); len(names) > 0 {
+	v.codeNames(pos, node, field, CodeNames(text))
+}
+
+// codeNames records code-in-text when names, the names of code that the field of node holds, are any.
+func (v *validator) codeNames(pos Position, node, field string, names []string) {
+	if len(names) > 0 {
 		v.problem(pos, node, fmt.Sprintf("code-in-text: %s names code: %s", field, strings.Join(names, ", ")))
 	}
+}
+
+// procedureCodeNames adds a program check's own Go test name to CodeNames, including bare Test.
+func procedureCodeNames(c Check) []string {
+	names := CodeNames(c.ProcedureText)
+	if c.Test == nil || c.Test.Runner != "go" {
+		return names
+	}
+	_, test, err := ParseSelector(c.Test.Selector)
+	if err != nil || slices.Contains(names, test) {
+		return names
+	}
+	if slices.Contains(nameRun.FindAllString(backtickSpan.ReplaceAllString(c.ProcedureText, " "), -1), test) {
+		names = append(names, test)
+	}
+	return names
 }

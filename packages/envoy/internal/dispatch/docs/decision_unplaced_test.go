@@ -2,11 +2,13 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -255,6 +257,103 @@ func TestTheConversionMakesADecisionOfEachSectionItCannotPlaceUnderOneAsk(t *tes
 	}
 }
 
+// A decision the conversion writes waits for a person's review until a Keep or a replacement,
+// whoever wrote its section's newest version (the spec's R2 and R9): a person's edit of sections
+// an agent wrote makes none of their choices hers, so the decision of such a section - one that
+// cites no ask, and one citing two answered asks, which the conversion could not place under one
+// ask - names no decided_by and reads waiting_review through the Decisions read
+// (decisionread.Decisions), as the decision of the section the agent's session wrote last does,
+// which names that session. A decision block alice wrote in the spec herself is hers, and waits
+// for nobody.
+func TestAConvertedDecisionWaitsForReviewWhereAPersonWroteItsSectionLast(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const pointer = "The decisions this spec rests on are in dispatch://DOC-1/artifact/decisions-md."
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"+
+		":::decision{#p1}\nThe corpus stays on one machine.\n:::\n\n"+
+		":::ask{#q-store urgency=\"med\" multiple=\"false\"}\nWhich store holds the corpus?\n:::\n\n"+
+		":::ask{#q-format urgency=\"low\" multiple=\"false\"}\nWhich format is each line in?\n:::\n\n## Decisions\n\n"+pointer+"\n")
+	asked := []string{
+		issue.answer(issue.spec, "q-store", "The seeded database."),
+		issue.answer(issue.spec, "q-format", "One line for each measurement."),
+	}
+	const (
+		placed   = "Files stay out of the corpus"
+		unplaced = "The store and its format go together"
+		agents   = "Readings stay small"
+	)
+	sections := func(files, both string) string {
+		return "# Decisions\n\n## " + placed + "\n\n" + files + " beside the database, which dispatch://DOC-1/spec#b-r1 depends on.\n\n" +
+			"## " + unplaced + "\n\n" + both + ", dispatch://DOC-1/ask/" + asked[0] + " and dispatch://DOC-1/ask/" + asked[1] +
+			", which shapes dispatch://DOC-1/spec#b-r1.\n\n" +
+			"## " + agents + "\n\nEach reading holds one line.\n"
+	}
+	// The agent's session writes the three sections, and alice's edit then rewords two of them,
+	// so her version is the newest of those two and the session's of the third.
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n")
+	issue.replace(decisions, sections("We write no file", "Both rest on one choice"))
+	issue.replaceAsPerson(decisions, sections("We write no file at all", "Both rest on one shared choice"))
+	headings := map[string]string{}
+	for _, title := range []string{placed, unplaced, agents} {
+		headings[title] = issue.headingID(decisions, title)
+	}
+
+	result := issue.run(true)
+	if result.Decisions != 3 || result.Readings != 0 || result.Dropped != 0 || result.Left != 0 || !result.Retired {
+		t.Fatalf("the conversion did %+v, want the three sections decisions, nothing else, the document retired", result)
+	}
+	spec := issue.refKey(issue.spec)
+	wants := []struct {
+		what, block string
+		// decider is the decided_by the node states, as kind/id, "" for none.
+		decider         string
+		unsure, waiting bool
+	}{
+		{"the decision of the section that cites no ask, which alice's edit wrote last", headings[placed], "", false, true},
+		{"the decision of the section the conversion could not place, which alice's edit wrote last", headings[unplaced], "", true, true},
+		{"the decision of the section the agent's session wrote last", headings[agents],
+			graphstore.KindSession + "/" + agentOfTheReleaseBefore.ID, false, true},
+		{"alice's own decision in the spec", "p1", graphstore.KindPerson + "/alice", false, false},
+	}
+	nodes := make([]decisionread.Node, len(wants))
+	for index, want := range wants {
+		nodes[index] = decisionread.Node{Kind: refs.BlockNodeKind, ID: spec + "#" + want.block}
+	}
+	read, err := decisionread.Decisions(ctx, issue.database.Pool, model.Actor{Kind: "user", ID: "alice"}, nodes)
+	if err != nil {
+		t.Fatalf("read the spec's decisions: %v", err)
+	}
+	byNode := map[string]model.Decision{}
+	for _, decision := range read {
+		byNode[decision.NodeID] = decision
+	}
+	for _, want := range wants {
+		address := spec + "#" + want.block
+		tuples, err := graphstore.CurrentOut(ctx, issue.database.Pool, refs.BlockNodeKind, address, []string{graphstore.TupleDecidedBy})
+		if err != nil {
+			t.Fatalf("read the decided_by of %s: %v", address, err)
+		}
+		var deciders []string
+		for _, tuple := range tuples {
+			deciders = append(deciders, tuple.ToKind+"/"+tuple.ToID)
+		}
+		if want.decider == "" && len(deciders) != 0 || want.decider != "" && !slices.Equal(deciders, []string{want.decider}) {
+			t.Errorf("%s (%s): the node states the decided_by %v, want %q", want.what, address, deciders, want.decider)
+		}
+		decision, found := byNode[address]
+		switch {
+		case !found:
+			t.Errorf("%s (%s): the Decisions read answers no decision for it", want.what, address)
+		case decision.Kind != "agent" || decision.Unsure != want.unsure || decision.Kept != nil || decision.Replaced:
+			t.Errorf("%s (%s): the read answers kind %q, unsure %t, kept %+v, replaced %t, want kind agent, unsure %t, no Keep and not replaced",
+				want.what, address, decision.Kind, decision.Unsure, decision.Kept, decision.Replaced, want.unsure)
+		case decision.WaitingReview != want.waiting:
+			t.Errorf("%s (%s): the read answers waiting_review %t, want %t", want.what, address, decision.WaitingReview, want.waiting)
+		}
+	}
+	issue.requireRetiredAndOwedNothing(decisions)
+}
+
 // R9's first further kind (the spec's R9, and R6's second shape): a section whose body
 // still holds an ask block no row names - a copy of an ask another document of the issue holds,
 // which no work item of the finder moves - has that block moved into the spec first, in the same
@@ -299,6 +398,29 @@ func TestTheConversionMovesTheAskBlockASectionStillHoldsAndConvertsTheRest(t *te
 	issue.requireUnplacedDecision(decisions, heading, unplacedBody, []string{"r1"}, nil,
 		[]string{"We lean towards the top shelf"})
 	issue.requireNoSectionCitation(heading)
+	issue.requireRetiredAndOwedNothing(decisions)
+}
+
+// A section whose whole body is its ask block - an answered ask whose block the decisions
+// document holds, the second shape of the restore - converts with nothing written under the ask:
+// the block moves into the spec, the section holds no words beside it, so it is dropped
+// (planRestating) and the restored block holds no reading. The document retires and the step
+// owes nothing.
+func TestTheConversionWritesNoReadingUnderAnAskBlockThatWasItsSectionsWholeBody(t *testing.T) {
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n## Which line names a moved block\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n")
+	moved := issue.answer(decisions, "q-doc", "The census names each move.")
+
+	result := issue.run(true)
+	from, to := issue.refKey(decisions)+"#q-doc", issue.refKey(issue.spec)+"#q-doc"
+	if len(result.Restored) != 1 || result.Restored[0].Ask != moved || result.Restored[0].From != from || result.Restored[0].To != to ||
+		result.Readings != 0 || result.Dropped != 1 || result.Decisions != 0 || result.Left != 0 || !result.Retired {
+		t.Fatalf("the conversion did %+v, want ask %s moved from %s to %s, its section dropped with no reading, the document retired", result, moved, from, to)
+	}
+	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-doc urgency=") || strings.Contains(spec, ":::reading") {
+		t.Errorf("the spec's newest version holds no block of the ask, or a reading under it:\n%s", spec)
+	}
 	issue.requireRetiredAndOwedNothing(decisions)
 }
 
@@ -583,11 +705,11 @@ func TestARestoreAloneLeavesASectionAboutAnAskTheSpecHoldsWithItsLinksForTheConv
 //   - its notes, a third document, which hold the answered ask q-notes, and whose block index holds
 //     no row of that block yet, as a version whose index its write deferred leaves it.
 //
-// A pass touches no issue and fails none, the decisions document stands at its one version, and
-// neither the spec nor the document that owes its index gains one. Once the block-index
-// reconciliation has indexed that document, the next pass writes the section as a reading into the
-// ask's block - q-store restored into the spec, or q-notes where the notes hold it - shapes it by
-// r1, and retires the decisions document.
+// A pass touches no issue and fails none, and answers DOC-1 left for its block index; the
+// decisions document stands at its one version, and neither the spec nor the document that owes
+// its index gains one. Once the block-index reconciliation has indexed that document, the next
+// pass writes the section as a reading into the ask's block - q-store restored into the spec, or
+// q-notes where the notes hold it - shapes it by r1, and retires the decisions document.
 func TestAPassLeavesAnIssueADocumentOfWhichOwesItsBlockIndexForALaterPass(t *testing.T) {
 	const title = "The corpus lives in the database"
 	const words = "The person ruled it in"
@@ -643,10 +765,13 @@ func TestAPassLeavesAnIssueADocumentOfWhichOwesItsBlockIndexForALaterPass(t *tes
 			step := NewDecisionStep(issue.database, "", nil)
 			step.UseDocuments(issue.service)
 
-			done, failed, err := step.RestoreAndConvert(ctx, "DOC", true, false)
-			if err != nil || len(done) != 0 || len(failed) != 0 {
+			pass, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+			if err != nil || len(pass.Done) != 0 || len(pass.Failed) != 0 {
 				t.Fatalf("the pass over an issue a document of which owes its block index answered %v, touched %+v and failed %+v, want the issue left alone",
-					err, done, failed)
+					err, pass.Done, pass.Failed)
+			}
+			if len(pass.Left) != 1 || pass.Left[0].Issue != "DOC-1" || !errors.Is(pass.Left[0].Reason, errBlockIndexOwed) {
+				t.Fatalf("the pass left %+v, want DOC-1 alone, left because a document of it owes its block index (%v)", pass.Left, errBlockIndexOwed)
 			}
 			if readRetired(t, issue.database, decisions) || specVersions(t, issue.database, decisions) != 1 ||
 				specVersions(t, issue.database, issue.spec) != specBefore || specVersions(t, issue.database, owing) != owingBefore {

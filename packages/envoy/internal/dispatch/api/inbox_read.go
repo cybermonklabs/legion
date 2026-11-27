@@ -521,7 +521,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     projection row, so two passes over one document queue at the fence and the one that loses
 //     it has written nothing;
 //  6. the head rows of the nodes a write names (issue_head_nodes, migration
-//     20261123180100_issue_tree_head) are the last rows it takes: one head write
+//     20261127120803_issue_tree_head) are the last rows it takes: one head write
 //     (graphstore.QueueHeads, graphstore.WriteHeads, or graphstore.Write and graphstore.Caused,
 //     which queue it in their own batch) after every node row, tuple and projection row of the
 //     write, and no row of another step after it, so two writes of one node that both reach a

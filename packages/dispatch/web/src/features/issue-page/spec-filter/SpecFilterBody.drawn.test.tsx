@@ -79,7 +79,7 @@ import {
 import { presetView } from "../presets";
 import { publishedNames, publishedTree } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
-import { drawStage } from "../slots/stage-fixtures";
+import { drawStage, spyOnBoxes } from "../slots/stage-fixtures";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
 import {
@@ -2212,7 +2212,9 @@ function layOut(height: number): () => void {
     configurable: true,
     get: () => height,
   });
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+  // On Element, which owns the method: a spy on HTMLElement leaves an own property behind once
+  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`).
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 600, height)
   );
   return () => {
@@ -2863,9 +2865,7 @@ test("a press on a decision's cell or away from it changes what the body draws o
 // a key moves the focus to is scrolled down below the heads, by the rule's 8 px.
 test("a statement or a cell a key moves the focus to is scrolled down from under the column heads", async () => {
   const user = userEvent.setup();
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
+  const boxes = spyOnBoxes(function (this: HTMLElement) {
     if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
     if (this.dataset.nodeId === "spec#b-r2") return new DOMRect(0, 27, 600, 48);
     if (this.parentElement?.hasAttribute("data-spec-cell") === true && this.tagName === "DIV") {
@@ -2911,9 +2911,7 @@ function layOutPage(
   scroll?: (delta: number) => void
 ) {
   const sizes = installResizeObserver();
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
+  const boxes = spyOnBoxes(function (this: HTMLElement) {
     if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
     return boxOf(this) ?? new DOMRect(0, 200, 600, 48);
   });

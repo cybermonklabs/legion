@@ -12,6 +12,7 @@ export function primarySpec(
 
 type RoleDocuments = Pick<
   IssueDetails,
+  // kept for one release: role-artifact-ids
   "artifacts" | "plan_artifact_id" | "queries" | "verification_artifact_id"
 >;
 
@@ -69,6 +70,7 @@ function keptRoleDocumentId(
   issue: RoleDocuments | undefined,
   role: Extract<DocumentRole, "plan" | "verification">
 ): string | undefined {
+  // kept for one release: role-artifact-ids
   return role === "plan" ? issue?.plan_artifact_id : issue?.verification_artifact_id;
 }
 

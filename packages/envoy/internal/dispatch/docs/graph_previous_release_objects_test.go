@@ -40,6 +40,7 @@ const rollSession = "ses_rolled_conversation"
 // `missing` after the roll's tick, and #3178's TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore
 // fails the same way on the issue, the spec and the document the release before creates there.
 func TestARowThePreviousReleaseWritesDuringARollGetsItsNodeFromTheTick(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	appendIssueEvent(t, database)
@@ -112,6 +113,7 @@ func TestARowThePreviousReleaseWritesDuringARollGetsItsNodeFromTheTick(t *testin
 // EventsOweObjectPass): with another_build_seen forced false, the first tick after the release
 // before left writes no node, and the project census names the five rows `missing`.
 func TestARowThePreviousReleaseCreatesWhileItHoldsTheLeaseGetsItsNodeFromTheNextTick(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	appendIssueEvent(t, database)
@@ -166,6 +168,7 @@ func TestARowThePreviousReleaseCreatesWhileItHoldsTheLeaseGetsItsNodeFromTheNext
 // Its control is the tick owing the pass on the roll's triggers and the events alone: the three
 // rows stay `missing` however far the clock moves.
 func TestARowNoEventNamesGetsItsNodeOnceTheObjectPassIntervalPasses(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	var aged atomic.Int64
 	service.now = func() time.Time { return time.Now().Add(time.Duration(aged.Load())) }

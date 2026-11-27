@@ -143,7 +143,8 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 	step.UseDocuments(issue.service)
 	var versions int
 	for pass := 1; pass <= 3; pass++ {
-		done, failed, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+		answered, err := step.RestoreAndConvert(ctx, "DOC", true, false)
+		done, failed := answered.Done, answered.Failed
 		if err != nil || len(failed) > 0 {
 			t.Fatalf("pass %d answered %v with failures %+v", pass, err, failed)
 		}

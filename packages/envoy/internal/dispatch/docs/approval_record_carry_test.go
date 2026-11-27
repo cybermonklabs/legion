@@ -42,13 +42,15 @@ func withRecordCarryForced(ctx context.Context) context.Context {
 
 // recordRoom is an issue room whose spec holds recordSpec, written by a peer's edit and settled, at
 // version approved, which alice approved once the settlement's fill recorded its record's digest
-// (approveStoredVersion pins the digest artifact_version_text_sha256 answers).
+// (approveStoredVersion pins the digest artifact_version_text_sha256 answers). serverURL is the
+// test server a browser of the room connects to.
 type recordRoom struct {
-	database *store.Store
-	service  *Service
-	peer     *docstest.Peer
-	room     issueRoom
-	approved int
+	database  *store.Store
+	service   *Service
+	serverURL string
+	peer      *docstest.Peer
+	room      issueRoom
+	approved  int
 }
 
 // approvedRecordRoom writes the issue DOC-<number>'s room by SQL (createIssueRoom), its query nodes
@@ -56,6 +58,13 @@ type recordRoom struct {
 // approval of the version that settlement wrote, whose row holds the record's digest
 // (requireStatedRow).
 func approvedRecordRoom(t *testing.T, number int) recordRoom {
+	t.Helper()
+	return approvedRecordRoomOf(t, number, recordSpec)
+}
+
+// approvedRecordRoomOf is approvedRecordRoom with markdown written into the spec in place of
+// recordSpec.
+func approvedRecordRoomOf(t *testing.T, number int, markdown string) recordRoom {
 	t.Helper()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
@@ -65,8 +74,8 @@ func approvedRecordRoom(t *testing.T, number int) recordRoom {
 	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
 		t.Fatalf("a peer's copy of %s's room: %v", room.issue, err)
 	}
-	written := recordRoom{database: database, service: service, peer: peer, room: room}
-	spec, err := pmdoc.Parse(recordSpec)
+	written := recordRoom{database: database, service: service, serverURL: server.URL, peer: peer, room: room}
+	spec, err := pmdoc.Parse(markdown)
 	if err != nil {
 		t.Fatalf("parse the spec: %v", err)
 	}
@@ -84,14 +93,21 @@ func approvedRecordRoom(t *testing.T, number int) recordRoom {
 // yet, which reads no tree, hands edit nil.
 func (r recordRoom) settleSpecEdit(t *testing.T, ctx context.Context, edit func(*pmdoc.Node) (*pmdoc.Node, error)) {
 	t.Helper()
+	r.settleEdit(t, ctx, r.peer, r.room.spec, edit)
+}
+
+// settleEdit is settleSpecEdit for the fragment named fragment of the room, which peer writes: the
+// spec's, or the tree artifact's own (fragmentName), which a browser of the issue's tree edits.
+func (r recordRoom) settleEdit(t *testing.T, ctx context.Context, peer *docstest.Peer, fragment string, edit func(*pmdoc.Node) (*pmdoc.Node, error)) {
+	t.Helper()
 	stored := storedUpdateCount(t, r.database, r.room.tree)
-	fragment := r.peer.Doc.GetXmlFragment(r.room.spec)
+	held := peer.Doc.GetXmlFragment(fragment)
 	var want string
 	var failed error
-	if _, err := r.peer.Send(func(txn *crdt.Transaction) {
+	if _, err := peer.Send(func(txn *crdt.Transaction) {
 		var tree *pmdoc.Node
-		if fragment.Len() > 0 {
-			if tree, failed = pmdoc.ReadInTransaction(txn, fragment); failed != nil {
+		if held.Len() > 0 {
+			if tree, failed = pmdoc.ReadInTransaction(txn, held); failed != nil {
 				return
 			}
 		}
@@ -100,14 +116,14 @@ func (r recordRoom) settleSpecEdit(t *testing.T, ctx context.Context, edit func(
 			want, err = pmdoc.Render(tree)
 		}
 		if err == nil {
-			err = pmdoc.Update(txn, fragment, tree)
+			err = pmdoc.Update(txn, held, tree)
 		}
 		failed = err
 	}); err != nil || failed != nil {
-		t.Fatalf("write the spec of %s: %v, %v", r.room.issue, err, failed)
+		t.Fatalf("write the fragment %s of %s's room: %v, %v", fragment, r.room.issue, err, failed)
 	}
-	if err := r.peer.WaitForText(fragmentMarkdown(r.room.spec), want, roomWait(t)); err != nil {
-		t.Fatalf("a peer's copy of %s's spec: %v", r.room.issue, err)
+	if err := peer.WaitForText(fragmentMarkdown(fragment), want, roomWait(t)); err != nil {
+		t.Fatalf("a peer's copy of the fragment %s of %s's room: %v", fragment, r.room.issue, err)
 	}
 	settleLandedWrite(t, ctx, r.database, r.service, r.room, stored)
 }

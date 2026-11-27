@@ -34,7 +34,9 @@ import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
  * provides above the page (`AppProviders`) is what the stage's tests, the Decisions body's
  * drawn test (`DecisionsFilterBody.drawn.test.tsx`) and the outline's reads test
  * (`outline-reads.test.tsx`) draw in; the outline's own tests and the Plan view's
- * (`IssueTree.test.tsx`, `PlanFilterBody.test.tsx`) draw that stack by hand.
+ * (`IssueTree.test.tsx`, `PlanFilterBody.test.tsx`) draw that stack by hand. `spyOnBoxes` gives
+ * the boxes happy-dom does not lay out, for the outline's tests, the Spec body's drawn test and
+ * the failed read's line's test.
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -287,9 +289,10 @@ export function inDocument(document: Pick<Artifact, "id" | "slug">, position = 0
   return { document: { artifact_id: document.id, position, slug: document.slug } };
 }
 
-/** Every read the page's tree is built from, answered with nothing, and who is reading. The
- *  issue's comments are the tree read's own, so no comments list is answered: a read of one
- *  reaches the network, which fails the file (`__tests__/network.ts`). */
+/** Every read the page's tree is built from, answered with nothing, the blocks the Decisions view
+ *  reads of each document a decision stands in, and who is reading. The issue's comments are the
+ *  tree read's own, so no comments list is answered: a read of one reaches the network, which
+ *  fails the file (`__tests__/network.ts`). */
 export function stubReads(): { mockRestore(): void }[] {
   return [
     spyOn(api, "getIssueCoverage").mockResolvedValue({
@@ -309,8 +312,23 @@ export function stubReads(): { mockRestore(): void }[] {
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf([]))),
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
+}
+
+/** Answers each HTML element's box with `box`, called on that element as the DOM's own read is;
+ *  any other element keeps the empty box the DOM gives it. On Element, which owns the method: a
+ *  spy on HTMLElement leaves an own property behind once restored, which hides every later spy on
+ *  Element (Margin.landing.test.tsx's `stubRects`). */
+export function spyOnBoxes(
+  box: (this: HTMLElement) => DOMRect
+): Mock<Element["getBoundingClientRect"]> {
+  return spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    return this instanceof HTMLElement ? box.call(this) : new DOMRect();
+  });
 }

@@ -25,6 +25,8 @@ import (
 // not this build's own version: a later build at the next schema version, which still holds this
 // guard, reads a process of this release beside it as one build, and a base process as two.
 func TestTheFleetGuardReadsAnotherBuildByTheSchemaVersionTheProcessesRegister(t *testing.T) {
+	// Not parallel: it stages a block in pmdoc's schema manifest for the whole process
+	// (pmdoc.UseStagedBlockForTest, in its subtests of a build at the next schema version).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	// version nil is a row that registers no schema number, which holds the column's default.
@@ -107,6 +109,7 @@ func TestTheFleetGuardReadsAnotherBuildByTheSchemaVersionTheProcessesRegister(t 
 // which stays within the cap. Weighed beside early's, late's words gave the room to early's, and
 // the document lost words it already held.
 func TestSettlementWithholdsOnlyTheAnswerWordsItsRepairsWrite(t *testing.T) {
+	t.Parallel()
 	const blocks = ":::ask{#early urgency=\"med\" multiple=\"false\"}\nShip it?\n:::\n\n" +
 		":::ask{#late urgency=\"med\" multiple=\"false\"}\nShip what?\n:::\n"
 	answered := func(id, login, words string) model.Ask {
@@ -195,6 +198,7 @@ func TestSettlementWithholdsOnlyTheAnswerWordsItsRepairsWrite(t *testing.T) {
 // the options nor the words; and the write states nothing on the node, which only the catch-up
 // brings up to the row (R3).
 func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoTheRow(t *testing.T) {
+	t.Parallel()
 	words := "Ship it on Monday."
 	answer := model.AskAnswer{User: "bob", Selected: []string{"Yes"}, Text: &words, At: time.Date(2026, 11, 20, 9, 0, 0, 123456000, time.UTC)}
 	changed := model.AskAnswer{User: "alice", Selected: []string{"No"}, At: time.Date(2026, 11, 20, 8, 30, 0, 0, time.UTC)}

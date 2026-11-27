@@ -17,6 +17,7 @@ import (
 // names, and an opened ask whose ask.opened is not among the appended events is an error that
 // names the ask, not a panic.
 func TestAnAskOpenedBesideARepairIsCausedByItsOwnEvent(t *testing.T) {
+	t.Parallel()
 	tree, err := pmdoc.Parse(":::ask{#ask-0 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"mallory\"}\nShip it?\n:::\n")
 	if err != nil {
 		t.Fatalf("parse the document: %v", err)

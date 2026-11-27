@@ -393,9 +393,12 @@ func TestALoginTheBrokerRefusesIsFailedAndAsksNoOne(t *testing.T) {
 			t.Fatalf("Enroll after login %d = %v, want NO_MACHINE_CREDENTIAL naming %s", i, err, code)
 		}
 	}
-	missing := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: filepath.Join(t.TempDir(), "absent")}
-	if _, err := missing.Login(context.Background()); err == nil || !strings.Contains(err.Error(), "read the ServiceAccount token") {
-		t.Fatalf("a login with no token file = %v, want a failure naming the token file", err)
+	// The path a made-up token pasted where it goes would be: the refusal names why, never the path.
+	const pasted = "madeUpServiceAccountToken0123456789"
+	missing := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: filepath.Join(t.TempDir(), pasted)}
+	if _, err := missing.Login(context.Background()); err == nil || !strings.Contains(err.Error(), "read the ServiceAccount token: its file cannot be read: it does not exist") ||
+		strings.Contains(err.Error(), pasted[:10]) {
+		t.Fatalf("a login with no token file = %v, want a failure naming why and not the path", err)
 	}
 	if got := broker.loginCount(); got != 2 {
 		t.Fatalf("the broker saw %d logins, want the two refused ones and none from a missing token", got)

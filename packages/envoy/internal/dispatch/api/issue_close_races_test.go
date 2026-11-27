@@ -397,6 +397,11 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // is not open for the release before's readers, so the withdrawal settles into one version: the
 // edit's own version holds none of the block's state, the next differs from it only in the
 // block's opener showing it resolved, and the text an agent reads shows the block resolved.
+//
+// The settlement held is one the test starts once the edit has answered (SettleNow), and the
+// settle delay of an hour starts none of its own: the edit runs R7's drain of its issue's queries
+// after its COMMIT and before it answers, and the drain takes the issue's owner lock, so a
+// settlement held while it owned that lock ahead of the drain would hold the edit's answer too.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
 	t.Parallel()
 	var documents *docs.Service
@@ -408,7 +413,8 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	var releaseOnce sync.Once
 	releaseSettlement := func() { releaseOnce.Do(func() { close(release) }) }
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documents = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
+		// An hour, so the only settlements are the ones the test starts and the close's own.
+		documents = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		documents.AfterSettleLockForTest(func(room string) {
 			if target := hold.Load(); target != nil && *target == room && hold.CompareAndSwap(target, nil) {
 				close(held)
@@ -423,11 +429,13 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A decision settling as it closes", "Context\n")
 	spec := issue.PrimaryArtifactID
+	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the issue's documents: %v", err)
+	}
 	awaitSettled(t, database, spec)
 	versions := len(versionHashes(t, database, spec))
 
 	specRoom, _ := documentRoomOf(t, database.Pool, spec)
-	hold.Store(&specRoom)
 	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
 		"actor": sessionActor(),
 		"ops": []map[string]string{{
@@ -438,6 +446,8 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write the ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
+	hold.Store(&specRoom)
+	documents.SettleNow(specRoom)
 	testwait.Receive(t, "the ask block's settlement to start", held)
 	if id := findBlockAsk(t, handler, issue.Key, spec, "late-decision"); id != "" {
 		t.Fatalf("the ask block is ask %s while its settlement is held", id)
@@ -477,6 +487,8 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	}
 	const resolved = `#late-decision state="resolved"`
 	requireLiveText(t, handler, spec, resolved)
+	// The withdrawal's settlement, which the settle delay of an hour does not start.
+	documents.SettleNow(specRoom)
 	awaitSettled(t, database, spec)
 	written := versionMarkdowns(t, database, spec)[versions:]
 	if len(written) != 2 || !strings.Contains(written[0], "#late-decision") || strings.Contains(written[0], `state="`) {

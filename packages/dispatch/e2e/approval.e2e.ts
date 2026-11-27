@@ -207,6 +207,38 @@ test("a reason longer than the server takes shows the server's own refusal in th
   }
 });
 
+// The primary document's approval chip sits in the header's State group, with its two actions
+// beside it at a phone's width; a press of Approve there writes the review the server holds.
+test("Approve in today's issue header approves the primary document at a phone's width", async ({
+  browser,
+}) => {
+  await createProject({ key: "HEADAPPR", name: "Header approve" });
+  const issue = await createIssue({
+    project: "HEADAPPR",
+    spec: "The plan.",
+    title: "Approved from the header",
+  });
+  const artifactID = issue.primary_artifact_id;
+  await requestApproval(artifactID, {}, session);
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto(`/issues/${issue.key}`);
+    const state = page.getByTestId("issue-state");
+    await expect(state.getByRole("button", { exact: true, name: "Request changes" })).toBeVisible();
+    await state.getByRole("button", { exact: true, name: "Approve" }).click();
+    await expect
+      .poll(async () => (await getArtifact(artifactID, { login: "alice" })).approval?.state)
+      .toBe("approved");
+    await expect(state.getByRole("button", { name: "Approved v1" })).toBeVisible();
+    await expect(state.getByRole("button", { exact: true, name: "Approve" })).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
 /** A document write's response as the restore tests read it: the advice beside its result. */
 interface AdvisedWrite {
   readonly advice?: WriteAdvice;

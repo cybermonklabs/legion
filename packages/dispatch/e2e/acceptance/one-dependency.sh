@@ -42,11 +42,17 @@
 #            400 INVALID_MARKDOWN; and a plan task in a second document of C needing C's own t-c1
 #            is taken, its `needs` tuple read back;
 #   sizes    t-p1, t-p2 and t-c1 read back 45, 120 and 90 minutes through the node's attributes
-#            (the tree read's plan view) and through `dispatch read --ref`, each with its text as
-#            written; t-c2 holds no size at all; 2d, 1.5h, 0m, -1h and 10001m are each refused 400
-#            INVALID_MARKDOWN, and 10000m is taken.
+#            (the tree read's plan view), and `dispatch read --ref` prints each size as written,
+#            the line `size: 45m`, `size: 2h` and `size: 1h30m` (Verification v231), each with
+#            its text as written; t-c2 holds no size at all; 2d, 1.5h, 0m, -1h and 10001m are
+#            each refused 400 INVALID_MARKDOWN, and 10000m is taken.
 # The Go halves of the check (TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller and
 # TestTheDaemonReadsNeedsAndFallsBackToBlockedBy) are the check's own steps, not this driver's.
+# The first holds main's cross-project rule since cybermonklabs/legion#5833: a credential that
+# names one project waits on a public issue of another project (200 on PATCH, for needs and
+# blocked_by, and 201 on create), and is refused an issue of a private project it does not name as
+# a key that does not exist (400 NEEDS_INPUT for needs, 400 BLOCKED_BY_INPUT for blocked_by), while
+# a credential that names that private project reads 200.
 #
 # Inputs: DATABASE_URL (infra_1253_upgrade, emptied here), DISPATCH_TOKEN (the agent bearer both
 # servers accept, e2e-token), PROJECT (CORE), DEV_SIGNIN_LOGIN (optional, the person, `alice` by
@@ -281,12 +287,13 @@ expect "$section" "this head answers $before_waiter's wait as needs and as block
 
 section=seed
 one_dependency_issue "$section" "The parent whose plan the child's plan waits on"
+# Not readonly: seed-corpus.sh's corpus_issue takes a local of that name.
 parent="$created_key"
 one_dependency_issue "$section" "The child that waits" "$parent"
 child="$created_key"
 one_dependency_issue "$section" "The sibling the child waits on" "$parent"
 sibling="$created_key"
-readonly parent child sibling
+readonly child sibling
 readonly p1_ref="dispatch://$parent/artifact/plan-md#b-t-p1" p2_ref="dispatch://$parent/artifact/plan-md#b-t-p2"
 readonly c1_ref="dispatch://$child/artifact/plan-md#b-t-c1" c2_ref="dispatch://$child/artifact/plan-md#b-t-c2"
 readonly p1_text="Write the parser the child reads." p2_text="Ship the parser behind its flag."
@@ -454,8 +461,8 @@ one_dependency_waits "$section" "$node_kind" "$node_id" "$c1_kind" "$c1_id"
 # --- sizes: a plan node's size in minutes -----------------------------------------------------------
 
 section=sizes
-for row in "$parent t-p1 $p1_ref 45" "$parent t-p2 $p2_ref 120" "$child t-c1 $c1_ref 90" "$child t-c2 $c2_ref -"; do
-  read -r issue block ref minutes <<<"$row"
+for row in "$parent t-p1 $p1_ref 45 45m" "$parent t-p2 $p2_ref 120 2h" "$child t-c1 $c1_ref 90 1h30m" "$child t-c2 $c2_ref - -"; do
+  read -r issue block ref minutes written <<<"$row"
   case "$block" in
     t-p1) words="$p1_text" ;;
     t-p2) words="$p2_text" ;;
@@ -466,8 +473,17 @@ for row in "$parent t-p1 $p1_ref 45" "$parent t-p2 $p2_ref 120" "$child t-c1 $c1
   tree_want 200 "$section" "read $issue's plan view"
   jq -e --arg b "$block" '[.nodes[] | select(.block_id == $b)] | length == 1' "$work/body" >/dev/null ||
     fail "$section" "$issue's plan view holds $block once" "$(body)"
-  expect "$section" "$block's text reads as its author wrote it" "$(jq -cn --arg w "$words" '$w')" \
-    --arg b "$block" '.nodes[] | select(.block_id == $b) | .text'
+  # A node's text is its block's whole markdown as its version stores it (the text value, its slice
+  # of the rendering, fence included), which keeps the block's words and the size as its author
+  # wrote it (r-plan-size); the renderer writes the opening line's attributes in its own order.
+  jq -e --arg b "$block" --arg w "$words" --arg s "$written" '
+    [.nodes[] | select(.block_id == $b) | .text | split("\n")][0] as $lines
+    | ($lines | length) == 3 and ($lines[0] | startswith(":::plan_task{#" + $b))
+      and $lines[1] == $w and $lines[2] == ":::"
+      and (if $s == "-" then ($lines[0] | contains("size=") | not) else ($lines[0] | contains("size=\"" + $s + "\"")) end)' \
+    "$work/body" >/dev/null ||
+    fail "$section" "$block's text holds its words, and the size as its author wrote it (${written})" \
+      "$(jq -c --arg b "$block" '.nodes[] | select(.block_id == $b) | .text' "$work/body")"
   if [[ "$minutes" == - ]]; then
     expect "$section" "$block holds no size at all, absent rather than present and empty" false \
       --arg b "$block" '.nodes[] | select(.block_id == $b) | .attributes | has("size")'
@@ -478,14 +494,16 @@ for row in "$parent t-p1 $p1_ref 45" "$parent t-p2 $p2_ref 120" "$child t-c1 $c1
   run "$section" "dispatch read --ref $ref" read --ref "$ref"
   grep -qF "$words" "$work/out" ||
     fail "$section" "dispatch read --ref $ref prints $block's text" "$(<"$work/out")"
-  if [[ "$minutes" == - ]]; then
-    ! grep -qiE '(^|[^a-z_])size([^a-z_]|$)' "$work/out" ||
+  # The block's attributes as its markdown writes them (envoy-client's blockLines), so its size
+  # as its author wrote it, the whole token on a line of its own.
+  if [[ "$written" == - ]]; then
+    ! grep -qE '^size: ' "$work/out" ||
       fail "$section" "dispatch read --ref $ref prints no size for $block" "$(<"$work/out")"
   else
-    grep -qiE "(^|[^a-z_])size([^a-z_0-9]+)$minutes([^0-9]|\$)" "$work/out" ||
-      fail "$section" "dispatch read --ref $ref prints $block's size, $minutes minutes" "$(<"$work/out")"
+    grep -qxF "size: $written" "$work/out" ||
+      fail "$section" "dispatch read --ref $ref prints $block's size as written, the line 'size: $written'" "$(<"$work/out")"
   fi
-  pass "$section" "dispatch read --ref $ref prints $block's text and its size ($minutes minutes, - for none)"
+  pass "$section" "dispatch read --ref $ref prints $block's text and its size as written (${written}, - for none)"
 done
 one_dependency_issue "$section" "The issue whose plan task sizes are probed"
 probe="$created_key"

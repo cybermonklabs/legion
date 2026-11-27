@@ -24,6 +24,10 @@ import (
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
+	// ScopeP0 is the right to make an issue's own priority 0 (P0): a write that names a priority
+	// of 0 on an issue whose own priority is not 0 needs it. A person's own sign-in holds it; a
+	// personal token holds it only where its maker gave it.
+	ScopeP0 = "p0"
 )
 
 // ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
@@ -33,22 +37,23 @@ const (
 // (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
 // Dispatch reads it from the broker's answer (brokerTokenActor).
 //
-// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check,
-// a new token's default scopes and the approve-only token's scopes (brokerTokenActor) all read
-// Scopes, and none of them may hold this scope: it is the daemon's broker token's alone. A
-// person-scoped broker token holds ScopePerson alone (brokerPersonScopes), and the approve-only
-// token both of Scopes, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// It is not in Scopes, and it must stay out. The browser's credential and the words a personal
+// token's scopes may hold both read Scopes, and neither may hold this scope: it is the daemon's
+// broker token's alone. A person-scoped broker token holds ScopePerson alone
+// (brokerPersonScopes), and the approve-only token ScopePerson and ScopeApprove
+// (brokerApproveOnlyScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
 const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
 // Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
-// in the order a credential holding both carries them: the whole set a person's own credential
-// holds, and the set a mint gives a token when its body names none. Read it, never write it —
-// every such credential shares this one slice, as every surface shares DISPATCH_SCOPES in
-// @legion/contracts.
-var Scopes = []string{ScopePerson, ScopeApprove}
+// in the order a credential holding all of them carries them: the whole set a person's browser
+// sign-in holds, ScopeP0 among it. A personal token holds the set its row names, which may leave
+// any of them out, and a mint that names none gives every scope its maker holds but ScopeP0 (api's
+// callerScopes). Read it, never write it — every such credential shares this one slice, as every
+// surface shares DISPATCH_SCOPES in @legion/contracts.
+var Scopes = []string{ScopePerson, ScopeApprove, ScopeP0}
 
 // ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
 // a credential's scopes, and a read-only personal token's set holds it: POST
@@ -94,10 +99,14 @@ func (a *ActorAct) Holds(scope string) bool {
 // only read. A pointer, so Actor stays comparable with ==, which this package's callers and its
 // tests rely on.
 type Credential struct {
-	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
-	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
-	// alone where the broker granted it, which the broker does for a Legion daemon's own token
-	// only (brokerTokenActor). No credential holds ScopeLegionStatus beside ScopePerson.
+	// Scopes are the OAuth scopes the credential holds, any of ScopePerson, ScopeApprove and
+	// ScopeP0: a browser holds all three, and a personal token the set its row names, which may be
+	// none. A broker-issued token acting for its person holds ScopePerson alone
+	// (brokerPersonScopes), except an approve-only token, which holds ScopePerson and ScopeApprove
+	// (brokerApproveOnlyScopes); no broker-issued token holds ScopeP0. A named broker token (one
+	// the secrets broker scoped to a project) holds ScopeLegionStatus alone where the broker
+	// granted it, which the broker does for a Legion daemon's own token only (brokerTokenActor). No
+	// credential holds ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
@@ -120,10 +129,11 @@ type Credential struct {
 	// ApproveOnly is a broker-issued token that holds only the scope approve
 	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
 	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
-	// never released. It acts as its person with both of the person's scopes, and Dispatch serves
-	// it on the routes its approve list names (approveScopeRoutes) alone, answering it 403
-	// APPROVE_ONLY_TOKEN on every other (refuseApproveOnlyToken), before anything else the route
-	// does. False for every other credential.
+	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
+	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes whose declaration states
+	// ApproveOnly (api's routeDecl.ApproveOnly) alone, answering it 403 APPROVE_ONLY_TOKEN on every
+	// other (refuseApproveOnlyToken), before anything else the route does. False for every other
+	// credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
@@ -141,6 +151,11 @@ type Credential struct {
 	// writes are recorded under its account — and is refused every write under any other
 	// (writeNeedsASignedInPerson).
 	ProjectScope string
+	// Principal is who a broker-issued token acts for, in the form that names its kind and scope
+	// (ciphertoken.Caller.Principal): the one the Envoy listener records a registration on that
+	// token as, which a successor's reply is held to (api's callerPrincipal and
+	// actsForSuccessorPrincipal). Empty for every other credential.
+	Principal string
 	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
 	// nil for every other credential until a later slice sets a personal token's
 	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
@@ -1909,15 +1924,18 @@ const (
 	BasisLearnedUpdatedAt = "updated_at"
 )
 
-// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable and ReasonReadFailed are why a check
-// names nothing to compare its results with (CheckBlock.ComparedNothing), and why a result's
-// commit cannot be placed (ResultCommitStands.Reason). The three are kept apart because each
-// is a different thing for a reader to do: there is no pull request and no branch to compare
-// with, the App cannot read the repository, or a read Dispatch makes did not answer.
+// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed and ReasonNotMerged
+// are why a check names nothing to compare its results with (CheckBlock.ComparedNothing), and the
+// middle two why a result's commit cannot be placed (ResultCommitStands.Reason). They are kept
+// apart because each is a different thing for a reader to do: there is no pull request and no
+// branch to compare with, the App cannot read the repository, a read Dispatch makes did not
+// answer, or Dispatch holds no merge of the work of an `after_merge` check's issue anywhere, in
+// its own repository or through a pull request it links, so no commit can hold one yet.
 const (
 	ReasonNoPullRequestOrBranch = "no_pull_request_or_branch"
 	ReasonRepositoryUnreadable  = "repository_unreadable"
 	ReasonReadFailed            = "read_failed"
+	ReasonNotMerged             = "not_merged"
 )
 
 // CommitAtBasis, CommitOtherCommit and CommitUnknown are where one result's commit stands: at
@@ -1947,19 +1965,32 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
+// of the pull request whose head the commit is. Merged is set on a `pull_request` basis whose
+// pull request merged, whose commit is its final head: a reader tells it from an open pull
+// request's head, and counts it apart. Repo is the `owner/repo` of a basis in a linked
 // repository, one the check's issue links a pull request in and does not resolve to: the head
-// of a pull request the issue links there, and a branch of it that a result whose commit is
-// that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
-// which is of the repository the check's issue resolves to or is the commit a reader named, so
-// a reader can tell pull request #7 or branch main of the linked repository from those of the
-// issue's own.
+// of a pull request the issue links there, and a branch of it where the issue has a merged
+// linked pull request. It is empty for every other basis, which is of the repository the
+// check's issue resolves to or is the commit a reader named, so a reader can tell pull request
+// #7 or branch main of the linked repository from those of the issue's own.
+//
+// MergeCommit is set on a `branch` basis where Dispatch holds the merge of the issue's work on
+// that branch: the merge commit of the issue's newest merged pull request in that basis's
+// repository on the branch it merged into, and on the default branch, where it merged into
+// another, the merge commit of the pull request that landed that branch there. A result stands
+// at the branch only at a commit whose history holds it. A branch basis names none where no merge
+// is asked of its commits (the default branch of a `default_branch` check of an issue with no
+// merged pull request anywhere), where no commit of it can count (a branch of the issue's own
+// repository where its only merges are linked), and where Dispatch cannot learn or order the
+// merge now.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
 	Repo        string          `json:"repo,omitempty"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
+	MergeCommit string          `json:"merge_commit,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
+	Merged      bool            `json:"merged,omitempty"`
 	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
 }
 
@@ -1975,10 +2006,72 @@ type BasisLearnedAt struct {
 // of it stands at what it compared its results with, against the check's words now, and from
 // which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
 // moved does not stand, and a retracted result counts for nothing.
+//
+// A `before_merge` check compared with heads has subjects, the heads a pass must stand at: each
+// open pull request's head, or where the issue has none, the newest merged one's final head. A
+// pass stands only when one stands at each subject, and Subjects says the state of each. Reason
+// is PassStandsReasonPassAndFail where the answer is unknown because a pass and a fail that count
+// at one commit, from any role, make that commit's state unknown (R4), and
+// PassStandsReasonReadFailed where it is unknown because a read Dispatch makes did not answer:
+// the check runs of a check CI proves that has no subject, or the time each merged pull request of
+// an issue with none open merged, so that Dispatch cannot tell which of them is the newest.
+//
+// An `after_merge` or a `default_branch` check is decided by its newest result that counts
+// (R19): Reason is PassStandsReasonFail where that result is a fail, PassStandsReasonNoResult
+// where no result counts, PassStandsReasonPassAndFail where a pass and a fail count at its
+// commit, PassStandsReasonNotPlaced where the newest result is one Dispatch could not place, and
+// PassStandsReasonReadFailed where the check compares with nothing for a read that did not
+// answer. Results names the results that decide the answer, where the rule that answers names
+// them, and Commit is their commit, absent where Results is empty.
 type CheckPassStands struct {
-	Answer string   `json:"answer" enum:"yes,no,unknown"`
-	Roles  []string `json:"roles,omitempty"`
+	Answer   string              `json:"answer" enum:"yes,no,unknown"`
+	Roles    []string            `json:"roles,omitempty"`
+	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail,fail,no_result,not_placed,read_failed,program_not_named,no_deploy,deploy_not_merged,no_result_from_deploy"`
+	Subjects []PassStandsSubject `json:"subjects,omitempty"`
+	Results  []string            `json:"results,omitempty"`
+	Commit   string              `json:"commit,omitempty"`
+	Deploy   *CheckDeploy        `json:"deploy,omitempty"`
 }
+
+// PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
+// PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
+// fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
+// PassStandsReasonPassAndFail where a pass and a fail that count at one commit of a `before_merge`
+// check, from any role, make that commit's state unknown, or with PassSubjectReasonReadFailed
+// where the check is one CI proves and GitHub's check runs at that head could not be read. Roles
+// names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of the
+// results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
+// PassStandsNo with PassSubjectReasonFail the newest fail, for PassStandsReasonPassAndFail the
+// newest pass and the newest fail, and for PassSubjectReasonNoResult and
+// PassSubjectReasonReadFailed none. CI is the read of a check CI proves at that head, in the
+// repository of that head's pull request, and is absent for every other check.
+type PassStandsSubject struct {
+	Basis   CheckBasis `json:"basis"`
+	Answer  string     `json:"answer" enum:"yes,no,unknown"`
+	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail,read_failed"`
+	Roles   []string   `json:"roles,omitempty"`
+	Results []string   `json:"results,omitempty"`
+	CI      *CheckCI   `json:"ci,omitempty"`
+}
+
+// The reasons a pass_stands answer and its subjects give. PassStandsReasonPassAndFail is a pass
+// and a fail that count at one commit, from any role. PassSubjectReasonReadFailed is a subject
+// alone: the check runs at that head, of a check CI proves, could not be read.
+// PassStandsReasonReadFailed is the check's own: a read that decides it did not answer, with no
+// subject to name it at (CheckPassStands). PassStandsReasonFail, PassStandsReasonNoResult and
+// PassStandsReasonNotPlaced are an `after_merge` or `default_branch` check's own: its newest
+// result that counts is a fail, no result counts, or its newest result is one Dispatch could not
+// place.
+const (
+	PassStandsReasonPassAndFail = "pass_and_fail"
+	PassStandsReasonReadFailed  = "read_failed"
+	PassStandsReasonFail        = "fail"
+	PassStandsReasonNoResult    = "no_result"
+	PassStandsReasonNotPlaced   = "not_placed"
+	PassSubjectReasonFail       = "fail"
+	PassSubjectReasonNoResult   = "no_result"
+	PassSubjectReasonReadFailed = "read_failed"
+)
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
@@ -2039,6 +2132,10 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// NotCounted is why this result counts for nothing, where it does. No surface counts such a
+	// result as evidence, a reader prints it after "It counts for nothing: ", and it is left out of
+	// the JSON on every result that counts.
+	NotCounted string `json:"not_counted,omitempty"`
 	// CommitRepo is the linked repository the record route took CommitSHA to be of
 	// (check_results.commit_repo), one the check's issue links a pull request in and does not
 	// resolve to: one with an open or merged linked pull request that GitHub said holds the
@@ -2051,6 +2148,10 @@ type CheckResult struct {
 	// where it is set, and names it in CommitStands.Repo where it decided an other_commit or
 	// unknown answer. It is no part of the wire shape.
 	CommitRepo *string `json:"-"`
+	// CheckSubject and CheckProgram snapshot the resolved block for deploy event recipients.
+	// They are stored facts, not recorder input or fields on a result's wire shape.
+	CheckSubject string `json:"-"`
+	CheckProgram string `json:"-"`
 	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
 	// for a caller that sent `Dispatch-Trees: 1`.
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
@@ -2096,7 +2197,9 @@ type CheckResultRetraction struct {
 // is the one derived from that run. Text is the block's words with every link and dispatch://
 // reference dropped (the pull-request line reads them); TextTree is the block's own content
 // whole, links and references kept, as the reader is shown it, present only for a caller that
-// sent `Dispatch-Trees: 1`.
+// sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored: code,
+// production or graph, and "" where the block names none, which reads as code. Program is the
+// deployed program it reads, its `program` as stored, "" where it names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -2110,21 +2213,26 @@ type CheckBlock struct {
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
 	CICheck         string        `json:"ci_check,omitempty"`
+	Subject         string        `json:"subject,omitempty" enum:"code,production,graph"`
+	Program         string        `json:"program,omitempty"`
 	CI              *CheckCI      `json:"ci,omitempty"`
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
 	// ComparedWith is every commit and branch this check's results are compared with, in the
 	// order they are asked about, and ComparedNothing is why there are none where it is empty
-	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
+	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed,
+	// ReasonNotMerged).
 	ComparedWith    []CheckBasis    `json:"compared_with"`
-	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
+	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed,not_merged"`
 	PassStands      CheckPassStands `json:"pass_stands"`
 }
 
 // CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI
 // proves answered (CheckCI.State): the named run passed, it failed, nothing the read found proves
-// the check either way, or GitHub could not be read. Only a pass and a fail carry a result.
+// the check either way, or a read that decides it did not answer: GitHub's, or Dispatch's own read
+// of when each merged pull request of an issue with none open merged, where it cannot tell which
+// of them is the newest (the case read_failed). Only a pass and a fail carry a result.
 const (
 	CIStatePass     = "pass"
 	CIStateFail     = "fail"
@@ -2132,16 +2240,30 @@ const (
 	CIStateUnread   = "unread"
 )
 
-// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
-// pull request head of the check's issue: the run's name, the state of the check, the case that
-// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
-// naming that case, and the line the pull-request body carries for the check.
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at one head of
+// the check's issue, in the repository of that head's pull request: the run's name, the state of
+// the check, the case that decided it (a conclusion GitHub wrote, or one of the cases of no
+// conclusion), one sentence naming that case, and the line the pull-request body carries for the
+// check. Dispatch reads it at the head of each open pull request of the issue, or, where none is
+// open, at the final head of the newest merged one. A check's own `ci` is the read of the open
+// pull request of the highest number; each subject of the check carries the read at its head.
+//
+// Commit and Repo name the head the read is of: its commit, and the repository of the pull
+// request whose head it is, where the check runs were read. Two repositories may hold one commit,
+// each with runs of its own there, so a reader tells the reads of one head apart by both. Neither
+// is set where Dispatch read no head (the cases no_head and read_failed). Result is the id of the
+// result the read derived from the run (CheckResult.ID, `ci-run:` and the check run's id), set
+// where the run passed or failed and only there: a reader picks the derived result of a head by
+// this id, never by the words of Line.
 type CheckCI struct {
 	Run    string `json:"run"`
 	State  string `json:"state" enum:"pass,fail,no_result,unread"`
 	Case   string `json:"case"`
 	Detail string `json:"detail"`
 	Line   string `json:"line"`
+	Commit string `json:"commit,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	Result string `json:"result,omitempty"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
@@ -2248,6 +2370,49 @@ type CheckResultRetractedEventPayload struct {
 	CheckBlockID string `json:"check_block_id"`
 	CommitSHA    string `json:"commit_sha"`
 	Reason       string `json:"reason"`
+}
+
+// RoleUndeliveredEventType is the event Dispatch's outbox appends on an event's own owner when its
+// copy for a role reached no session: every copy the outbox kept for the role on the role's kept
+// lane ended its hour with no session holding the role (RoleUndeliveredExpired), or Envoy no longer
+// held the last copy to keep it again (RoleUndeliveredCopyGone). The outbox writes it as a system
+// actor, so it wakes no route and reaches no role (events.Broker.Notify); a person reads it in the
+// owner's history, and a session that follows the owner's topic is sent it.
+const RoleUndeliveredEventType = "role.undelivered"
+
+// SystemMessage is a message Dispatch itself writes on an issue, as one of its own system actors
+// (api.Background.PostSystemMessage): ID is the id it is stored under, which its writer chooses so
+// that a post made again writes no second message, IssueKey the issue it is posted on, and Body
+// its markdown. Dispatch's outbox posts the message that names the events a role did not take
+// with it.
+type SystemMessage struct {
+	ID       string
+	IssueKey string
+	Body     string
+}
+
+// The reasons a role.undelivered event gives (RoleUndeliveredEventPayload.Reason).
+const (
+	// RoleUndeliveredExpired: each of the copy's keeps ended its hour with no session taking it.
+	RoleUndeliveredExpired = "expired"
+	// RoleUndeliveredCopyGone: the stream no longer held the copy that expired - its retention
+	// passed it, or a stream created again since holds another message at its sequence - so the
+	// outbox had nothing to keep again.
+	RoleUndeliveredCopyGone = "copy_gone"
+)
+
+// RoleUndeliveredEventPayload is the payload of role.undelivered (RoleUndeliveredEventType): the
+// event whose copy reached no session (EventID, EventType), the role it was routed to, how many
+// times its copy was kept on the role's kept lane, when the last copy was kept and when Envoy
+// dropped it, and why the outbox stopped.
+type RoleUndeliveredEventPayload struct {
+	EventID   int64     `json:"event_id"`
+	EventType string    `json:"event_type"`
+	Role      string    `json:"role"`
+	Keeps     int       `json:"keeps"`
+	KeptAt    time.Time `json:"kept_at"`
+	DroppedAt time.Time `json:"dropped_at"`
+	Reason    string    `json:"reason"`
 }
 
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends
@@ -3718,16 +3883,26 @@ type CommentNodeAnchor struct {
 // is what says the post itself is gone rather than the one block. All three are absent on a part
 // of an ask, which no correction marks. An event's reply_block keeps the marks the write that
 // appended it read. A reply's delete event (comment.deleted, message.deleted) carries the block
-// with every field but its text, which is empty: a delete event carries no text of another post.
+// with every field but its text, quote and occurrence: its text is empty and the other two are
+// absent, because a delete event carries no text of another post.
+//
+// Quote and Occurrence are the words of the block the reply quotes and which of their matches in
+// the block's plain text they are, counted from 0, as the reply stored them
+// (comments.replies_to_quote and replies_to_occurrence, and the same two of messages): both or
+// neither, absent on a reply that quotes nothing, as the marks are absent where the post holds
+// none. A read leaves both out once the quoted post is deleted (refs.ReplyBlocks), as they are
+// words of that post.
 type ReplyBlock struct {
-	Node      string     `json:"node"`
-	Ref       string     `json:"ref,omitempty"`
-	BlockID   string     `json:"block_id"`
-	Text      string     `json:"text"`
-	Removed   bool       `json:"removed"`
-	EditedAt  *time.Time `json:"edited_at,omitempty"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	DeletedBy *Actor     `json:"deleted_by,omitempty"`
+	Node       string     `json:"node"`
+	Ref        string     `json:"ref,omitempty"`
+	BlockID    string     `json:"block_id"`
+	Text       string     `json:"text"`
+	Removed    bool       `json:"removed"`
+	EditedAt   *time.Time `json:"edited_at,omitempty"`
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy  *Actor     `json:"deleted_by,omitempty"`
+	Quote      *string    `json:"quote,omitempty"`
+	Occurrence *int       `json:"occurrence,omitempty"`
 }
 
 // ItemBlocks is the answer of GET /api/v1/comments/{id}/blocks and GET

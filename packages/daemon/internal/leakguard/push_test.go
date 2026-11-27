@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // A push's records are read from the commits it would add, out of a real repository: the
@@ -1042,8 +1043,10 @@ func TestAPushReadsWhatItsRemoteFetchedFromAnotherRepository(t *testing.T) {
 //
 // The fetch the refusal names is from the push's own destination: the remote a push names, even
 // one whose refs the guard does not hold (here because a remote named origin/extra can file refs
-// among origin's), and for a push to a URL, that URL with its userinfo removed, so a token in it
-// is not printed. The failure's own error is read, beneath the redaction a refusal's text gets.
+// among origin's), and for a push to a URL, that URL as the URL rule prints it
+// (redact.URLCredentials): its authority, which holds the token, written as the mark and its path
+// kept, so no part of the token is printed. The failure's own error is read, beneath the
+// redaction a refusal's text gets.
 func TestAPushPastAShallowBoundaryIsRefusedNamingTheFetch(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	remote, seed, clone := filepath.Join(root, "remote.git"), filepath.Join(root, "seed"), filepath.Join(root, "clone")
@@ -1129,7 +1132,7 @@ func TestAPushPastAShallowBoundaryIsRefusedNamingTheFetch(t *testing.T) {
 	withToken := "https://" + userinfo + "@github.com/" + theRepo + ".git"
 	for _, tc := range []struct{ name, remote, url, fetch string }{
 		{name: "a push to origin, which the guard does not hold", remote: "origin", url: "file://" + remote, fetch: "origin"},
-		{name: "a push to a URL with a token in its userinfo", remote: withToken, url: withToken, fetch: theURL},
+		{name: "a push to a URL with a token in its userinfo", remote: withToken, url: withToken, fetch: "https://" + redact.URLWithCredentials + "/" + theRepo + ".git"},
 	} {
 		req := request("refs/heads/work", own)
 		req.Remote, req.URL = tc.remote, tc.url

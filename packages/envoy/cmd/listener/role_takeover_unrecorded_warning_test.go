@@ -14,6 +14,9 @@ import (
 // refusals for a minute, so a full stream that refuses every claim's backoff logs a line a minute
 // for each role. The control is another role, whose first refusal logs at once.
 func TestARefusedTakeoverClaimIsLoggedOnceAMinuteForEachRole(t *testing.T) {
+	// Not parallel: it writes entries of the package variable takeoverUnrecordedWarnings
+	// (warnTakeoverUnrecorded, roles role-warned and role-other) and asserts on the warnings
+	// they let through.
 	var logs bytes.Buffer
 	logger := logging.NewWithWriter("test", &logs)
 	refused := takeoverUnrecordedError{previous: "ses_previous", err: errors.New("nats: maximum bytes exceeded")}

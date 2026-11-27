@@ -154,7 +154,7 @@ type idPrefixRoute struct {
 	shortStatus int
 	shortCode   string
 	// notFoundCode is the 404 the route answers for a whole id of its kind that names no
-	// item, which is what the prefix layer answers for a prefix that names none (idRoutes).
+	// item, which is what the prefix layer answers for a prefix that names none (its ID).
 	notFoundCode string
 }
 
@@ -1056,7 +1056,7 @@ func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path stri
 	return response
 }
 
-// idRoutes names, per route, the 404 that route answers for an id of its kind it does not hold,
+// A route's ID names the 404 that route answers for an id of its kind it does not hold,
 // and the prefix layer answers a prefix that names none with that code, copied there by hand
 // (resolvePathValue). This drives every resolving row with a whole uuid nothing carries - which
 // the layer leaves as written (text.IsIDPrefix), so the answer is the handler's own - and holds
@@ -1080,10 +1080,10 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 	}
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
 		name := route.Method + " " + route.Pattern
-		entry, named := idRoutes[name]
-		if !named || !entry.resolves() {
+		if route.ID == nil || !route.ID.resolves() {
 			continue
 		}
+		entry := *route.ID
 		t.Run(name, func(t *testing.T) {
 			probe := unknownIDRouteProbes[name]
 			// Each wildcard the row resolves, with every other value naming something that
@@ -1103,17 +1103,17 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 				answer := unknownIDRouteRequest(t, handler, route.Method, each.path, probe, routeProbeBody(route))
 				if each.want == notFoundNone {
 					if answer.Code == http.StatusNotFound {
-						t.Fatalf("%s answers 404 %s for %s nothing carries; idRoutes says it answers none: %s",
+						t.Fatalf("%s answers 404 %s for %s nothing carries; its ID says it answers none: %s",
 							name, decodeBody[refusedAnswer](t, answer).Code, each.what, answer.Body.String())
 					}
 					continue
 				}
 				if answer.Code != http.StatusNotFound {
-					t.Fatalf("%s answers %d for %s nothing carries, not the 404 idRoutes names (%s): %s",
+					t.Fatalf("%s answers %d for %s nothing carries, not the 404 its ID names (%s): %s",
 						name, answer.Code, each.what, each.want, answer.Body.String())
 				}
 				if code := decodeBody[refusedAnswer](t, answer).Code; code != each.want {
-					t.Fatalf("%s answers 404 %q for %s nothing carries; idRoutes names %q, which is what a prefix nothing carries gets",
+					t.Fatalf("%s answers 404 %q for %s nothing carries; its ID names %q, which is what a prefix nothing carries gets",
 						name, code, each.what, each.want)
 				}
 			}

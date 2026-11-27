@@ -20,7 +20,7 @@ import (
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
 // title and never written in. It answers 204 and no body.
 //
-// It needs the person scope (routeScopes) and takes two locks: the owner's lock (store.LockOwner,
+// It needs the person scope (its route's OAuthScopes) and takes two locks: the owner's lock (store.LockOwner,
 // which beginArtifactWrite takes), as the title correction does (renameArtifact), so a correction
 // and a removal of one owner cannot each miss the other, and then the document's room
 // (docs.LockDocumentRoom), which is the lock a durable write of the document takes. In that
@@ -79,7 +79,7 @@ import (
 // the person may not see among them, each written again as the store holds it but for its state,
 // keeping its cause, with one state tuple at the sentinel signed by the person at the removal's
 // time, in one batch with their head rows (spec requirement r-proposed). The removal takes no person check
-// of its own for them: it is the person's already (routeScopes), and the cascade is part of the
+// of its own for them: it is the person's already (its route's OAuthScopes), and the cascade is part of the
 // delete. It reads, with the rest of what it reads before its first write, whether any lens stands
 // on the document's node, and reads the stale lenses only where one does, so a document nothing
 // stands on holds its transaction id no longer than before. No lens stands on a block of the

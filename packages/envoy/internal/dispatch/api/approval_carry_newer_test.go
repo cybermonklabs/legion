@@ -115,6 +115,8 @@ func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Durati
 // editor keeps on the block, and carries his approval to it: the two differ in the block's
 // server-owned attributes alone.
 func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReadsIt(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault) and pmdoc's schema
+	// manifest (useNewerAskManifest, pmdoc.UseManifestForTest).
 	logged := captureLog(t)
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	registerTwoBuilds(t, database)

@@ -45,6 +45,7 @@ func ForgetDocument(ctx context.Context, q Execer, artifactID string) error {
 	`, artifactID); err != nil {
 		return fmt.Errorf("settle the index owed by the removed document %s: %w", artifactID, err)
 	}
+	// kept for one release: decisions-ref-repair
 	if _, err := q.Exec(ctx, `
 		with seed as (delete from refs_decisions_forms_seed_owed where kind = 'artifact' and id = $1::uuid),
 		     decisions as (delete from refs_decisions_forms_owed where kind = 'artifact' and id = $1::uuid)

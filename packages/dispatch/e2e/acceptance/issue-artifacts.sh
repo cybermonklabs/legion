@@ -539,6 +539,21 @@ with_vars "$section" "read the id of $new's issue.created event" "
 created_event="$answer"
 readonly created_event
 [[ "$created_event" =~ ^[0-9]+$ ]] || fail "$section" "read the id of $new's issue.created event" "the log holds $created_event"
+# The release before, a build of marking rule 1, writes its row of block_index_event_cursors from a
+# block-index tick of its own, which ticks here while this head's block index is held; beside an
+# unheld head it may not tick at all, so the rule2 case, which reads that build's row (it is keyed
+# by the build's commit), finds it only where it stands from here.
+deadline=$((SECONDS + tree_wait_seconds))
+while true; do
+  with_vars "$section" "read the release before's cursor at marking rule 1" "
+    select count(*) from block_index_event_cursors where marking_rule = 1 and build_commit <> :'h'" "h=$head_commit"
+  ((answer == 0)) || break
+  ((SECONDS < deadline)) ||
+    fail "$section" "the release before writes its block_index_event_cursors row at marking_rule 1 while this head is held" \
+      "no row of a build other than $head_commit at rule 1 after ${tree_wait_seconds} s"
+  sleep "$tree_poll_seconds"
+done
+pass "$section" "the release before wrote its cursor row at marking_rule 1"
 issue_artifacts_stop_before
 pass "$section" "stopped the release before"
 
@@ -564,7 +579,11 @@ pass "$section" "$old's spec stands stated at version $spec_version with no mark
 query "$section" "read the horizon of rule 2" \
   "select coalesce((select event_id::text from graph_backfill_horizon where marking_rule = 2), 'none')"
 horizon="$answer"
-[[ "$horizon" =~ ^[0-9]+$ && "$horizon" -gt "$created_event" ]] ||
+# The horizon is inclusive: graphcensus/backfill.go:212-218 records "an id of the event log at or
+# below which every event is final", the newest event the mark saw, and a tick of docs'
+# block_index_roll.go reads (cursor, safe] from a cursor that starts at that horizon. So an event
+# at the horizon is one no tick of this head reads.
+[[ "$horizon" =~ ^[0-9]+$ && "$horizon" -ge "$created_event" ]] ||
   fail "$section" "the horizon of rule 2 stands above $new's issue.created event, so no tick of this head reads it" \
     "graph_backfill_horizon records $horizon for rule 2, and $new's issue.created event is $created_event"
 pass "$section" "the horizon of rule 2, $horizon, stands above $new's issue.created event, $created_event"
@@ -660,13 +679,17 @@ for row in "spec $old/spec spec" "verification $old_verification_ref verificatio
   [[ "$answer" == "$name|["* ]] ||
     fail "$section" "the query node $ref states its query and the types it takes" "it states $answer"
   pass "$section" "$ref is the query node $name, taking ${answer#*|}"
+  # Each non-spec query node answers its query's name as `role`; the spec query node answers no
+  # `role`, its part being `primary: true` (Verification v231).
+  want="{\"primary\":false,\"role\":\"$name\"}"
+  [[ "$name" != spec ]] || want='{"primary":true,"role":null}'
   tree_send GET "/api/v1/issues/$old/artifacts/$slug"
   tree_want 200 "$section" "read $slug of $old"
-  expect "$section" "GET /api/v1/issues/$old/artifacts/$slug answers the role $name" "\"$name\"" .role
+  expect "$section" "GET /api/v1/issues/$old/artifacts/$slug answers $slug as $want" "$want" '{primary, role}'
   tree_send GET "/api/v1/issues/$old/artifacts"
   tree_want 200 "$section" "list $old's artifacts"
-  expect "$section" "GET /api/v1/issues/$old/artifacts answers $slug with the role $name" "[\"$name\"]" \
-    --arg s "$slug" '[.[] | select(.slug == $s) | .role]'
+  expect "$section" "GET /api/v1/issues/$old/artifacts answers $slug as $want" "[$want]" \
+    --arg s "$slug" '[.[] | select(.slug == $s) | {primary, role}]'
 done
 issue_artifacts_blocks "$section" "dispatch://$old/artifact/verification-md" "$old_verification"
 issue_artifacts_resolve "$section" "dispatch://$old/artifact/verification-md#b-c-old"
@@ -731,11 +754,23 @@ done
   fail "$section" "before this head's tick the row of $old_notes_ref stands at store_version $notes_version with stated_version behind it" \
     "its row reads $row_line: this head's tick reached it before the read"
 pass "$section" "before this head's tick: $row_line"
-with_vars "$section" "read the release before's cursor at marking rule 1" "
-  select count(*) from block_index_event_cursors where marking_rule = 1 and build_commit <> :'h'" "h=$head_commit"
-[[ "$answer" -gt 0 ]] ||
-  fail "$section" "the release before keeps a block_index_event_cursors row at marking_rule 1" "no row of a build other than $head_commit at rule 1: the run proves nothing of the widened rule"
+# The release before writes that row from a block-index tick of its own, which need not have run
+# when its in-request index of the edit has answered (a tick inserts the row only once it reads a
+# proven horizon of the event log), so the read waits for it and fails at the wait's end.
+deadline=$((SECONDS + tree_wait_seconds))
+while true; do
+  with_vars "$section" "read the release before's cursor at marking rule 1" "
+    select count(*) from block_index_event_cursors where marking_rule = 1 and build_commit <> :'h'" "h=$head_commit"
+  ((answer == 0)) || break
+  ((SECONDS < deadline)) ||
+    fail "$section" "the release before keeps a block_index_event_cursors row at marking_rule 1" "no row of a build other than $head_commit at rule 1 after ${tree_wait_seconds} s: the run proves nothing of the widened rule"
+  sleep "$tree_poll_seconds"
+done
 pass "$section" "the release before keeps $answer cursor rows at marking_rule 1"
+# The release before has written its version and its cursor row; it stops before this head's tick
+# is awaited, as a roll ends: a run that awaited the tick beside it read no stated version in
+# 300 s, the two builds taking turns at the one block-index lease (docs' BlockIndexLease).
+issue_artifacts_stop_before
 base="$tree_head_url"
 deadline=$((SECONDS + tree_wait_seconds))
 while true; do
@@ -763,7 +798,6 @@ IFS='|' read -r head_cursor rule2_horizon rule1_cursors <<<"$answer"
   fail "$section" "this head's cursor stands at marking_rule 2 from the horizon rule 2 recorded" \
     "its cursor reads $head_cursor, the horizon $rule2_horizon, the cursors of rule 1 $rule1_cursors"
 pass "$section" "this head's cursor at marking_rule 2 reads $head_cursor, from the horizon $rule2_horizon (the cursors of rule 1: $rule1_cursors)"
-issue_artifacts_stop_before
 issue_artifacts_edit "$section" "$old_notes" "The release before writes it again." "This head writes it last."
 corpus_version "$section" "$old_notes"
 last_notes="$tree_value"

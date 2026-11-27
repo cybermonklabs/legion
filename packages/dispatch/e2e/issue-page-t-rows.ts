@@ -114,7 +114,7 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests 
  * answer it was drawn from: its rows are the answer's nodes but those no row draws
  * (`nodesNoRowDraws`, `answerRowIds`), each in its place (`firstRowOutOfPlace`,
  * `servingOutOfPlace`), none folded (`foldedRowIds`) and each whole (`rowsNotWhole`). Rows 11 and
- * 13 wait on Dashboard's part (`dashboardPartGate`).
+ * 13 wait on Dashboard's part and on T's R16 and R17 built on it (`dashboardPartGate`).
  *
  * Each row checks its gates first, each with one `owedUnless` call, and skips where a gate is not
  * on this branch's base, with an `owed` annotation naming the gate; it never passes then, since a

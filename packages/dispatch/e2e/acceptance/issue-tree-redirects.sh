@@ -19,8 +19,9 @@
 # reference read (GET /api/v1/references?to=, blockReferenceNode in api/references.go), the same
 # reference pinned to the Verification document's newest version (`@v<n>`), the block-link read
 # (GET /api/v1/block-links?from=<notes.md>&to=<verification.md>, refs.BlockLinks), the second
-# issue's reference closure (GET /api/v1/issues/{key}/references, refs.Closure), and the backlink
-# read of the same address; and the five pointer columns, refs.to_id, block_refs.to_id,
+# issue's reference closure (GET /api/v1/issues/{key}/references, refs.Closure, which counts a
+# cited block as the document holding it: documentOfTarget), and the backlink read of the same
+# address; and the five pointer columns, refs.to_id, block_refs.to_id,
 # asks.block_artifact_id, comments.anchor and the check_results pair. It stops that server, boots
 # this head over the same database with the hold of R6's step, and waits for the backfill. Before
 # the move it reads the five pointer columns as it captured them, so no migration rewrote one.
@@ -38,9 +39,10 @@
 # announcement and converts with `envoy-dispatch convert-issues --project PROJECT`, which moves
 # the Verification document's blocks into the issue's tree, and reads the citation again four ways:
 # each resolver reaches the block at its new address, the far end of the one moved_to tuple that
-# records the move (no second row for it), and answers the text captured before the upgrade; the
-# backlink read answers the same links. Each of the five pointers is a tuple of the store after the
-# move, from its owner to the node's new home, and each projection column names that home. Last
+# records the move (no second row for it), or the closure the document holding it, and answers the
+# text captured before the upgrade; the backlink read answers the same links. Each of the five
+# pointers is a tuple of the store after the move, from its owner to the node's new home, and each
+# projection column names that home. Last
 # `census --store` again, after the wait for every document's block index: the dangling line and
 # `n` read as before the move, and the versions line reads tree_mismatch=0 and
 # tree_mismatch_repaired=0.
@@ -113,7 +115,10 @@ trap 'exit 143' TERM
 # $pinned_version (its id and its text); `backlinks`, the edges that read answers (each edge's kind
 # and its other end's kind, and the ids of the other ends); `block_links`, the links GET
 # /api/v1/block-links answers from notes.md to the block whose node id is NODE (its id and its
-# text); `closure`, the second issue's links to that node (its id, its name and its text).
+# text, which neither release's block-link read fills: only the read of a node's own address
+# answers its text, refs.Node); `closure`, the second issue's links to the Verification document
+# `verification`, the node refs.Closure counts a cited block of it as (its id, its name and its
+# text).
 issue_tree_redirects_resolve() {
   local section="$1" file="$2" node="$3"
   tree_send GET "/api/v1/references?to=$(q "$target_address")"
@@ -128,28 +133,31 @@ issue_tree_redirects_resolve() {
   tree_send GET "/api/v1/issues/$other/references"
   tree_want 200 "$section" "read the reference closure of $other"
   cp "$work/body" "$work/resolve.closure"
-  jq -n --arg node "$node" --slurpfile reference "$work/resolve.reference" --slurpfile pinned "$work/resolve.pinned" \
-    --slurpfile links "$work/resolve.links" --slurpfile closure "$work/resolve.closure" '{
+  jq -n --arg node "$node" --arg document "$verification" --slurpfile reference "$work/resolve.reference" \
+    --slurpfile pinned "$work/resolve.pinned" --slurpfile links "$work/resolve.links" \
+    --slurpfile closure "$work/resolve.closure" '{
       reference: ($reference[0].node | {id, text: (.text // "")}),
       pinned: ($pinned[0].node | {id, text: (.text // "")}),
       backlinks: {kinds: ([$reference[0].edges[] | "\(.kind) \(.node.kind)"] | sort),
                   ids: ([$reference[0].edges[] | .node.id] | sort)},
       block_links: [$links[0].links[] | select(.to.id == $node) | {id: .to.id, text: (.to.text // "")}],
-      closure: [$closure[0].links[] | select(.node.id == $node) | {id: .node.id, name, text: (.node.text // "")}]
+      closure: [$closure[0].links[] | select(.node.kind == "artifact" and .node.id == $document)
+                | {id: .node.id, name, text: (.node.text // "")}]
     }' >"$file" || fail "$section" "read what each resolver answers for $target_address" \
     "the answers do not read: $(head -c 300 "$work/resolve.reference")"
   printf 'resolvers of %s: %s\n' "$target_address" "$(jq -c . "$file")"
 }
 
 # issue_tree_redirects_pointers SECTION FILE: the five pointer columns, one line each, in FILE:
-# the refs and block_refs rows of the citations of c-target, by the owners refs_owners and
-# block_refs_owners name, and the rows of the ask, the anchored comment and the result, by their
-# ids.
+# the refs and block_refs rows of notes.md's citation of c-target, by the owners refs_owners and
+# block_refs_owners name, the refs row the one whose block id is c-target at whichever address
+# (the owner's citation of q-moved is no pointer at c-target), and the rows of the ask, the
+# anchored comment and the result, by their ids.
 issue_tree_redirects_pointers() {
   query "$1" "read the five pointer columns" "
     select concat_ws(E'\n',
       (select string_agg('refs ' || from_kind || ' ' || from_id || ' ' || to_kind || ' ' || to_id, E'\n' order by from_kind, from_id)
-         from refs where (from_kind, from_id) in ($refs_owners)),
+         from refs where (from_kind, from_id) in ($refs_owners) and split_part(to_id, '#', 2) = 'c-target'),
       (select string_agg('block_refs ' || artifact_id || ' ' || block_id || ' ' || from_node || ' ' || to_kind || ' ' || to_id, E'\n' order by artifact_id, block_id)
          from block_refs where (artifact_id, block_id) in ($block_refs_owners)),
       (select 'asks ' || id || ' ' || coalesce(block_artifact_id::text, 'null') || ' ' || coalesce(block_id, 'null') from asks where id = '$ask'),
@@ -262,9 +270,12 @@ pass "$section" "wrote $main (verification.md $verification at version $pinned_v
 # The owners of the refs and block_refs rows of the citations of c-target, as the earlier release
 # wrote them: each pointer read after this one reads these rows by their owner, wherever they
 # point.
+# The refs pointer is notes.md's, the document citation: the conversion rewrites a document's refs
+# row at a moved block (docs' movePointers), while the second issue's comment reaches the move
+# through moved_to, which the closure and backlink reads take.
 query "$section" "read the owners of the refs rows of the citations of c-target" \
   "select coalesce(string_agg('(' || quote_literal(from_kind) || ', ' || quote_literal(from_id) || ')', ', '), '')
-   from refs where to_id = '$target_node'"
+   from refs where to_id = '$target_node' and from_kind = 'artifact' and from_id = '$notes'"
 [[ -n "$answer" ]] || fail "$section" "the earlier release wrote the refs pointer of a citation of c-target" "refs holds no row to $target_node"
 readonly refs_owners="$answer"
 query "$section" "read the owners of the block_refs rows of the citations of c-target" \
@@ -279,10 +290,14 @@ for pointer in refs block_refs asks comments check_results; do
   grep -q "^$pointer " "$work/pointers.captured" ||
     fail "$section" "the earlier release wrote the $pointer pointer" "the rows hold none: $(tr '\n' ';' <"$work/pointers.captured")"
 done
-jq -e --arg n "$target_node" --arg w "$target_words" \
-  '[.reference, .pinned, .block_links[0], .closure[0]] | all(. != null and .id == $n and ((.text | contains($w)) or ((.name // "") | contains($w))))' \
+# The reference read and its pinned read answer c-target with its words; the block-link read
+# answers one link to it, and the closure one link to the document holding it.
+readonly resolved_test='([.reference, .pinned] | all(. != null and .id == $n and (.text | contains($w))))
+  and (.block_links | length == 1 and .[0].id == $n) and (.closure | length == 1 and .[0].id == $d)'
+jq -e --arg n "$target_node" --arg w "$target_words" --arg d "$verification" "$resolved_test" \
   "$work/resolved.captured" >/dev/null ||
-  fail "$section" "each resolver of the earlier release answers c-target at $target_node with its words" "$(<"$work/resolved.captured")"
+  fail "$section" "each resolver of the earlier release answers c-target at $target_node, the closure its document $verification" \
+    "$(<"$work/resolved.captured")"
 pass "$section" "captured what each resolver answers for $target_address and the five pointer columns, through the earlier release"
 baseline_stop_server
 
@@ -298,11 +313,11 @@ differs="$(diff "$work/pointers.captured" "$work/pointers.upgraded")" || true
   fail "$section" "no migration rewrote a pointer: the five columns read as captured" "they differ (< captured, > now): $(tr '\n' ';' <<<"$differs")"
 pass "$section" "no migration rewrote a pointer: the five pointer columns read as captured"
 issue_tree_redirects_resolve "$section" "$work/resolved.upgraded" "$target_node"
-jq -e --arg n "$target_node" --arg w "$target_words" \
-  '[.reference, .pinned, .block_links[0], .closure[0]] | all(. != null and .id == $n and ((.text | contains($w)) or ((.name // "") | contains($w))))' \
+jq -e --arg n "$target_node" --arg w "$target_words" --arg d "$verification" "$resolved_test" \
   "$work/resolved.upgraded" >/dev/null ||
-  fail "$section" "every resolver answers c-target at $target_node with its words before the move" "$(<"$work/resolved.upgraded")"
-pass "$section" "every resolver answers c-target at $target_node with its words before the move"
+  fail "$section" "every resolver answers c-target at $target_node, the closure its document $verification, before the move" \
+    "$(<"$work/resolved.upgraded")"
+pass "$section" "every resolver answers c-target at $target_node, the closure its document $verification, before the move"
 # One move of the restore's shape, which the release before cannot write, resolved through each
 # resolver before the first node of this child moves.
 query "$section" "append a moved_to tuple of the restore's shape from $moved_node to $ask_node" "
@@ -319,7 +334,8 @@ tree_want 200 "$section" "read the block links from notes.md to verification.md 
 expect "$section" "the block-link read resolves the moved address to $ask_node" true --arg n "$ask_node" '[.links[] | select(.to.id == $n)] | length >= 1'
 tree_send GET "/api/v1/issues/$other/references"
 tree_want 200 "$section" "read the reference closure of $other"
-expect "$section" "the closure of $other resolves the moved address to $ask_node" true --arg n "$ask_node" '[.links[] | select(.node.id == $n)] | length >= 1'
+expect "$section" "the closure of $other resolves the moved address to the document holding $ask_node, $verification" true \
+  --arg d "$verification" '[.links[] | select(.node.kind == "artifact" and .node.id == $d)] | length >= 1'
 issue_tree_redirects_census "$section"
 readonly dangling_before="$dangling" unresolved_before="$unresolved"
 ((unresolved_before >= 1)) ||
@@ -354,21 +370,25 @@ readonly new_node new_ask_node tree_artifact
 section=redirects
 issue_tree_redirects_resolve "$section" "$work/resolved.moved" "$new_node"
 for leg in reference pinned block_links closure; do
-  # The one answer of each resolver for the node: the node itself, or the one link to it.
+  # The one answer of each resolver for the node: the node itself, or the one link to it; the
+  # closure's is the document holding it, at any address of the block.
   pick=".$leg"
   [[ "$leg" == reference || "$leg" == pinned ]] || pick=".$leg | if length == 1 then .[0] else null end"
+  reach="$new_node"
+  [[ "$leg" != closure ]] || reach="$verification"
   moved="$(jq -c "$pick" "$work/resolved.moved")"
   captured="$(jq -c "$pick" "$work/resolved.captured")"
-  [[ "$(jq -r '.id // "none"' <<<"$moved")" == "$new_node" ]] ||
-    fail "$section" "the $leg resolver reaches c-target at its new address $new_node" "it answers $moved"
+  [[ "$(jq -r '.id // "none"' <<<"$moved")" == "$reach" ]] ||
+    fail "$section" "the $leg resolver reaches c-target at its new address $new_node ($reach)" "it answers $moved"
   [[ "$(jq -c 'del(.id)' <<<"$moved")" == "$(jq -c 'del(.id)' <<<"$captured")" ]] ||
     fail "$section" "the $leg resolver answers the text captured before the upgrade" "it answers $moved, captured $captured"
-  pass "$section" "the $leg resolver reaches c-target at $new_node with the text captured before the upgrade"
+  pass "$section" "the $leg resolver reaches c-target at $new_node ($reach) with the text captured before the upgrade"
 done
 [[ "$(jq -c '.backlinks.kinds' "$work/resolved.moved")" == "$(jq -c '.backlinks.kinds' "$work/resolved.captured")" ]] ||
   fail "$section" "the backlink read of $target_address answers the links it answered before the upgrade" \
     "it answers $(jq -c '.backlinks' "$work/resolved.moved"), captured $(jq -c '.backlinks' "$work/resolved.captured")"
-jq -e --arg c "$cite_comment" '.backlinks.ids | any(endswith($c))' "$work/resolved.moved" >/dev/null ||
+# The citation's end is a block of the comment, `comment/<id>#b<n>`, or the comment itself.
+jq -e --arg c "$cite_comment" '.backlinks.ids | any(. == "comment/" + $c or startswith("comment/" + $c + "#"))' "$work/resolved.moved" >/dev/null ||
   fail "$section" "the backlink read of $target_address answers the comment $cite_comment" "it answers $(jq -c '.backlinks' "$work/resolved.moved")"
 pass "$section" "the backlink read of $target_address answers the links it answered before the upgrade"
 
@@ -384,7 +404,13 @@ while read -r table rest; do
       read -r from_kind from_id to_kind to_id <<<"$rest"
       [[ "$to_kind $to_id" == "block $new_node" ]] ||
         fail "$section" "refs.to_id of $from_kind $from_id names the node's new home" "it names $to_kind $to_id, want block $new_node"
-      issue_tree_redirects_tuple "$section" "the citation of $from_kind $from_id" "$from_kind" "$from_id" "$new_node"
+      # The store addresses a document by its ref_key, where refs names it by its uuid.
+      owner="$from_id"
+      if [[ "$from_kind" == artifact ]]; then
+        query "$section" "read the ref_key of the document $from_id" "select coalesce((select ref_key from artifacts where id::text = '$from_id'), '')"
+        owner="$answer"
+      fi
+      issue_tree_redirects_tuple "$section" "the citation of $from_kind $from_id" "$from_kind" "$owner" "$new_node"
       ;;
     block_refs)
       read -r _ _ from_node to_kind to_id <<<"$rest"
@@ -400,10 +426,17 @@ while read -r table rest; do
       issue_tree_redirects_tuple "$section" "the ask $id's block" ask "$id" "$new_ask_node"
       ;;
     comments)
+      # The anchor points at the document (its artifact_id) and at the block the quote stands
+      # in, the paragraph inside c-target; the conversion keeps both, renaming only a reminted
+      # block id (docs' moveAsks), and moves the anchored_in tuple to that block's node in the
+      # room.
       read -r id anchor <<<"$rest"
-      [[ "$(jq -r '.artifact_id + " " + (.block_id // "")' <<<"$anchor")" == "$tree_artifact $new_block" ]] ||
-        fail "$section" "comments.anchor of $id names the new home of c-target" "it reads $anchor, want artifact_id $tree_artifact and block_id $new_block"
-      issue_tree_redirects_tuple "$section" "the anchor of the comment $id" comment "$id" "$new_node"
+      anchor_block="$(jq -r '.block_id // ""' <<<"$anchor")"
+      captured_block="$(sed -n "s/^comments $id //p" "$work/pointers.captured" | jq -r '.block_id // ""')"
+      [[ "$(jq -r '.artifact_id' <<<"$anchor")" == "$verification" && -n "$anchor_block" && "$anchor_block" == "$captured_block" ]] ||
+        fail "$section" "comments.anchor of $id points at the document $verification and the block the quote stands in" \
+          "it reads $anchor, want artifact_id $verification and block_id $captured_block, as captured"
+      issue_tree_redirects_tuple "$section" "the anchor of the comment $id" comment "$id" "${new_node%#*}#$anchor_block"
       ;;
     check_results)
       read -r id check_artifact check_block <<<"$rest"

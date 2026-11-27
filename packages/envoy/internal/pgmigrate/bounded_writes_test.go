@@ -3,14 +3,11 @@ package pgmigrate
 import (
 	"context"
 	"fmt"
-	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // boundedWritesFixtureSQL is the database the bounded-write census tests judge their rows against.
@@ -54,25 +51,10 @@ insert into ruled select g, 'x' from generate_series(1, 10) g;
 `
 
 // boundedWritesDatabase connects to a database of the test's own, loaded with
-// boundedWritesFixtureSQL, on the server DISPATCH_TEST_DATABASE_URL names, and skips the test when
-// that variable is unset, as catalogOnlyDatabase does. The database is dropped when the test ends.
+// boundedWritesFixtureSQL (fixtureDatabase).
 func boundedWritesDatabase(t *testing.T, ctx context.Context) *pgx.Conn {
 	t.Helper()
-	raw := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if raw == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's bounded-write tests")
-	}
-	adminURL, err := url.Parse(raw)
-	if err != nil {
-		// url.Parse's own error quotes the URL, which carries a credential.
-		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
-	}
-	adminURL.Path = "/postgres"
-	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), "pgmigrate_bounded"))
-	if _, err := conn.Exec(ctx, boundedWritesFixtureSQL); err != nil {
-		t.Fatalf("load the fixture: %v", err)
-	}
-	return conn
+	return fixtureDatabase(t, ctx, "pgmigrate_bounded", "bounded-write tests", boundedWritesFixtureSQL)
 }
 
 // tupleColumns are the columns of tuples an insert of the tests gives, the rest taking their

@@ -172,7 +172,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "TurnOutcomes", Column: ColumnWithheld,
 		Reason: "the window the run of refused turns is derived from, which the turn-outcome answer alone carries and which reaches no surface"},
 	{Field: "Abandoned", Column: ColumnWithheld,
-		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
+		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and in its registration answer (`replaces`), and no surface"},
 	{Field: "SessionRun", Column: ColumnWithheld,
 		Reason: "the run of the claim's session since it last finished a turn, which decides the controller's replacement of a failing session and reaches the daemon's log and the fresh session's first task, and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,

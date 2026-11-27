@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/httpoutage"
 )
 
 // Client is the Dispatch surface the workflow needs. It deliberately exposes only the reads and
@@ -275,7 +277,9 @@ type Issue struct {
 	HandedOver        bool
 	PrimaryArtifactID string
 	// VerificationArtifactID is the issue's Verification document (Approval.Role
-	// ArtifactRoleVerification), empty when the issue holds none.
+	// ArtifactRoleVerification), empty when the issue holds none: the artifact of the issue read's
+	// verification query, or, where the answer carries no queries (a Dispatch of the release
+	// before), its verification_artifact_id (issueResponse.verificationArtifact in wire.go).
 	VerificationArtifactID string
 	LastSeq                int64
 	// Priority is IssueSummary.Priority.
@@ -719,9 +723,7 @@ func PermanentRefusal(err error) (*Error, bool) {
 	switch {
 	case refusal.Code == "ISSUE_CHANGED",
 		refusal.Code == "",
-		refusal.Status < 400 || refusal.Status >= 500,
-		refusal.Status == http.StatusRequestTimeout,
-		refusal.Status == http.StatusTooManyRequests,
+		refusal.Status < 400 || httpoutage.Is(refusal.Status),
 		refusal.Status == http.StatusUnauthorized,
 		refusal.Status == http.StatusForbidden,
 		refusal.Status == http.StatusConflict && refusal.Code == ParentContended,

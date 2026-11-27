@@ -14,6 +14,7 @@ import (
 // response path keeps them, and only the path into document_blocks lost them, so nothing fails
 // and a later attribute filter answers nothing.
 func TestOffsetBlocksCarriesTheAttributesTheRenderFound(t *testing.T) {
+	t.Parallel()
 	offsets := []pmdoc.BlockOffset{
 		{
 			ID: "c1", Type: "check", From: 0, To: 10,

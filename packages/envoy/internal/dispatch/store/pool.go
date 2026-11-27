@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/errgroup"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
@@ -113,6 +114,26 @@ func ForConcurrentRead(ctx context.Context) (context.Context, error) {
 		return nil, ErrNestedAcquire
 	}
 	return context.WithValue(ctx, holdingKey{}, &holding{}), nil
+}
+
+// ReadSideBySide runs reads at once and answers the first error. Each runs on a hold mark of its
+// own (ForConcurrentRead), so it takes at most one connection of the pool and one read's open
+// cursor refuses no other; a read holds no lock past its own statements and waits on no other
+// read, so none waits on another: a read opens no transaction, or reads in one that only reads,
+// which its caller opened before the group on a hold mark of its own and the read commits once
+// its statements end (legion/metrics' read opens it, and readSampled reads in it and commits it).
+// A caller that holds a connection is refused (ErrNestedAcquire) before any read starts.
+func ReadSideBySide(ctx context.Context, reads ...func(ctx context.Context) error) error {
+	group, groupCtx := errgroup.WithContext(ctx)
+	for _, read := range reads {
+		readCtx, err := ForConcurrentRead(groupCtx)
+		if err != nil {
+			_ = group.Wait()
+			return err
+		}
+		group.Go(func() error { return read(readCtx) })
+	}
+	return group.Wait()
 }
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side

@@ -380,6 +380,7 @@ func TestACompactionReadsTheCursorASettlementMovedInsideIt(t *testing.T) {
 // Rows that do not fold are left as stored and logged once. A second compaction of the same rows
 // skips them without folding again or logging, and a compaction after they changed folds again.
 func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 

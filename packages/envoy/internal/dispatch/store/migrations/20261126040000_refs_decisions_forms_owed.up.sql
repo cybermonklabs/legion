@@ -32,12 +32,14 @@
 --
 -- Its own migration: it creates tables and indexes and takes no existing table's lock, and each
 -- migration after it holds one table's own (20261117025900's precedent).
+-- kept for one release: decisions-ref-repair
 create table refs_decisions_forms_owed (
   kind text not null check (kind in ('comment', 'ask', 'message', 'artifact')),
   id uuid not null,
   enqueued_at timestamptz not null default now(),
   primary key (kind, id)
 );
+-- kept for one release: decisions-ref-repair
 create table refs_decisions_forms_seed_owed (
   kind text not null check (kind in ('comment', 'ask', 'message', 'artifact')),
   id uuid not null,

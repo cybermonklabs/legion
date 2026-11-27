@@ -10,13 +10,14 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { isPersonDecision } from "../issue/decision-entries";
 import { ownTree, ownWords } from "../issue/decision-text";
 import { postDeletion } from "../refs/post-marks";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { DocumentBlocks } from "./issue-tree";
 import { storedReading } from "./stored-reading";
-import { olderCommentsBefore, splitPosition } from "./tree-read/comment-positions";
+import { nextTreeCursor, olderCommentsBefore, splitPosition } from "./tree-read/comment-positions";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -24,7 +25,7 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * change.
  *
  * This module is pure and imports no code of the tree, only the types of a document's blocks and
- * of the tree read and the read's own comment positions (`tree-read/comment-positions.ts`), so the
+ * of the tree read and the read's own page positions (`tree-read/comment-positions.ts`), so the
  * tree (`issue-tree.ts`, `tree-read/tree-nodes.ts`), the Decisions filter
  * (`decisions-filter/decisions-parts.ts`) and the header's count of what waits on the reader
  * (`waiting.ts`) read one rule each and cannot disagree.
@@ -33,7 +34,8 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * another's (`decisionread`): the decisions read's entry for it (`DecisionEntry`) names it by that
  * block's address (`DecisionEntry.ref`) and answers its text as that one block, whose own content
  * is what the decision says (`decisionContent`). A person's decision is the answered ask itself,
- * whose address is the ask's: no Change is written on it, and it is on no review list.
+ * whose address is the ask's, or a `decision` block whose `decided_by` names a person
+ * (`isPersonDecision`): no Change is written on it, and it is on no review list.
  *
  * A Change is a comment of the issue anchored to the decision's own words in the document its
  * block stands in (`DecisionActions.tsx`'s Change composer writes it so);
@@ -62,9 +64,12 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * person wrote that the read hangs under it, made since it last changed and was last kept
  * (`decisionNodeChanges`), and no quote is matched for it. A decision the read holds no node
  * for is found by the decision's block that holds the anchor's block where its document's blocks
- * are given, and by its words alone where they are not, which is how the outline, the Decisions
- * filter (`decisions-entries.ts`) and the header's count read it, since none reads a document's
- * blocks: the change is then the first decision's whose words hold the quote.
+ * are given, and by its words alone where they are not. The Decisions filter
+ * (`decisions-entries.ts`) reads the blocks of the spec, the plan and the Verification document,
+ * each where its decisions stand in it, so it finds such a decision there by its block once they
+ * answer, and one of any other document by its words alone; the outline and the header's count
+ * read no document's blocks, so they find it by its words alone: the change is then the first
+ * decision's whose words hold the quote.
  */
 
 /** The fields of a comment this module reads, and when its author last edited it, which the
@@ -216,15 +221,17 @@ export function decisionContent(
  * words are its record (`decision-entries.ts`'s `entryTextSource`). Undefined for an entry that
  * names none and whose address names no block of the issue's documents: an ask, whose address
  * names the ask and no block (its words are the ask's own record), a block of a document the
- * issue read does not list yet, and an address of another issue.
+ * issue read does not list yet, and an address of another issue. Undefined too for an entry that
+ * names none while `issue` is undefined, where the caller's issue read has not answered.
  */
 export function decisionDocumentId(
-  issue: DecisionDocuments,
+  issue: DecisionDocuments | undefined,
   decision: Pick<DecisionEntry, "document" | "ref">
 ): string | undefined {
   const named = decision.document?.artifact_id;
   if (named !== undefined) return named;
   // The view named no document: read the one the decision's own address names.
+  if (issue === undefined) return undefined;
   const route = parseNodeReference(decision.ref);
   if (route === undefined || !("key" in route) || route.key !== issue.key) return undefined;
   if (!("block" in route) || route.block === undefined) return undefined;
@@ -238,8 +245,11 @@ export function decisionDocumentId(
 /**
  * Each of the issue's decisions a Change can be asked of, by the document its block stands in
  * (`decisionDocumentId`), replaced ones included: their blocks hold blocks too, and a comment
- * anchored in one changes no other decision. An ask's entry is none, whatever document its block
- * stands in: a person's answer is theirs, and no Change is written on it.
+ * anchored in one changes no other decision. Those are the decisions an agent made: an agent's
+ * `decision` block. A person's decision (`isPersonDecision`) is none - an answered ask, whatever
+ * document its block stands in, and a `decision` block whose `decided_by` names a person - since
+ * what a person decided is theirs and every view places it as its decider's, and no Change is
+ * written on it. Nor is an ask that is open or declined, which decided nothing.
  */
 function changeableByDocument(
   issue: DecisionDocuments,
@@ -247,7 +257,8 @@ function changeableByDocument(
 ): ReadonlyMap<string, readonly ChangedDecision[]> {
   const byDocument = new Map<string, ChangedDecision[]>();
   for (const row of decisions?.entries ?? []) {
-    const document = row.node.kind === "ask" ? undefined : decisionDocumentId(issue, row);
+    const document =
+      row.node.kind === "ask" || isPersonDecision(row) ? undefined : decisionDocumentId(issue, row);
     if (document === undefined) continue;
     const held = byDocument.get(document);
     if (held === undefined) byDocument.set(document, [row]);
@@ -258,9 +269,14 @@ function changeableByDocument(
 
 /**
  * The documents a Change of one of the issue's decisions can be anchored in
- * (`changeableByDocument`). A caller reads the blocks of those of them the tree reads, which name
- * the decision whose block holds a Change's anchor (`decisionChangeComments`): the header's count
- * and the Decisions filter read them so, and the tree reads them all.
+ * (`changeableByDocument`). Until part U only the Decisions filter reads the blocks of any of
+ * them (part Q's seam, `decisions-filter/decisions-entries.ts`): those of the spec, the plan and
+ * the Verification document, where they are among them, which name the decision whose block
+ * holds a Change's anchor (`decisionChangeComments`); a Change in any other is matched by its
+ * quote alone.
+ * The outline and the header's count read no block of a document to match a Change (R3): each
+ * takes it from the comment the tree read hangs under a decision node, and for a decision the
+ * tree holds no node of, by the quote alone.
  */
 export function changeDocumentIds(
   issue: DecisionDocuments,
@@ -767,19 +783,25 @@ function after(at: string, row: Partial<Pick<DecisionEntry, "changed_at" | "kept
 }
 
 /**
- * Whether a Change of `decision` may stand among the comments the tree read's `answer` does not
- * hold: the read pages the issue's comments, the newest first, and an answer with an older page
- * names where it starts (`comments_before`, `<made_at>,<id>` of the oldest comment it holds,
- * `tree-read/comment-positions.ts`' `olderCommentsBefore`). A Change is newer than the decision's
- * words and its last Keep (`after`), so a comment older than the oldest held can be one only where
- * that oldest comment is newer than both. A decision drawn with no Change it may have then carries
- * the page's mark of a count with more to read (`tree-drafts.ts`' `markChangeUnread`), rather than
- * reading as unchanged.
+ * Whether a Change of `decision` may stand on a page of the tree read that its `answer` does not
+ * hold. The read pages its walk (`cursor`, `tree-read/comment-positions.ts`' `nextTreeCursor`),
+ * and a comment may stand anywhere in it, so while the answer names a next page any Change may
+ * stand there: a decision node's, which the read hangs under the node, after it in the walk, and
+ * the Change of a decision the read holds no node for, found by its quote. The read pages the
+ * issue's comments too, the newest first, and an answer with an older page names where it starts
+ * (`comments_before`, `<made_at>,<id>` of the oldest comment it holds, `olderCommentsBefore`). A
+ * Change is newer than the decision's words and its last Keep (`after`), so a comment older than
+ * the oldest held can be one only where that oldest comment is newer than both. A decision drawn
+ * with no Change it may have then carries the page's mark of a count with more to read
+ * (`tree-drafts.ts`' `markChangeUnread`), rather than reading as unchanged; one whose Change the
+ * answer holds draws that Change, and no mark (`changeUnread`).
  */
-export function changeMayBeOlder(
+export function changeMayBeUnloaded(
   decision: Partial<Pick<DecisionEntry, "changed_at" | "kept">>,
   answer: TreeAnswer | undefined
 ): boolean {
-  const before = answer === undefined ? undefined : olderCommentsBefore(answer);
+  if (answer === undefined) return false;
+  if (nextTreeCursor(answer) !== undefined) return true;
+  const before = olderCommentsBefore(answer);
   return before !== undefined && after(splitPosition(before)[0], decision);
 }

@@ -29,6 +29,7 @@
 -- long as it runs.
 -- The queue holds rows only from this statement, so a drain that finds it empty is finished, and
 -- stops reading it (docs.formsDrain).
+-- kept for one release: decisions-ref-repair
 insert into refs_decisions_forms_seed_owed (kind, id)
 select 'comment', id from comments
 union all

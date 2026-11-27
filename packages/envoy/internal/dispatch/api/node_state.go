@@ -297,7 +297,8 @@ type nodeWriterCheck func(ctx context.Context, q queryer, writer specWriter, key
 // written, so the refusal stores no tuple and no row. A write by the ask's own address goes
 // through writeNodeState as on any other node, and the answer includes its state before and
 // after the write. Past the route's rule, under the issue's owner lock writeNodeState takes, the
-// write is held to refuseWriter, the check of who writes a requirement, criterion or check node:
+// write is held to the check its route hands it (nodeWriterCheck, each route's
+// refuseSpecWriterOfNode), the check of who writes a requirement, criterion or check node:
 // 403 DOCUMENT_WRITER_NOT_ARCHITECT on such a node of an issue Legion runs from a writer who is no
 // person and no architect of the issue or of an issue above it, and nothing is stored.
 func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, supplied *model.Actor, asked string, rule nodeStateRule, refuseWriter nodeWriterCheck) {

@@ -220,8 +220,8 @@ type keptPublisher struct {
 	genErr    error
 }
 
-func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(topic, message, payload, key, false)
+func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) (string, error) {
+	return "", p.publish(topic, message, payload, key, false)
 }
 
 func (p *keptPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {

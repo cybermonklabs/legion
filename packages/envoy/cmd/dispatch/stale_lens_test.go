@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/testbaseline"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 const (
@@ -213,7 +214,7 @@ func newStaleLensRoll(t *testing.T) *staleLensRoll {
 	requireTheStoreMigration(t, testbaseline.MainVariable, mainCommit, false)
 	requireTheStoreMigration(t, testbaseline.Variable, baseCommit, true)
 	databaseURL := censusDatabase(t)
-	pool, err := pgxpool.New(context.Background(), databaseURL)
+	pool, err := testpool.NewPool(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open the run's own connections: %v", err)
 	}

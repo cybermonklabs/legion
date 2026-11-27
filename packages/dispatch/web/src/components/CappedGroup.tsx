@@ -7,7 +7,7 @@ import {
 } from "../theme/classes";
 
 /** The most entries a group whose length comes from data shows before its "+N" control, the
- *  layout rule's cap (`packages/dispatch/AGENTS.md`, Layout; INFRA-1196's R13). */
+ *  layout rule's cap (`packages/dispatch/web/src/AGENTS.md`, Layout; INFRA-1196's R13). */
 export const LAYOUT_GROUP_MAX = 10;
 
 /**

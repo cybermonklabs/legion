@@ -206,6 +206,7 @@ type busyPane struct {
 // recall, a turn of the agent's own, a newer task in a late turn, a worker in no turn, and the
 // three relaunches.
 func TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newBusyRelaunchLive(t)
 	r.run("busy-late-turn", r.busyLateTurn)
@@ -286,7 +287,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	for _, pane := range r.panes {
 		r.awaitReady(pane.token)
 	}

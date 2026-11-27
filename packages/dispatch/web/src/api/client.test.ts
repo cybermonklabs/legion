@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE, type Sleep, sleep } from "@legion/contracts";
 
+import { isPersonDecision } from "../features/issue/decision-entries";
 import { ApiError, createApiClient, type FetchImplementation, isNoRoute } from "./client";
 
 // While a release rolls out, an older Dispatch process answers a route only the newer build serves
@@ -166,6 +167,77 @@ test("an answered ask's entry carries the tree the Decisions view answers for it
   const entry = (await api.getIssueDecisions("CORE-1")).entries?.[0];
   expect(entry).toMatchObject({ answer: "An **answer**.", answer_state: "answered" });
   expect(entry?.answer_tree).toEqual(answerTree);
+});
+
+// A `decision` block a person wrote, which nobody kept, is that person's decision: the Decisions
+// view answers it kind `agent`, the node's shape, waiting for nobody's review, with its
+// `decided_by` tuple to the person, and the entry carries that decider, so the Decisions tab lists
+// it under "Your decisions" (`isPersonDecision`). The kind `person` the old `decisions` member of
+// `GET /api/v1/issues/{key}/decisions` answers for such a block is for a page of the release
+// before, which reads that member alone; the view carries no such kind.
+test("a decision block a person decided reads as theirs from its decided_by tuple", async () => {
+  const block = { id: "CORE-1/tree#d1", kind: "block" };
+  const person = { id: "alice", kind: "person" };
+  const stub = scriptedFetch([
+    () =>
+      Response.json({
+        cursor: null,
+        nodes: [
+          {
+            ...block,
+            author: [],
+            block_id: "d1",
+            decision: {
+              asks: [],
+              block_id: "d1",
+              changed_at: "2026-09-09T00:00:00Z",
+              changed_version: 1,
+              heading: "Cap each table at a million rows.",
+              kept: null,
+              kind: "agent",
+              links: [],
+              ref: "dispatch://CORE-1/spec#b-d1",
+              replaced: false,
+              text: "Cap each table at a million rows.",
+              text_sha256: "sha256:d1",
+              uncertainty: null,
+              uncertainty_reason: null,
+              unsure: false,
+              waiting_review: false,
+            },
+            made_at: "2026-09-09T00:00:00Z",
+            parent: null,
+            role: "query",
+            state: "live",
+            supertag: "decision",
+            text: "Cap each table at a million rows.",
+          },
+          {
+            ...person,
+            author: [],
+            made_at: "2026-09-09T00:00:00Z",
+            parent: null,
+            role: "context",
+            state: "live",
+            supertag: "person",
+            text: "",
+          },
+        ],
+        tuples: [{ from: block, kind: "decided_by", to: person }],
+      }),
+  ]);
+  const api = createApiClient(stub.fetch);
+
+  const entries = (await api.getIssueDecisions("CORE-1")).entries ?? [];
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    decided_by: person,
+    kept: null,
+    kind: "agent",
+    node: block,
+    waiting_review: false,
+  });
+  expect(entries.map(isPersonDecision)).toEqual([true]);
 });
 
 /** A sleep that returns at once and records each wait it was asked for. */

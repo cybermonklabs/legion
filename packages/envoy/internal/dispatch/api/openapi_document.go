@@ -10,8 +10,8 @@ import (
 )
 
 // openAPIDocument builds the document. It walks the table with its test hooks in, since a hook's
-// row is a row of the table wherever a deployment leaves it out (scopedRoutesNotMounted), and
-// marks each hook row x-test-hook so a reader of the document can tell the twelve apart.
+// row is a row of the table wherever a deployment leaves it out, and marks each hook row
+// x-test-hook (routeDecl.TestHook) so a reader of the document can tell them apart.
 func openAPIDocument() (*openapi31.Spec, error) {
 	emitter, bothDirections := newOpenAPIEmitter()
 	for _, body := range bothDirections {
@@ -27,8 +27,9 @@ func openAPIDocument() (*openapi31.Spec, error) {
 	spec.Info.WithTitle("Dispatch HTTP API")
 	spec.Info.WithVersion("1")
 	spec.Info.WithDescription(
-		"Generated from the Go route table (internal/dispatch/api/routes_table.go) and the Go " +
-			"types beside it (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never " +
+		"Generated from Dispatch's route declarations (one file per route in " +
+			"internal/dispatch/api) and the Go types they name (routes_shapes.go) by " +
+			"`envoy-dispatch openapi`. Edit those, never " +
 			"this document: it is committed so a client's types can be rendered from it, and " +
 			"`envoy-dispatch openapi --check` refuses a tree where it is stale.")
 
@@ -36,12 +37,11 @@ func openAPIDocument() (*openapi31.Spec, error) {
 		return nil, err
 	}
 
-	hooks := openAPIHookRoutes()
 	paths := map[string]*openapi31.PathItem{}
 	operationIDs := map[string]string{}
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
 		name := route.Method + " " + route.Pattern
-		operation, err := emitter.operation(route, hooks[name])
+		operation, err := emitter.operation(route)
 		if err != nil {
 			return nil, err
 		}
@@ -81,22 +81,4 @@ func openAPIDocument() (*openapi31.Spec, error) {
 			strings.Join(slices.Compact(emitter.failures), "\n\t"))
 	}
 	return spec, nil
-}
-
-// openAPIHookRoutes names every row the table mounts only with Deps.TestHooksEnabled, read as the
-// difference between the two tables rather than listed, so a hook added to routes() is marked
-// without this file being touched.
-func openAPIHookRoutes() map[string]bool {
-	served := map[string]bool{}
-	for _, route := range (&server{}).routes() {
-		served[route.Method+" "+route.Pattern] = true
-	}
-	hooks := map[string]bool{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		name := route.Method + " " + route.Pattern
-		if !served[name] {
-			hooks[name] = true
-		}
-	}
-	return hooks
 }

@@ -1,10 +1,10 @@
 import { z } from "zod";
+import { outage } from "../../packages/contracts/src/http-status";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchServiceError,
   DispatchWriteLandedError,
-  transientStatus,
 } from "../../packages/envoy-client/src/dispatch-http";
 import {
   sessionConfigFile,
@@ -65,7 +65,7 @@ export function errorCategory(error: unknown): Category {
   if (!(error instanceof DispatchServiceError || error instanceof HttpStatusError)) {
     return "transport";
   }
-  if (transientStatus(error.status)) return "transport";
+  if (outage(error.status)) return "transport";
   if (error.status === 401 || error.status === 403) return "auth";
   if (error.status === 404) return "not-found";
   if (error.status >= 400 && error.status < 500) return "refused";

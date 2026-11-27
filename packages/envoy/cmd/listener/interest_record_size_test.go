@@ -138,11 +138,13 @@ func requireWideRegistrationRenews(t *testing.T, sessionID string, tokenBytes in
 // The case: 300 issue topics of about 3,950 bytes each, about 1.18 MB as JSON, past the server's
 // 1 MiB max payload.
 func TestARegistrationPastTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testing.T) {
+	t.Parallel()
 	requireWideRegistrationRenews(t, "ses_wide_long_topics", 3900, true)
 }
 
 // The control: the same 300 issue topics, each of about 50 bytes, under the max payload.
 func TestARegistrationUnderTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testing.T) {
+	t.Parallel()
 	requireWideRegistrationRenews(t, "ses_wide_short_topics", 10, false)
 }
 
@@ -151,6 +153,7 @@ func TestARegistrationUnderTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testin
 // bucket's bound, with no Retry-After, and the client is not told to retry a write that cannot
 // land. A registration whose record fits the same bucket is the control: it is answered 200.
 func TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge(t *testing.T) {
+	t.Parallel()
 	const valueBound = 4096
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
@@ -189,6 +192,9 @@ func TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge(t *testing.T) {
 // control is the same topics under a wildcard that covers them, whose filter reduces to a few
 // subjects: it is answered 200, and its record, larger than one message, is stored in chunks.
 func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t *testing.T) {
+	// Not parallel: its two registrations of about 1.18 MB of topics must each be answered inside
+	// the route's own 3.5 s budget (sendRequestBudget), and load beside it stretched such a
+	// registration past it.
 	rig := newRoleClaimRenewalRig(t)
 	covered := wideTopics(300, 3900, "legion-controller")
 	if control := registerTopics(t, rig.subscribe, "ses_filter_reduces", covered); control.Code != http.StatusOK {
@@ -261,10 +267,12 @@ func requireStoppedSessionKnown(t *testing.T, sessionID string, tokenBytes int) 
 // for its size, the registration answered 200 with a WARN, and the session had no record: the send
 // answered 404 and the publish counted nobody.
 func TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted(t *testing.T) {
+	t.Parallel()
 	requireStoppedSessionKnown(t, "ses_known_wide_long", 3900)
 }
 
 // The control: the same 300 topics, each of about 50 bytes, under the max payload.
 func TestAStoppedSessionUnderTheMaxPayloadIsSentToAndCounted(t *testing.T) {
+	t.Parallel()
 	requireStoppedSessionKnown(t, "ses_known_wide_short", 10)
 }

@@ -1779,9 +1779,10 @@ func parseVersionNumber(text string) (int, bool) {
 }
 
 // getArtifactVersion answers one version of an artifact on all four version routes: a document's
-// text as artifactVersionText, or as its Markdown under its file name at the download address,
-// each as the one renderer answers the version (docs.RenderVersion) and naming what its bytes are
-// in renderSourceHeader, and a file's or an image's bytes (serveFileVersion).
+// text, or an issue's tree artifact's (readsAsDocument), as artifactVersionText, or as its Markdown
+// under its file name at the download address, each as the one renderer answers the version
+// (docs.RenderVersion) and naming what its bytes are in renderSourceHeader, and a file's or an
+// image's bytes (serveFileVersion).
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	reader, _, err := s.optionalActor(r)
 	if err != nil {
@@ -1810,7 +1811,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	// The file name is the artifact's name as this read finds it, so a renamed document downloads
 	// under its new name, and an older version's carries its number (versionFilename).
 	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
-	if artifact.Kind == "doc" {
+	if readsAsDocument(artifact) {
 		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -2989,7 +2990,7 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 }
 
 // scanArtifactOrNotFound reads the artifact's own row, answering the 404 every artifact read
-// answers for a row that is not there, the one idRoutes names for these routes. It is the step
+// answers for a row that is not there, the one these routes' ID names. It is the step
 // every read of an artifact shares: the one that goes on to carry the versions and the approval
 // (loadArtifactRow) and those that take the row alone (loadArtifactRowByID, artifactRowByRefKey).
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
@@ -3535,7 +3536,7 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 // is the preamble the title correction and the removal share (renameArtifact, removeArtifact),
 // and each of them holds only its own refusals after it.
 //
-// Both writes are mounted on /api/v1/artifacts/{id} alone (routes_table.go), so the id the
+// Both writes are mounted on /api/v1/artifacts/{id} alone (their route files), so the id the
 // request names is what each read takes, and each takes the row alone (loadArtifactRowByID): the
 // versions and the approval an artifact read carries cost a second round trip, and neither
 // handler reads them.

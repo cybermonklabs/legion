@@ -473,13 +473,14 @@ jq -e '(.capabilities | length) == 22
 }
 # The daemon's resolved settings ride the same document (LEGION-791, contract 35): the value the
 # fixture set over its default, a default the fixture left alone, the runtime, the envoy_url with
-# its userinfo masked, and none of what the fixture planted as a credential, a credential file or an
-# App key — the App rides as its id and installations alone, and nothing anywhere in the document
-# reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
+# its authority shown as the mark of a URL with credentials (nothing of a userinfo's authority is
+# printed, its host included), and none of what the fixture planted as a credential, a credential
+# file or an App key — the App rides as its id and installations alone, and nothing anywhere in the
+# document reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
 jq -e '.settings.review_round_cap == 5
   and .settings.worker_boot_timeout_seconds == 120
   and .settings.runtime.name == "tmux"
-  and .settings.envoy_url == "http://xxxxx@127.0.0.1:9020"
+  and .settings.envoy_url == "http://[a URL with credentials]"
   and ((.settings | has("postgres_dsn") or has("operator_token_file")) | not)
   and ([.. | strings | select(test("BEGIN|PRIVATE KEY|postgres://|fixture-envoy-password|://[^/@ ]+:[^/@ ]+@"))] | length) == 0
   and (.settings.github_apps.implement | keys) == ["app_id", "installations"]' \

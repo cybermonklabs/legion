@@ -1,6 +1,7 @@
 /** the row reads each task's size and the tasks of the issue under an issue as the server's Plan
  *  read answers them from the plan documents a person uploads, with the needs and the statements
- *  its names read gives their words */
+ *  its names read gives their words, and two tasks of two issues under one that share a block id
+ *  as two tasks */
 
 import type { Page } from "@playwright/test";
 
@@ -11,6 +12,7 @@ import {
   PLAN_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { treeIdOfNode } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { buildIssuePath } from "../web/src/features/refs/routes";
 import { getArtifact } from "./api";
 import { gotoIssue, phase } from "./issue-page";
@@ -34,7 +36,9 @@ import { expect, test } from "./test";
  * size", and the plan holds the tasks of the issue under it after the issue's own, each in the
  * order the Plan view's read answers (`plan.position`), which the page draws
  * (`plan-filter/plan-order.ts`), and marked with that issue's key, a link to it.
- * On the issue under it, its own `/plan` draws its tasks in the same order and with no mark. The
+ * On the issue under it, its own `/plan` draws its tasks in the same order and with no mark. On
+ * the second seeded issue's `/plan`, the tasks `t1` of the two issues under it, which share that
+ * block id, are two rows, each with its own issue's words and marked with that issue's key. The
  * chart and the steps are read through the marks `plan-filter/PlanFilterBody.tsx` carries, as
  * `e2e/issue-page-k.ts` names them.
  */
@@ -43,6 +47,11 @@ import { expect, test } from "./test";
 interface KeyLink {
   readonly href: string;
   readonly key: string;
+}
+
+/** The one key link a task of issue `key` is marked with: its key, linking that issue's page. */
+function keyLinkOf(key: string): readonly KeyLink[] {
+  return [{ href: buildIssuePath({ key, kind: "issue" }), key }];
 }
 
 /** One step of the chart as the row reads it: its bar's left edge, width and border, how far
@@ -61,12 +70,10 @@ interface ChartStep {
 
 /** Every step of the chart, in the order it is drawn. */
 function chartSteps(page: Page): Promise<ChartStep[]> {
-  return page.evaluate(() => {
+  return page.evaluate((selector) => {
     const text = (element: Element | null) =>
       (element?.textContent ?? "").replace(/\s+/g, " ").trim();
-    return [
-      ...document.querySelectorAll("[data-issue-page] [data-plan-chart] [data-plan-bar-row]"),
-    ].map((row) => {
+    return [...document.querySelectorAll(selector)].map((row) => {
       const bar = row.querySelector("[data-plan-bar]");
       const box = bar?.getBoundingClientRect();
       const lines = [...row.querySelectorAll("[data-plan-axis] > i")].map(
@@ -92,7 +99,7 @@ function chartSteps(page: Page): Promise<ChartStep[]> {
         size: text(row.querySelector("[data-plan-size], [data-plan-no-size]")),
       };
     });
-  });
+  }, CHART_ROWS);
 }
 
 /** One step under Steps as the row reads it: the facts its body draws whose label is one of the
@@ -112,14 +119,10 @@ const STEP_FACT_LABELS = { issue: nodeFactLabel("issue"), size: nodeFactLabel("s
 /** Every step under Steps, in the order it is drawn. */
 function stepRows(page: Page): Promise<StepRow[]> {
   return page.evaluate(
-    ({ labels, needsLabel, noSize }) => {
+    ({ labels, needsLabel, noSize, selector }) => {
       const text = (element: Element | null) =>
         (element?.textContent ?? "").replace(/\s+/g, " ").trim();
-      return [
-        ...document.querySelectorAll(
-          '[data-issue-page] [data-plan-body] [data-node-row][data-node-type="plan_task"]'
-        ),
-      ].map((row) => ({
+      return [...document.querySelectorAll(selector)].map((row) => ({
         facts: [...row.querySelectorAll("[data-node-body] dt")]
           .map((label) => [text(label), text(label.nextElementSibling)])
           .filter(([label]) => labels.includes(label ?? "")),
@@ -140,8 +143,46 @@ function stepRows(page: Page): Promise<StepRow[]> {
       labels: [STEP_FACT_LABELS.issue, STEP_FACT_LABELS.size],
       needsLabel: BLOCK_ATTRIBUTE_LABELS.needs,
       noSize: PLAN_WORDS.no_size,
+      selector: STEP_ROWS,
     }
   );
+}
+
+/** The task rows of the chart, and those of Steps. */
+const CHART_ROWS = "[data-issue-page] [data-plan-chart] [data-plan-bar-row]";
+const STEP_ROWS = '[data-issue-page] [data-plan-body] [data-node-row][data-node-type="plan_task"]';
+
+/** One task row, of the chart or of Steps, as the row reads it: its node's id, the issue keys it
+ *  links and its words. */
+interface TaskRow {
+  readonly id: string;
+  readonly keys: readonly KeyLink[];
+  readonly words: string;
+}
+
+/** Every task row `rows` selects (`CHART_ROWS`, `STEP_ROWS`), in the order it is drawn. */
+function taskRows(page: Page, rows: string): Promise<TaskRow[]> {
+  return page.evaluate((selector) => {
+    const text = (element: Element | null) =>
+      (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+    return [...document.querySelectorAll(selector)].map((row) => ({
+      id: row.getAttribute("data-node-id") ?? "",
+      keys: [...row.querySelectorAll("a[data-child-key]")].map((link) => ({
+        href: link.getAttribute("href") ?? "",
+        key: text(link),
+      })),
+      words: text(row.querySelector("[data-node-words], [data-node-first-line]")),
+    }));
+  }, rows);
+}
+
+/** The rows of `rows` that link an issue's key, the tasks of another issue, each by its words
+ *  and its keys, ordered by their words. */
+function linkedByWords(rows: readonly Omit<TaskRow, "id">[]): Omit<TaskRow, "id">[] {
+  return rows
+    .filter((row) => row.keys.length > 0)
+    .map(({ keys, words }) => ({ keys, words }))
+    .sort((one, other) => one.words.localeCompare(other.words));
 }
 
 /** The words each sized task's size is drawn in. */
@@ -155,16 +196,23 @@ const SIZE_WORDS = {
 /** How far apart, in px, two edges that stand at one place may be drawn. */
 const PX = 2;
 
-// SLOW(>=2s): two issues and their plans seeded, each issue's Plan view loaded at two widths and
-// read under both drawings, with the names read waited out on each.
+// SLOW(>=2s): five issues and their plans seeded, three issues' Plan views each loaded at two
+// widths and read under both drawings, with the names read waited out on each.
 test("Plan draws each task's size, and a parent's plan holds the steps of the issue under it in the order its read answers @phone", async ({
   browser,
 }) => {
   test.setTimeout(ROW_MS);
   await phase(browser, seedPlanSizes, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
-    await awaitIndexedCoverage(seeded.key);
-    await awaitIndexedCoverage(seeded.child);
+    for (const key of [
+      seeded.key,
+      seeded.child,
+      seeded.twins.key,
+      seeded.twins.first,
+      seeded.twins.second,
+    ]) {
+      await awaitIndexedCoverage(key);
+    }
     const W = PLAN_SIZES_WORDS;
     const project = test.info().project.name;
     const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
@@ -172,13 +220,17 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
     const [a, b, c] = [OWN_TASKS.a, OWN_TASKS.b, OWN_TASKS.c].map((id) =>
       blockNodeId(planSlug, id)
     );
-    // The parent's plan draws a task of the issue under it by its block id alone, as the tree
-    // draws every node of another issue (`tree-read/tree-nodes.ts`' `treeIdOfNode`).
-    const [xa, xb] = [CHILD_TASKS.first, CHILD_TASKS.second];
-    const order = [b, a, c, xa, xb];
-    const childKey: readonly KeyLink[] = [
-      { href: buildIssuePath({ key: seeded.child, kind: "issue" }), key: seeded.child },
-    ];
+    const childKey = keyLinkOf(seeded.child);
+    // The rows of the second issue's plan that are tasks of the two issues under it, each by its
+    // words and its key (`linkedByWords`).
+    const twinRows = linkedByWords(
+      (
+        [
+          [seeded.twins.first, W.twinFirst],
+          [seeded.twins.second, W.twinSecond],
+        ] as const
+      ).map(([key, words]) => ({ keys: keyLinkOf(key), words }))
+    );
     for (const size of [DESKTOP, PHONE]) {
       const where = `at ${size.width} px`;
       await page.setViewportSize(size);
@@ -191,12 +243,31 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
         planView(page, "chart"),
         `Plan does not open on the chart ${where}`
       ).toHaveAttribute("aria-pressed", "true");
+      const answer = await heldAnswer(planRead, `${seeded.key}'s Plan read ${where}`);
+      // The parent's plan draws a task of the issue under it by the id the tree draws every node
+      // of another issue by (`tree-read/tree-nodes.ts`' `treeIdOfNode`), read off the node the
+      // Plan read answers for it.
+      const childTask = (blockId: string): string => {
+        const read = (answer.nodes ?? []).find(
+          (node) =>
+            node.supertag === "plan_task" &&
+            node.issue === seeded.child &&
+            node.block_id === blockId
+        );
+        return read === undefined
+          ? `no ${blockId} of ${seeded.child} in the read`
+          : treeIdOfNode(read, seeded.key);
+      };
+      const [xa, xb] = [childTask(CHILD_TASKS.first), childTask(CHILD_TASKS.second)];
+      console.log(
+        `PLAN-SIZES [${project}] the child's tasks are drawn as ${xa} and ${xb} ${where}`
+      );
+      const order = [b, a, c, xa, xb];
       await expect
         .poll(async () => (await chartSteps(page)).map((step) => step.id), {
           message: `the chart ${where} does not draw b, a, c and then the child's two in order`,
         })
         .toEqual(order);
-      const answer = await heldAnswer(planRead, `${seeded.key}'s Plan read ${where}`);
       const readBack = [
         ...new Set(
           (answer.nodes ?? [])
@@ -414,6 +485,33 @@ test("Plan draws each task's size, and a parent's plan holds the steps of the is
         planBody(page).locator("a[data-child-key]"),
         `the child's own steps ${where} link an issue key`
       ).toHaveCount(0);
+
+      // The second issue's plan: its own `t1` and the `t1` of each of the two issues under it
+      // (R19 (2)). Each of the two of another issue is a row of its own, which draws its own
+      // issue's words and is marked with that issue's key, on the chart and under Steps.
+      await gotoIssue(page, presetPath(seeded.twins.key, "plan"));
+      await expect(
+        planView(page, "chart"),
+        `the second issue's Plan does not open on the chart ${where}`
+      ).toHaveAttribute("aria-pressed", "true");
+      for (const [drawing, rows] of [
+        ["chart", CHART_ROWS],
+        ["steps", STEP_ROWS],
+      ] as const) {
+        if (drawing === "steps") await planView(page, "steps").click();
+        await expect
+          .poll(async () => linkedByWords(await taskRows(page, rows)), {
+            message:
+              `the second issue's ${drawing} ${where} does not draw each issue's t1 as a row of its ` +
+              "own, with that issue's words and its key",
+          })
+          .toEqual(twinRows);
+        const ids = (await taskRows(page, rows)).map((row) => row.id);
+        expect(
+          new Set(ids).size,
+          `the second issue's ${drawing} ${where} draws two rows by one id: ${ids.join(", ")}`
+        ).toBe(ids.length);
+      }
     }
   });
 });

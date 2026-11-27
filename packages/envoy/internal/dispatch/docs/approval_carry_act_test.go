@@ -77,6 +77,7 @@ func answerWithAct(login string, selected []string, act *model.ActorAct) model.A
 // TestWhileTwoBuildsServeAnAnswerKeepsTheApprovalCurrent); they decide the carry of an answer to a
 // block added since the approval (TestAnAnswerToABlockAddedSinceTheApprovalCarriesIt).
 func TestNoActDecidesTheCarryOfTheVersionAnAnswerWrites(t *testing.T) {
+	t.Parallel()
 	narrow := &model.ActorAct{Session: "session-agent", TokenID: "token-1", TokenName: "planner", Scopes: []string{model.ScopePerson}}
 	approving := &model.ActorAct{Session: "session-agent", TokenID: "token-1", TokenName: "architect", Scopes: []string{model.ScopePerson, model.ScopeApprove}}
 	for _, test := range []struct {

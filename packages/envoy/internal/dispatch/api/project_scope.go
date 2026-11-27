@@ -43,11 +43,11 @@ package api
 //     reading, which may name the project it reads as, or an account it would have written as):
 //     the read-only gate register puts outside it answers every such credential 403
 //     READ_ONLY_TOKEN on every route outside the read class, every write among them
-//     (refuseReadOnlyToken, readClasses). A job's `named` token is no such credential: it carries
-//     the one project its entry names, and the check below judges it as it judges a person's
-//     named token for that project. That is the rule and not a transitional measure: every caller
-//     that exists today writes exactly what it wrote before, which is what lets this deploy before
-//     anything presents a broker token.
+//     (refuseReadOnlyToken, routeDecl.Read). A job's `named` token is no such credential: it
+//     carries the one project its entry names, and the check below judges it as it judges a
+//     person's named token for that project. That is the rule and not a transitional measure:
+//     every caller that exists today writes exactly what it wrote before, which is what lets this
+//     deploy before anything presents a broker token.
 //
 // A credential that names one project writes every project's objects that a credential naming
 // none may write. The one exception is a private project that the credential does not name.
@@ -371,7 +371,7 @@ func unaddressed(err error) bool {
 // to nothing is refused, so the check fails closed, and an object of a private project that the
 // credential does not name gets that same refusal.
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
-	switch route.Scope {
+	switch route.WriteClass {
 	case scopeProject:
 		resolve, addressed := s.projectResolverFor(route.Pattern)
 		second := s.secondProjectResolverFor(route.Pattern)
@@ -466,7 +466,7 @@ func outsideProjectScopeError(covers string) *apiError {
 // A row that declares OAuth scopes passes whatever session the credential proved, because those
 // rows are the person's own writes into someone else's conversation:
 // `POST /api/v1/agents/{session_id}/messages` and `PUT /api/v1/me/agents/{session_id}/state`
-// need the `person` scope (routeScopes), and a person writing to a session is by design writing
+// need the `person` scope (its route's OAuthScopes), and a person writing to a session is by design writing
 // into a session that is not theirs. Without this a person's own broker-issued credential could
 // only ever address the session it was issued for, which is nobody's conversation but its own.
 // The row decides it, not the request: gateRouteScopes stands ahead of this wrapper and has
@@ -501,7 +501,7 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 // address no session of their own — the `me` token rows are the calling person's, and the two
 // message rows are held to the session their delivery attempt names.
 func addressesOneSession(route apiRoute) bool {
-	return route.Scope == scopeSession && strings.Contains(route.Pattern, "{session_id}")
+	return route.WriteClass == scopeSession && strings.Contains(route.Pattern, "{session_id}")
 }
 
 // writeNeedsASignedInPerson refuses every write by a caller whose broker-issued credential names
@@ -594,15 +594,14 @@ func writesAsItsService(credential *model.Credential) bool {
 	return credential != nil && slices.Contains(writingServiceScopes, credential.ProjectScope)
 }
 
-// undecidableWrites names every mutating row the project check cannot decide: one writeClasses
-// gives no class, and one classed scopeProject whose address names no object to resolve. Every
-// other class is decided: scopeDeployment and scopeProjectInBody by the class itself,
-// scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by writing
-// nothing at all.
-// TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
-// table it names anything in, so a row added later cannot be left undecided. The other direction,
-// a writeClasses name that is no row of the table, is the same test's (nothing is served by it,
-// so it cannot admit a write).
+// undecidableWrites names every mutating route the project check cannot decide: one whose
+// declaration states no class, and one classed scopeProject whose address names no object to
+// resolve. Every other class is decided: scopeDeployment and scopeProjectInBody by the class
+// itself, scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by
+// writing nothing at all. TestEveryMutatingRouteIsClassed walks the table through it, and
+// register refuses to mount a table it names anything in, so a route added later cannot be left
+// undecided. The other direction the map beside the table needed, a class naming no route, cannot
+// happen now: a class is a field of the route's own declaration.
 func (s *server) undecidableWrites(routes []apiRoute) []string {
 	var undecidable []string
 	for _, route := range routes {
@@ -610,14 +609,14 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 			continue
 		}
 		name := route.Method + " " + route.Pattern
-		switch route.Scope {
+		switch route.WriteClass {
 		case scopeSession, scopeDeployment, scopeProjectInBody, scopeNoWrite:
 		case scopeProject:
 			if _, addressed := s.projectResolverFor(route.Pattern); !addressed {
 				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")
 			}
 		default:
-			undecidable = append(undecidable, name+": no write class (writeClasses)")
+			undecidable = append(undecidable, name+": no write class (routeDecl.WriteClass)")
 		}
 	}
 	return undecidable

@@ -381,11 +381,15 @@ func TestMovedApprovalRequestReachesAPersonsWrite(t *testing.T) {
 // (docs.restoresApprovedText), which answers the spec's half alone: nobody has approved the
 // Verification document, so the request stays open. The edit that then versions the Verification
 // document takes it further from him, and the report names that document as the one standing
-// above the version the request asks about.
+// above the version the request asks about. The words the agent's edit changes are the
+// requirement r1's, so its version moves the spec's record and leaves his approval behind: R14
+// covers the spec's approval by the Spec query's record, which an edit of a paragraph alone does
+// not move, so the record carry would carry his approval to that version, and the undo would then
+// carry that carry by the record carry's reason rather than the restore's.
 func TestMovedApprovalRequestNamesTheDocumentACarryLeftBehind(t *testing.T) {
 	t.Parallel()
 	handler := approvalCarryHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Carried one half", "Context\n")
+	issue := createInteractionIssue(t, handler, "TEST", "Carried one half", ":::requirement{#r1}\nContext\n:::\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
 	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)

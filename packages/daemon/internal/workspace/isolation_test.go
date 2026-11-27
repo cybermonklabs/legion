@@ -24,10 +24,11 @@ import (
 
 // Every agent of a tree writes the shared clone, so everything below is what a tree agent can plant
 // there for the next provisioning of the tree, and what provisioning's credentialed clone and fetch
-// — the tmux runtime's, which name the token file in their environment — must never obey. On tmux
-// that is defence, not a boundary (config.go); a pod's boundary, two init containers of which only
-// workspace-fetch, the one that touches no tree volume, holds the token, is proven by
-// internal/runtime/sandbox/boundary_test.go.
+// — which name the token file in their environment — must never obey. That is defence, not a
+// boundary, on both runtimes (config.go): a Kubernetes issue pod's workspace-init holds the token
+// and runs git in the clone its agents write, as the tmux runtime's provisioning does in the shared
+// clone. internal/runtime/sandbox/boundary_test.go runs that workspace-init as an issue pod's
+// manifest states it.
 
 // gitHooks is every hook githooks(5) names; a planted script under each name records whether git
 // ran it.

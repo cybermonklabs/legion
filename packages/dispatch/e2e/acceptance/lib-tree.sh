@@ -618,11 +618,13 @@ tree_node_store() {
 }
 
 # tree_node_far SECTION ADDRESS TUPLE: the far ends of the current TUPLE tuples out of the node at
-# ADDRESS - a block's id, every other node `<kind>/<id>` - joined by commas, in answer.
+# ADDRESS - a block's id, every other node `<kind>/<id>` - joined by commas, in answer. A tuple
+# names a lens's finding, a block of the store, as lens_block (graphstore.AddressKind), so that far
+# end is read as a block's id too.
 tree_node_far() {
   tree_node_store "$2"
   with_vars "$1" "read the $3 of $2" \
-    "select coalesce(string_agg(case when h.to_kind = 'block' then h.to_id else h.to_kind || '/' || h.to_id end, ',' order by h.to_kind, h.to_id), '')
+    "select coalesce(string_agg(case when h.to_kind in ('block', 'lens_block') then h.to_id else h.to_kind || '/' || h.to_id end, ',' order by h.to_kind, h.to_id), '')
      from (select distinct on (to_kind, to_id) to_kind, to_id, asserted from graph_tuples
            where from_kind = :'kind' and from_id = :'id' and kind = :'tuple' and to_kind <> 'value'
            order by to_kind, to_id, seq desc) h where h.asserted" \

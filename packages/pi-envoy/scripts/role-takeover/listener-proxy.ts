@@ -11,12 +11,15 @@
  *   {"seq":1,"label":"omp-a","at":1761,"method":"POST","path":"/v1/roles/set","status":409,
  *    "request":{...},"response":{...},"ms":3}
  *
- * Usage: bun listener-proxy.ts --port <n> --upstream <url> --log <file> --label <name>
+ * It listens on a port of 127.0.0.1 the kernel chooses and prints
+ * `listener-proxy <label> ready on <port>` once it does, which is how the smoke learns the port:
+ * a port the smoke picked and handed in would be any other process's to take first.
+ *
+ * Usage: bun listener-proxy.ts --upstream <url> --log <file> --label <name>
  */
 import { appendFileSync } from "node:fs";
 
 interface Options {
-  readonly port: number;
   readonly upstream: string;
   readonly log: string;
   readonly label: string;
@@ -32,15 +35,13 @@ function parseOptions(argv: readonly string[]): Options {
     }
     values.set(name.slice(2), value);
   }
-  const port = Number(values.get("port"));
   const upstream = values.get("upstream");
   const log = values.get("log");
   const label = values.get("label");
-  if (!Number.isInteger(port) || port <= 0) throw new Error("listener-proxy: --port is required");
   if (upstream === undefined) throw new Error("listener-proxy: --upstream is required");
   if (log === undefined) throw new Error("listener-proxy: --log is required");
   if (label === undefined) throw new Error("listener-proxy: --label is required");
-  return { port, upstream: upstream.replace(/\/$/, ""), log, label };
+  return { upstream: upstream.replace(/\/$/, ""), log, label };
 }
 
 const options = parseOptions(process.argv.slice(2));
@@ -63,7 +64,7 @@ function record(entry: Record<string, unknown>): void {
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
-  port: options.port,
+  port: 0,
   idleTimeout: 0,
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);

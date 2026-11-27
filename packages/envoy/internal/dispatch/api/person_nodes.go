@@ -271,7 +271,7 @@ var personNodesQuery = personNodesHeld + `, items as (
 //
 // It is a named read of the graph and no traversal: the route takes the person and a page, and
 // takes no kind, no filter and no edge to walk, so no caller chooses what the store is asked.
-// The whole route belongs to people - routeScopes gives it model.ScopePerson, and gateRouteScopes
+// The whole route belongs to people - its declaration states model.ScopePerson, and gateRouteScopes
 // refuses a credential the deployment configured with 403 OAUTH_SCOPE_REQUIRED before this
 // handler runs - and every row it answers passes the visibility predicate of its own kind.
 //

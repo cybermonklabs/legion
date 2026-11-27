@@ -36,6 +36,7 @@
 -- until it commits, for milliseconds. Both builds' writes of a text insert into that table
 -- (20261117025901-20261117025904), so the wait is bounded by the runner's lock timeout and tried
 -- again, as every trigger migration's is. It touches no row.
+-- kept for one release: decisions-ref-repair
 create or replace function refs_decisions_forms_relay() returns trigger language plpgsql as $$
 begin
   insert into refs_decisions_forms_owed (kind, id)
@@ -53,6 +54,7 @@ begin
   return null;
 end;
 $$;
+-- kept for one release: decisions-ref-repair
 create trigger refs_forms_owed_decisions_relay after delete on refs_forms_owed
   referencing old table as gone
   for each statement execute function refs_decisions_forms_relay();

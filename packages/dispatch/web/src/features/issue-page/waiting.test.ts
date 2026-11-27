@@ -17,6 +17,7 @@ import {
   changeAnchor,
   changeDocumentIds,
   decisionChangeComments,
+  decisionChanges,
 } from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
 import { blockNodeId, coverageStatements } from "./tree-drafts";
@@ -545,7 +546,7 @@ function changePlaces(
 // decision; an approval request is no node of it. While the login is not known, nothing waits.
 test("what waits on the reader is their open questions, the review list and their approval requests", () => {
   const counted = waitingOnReader(issue, "alice", decisions, isCoverageStatement, issueTree);
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
+  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3, unread: 0 });
 
   const root = buildIssueTree({
     coverage,
@@ -580,7 +581,7 @@ test("a Change its author deleted leaves its decision on the review list and in 
     markedCommentNode(deleted, KEY),
   ]);
   const counted = waitingOnReader(issue, "alice", decisions, isCoverageStatement, tree);
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4 });
+  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4, unread: 0 });
 
   const root = buildIssueTree({
     coverage,
@@ -637,6 +638,34 @@ test("a decision's document is the one the read names, before the issue read lis
     (node) => node.reference === `dispatch://${KEY}/spec#b-listed`
   );
   expect(listed?.source).toEqual({ id: spec.id, issue: KEY, kind: "artifact" });
+});
+
+// A `decision` block whose `decided_by` names a person is that person's own decision, which the
+// Decisions tab lists under "Your decisions" (`isPersonDecision`): a person's comment on its words
+// is no Change of it. The tree draws the decision as no change asked of it, never as waiting on its
+// agent, and the comment stands as a turn of the conversation, not under the decision; the
+// Decisions filter, which reads `decisionChanges`, holds no change for it either.
+test("a person's comment on a decision block a person decided asks no change of it", () => {
+  const decided: DecisionEntry = {
+    ...entryOf(waitingDecision("changed", ["r1"])),
+    decided_by: { id: "bob", kind: "person" },
+    waiting_review: false,
+  };
+  const read: IssueDecisions = { ...decisions, entries: [decided] };
+
+  expect(decisionChangeComments(read, [change], issue, undefined)).toEqual(new Map());
+  expect(decisionChanges(read, [change], issue, undefined)).toEqual(new Map());
+  expect(changeDocumentIds(issue, read)).toEqual(new Set());
+  const root = buildIssueTree({
+    tree: answerOf([commentNode(change, KEY)]),
+    coverage,
+    decisions: read,
+    issue,
+    viewer: "alice",
+  });
+  const node = nodesInOrder(root).find((one) => one.reference === decided.ref);
+  expect({ id: node?.id, state: node?.state }).toEqual({ id: "spec#b-changed", state: undefined });
+  expect(parentsOf(root, change.id)).toEqual([root.id]);
 });
 
 // R3, R7 and R13: a Change belongs to the decision whose block of the spec holds the block the
@@ -919,6 +948,103 @@ test("the count and the tree agree on a decision node's Change, read from the tr
     waitingOnReader(issue, "alice", read, isCoverageStatement, tree).decisions,
     waitingIn(buildIssueTree({ coverage, decisions: read, issue, tree, viewer: "alice" })),
   ]).toEqual([0, []]);
+});
+
+// Decision 563 (4): a decision whose Change may stand on a comment page the tree read has not
+// loaded - the answer names an older page, and the decision last changed before the oldest
+// comment it holds - carries the outline's mark and waits on no reader, in the count as in the
+// tree, until that page is read. Then a Change the page holds makes it wait on its agent, and a
+// page that holds none of its Changes puts it back on the review list.
+test("a decision whose Change may stand on an older comment page waits on no reader until that page is read, in the count as in the tree", () => {
+  const row = waitingDecision("older", ["r1"]);
+  const read = decisionsRead([row]);
+  const later: Comment = {
+    ...change,
+    anchor: null,
+    created_at: "2026-11-05T12:00:00Z",
+    id: "c-later",
+  };
+  const asked: Comment = { ...change, anchor: null, id: "c-older" };
+  const waits = (tree: TreeAnswer) => {
+    const root = buildIssueTree({ coverage, decisions: read, issue, tree, viewer: "alice" });
+    const counted = waitingOnReader(issue, "alice", read, isCoverageStatement, tree);
+    return {
+      counted: counted.decisions,
+      marked: nodesInOrder(root).flatMap((node) => (node.changeUnread === true ? [node.id] : [])),
+      unread: counted.unread,
+      waiting: waitingIn(root),
+    };
+  };
+  const nodes = [statement, decisionTreeNode(row)];
+  const first: TreeAnswer = {
+    ...answerOf([...nodes, commentNode(later, KEY)]),
+    comments_before: `${later.created_at},${later.id}`,
+  };
+  expect(waits(first), "while the older page is out").toEqual({
+    counted: 0,
+    marked: ["older"],
+    unread: 1,
+    waiting: [],
+  });
+  expect(
+    waits(answerOf([...nodes, commentNode(asked, "older"), commentNode(later, KEY)])),
+    "once the older page that holds its Change is read"
+  ).toEqual({ counted: 0, marked: [], unread: 0, waiting: [] });
+  expect(
+    waits(answerOf([...nodes, commentNode(later, KEY)])),
+    "once the older page that holds none of its Changes is read"
+  ).toEqual({ counted: 1, marked: [], unread: 0, waiting: ["older"] });
+});
+
+// Decision 574 (B): the tree read pages its walk as well as its comments, and a comment may stand
+// on any page of the walk, so while the answer names a next page (`cursor`) a decision with no
+// Change held carries the outline's mark and waits on no reader, in the count as in the tree,
+// though no older comment page remains (`comments_before: null`). A decision whose Change the
+// loaded page holds under its node draws that Change and carries no mark. Once the next page is
+// read, a Change it holds makes the marked decision wait on its agent, and a last page that holds
+// none of its Changes puts it back on the review list.
+test("a decision whose Change may stand on the tree read's next page waits on no reader until that page is read, in the count as in the tree", () => {
+  const row = waitingDecision("next", ["r1"]);
+  const held = waitingDecision("held", ["r1"]);
+  const read = decisionsRead([held, row]);
+  const heldChange: Comment = { ...change, anchor: null, id: "c-held" };
+  const nextChange: Comment = { ...change, anchor: null, id: "c-next" };
+  const waits = (tree: TreeAnswer) => {
+    const root = buildIssueTree({ coverage, decisions: read, issue, tree, viewer: "alice" });
+    const counted = waitingOnReader(issue, "alice", read, isCoverageStatement, tree);
+    return {
+      counted: counted.decisions,
+      marked: nodesInOrder(root).flatMap((node) => (node.changeUnread === true ? [node.id] : [])),
+      unread: counted.unread,
+      waiting: waitingIn(root),
+    };
+  };
+  const firstPage = [
+    statement,
+    decisionTreeNode(held),
+    commentNode(heldChange, "held"),
+    decisionTreeNode(row),
+  ];
+  const first: TreeAnswer = {
+    ...answerOf(firstPage),
+    comments_before: null,
+    cursor: "page-2",
+    remaining: 1,
+  };
+  expect(waits(first), "while the next page is out").toEqual({
+    counted: 0,
+    marked: ["next"],
+    unread: 1,
+    waiting: [],
+  });
+  expect(
+    waits(answerOf([...firstPage, commentNode(nextChange, "next")])),
+    "once the next page that holds its Change is read"
+  ).toEqual({ counted: 0, marked: [], unread: 0, waiting: [] });
+  expect(
+    waits(answerOf(firstPage)),
+    "once the next page that holds none of its Changes is read"
+  ).toEqual({ counted: 1, marked: [], unread: 0, waiting: ["next"] });
 });
 
 // Two documents of an issue may share a block id. A person's comment on the statement r1 is no

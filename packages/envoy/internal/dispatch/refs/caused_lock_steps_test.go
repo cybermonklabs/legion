@@ -64,6 +64,7 @@ var causedWriter = model.Actor{Kind: "user", ID: "alice"}
 // docs/block_index_fence_test.go runs Caused after the fenced writers it races, but holds no row
 // Caused takes and reads no step of it, so it proves nothing about which rows Caused locks.
 func TestCausedTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 

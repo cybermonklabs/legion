@@ -123,7 +123,8 @@ const planOrderDepth = authoredChainDepth
 // read off its row and the issues it needs off its needs tuples; and every plan node under each
 // of them - a block node not gone whose document_blocks row is a plan_task, a block of the
 // issue's room keyed by its tree (`<KEY>/tree#<id>`) as much as one of a document - whose issue
-// is the first one its part_of chain reaches, whatever its address spells. A plan node waits on
+// is the first one its part_of chain reaches, whatever its address spells, a block of the
+// issue's asks, comments and messages reaching their issue. A plan node waits on
 // its issue's start, and its issue's done waits on it; a needs tuple out of a plan node waits on
 // the plan node it names, or on the done half of the issue it names. A node the tree does not
 // hold is a fixed node. An issue the reader may not see, and every node under it, is no node of
@@ -131,9 +132,10 @@ const planOrderDepth = authoredChainDepth
 // see answers nothing.
 //
 // It reads the tree in two statements beside IssueDescendants', however large: the walk down
-// the current part_of tuples into each issue (graph_tuples_inbound), through every node who may
-// see and never into an issue, which answers each issue's parent, its node's current rank and
-// when its node was made, and each plan node with its issue, its current text_rank, size, skills
+// the current part_of tuples into each issue and into each current block of its asks, comments
+// and messages (graph_tuples_inbound), through every node who may see and never into an issue,
+// which answers each issue's parent, its node's current rank and when its node was made, and
+// each plan node with its issue, its current text_rank, size, skills
 // and docs values (graph_tuples_values), which the block index states from the node's place in
 // its document and its opening line (planBlockValues), and whether it or a node above it is
 // overtaken; and one read of every current needs tuple out of those nodes (graph_tuples_current).
@@ -209,9 +211,30 @@ type planNode struct {
 	needs        []Target
 }
 
+// planConversationBlocks is the second start of readPlanTree's walk, a lateral read over the issue
+// i: each current block (itemBlockCurrent) of each of its asks, comments and messages, by its kind
+// as the walk of the tree takes it (ItemKind.BlockKind) and its node id. A criterion a person
+// writes in that exchange, and every node under it, stands under such a block, and the
+// conversation holds no part_of tuple into the issue - the walk of the tree reads it apart and
+// walks down from its blocks (docs' readConversation, TreeSubtrees) - so the walk down the issue's
+// own part_of tuples reaches none of them.
+func planConversationBlocks() string {
+	arms := make([]string, len(itemKinds))
+	for index, item := range itemKinds {
+		tables, _ := item.tables()
+		arms[index] = `select '` + item.BlockKind() + `'::text as kind, b.node_id from ` + tables.items + ` item
+				join ` + tables.blocks + ` b on b.` + tables.item + ` = item.id
+				where item.issue_key = i.key and ` + itemBlockCurrent
+	}
+	return strings.Join(arms, `
+				union all
+				`)
+}
+
 // readPlanTree reads the tree of root, whose descendants are descendants, in one statement: the
-// walk down each issue's current part_of tuples, which answers a row per issue and a row per
-// plan node (PlanOrder).
+// walk down each issue's current part_of tuples, from the issue's node and from each current block
+// of its asks, comments and messages (planConversationBlocks), which answers a row per issue and a
+// row per plan node (PlanOrder).
 func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, descendants []string) (*planTree, error) {
 	rows, err := q.Query(ctx, `
 		with recursive below (issue, parent, kind, id, depth, state, overtaken, made) as (
@@ -219,6 +242,13 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 			       coalesce(n.state = '`+graphstore.StateOvertaken+`', false), n.made_at
 			from issues i
 			left join graph_nodes n on n.kind = '`+graphstore.KindIssue+`' and n.id = i.key
+			where i.key = any($1::text[]) and `+VisibleKind(graphstore.KindIssue, "i.key", "$3")+`
+			union all
+			select i.key, null::text, conversation.kind, conversation.node_id, 1, null::text,
+			       coalesce(n.state = '`+graphstore.StateOvertaken+`', false), null::timestamptz
+			from issues i
+			left join graph_nodes n on n.kind = '`+graphstore.KindIssue+`' and n.id = i.key
+			cross join lateral (`+planConversationBlocks()+`) conversation
 			where i.key = any($1::text[]) and `+VisibleKind(graphstore.KindIssue, "i.key", "$3")+`
 			union all
 			select below.issue, null::text, held.from_kind, held.from_id, below.depth + 1, n.state,

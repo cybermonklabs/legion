@@ -11,6 +11,7 @@ import { TAB_STOP_ROW } from "../tree-focus";
 import { useIssueKeymap } from "../useIssueKeymap";
 import { FAILED_READ_RETRY, FailedReadLine } from "./failed-read-line";
 import { ViewStage } from "./stage";
+import { spyOnBoxes } from "./stage-fixtures";
 
 // A failed read's line, as each view drawn in the stage is to draw it. The views here are
 // stand-ins that draw the lines over a tree the way a view is to: each view's own slot is to be
@@ -364,6 +365,44 @@ test("a failed read's line drawn above the Retry the stage gave the focus takes 
   }
 });
 
+// The frame after the stage's take gives the focus back where nothing holds it then, as where the
+// app's main element took it at a page change. A line drawn above the Retry the take chose before
+// that frame took the focus to its own Retry, so the frame gives it back there, to the view's
+// first line, and not to the Retry the take chose. The frame comes after the draw's microtasks,
+// so the case waits on no frame or timer until the app's main element holds the focus.
+test("a failed read's line drawn above the Retry the stage gave the focus gets the focus back from the frame after the take", async () => {
+  const drawn = (statements: Stands) => (
+    <main tabIndex={-1}>
+      <ViewStage>
+        <TwoReadsView results="failed" statements={statements} />
+      </ViewStage>
+    </main>
+  );
+
+  (document.activeElement as HTMLElement | null)?.blur();
+  const page = render(drawn("out"));
+  try {
+    const results = page.getByRole("button", { name: "Retry" });
+    expect(document.activeElement, "the stage gave the results' Retry no focus").toBe(results);
+    page.rerender(drawn("failed"));
+    // The stage's observer of the view's lines runs as a microtask of the draw.
+    await Promise.resolve();
+    const [statements] = page.getAllByRole("button", { name: "Retry" });
+    expect(
+      document.activeElement,
+      "the statements' line drawn above the results' left the focus on the results' Retry"
+    ).toBe(statements);
+    act(() => page.getByRole("main").focus());
+    await frames(1);
+    expect(
+      document.activeElement,
+      "the frame after the take gave the focus to the results' Retry, below the view's first line"
+    ).toBe(statements);
+  } finally {
+    page.unmount();
+  }
+});
+
 /** A view whose row is drawn from a read that answered, under the lines of two other reads that
  *  failed, the first of them while `first`. */
 function RowsUnderLinesView({ first }: { first: boolean }): ReactNode {
@@ -540,9 +579,7 @@ test("the chord that opens a view with no row reaches its failed read's Retry fr
 // box is given, 100 px above the screen, and every other box is empty.
 test("the chord that opens a view with no row brings its failed read's Retry on screen in the next frame", async () => {
   const user = userEvent.setup();
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
+  const boxes = spyOnBoxes(function (this: HTMLElement) {
     return this.matches(FAILED_READ_RETRY) ? new DOMRect(0, -100, 80, 24) : new DOMRect();
   });
   const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});

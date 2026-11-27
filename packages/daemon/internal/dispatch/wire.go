@@ -41,23 +41,57 @@ func WaitsOf(needs *[]string, blockedBy []string) []string {
 }
 
 type issueResponse struct {
-	Key                    string          `json:"key"`
-	Project                string          `json:"project"`
-	Title                  string          `json:"title"`
-	Status                 string          `json:"status"`
-	Parent                 *string         `json:"parent"`
-	Rank                   string          `json:"rank"`
-	Priority               *int            `json:"priority"`
-	ResolvedPriority       json.RawMessage `json:"resolved_priority"`
-	PriorityFrom           *string         `json:"priority_from"`
-	Labels                 []string        `json:"labels"`
-	PrimaryArtifactID      string          `json:"primary_artifact_id"`
-	VerificationArtifactID string          `json:"verification_artifact_id"`
-	LastSeq                int64           `json:"last_seq"`
-	ResolvedRepo           *string         `json:"resolved_repo"`
-	Needs                  *[]string       `json:"needs"`
-	BlockedBy              []string        `json:"blocked_by"`
-	Claim                  *claimResponse  `json:"claim"`
+	Key               string          `json:"key"`
+	Project           string          `json:"project"`
+	Title             string          `json:"title"`
+	Status            string          `json:"status"`
+	Parent            *string         `json:"parent"`
+	Rank              string          `json:"rank"`
+	Priority          *int            `json:"priority"`
+	ResolvedPriority  json.RawMessage `json:"resolved_priority"`
+	PriorityFrom      *string         `json:"priority_from"`
+	Labels            []string        `json:"labels"`
+	PrimaryArtifactID string          `json:"primary_artifact_id"`
+	// Queries is the issue read's queries, each with the artifact that reads it: its query node,
+	// or on an issue that has not converted its role document. It is nil where the answer carries
+	// none: a Dispatch of the release before, which answers no queries, and a PATCH's answer.
+	Queries *[]issueQueryResponse `json:"queries"`
+	// VerificationArtifactID is the issue read's verification_artifact_id, which Dispatch keeps on
+	// the read for one release; the daemon reads it only where the answer carries no queries
+	// (verificationArtifact).
+	VerificationArtifactID string         `json:"verification_artifact_id"` // kept for one release: role-artifact-ids
+	LastSeq                int64          `json:"last_seq"`
+	ResolvedRepo           *string        `json:"resolved_repo"`
+	Needs                  *[]string      `json:"needs"`
+	BlockedBy              []string       `json:"blocked_by"`
+	Claim                  *claimResponse `json:"claim"`
+}
+
+// issueQueryResponse is one query of an issue read: its name (spec, verification, plan or
+// decisions) and the id of the artifact that reads it.
+type issueQueryResponse struct {
+	Query      string `json:"query"`
+	ArtifactID string `json:"artifact_id"`
+}
+
+// verificationQuery is the name of an issue's Verification query in the issue read's queries.
+const verificationQuery = "verification"
+
+// verificationArtifact is the issue's Verification document as the answer names it (R8 of the
+// issue-tree spec): the artifact of the verification query where the answer carries queries, ""
+// where those queries hold none, whatever verification_artifact_id names; and, for one release,
+// verification_artifact_id where the answer carries no queries, as a Dispatch of the release
+// before answers, so a daemon of this release still names the document there.
+func (r issueResponse) verificationArtifact() string {
+	if r.Queries == nil {
+		return r.VerificationArtifactID // kept for one release: role-artifact-ids
+	}
+	for _, query := range *r.Queries {
+		if query.Query == verificationQuery {
+			return query.ArtifactID
+		}
+	}
+	return ""
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
@@ -74,7 +108,7 @@ func (r issueResponse) issue() Issue {
 		Labels:                 r.Labels,
 		HandedOver:             CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID:      r.PrimaryArtifactID,
-		VerificationArtifactID: r.VerificationArtifactID,
+		VerificationArtifactID: r.verificationArtifact(),
 		LastSeq:                r.LastSeq,
 		ResolvedRepo:           deref(r.ResolvedRepo),
 		BlockedBy:              WaitsOf(r.Needs, r.BlockedBy),

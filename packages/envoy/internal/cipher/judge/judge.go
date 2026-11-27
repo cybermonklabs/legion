@@ -218,11 +218,14 @@ type Options struct {
 type Runner struct {
 	ctx  context.Context
 	opts Options
+	// dispatchPhase makes the run's Dispatch phase: requests.JudgeDispatch, which only this
+	// package's tests replace (holdPhase).
+	dispatchPhase func(context.Context) (context.Context, context.CancelFunc)
 }
 
 // New is the runner for one broker. ctx is that broker's serving lifetime.
 func New(ctx context.Context, o Options) *Runner {
-	return &Runner{ctx: ctx, opts: o}
+	return &Runner{ctx: ctx, opts: o, dispatchPhase: requests.JudgeDispatch}
 }
 
 // Consider starts one run for one pending request, on a goroutine of its own with runBudget off
@@ -432,7 +435,7 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 	// check's, the project check's and the issue's two GETs — runs under one
 	// requests.JudgeDispatch, so however slowly Dispatch answers, the ask read, the model call and
 	// the row's write keep the parts of runBudget the arithmetic gives them.
-	phase, cancel := requests.JudgeDispatch(ctx)
+	phase, cancel := r.dispatchPhase(ctx)
 	defer cancel()
 
 	// One read of the machine per key answers the next three checks: the policy's outcome,

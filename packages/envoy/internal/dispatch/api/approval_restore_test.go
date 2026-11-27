@@ -276,6 +276,7 @@ func storeRespelled(t *testing.T, database *store.Store, artifactID string, numb
 // no query covers (uncoveredDocument): R14 carries a spec's approval across the paragraph's edit
 // by the record carry, since the Spec query takes memo callouts, criteria and requirements alone.
 func TestAnUploadOfAnApprovedTextAnotherRendererVersionStoredCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "TEST", "Upload a text another renderer version stored", "A spec")
 	artifactID := uncoveredDocument(t, handler, issue.Key, respellSpec)
@@ -326,6 +327,7 @@ func TestAnUploadOfAnApprovedTextAnotherRendererVersionStoredCarriesTheApproval(
 // approval stays current, carried to the named version, though its bytes are not the approved
 // version's.
 func TestANamedVersionKeepsCurrentAnApprovalOfATextAnotherRendererVersionStored(t *testing.T) {
+	t.Parallel()
 	another := pmdoc.RendererVersion - 1
 	for _, test := range []struct {
 		name  string

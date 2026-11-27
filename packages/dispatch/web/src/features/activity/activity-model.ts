@@ -117,6 +117,8 @@ function describe(
     }
     case "issue.deployed":
       return `deployed ${event.payload.repo}#${event.payload.number} to production (run ${event.payload.run_id})`;
+    case "deploy.recorded":
+      return `recorded a deploy of ${event.payload.program} in ${event.payload.repo} at ${event.payload.commit}, deployed ${event.payload.deployed_at}.`;
     case "handoff.recorded":
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
@@ -293,6 +295,15 @@ function describe(
       return `retracted the result of check ${event.payload.check_block_id} at ${event.payload.commit_sha}: ${event.payload.reason}`;
     case "issue.pull_request_attribution_changed":
       return `moved pull request ${event.payload.repo}#${event.payload.number} from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
+    // Same rule as the issue timeline's line: the outbox, as a system actor, reports an event's
+    // copy for a role that reached no session, and why it stopped keeping it.
+    case "role.undelivered": {
+      const head = `did not deliver event ${event.payload.event_id} (${event.payload.event_type}) to role ${event.payload.role}`;
+      const keeps = event.payload.keeps;
+      return event.payload.reason === "expired"
+        ? `${head}: it was kept ${keeps} time${keeps === 1 ? "" : "s"} for an hour and no session took it`
+        : `${head}: Envoy no longer held it after ${keeps} keep${keeps === 1 ? "" : "s"}`;
+    }
   }
 }
 

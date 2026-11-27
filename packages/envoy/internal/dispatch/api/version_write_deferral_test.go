@@ -337,9 +337,10 @@ func (d *deferralDocument) inlineWrites(t *testing.T) {
 		":::ask{#q-open urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n:::\n")
 	step := docs.NewDecisionStep(d.database, "", nil)
 	step.UseDocuments(d.documents)
-	done, failed, err := step.RestoreAndConvert(ctx, "DEFER", true, false)
+	pass, err := step.RestoreAndConvert(ctx, "DEFER", true, false)
+	done, failed := pass.Done, pass.Failed
 	if err != nil || len(failed) > 0 || len(done) != 1 || done[0].SpecVersion == 0 {
-		t.Fatalf("the decisions step answered %+v, %+v, %v, want the issue's spec versioned", done, failed, err)
+		t.Fatalf("the decisions step answered %+v, %v, want the issue's spec versioned and none left or failed", pass, err)
 	}
 	if indexed := blockIndexVersion(t, d.database, d.spec); indexed == nil || *indexed != done[0].SpecVersion {
 		t.Errorf("the decisions step's version %d left the spec's blocks indexed at %s, want them indexed by the step's own transaction", done[0].SpecVersion, indexedAt(indexed))

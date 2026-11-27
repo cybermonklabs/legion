@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  An `issue.*` event that the release before wrote now answers `needs` beside its `blocked_by`,
+  with the same targets, as this release's own issue events do. That release wrote `blocked_by`
+  alone, so before this change such an event answered no `needs`. An event that holds `needs`
+  alone now answers `blocked_by` beside it too. Every read that gives a stored event to a client
+  answers both: `GET /api/v1/issues/{key}/events`, `GET /api/v1/artifacts/{id}/events`,
+  `GET /api/v1/events/log`, the events view of `GET /ws/live`, and the envelopes the outbox
+  publishes to Envoy. The stored rows do not change. The `changed` list of such an event still
+  names `blocked_by` alone where this release names `blocked_by` and `needs`.
+time: 2026-11-27T05:29:25Z
+custom:
+    Issue: INFRA-1253

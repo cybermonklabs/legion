@@ -87,6 +87,8 @@ func TestAnUpdateClassHoldsNoCopyAndMatchesByIdentity(t *testing.T) {
 // can stay open for hours, and not the preload map. A weak pointer to the losing state's update
 // bytes is cleared by a collection while both sockets are still open.
 func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC) and holds the losing
+	// preload to going in them.
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -120,7 +122,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	sockets := make(chan opened, 2)
 	for range 2 {
 		go func() {
-			connection, err := dialDocument(server.URL, artifactID)
+			connection, err := dialDocument(t, server.URL, artifactID)
 			sockets <- opened{connection, err}
 		}()
 	}
