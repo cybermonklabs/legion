@@ -2144,6 +2144,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "kindRefusal.text",
   },
   {
+    file: `${FEATURES}/conversation/MentionComposer.tsx`,
+    holds:
+      "the issue page's box's words for a refusal (`OutlineRefusal`): the composer's words for a refused send or upload, the host's own line for a mark it could not write again, the server's error message, or the wording around it",
+    written: "message",
+  },
+  {
     file: `${FEATURES}/conversation/held-sends.ts`,
     holds: "the words a mention was typed as, matched against the draft and drawn nowhere",
     written: "mention.text",

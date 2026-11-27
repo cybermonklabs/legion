@@ -5,6 +5,7 @@ import {
 } from "@legion/contracts";
 
 import type { Body } from "../web/src/api/paths";
+import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
 import { agentMention, agentRow } from "./agents";
 import {
@@ -26,6 +27,8 @@ import {
 } from "./editor";
 import { askCard, inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { expectIssuePageDrawn, focusRow } from "./issue-page-g";
+import { withIssuePage } from "./issue-page-option";
 import { commentField, pickerRows, pickReference, refPicker } from "./ref-picker";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -503,6 +506,40 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       const onMessage = inboxPane(page).getByRole("textbox", { name: "Reply" });
       await expect(onMessage).toBeVisible();
       await expectRow(page, onMessage, "inbox-thread-reply", "message-reply");
+    },
+  },
+  // The new issue page's one box, at the foot of its outline, which a
+  // reader gets once their `issue.page` is `outline` (`withIssuePage`). The line's name follows
+  // what it writes, so it is reached by the attribute its form carries. It answers no ask
+  // (`OutlineWriter.answer`), so it draws no answer field. An edit of the reader's own comment is
+  // opened only by an Edit of that comment, which the page does not draw yet, so the list leaves
+  // `comment-edit` uncovered until such an Edit is under the box.
+  "issue-page-composer": {
+    drive: async (page, world) => {
+      await withIssuePage(page.context(), world.reader);
+      await page.goto(`/issues/${world.host}`);
+      await expectIssuePageDrawn(page);
+      const box = page.getByTestId("issue-composer");
+      const field = box.locator("[data-issue-composer] textarea");
+      await expect(field).toBeVisible();
+      // With no target the line writes on the issue: a comment while Comment is pressed, as it
+      // is at first, sent with the line's own Send, and a question once Question is.
+      await walkBox(field, world);
+      await expectRow(page, field, "issue-page-composer", "comment", () =>
+        box.getByRole("button", { exact: true, name: CONTROL_LABELS.send }).click()
+      );
+      // The box stays at the foot after a send, and clears its draft as the comment lands.
+      await expect(field).toHaveValue("");
+      const question = box.locator('[data-composer-kind="ask"]');
+      await question.click();
+      await expect(question).toHaveAttribute("aria-pressed", "true");
+      await expectRow(page, field, "issue-page-composer", "ask");
+      // `r` on the reader's own message aims the line at a reply in that thread, which goes to
+      // the thread's target. A target takes no kind, so Question left pressed makes no ask of it.
+      await focusRow(page, world.message);
+      await page.keyboard.press("r");
+      await expect(field).toBeFocused();
+      await expectRow(page, field, "issue-page-composer", "message-reply");
     },
   },
   "margin-comment-edit": {

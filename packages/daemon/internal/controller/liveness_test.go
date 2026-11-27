@@ -283,6 +283,10 @@ func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 			if strings.Contains(log.String(), "madeUpEnvoy") {
 				t.Errorf("%s: the log names the credential: %s", name, log.String())
 			}
+			// The quoted userinfo's user name, legion, is no part of the check above.
+			if userName, _, _ := strings.Cut(user, ":"); strings.Contains(log.String(), "://"+userName) {
+				t.Errorf("%s: the log names the URL's user name: %s", name, log.String())
+			}
 		}
 	}
 	var tailLog bytes.Buffer

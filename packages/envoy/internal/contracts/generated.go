@@ -385,6 +385,7 @@ var DispatchEventTypes = []string{
 	"issue.deployed",
 	"issue.pull_request_attribution_changed",
 	"issue.released",
+	"issue.role_holders_changed",
 	"issue.updated",
 	"message.accepted",
 	"message.answered",
