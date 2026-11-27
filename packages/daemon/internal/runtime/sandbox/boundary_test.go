@@ -35,6 +35,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -143,7 +144,7 @@ func newInitRigOf(t *testing.T, legion string, opts Options) *initRig {
 			t.Fatalf("the rig drives a real %s: %v", name, err)
 		}
 		script := "#!/bin/sh\nexec " + shellprefix.Literal(real) + ` "$@"` + "\n"
-		if err := os.WriteFile(filepath.Join(rig.bin, name), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(rig.bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -652,7 +653,7 @@ func TestEveryProcessTheRigStartsHasItsContainersCPULimit(t *testing.T) {
 	// The stand-in for the Go legion appends one line for each init container that runs it.
 	record := filepath.Join(t.TempDir(), "record")
 	standIn := filepath.Join(t.TempDir(), "legion")
-	if err := os.WriteFile(standIn, []byte("#!/bin/sh\n{ "+report+"; echo; } >> "+shellprefix.Literal(record)+"\n"), 0o700); err != nil {
+	if err := execfile.Write(standIn, []byte("#!/bin/sh\n{ "+report+"; echo; } >> "+shellprefix.Literal(record)+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	rig := newInitRig(t, standIn)

@@ -25,6 +25,7 @@ import (
 // still waiting on a root out of the workflow, as one written before a leave ended such waits,
 // opens on neither, and its wait ends with nobody told.
 func TestAPendingBasisOpensNothingOnARootThatLeftTheWorkflow(t *testing.T) {
+	t.Parallel()
 	approved := dispatch.Approval{IssueKey: basisAncestor, State: "approved", LatestVersion: 4, Version: new(4), At: basisApprovedAt.Add(24 * time.Hour),
 		Seq: 60, By: basisPerson}
 	for _, place := range []struct {
@@ -96,6 +97,7 @@ func TestAPendingBasisOpensNothingOnARootThatLeftTheWorkflow(t *testing.T) {
 // on nothing, and beside the seed the close queues no basis-ended notice, no resting-root notice,
 // no message and no other row.
 func TestAPendingBasisOnARootOutOfTheWorkflowEndsWithNobodyToldWhenItsRequestCloses(t *testing.T) {
+	t.Parallel()
 	pool, _, apply := registeredPending(t)
 	leave(t, pool, gatedRoot, phase.Done, "backlog")
 	rows, messages := outboxRows(t, pool), messageBodies(t, pool)
@@ -133,6 +135,7 @@ func TestAPendingBasisOnARootOutOfTheWorkflowEndsWithNobodyToldWhenItsRequestClo
 // basis: the ancestor's architect gets no resting-root notice, the root's issue no message, the
 // root's architect no design-approved notice, and no pending-basis seed is queued.
 func TestARegistrationOnABasisOfARootThatLeftTheWorkflowTakesNoBasis(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
