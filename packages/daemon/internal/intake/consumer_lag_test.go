@@ -25,6 +25,7 @@ import (
 // with none handled — a message it keeps naking is not progress. A poison message it terminates is
 // handled.
 func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor60Seconds(t *testing.T) {
+	// Not parallel: its exact readings hold only while each NATS read beats consumerOldestBound, 1 s, a wall-clock bound the load of tests beside it can cross.
 	ctx := context.Background()
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -41,6 +42,7 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 	for number := 1; number <= 3; number++ {
 		stored = append(stored, publishStored(t, js, stream, fmt.Sprintf("notifications.github.sjawhar.legion.pr.%d", number), pullRequestOpenedEnvelope(t, number)))
 	}
+	awaitWaiting(t, stream, github, 3)
 
 	lags := consumers.Lag(ctx)
 	if names := lagNames(lags); !slices.Equal(names, []string{dispatch, github, wakeConsumerName(spec.Project)}) {
@@ -109,6 +111,7 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 // STREAM.MSG.GET that fails or never answers leaves only the oldest unknown, the never-answered
 // read cut at its own bound, before the consumer's.
 func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
+	// Not parallel: it bounds Lag between consumerOldestBound and consumerLagBound, 1 to 2 s, a wall-clock bound the load of tests beside it can cross.
 	ctx := context.Background()
 	served, stream := testJetStream(t)
 	standIn := &lagStandIn{JetStream: served}
@@ -121,6 +124,7 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 	publishStored(t, served, stream, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	awaitWaiting(t, stream, github, 1)
 	clock.advance(consumerStallAfter + time.Second)
 
 	t.Run("the consumer's info refused", func(t *testing.T) {
@@ -177,6 +181,7 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 // message could not be read keeps its waiting count and stalled flag and names that read, and Lag
 // as a whole stays within one consumerLagBound.
 func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *testing.T) {
+	// Not parallel: it bounds Lag at consumerLagBound plus 1 s, a wall-clock bound the load of tests beside it can cross.
 	ctx := context.Background()
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
@@ -184,7 +189,8 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 		testnats.NkeyUser{Public: daemonPublic, Permissions: `{ publish: { deny: ["$JS.API.STREAM.MSG.GET.>"] } }`},
 		testnats.NkeyUser{Public: adminPublic})
 	admin := jetStreamAs(t, uri, adminSeed, "admin")
-	if _, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}}); err != nil {
+	stream, err := admin.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}})
+	if err != nil {
 		t.Fatalf("create the notification stream: %v", err)
 	}
 	clock := &lagClock{now: time.Now()}
@@ -200,6 +206,9 @@ func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *t
 	}
 	publish(t, admin, legionWakeSubject, envelopeJSON(t, "wake-1", "envoy",
 		fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, clock.Now().UnixMilli())))
+	awaitWaiting(t, stream, dispatchConsumerName(spec.Project), 1)
+	awaitWaiting(t, stream, githubConsumerName(spec.Project), 3)
+	awaitWaiting(t, stream, wakeConsumerName(spec.Project), 1)
 	clock.advance(consumerStallAfter + time.Second)
 
 	started := time.Now()
@@ -320,6 +329,57 @@ func publishStored(t *testing.T, js jetstream.JetStream, stream jetstream.Stream
 		t.Fatalf("read message %d back: %v", ack.Sequence, err)
 	}
 	return message.Time
+}
+
+// awaitWaiting waits until the server counts n messages waiting for the consumer named name, read
+// as Lag reads it: NumPending and NumAckPending of the consumer's CONSUMER.INFO. A publish's ack
+// says the stream stored the message, and the server counts it for each consumer only afterwards,
+// in a goroutine of its own (drain_test.go's wait for its backlog says how), so a Lag read the
+// moment the publish returns can find nothing waiting yet: merge-group run 44087318326 and run
+// 45387283087 read the wake consumer Waiting 0. The wait, and each read in it, is bounded by the
+// row's hang guard alone (testwait.Remaining), never by a span of its own; its failure names the
+// last count read. A count past n is a message from outside the row, and fails at once, and so
+// does a read that fails. internal/daemon's nats_permissions_test.go holds a copy of it, which
+// that package's tests need and cannot import: keep the two in step.
+func awaitWaiting(t *testing.T, stream jetstream.Stream, name string, n uint64) {
+	t.Helper()
+	requests, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	consumer, err := stream.Consumer(requests, name)
+	if err != nil {
+		t.Fatalf("read the %s consumer: %v", name, err)
+	}
+	var waiting uint64
+	if testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
+		count, err := ConsumerWaiting(requests, consumer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting = count; waiting > n {
+			t.Fatalf("the server counts %d messages waiting for %s, more than the %d the row published", waiting, name, n)
+		}
+		return waiting == n
+	}) {
+		return
+	}
+	t.Fatalf("the server counts %d message(s) waiting for %s at the row's hang guard, want %d", waiting, name, n)
+}
+
+// ConsumerWaiting is consumer's waiting messages, counted as Lag counts them (ConsumerLag's
+// Waiting: JetStream's NumPending plus NumAckPending), from one CONSUMER.INFO that requests
+// bounds; the row bounds it by its own deadline. Lag's own read bounds that request by
+// consumerLagBound, two seconds, and its oldest-message read by consumerOldestBound, one second.
+// Those bounds stay in the daemon: they keep its state route from waiting on a NATS server that
+// does not answer, which is that route's contract and not a row's subject; read through them, a
+// NATS server the machine held 2.1 s failed the drain row. It is the one count of this package's
+// tests: awaitWaiting's, and the drain row's (drain_test.go, of package intake_test, which is why
+// it is exported).
+func ConsumerWaiting(requests context.Context, consumer jetstream.Consumer) (uint64, error) {
+	info, err := consumer.Info(requests)
+	if err != nil {
+		return 0, fmt.Errorf("read the %s consumer's info: %w", consumer.CachedInfo().Name, err)
+	}
+	return info.NumPending + uint64(info.NumAckPending), nil
 }
 
 func lagNames(lags []ConsumerLag) []string {

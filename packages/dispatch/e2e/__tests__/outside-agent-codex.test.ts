@@ -18,7 +18,15 @@
  *  and, in the same file, not PASS where one crosses the rule the row reads. */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -111,6 +119,10 @@ interface CodexScenario {
   /** The installed plugin has no dist/dispatch.js, or its whoami answers otherwise (C7). */
   readonly noEntry?: boolean;
   readonly terminal?: "config" | "other";
+  /** The entry's whoami names the project as a release since a token naming a project writes
+   *  other projects says it, "Its token names project <P>.", not as a release before it, "It may
+   *  write project <P> and no other." (C7). */
+  readonly tokenNames?: boolean;
   /** The stand-in model answers /_ready with another word than the leg's nonce, as another run's
    *  stand-in on the port would. */
   readonly modelSquat?: boolean;
@@ -141,6 +153,8 @@ interface CodexScenario {
    *  stops that run's Codex (`at-stop`), on the TERM the stand-in tmux's `kill-server` sends, which
    *  comes after the turn's next request, once the leg has read that no record comes. */
   readonly recordLate?: "before-next" | "at-stop";
+  /** The leg's PATH holds no `ln`, so it can link none of the programs it found. */
+  readonly withoutLn?: boolean;
 }
 
 /** Where the real provenance helper is: the stand-in imports its tree comparison. */
@@ -167,7 +181,8 @@ if (scenario.terminal === "config") {
   process.exit(2);
 }
 const owner = scenario.terminal === "other" ? "someone@example.com" : ${JSON.stringify(person)};
-console.log("Session " + process.env.CODEX_THREAD_ID + " acts for " + owner + ": issues you create without an assignee are assigned to " + owner + ". It may write project EXAMPLE and no other.");
+const named = scenario.tokenNames ? " Its token names project EXAMPLE." : " It may write project EXAMPLE and no other.";
+console.log("Session " + process.env.CODEX_THREAD_ID + " acts for " + owner + ": issues you create without an assignee are assigned to " + owner + "." + named);
 `;
 }
 
@@ -582,6 +597,7 @@ else {
   );
   const bin = textToolPath(scratch, ["bun", "git", "tar", "gzip"]);
   script(join(bin, "tmux"), standInTmux());
+  if (scenario.withoutLn === true) rmSync(join(bin, "ln"), { force: true });
   const codex = script(join(state, "codex"), standInCodex(state));
   // npm: installs the stand-in codex for \`npm install --prefix <dir> @openai/codex@<v>\`, recording
   // the integrity of the two packages as npm does in its hidden lockfile, takes the release for the
@@ -771,6 +787,9 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
       expect(rows.get("C4")?.got).toContain("example-peer-foreign answered 404");
       expect(rows.get("C5")?.got).toContain("read it from codex-thread-main");
       expect(rows.get("C6")?.got).toContain("ENVOY_URL at http://127.0.0.1:1, which refused");
+      // C7 read "It may write project EXAMPLE and no other.", as a release before a token naming a
+      // project wrote other projects says it.
+      expect(rows.get("C7")?.got).toContain(`acts for ${person}, its token names project EXAMPLE`);
       // C7 ran the installed copy's entry as a terminal would: the host codex, a session of its
       // own, P2's HOME and the device login.
       const terminal = JSON.parse(readFileSync(join(run.state, "terminal.json"), "utf8"));
@@ -817,6 +836,19 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     row: rowsOf(run.stdout).get(name),
     stdout: run.stdout,
   });
+
+  test(
+    "C7 passes where the installed entry's whoami says its token names the project, as a release since a token naming a project writes other projects says it",
+    async () => {
+      const run = await codexStandInRun({ tokenNames: true });
+      expect(rowOf(run, "C7")).toMatchObject({ row: { verdict: "PASS" } });
+      expect(rowOf(run, "C7").row?.got).toContain(
+        `acts for ${person}, its token names project EXAMPLE`
+      );
+    },
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
+  );
 
   test(
     "C2 reads UNKNOWN where its control did not fail, and C4 fails where a message to a session of another project reached the session",
@@ -1023,6 +1055,32 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     },
     // The five runs at once, each a bounded child under the Codex run's bound.
     rowLimit({ atOnce: ["codexRun", "codexRun", "codexRun", "codexRun", "codexRun"] })
+  );
+
+  // The leg links, at its start, the real program behind each tool that Codex and the children it
+  // starts run under the leg's PATH. A program it found and could not link leaves them to whatever
+  // PATH holds, so the leg runs nothing and every row reads UNKNOWN naming the program and the
+  // reason. The control that nothing ran: the stand-in npm, which records every call, was never
+  // called.
+  test(
+    "a Codex leg that cannot link a program it found runs nothing: every row reads UNKNOWN naming it",
+    async () => {
+      const run = await codexStandInRun({ withoutLn: true });
+      expect({ problems: unknownProblems(run), stdout: run.stdout }).toEqual({
+        problems: [],
+        stdout: run.stdout,
+      });
+      const rows = rowsOf(run.stdout);
+      for (const name of codexRows) {
+        const got = rows.get(name)?.got ?? "";
+        for (const part of ["bun (", "was not linked into", "command not found"]) {
+          expect({ name, got }).toEqual({ name, got: expect.stringContaining(part) });
+        }
+      }
+      expect(existsSync(join(run.state, "npm-args"))).toBe(false);
+    },
+    // The run, a bounded child under the Codex run's bound.
+    rowLimit("codexRun")
   );
 
   test(
@@ -1784,5 +1842,18 @@ describe("the Codex leg's stand-in model, on the requests Codex sends it", () =>
         `Session s-2 acts for ${person}: issues. Your credential names session s-9, which is not this host session (s-2): Dispatch records every write you make as s-9. It may write project EXAMPLE and no other.\n[exit 0]`
       )
     ).toMatchObject({ session: "s-2", elsewhere: "s-9" });
+  });
+
+  test("it reads the project from either sentence whoami names it with, before and since a token naming a project writes other projects", () => {
+    const acting = `Session th-1 acts for ${person}: issues you create without an assignee are assigned to ${person}.`;
+    for (const named of [
+      " It may write project EXAMPLE and no other.",
+      " Its token names project EXAMPLE.",
+    ]) {
+      expect({ named, line: whoamiOf(`${acting}${named}\n[exit 0]`) }).toEqual({
+        named,
+        line: { exit: 0, session: "th-1", owner: person, project: "EXAMPLE", elsewhere: "" },
+      });
+    }
   });
 });

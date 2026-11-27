@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -115,7 +114,7 @@ func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
 		{"APP_READ", app(movedSecond + "app-key"), unset, false},
 		{"APP_READ", installations(movedSecond + "app-key"), moved, false},
 	} {
-		err := stillAllowed(set, proxyrules.Rules{}, row.rule, row.name, row.frozen, policy.Automatic, "", nil, requester)
+		err := stillAllowed(set, row.rule, row.name, row.frozen, policy.Automatic, "", nil, requester)
 		switch {
 		case row.live && err != nil:
 			t.Errorf("stillAllowed(%s frozen at %s, second prefix %q) = %v; want nil, the grant goes on", row.name, row.frozen, row.rule.second, err)

@@ -37,12 +37,16 @@ const (
 )
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in one
-// of them is waiting on its children (segment 4). `done` is none of them: a child in `done` before
-// its close is out of the workflow, whose hours are outside its own work time too (the spec's "Out
-// of the workflow before the close", outOfWorkflowSpans), so its root waits on it through none.
+// of them is waiting on its children (segment 4). `awaiting_children`, which
+// dispatch://INFRA-3320 added, is one of them too: a child enters it from one of planning through
+// accepting, and waits there on children of its own, which are still at work, so its root waits
+// on it. `done` is none of them: a child in `done` before its close is out of the workflow, whose
+// hours are outside its own work time too (the spec's "Out of the workflow before the close",
+// outOfWorkflowSpans), so its root waits on it through none.
 var childWorkingPhases = []string{
 	legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting, legion.PhaseReviewing,
 	legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,
+	legion.PhaseAwaitingChildren,
 }
 
 // parkedStatuses are the statuses whose time the work time subtracts: the daemon writes `backlog`
@@ -203,12 +207,12 @@ type PhaseSpan struct {
 // phase before observations — metric 3's review rounds, its send-backs and the first review its
 // hours are counted from — read the status history up to that moment. An issue whose only
 // observation is the mark the sampler left after it closed has no observed hour of its own life:
-// the stretch that mark opens lies after the close, so observedPhases clips it to nothing, and the
+// the stretch that mark opens lies after the close, so sampledPhases clips it to nothing, and the
 // whole of its life is before observations.
 func (p *Population) Phases(issue *Issue) ([]PhaseSpan, int) {
 	until := p.issueEnd(issue)
 	steps := phaseSteps(p.fallbackMarks(issue))
-	observed := p.observedPhases(issue)
+	observed := p.sampledPhases(issue)
 	if len(observed) > 0 {
 		until = observed[0].Span.From
 		if cut := slices.IndexFunc(steps, func(step phaseMark) bool { return !step.at.Before(until) }); cut >= 0 {
@@ -259,11 +263,19 @@ func layOutOfWorkflow(timeline []PhaseSpan, out []Span) []PhaseSpan {
 	return laid
 }
 
-// observedPhases is the timeline the sampler's `phase` observations draw, with each admitted
-// stretch split into the design the issue held a slot through and the queue it did not.
-func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
+// sampledPhases is the timeline the sampler's `phase` observations draw and nothing else: each
+// stretch a phase mark holds (phaseStretches), with each admitted stretch split into the design
+// the issue held a slot through and the queue it did not. It is the issue's observed phase at each
+// moment, which is what the two rules that read only an observed phase stand on (slotWaitHours and
+// idleByRole): an hour before the sampler first saw the issue has no observed phase, so it is on
+// neither.
+func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 	end := p.issueEnd(issue)
-	var timeline []PhaseSpan
+	var (
+		timeline  []PhaseSpan
+		slots     []Span
+		readSlots bool
+	)
 	for stretch := range p.phaseStretches(issue) {
 		if stretch.Span.Duration() == 0 {
 			continue
@@ -272,7 +284,11 @@ func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 			timeline = append(timeline, stretch)
 			continue
 		}
-		held := intersect([]Span{stretch.Span}, p.slotSpans(issue, end))
+		if !readSlots {
+			slots = p.slotSpans(issue, end)
+			readSlots = true
+		}
+		held := intersect([]Span{stretch.Span}, slots)
 		for _, holding := range held {
 			timeline = append(timeline, PhaseSpan{Phase: phaseDesign, Span: holding})
 		}
@@ -294,7 +310,7 @@ func (p *Population) observedPhases(issue *Issue) []PhaseSpan {
 // next mark that carries a phase or to the issue's end where none follows, and its hours stay on
 // the bar of the phase the issue was last seen in, so the bars of the issue still add up to its
 // work time (the spec's "Parked and pre-work hours in phase time"). Both readers of an issue's
-// phase stretches take them from here, the timeline (observedPhases) and the root's recorded wait
+// phase stretches take them from here, the timeline (sampledPhases) and the root's recorded wait
 // on a person (waitingOnPersonSpans), so the two cannot read one mark two ways. slotSpans reads
 // the drops through markedPhase too.
 func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
@@ -347,7 +363,7 @@ func markedPhase(mark Mark) string { return legion.JSONString([]byte(mark.Value)
 // at its moment is a release. Where no read carries the issue again, the hold runs to end.
 //
 // This is the one reader of the slot marks. The timeline's split of an admitted stretch into
-// design and queue (observedPhases), and so the queue time (queuedSpans) and every bar, take them
+// design and queue (sampledPhases), and so the queue time (queuedSpans) and every bar, take them
 // from here, as does the start of the design phase before observations (fallbackMarks).
 func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
 	phases, slots := issue.Observed[legion.FieldPhase], issue.Observed[legion.FieldSlot]
@@ -432,8 +448,8 @@ const (
 // starts the next phase, and no hour between phases is left over ... After a send-back, the
 // Dispatch status sets the phase". The three sources are therefore one list of marks and the
 // timeline is the step function they draw, with no gap between one phase and the next — which is
-// what lets the seven bars of metric 2 add up to the work time while the no-role bar holds
-// `awaiting_person` and `held` alone.
+// what lets the seven bars of metric 2 add up to the work time while the no-role bar holds the
+// phases no role works alone: `awaiting_person`, `awaiting_children` and `held`.
 func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) []PhaseSpan {
 	for index, step := range steps {
 		span := Span{From: step.at, To: until}

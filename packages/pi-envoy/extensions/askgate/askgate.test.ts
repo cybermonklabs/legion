@@ -22,6 +22,7 @@ import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { processEnded } from "@legion/test-fixtures/process-end";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -284,7 +285,7 @@ function bind(opts: BindOptions = {}): BoundGate {
   const complete = opts.complete ?? (async () => ({ text: ALLOW, usage: USAGE }));
   // The session's Dispatch, which a test that drives a document read or a decision record binds;
   // with none, a document read gives nothing and no decision record is written.
-  const dispatchClient = (directory: string, signal: AbortSignal) => {
+  const dispatchClient = async (directory: string, signal: AbortSignal) => {
     dispatchReads.push({ directory, signal });
     return opts.dispatch?.(directory, signal);
   };
@@ -1568,7 +1569,7 @@ describe("deadline and abandonment", () => {
       started = Promise.withResolvers<void>();
       const gated = g.device(id, "dispatch_comment", COMMENT);
       await started.promise;
-      g.event("tool_execution_end", { toolCallId: id, toolName: "write", isError: true });
+      await g.event("tool_execution_end", { toolCallId: id, toolName: "write", isError: true });
       // Warn mode lets it go, and says it went out unreviewed (the attack review, non-blocking 2).
       const result = await gated;
       expect(result?.block).toBeUndefined();
@@ -1583,7 +1584,7 @@ describe("deadline and abandonment", () => {
     started = Promise.withResolvers<void>();
     const next = g.device("d", "dispatch_comment", COMMENT);
     await started.promise;
-    g.event("tool_execution_end", { toolCallId: "d", toolName: "write", isError: true });
+    await g.event("tool_execution_end", { toolCallId: "d", toolName: "write", isError: true });
     await next;
     expect(signals).toHaveLength(4);
   });
@@ -1605,7 +1606,11 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    g.event("tool_execution_end", { toolCallId: "toolu_eval", toolName: "eval", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "toolu_eval",
+      toolName: "eval",
+      isError: true,
+    });
     expect(signals[0].aborted).toBe(false);
     return { g, gated, signals };
   }
@@ -1616,7 +1621,7 @@ describe("deadline and abandonment", () => {
 
   test("a run the user stopped abandons every gate still waiting, whichever path dispatched its call", async () => {
     const { g, gated, signals } = await bridgedGate();
-    g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("aborted")] });
+    await g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("aborted")] });
     const result = await gated;
     expect(result?.block).toBeUndefined();
     expect(result?.additionalContext).toContain('outcome="abandoned"');
@@ -1633,7 +1638,7 @@ describe("deadline and abandonment", () => {
   test("in block mode a call the user's stop left without a verdict is refused, not let through", async () => {
     // A write an eval cell starts from its own timer: its runner is still live when the stop abandons its gate.
     const { g, gated } = await bridgedGate({ OMP_ASKGATE: "block" });
-    g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("aborted")] });
+    await g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("aborted")] });
     const result = await gated;
     expect(result?.block).toBe(true);
     expect(result?.reason).toContain("before a verdict");
@@ -1643,7 +1648,7 @@ describe("deadline and abandonment", () => {
   });
   test("an end the session will continue past leaves the gate waiting", async () => {
     const { g, gated, signals } = await bridgedGate({ OMP_ASKGATE_TIMEOUT_MS: "50" });
-    g.event("agent_end", { messages: [lastAssistant("aborted")], willContinue: true });
+    await g.event("agent_end", { messages: [lastAssistant("aborted")], willContinue: true });
     expect(signals[0].aborted).toBe(false);
     await gated;
     expect(g.entries.map((e) => e.outcome)).toEqual(["timeout"]);
@@ -1651,7 +1656,7 @@ describe("deadline and abandonment", () => {
   test("a run that ends any other way leaves the gate to its verdict or its deadline", async () => {
     // A backgrounded eval cell keeps running past the run's end; abandoning its gate would let its write out unchecked.
     const { g, gated, signals } = await bridgedGate({ OMP_ASKGATE_TIMEOUT_MS: "50" });
-    g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("stop")] });
+    await g.event("agent_end", { messages: [fx.user("Post it."), lastAssistant("stop")] });
     expect(signals[0].aborted).toBe(false);
     await gated;
     expect(g.entries.map((e) => e.outcome)).toEqual(["timeout"]);
@@ -1883,7 +1888,11 @@ console.log(JSON.stringify(args, null, 2));
     });
     const gated = g.bash("dry-ended", ONE_LINE_ASK);
     const signal = await running.promise;
-    g.event("tool_execution_end", { toolCallId: "dry-ended", toolName: "bash", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "dry-ended",
+      toolName: "bash",
+      isError: true,
+    });
     expect(signal.aborted).toBe(true);
     // Warn mode lets the abandoned call go, saying it went out unreviewed.
     const result = await gated;
@@ -1912,7 +1921,11 @@ console.log(JSON.stringify(args, null, 2));
     expect(g.dryRuns).toHaveLength(1);
     expect(g.calls.filter(isCharter)).toHaveLength(1);
     expect(g.calls.filter(isRules)).toHaveLength(1);
-    g.event("tool_execution_end", { toolCallId: "models-ended", toolName: "bash", isError: true });
+    await g.event("tool_execution_end", {
+      toolCallId: "models-ended",
+      toolName: "bash",
+      isError: true,
+    });
     // Both at once, before either call settles: the one stop the call holds aborts them together.
     expect(signals.map((s) => s.aborted)).toEqual([true, true]);
     const result = await gated;
@@ -2618,7 +2631,7 @@ console.log(JSON.stringify(args, null, 2));
     // And each one is marked, so the CLI posts it as it posts a reviewed comment.
     expect(markersIn(g.store)).toHaveLength(4);
   }, 30_000);
-  test("a command the agent already runs with --dry-run or --help sends nothing and is not reviewed", async () => {
+  test("a command the agent already runs with --dry-run or --help stores nothing and is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
     await g.bash("a", "dispatch ask --dry-run --issue X-1 --question q");
     await g.bash("b", "dispatch message --help");
@@ -3254,9 +3267,9 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     ]);
     expect(g.entries[0].reason).toContain("unknown flag --fail");
   });
-  // A dry run contacts no Dispatch server, so only a busy machine makes it slow: the gate runs a
-  // cut run once more within half the call's deadline, and the review keeps the rest. The clock
-  // here moves only as each stand-in run spends its whole limit.
+  // The gate's dry run contacts no Dispatch server, so only a busy machine makes it slow: the gate
+  // runs a cut run once more within half the call's deadline, and the review keeps the rest. The
+  // clock here moves only as each stand-in run spends its whole limit.
   test("a dry-run cut at its limit runs once more within half the deadline, and the call is reviewed", async () => {
     let clock = 1_000_000;
     let runs = 0;
@@ -3333,6 +3346,66 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(result.timedOut).toBe(true);
     expect(Date.now() - began).toBeLessThan(2_000);
   });
+  test("the runner answers when the script ends, and a helper the script left running goes with it", async () => {
+    const pidFile = path.join(work, "dry-run-helper.pid");
+    // The helper inherits the script's stdout, so a read that waited for the pipe to close would
+    // wait for the helper until the 5 s limit, and answer timed out. It sleeps far past the test's
+    // timeout, so only the kill ends it in time.
+    const result = await core.spawnDryRun(`sleep 600 & echo $! > '${pidFile}'; echo out`, {
+      cwd: work,
+      env: { PATH: process.env.PATH ?? "", HOME: work },
+      timeoutMs: 5_000,
+    });
+    const helper = Number(fs.readFileSync(pidFile, "utf8").trim());
+    try {
+      expect(result).toMatchObject({ exitCode: 0, stdout: "out\n", timedOut: false });
+      // Killed as the script ends, so its end is the event: the per-test timeout is the only bound.
+      await processEnded(helper);
+    } finally {
+      try {
+        process.kill(helper, "SIGKILL");
+      } catch {
+        // Gone, as the test expects.
+      }
+    }
+  });
+  // The gate's process can end while a dry run is under way, by a signal or a crash that runs
+  // nothing as it goes: the script's group, its own process group, must end with it.
+  test("a dry run's group ends with the process that started it, even one killed by SIGKILL", async () => {
+    const pidFile = path.join(work, "dry-run-orphan.pid");
+    const runner = path.join(work, "dry-run-runner.ts");
+    fs.writeFileSync(
+      runner,
+      [
+        `import { spawnDryRun } from ${JSON.stringify(path.join(import.meta.dir, "askgate-core.ts"))};`,
+        `void spawnDryRun(${JSON.stringify(`sleep 600 & echo $! > '${pidFile}'; wait`)}, {`,
+        `  cwd: ${JSON.stringify(work)},`,
+        "  env: { PATH: process.env.PATH ?? '' },",
+        "  timeoutMs: 600_000,",
+        "});",
+        `while (!(await Bun.file(${JSON.stringify(pidFile)}).text().catch(() => "")).trim()) {`,
+        "  await Bun.sleep(10);",
+        "}",
+        'process.kill(process.pid, "SIGKILL");',
+      ].join("\n")
+    );
+    const runs = Bun.spawn([process.execPath, runner], { stderr: "pipe", stdout: "ignore" });
+    await runs.exited;
+    const helper = Number(fs.readFileSync(pidFile, "utf8").trim());
+    try {
+      expect(await new Response(runs.stderr).text()).toBe("");
+      expect(runs.signalCode).toBe("SIGKILL");
+      // The watch ends the group once the kernel has closed the pipe the runner held: its end is
+      // the event, and the per-test timeout is the only bound.
+      await processEnded(helper);
+    } finally {
+      try {
+        process.kill(helper, "SIGKILL");
+      } catch {
+        // Gone, as the test expects.
+      }
+    }
+  }, 30_000);
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
     expect(await g.bash("b1", ASK)).toBeUndefined();
@@ -4912,6 +4985,17 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     // Main deleted skills/dispatch/references/, whose asks.md held one more example.
     ["skills/legion-worker/references/findings.md", "dispatch ask --issue", "dispatch_ask"],
     ["skills/legion-worker/references/findings.md", "dispatch comment --issue", "dispatch_comment"],
+    // findings.md's two --mention examples moved to its steps file under the skill budget.
+    [
+      "skills/legion-worker/references/findings-steps.md",
+      "dispatch comment --issue '<THAT KEY>'",
+      "dispatch_comment",
+    ],
+    [
+      "skills/legion-worker/references/findings-steps.md",
+      "dispatch comment --issue '<KEY>'",
+      "dispatch_comment",
+    ],
     ["skills/legion-retro/SKILL.md", "dispatch message --issue", "dispatch_message"],
   ])
     test(`the skill example in ${file} that starts \`${first}\` is in the literal grammar`, () => {
@@ -4974,7 +5058,7 @@ describe("sessions", () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
     for (const id of ["a", "b", "c", "d"]) await g.device(id, "dispatch_comment", COMMENT);
     expect(g.entries.map((e) => e.outcome)).toEqual(["timeout", "timeout", "timeout", "halted"]);
-    g.event("session_switch", { reason: "new" });
+    await g.event("session_switch", { reason: "new" });
     await g.device("e", "dispatch_comment", COMMENT);
     expect(g.entries.at(-1)?.outcome).toBe("timeout");
     expect(g.calls).toHaveLength(4);
@@ -4988,7 +5072,7 @@ describe("sessions", () => {
     );
     await g.device("a", "dispatch_comment", { issue: "X-1", body: "one" });
     await g.device("b", "dispatch_comment", { issue: "X-1", body: "two" });
-    g.event("session_branch");
+    await g.event("session_branch");
     await g.device("c", "dispatch_comment", { issue: "X-1", body: "three" });
     await g.device("r1", "dispatch_comment", { issue: "X-2", body: "b" });
     expect(g.entries.map((e) => e.outcome)).toEqual(["verdict", "verdict", "verdict", "verdict"]);
@@ -5986,8 +6070,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   const CHANGED = "a file this write posts changed after AskGate read it";
   const LATER = "send this call again in a later message";
 
-  /** Posts `command` with the real CLI, as the session whose live record names `store`. */
-  async function post(command: string, store: string) {
+  /** Makes the CLI ask for a marker from `store`, as the record of a session that chose block. */
+  function holdRecord(store: string) {
     // This test process stands in for Oh My Pi, whose record makes the CLI ask for a marker.
     openStore(store);
     // The session chose block (gateEnv), so the CLI refuses a write that spends no marker.
@@ -5996,6 +6080,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       { pid: process.pid, start: processStart(process.pid), ns: pidNamespace(), store },
       "block"
     );
+  }
+
+  /** Posts `command` with the real CLI, as the session whose live record names `store`. */
+  async function post(command: string, store: string) {
+    holdRecord(store);
     const sent: Array<{ path: string; body: unknown }> = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
       const request =
@@ -6005,6 +6094,12 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       // no document here, so the upload below writes a first version.
       if (route.endsWith("/artifacts") && request.method === "GET") {
         return Response.json([]);
+      }
+      // The file round trip a markdown upload asks before it uploads, for a refusal of the file's
+      // bytes: the bytes as given let it through.
+      if (route === "/api/v1/markdown/file-round-trip") {
+        const { file } = (await request.json()) as { file: string };
+        return Response.json({ markdown: Buffer.from(file, "base64").toString("utf8") });
       }
       if (route.endsWith("/artifacts")) {
         const file = (await request.formData()).get("file") as Blob;
@@ -6046,6 +6141,85 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
     // The marker is spent: the same call again is refused.
     expect((await post(command, g.store)).code).toBe(1);
+  }, 30_000);
+
+  // INFRA-4224: the CLI's own `dispatch artifact --dry-run` asks Dispatch how it would store inline
+  // text (POST /api/v1/markdown/round-trip). The gate reads the arguments alone, and the call
+  // refuses a text Dispatch would store under another spelling itself, so the gate's dry run asks
+  // Dispatch nothing and the call it lets run makes the round trip. The call runs as Oh My Pi runs
+  // it: under bash, in the call's directory, with the environment the gate was given. The fake
+  // Dispatch keeps every request it takes, the dry run's and the call's alike, each a process of
+  // its own, so no `fetch` another test file installs in this process reaches them.
+  test("the gate's read of an inline upload asks Dispatch nothing, and the call it lets run makes the round trip", async () => {
+    const requests: Array<{ method: string; path: string; body?: unknown }> = [];
+    const dispatch = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(request) {
+        const route = new URL(request.url).pathname;
+        const text = await request.text();
+        const body: unknown = text === "" ? undefined : JSON.parse(text);
+        requests.push({ method: request.method, path: route, ...(text === "" ? {} : { body }) });
+        // The upload asks the store's round trip of its text, then reads the issue's documents, to
+        // refuse a name the issue holds: the text as given and an empty list let it through.
+        if (request.method === "GET" && route === "/api/v1/issues/DSP-1/artifacts") {
+          return Response.json([]);
+        }
+        if (request.method === "POST" && route === "/api/v1/markdown/round-trip") {
+          const markdown =
+            typeof body === "object" && body !== null && "markdown" in body ? body.markdown : null;
+          return Response.json({ markdown });
+        }
+        if (request.method === "POST" && route === "/api/v1/issues/DSP-1/artifacts") {
+          return Response.json({
+            artifact: { id: "artifact-1", issue_key: "DSP-1", name: "brief.md", slug: "brief-md" },
+            version: { number: 1 },
+          });
+        }
+        return new Response("unavailable", { status: 503 });
+      },
+    });
+    try {
+      const sessionEnv = { ...gateEnv, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };
+      const command = `dispatch artifact --issue DSP-1 --name brief.md --content '${BRIEF}'`;
+      const g = bind({ env: sessionEnv, cwd: work });
+      expect(await g.bash("inline", command)).toBeUndefined();
+      // The model reviewed the text the real CLI's dry run printed, and that dry run asked nothing.
+      expect(g.entries).toMatchObject([
+        { tool: "dispatch_artifact", outcome: "verdict", decision: "allow" },
+      ]);
+      expect(g.calls[0]?.user).toContain(`"content": ${JSON.stringify(BRIEF)}`);
+      expect(requests).toEqual([]);
+
+      holdRecord(g.store);
+      const call = Bun.spawn(["bash", "-c", command], {
+        cwd: work,
+        env: sessionEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr] = await Promise.all([
+        new Response(call.stdout).text(),
+        new Response(call.stderr).text(),
+      ]);
+      expect({ code: await call.exited, stderr }).toEqual({ code: 0, stderr: "" });
+      expect(stdout).toStartWith("Uploaded brief.md as version 1");
+      expect(requests).toEqual([
+        {
+          method: "POST",
+          path: "/api/v1/markdown/round-trip",
+          body: { markdown: BRIEF, new_document: true },
+        },
+        { method: "GET", path: "/api/v1/issues/DSP-1/artifacts" },
+        {
+          method: "POST",
+          path: "/api/v1/issues/DSP-1/artifacts",
+          body: expect.objectContaining({ name: "brief.md", content: BRIEF }),
+        },
+      ]);
+    } finally {
+      dispatch.stop(true);
+    }
   }, 30_000);
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
@@ -6899,7 +7073,7 @@ describe("rules check", () => {
   }
   test("both pending calls of a gated ask stop together: at its tool's end, at a stopped run, and at shutdown (rules test 16)", async () => {
     const ended = await bothPending();
-    ended.g.event("tool_execution_end", {
+    await ended.g.event("tool_execution_end", {
       toolCallId: "js-write-00000000-0000-4000-8000-000000000002",
       toolName: "write",
       isError: true,
@@ -6920,7 +7094,7 @@ describe("rules check", () => {
     expect(ended.g.entries).toHaveLength(1);
 
     const stopped = await bothPending({ OMP_ASKGATE: "block" });
-    stopped.g.event("agent_end", {
+    await stopped.g.event("agent_end", {
       messages: [
         fx.user("Post it."),
         { ...fx.assistant({ type: "text", text: "Stopping." }), stopReason: "aborted" },
@@ -7116,7 +7290,7 @@ describe("rules check", () => {
       });
       const gated = g.device("t1", "dispatch_ask", KEEP_INPUT);
       await started.promise;
-      g.event("tool_execution_end", { toolCallId: "t1" });
+      await g.event("tool_execution_end", { toolCallId: "t1" });
       expect((await gated)?.block).toBe(blocked);
       expect(g.entries).toMatchObject([
         {
@@ -7269,7 +7443,7 @@ describe("rules check", () => {
     await g.device("h", "dispatch_ask", KEEP_INPUT);
     expect(g.notices).toEqual([RULES_NOTICE, RULES_NOTICE]);
     // A session switch resets it too: the three failures after the switch raise a third.
-    g.event("session_switch", { reason: "new" });
+    await g.event("session_switch", { reason: "new" });
     for (const id of ["i", "j"]) await g.device(id, "dispatch_ask", KEEP_INPUT);
     expect(g.notices).toHaveLength(2);
     await g.device("k", "dispatch_ask", KEEP_INPUT);

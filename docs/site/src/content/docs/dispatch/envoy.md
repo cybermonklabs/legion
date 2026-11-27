@@ -188,7 +188,7 @@ published still gets it when it reconnects
 | Topic | What it is |
 | --- | --- |
 | `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
-| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. |
+| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. A publish through the API that names no session of yours is not kept: it is refused `404`, since nothing could tell you if the copy expired. A message published straight onto NATS that names no session is still kept, and dropped at the end of its hour with no word to anyone. |
 | `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |
 | `notifications.legion.<project>.controller` | A Legion project's controller. |
@@ -232,9 +232,24 @@ While a kept message has at least 20 minutes of its hour left and no live sessio
 role, the listener raises the role's wake report again every five minutes, so a released Legion
 role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
 publish is then refused `404` with the reason `unclaimed` or `holder_lapsed`, as it is when the
-keep itself fails. If the holder does not take the message's delivery mode, the refusal is
+keep itself fails. A publish that names no `source_session` is refused the same way, since the
+dead letter of an expired copy goes to that session and there is none: its `error` names the role
+and says that nothing was kept and why. Whether a live session holds the role is then read from
+the role bucket's and the session bucket's stream leaders, so a copy of either bucket that is
+behind refuses no message a live holder can take. If the holder does not take the message's delivery mode, the refusal is
 `403`; and if the stream has not stored the forward to a live holder within four seconds, it is
-`504` naming the holder, with the reason `delivery_failed`, and that message is not kept. A role
+`504` naming the holder, with the reason `delivery_failed`, and that message is not kept: send it
+again, and the listener reads the holder again. A forward stored so long after the listener read
+the role's holder that the holder may have lost the role meanwhile is answered by what the
+listener finds: `200` when the role's claim still names that holder, which reads the forward
+itself; `504` when the claim names another session or none and the listener withdrew the
+forward, so send it again; `200` when the role's next holder already has a copy on its way; and
+`503` with `code: "maybe_stored"` when the listener could not read the claim or make the
+withdrawal, where a retry may give the holder the message twice under two event ids. One case is
+still lost: a retry under the same key after a `504` that resolves the forward's first holder
+again meets the withdrawn forward as a duplicate and is answered `200`, and if the listener took
+the forward off that holder's subject while another session, or none, held the role, nobody
+receives the message. A later release of the listener closes that case. A role
 message published straight onto NATS, not through the API, is kept the same way when no live
 session holds the role, and also when the listener could not read the role's claim, in which
 case it is forwarded once a later read finds a `live` holder inside the message's hour, with no
@@ -250,6 +265,17 @@ A role send the API refuses `404` also raises one exception on
 holder is no longer live and nothing was kept. That exception is only a bus signal: nothing
 re-sends a refused publish except the Legion daemon's own outbox notice, whose row retries by
 itself.
+
+An event Dispatch routes to a role that no live session holds is kept on the role for one hour,
+as a role message is. When that hour ends with no session taking it, Dispatch keeps the event
+for the role again, up to three times in all; a session that holds the role by then is sent it
+instead. If the third keep also ends with no session taking it, Dispatch stops and appends a
+`role.undelivered` event to the event's own issue, document or project. That event names the
+event, the role and how many times it was kept, and it shows in that issue's history. It
+notifies no route, so it is never itself sent to the role. Dispatch also posts a message on the
+issue, or on the issue of the document the event is about: one message for each role in each
+hour, posted when that hour ends, naming every event the role did not take on that issue in the
+hour. Dispatch writes the message itself, so it is not sent to the role either.
 
 ### What a restored session gets
 
@@ -550,7 +576,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | Setting | What it is |
 | --- | --- |
 | `ENVOY_MACHINE_ID` | Required. Names this listener; its durable consumer is `listener-<machine id>`. |
-| `NATS_URLS` | Required. Comma-separated NATS addresses, such as `nats://<nats-host>:4222`. |
+| `NATS_URLS` | Required. Comma-separated NATS addresses, such as `nats://<nats-host>:4222`. A URL after the first that carries a user name or password names its scheme (`nats://`, `tls://`, `ws://` or `wss://`), and a comma in a credential is written `%2C`. |
 | `NATS_NKEY_SEED_FILE` | The NATS user to connect as, as a file holding its seed. |
 | `ENVOY_ALLOW_REMOTE_NATS` | Set to `1` when NATS runs on another machine; otherwise the listener refuses it. |
 | `ENVOY_NATS_SOCKS5_PROXY` | A SOCKS5 proxy, as `host:port` (for example `127.0.0.1:1055`), that every NATS connection goes through, each server's host name handed to the proxy unresolved. Needs `ENVOY_ALLOW_REMOTE_NATS=1`, since the proxy decides which server a connection reaches. |
@@ -799,7 +825,7 @@ install it, what each component deploys and which settings it sets.
 | `200` `starting` | The listener is still binding its durable consumer. |
 | `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
 | `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
-| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. While that lasts, the listener's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the listener for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. |
+| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. While that lasts, the listener's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the listener for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. `nats credential refused: …`, naming the refusal, while the listener's start waits for NATS to admit its credential (below). |
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
 every role claim from NATS again one minute after each full read completes, and each such read
@@ -823,8 +849,31 @@ watch the timestamp's age. No setting changes the minute or the 2-minute bound.
 
 `GET /livez` needs no credential either. It answers `204` and reads nothing: no flush to NATS, no
 cache ping and no read of the durable consumer. A liveness or startup probe reads it, so a bus
-outage or a warming cache restarts no listener. Readiness stays on `/healthz`, whose status tells
-a starting listener from a serving one.
+outage, a warming cache or a start that waits for its credential restarts no listener. Readiness
+stays on `/healthz`, whose status tells a starting listener from a serving one.
+
+A NATS server that refuses the listener's credential as it starts, at the connect or at the
+`ENVOY_NOTIFICATIONS` stream's reconcile, does not end the start at once: a hub refuses a new nkey
+until each of its servers has reloaded the configuration that names it, about a minute later. The
+listener tries again after 1 second, doubling each wait up to 10 seconds, for up to 180 seconds
+from its first try. The same wait, under the same 180 seconds, covers the start's later connects,
+the role lane's and the session consumers', each on a connection of its own: one can meet a server
+that has not reloaded after another got in through one that has. Meanwhile `/healthz` answers
+`503` `unhealthy`, naming the last refusal, and `/livez` answers `204`. Once a server admits it, the
+start goes on as usual, and `/healthz` stops naming the refusal as soon as that connect gets in. A
+try in progress at 180 seconds may still succeed, and no try begins after it on a refusal: when the
+last try begun by then is refused, the listener exits `1`, its last line naming its credential (an
+nkey user by its public key) and the last refusal. A connect made after the 180 seconds tries ten
+times, a second apart, as before. A dial that fails for any other reason, whenever it fails, ends
+the start only after ten tries a second apart, as before, so a connect begun near the 180 seconds
+still makes them. A reconcile that fails for any other reason, such as `ENVOY_NATS_REPLICAS` above
+`1` on a single server, ends the start at once, and so does a step after a connect that got in, such
+as the role lane's subscribe; such a line names the step that failed, and the credential only when a
+server refused it. An edge
+listener (`ENVOY_EDGE_PROJECTS`) only reads the stream and opens no role lane, and its start waits
+out a refused credential at the connect, and a grant that refuses that read, the same way. A stream
+the server does not hold, a read that times out, or any other failure of the read ends its start at
+once.
 
 `GET /readyz` needs no credential either. It answers whether /v1 can serve, and a load balancer's
 health check reads it: `503 {"status":"starting"}` until the /v1 gate opens; after that

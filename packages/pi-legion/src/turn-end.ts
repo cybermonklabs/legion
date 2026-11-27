@@ -5,7 +5,7 @@ import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
  * settled: the host has already scheduled a retry, the next model of its fallback chain or a
  * hook's continuation (`willContinue`). An end that waits only on a background job's result
  * (`awaitingAsyncWork`) has settled: the host reaches it only after each of its own retries and
- * continuations has declined the turn (`session/agent-session.ts:6012-6015` at the pinned tag),
+ * continuations has declined the turn (`session/agent-session.ts:6489-6492` at the pinned tag),
  * and the job's result starts the next turn. A steered run's non-terminal end sets neither flag
  * (`AgentEndEvent`), so it reads as settled here.
  *

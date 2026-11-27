@@ -10,10 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PodRelease is one release of an issue pod: which roles were in it, when their claims were
-// suspended as released, and how large the workspace bundle it saved was. It is the row every
-// resume of that pod hangs from, so a reader can pair a release with what woke it and how long
-// the agent waited.
+// PodRelease is one release of an issue pod: which roles were in it and when their claims were
+// suspended as released. It is the row every resume of that pod hangs from, so a reader can pair
+// a release with what woke it and how long the agent waited.
 type PodRelease struct {
 	// ID is the row's own id, which the store fills.
 	ID int64
@@ -26,9 +25,15 @@ type PodRelease struct {
 	Roles []string
 	// At is when the release completed.
 	At time.Time
-	// BundleBytes is the size of the bundle the release saved; zero when it saved none because
-	// the workspace held nothing unpushed.
+	// BundleBytes is the size of the git bundle of unpushed work an earlier release saved, which
+	// pod_releases.bundle_bytes keeps for the rows those releases wrote. No release saves one
+	// now, so every release this daemon records writes zero; the column stays because the release
+	// before still writes it, and a rollback runs that release over this table.
 	BundleBytes int
+	// Release is the id of the release's mark (issue_releases.id) the record stands for,
+	// pod_releases.issue_release_id; zero for a record that names no mark. A release is recorded
+	// once per mark (RecordPodRelease), and a record read back names the mark it was written with.
+	Release int64
 }
 
 // PodResume is one wake of a released pod and what it cost: which wake brought it back, when the
@@ -108,23 +113,36 @@ type PodReleaseRecords struct {
 // of releases is complete without reading any resume. It ends every hold streak of that pod: the
 // pod is gone, so whatever was keeping it is over, and a pod held again after it comes back is
 // a streak of its own.
-func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
+//
+// A record that names its release's mark (rel.Release) is written once per mark
+// (pod_releases_one_per_issue_release): the teardown records the release and clears the mark in
+// transactions of their own, so a teardown that failed, or whose daemon died, between the two runs
+// again and records the release again. That second write takes the record the first one wrote,
+// answers its id with wrote false and ends no streak, since the first one ended them. wrote is
+// true where this call wrote the row, which a record that names no mark always does.
+func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64, wrote bool, err error) {
 	if rel.Project == "" || rel.Issue == "" {
-		return 0, errors.New("a pod release record needs its project and issue")
+		return 0, false, errors.New("a pod release record needs its project and issue")
 	}
-	var id int64
-	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
-			values ($1, $2, $3, $4, $5, $6) returning id`,
-			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes).Scan(&id); err != nil {
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		wrote = false
+		err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes, issue_release_id)
+			values ($1, $2, $3, $4, $5, $6, nullif($7::bigint, 0))
+			on conflict (issue_release_id) where issue_release_id is not null do nothing returning id`,
+			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes, rel.Release).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, rel.Release).Scan(&id)
+		}
+		if err != nil {
 			return err
 		}
+		wrote = true
 		return endPodHoldStreaks(ctx, tx, rel.Project, rel.Issue, "")
 	})
 	if err != nil {
-		return 0, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
+		return 0, false, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
 	}
-	return id, nil
+	return id, wrote, nil
 }
 
 // MarkPodResumeReady stamps when the replacement pod was Ready. It is written once, by the first
@@ -218,10 +236,11 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 // Each reads the resume's stuck clock (clock_at), never the wake's own moment (at), and passes
 // over every resume of a project paused now: the pause holds the launch the resume waits for, and
 // its resume starts the clock again.
+// A queued launch has not been let out, so its clock is not running either.
 func podResumesWithoutAFirstTurn(ctx context.Context, tx pgx.Tx, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0), stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and clock_at <= $2
-		and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
+		and not queued and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
 	if unmarked {
 		query += ` and not stuck`
 	} else {
@@ -373,7 +392,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 
 func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since time.Time) (PodReleaseRecords, error) {
 	var out PodReleaseRecords
-	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, at, bundle_bytes
+	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, at, bundle_bytes, coalesce(issue_release_id, 0)
 		from pod_releases where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
@@ -382,7 +401,7 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 		var r PodRelease
 		var generation int64
 		var roles string
-		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &r.At, &r.BundleBytes); err != nil {
+		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &r.At, &r.BundleBytes, &r.Release); err != nil {
 			releases.Close()
 			return out, fmt.Errorf("read the release records of %s: %w", project, err)
 		}

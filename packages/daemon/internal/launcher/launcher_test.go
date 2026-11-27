@@ -36,6 +36,7 @@ const launcherChildEnv = "LEGION_LAUNCHER_TEST_CHILD"
 // credential pointer reads and whether its generation's session socket was already bound when it
 // ran, starts a descendant in its process group, and waits.
 func TestLauncherChild(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(launcherChildEnv) != "1" {
 		return
 	}
@@ -81,16 +82,14 @@ type rig struct {
 }
 
 // roleConn is the daemon end of one role's launcher connection: the frames it reads, the hello
-// that opened it, the last state the role reported on it and the last report it made of the
-// pod's workspace restore.
+// that opened it and the last state the role reported on it.
 type roleConn struct {
-	t        *testing.T
-	conn     net.Conn
-	reader   *bufio.Reader
-	writer   *shimwire.Writer
-	hello    shimwire.LauncherHello
-	latest   shimwire.LauncherState
-	restored *shimwire.LauncherRestored
+	t      *testing.T
+	conn   net.Conn
+	reader *bufio.Reader
+	writer *shimwire.Writer
+	hello  shimwire.LauncherHello
+	latest shimwire.LauncherState
 }
 
 // lockedBuffer is a bytes.Buffer the launcher and its children can write while a test reads it.
@@ -158,6 +157,9 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 // A test may join its rig itself, taking the launcher's one return, and the rig's own cleanup
 // must then find nothing left to wait for, rather than wait out its bound for a second value.
 func TestARigJoinedByItsTestLeavesItsCleanupNothingToWaitFor(t *testing.T) {
+	// Not parallel: it holds the rig's cleanups to under a second, a wall-clock bound that tests
+	// running beside it would spend; the cleanup's own bound, which the second tells apart, is
+	// minutes long (cleanupBeforeDeadline).
 	var joinedAt, cleanedAt time.Time
 	passed := t.Run("joined", func(t *testing.T) {
 		// Registered before the rig's own cleanups, so it runs after them (cleanups run last first).
@@ -243,10 +245,9 @@ func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.Launc
 
 // next is the launcher's next frame on the connection. Its read waits through the shared wait
 // (testwait.Receive), so the test binary's deadline is its one bound. A generation that runs a
-// while sends no frame until it ends (a role start that restores a released workspace with git and
-// jj first, say), and a deadline of a fixed few seconds failed such a case on a loaded machine with
-// nothing wrong. A read the wait gave up on stays blocked until the case's cleanup closes the
-// connection.
+// while sends no frame until it ends, and a deadline of a fixed few seconds failed such a case on
+// a loaded machine with nothing wrong. A read the wait gave up on stays blocked until the case's
+// cleanup closes the connection.
 func (g *roleConn) next() shimwire.Frame {
 	g.t.Helper()
 	type read struct {
@@ -269,9 +270,6 @@ func (g *roleConn) next() shimwire.Frame {
 	if state, ok := frame.(shimwire.LauncherState); ok {
 		g.latest = state
 	}
-	if report, ok := frame.(shimwire.LauncherRestored); ok {
-		g.restored = &report
-	}
 	return frame
 }
 
@@ -282,20 +280,20 @@ func (g *roleConn) send(frame shimwire.Frame) {
 	}
 }
 
-// answer sends command and returns its answer, skipping the frames the launcher reports of its
-// own accord: its state, and what became of the pod's workspace restore.
+// answer sends command and returns its answer, skipping the state the launcher reports of its own
+// accord.
 func (g *roleConn) answer(command shimwire.Frame) shimwire.Frame {
 	g.t.Helper()
 	g.send(command)
 	return g.reply()
 }
 
-// reply is the next answer the launcher sends, skipping the frames it reports of its own accord.
+// reply is the next answer the launcher sends, skipping the state it reports of its own accord.
 func (g *roleConn) reply() shimwire.Frame {
 	g.t.Helper()
 	for {
 		switch frame := g.next(); frame.(type) {
-		case shimwire.LauncherState, shimwire.LauncherRestored:
+		case shimwire.LauncherState:
 		default:
 			return frame
 		}
@@ -329,12 +327,12 @@ func (g *rig) generationDir(generation uint64) string {
 // launcher binds it, and publishing both to marker.
 //
 // Every start names a LEGION_WORKSPACE of the test's own. The launcher merges a start's
-// environment over the process's (launcher.go's mergeEnv) and a restore reads the workspace from
-// the merged one (restore.go's bundleRestore.apply), so a start that named none would restore
-// into whatever workspace the process holds — in an issue pod, the live one its roles work in.
-// The package's guard takes that variable out of the test process (main_test.go), and this makes
-// the guard the second line rather than the only one: the start names a directory of this test,
-// so even an unguarded run reaches nothing of the pod's.
+// environment over the process's (launcher.go's mergeEnv) and the pod's git lock sweep reads the
+// workspace from the merged one (gitLockSweep.learn), so a start that named none would have the
+// sweep work whatever workspace the process holds — in an issue pod, the live one its roles work
+// in. The package's guard takes that variable out of the test process (main_test.go), and this
+// makes the guard the second line rather than the only one: the start names a directory of this
+// test, so even an unguarded run reaches nothing of the pod's.
 func (g *rig) childStart(generation uint64, marker string, files map[string]string) shimwire.LauncherStart {
 	g.t.Helper()
 	self, err := os.Executable()
@@ -421,6 +419,7 @@ func zombie(pid int) bool {
 // child reads them through the pointer the daemon named, a lost daemon connection keeps the child
 // and the launcher reports it again, and a stop ends the whole process group and the directory.
 func TestAGenerationsCredentialsLiveExactlyAsLongAsItsChild(t *testing.T) {
+	t.Parallel()
 	g := newRig(t)
 	marker := filepath.Join(t.TempDir(), "marker")
 	files := map[string]string{"LEGION_BOOT_TOKEN": "boot-7", "ENVOY_TOKEN": "envoy-7"}
@@ -468,6 +467,7 @@ func TestAGenerationsCredentialsLiveExactlyAsLongAsItsChild(t *testing.T) {
 // reads apart from one still dialing. A connection the daemon ends before acknowledging the hello
 // writes none.
 func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
+	t.Parallel()
 	g := newRig(t)
 	connected := func() []string {
 		var lines []string
@@ -499,6 +499,7 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 // planted at the next generation's path toward the shared workspace receives no credential, and an
 // earlier generation's directory a crashed launcher left is removed.
 func TestAPlantedPathCannotRedirectCredentials(t *testing.T) {
+	t.Parallel()
 	g := newRig(t)
 	workspace := t.TempDir()
 	if err := os.Symlink(workspace, filepath.Join(g.private, "g8")); err != nil {
@@ -535,6 +536,7 @@ func TestAPlantedPathCannotRedirectCredentials(t *testing.T) {
 // follows a link through (rolefile.OpenDirectory), so in such a pod it deletes what the link
 // names; Linux refuses that open, so only such a gVisor shows that control fail.
 func TestWriteFilesRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
 	}
@@ -574,6 +576,7 @@ func TestWriteFilesRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
 // another payload, credentials included, is refused before anything is written; and a generation
 // that already ran is never started again.
 func TestStartsAreIdempotentAndRefusedBeforeWriting(t *testing.T) {
+	t.Parallel()
 	g := newRig(t)
 	marker := filepath.Join(t.TempDir(), "marker")
 	start := g.childStart(9, marker, map[string]string{"ENVOY_TOKEN": "envoy-9"})
@@ -839,6 +842,7 @@ func (f *fleet) waitForRoleFile(path string) string {
 // launcher: its id is its own and outlives its own reconnects, and one role's lost connection
 // leaves every other role serving.
 func TestAMultiRoleLauncherConnectsOncePerRoleWithThatRolesToken(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleet), which parallel tests read.
 	f := newFleet(t, 2*time.Second, "tester", "reviewer")
 	for _, role := range []string{"tester", "reviewer"} {
 		hello := f.role(role).hello
@@ -868,6 +872,7 @@ func TestAMultiRoleLauncherConnectsOncePerRoleWithThatRolesToken(t *testing.T) {
 // itself. The controller pod's single role says it, and so does each role of an issue pod's one
 // container, on its own connection.
 func TestTheLauncherHelloSaysItResumesBySession(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleet), which parallel tests read.
 	if hello := newRig(t).hello; !hello.ResumesBySession {
 		t.Errorf("the single role's hello = %#v, want it to say it resumes a session by its id", hello)
 	}
@@ -888,6 +893,7 @@ func TestTheLauncherHelloSaysItResumesBySession(t *testing.T) {
 // of their own timestamps, which the case waits for under its hang guard, and the tester's must
 // not move in that time. A fixed sleep cannot establish that the reviewer's child ran.
 func TestAStopOfOneRolesGenerationLeavesTheOtherRoleRunning(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleet), which parallel tests read.
 	requireRoleNamespaces(t)
 	f := newFleet(t, 10*time.Second, "tester", "reviewer")
 	const beating = `while :; do /bin/date +%s%N > /tmp/beat.tmp && /bin/mv /tmp/beat.tmp /tmp/beat; /bin/sleep 0.05; done`
@@ -928,6 +934,7 @@ func TestAStopOfOneRolesGenerationLeavesTheOtherRoleRunning(t *testing.T) {
 // A role's exit is the shim's own, not its namespace init's: the init reports the status it
 // waited on, so an exit code and a kill both reach the daemon as the role's.
 func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleet), which parallel tests read.
 	requireRoleNamespaces(t)
 	f := newFleet(t, 10*time.Second, "tester", "reviewer")
 	if got := f.role("tester").start(shimwire.LauncherStart{
@@ -976,6 +983,7 @@ func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
 // and then leaves passes, as one that waits 30 s does. No order of events shows such a wait, only
 // a bound does, and any bound short enough to see a few seconds is one a loaded machine reaches.
 func TestTheContainersStopEndsEveryRoleWithinOneStopGrace(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleet), which parallel tests read.
 	requireRoleNamespaces(t)
 	grace := min(beforeDeadline(t), 3*time.Minute) / 2
 	f := newFleet(t, grace, "tester", "reviewer")
@@ -1040,6 +1048,7 @@ while :; do /bin/sleep 600 & wait; done
 // that exits mid-line has that line written out on its own once it is gone, so the next
 // generation's first line starts a line of its own rather than finishing it (`fatalready`).
 func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {
+	t.Parallel()
 	out := &lockedBuffer{}
 	log := &roleLog{stdout: out, stderr: out}
 	_, own := log.writers("tester")
@@ -1075,13 +1084,14 @@ func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {
 // writer searches only the bytes each write adds for a newline, since what it holds from earlier
 // writes holds none, and every size of write gives the same log.
 func TestALongRoleLineIsCutWhereTheURLRuleReadsEachURLWhole(t *testing.T) {
+	t.Parallel()
 	filler := strings.Repeat("x", maxLogLine-len(" https://planted-user"))
 	for _, tc := range []struct {
 		name, line, want string
 	}{{
 		name: "a URL across the mark",
 		line: filler + " https://planted-user-1@example.com/path?token=planted-query-token-1 done\n",
-		want: "tester: " + filler + " \n" + "tester: https://example.com/path done\n",
+		want: "tester: " + filler + " \n" + "tester: https://[a URL with credentials]/path done\n",
 	}, {
 		name: "a run with no byte that ends a URL",
 		line: strings.Repeat("y", maxLogLine+5) + "\n",
@@ -1125,6 +1135,7 @@ func logLines(log string) []string {
 // status, its exit code 1 included. Either way the last line the generation left unfinished
 // reaches the log once it is gone.
 func TestARoleInitThatFailsBeforeItsShimIsReportedAsASetupFailure(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		exit   int
@@ -1180,6 +1191,7 @@ func TestARoleInitThatFailsBeforeItsShimIsReportedAsASetupFailure(t *testing.T) 
 // the traps of those it took in that order too; SIGTERM's number is the lower, so a SIGTERM the
 // stop sent is written before the case's SIGWINCH however slow the machine is.
 func TestAStopOfAReapedGenerationSignalsNothing(t *testing.T) {
+	t.Parallel()
 	reaped := exec.Command("/bin/true")
 	if err := reaped.Start(); err != nil {
 		t.Fatal(err)
@@ -1236,6 +1248,7 @@ func TestAStopOfAReapedGenerationSignalsNothing(t *testing.T) {
 // it would otherwise begin after the container's SIGTERM, be given the whole stop grace from then,
 // and outlast the pod's own.
 func TestAStartAfterTheContainersStopIsRefused(t *testing.T) {
+	t.Parallel()
 	m := &manager{role: "controller", private: t.TempDir(), requests: map[string]request{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1256,6 +1269,8 @@ func TestAStartAfterTheContainersStopIsRefused(t *testing.T) {
 // container is reaped, and each role's own generation is left to its manager's wait, which still
 // reads that generation's own exit status.
 func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
+	// Not parallel: the reaper waits on every exited child of the whole process, so it would take
+	// the exit status another test's own wait reads.
 	start := func(script string) *exec.Cmd {
 		cmd := exec.Command("/bin/sh", "-c", script)
 		if err := cmd.Start(); err != nil {
@@ -1319,6 +1334,8 @@ func reapedByAnother(err error) bool {
 // leak-check install's run, say) to that wait, which reads its own exit, and reaps any other exited
 // child.
 func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
+	// Not parallel: each pass waits on every exited child of the whole process, so it would take
+	// the exit status another test's own wait reads.
 	for _, tc := range []struct {
 		name string
 		pass func(guard *pidGuard) error
@@ -1358,12 +1375,14 @@ func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
 // reaped. It runs as PID 1 of a PID namespace of its own, since off PID 1 the drain does nothing
 // (TestControllerDrainPIDOneHelper).
 func TestTheControllerPodsDrainLeavesTheGuardsChildrenToTheirWaits(t *testing.T) {
+	t.Parallel()
 	t.Logf("%s", runAsPIDOne(t, "TestControllerDrainPIDOneHelper"))
 }
 
 // TestControllerDrainPIDOneHelper is TestTheControllerPodsDrainLeavesTheGuardsChildrenToTheirWaits's
 // body, run as PID 1.
 func TestControllerDrainPIDOneHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
 	}
@@ -1552,6 +1571,7 @@ func idleUpstream(t *testing.T) string {
 // the refusal names each flag that is missing: all three open the database, and a pod that proxied
 // to half of one would run an agent against nothing.
 func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		database ompsessions.Database
 		want     string
@@ -1589,6 +1609,7 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 // the single-role form, whose agent runs in the container's own namespaces, where the token would
 // be in its view. Named whole in the roles-dir form, it is accepted.
 func TestAWriterAudienceIsRefusedWithoutItsAccountInAnotherFormOrInTheSingleRoleForm(t *testing.T) {
+	t.Parallel()
 	noAccount := writerDatabase
 	noAccount.ImpersonateServiceAccount = ""
 	otherForm := writerDatabase
@@ -1634,6 +1655,7 @@ func TestAWriterAudienceIsRefusedWithoutItsAccountInAnotherFormOrInTheSingleRole
 // up, and has proven one connection to the instance, before anything the agent runs can ask Oh My
 // Pi for its session (INFRA-271).
 func TestAChildFindsItsGenerationsSessionSocketAlreadyBound(t *testing.T) {
+	t.Parallel()
 	dialer := &sessionDialer{addr: idleUpstream(t)}
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build})
 	marker := filepath.Join(t.TempDir(), "marker")
@@ -1651,6 +1673,7 @@ func TestAChildFindsItsGenerationsSessionSocketAlreadyBound(t *testing.T) {
 // Cloud SQL connector impersonates and signs in as, so a launcher that dropped it would sign every
 // generation in as the pod itself, which the database's login does not name.
 func TestAGenerationsProxyIsBuiltForTheServiceAccountTheLauncherIsTold(t *testing.T) {
+	t.Parallel()
 	impersonating := testDatabase
 	impersonating.ImpersonateServiceAccount = testServiceAccount
 	for name, tc := range map[string]struct {
@@ -1680,6 +1703,7 @@ func TestAGenerationsProxyIsBuiltForTheServiceAccountTheLauncherIsTold(t *testin
 // against something else: the refusal names the generation and the instance, no child runs, the
 // generation's directory is gone, and nothing is left listening where its socket would have been.
 func TestAGenerationWhoseSessionDatabaseRefusesIsNotStarted(t *testing.T) {
+	t.Parallel()
 	dialer := &sessionDialer{addr: idleUpstream(t), check: func() error { return errors.New("the instance refused the login") }}
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build})
 	marker := filepath.Join(t.TempDir(), "marker")
@@ -1718,6 +1742,7 @@ func TestAGenerationWhoseSessionDatabaseRefusesIsNotStarted(t *testing.T) {
 // for it: the row keeps it at the production value, and a start whose own work outlasts it on a
 // loaded machine would outlast the daemon's wait there too.
 func TestAGenerationWhoseSessionDatabaseNeverAnswersIsRefusedWhileTheDaemonWaits(t *testing.T) {
+	t.Parallel()
 	dialer := &sessionDialer{addr: idleUpstream(t)}
 	dialer.stallAt(silentUpstream(t))
 	// The grace is the one a pod's launcher gets at the daemon's default worker_stop_timeout_seconds
@@ -1791,6 +1816,7 @@ func TestAGenerationWhoseSessionDatabaseNeverAnswersIsRefusedWhileTheDaemonWaits
 // its child is gone both are too and that address is dead. The generation after it gets a
 // directory, a socket and a file of its own.
 func TestASessionDatabaseIsHeldForItsGenerationAndNothingBetween(t *testing.T) {
+	t.Parallel()
 	dialer := &sessionDialer{addr: idleUpstream(t)}
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build})
 	running := func(generation uint64) (socket, file string) {
@@ -1852,6 +1878,7 @@ func TestASessionDatabaseIsHeldForItsGenerationAndNothingBetween(t *testing.T) {
 // and waited 5 s for the proxy's upstream dial and 10 s for Run, so a loaded machine could fail it
 // with nothing wrong.
 func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t *testing.T) {
+	t.Parallel()
 	t.Run("its child is served for as long as it lives through the stop", func(t *testing.T) {
 		// The directory comes first, so its removal is the last of the case's cleanups: the release
 		// below is still there when the rig's cleanup stops the container.
@@ -2056,9 +2083,13 @@ func holdSessionSocket(t *testing.T, socket string) net.Conn {
 // it: the proxy's Close returns only once it has closed every connection it still held, and Run
 // and a stop's answer each wait for that Close, so the end of file is there by then. The read takes
 // what the socket holds at once, through its own non-blocking descriptor, and never waits: a
-// connection still open reads nothing (EAGAIN), however slow the machine.
+// connection still open reads nothing (EAGAIN), however slow the machine. The end of file is
+// there only once no process holds the proxy's end, and a child forked in the test process holds a
+// copy of every descriptor until it execs, so its caller must run beside no other test, which
+// requireRunsAlone checks first.
 func expectHeldClosed(t *testing.T, conn net.Conn) {
 	t.Helper()
+	requireRunsAlone(t, "expectHeldClosed")
 	raw, err := conn.(syscall.Conn).SyscallConn()
 	if err != nil {
 		t.Fatal(err)
@@ -2086,6 +2117,10 @@ func expectHeldClosed(t *testing.T, conn net.Conn) {
 // back within the grace, the drain and 3 s more, a span a loaded machine reaches with nothing
 // wrong; a launcher that waits a few seconds past the drain and then returns passes now.
 func TestASocketHolderOutsideTheGenerationCannotHoldItOpenOnTheContainersShutdown(t *testing.T) {
+	// Not parallel: it reads the held connection's end of file the moment the proxy has closed its
+	// end (expectHeldClosed), and a child another test forks in that window holds a copy of the
+	// proxy's socket until it execs, so the end of file comes late (-parallel 8, scratch job
+	// 139138439208).
 	dialer := &sessionDialer{addr: echoUpstream(t)}
 	const grace = 300 * time.Millisecond
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build, StopGrace: grace})
@@ -2129,6 +2164,10 @@ func TestASocketHolderOutsideTheGenerationCannotHoldItOpenOnTheContainersShutdow
 // waited for until beforeDeadline runs out (roleConn.next): the row once wanted it within the
 // stop's grace, the drain and 3 s more, a span a loaded machine reaches with nothing wrong.
 func TestASocketHolderOutsideTheGenerationCannotHoldUpTheDaemonsStop(t *testing.T) {
+	// Not parallel: it reads the held connection's end of file the moment the proxy has closed its
+	// end (expectHeldClosed), and a child another test forks in that window holds a copy of the
+	// proxy's socket until it execs, so the end of file comes late (-parallel 8, scratch job
+	// 139138439208).
 	dialer := &sessionDialer{addr: echoUpstream(t)}
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build, StopGrace: 300 * time.Millisecond})
 	marker := filepath.Join(t.TempDir(), "marker")
@@ -2165,6 +2204,7 @@ func TestASocketHolderOutsideTheGenerationCannotHoldUpTheDaemonsStop(t *testing.
 // endpoint — the socket as the URL's path, where the launcher's own client names its directory —
 // and carries no password at all: the login travels in the proxy's certificate exchange.
 func TestTheSessionConnectionFileIsTheAgentsSpellingAndCarriesNoPassword(t *testing.T) {
+	t.Parallel()
 	dialer := &sessionDialer{addr: idleUpstream(t)}
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build})
 	marker := filepath.Join(t.TempDir(), "marker")

@@ -71,7 +71,7 @@
 #                   run_brainstorm (below). Scored by brainstormSurface.
 #   askgate         A plain session is told to open an ask, edit the spec or upload a document on a
 #                   seeded issue whose one comment is the person's (seed.ts askgate), with AskGate,
-#                   the Envoy plugin's review of each Dispatch write, on (any label) or off (the
+#                   the Envoy plugin's review of each gated Dispatch write, on (any label) or off (the
 #                   label `off`, built with --envoy-json holding {"askgate":{"enabled":false}}).
 #                   SKILL_SCENARIOS_ASKGATE_CASE names the prompt: `facts` (an ask carrying facts
 #                   that do not help the choice), `link` (an ask linking the person's comment, on a
@@ -169,12 +169,12 @@
 #                                 only the password out of the URL it gives psql, and every user
 #                                 of this machine can read psql's arguments. It must be the
 #                                 Postgres on this machine: services_up reads the URL with
-#                                 require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh) before
+#                                 require_loopback_env (scripts/e2e/lib/loopback-dsn.sh) before
 #                                 anything connects to it or the batch writes the URL anywhere,
 #                                 and refuses every host libpq reads from it but 127.0.0.1,
 #                                 localhost and ::1. Then it refuses a URL with a value that the
 #                                 connection string each run's Dispatch gets cannot carry
-#                                 (run_database_url), a password with a character that does not
+#                                 (run_database_url_env), a password with a character that does not
 #                                 print among them. Its login must be allowed to CREATE
 #                                 DATABASE, since each run makes a database of
 #                                 its own on it (own_dispatch), and each new database must offer
@@ -184,11 +184,12 @@
 #                                 create it. Those databases stay there, because the batch drops
 #                                 no database and stops no server it was given, so drop them
 #                                 between batches: a later run of the same name finds its database
-#                                 there and fails, naming it. Its max_connections must admit 30
-#                                 connections for each concurrent run and 20 more: services_up
-#                                 reads max_connections and refuses a SKILL_SCENARIOS_PARALLEL
-#                                 above what the server admits. A server that admits 100 takes a
-#                                 parallelism of 1 or 2
+#                                 there and fails, naming it. Its max_connections must admit, for
+#                                 each concurrent run, the connections one Dispatch server opens
+#                                 (`store/cmd/connections -process` prints them) and 20 more:
+#                                 services_up reads max_connections and refuses a
+#                                 SKILL_SCENARIOS_PARALLEL above what the server admits, so a
+#                                 server at Postgres's default of 100 is refused
 #   SKILL_SCENARIOS_NATS_URL      a NATS the batch uses in place of the container it would start,
 #                                 as a URL (nats://<host>:<port>). It must run JetStream, as the
 #                                 container does (`-js`), on a nats-server at or above the floor
@@ -257,7 +258,7 @@ set -euo pipefail
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too, for the loopback guard services_up reads a given
-# Postgres URL with (require_loopback_dsn, scripts/e2e/lib/loopback-dsn.sh): the guard reads the
+# Postgres URL with (require_loopback_env, scripts/e2e/lib/loopback-dsn.sh): the guard reads the
 # URL alone, psql reads PGHOSTADDR, and PGSERVICE with PGSERVICEFILE name a service entry that can
 # set hostaddr, so psql would connect to an address the guard never read. The sweep runs in every
 # process of this script, so `rig.sh run`, which runs own_dispatch, has them cleared too.
@@ -900,7 +901,7 @@ safe_url() {
 }
 
 # pg_sql URL SQL runs SQL on URL with psql and prints each row's values, one row a line, tabs
-# between them. psql is libpq, so the host it connects to is the host require_loopback_dsn read
+# between them. psql is libpq, so the host it connects to is the host require_loopback_env read
 # from the same URL (services_up). pg_url_run (pg-url.sh, sourced above) gives psql the URL
 # without its password, and the password in PGPASSWORD for that one command, so no process list
 # shows it. psql never asks for a password (-w): a server that asks for one the URL does not hold
@@ -927,32 +928,44 @@ nats_ready() {
   case $line in 'INFO '*) ;; *) return 1 ;; esac
 }
 
+# connections_needed sets services_up's per_run, the connections one run's Dispatch server opens,
+# which `store/cmd/connections -process` prints, and its needs, what parallel runs and the batch's
+# own queries open at once: per_run for each run and 20 more. It fails when no count is printed.
+connections_needed() {
+  per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&
+    [[ "$per_run" =~ ^[1-9][0-9]*$ ]] ||
+    fail "store/cmd/connections -process printed no count of one Dispatch server's connections: $per_run"
+  needs=$((per_run * parallel + 20))
+}
+
 # services_up brings up the batch's services: its Postgres and its NATS, the servers the operator
 # gave (given_services) or two containers it starts, and the Envoy listener built from this
 # checkout, which the services file ($services_env) names with the NATS and the listener token.
 #
-# Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
-# (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
-# packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
-# servers at once, so a container this batch starts gets max_connections of 30 for each concurrent
-# run and 20 more for the batch's own queries. A given server's max_connections is the operator's,
-# not the batch's, so services_up reads it and refuses a parallelism the server cannot serve.
+# Each run's Dispatch server opens at most store.ConnectionsPerProcess connections to the batch's
+# Postgres: its counted pools and its permanent listeners (packages/envoy/internal/dispatch/store/
+# pool.go), which `store/cmd/connections -process` prints, so this script holds no number of its
+# own. Postgres admits 100 by default, too few for 5 servers at once, so a container this batch
+# starts gets max_connections of that count for each concurrent run and 20 more for the batch's own
+# queries. A given server's max_connections is the operator's, not the batch's, so services_up
+# reads it and refuses a parallelism the server cannot serve. The count is read after a given
+# URL's checks, so a refused URL builds nothing.
 #
 # A given Postgres must be a postgres:// or postgresql:// URL, the one form safe_url and pg_sql take
 # a password out of. It must hold no sslpassword parameter, a client key's passphrase: pg_sql takes
 # only the password out of the URL it gives psql, and every user of this machine can read psql's
 # arguments. Its query is read as safe_url reads it: from the first `?` past the user info, each
-# key percent-decoded. Its URL is read with require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh)
+# key percent-decoded. Its URL is read with require_loopback_env (scripts/e2e/lib/loopback-dsn.sh)
 # before anything connects to that server or this batch writes the URL anywhere. The guard reads
 # the host with libpq, and pg_sql connects with psql, which is libpq, so the host psql reaches is
-# the host the guard read. run_database_url then rebuilds, for a placeholder database, the
+# the host the guard read. run_database_url_env then rebuilds, for a placeholder database, the
 # connection string each run's Dispatch gets (own_dispatch), and refuses a value that string
-# cannot carry, so such a URL is refused here, before anything starts, and not in every run.
+# cannot carry, so such a URL is refused here, before anything starts, and not in every run. Both
+# take the variable's name rather than its value, so their lines put no DSN into a `bash -x` trace.
 services_up() {
   evidence=$S
-  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port pg_host run_url tool rest param key
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} per_run needs admits fits pg_port nats_port pg_host run_url tool rest param key
   local -a params=()
-  needs=$((30 * parallel + 20))
   if given_services; then
     case $SKILL_SCENARIOS_POSTGRES_URL in
     postgres://* | postgresql://*) ;;
@@ -973,20 +986,22 @@ services_up() {
       command -v "$tool" >/dev/null ||
         fail "$tool is not on PATH: a batch given SKILL_SCENARIOS_POSTGRES_URL reads that URL with python3 and libpq, and reaches the server with psql"
     done
-    require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
-    run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    require_loopback_env pg_host SKILL_SCENARIOS_POSTGRES_URL "each run creates a database there" || fail "$pg_host"
+    run_database_url_env run_url SKILL_SCENARIOS_POSTGRES_URL run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    connections_needed
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
     until_true 60 "Postgres at $(safe_url "$pg_url") to answer a query" pg_sql "$pg_url" 'select 1'
     until_true 60 "NATS at $(safe_url "$nats_url") to send its INFO line" nats_ready "$nats_url"
     admits=$(pg_sql "$pg_url" 'SHOW max_connections')
-    fits=$(((admits - 20) / 30))
+    fits=$(((admits - 20) / per_run))
     [ "$fits" -ge 1 ] ||
-      fail "$(safe_url "$pg_url") admits $admits connections, and one run needs 50: give a Postgres whose max_connections is 50 or more"
+      fail "$(safe_url "$pg_url") admits $admits connections, and one run needs $((per_run + 20)): give a Postgres whose max_connections is $((per_run + 20)) or more"
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
   else
+    connections_needed
     # A given Postgres's URL that a batch killed outright left would send this batch's runs there.
     rm -f -- "$services_postgres"
     # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -1034,10 +1049,9 @@ services_down() {
 # Postgres, and a Dispatch server on it, which stop_run stops. It records the Postgres, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port. The
 # batch's Postgres is the server $services_postgres names, and the batch's own container when that
-# file is absent. On a given server, the run's Dispatch gets the connection string
-# run_database_url (scripts/e2e/lib/loopback-dsn.sh) rebuilds from the given URL with libpq, with
-# the run's database as its dbname: pgx, which Dispatch opens it with, reads that keyword/value
-# form.
+# file is absent. On a given server, services_up checks the URL with run_database_url_env.
+# Here own_dispatch calls run_database_url on the URL from the file to set dbname to the run's
+# database. Dispatch's pgx driver reads the resulting keyword/value connection string.
 own_dispatch() {
   local seed=$1 database=run_${R##*/} pg_port postgres url
   database=${database//-/_}
@@ -1120,8 +1134,8 @@ run_measure_before_ask() {
   dispatch_session "$name"
 }
 
-# The person's words are one comment on the run's own issue, and AskGate reviews each Dispatch
-# write the agent makes. The case's prompt names that issue, and every case but `facts` and
+# The person's words are one comment on the run's own issue, and AskGate reviews each gated
+# Dispatch write the agent makes. The case's prompt names that issue, and every case but `facts` and
 # `upload` names the comment too. `link` asks a choice the comment leaves open, so only AskGate's
 # rule 10 (the person's words with no link to them) bears on it: an ask whether to do what the
 # person asked is authority 6 (applying a decision they already gave). Its reindex fact cites the
@@ -1157,7 +1171,7 @@ run_askgate() {
     ;;
   upload) printf 'Upload the person'"'"'s comment on Dispatch issue %s word for word as the document brief.md, with dispatch artifact --force, so that you can link it. Then open an ask that links brief.md and asks whether to move the nightly export.\n' "$issue" ;;
   nochange) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
-  nochange-rebuttal) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, and send it with the flag --advisor-rebuttal whose value is this line: "The person asked for the move, so keeping 02:00 needs their authority." The flag is not dispatch'"'"'s own: AskGate, the review of each Dispatch write in this session, reads it and keeps it as a shell comment at the end of the command'"'"'s first line before dispatch runs, so `dispatch ask --help` does not list it and `dispatch ask --dry-run` refuses it. Send the ask once, with the flag. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
+  nochange-rebuttal) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, and send it with the flag --advisor-rebuttal whose value is this line: "The person asked for the move, so keeping 02:00 needs their authority." The flag is not dispatch'"'"'s own: AskGate, the review of each gated Dispatch write in this session, reads it and keeps it as a shell comment at the end of the command'"'"'s first line before dispatch runs, so `dispatch ask --help` does not list it and `dispatch ask --dry-run` refuses it. Send the ask once, with the flag. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
   nochange-block) printf 'With one dispatch doc-edit command, insert this ask block at the end of the spec of Dispatch issue %s, word for word, and do nothing else. Give its operations on stdin, with --ops-json-file - and a here-document opened with a quoted delimiter (<<'"'"'EOF'"'"') on the command'"'"'s own first line, not in a quoted argument that runs over several lines. %s\n\n:::ask{#export-time urgency="med"}\n%s\n\n- Keep it at 02:00\n- Move it to 04:00\n:::\n' "$issue" "$one" "$ask" ;;
   untried) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. Do not run the command it names yourself. %s Question: "Can you run %s and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$issue" "$one" "$billing" "$ref" ;;
   tried) printf 'First run %s yourself. It will fail. Then, in a command of its own, open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, with the exact error the command printed in place of <error>. %s Question: "I ran %s and it failed with <error>. Can you run it with your access and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$billing" "$issue" "$one" "$billing" "$ref" ;;

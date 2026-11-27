@@ -3,7 +3,7 @@
  * (INFRA-1026): the session's own user turn, a command, a pick or a side turn, and the card every
  * refusal keeps.
  */
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -11,10 +11,12 @@ import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { type DispatchDelivery, renderInbound } from "@legion/envoy-client/delivery"
 import {
   type DispatchClient,
+  DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
 } from "@legion/envoy-client/dispatch-http"
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type ModSession, modSession } from "../src/mod-session"
 import {
@@ -31,6 +33,10 @@ import {
   userTurnStateFile,
 } from "../src/user-turn-state"
 import { settled, waitFor } from "./channel-session-harness"
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS)
 
 const SESSION = "ses_claude"
 const DIRECT = `notifications.agent.${SESSION}`
@@ -185,7 +191,7 @@ async function harness(input: {
     ...(input.commandOutputMs === undefined ? {} : { commandOutputMs: input.commandOutputMs }),
   })
   const router = createUserTurnRouter({
-    dispatch: () =>
+    dispatch: async () =>
       ({
         acceptMessageDelivery: async (id: string, attempt: number) => {
           accepts.push({ id, attempt })
@@ -866,9 +872,13 @@ test("a reply or a BTW answer Dispatch refused is said not posted, with Dispatch
 })
 
 // A reply that ended with no definitive answer while an attempt of it may have reached Dispatch
-// (`DispatchWriteUnsettledError`), or on a 5xx, may have been posted, so the line says it may or
-// may not have been, never that it was not. A BTW answer that ends so is answered with the error,
-// and when that error reply ends so too the line says the same of the BTW answer.
+// (`DispatchWriteUnsettledError`), or on a status after which it may have (`mayHaveReachedServer`:
+// a 5xx, or a 408, which a gateway can answer after it forwarded the write), may have been posted,
+// so the line says it may or may not have been, never that it was not. A BTW answer that ends so
+// is answered with the error, and when that error reply ends so too the line says the same of the
+// BTW answer. Each error is injected as the host's reply fails, so the 5xx and 408 rows hold the
+// router's own reading of an error that reaches it unclassified; the Dispatch client's keyed POST
+// ends both statuses as `DispatchWriteUnsettledError` before any host sees them.
 for (const [name, failure, tail] of [
   [
     "a write left unsettled",
@@ -883,6 +893,11 @@ for (const [name, failure, tail] of [
     "a 5xx",
     new DispatchServiceError("INTERNAL", 500, "internal error"),
     "INTERNAL: internal error",
+  ],
+  [
+    "a gateway's 408",
+    new DispatchGatewayError(408, "answered 408", "ask again"),
+    "HTTP_408: answered 408, so ask again.",
   ],
 ] as const) {
   test(`a reply that ended in ${name} may have been posted, and its line says so`, async () => {

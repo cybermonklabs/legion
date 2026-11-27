@@ -18,24 +18,32 @@ const (
 	// AwaitingPerson is a root admitted tree that waits only on a person: its architect asked a
 	// question and handed it to the person. It keeps the admission slot it took when the daemon
 	// started it, and its architect stays live in its own session, reading and answering the
-	// person's comments; the person's answer puts the root in the waiting line as well, among the
-	// issues whose work came back, oldest first, and the pass that reads it delivers the
+	// person's comments; the person's answer puts the root in the waiting line as well, within its
+	// priority, among the issues whose work came back, oldest first, and the pass that reads it delivers the
 	// architect its task, taking no further slot.
 	AwaitingPerson Phase = "awaiting_person"
-	Planning       Phase = "planning"
-	Implementing   Phase = "implementing"
-	Testing        Phase = "testing"
-	Reviewing      Phase = "reviewing"
-	Accepting      Phase = "accepting"
-	Retro          Phase = "retro"
-	Merging        Phase = "merging"
-	Done           Phase = "done"
-	Held           Phase = "held"
+	// AwaitingChildren is a parent that held a phase start because a Dispatch child of it is still
+	// open: it keeps none of the cap's slots while it waits (record.PhaseKeepsSlot leaves it out),
+	// shows in_progress in Dispatch (workflow's phaseStatus), and no worker of it is woken for its
+	// work. When no open child is left it comes back as the step its return takes (record's
+	// ReturnStep): the start it held, or for a held testing, reviewing or accepting the first step
+	// of its walk after the implementer's. It stands outside Order, so no move into or out of it is
+	// a move back, and outside RoleFor, since no role works it.
+	AwaitingChildren Phase = "awaiting_children"
+	Planning         Phase = "planning"
+	Implementing     Phase = "implementing"
+	Testing          Phase = "testing"
+	Reviewing        Phase = "reviewing"
+	Accepting        Phase = "accepting"
+	Retro            Phase = "retro"
+	Merging          Phase = "merging"
+	Done             Phase = "done"
+	Held             Phase = "held"
 )
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
-	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
+	Admitted, AwaitingPerson, AwaitingChildren, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
 	Done, Held,
 }
 
@@ -183,15 +191,15 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, done, held — has none. Admitted and accepting are the architect's, and neither
-// phase starts a worker. On a root both are its own architect's. On a child both are the
-// architect that owns it: its own while that claim holds its role, else the one above. At
-// admitted that is the one above, since the child's own architect has not started yet or a leave
-// suspended or retired it, unless a person set the child back to todo while it ran or was held:
-// that re-entry starts and stops nothing, so a child's own architect that held its role still
-// holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's worker
-// skips the architect, so it skips both phases (workflow's start, admit's startMidPhaseMembers,
-// workflow's booted and Stranded).
+// awaiting_person, awaiting_children, done, held — has none. Admitted and accepting are the
+// architect's, and neither phase starts a worker. On a root both are its own architect's. On a
+// child both are the architect that owns it: its own while that claim holds its role, else the one
+// above. At admitted that is the one above, since the child's own architect has not started yet or
+// a leave suspended or retired it, unless a person set the child back to todo while it ran or was
+// held: that re-entry starts and stops nothing, so a child's own architect that held its role
+// still holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's
+// worker skips the architect, so it skips both phases (workflow's start, admit's
+// startMidPhaseMembers, workflow's booted and Stranded).
 //
 // It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
 // which starts the roles: the state projection names the role each issue's entry numbers are of

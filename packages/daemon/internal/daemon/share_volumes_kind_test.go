@@ -76,8 +76,10 @@ func shareLivePod(claimName, server, exportPath string) config.PodConfig {
 
 // Each of the share proof's legion.yaml files passes the daemon's loader into the pod block the
 // proof expects, and builds its runtime through sandboxOptions and sandbox.New against an API
-// server standing in for the kind cluster; the launch passes the spawn-spec checks. Every step is
-// the one the driver takes before it reaches the cluster.
+// server standing in for the kind cluster; the providers Secret the driver creates holds the key
+// the file names, the runtime's reader of the leak check serves a check a pod's launcher installs,
+// and the launch passes the spawn-spec checks. Every step is the one the driver takes before it
+// reaches the cluster.
 func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -102,6 +104,7 @@ func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
 			if got := cfg.Runtime.Kubernetes.Pod; !reflect.DeepEqual(got, want[tc.name]) {
 				t.Fatalf("the file's pod block = %+v, want %+v", got, want[tc.name])
 			}
+			requireLiveProvidersSecret(t, cfg)
 			rc, err := kubeClient(*cfg.Runtime.Kubernetes)
 			if err != nil {
 				t.Fatal(err)
@@ -111,9 +114,11 @@ func TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := burstableLiveRuntime(ctx, cfg, rc, listener, quietLogger()); err != nil {
+			_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger(), burstableLiveRepository)
+			if err != nil {
 				t.Fatalf("the proof's runtime: %v", err)
 			}
+			requireLiveLeakCheckInstalls(t, opts.LeakCheck)
 			project, err := claim.ProjectToken(cfg.Project)
 			if err != nil {
 				t.Fatal(err)

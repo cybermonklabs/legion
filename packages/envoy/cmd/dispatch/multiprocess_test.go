@@ -3718,7 +3718,7 @@ func waitForDurableBinder(t *testing.T, pair *dispatchPair, js natsgo.JetStreamC
 			t.Fatalf("%s exited before %s was one process's to deliver from: NATS has it %s, and %s logged a bind of it.\n%s",
 				processNames(pair, gone), durable, binding, processNames(pair, bound), pair.buffers())
 		case time.Now().After(deadline):
-			t.Fatalf("%s was not one process's to deliver from within %v: NATS has it %s, and %s logged a bind of it. A process polls its durables every two seconds once it has read the delivery settings, and the first of the two to take the durable's hold binds it.\n%s",
+			t.Fatalf("%s was not one process's to deliver from within %v: NATS has it %s, and %s logged a bind of it. A process polls its durables every two seconds, the delivery intake's once its settings cache's first read has answered, and the first of the two to take the durable's hold binds it.\n%s",
 				durable, within, binding, processNames(pair, bound), pair.buffers())
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -4077,7 +4077,7 @@ const (
 // by a table lock this test takes, or by the GitHub listing the fake holds - which is the only way
 // two processes' passes are made to overlap on purpose rather than by luck.
 //
-// Five of the twelve leases are observable here inside a window a test can wait out, and they
+// Five of the fifteen leases are observable here inside a window a test can wait out, and they
 // keep different rules once the hold lets go. webhook-redelivery, block-index and
 // search-term-stats are timer loops whose first pass is immediate, and what this row holds them
 // to is per period: at least one pass across the two processes, and no period served twice.
@@ -4089,8 +4089,10 @@ const (
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
 // two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
 // read before whatever woke it, so after the release each process runs at least one pass and no
-// count is held to one. The other seven are not observable, and this row says so rather than
-// pretending: issue-ask-repair's first leased pass is one IssueAskRepairInterval (10 min) in, the
+// count is held to one. The other ten are not observable, and this row says so rather than
+// pretending: refs-forms is a timer loop whose passes, on a database owing nothing, are one read
+// of refs_forms_owed and one count, so whether the two processes' passes meet is luck;
+// issue-ask-repair's first leased pass is one IssueAskRepairInterval (10 min) in, the
 // boot's repair taking no lease; suggestion-outcomes is held only by the keyed writes'
 // maintenance sweep now (api.RunMaintenanceSweep, the suggestion outcome sweep taking no lease),
 // which no longer touches write_suggestions, the table this row once held it by, and whose first
@@ -4105,9 +4107,13 @@ const (
 // passes meet is luck too (docs.TestEditNoticeSweepRetriesAHeldLease holds its retry, and
 // docs.TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce what its lease is for);
 // settlement-resumption's period is SettlementResumeInterval (1 min) and each pass is over in
-// milliseconds, so this window holds several of its periods, each served once; and
+// milliseconds, so this window holds several of its periods, each served once;
 // server-processes' prune is one delete on server_processes, the table every process's heartbeat
-// writes every five seconds, so a lock that held the prune would hold the registry itself.
+// writes every five seconds, so a lock that held the prune would hold the registry itself;
+// text-tree-fill's first pass is at each process's start, and on a database whose stored texts
+// already carry their trees it takes one candidate scan and ends done; and parent-status-fix is
+// taken only at a boot with DISPATCH_PARENT_STATUS_RULE on, which this row does not set
+// (api.TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess holds what its lease is for).
 func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	pair := newPair(t)
 	waitOutABucketBoundary(t, time.Hour)
@@ -4190,6 +4196,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	requireLeasedOncePerPeriod(t, pair, "document-compaction")
 	requireLeasedOncePerPeriod(t, pair, "search-term-stats")
 	for _, unobserved := range []struct{ lease, why string }{
+		{"refs-forms", "a timer loop whose passes, on a database owing nothing, are one read of refs_forms_owed and one count, so whether the two processes' passes meet is luck"},
 		{"issue-ask-repair", "its first leased pass is one IssueAskRepairInterval (10 min) after each process started"},
 		{"suggestion-outcomes", "only the keyed writes' maintenance sweep holds it, which no longer touches write_suggestions; api.TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners holds its lease"},
 		{"architecture-import", "its first pass is jittered over SyncInterval (5 min) and each process draws its own"},
@@ -4198,6 +4205,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 		{"settlement-resumption", "its period is SettlementResumeInterval (1 min), so the window holds several periods, each served once"},
 		{"server-processes", "its pass is one delete on server_processes, which every process's heartbeat writes, so holding it would hold the heartbeats too"},
 		{"text-tree-fill", "its first pass is at each process's start, and on a database whose stored texts already carry their trees it takes one candidate scan and ends done"},
+		{"parent-status-fix", "it is taken only at a boot with DISPATCH_PARENT_STATUS_RULE on, which this row does not set; api.TestTheFixRunsOnceUnderItsLeaseBesideASecondProcess holds its lease"},
 	} {
 		if ran := countLease(pair.a, leaseRan, unobserved.lease) + countLease(pair.b, leaseRan, unobserved.lease); ran > 0 {
 			t.Logf("%s ran %d times in the window, which this row does not hold to a count: %s",
@@ -4222,10 +4230,14 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 	gate := lockTables(t, pair.database, "exclusive", "suggestion_outcome_cursor")
 	pair.start(t, nil)
 
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 60*time.Second); waiting < 2 {
-		t.Fatalf("%d of the two processes' suggestion-outcome passes reached the cursor lock, want both; the loop takes no lease, so neither waits outside the row:\nA:\n%s\nB:\n%s",
-			waiting, pair.a.Output.String(), pair.b.Output.String())
-	}
+	// The wait fails the row by name at the binary's deadline, and the cleanup prints both
+	// processes' output then, as this branch's failure did before the wait had a bound.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("A's output:\n%s\nB's output:\n%s", pair.a.Output.String(), pair.b.Output.String())
+		}
+	})
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor the passes are waiting on: %v", err)
 	}
@@ -6590,9 +6602,12 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		gate := lockIssue(t, pair.database, issueKey)
 		throughA := pair.a.requestInBackground(http.MethodPost, rebuildPath(artifactID), `{}`, asUser("alice"))
 		throughB := pair.b.requestInBackground(http.MethodPost, rebuildPath(artifactID), `{}`, asUser("alice"))
-		if waiting := storetest.WaitForLockWaiters(t, gate, 2, 30*time.Second); waiting < 2 {
-			t.Fatalf("%d of the two rebuilds reached the issue's row within 30 s:\nA:\n%s\nB:\n%s", waiting, pair.a.Output.String(), pair.b.Output.String())
-		}
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("A's output:\n%s\nB's output:\n%s", pair.a.Output.String(), pair.b.Output.String())
+			}
+		})
+		storetest.WaitForLockWaiters(t, gate, 2)
 		if err := gate.Rollback(context.Background()); err != nil {
 			t.Fatalf("release the issue's row: %v", err)
 		}
@@ -8955,7 +8970,10 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 			return cursor
 		}
 		testwait.Until(t, "a batch of the keyword fill to wait on its cursor", func() (int, bool) {
-			waiting := storetest.WaitForLockWaiters(t, s.held, 1, 0)
+			waiting, err := storetest.LockWaiters(ctx, s.held)
+			if err != nil {
+				t.Fatal(err)
+			}
 			return waiting, waiting >= 1
 		})
 		next, err := s.database.Pool.Begin(ctx)

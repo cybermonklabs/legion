@@ -80,14 +80,6 @@ func listenForLauncher(t *testing.T, tokens ...string) *daemonEnd {
 	})
 }
 
-// shimHello is the opening of a shim under test: its hello, carrying bootToken.
-func shimHello(bootToken string) func(shimwire.Frame) bool {
-	return func(frame shimwire.Frame) bool {
-		hello, ok := frame.(shimwire.Hello2)
-		return ok && hello.BootToken == bootToken
-	}
-}
-
 // listenFor listens on a loopback port the kernel picks, for code under test whose connections
 // open with a frame opens accepts, and starts the accept loop. Its cleanup, registered before the
 // code's own, runs after the code has stopped: it closes the listener and every connection the
@@ -290,6 +282,7 @@ func listensAt(t *testing.T, out string) string {
 // silent role's wait outlasts the 10 s the rig's read once had, and ends by the wait's own text
 // rather than the binary's panic.
 func TestTheWaitForAHelloEndsOnTheHelloTheLaunchersReturnOrTheDeadline(t *testing.T) {
+	t.Parallel()
 	switch os.Getenv(helloWaitChildEnv) {
 	case "silent":
 		end := listenForLauncher(t, ownToken("launcher-token"))
@@ -333,6 +326,7 @@ func TestTheWaitForAHelloEndsOnTheHelloTheLaunchersReturnOrTheDeadline(t *testin
 // the test binary's deadline, naming what it waited for, and not at a read deadline of the rig's:
 // a child run of this test binary, under a -timeout of 20 s, waits past the 10 s that read once had.
 func TestTheWaitForARolesNextFrameHasNoBoundButTheDeadline(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(helloWaitChildEnv) == "next-frame" {
 		token := ownToken("launcher-token")
 		end := listenForLauncher(t, token)
@@ -362,6 +356,7 @@ func launcherHelloOf(token string) shimwire.LauncherHello {
 // Each listener's token is its own: two ownToken calls for one name give two tokens, each that name
 // and a suffix.
 func TestEachOwnTokenIsItsOwn(t *testing.T) {
+	t.Parallel()
 	first, second := ownToken("launcher-token"), ownToken("launcher-token")
 	if first == second || !strings.HasPrefix(first, "launcher-token-") || !strings.HasPrefix(second, "launcher-token-") {
 		t.Fatalf("ownToken gave %q and %q, want two different tokens, each launcher-token and a suffix", first, second)
@@ -374,6 +369,7 @@ func TestEachOwnTokenIsItsOwn(t *testing.T) {
 // {"x":1} first and waits for the daemon end's close; the child passes and logs that close once, by
 // the stranger's own address.
 func TestAStrangersJSONObjectIsClosedAndLoggedAndFailsNothing(t *testing.T) {
+	t.Parallel()
 	const object = `{"x":1}` + "\n"
 	if os.Getenv(helloWaitChildEnv) == "json-stranger" {
 		end := listenForLauncher(t, ownToken("launcher-token"))
@@ -405,6 +401,7 @@ func TestAStrangersJSONObjectIsClosedAndLoggedAndFailsNothing(t *testing.T) {
 // -timeout of 20 s; the child fails by the frame's name and gives up no wait. A hello under a token
 // not this listener's cannot fail so: the daemon end cannot tell it from a stranger's.
 func TestAnOpeningThatIsAnotherModelledFrameFailsTheWaitAtOnce(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(helloWaitChildEnv) == "misopened" {
 		end := listenForLauncher(t, ownToken("launcher-token"))
 		conn, err := net.Dial("tcp", end.Addr().String())
@@ -432,6 +429,7 @@ func TestAnOpeningThatIsAnotherModelledFrameFailsTheWaitAtOnce(t *testing.T) {
 // of each. The stray is known by its own address, so a connection another process opens to the
 // child's port changes nothing.
 func TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(helloWaitChildEnv) == "silent-to-the-end" {
 		var stray, untaken net.Conn
 		// Registered before the daemon end's own, so it runs after the daemon end has stopped.
@@ -466,7 +464,7 @@ func TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce(t *t
 		})
 		return
 	}
-	out, code := runChild(t, "^TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce$", "silent-to-the-end", 20*time.Second)
+	out, code := runChild(t, "^TestTheCasesEndClosesWhatTheDaemonEndHoldsAndLogsASilentConnectionOnce$", "silent-to-the-end", testwait.Remaining(t))
 	_, after, _ := strings.Cut(out, "the stray dials from ")
 	stray, _, _ := strings.Cut(after, "\n")
 	stray = strings.TrimSpace(stray)

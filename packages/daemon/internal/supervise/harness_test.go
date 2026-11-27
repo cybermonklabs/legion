@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,8 +88,24 @@ func (c *fakeClock) Now() time.Time {
 func (c *fakeClock) AfterFunc(d time.Duration, f func()) Cancel {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.armLocked(c.now.Add(d), f)
+}
+
+func (c *fakeClock) At(at time.Time, f func()) Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armLocked(at, f)
+}
+
+// armLocked arms f for at, or for the clock's own time when at has passed: Advance sets the clock
+// to each timer's moment as it fires it, so a timer left at a passed moment would move the clock
+// back. The caller holds mu.
+func (c *fakeClock) armLocked(at time.Time, f func()) Cancel {
+	if at.Before(c.now) {
+		at = c.now
+	}
 	c.armed++
-	timer := &fakeTimer{clock: c, at: c.now.Add(d), order: c.armed, f: f}
+	timer := &fakeTimer{clock: c, at: at, order: c.armed, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -236,6 +253,28 @@ func (c *fakeClock) Live() int {
 		}
 	}
 	return live
+}
+
+// movingClock is the harness's clock moved by step right after each read while moving is set, as
+// another goroutine moves a test's clock between a decision's read of it and its arm. A move fires
+// nothing, so the decision that read the clock still runs; a timer that falls due within a move
+// fires at the next Advance at its own moment, which sets the clock back to that moment.
+type movingClock struct {
+	*fakeClock
+	step   time.Duration
+	moving atomic.Bool
+	moves  atomic.Int32
+}
+
+func (c *movingClock) Now() time.Time {
+	c.fakeClock.mu.Lock()
+	defer c.fakeClock.mu.Unlock()
+	now := c.fakeClock.now
+	if c.moving.Load() {
+		c.moves.Add(1)
+		c.fakeClock.now = now.Add(c.step)
+	}
+	return now
 }
 
 // memStore is the store as a double: what was written, in order, and a way to fail a write.
@@ -768,6 +807,10 @@ type harness struct {
 	records *logRecords
 	deps    Deps
 	m       *Machine
+	// pace is the wake pacing the harness's machines are built with (pacedHarness), which a
+	// restart builds afresh, as a restarted daemon builds its pacer anew (restart); nil for a
+	// harness that set none, or set its own.
+	pace func(*Deps)
 }
 
 func testLimits() Limits { return Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2} }
@@ -890,11 +933,17 @@ func (h *harness) start(c Claim) {
 }
 
 // restart is a daemon restart: the machine is dropped with whatever it held in memory — its
-// timers die with it — and a new one is built from what the store read back.
+// timers die with it — and a new one is built from what the store read back. The wake pacer's
+// own timer dies with them, so the pacing the harness was built with is built anew (pace), as a
+// restarted daemon builds its own: the old pacer, its pending turn gone, lets nothing more out,
+// and no place a dropped machine held is ever let out to it.
 func (h *harness) restart() {
 	h.t.Helper()
 	h.m.Wait()
 	h.clock.dropAll()
+	if h.pace != nil {
+		h.pace(&h.deps)
+	}
 	h.start(h.store.load(h.token))
 }
 

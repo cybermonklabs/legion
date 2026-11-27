@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -70,7 +71,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
+	message, advice, err := s.createStoredMessage(r.Context(), "", &issueKey, input, delivery, false, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -120,7 +121,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
+	message, _, err := s.createStoredMessage(r.Context(), "", nil, messageInput, delivery, input.ConnectedOnly, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -308,13 +309,55 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
+// planMessageNode reads, in a request's read phase, the scope of message id, which the request
+// is about to store, and answers the write of its node (graphstore.MessageNode), held for the
+// event that records the message: the request queues the node write before the row's insert
+// (graphstore.QueueNodes) and its cause after the event (graphstore.QueueCaused), both in its
+// write phase. A message on an issue is in that issue's project. A message on none is between
+// its thread's parties (graphstore.ThreadParties): those of the root it answers, read up
+// in_reply_to as messageThreadCTE walks it, or, for a message that answers nothing, its own
+// author and target. at is the row's created_at, which the node is dated with.
+func planMessageNode(
+	ctx context.Context, tx pgx.Tx, id string, issueKey, inReplyTo *string, author model.Actor, target *string, at time.Time,
+) (graphstore.Uncaused, error) {
+	var project string
+	var parties []string
+	switch {
+	case issueKey != nil:
+		var err error
+		if project, _, err = graphstore.ScopeOf(ctx, tx, issueKey, nil); err != nil {
+			return graphstore.Uncaused{}, err
+		}
+	case inReplyTo != nil:
+		var rootAuthor []byte
+		var rootTarget *string
+		if err := tx.QueryRow(ctx, messageThreadCTE+`
+			select m.author, m.target from messages m join thread t on t.id = m.id
+			where t.in_reply_to is null
+		`, *inReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("read the thread root of a reply to message %s: %w", *inReplyTo, err)
+		}
+		var root model.Actor
+		if err := json.Unmarshal(rootAuthor, &root); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("decode the author of the thread root of message %s: %w", *inReplyTo, err)
+		}
+		parties = graphstore.ThreadParties(root, rootTarget)
+	default:
+		parties = graphstore.ThreadParties(author, target)
+	}
+	return graphstore.PlanUncaused([]graphstore.Node{graphstore.MessageNode(id, project, parties, author, at)}, nil), nil
+}
+
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
 // request's connected_only, which only the agents route takes
-// (createAgentMessageInput.ConnectedOnly).
+// (createAgentMessageInput.ConnectedOnly). chosenID is the id the message is stored under: empty
+// for every request, whose message takes a fresh id, and the id a caller inside this process
+// chose for a post it may make again (postSystemMessage).
 func (s *server) createStoredMessage(
 	ctx context.Context,
+	chosenID string,
 	issueKey *string,
 	input createMessageInput,
 	delivery string,
@@ -394,7 +437,7 @@ func (s *server) createStoredMessage(
 	// (writeAdvice).
 	var messageID string
 	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&messageID, &createdAt); err != nil {
+	if err := tx.QueryRow(ctx, `select coalesce(nullif($1, ''), gen_random_uuid()::text), now()`, chosenID).Scan(&messageID, &createdAt); err != nil {
 		return model.Message{}, nil, err
 	}
 	eventType := "message.created"
@@ -440,16 +483,25 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	// The parent's lock, the index its blocks owe, the insert, the recovery point, this message's
-	// own index, the event, its stamp and a targeted message's first delivery attempt go in one
-	// batch (store.WriteBatch): the message is known before the insert runs, and the stamp names
-	// the event's id as the id sequence left it.
+	// The message's node, in its issue's project or between its thread's parties, read here in
+	// the read phase; its write goes in before the row's insert, and what it states waits for the
+	// event below (graphstore.QueueCaused).
+	messageNode, err := planMessageNode(ctx, tx, messageID, issueKey, input.InReplyTo, actor, input.Target, createdAt)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
+	// The parent's lock, the index its blocks owe, the message's node, the insert, the recovery
+	// point, this message's own index, the event, its stamp, what the node write stated and a
+	// targeted message's first delivery attempt go in one batch (store.WriteBatch): the message is
+	// known before the insert runs, and the stamp and the node's cause name the event's id as the
+	// id sequence left it.
 	var event model.Event
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)
 			parentRepair.Queue(b)
 		}
+		graphstore.QueueNodes(b, messageNode)
 		b.Queue("", `
 			insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block, created_at)
 			values ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -474,6 +526,7 @@ func (s *server) createStoredMessage(
 		}); err != nil {
 			return err
 		}
+		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
 		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each
 		// recipient's: a process that dies, or a request whose connection is cut, between this

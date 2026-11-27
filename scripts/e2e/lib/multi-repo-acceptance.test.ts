@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import {
   bashPath,
   closeServers,
@@ -20,6 +21,10 @@ import {
   stateBody,
   useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
+
+// The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
+// is a hang guard, not a verdict, for every row of this file that states none of its own.
+setDefaultTimeout(HANG_GUARD_MS);
 
 // scripts/e2e/multi-repo-acceptance.sh is the observer for the live multi-repository acceptance
 // run; this file covers every observation but second-owner (multi-repo-second-owner.test.ts) and
@@ -254,7 +259,11 @@ describe("a failed Dispatch read never prints the bearer", () => {
 describe("an interrupted run cleans up and actually stops", () => {
   /** A daemon stub whose state read answers only once `release` is called, and whose `reached`
    *  resolves the moment the observer's fetch arrives. */
-  function heldStateDaemon(): { port: number; reached: Promise<void>; release: () => void } {
+  function heldStateDaemon(): {
+    port: number | undefined;
+    reached: Promise<void>;
+    release: () => void;
+  } {
     const arrival = Promise.withResolvers<void>();
     const held = Promise.withResolvers<void>();
     const server = servers.track(
@@ -686,7 +695,7 @@ esac`;
     const kubectl = `
 case "$*" in
   "get pod the-pod -o jsonpath={.metadata.labels.legion\\.dev/issue}") printf 'ACME-2' ;;
-  "logs the-pod -c workspace-fetch") printf 'workspace-init fetch: the repository cache failed; fell back to GitHub for everything\\n' ;;
+  "logs the-pod -c workspace-init") printf 'workspace-init: the repository cache failed; fell back to GitHub for everything\\n' ;;
   *) echo "kubectl: unexpected call: $*" >&2; exit 1 ;;
 esac`;
     const { status, stderr } = await run(["cache", "ACME-2", "the-pod"], env, { kubectl });
@@ -704,7 +713,7 @@ esac`;
     const kubectl = `
 case "$*" in
   "get pod the-pod -o jsonpath={.metadata.labels.legion\\.dev/issue}") printf 'ACME-2' ;;
-  "logs the-pod -c workspace-fetch") printf 'workspace-init fetch: 6,612,345,678 bytes from the repository cache http://cache:8418 in 3s, its history verified in 1s; 128 bytes from GitHub for the delta (2 refs)\\n' ;;
+  "logs the-pod -c workspace-init") printf 'workspace-init: 6,612,345,678 bytes from the repository cache http://cache:8418 in 3s, its history verified in 1s; 128 bytes from GitHub for the delta (2 refs)\\n' ;;
   *) echo "kubectl: unexpected call: $*" >&2; exit 1 ;;
 esac`;
     const { status, stdout, evidence } = await run(["cache", "ACME-2", "the-pod"], env, {
@@ -713,7 +722,7 @@ esac`;
     expect(status).toBe(0);
     expect(stdout).toContain("CHECK cache: PASS");
     expect(readFileSync(join(evidence, "cache-logs-ACME-2.raw"), "utf8")).toContain(
-      "workspace-init fetch:"
+      "workspace-init:"
     );
   });
 
@@ -729,7 +738,7 @@ esac`;
     const kubectl = `
 case "$*" in
   "get pod the-pod -o jsonpath={.metadata.labels.legion\\.dev/issue}") printf 'ACME-2' ;;
-  "logs the-pod -c workspace-fetch") printf 'workspace-init fetch: 6,612,345,678 bytes from the repository cache http://cache:8418 in 1m2.345s, its history verified in 1m0.1s; 128 bytes from GitHub for the delta (2 refs)\\n' ;;
+  "logs the-pod -c workspace-init") printf 'workspace-init: 6,612,345,678 bytes from the repository cache http://cache:8418 in 1m2.345s, its history verified in 1m0.1s; 128 bytes from GitHub for the delta (2 refs)\\n' ;;
   *) echo "kubectl: unexpected call: $*" >&2; exit 1 ;;
 esac`;
     const { status, stdout } = await run(["cache", "ACME-2", "the-pod"], env, { kubectl });

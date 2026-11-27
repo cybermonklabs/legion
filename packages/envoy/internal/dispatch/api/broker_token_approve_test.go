@@ -1,11 +1,14 @@
-// broker_token_approve_test.go holds that no token the secrets broker issued holds the approve
-// scope, whatever its project scope, so every route that needs approve refuses each of them at the
-// gate, while the browser session of the person a token names is answered there as before. A
-// broker token is made from a file on the machine that holds it (a machine login or a person's
-// sign-in), so whoever copies that file holds it; approve settles what only the person settles, so
-// it needs the person's browser or a personal token they chose to give it. The answer to an
-// approval request checks approve inside its handler, and its test is
-// TestAnsweringAnApprovalAskNeedsTheApproveScope's broker row.
+// broker_token_approve_test.go holds that no token the secrets broker issued for a machine to hold
+// holds the approve scope, whatever its project scope, so every route that needs approve refuses
+// each of them at the gate, while the browser session of the person a token names is answered
+// there as before. The one broker-issued token that holds approve, the approve-only token the
+// broker's proxy spends and no machine holds, is approve_only_token_test.go's. A broker token is
+// made from a file on the machine that holds it (a machine login or a person's sign-in), so
+// whoever copies that file holds it; approve settles what only the person settles, so it needs
+// the person's browser, a personal token they chose to give it, or that approve-only token. The
+// answer to an approval request checks approve inside its handler, and its test is
+// TestAnsweringAnApprovalAskNeedsTheApproveScope's broker row. A job's token does not hold person
+// either, since it names no person, so every route that needs person refuses it at the same gate.
 package api
 
 import (
@@ -32,14 +35,17 @@ type approveTestToken struct {
 }
 
 // approveTestTokens is every kind of token the broker mints for a session: one acting as its
-// person, refused for approve itself; one an operator's entry mapped to one project and one of a
-// machine nobody signed in on, which hold no scope and are refused for person, the row's first;
-// and a read-only one, which the read-only gate answers before any scope is read.
+// person, refused for approve itself; one an operator's entry mapped to one project, one of a
+// machine nobody signed in on and a job's two, named and public, which hold no scope and are
+// refused for person, the row's first; and a read-only one, which the read-only gate answers
+// before any scope is read.
 func approveTestTokens(jkt string) []approveTestToken {
 	return []approveTestToken{
 		{"a person-scoped broker token", "a-person-scoped-token", personScopedTokenAnswer(jkt), codeScopeRequired, model.ScopeApprove},
 		{"a named broker token", "a-named-token", liveNamedToken(jkt), codeScopeRequired, model.ScopePerson},
 		{"a service-only broker token", "a-service-only-token", serviceOnlyToken(jkt), codeScopeRequired, model.ScopePerson},
+		{"a job's named broker token", "a-job-named-token", liveJobNamedToken(jkt), codeScopeRequired, model.ScopePerson},
+		{"a job's public broker token", "a-job-public-token", liveJobPublicToken(jkt), codeScopeRequired, model.ScopePerson},
 		{"a read-only broker token", "a-read-only-token", readOnlyToken(jkt), contracts.DispatchReadOnlyToken, ""},
 	}
 }
@@ -126,4 +132,56 @@ func TestNoBrokerTokenGetsApprove(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNoJobTokenReachesARowThatNeedsAPerson: a job's token names its identity and no person, so it
+// holds no OAuth scope, and each route whose declaration's OAuthScopes name person refuses both of
+// a job's tokens 403 OAUTH_SCOPE_REQUIRED naming person before its handler runs; a route that needs
+// approve as well names person, the first scope of its set. The walk is over every route the
+// server mounts, on a server that mounts the test hooks, so every declaration is probed.
+func TestNoJobTokenReachesARowThatNeedsAPerson(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
+	caller := newBrokerCaller(t)
+	tokens := []struct {
+		name, token string
+		answer      ciphertoken.Introspection
+	}{
+		{"a job's named token", "a-job-named-token", liveJobNamedToken(caller.jkt)},
+		{"a job's public token", "a-job-public-token", liveJobPublicToken(caller.jkt, "PRIV")},
+	}
+	for _, token := range tokens {
+		rig.broker.Says(token.token, token.answer)
+	}
+	probed := 0
+	for _, route := range rig.served.routes() {
+		if !slices.Contains(route.OAuthScopes, model.ScopePerson) {
+			continue
+		}
+		name := route.Method + " " + route.Pattern
+		probed++
+		t.Run(name, func(t *testing.T) {
+			path := routeProbePath(route.Pattern)
+			var body any
+			if route.Method != http.MethodGet {
+				body = json.RawMessage(routeProbeBody(route))
+			}
+			for _, token := range tokens {
+				response := rig.serve(caller.presenting(t, route.Method, path, token.token, body))
+				refusal := decodeBody[refusalAnswer](t, response)
+				if response.Code != http.StatusForbidden || refusal.Code != codeScopeRequired {
+					t.Fatalf("%s under %s = %d %s, want 403 %s", name, token.name, response.Code, response.Body.String(), codeScopeRequired)
+				}
+				if challenge := response.Header().Get("WWW-Authenticate"); !strings.Contains(refusal.Error, model.ScopePerson) ||
+					challenge != insufficientScopeChallenge(model.ScopePerson) {
+					t.Fatalf("%s under %s refused %q with challenge %q, want the %s scope named in both",
+						name, token.name, refusal.Error, challenge, model.ScopePerson)
+				}
+			}
+		})
+	}
+	if probed == 0 {
+		t.Fatal("no route's OAuthScopes name person: the walk held nothing to the rule")
+	}
+	t.Logf("%d routes' OAuthScopes name person", probed)
 }

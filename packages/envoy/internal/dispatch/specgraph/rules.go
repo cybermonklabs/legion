@@ -30,7 +30,8 @@ type Options struct {
 //     components);
 //   - a check: check-serves (not exactly one statement), no-claim, no-procedure,
 //     no-failing-example, bad-subject, bad-procedure, no-test and no-job (a program check without
-//     its test part), test-on-non-program, bad-selector (a go selector that picks no one test);
+//     its test part: a runner, selector or job with no letter or digit is missing), test-on-non-program,
+//     bad-selector (a go selector that picks no one test);
 //   - a component: bad-component (no name, a purpose that is not one sentence, a parent that is no
 //     component, or joins on a component that is no interface) and bad-interface (fewer than two
 //     components joined, or a joined node that is no component);
@@ -40,9 +41,21 @@ type Options struct {
 //     A check's test part and job name code by design and are not read. Parse reads each heading
 //     for code too, and refuses a claim of more than one sentence (bad-field).
 func Validate(t Tree, o Options) []Problem {
-	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{}}
+	v := validator{tree: t, kinds: map[string]string{}, retired: map[string]bool{}, edges: map[string][]edge{},
+		checked: map[string]bool{}, parents: map[string]bool{}, servedBy: map[string]bool{}}
 	for _, id := range o.Retired {
 		v.retired[id] = true
+	}
+	for _, c := range t.Checks {
+		v.checked[c.Serves] = true
+	}
+	for _, s := range t.Statements {
+		v.parents[s.Parent] = true
+		for _, id := range s.Serves {
+			if id != s.ID {
+				v.servedBy[id] = true
+			}
+		}
 	}
 	v.ids()
 	for _, s := range t.Statements {
@@ -69,15 +82,40 @@ func Validate(t Tree, o Options) []Problem {
 }
 
 // validator is the state of one Validate: the kind and the first position of each id, the
-// relations the loop finder walks, and the problems found so far.
+// relations the loop finder walks, each id that a check serves, that a statement names as its
+// parent and that another statement serves, read once so that a statement's rules read no list of
+// the tree, and the problems found so far.
 type validator struct {
 	tree     Tree
-	kinds    map[string]string // id -> "statement", "check", "component" or "interface", of its first node
+	kinds    map[string]string // id -> kindOf its first node
 	first    map[string]Position
 	retired  map[string]bool
 	edges    map[string][]edge
+	checked  map[string]bool // each id that a check serves
+	parents  map[string]bool // each id that a statement names as its parent
+	servedBy map[string]bool // each id that a statement other than itself serves
 	problems []Problem
 }
+
+// relationRule is one relation that a node of one kind sets: its member, and the kinds of node that
+// it may name. Each is a named value below, the one rule of its relation, which Validate reads in
+// the files and the approved reader in the approved spec (relationFault); a rule is read by its
+// name, so a misspelt one does not compile, where a misspelt key of a map would read no kind and
+// refuse every such relation.
+type relationRule struct {
+	member string
+	kinds  []string
+}
+
+// The relations of each kind of node, by the kind that sets them and the member.
+var (
+	statementParent = relationRule{member: "parent", kinds: []string{"statement"}}
+	statementServes = relationRule{member: "serves", kinds: []string{"statement"}}
+	statementAbout  = relationRule{member: "about", kinds: []string{"component", "interface"}}
+	checkServes     = relationRule{member: "serves", kinds: []string{"statement"}}
+	componentParent = relationRule{member: "parent", kinds: []string{"component"}}
+	componentJoins  = relationRule{member: "joins", kinds: []string{"component"}}
+)
 
 // problem records a problem of node at pos; detail begins with the rule.
 func (v *validator) problem(pos Position, node, detail string) {
@@ -103,11 +141,7 @@ func (v *validator) ids() {
 		all = append(all, held{c.ID, "check", c.Pos})
 	}
 	for _, c := range v.tree.Components {
-		kind := "component"
-		if c.Interface {
-			kind = "interface"
-		}
-		all = append(all, held{c.ID, kind, c.Pos})
+		all = append(all, held{c.ID, kindOf(c), c.Pos})
 	}
 	for _, term := range v.tree.Terms {
 		all = append(all, held{term.ID, "term", term.Pos})
@@ -160,42 +194,36 @@ func (v *validator) statement(s Statement) {
 		v.problem(s.Pos, s.ID, fmt.Sprintf("bad-kind: %q is not behavior, structure or property", s.Kind))
 	}
 	if s.Parent != "" {
-		if v.kinds[s.Parent] == "statement" {
-			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: "parent"})
+		if slices.Contains(statementParent.kinds, v.kinds[s.Parent]) {
+			v.edges[s.ID] = append(v.edges[s.ID], edge{to: s.Parent, relation: statementParent.member})
 		} else {
 			v.problem(s.Pos, s.ID, fmt.Sprintf("no-parent: the files hold no statement %q", s.Parent))
 		}
 	}
 	for _, id := range s.Serves {
-		if v.target(s.Pos, s.ID, "serves", id, "statement") {
-			v.edges[s.ID] = append(v.edges[s.ID], edge{to: id, relation: "serves"})
+		if v.target(s.Pos, s.ID, statementServes.member, id, statementServes.kinds...) {
+			v.edges[s.ID] = append(v.edges[s.ID], edge{to: id, relation: statementServes.member})
 		}
 	}
 	for _, id := range s.About {
-		v.target(s.Pos, s.ID, "about", id, "component", "interface")
+		v.target(s.Pos, s.ID, statementAbout.member, id, statementAbout.kinds...)
 	}
 	if s.Kind == KindStructure && len(s.About) == 0 {
 		v.problem(s.Pos, s.ID, "no-about: a statement of kind structure names its components or interfaces")
 	}
-	if s.ID != "" && len(v.tree.ChecksOf(s.ID)) == 0 {
+	if s.ID != "" && !v.checked[s.ID] {
 		switch {
-		case len(v.tree.Children(s.ID)) == 0:
+		case !v.parents[s.ID]:
 			v.problem(s.Pos, s.ID, "leaf-without-check: no statement is under it and no check serves it")
-		case v.served(s.ID):
+		case v.servedBy[s.ID]:
 			v.problem(s.Pos, s.ID, "supported-without-check: other statements serve it and no check serves it")
 		}
 	}
 	v.code(s.Pos, s.ID, "text", s.Text)
 }
 
-// served reports whether another statement serves the statement id: one that other statements
-// support still has checks of its own (R5).
-func (v *validator) served(id string) bool {
-	return slices.ContainsFunc(v.tree.Statements, func(s Statement) bool { return s.ID != id && slices.Contains(s.Serves, id) })
-}
-
 func (v *validator) check(c Check) {
-	if strings.Contains(c.Serves, " ") || v.kinds[c.Serves] != "statement" {
+	if strings.Contains(c.Serves, " ") || !slices.Contains(checkServes.kinds, v.kinds[c.Serves]) {
 		v.problem(c.Pos, c.ID, "check-serves: a check serves exactly one statement of the files")
 	}
 	for _, part := range []struct{ value, detail string }{
@@ -215,14 +243,14 @@ func (v *validator) check(c Check) {
 	switch c.Procedure {
 	case ProcedureProgram:
 		switch {
-		case c.Test == nil || c.Test.Runner == "" || c.Test.Selector == "":
+		case c.Test == nil || !hasWord(c.Test.Runner) || !hasWord(c.Test.Selector):
 			v.problem(c.Pos, c.ID, "no-test: a program check names its runner and its selector")
 		case c.Test.Runner == "go":
 			if _, _, err := ParseSelector(c.Test.Selector); err != nil {
 				v.problem(c.Pos, c.ID, `bad-selector: a go selector is "<import path> <TopLevelTestName>"`)
 			}
 		}
-		if c.Test != nil && c.Test.Job == "" {
+		if c.Test != nil && !hasWord(c.Test.Job) {
 			v.problem(c.Pos, c.ID, "no-job: a program check names the job that runs its test")
 		}
 	case ProcedureQuery, ProcedureAgent:
@@ -237,7 +265,7 @@ func (v *validator) check(c Check) {
 		v.problem(c.Pos, c.ID, fmt.Sprintf("bad-procedure: %q is not program, query or agent", c.Procedure))
 	}
 	v.code(c.Pos, c.ID, "claim", c.Claim)
-	v.code(c.Pos, c.ID, "procedure", c.ProcedureText)
+	v.codeNames(c.Pos, c.ID, "procedure", procedureCodeNames(c))
 	v.code(c.Pos, c.ID, "failing example", c.FailingExample)
 }
 
@@ -263,8 +291,8 @@ func (v *validator) component(c Component) {
 		v.problem(c.Pos, c.ID, "bad-component: a component has a name and one sentence of purpose")
 	}
 	if c.Parent != "" {
-		if v.kinds[c.Parent] == "component" {
-			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: "parent"})
+		if slices.Contains(componentParent.kinds, v.kinds[c.Parent]) {
+			v.edges[c.ID] = append(v.edges[c.ID], edge{to: c.Parent, relation: componentParent.member})
 		} else {
 			v.problem(c.Pos, c.ID, fmt.Sprintf("bad-component: parent %q is no component", c.Parent))
 		}
@@ -277,7 +305,7 @@ func (v *validator) component(c Component) {
 	}
 	if c.Interface {
 		for _, id := range c.Joins {
-			if v.kinds[id] != "component" {
+			if !slices.Contains(componentJoins.kinds, v.kinds[id]) {
 				v.problem(c.Pos, c.ID, fmt.Sprintf("bad-interface: joins %q, which is no component", id))
 			}
 		}
@@ -288,7 +316,28 @@ func (v *validator) component(c Component) {
 
 // code records code-in-text when text, the field of node, names code.
 func (v *validator) code(pos Position, node, field, text string) {
-	if names := CodeNames(text); len(names) > 0 {
+	v.codeNames(pos, node, field, CodeNames(text))
+}
+
+// codeNames records code-in-text when names, the names of code that the field of node holds, are any.
+func (v *validator) codeNames(pos Position, node, field string, names []string) {
+	if len(names) > 0 {
 		v.problem(pos, node, fmt.Sprintf("code-in-text: %s names code: %s", field, strings.Join(names, ", ")))
 	}
+}
+
+// procedureCodeNames adds a program check's own Go test name to CodeNames, including bare Test.
+func procedureCodeNames(c Check) []string {
+	names := CodeNames(c.ProcedureText)
+	if c.Test == nil || c.Test.Runner != "go" {
+		return names
+	}
+	_, test, err := ParseSelector(c.Test.Selector)
+	if err != nil || slices.Contains(names, test) {
+		return names
+	}
+	if slices.Contains(nameRun.FindAllString(backtickSpan.ReplaceAllString(c.ProcedureText, " "), -1), test) {
+		names = append(names, test)
+	}
+	return names
 }

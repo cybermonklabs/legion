@@ -39,6 +39,7 @@ func countExcerptLeaseLines(logs *storetest.LockedLog, message, lease string) in
 // it runs a pass of its own: the first may have read before whatever woke the second, so a woken
 // loop never gives its pass up to another process's.
 func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureLogs).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -61,9 +62,7 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 	}
 
 	runExcerpts(t, func(ctx context.Context) { first.RunReferenceExcerptReconciliation(ctx, firstLeases, nil) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 30*time.Second); waiting < 1 {
-		t.Fatal("the first runner's pass never reached the refs lock: it never took the lease")
-	}
+	storetest.WaitForLockWaiters(t, gate, 1)
 	runExcerpts(t, func(ctx context.Context) { other.RunReferenceExcerptReconciliation(ctx, secondLeases, nil) })
 	// The second runner's boot attempt and at least one retry find the lease held.
 	waitFor(t, 30*time.Second, "the second runner to find the lease held twice", func() bool {

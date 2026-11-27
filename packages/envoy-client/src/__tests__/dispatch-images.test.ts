@@ -6,12 +6,13 @@ import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
-import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchServiceError } from "../dispatch-http";
 import {
   forgetShownPictures,
   readPictures,
   shownPictureAddresses,
   shownPictures,
+  textWithPictures,
 } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
@@ -265,7 +266,9 @@ describe("sending pictures", () => {
     const server = dispatch();
     const RIFF = [0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00];
     const gif = file("moving.gif", [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00]);
-    const webp = file("photo.webp", [...RIFF, 0x57, 0x45, 0x42, 0x50]);
+    // A WebP's first chunk follows its `WEBP`: `VP8 `, `VP8L` or `VP8X`, which is what Go's
+    // sniffer, and so Dispatch, reads it by.
+    const webp = file("photo.webp", [...RIFF, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20]);
     const wave = file("sound.webp", [...RIFF, 0x57, 0x41, 0x56, 0x45]);
 
     await run(
@@ -499,6 +502,32 @@ describe("sending pictures", () => {
     expect(failure.message).toEndWith(". Nothing was posted.");
     expect(failure.message).not.toContain("..");
     expect(server.posted).toEqual([]);
+  });
+
+  // Whether a refusal says the upload never took effect is the one rule of whether a request may
+  // have reached the server (`mayHaveReachedServer`), as `writeMayHaveLanded` reads it: Dispatch's
+  // own 408 may come after it stored the upload, as its 5xx may, and its 413 may not.
+  test.each([
+    [408, "may or may not have been uploaded"],
+    [503, "may or may not have been uploaded"],
+    [413, "was not uploaded"],
+  ] as const)("an upload Dispatch answered %i %s", async (status, outcome) => {
+    const shot = file(`status-${status}.png`, PNG);
+    const failure = await refusal(
+      textWithPictures(
+        "Look.",
+        [{ path: shot, name: path.basename(shot), file: Bun.file(shot, { type: "image/png" }) }],
+        "DSP-41",
+        async () => {
+          throw new DispatchServiceError("REFUSED", status, "the upload was answered so");
+        },
+        { kind: "session", id: session }
+      )
+    );
+
+    expect(failure.message).toBe(
+      `images: ${shot} ${outcome}: REFUSED: the upload was answered so. Nothing was posted.`
+    );
   });
 
   // A picture is uploaded before the call's own write. A repeat of that upload that Dispatch

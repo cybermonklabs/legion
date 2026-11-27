@@ -2,7 +2,7 @@ package textcheck
 
 // This test reads the store's migrations through migrations.All: its import puts their embed
 // in the go list closure of the text-check run, which needs no row, so the guide is its one row.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:498 reads it under ../../../.. for phaseEntryList (shippedText)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for phaseEntryList
 
 import (
 	"errors"
@@ -260,10 +260,10 @@ func phaseEntryList(t *testing.T) phaseEntryListing {
 	return listing
 }
 
-// phaseEntryListing is the list as a reader sees it: the migrations its entries describe, and
-// every migration name it carries, the described ones among them. Each guide test reads it only
-// through the method that is its check, so neither reads the other's names.
-type phaseEntryListing struct{ described, named []string }
+// phaseEntryListing is the list as a reader sees it. It holds the migrations its entries describe,
+// every migration name it carries, described or not, and its entries, one to a line. Each guide
+// test reads it only through the method that is its check, so no check reads another's fields.
+type phaseEntryListing struct{ described, named, entries []string }
 
 // undescribed is every migration of above that no entry of the list describes, in above's order:
 // what TestTheGuideNamesEveryMigrationAboveThePhaseEntry reports.
@@ -295,9 +295,10 @@ var errHidden = errors.New("only an HTML comment holds it, and the rendered guid
 
 // readPhaseEntryList reads the list in text, the guide called name, where a reader sees it
 // (visibleMarkdown): the lines after its opening sentence, up to the line phaseEntryListEnd opens.
-// It answers the migrations the list describes and every migration name it carries. A text with
-// no such sentence or with two, with no such line after it, or whose list names no migration is
-// refused: each would otherwise read as a list that names nothing, which
+// It answers the migrations the list describes, every migration name it carries, and its visible
+// lines, one entry to a line. A text with no such sentence or with two, with no such line after
+// it, or whose list names no migration is refused: each would otherwise read as a list that names
+// nothing, which
 // TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes. A sentence or line that only
 // an HTML comment holds is refused as hidden (errHidden), a comment opened before the sentence
 // among them: that comment hides the sentence and whatever of the list it runs over.
@@ -339,7 +340,8 @@ func readPhaseEntryList(name, text string) (phaseEntryListing, error) {
 	if len(listing.named) == 0 {
 		return phaseEntryListing{}, fmt.Errorf("%s's list after line %d names no migration", name, start+1)
 	}
-	for _, entry := range strings.Split(visible, "\n") {
+	listing.entries = strings.Split(visible, "\n")
+	for _, entry := range listing.entries {
 		listing.described = append(listing.described, entrySubjects(strings.TrimLeft(entry, " \t"))...)
 	}
 	return listing, nil

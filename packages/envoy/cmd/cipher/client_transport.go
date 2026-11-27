@@ -18,11 +18,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/tlsalert"
 )
@@ -187,9 +187,10 @@ func (e *cutOffError) Unwrap() error { return e.cause }
 // retryable reports whether a later call may get the answer err's call did not: the call went
 // out and failed in transport (unreachable's classes), its answer was cut off after the headers
 // came (*cutOffError), or the broker, or a front door before it, could not serve it just then —
-// 429, 502, 503 or 504, with the broker's envelope or without it (doStatus makes an *apiError of
-// either). Any other refusal is the broker's answer, which the same call gets again, and a
-// failure of the local signer (the helper's socket) is not the broker's at all.
+// an outage (httpoutage.Is: any 5xx, a 408 or a 429), with the broker's envelope or without
+// it (doStatus makes an *apiError of either). Any other refusal is the broker's answer, which the
+// same call gets again, and a failure of the local signer (the helper's socket) is not the
+// broker's at all.
 func retryable(err error) bool {
 	var unreached *unreachableError
 	if errors.As(err, &unreached) {
@@ -197,9 +198,7 @@ func retryable(err error) bool {
 	}
 	var refusal *apiError
 	if errors.As(err, &refusal) {
-		return slices.Contains([]int{
-			http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout,
-		}, refusal.Status)
+		return httpoutage.Is(refusal.Status)
 	}
 	var cut *cutOffError
 	return errors.As(err, &cut)

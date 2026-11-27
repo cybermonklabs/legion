@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"slices"
@@ -20,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 
 	"github.com/sjawhar/envoy/natsgrant"
 	"github.com/sjawhar/envoy/testnatsimages"
@@ -87,7 +85,12 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 					fmt.Sprintf(`{"kind":"listener_ready","at":%d}`, time.Now().UnixMilli()))
 				// Before the consumers run, each has its one event waiting, so the state's lag read
 				// makes every request it can under the grant: each consumer's info and its oldest
-				// waiting message's stored-message get.
+				// waiting message's stored-message get. A publish's ack says the stream stored the
+				// event, and nats-server counts it for each consumer only after that ack, so the read
+				// waits for the server to count each consumer's event first (awaitWaiting).
+				for _, name := range []string{dispatchGrantConsumer, githubGrantConsumer, wakeGrantConsumer} {
+					awaitWaiting(t, stream, name, 1)
+				}
 				for _, lag := range restarted.consumers.Lag(t.Context()) {
 					if lag.Waiting != 1 || lag.OldestAt.IsZero() || lag.Unavailable != "" {
 						t.Fatalf("lag of %s under the daemon grant = %+v, want its one event waiting with its time and nothing unavailable", lag.Name, lag)
@@ -161,7 +164,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				var serverLogErr error
 				testwait.Eventually(t, "the server log naming the refused JetStream API publish", func() bool {
 					var serverLog string
-					serverLog, serverLogErr = readDaemonGrantServerLogs(server)
+					serverLog, serverLogErr = server.Logs(context.Background())
 					serverLine = matchingLogLine(serverLog, "Publish Violation", denied)
 					return serverLine != ""
 				})
@@ -300,7 +303,39 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 	return stream
 }
 
-func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
+// awaitWaiting waits until the server counts n messages waiting for the consumer named name of
+// stream, as the daemon's lag read counts them (JetStream's NumPending plus NumAckPending). A
+// publish's ack says the stream stored the message, and nats-server counts it for each consumer
+// only afterwards, so a lag read the moment the publish returns can find nothing waiting yet. The
+// wait, and each read in it, is bounded by the row's hang guard alone (testwait.Remaining), never
+// by a span of its own. A count past n is a message from outside the row, and fails at once, and so
+// does a read that fails. It is a copy of internal/intake's awaitWaiting and ConsumerWaiting
+// (consumer_lag_test.go), which this package's tests cannot import: keep the two in step.
+func awaitWaiting(t *testing.T, stream jetstream.Stream, name string, n uint64) {
+	t.Helper()
+	requests, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	consumer, err := stream.Consumer(requests, name)
+	if err != nil {
+		t.Fatalf("read the %s consumer: %v", name, err)
+	}
+	var waiting uint64
+	if testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
+		info, err := consumer.Info(requests)
+		if err != nil {
+			t.Fatalf("read the %s consumer's info: %v", name, err)
+		}
+		if waiting = info.NumPending + uint64(info.NumAckPending); waiting > n {
+			t.Fatalf("the server counts %d messages waiting for %s, more than the %d the row published", waiting, name, n)
+		}
+		return waiting == n
+	}) {
+		return
+	}
+	t.Fatalf("the server counts %d message(s) waiting for %s at the row's hang guard, want %d", waiting, name, n)
+}
+
+func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissions) (string, *nats.Conn, jetstream.JetStream, *testnats.Container, string) {
 	t.Helper()
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
@@ -328,23 +363,13 @@ func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissi
 	return daemonSeed, admin, js, server, uri
 }
 
-func daemonGrantServerLogs(t *testing.T, server *tcnats.NATSContainer) string {
+func daemonGrantServerLogs(t *testing.T, server *testnats.Container) string {
 	t.Helper()
-	text, err := readDaemonGrantServerLogs(server)
+	text, err := server.Logs(context.Background())
 	if err != nil {
 		t.Fatalf("read the server log: %v", err)
 	}
 	return text
-}
-
-func readDaemonGrantServerLogs(server *tcnats.NATSContainer) (string, error) {
-	logs, err := server.Logs(context.Background())
-	if err != nil {
-		return "", err
-	}
-	defer logs.Close()
-	text, err := io.ReadAll(logs)
-	return string(text), err
 }
 
 func matchingLogLine(text string, terms ...string) string {

@@ -6,14 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/alonetest"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
@@ -25,6 +24,7 @@ import (
 // no role message, so the relay sends it to the session whose subject holds it, as it sends every
 // frame that is no role message.
 func TestTheRoleReadRefusesWhatJSONParseRefusesAtTheTopLevel(t *testing.T) {
+	t.Parallel()
 	const role = `"topic":"notifications.role.reader"`
 	refused := []struct{ name, data string }{
 		{"not an object", `["notifications.role.reader"]`},
@@ -87,6 +87,7 @@ func TestTheRoleReadRefusesWhatJSONParseRefusesAtTheTopLevel(t *testing.T) {
 // for an integer, and the envelope's schema types the field as an integer, so a copy that took it
 // would carry a time the original does not.
 func TestTheEnvelopeReadTakesAWholeNumberAndNoStringHoldingOne(t *testing.T) {
+	t.Parallel()
 	read := func(t *testing.T, data string) (int64, string) {
 		t.Helper()
 		frame, err := readRoleFrame([]byte(data))
@@ -117,10 +118,11 @@ func TestTheEnvelopeReadTakesAWholeNumberAndNoStringHoldingOne(t *testing.T) {
 // readRoleFrame keys a role mark as the role's claim is keyed (store.RoleClaimKeyOf), as it keys a
 // role lane's topic (roleOfLaneTopic): a free-form role under a project is that project's own
 // claim, <project>.<role>, and every other name is its bare name. A takeover pass copies a message
-// only to the role its read names (takenRoleMessage), so a mark read as the bare name would copy a
+// only to the role its read names (takenFrame), so a mark read as the bare name would copy a
 // project's message to the lane of the claim of the same name under no project, and the session
 // relay would read that claim's holder for it.
 func TestARoleMarkIsReadAsTheClaimKeyOfTheRoleItNames(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ mark, key string }{
 		{"PRIV.lead-reviewer", "PRIV.lead-reviewer"},
 		{"INFRA.reviewer", "INFRA.reviewer"},
@@ -142,8 +144,8 @@ func TestARoleMarkIsReadAsTheClaimKeyOfTheRoleItNames(t *testing.T) {
 			if err != nil || frame.role != c.key {
 				t.Errorf("readRoleFrame of a message marked %q answers role %q and %v; want %q, the key roleOfLaneTopic gives its topic", c.mark, frame.role, err, c.key)
 			}
-			if item, ok := takenRoleMessage(data, c.key); !ok || item.EventID != "evt-mark" {
-				t.Errorf("a takeover pass of role %s takes the message marked %q: %t (event %q); want it taken", c.key, c.mark, ok, item.EventID)
+			if frame, kind := takenFrame(data, c.key, "ses_marked", false); kind != takenRoleCopy || frame.envelope().EventID != "evt-mark" {
+				t.Errorf("a takeover pass of role %s takes the message marked %q: %v (event %q); want it taken to the role's lane", c.key, c.mark, kind, frame.envelope().EventID)
 			}
 		})
 	}
@@ -160,6 +162,7 @@ const roleFrameErrorBound = 256
 // value after it, and a key of bytes the quote writes as four characters each (0xff, a control
 // byte), each give an error of at most roleFrameErrorBound bytes.
 func TestAnUnreadableRoleFrameIsNamedInAFewDozenBytes(t *testing.T) {
+	t.Parallel()
 	nested := strings.Repeat("[", 4<<20) + strings.Repeat("]", 4<<20)
 	key := strings.Repeat("k", 1<<20)
 	invalid32, invalid1M := strings.Repeat("\xff", 32), strings.Repeat("\xff", 1<<20)
@@ -232,20 +235,14 @@ const relaysFirstReadAllocsSlack = 100
 // testing.AllocsPerRun counts every allocation the process makes while it measures, and the other
 // tests of this package leave servers and watchers running that allocate meanwhile: a run of the
 // whole package counted 27 and 103 for these reads. So the test runs the test binary again, for
-// this test alone, and the measurement is that run's, held to relaysFirstReadAllocsSlack above the
-// count for 8 keys; it fails unless that run reports both measurements.
+// this test alone (alonetest), and the measurement is that run's, held to
+// relaysFirstReadAllocsSlack above the count for 8 keys; it fails unless that run reports both
+// measurements.
 func TestTheRelaysFirstReadOfAFrameMakesNoAllocationForEachKey(t *testing.T) {
-	if os.Getenv(relaysFirstReadAllocsChildEnv) == "" {
-		child := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v")
-		child.Env = append(os.Environ(), relaysFirstReadAllocsChildEnv+"=1")
-		output, err := child.CombinedOutput()
-		t.Logf("the run of this test alone:\n%s", output)
-		if err != nil {
-			t.Fatalf("the run of this test alone failed: %v", err)
-		}
-		if measured := strings.Count(string(output), "allocations for 8 keys"); measured != 2 {
-			t.Fatalf("the run of this test alone reported %d measurements; want 2", measured)
-		}
+	// Not parallel: its run alone counts allocations with testing.AllocsPerRun, which panics
+	// during a parallel test.
+	if !alonetest.Child(relaysFirstReadAllocsChildEnv) {
+		alonetest.Run(t, relaysFirstReadAllocsChildEnv, 2)
 		return
 	}
 	relays := &sessionRelays{}
@@ -270,7 +267,7 @@ func TestTheRelaysFirstReadOfAFrameMakesNoAllocationForEachKey(t *testing.T) {
 			few, many := manyKeysFrame(c.topic, 8), manyKeysFrame(c.topic, 100_000)
 			fewAllocs := testing.AllocsPerRun(5, func() { c.judge(t, few) })
 			manyAllocs := testing.AllocsPerRun(5, func() { c.judge(t, many) })
-			t.Logf("%v allocations for 8 keys (%d bytes), %v for 100,000 keys (%d bytes)", fewAllocs, len(few), manyAllocs, len(many))
+			alonetest.Measured(t, "%v allocations for 8 keys (%d bytes), %v for 100,000 keys (%d bytes)", fewAllocs, len(few), manyAllocs, len(many))
 			if manyAllocs > fewAllocs+relaysFirstReadAllocsSlack {
 				t.Errorf("the read makes %v allocations for a frame of 100,000 keys and %v for one of 8; want at most %d more for more keys", manyAllocs, fewAllocs, relaysFirstReadAllocsSlack)
 			}
@@ -283,6 +280,7 @@ func TestTheRelaysFirstReadOfAFrameMakesNoAllocationForEachKey(t *testing.T) {
 // field of the envelope its sender wrote. Every field of the envelope is set, so a field a later
 // version adds is held to this too.
 func TestACopiedRoleMessageCarriesEveryFieldAmongManyKeys(t *testing.T) {
+	t.Parallel()
 	expires, kept := int64(1795191372979), int64(1795191371999)
 	want := contracts.Envelope{
 		EventID:           "evt-every-field",
@@ -332,8 +330,8 @@ func TestACopiedRoleMessageCarriesEveryFieldAmongManyKeys(t *testing.T) {
 	if got := frame.envelope(); !reflect.DeepEqual(got, want) {
 		t.Errorf("the relay's copy reads\n%+v\nwant every field its sender wrote\n%+v", got, want)
 	}
-	if got, ok := takenRoleMessage(data, "reader"); !ok || !reflect.DeepEqual(got, want) {
-		t.Errorf("a takeover pass takes %t and copies\n%+v\nwant every field its sender wrote\n%+v", ok, got, want)
+	if taken, kind := takenFrame(data, "reader", "ses_after", false); kind != takenRoleCopy || !reflect.DeepEqual(taken.envelope(), want) {
+		t.Errorf("a takeover pass takes it as %v and copies\n%+v\nwant every field its sender wrote\n%+v", kind, taken.envelope(), want)
 	}
 }
 
@@ -341,6 +339,7 @@ func TestACopiedRoleMessageCarriesEveryFieldAmongManyKeys(t *testing.T) {
 // (jsonStringTextValid), and reads it, with no allocation, as encoding/json reads it, for each of
 // the keys it keeps (keyNames).
 func TestAKeyWithEscapesNamesAFieldAsEncodingJSONReadsIt(t *testing.T) {
+	t.Parallel()
 	tokens := []string{
 		`"topic"`, `"top\u0069c"`, `"\u0074\u006f\u0070\u0069\u0063"`, `"\u0074OPIC"`, `"top\u0049c"`, `"topi\u0063 "`,
 		`"topic\u0000"`, `"top\u0130c"`, `"\u0174opic"`, `"\ud835\udcc9opic"`, `"t\/opic"`, `"ro\u006ce"`, `"r\u006Fle"`,

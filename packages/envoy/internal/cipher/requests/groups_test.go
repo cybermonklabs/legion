@@ -18,9 +18,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/groups/groupstest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -89,7 +89,7 @@ func newGroupFixture(t *testing.T) *groupFixture {
 		Replay:     replayer(st),
 		Groups:     directory,
 	}
-	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
 	m.Chain.Groups = directory
 	f := &groupFixture{m: m, local: local, directory: directory}
 	f.member, f.memberKey = newEnrollment(t, st, "session", "box-member-"+t.Name(), new(groupMember), nil)
@@ -138,7 +138,7 @@ func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
 	set := current.Get()
 	source := set.Secrets["TEAM_KEY"].Source
 	asker := policy.Requester{Operator: groupAsker}
-	if err := stillAllowed(set, proxyrules.Rules{}, sourceRule{}, "TEAM_KEY", source, policy.Approval, groupMember, nil, asker); err != nil {
+	if err := stillAllowed(set, sourceRule{}, "TEAM_KEY", source, policy.Approval, groupMember, nil, asker); err != nil {
 		t.Fatalf("stillAllowed(approved by a member) = %v, want nil", err)
 	}
 	for _, c := range []struct {
@@ -151,7 +151,7 @@ func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
 		if c.stale {
 			directory.MarkStale(approversGroup)
 		}
-		err := stillAllowed(set, proxyrules.Rules{}, sourceRule{}, "TEAM_KEY", source, policy.Approval, c.decider, nil, asker)
+		err := stillAllowed(set, sourceRule{}, "TEAM_KEY", source, policy.Approval, c.decider, nil, asker)
 		var lapsed record.ApproverNotAdmittedError
 		if !errors.Is(err, ErrGrantNotLive) || errors.As(err, &lapsed) {
 			t.Fatalf("%s: stillAllowed = %v; want ErrGrantNotLive and no lapse of the record's group", c.name, err)
@@ -164,7 +164,7 @@ func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
 func TestMaySettleAdmitsAGroupMember(t *testing.T) {
 	directory := groupstest.New()
 	directory.Set(approversGroup, groupMember)
-	member, outsider := byPerson(groupMember), byPerson(groupOutsider)
+	member, outsider := bySession(store.BrowserSessionRef{Login: groupMember}), bySession(store.BrowserSessionRef{Login: groupOutsider})
 	if !member.maySettle(approversForm, approversForm, directory) || outsider.maySettle(approversForm, approversForm, directory) {
 		t.Fatalf("maySettle: member %v, outsider %v; want true, false", member.maySettle(approversForm, approversForm, directory), outsider.maySettle(approversForm, approversForm, directory))
 	}
@@ -528,8 +528,8 @@ func TestAMemberDismissesAnExpiredGroupRequest(t *testing.T) {
 func TestAJudgedGroupGrantStaysOnAMembersListWhileTheGroupIsStale(t *testing.T) {
 	f := newGroupFixture(t)
 	ctx := context.Background()
-	f.m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_KEY", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
-	f.m.Chain = NewChainVerifier(f.m.Store, testAudience, time.Minute, f.m.Airlock)
+	policytest.JudgeTags(t, f.m.Secrets.(secrets.AWS).Client.(*secrets.Local), f.m.Policy, "TEAM_KEY", 900, "")
+	f.m.Chain = NewChainVerifier(f.m.Store, testAudience, time.Minute, f.m.Policy)
 	f.m.Chain.Groups = f.directory
 	f.m.Judge = func(PendingRequest) {}
 	req := pendingJudgeable(t, f.m, f.asker, f.askerKey, "ACME-12 needs the team key", 600, "TEAM_KEY")

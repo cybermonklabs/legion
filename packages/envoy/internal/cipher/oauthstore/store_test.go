@@ -3,6 +3,7 @@ package oauthstore_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -19,11 +20,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 func newStore(t *testing.T) (*oauthstore.Store, *pgxpool.Pool) {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), storetest.URL(t))
+	pool, err := testpool.NewPool(context.Background(), storetest.URL(t))
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
@@ -275,8 +277,8 @@ func TestEndCredentialEndsItsTokensAndNoOthers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := oauthstore.EndCredential(ctx, tx, ended); err != nil {
-		t.Fatalf("EndCredential: %v", err)
+	if n, err := oauthstore.EndCredential(ctx, tx, ended); err != nil || n != 1 {
+		t.Fatalf("EndCredential = %d, %v; want the one live access token the credential's login holds", n, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -377,6 +379,45 @@ func TestADPoPProofIsUsedOnce(t *testing.T) {
 	}
 }
 
+// A DPoP proof the replay table cannot hold is ErrUnstorableText and records nothing: a jti holding
+// a control character (PostgreSQL stores no U+0000 in text), and a jti and htu longer together than
+// the store's bound of 2,048 bytes (the primary key's btree takes no tuple over 2,704). A key of
+// exactly 2,048 bytes is recorded. The htu is random text (rand.Text), which PostgreSQL cannot
+// compress inside the index row.
+//
+// Controls in store.go: each arm of the guard dropped (the NUL fails the insert with SQLSTATE
+// 22021, and the long key with SQLSTATE 54000, neither ErrUnstorableText).
+func TestADPoPProofTheTableCannotHoldIsRefusedBeforeTheWrite(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	exp := time.Now().Add(time.Minute)
+	const jti = "a-jti-of-the-library's-length"
+	htu := func(total int) string {
+		path := "https://broker.example/v1/oauth/token/"
+		for len(jti)+len(path) < total {
+			path += rand.Text()
+		}
+		return path[:total-len(jti)]
+	}
+	if used, err := s.CheckAndSetDPoPProofUsed(ctx, jti, "jkt", "", "POST", htu(2048), exp); err != nil || used {
+		t.Fatalf("a proof of jti and htu 2,048 bytes together: (%v, %v), want (false, nil)", used, err)
+	}
+	for name, refused := range map[string][2]string{
+		"a jti holding U+0000":         {"a-jti-with-a-\x00-in-it", "https://broker.example/v1/oauth/token"},
+		"a jti holding U+001F":         {"a-jti-with-a-\x1f-in-it", "https://broker.example/v1/oauth/token"},
+		"a jti and htu of 2,049 bytes": {jti, htu(2049)},
+		"a jti and htu of 3,000 bytes": {jti, htu(3000)},
+	} {
+		if used, err := s.CheckAndSetDPoPProofUsed(ctx, refused[0], "jkt", "", "POST", refused[1], exp); !errors.Is(err, oauthstore.ErrUnstorableText) || used {
+			t.Errorf("%s: (%v, %v), want (false, ErrUnstorableText)", name, used, err)
+		}
+	}
+	var recorded int
+	if err := pool.QueryRow(ctx, `select count(*) from oauth_dpop_proofs`).Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("the table holds %d proofs, %v; want only the 2,048-byte one", recorded, err)
+	}
+}
+
 func TestADPoPNonceIsValidUntilItExpires(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newStore(t)
@@ -408,6 +449,8 @@ func TestSweepDeletesOnlySpentState(t *testing.T) {
 		`insert into oauth_dpop_nonces (nonce, expires_at) values ('nonce-expired', now() - interval '1 second'), ('nonce-live', now() + interval '1 minute')`,
 		`insert into oauth_access_tokens (signature, request_id, request, expires_at) values
 			('access-expired', 'r', '{}', now() - interval '1 second'), ('access-live', 'r', '{}', now() + interval '1 hour')`,
+		`insert into oauth_narrowed_access_tokens (signature, request_id, request, expires_at, jwk_thumbprint) values
+			('narrowed-expired', 'n', '{}', now() - interval '1 second', 'k'), ('narrowed-live', 'n', '{}', now() + interval '1 hour', 'k')`,
 		// rotated: its old token's grace passed, its newest is live, so all of it stays.
 		// revoked: every row inactive. lapsed: every row past its expiry. spent: its only token's
 		// grace passed with no successor. retrying: its only token is inside its grace.
@@ -428,11 +471,12 @@ func TestSweepDeletesOnlySpentState(t *testing.T) {
 		t.Fatalf("Sweep: %v", err)
 	}
 	for table, want := range map[string]string{
-		"select string_agg(signature, ',' order by signature) from oauth_device_codes":   "device-just-expired,device-live",
-		"select string_agg(jti, ',' order by jti) from oauth_dpop_proofs":                "proof-live",
-		"select string_agg(nonce, ',' order by nonce) from oauth_dpop_nonces":            "nonce-live",
-		"select string_agg(signature, ',' order by signature) from oauth_access_tokens":  "access-live",
-		"select string_agg(signature, ',' order by signature) from oauth_refresh_tokens": "retrying-1,rotated-new,rotated-old",
+		"select string_agg(signature, ',' order by signature) from oauth_device_codes":           "device-just-expired,device-live",
+		"select string_agg(jti, ',' order by jti) from oauth_dpop_proofs":                        "proof-live",
+		"select string_agg(nonce, ',' order by nonce) from oauth_dpop_nonces":                    "nonce-live",
+		"select string_agg(signature, ',' order by signature) from oauth_access_tokens":          "access-live",
+		"select string_agg(signature, ',' order by signature) from oauth_narrowed_access_tokens": "narrowed-live",
+		"select string_agg(signature, ',' order by signature) from oauth_refresh_tokens":         "retrying-1,rotated-new,rotated-old",
 	} {
 		var got string
 		if err := pool.QueryRow(ctx, table).Scan(&got); err != nil || got != want {
@@ -669,7 +713,8 @@ func TestTheProviderHasThreeClientsAndNoOther(t *testing.T) {
 
 // TestTheExchangeClientIsConfidentialAndNarrow: the library refuses a public client at the
 // token-exchange grant, so that client must never read as public; it may present exactly the
-// five kinds of subject token this broker accepts, ask for an access token and nothing else,
+// five kinds of subject token this broker accepts, ask for an access token or the proxy
+// placeholder a person's sign-in is traded for (oauth.Provider.grantApprove) and nothing else,
 // and present the machine's Google identity token as the one actor token a person's sign-in
 // carries and nothing else. Only it may exchange a machine login's token, and it says that an
 // authorization outside the subject token decides a delegation, since Google puts no 'may_act'
@@ -700,7 +745,7 @@ func TestTheExchangeClientIsConfidentialAndNarrow(t *testing.T) {
 				"urn:ietf:params:oauth:token-type:access_token",
 			}},
 		{name: "requested token types", got: exchanger.GetSupportedRequestTokenTypes(),
-			want: []string{"urn:ietf:params:oauth:token-type:access_token"}},
+			want: []string{"urn:ietf:params:oauth:token-type:access_token", oauthwire.TokenTypeProxyPlaceholder}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if !slices.Equal(c.got, c.want) {

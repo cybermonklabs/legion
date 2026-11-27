@@ -77,6 +77,7 @@ func servedHolds(t *testing.T, server *httptest.Server, keys ...string) map[stri
 // Each subtest that expects no hold first reads the hold shown, so each fails against a state
 // that carries no hold at all, which is the state before this change.
 func TestTheStateNamesAPodsStandingHold(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	held, quiet := cfg.Project+"-1", cfg.Project+"-2"
 	released, ended, moved := cfg.Project+"-3", cfg.Project+"-4", cfg.Project+"-5"
@@ -159,7 +160,7 @@ func TestTheStateNamesAPodsStandingHold(t *testing.T) {
 	t.Run("released", func(t *testing.T) {
 		hold(t, released, workflow.IdleHoldImage, "", first)
 		shown(t, released, workflow.IdleHoldImage)
-		if _, err := st.RecordPodRelease(ctx, store.PodRelease{Project: project, Issue: released, At: first.Add(time.Minute)}); err != nil {
+		if _, _, err := st.RecordPodRelease(ctx, store.PodRelease{Project: project, Issue: released, At: first.Add(time.Minute)}); err != nil {
 			t.Fatalf("record the release of %s: %v", released, err)
 		}
 		if got := servedHolds(t, server, released)[released]; got != nil {

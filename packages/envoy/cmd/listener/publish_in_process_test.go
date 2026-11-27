@@ -249,7 +249,7 @@ func (rig *inProcessRig) copies(t *testing.T, subject string) uint64 {
 // the row read before it sent anything, and fails on any other count.
 func (rig *inProcessRig) requireOneCopy(t *testing.T, subject string, before uint64) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the stream to store the message on "+subject, func() bool { return rig.copies(t, subject) > before })
+	waitFor(t, "the stream to store the message on "+subject, func() bool { return rig.copies(t, subject) > before })
 	if got := rig.copies(t, subject) - before; got != 1 {
 		t.Fatalf("the stream stored %d copies on %s, want 1: both attempts carry one message id", got, subject)
 	}
@@ -309,6 +309,7 @@ func (rig *inProcessRig) forwardAttempts(key string) []float64 {
 // inside that one forward, so each role send makes one attempt, where a refused forward counted
 // as one that failed makes a second.
 func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsStored(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	const target, holder = "ses_in_process_target", "ses_in_process_holder"
 	if err := rig.harness.sessions.Put(target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -366,6 +367,7 @@ const inProcessForwardWindow = 300 * time.Millisecond
 // The rig's forward seam shortens the resend's first forward to inProcessForwardWindow, so its
 // window ends while the routes are frozen, and the thaw comes once it has ended.
 func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	const holder = "ses_in_process_next_holder"
 	role := "in-process-next-" + id.New()[:8]
@@ -407,7 +409,7 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	var firstForward ended
 	select {
 	case firstForward = <-first:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the resend's first forward did not end")
 	}
 	thaw()
@@ -454,6 +456,7 @@ const inProcessBudget = time.Second
 // ends that send. A role send whose window ends while its forward is still in process costs one,
 // as main charges its 504 (sendToRole).
 func TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMaybeStored(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	const target, holder = "ses_in_process_budget_target", "ses_in_process_budget_holder"
 	if err := rig.harness.sessions.Put(target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -551,6 +554,7 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMa
 // until an answer names the copy, as the keep's own does (publishPastInProcess): a copy refused
 // twice and then stored is a copy made, under takenFrameMsgID each time.
 func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	role := "taken-in-process-" + id.New()[:8]
 	inProcess := fmt.Errorf("%w: %w", bus.ErrDuplicateInProcess,
@@ -591,6 +595,7 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 // the members' routes, waits until the leader holds the other listener's publish, and raises the
 // exception through applyDeliveryOutcome before the thaw, so the refusal comes by events.
 func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	const topic, recipient, reason = "notifications.team.exception-in-process", "ses_exception_in_process", "delivery_failed"
 	lane := bus.ExceptionTopicPrefix + topic

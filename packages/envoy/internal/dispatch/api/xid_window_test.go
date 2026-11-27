@@ -37,8 +37,9 @@ import (
 // issue_ask_repair_xid_window_test.go and delivery's xid_window_test.go build without the race
 // detector (`//go:build !race`). Under it the rig judges no gap (storetest.XidJudgesGaps) and the
 // shape is the same rule in either build, so a race run of these tests proved nothing the plain
-// run does not, at about four times the plain run's cost: envoy-go's step "Test what the race
-// build cannot run at all or at full size" runs them, judging shape and gaps both.
+// run does not, at about four times the plain run's cost: envoy-go-alone's step "Test the xid
+// window rows, the API's issue-list bound and the auth service's storm, alone" runs them, judging
+// shape and gaps both.
 //
 // Seeding the fixture is most of what a window test costs: twenty anchored writes on a 40 KB
 // spec, each of which renders the spec, about fifteen seconds of a race-built run on a two-core
@@ -172,47 +173,6 @@ func (f *xidFixture) uploadVerification(t *testing.T) {
 	uploaded := uploadDocument(t, f.handler, "/api/v1/issues/"+f.issueKey, "verification.md", verification+"\n"+twoChecks)
 	waitForArtifactVersion(t, f.handler, uploaded.Artifact.ID, 1)
 	f.verification = true
-}
-
-// awaitSettledDocuments waits until no document owes a settlement and no backend has held an xid
-// for a quiet spell, so a test that needed settlement to run first measures its request alone.
-func awaitSettledDocuments(t *testing.T, database *store.Store) {
-	t.Helper()
-	awaitQuietDatabase(t, database, true)
-}
-
-// awaitQuietDatabase waits until no backend has held an xid for a quiet spell and, where settled
-// asks it, no document owes a settlement either. A document of a closed issue owes its settlement
-// until the issue reopens - a closed issue settles nothing, and the reopen arms what it owes
-// (docs' settlement) - so a request made on a closed issue waits for the quiet alone.
-func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
-	t.Helper()
-	const quiet = 300 * time.Millisecond
-	deadline := time.Now().Add(30 * time.Second)
-	var calm time.Time
-	for time.Now().Before(deadline) {
-		var busy bool
-		if err := database.Pool.QueryRow(context.Background(), `
-			select ($1::boolean and exists (select 1 from doc_settlements_pending))
-			    or exists (select 1 from pg_stat_activity
-			               where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid())
-		`, settled).Scan(&busy); err != nil {
-			t.Fatalf("read settlement state: %v", err)
-		}
-		switch {
-		case busy:
-			calm = time.Time{}
-		case calm.IsZero():
-			calm = time.Now()
-		case time.Since(calm) >= quiet:
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if settled {
-		t.Fatal("documents never finished settling")
-	}
-	t.Fatal("the database never fell quiet")
 }
 
 // TestXidWindowsOnTheLargeSpec measures, as steps on one fixture, every route whose request needs
@@ -704,6 +664,57 @@ func xidWindowClaim(t *testing.T, f *xidFixture) {
 func xidWindowIssueCloseWithOpenAsks(t *testing.T, f *xidFixture) {
 	f.measure(t, http.StatusOK, storetest.XidWindowOf(5,
 		"the issue row's own update, the two reads that load the issue it answers with, the batch withdrawing its asks and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
+		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/issues/"+f.issueKey, map[string]any{"status": "done"}, "alice")
+	})
+}
+
+// TestXidWindowsUnderTheParentStatusRule measures, with DISPATCH_PARENT_STATUS_RULE on, the two
+// writes to which the rule adds a statement inside the xid window: a create under a parent,
+// whose write phase reads the parent's row `for share` just before its insert, and a close, whose
+// write phase reads the issue's open children again after its own update. With the rule off
+// neither statement runs, and xidWindowIssueCreateWithSpec and xidWindowIssueCloseWithOpenAsks
+// hold those two writes to the windows they hold without it. The create goes first and files
+// its issue under a parent of its own, so the fixture's issue has no child when it closes. The
+// fixture settles each document twenty milliseconds after a write, and each step waits for every
+// document to settle first, so the close settles nothing before its transaction.
+func TestXidWindowsUnderTheParentStatusRule(t *testing.T) {
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
+	f := newXidFixture(t, testServerOptions{settle: 20 * time.Millisecond, parentStatusRule: true}, "")
+	runXidSteps(t, f, true, []xidStep{
+		{"issue create under a parent", xidWindowIssueCreateUnderAParent},
+		{"issue close with open asks", xidWindowIssueCloseUnderTheRule},
+	})
+}
+
+// A create with a spec under a parent, with the rule on: the create's window of
+// xidWindowIssueCreateWithSpec, the read of the parent's row `for share` before the insert, and
+// the walk of the new issue's ancestors that its issue.created event names, which a create under
+// a parent runs whatever the setting.
+func xidWindowIssueCreateUnderAParent(t *testing.T, f *xidFixture) {
+	parent := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": xidProject, "title": "Parent of the measured create", "force": true, "actor": sessionActor(),
+	})
+	if parent.Code != http.StatusCreated {
+		t.Fatalf("create the parent: status=%d body=%s", parent.Code, parent.Body.String())
+	}
+	parentKey := decodeBody[model.Issue](t, parent).Key
+	awaitQuietDatabase(t, f.database, true)
+	spec, _ := xidSpec(3)
+	f.measureAdvised(t, http.StatusCreated, storetest.XidWindowOf(12,
+		"the create's inline steering writes - the project's next number, the rank lock, the rank read, the parent's row read for share, the issue row, its blocked_by links and its artifact row - "+
+			"the two reads that load the issue it answers with, the walk of its ancestors for its event, the queued batch and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
+		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": xidProject, "title": "Large spec filed under a parent", "spec": spec, "parent": parentKey, "force": true,
+			"actor": sessionActor(),
+		})
+	})
+}
+
+// A close with open asks, with the rule on: the close's window of xidWindowIssueCloseWithOpenAsks,
+// and the second read of the issue's open children after its update.
+func xidWindowIssueCloseUnderTheRule(t *testing.T, f *xidFixture) {
+	f.measure(t, http.StatusOK, storetest.XidWindowOf(6,
+		"the issue row's own update, the read of its open children, the two reads that load the issue it answers with, the batch withdrawing its asks and its COMMIT"), func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/issues/"+f.issueKey, map[string]any{"status": "done"}, "alice")
 	})
 }

@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  `runtime.kubernetes.repository_cache` takes two optional keys, set together or not at all: `bucket`, the Cloud Storage bucket each repository cache keeps its packs in, and `service_account`, the Kubernetes ServiceAccount the cache pods alone run as, which must be bound through Workload Identity to the Google service account that holds the bucket's grants.
+  Both absent is off, and every cache pod runs as `runtime.kubernetes.pod.service_account`, as before.
+  With both set, every cache pod runs as `service_account`, and its `cache` container alone is told the bucket as `LEGION_REPOSITORY_CACHE_BUCKET`; its argv, its Secret and its mounts do not change, and no issue pod or controller pod runs as that account or is told the bucket.
+  The cache then uploads its clone's packs and indexes to the bucket, create-only, after every fetch and repack that succeeds, and answers `GET /packs`, on the token `/tar` takes, with its refs and a 15-minute V4 signed address for each pack and index, which an issue pod's `workspace-init provision` downloads into its clone's `.git` and verifies, falling back to `/tar` when any of it fails.
+  One bucket serves the caches of one project's daemon alone, and no lifecycle rule of the bucket may reach an object a listed set names: the cache uploads such an object again at a later sync, and until then every provision of that repository falls back to `/tar`.
+  The loader and the Sandbox runtime refuse one key without the other, a `service_account` that is the account the issue pods run as (`pod.service_account`, or `default` while it is unset), and a `service_account` that is the controller's own account (`pod.controller_service_account`); the loader also refuses a blank value, a `${…}` placeholder, a `bucket` that is not a Cloud Storage bucket's name and a `service_account` that is not a ServiceAccount's name (a DNS-1123 subdomain, so not `Legion_Cache` or `a/b`).
+  The loader now refuses a `runtime.kubernetes.pod.service_account` that is not a ServiceAccount's name the same way, naming the key and the value, where until now the API server refused every pod that named it.
+  The daemon makes a cache's pod again, keeping its Sandbox and volume and waiting until it serves no `/tar` stream, when the pair is turned on or off, when either key changes, and when the cache's pod runs as another account than the one a cache pod runs as now.
+  Neither value is carried on `GET /legion/v1/state`.
+  Create the bucket, the ServiceAccount and the Google service account it is bound to before setting the keys (a ServiceAccount bound to none leaves `/packs` answering 503 and every provision on `/tar`), and remove both keys before rolling back to a daemon that does not know them (docs/kubernetes.md, The repository cache, "The bucket").
+time: 2026-11-25T22:45:35Z
+custom:
+    Issue: INFRA-5789

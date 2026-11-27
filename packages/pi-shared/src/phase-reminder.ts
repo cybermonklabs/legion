@@ -85,7 +85,7 @@ export interface PhaseReminderDeps {
   readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
-  readonly publisher: () => EnvoyPublish | undefined;
+  readonly publisher: () => Promise<EnvoyPublish | undefined>;
   /** `LEGION_PROJECT`: the project token every role topic carries. */
   readonly project: string | undefined;
   readonly limits: StallLimits;
@@ -303,6 +303,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     return { reminds: true, record };
   };
 
+  /** Whether the run has reached the threshold and its architect has not been told yet. */
+  const architectDue = (): boolean => !reported && stall.count >= deps.limits.architectAfter;
+
   /**
    * D6: one Envoy message to the issue's architect, when a delivered reminder brought the count to
    * the threshold. `reportKey` is minted at the first attempt of a run of reminders and kept until
@@ -313,9 +316,15 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * run ended acknowledges nothing.
    */
   const tellArchitect = async (record: LegionIssue | undefined): Promise<void> => {
+    // A run whose claim has ended builds no publisher: its first build can run Envoy's token
+    // command, which would trade a broker token for a notice that is not sent.
+    if (deps.claim() === undefined) return;
+    // The worker's own turn may end the run, or its claim may end, while the publisher is built.
+    // What is read after it is the run as it stands, which may need no notice any more.
+    const publish = await deps.publisher();
+    if (!architectDue()) return;
     const claim = deps.claim();
     if (claim === undefined) return;
-    const publish = deps.publisher();
     if (publish === undefined) {
       deps.log.debug("legion: Envoy is off for this session; the architect is not told", {
         issue: claim.issue,
@@ -438,7 +447,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       if (generation === sentAt) armReminder(reminder, deps.limits.reminderMs);
       return;
     }
-    if (reported || stall.count < deps.limits.architectAfter) return;
+    if (!architectDue()) return;
     await tellArchitect(record);
   };
 
@@ -500,12 +509,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // reads: the daemon judges a reminder's own turn, which no prompt of its ran, from its
         // turn-outcome report, as it judges a prompt's turn from that prompt's result
         // (dispatch://INFRA-4508), so a refusal whose status cannot clear (a 4xx other than 401,
-        // 403, 408 and 429) fails the claim at once and holds the issue for its architect, and
-        // the next reminder is dropped. A refusal that can clear, or whose status cannot be read,
-        // fails nothing, so the reminders keep this pace for as long as the provider refuses —
-        // the whole of dispatch://INFRA-264 — and the project's controller is told once when the
-        // worker's turns that ended in a provider error, reminders' and prompts' alike, reach six
-        // in a row.
+        // 403, 408 and 429), or whose report carries `code: "cyber_policy"` (Oh My Pi's own class
+        // for OpenAI's cyber-policy refusal, whatever the status), fails the claim at once and
+        // holds the issue for its architect, and the next reminder is dropped. Any other refusal,
+        // or one whose report carries no status and no code, fails nothing, so the reminders keep
+        // this pace for as long as the provider refuses — the whole of dispatch://INFRA-264 — and
+        // the daemon sends the `provider-errors` notice once when the worker's turns that ended in
+        // a provider error, reminders' and prompts' alike, reach six in a row
+        // (`providerErrorRunReached` in the daemon says to whom).
         advance(turn);
         continued = false;
         armReminder(reminderText(""), deps.limits.reminderMs);

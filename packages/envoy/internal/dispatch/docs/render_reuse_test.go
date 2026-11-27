@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The tests here hold the reuse of renderings (renderedReplica.changedBy, warmFork's forkMarkdown,
@@ -217,7 +218,7 @@ func watchRenders(t *testing.T, service *Service, artifactID string) *renderShad
 		}
 		sh.forkRead()
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		sh.mu.Lock()
 		sh.closed = true
 		sh.mu.Unlock()
@@ -371,6 +372,7 @@ func (sh *renderShadow) observedWithoutUpdate(room *shadowRoom, log *crdt.Update
 }
 
 func TestTheRenderShadowReadsClassesForAParkedOnlyCommit(t *testing.T) {
+	t.Parallel()
 	writer := crdt.New(crdt.WithClientID(7))
 	text := writer.GetText("pending")
 	writer.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 0, "base", nil) })
@@ -783,6 +785,7 @@ var (
 // observer takes the edit's rendering as the replica's: nothing renders but the edit's own
 // after-render.
 func TestRenderReuseAWarmReplaceRendersOnlyItsResult(t *testing.T) {
+	t.Parallel()
 	service, artifactID, sh := newWarmRenderReuseRoom(t)
 	m := sh.measure()
 	write := sh.write(t, applyOps(service, artifactID, reuseAgent, model.EditOp{Op: "replace", Find: "Paragraph 7 opens", With: "Paragraph 7 now opens"}))
@@ -803,6 +806,7 @@ func TestRenderReuseAWarmReplaceRendersOnlyItsResult(t *testing.T) {
 // publish into the room its fork was warm-built from is classified by the margin-only path. Neither
 // changes content.
 func TestRenderReuseAnAnchoredCommentRendersNothingTwice(t *testing.T) {
+	t.Parallel()
 	service, artifactID, sh := newWarmRenderReuseRoom(t)
 	m := sh.measure()
 	write := sh.write(t,
@@ -826,6 +830,7 @@ func TestRenderReuseAnAnchoredCommentRendersNothingTwice(t *testing.T) {
 // E3. A warm write that adds an ask block hands the observer the ask blocks it walked, and the
 // room records the block and its author as rendering would: the write's actor.
 func TestRenderReuseAWarmAskKeepsItsAuthor(t *testing.T) {
+	t.Parallel()
 	service, artifactID, sh := newWarmRenderReuseRoom(t)
 	m := sh.measure()
 	write := sh.write(t, applyOps(service, artifactID, reuseAgent, model.EditOp{
@@ -861,6 +866,7 @@ func TestRenderReuseAWarmAskKeepsItsAuthor(t *testing.T) {
 // delete-only edit, which advances no clock of the room's state vector, is told by the foreign
 // count all the same.
 func TestRenderReuseABrowserEditAfterTheForkReadIsRendered(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		edit       func(t *testing.T) func(*pmdoc.Node) *pmdoc.Node
@@ -930,6 +936,7 @@ func serviceEdit(t *testing.T, service *Service, artifactID string, edit func(*p
 // - the repair's paragraph, the backfill's re-minted id, the write's paragraph - is spliced in; the
 // browser's appended block is rendered whole.
 func TestRenderReuseAServiceCommitAfterTheForkReadIsRendered(t *testing.T) {
+	t.Parallel()
 	t.Run("service repair", func(t *testing.T) {
 		service, artifactID, sh := newWarmRenderReuseRoom(t)
 		edited := false
@@ -1001,6 +1008,7 @@ func TestRenderReuseAServiceCommitAfterTheForkReadIsRendered(t *testing.T) {
 // nothing classifies it - and with a browser's edit, which appends a block and so is rendered
 // whole, the new replica's foreign count is the fork read's, so only the epoch tells the two apart.
 func TestRenderReuseAReloadedRoomNeverTakesTheWritesRendering(t *testing.T) {
+	t.Parallel()
 	for _, afterCommit := range []bool{false, true} {
 		name := "before the append"
 		if afterCommit {
@@ -1072,6 +1080,7 @@ func TestRenderReuseAReloadedRoomNeverTakesTheWritesRendering(t *testing.T) {
 // E8. A replica that recovers between the write's fork read and its publish starts again at a
 // fresh epoch, so the write's rendering is not taken: the publish is measured, and spliced in.
 func TestRenderReuseARecoveredReplicaRendersThePublish(t *testing.T) {
+	t.Parallel()
 	service, artifactID, sh := newWarmRenderReuseRoom(t)
 	recovered := false
 	var readEpoch uint64
@@ -1121,6 +1130,7 @@ func joinedLiveWriteOf(t *testing.T, service *Service, artifactID string) *liveW
 // updates, whether the room consumed F before the second operation or after it. Every update
 // measured changes one paragraph, so each is spliced in.
 func TestRenderReuseAForeignCommitBetweenOperations(t *testing.T) {
+	t.Parallel()
 	for _, consumedFirst := range []bool{true, false} {
 		name := "F consumed later"
 		if consumedFirst {
@@ -1161,6 +1171,7 @@ func TestRenderReuseAForeignCommitBetweenOperations(t *testing.T) {
 // E10. A cold write's room loads after the write committed, from the store, which holds the
 // write, so nothing of the write reaches that room as a commit and no observer classifies it.
 func TestRenderReuseAColdWriteIsAlreadyInTheRoom(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		ops  []model.EditOp
@@ -1208,6 +1219,7 @@ func TestRenderReuseAColdWriteIsAlreadyInTheRoom(t *testing.T) {
 // load read the head before it (roomLoad.took): its update is not in that room, so it is measured,
 // and spliced in, since it changes one paragraph.
 func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
+	t.Parallel()
 	service, artifactID, sh := newRenderReuseService(t)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -1265,6 +1277,7 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 // document pushed outside the schema after the fork read renders, and WARNs, as before; a cold
 // repair is already in the room that loads after it committed, so nothing of it is classified.
 func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in its captureWarnings).
 	const updatedOutside = "updated document outside Proof schema"
 	captureWarnings := func(t *testing.T) *storetest.LockedLog {
 		logs := &storetest.LockedLog{}
@@ -1338,6 +1351,7 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 // E13. A committed warm write keeps no fork, rendering, update or published rendering: each goes
 // with the publish (finishLiveWrite). TestAColdWriteLoadsNoRoom holds a cold write to the same.
 func TestRenderReuseACommittedWriteKeepsNoRendering(t *testing.T) {
+	t.Parallel()
 	service, artifactID, sh := newWarmRenderReuseRoom(t)
 	m := sh.measure()
 	write := sh.write(t,
@@ -1358,6 +1372,7 @@ func TestRenderReuseACommittedWriteKeepsNoRendering(t *testing.T) {
 // rendering, and the version is above the room's loaded head, so the update, which deletes text
 // in one paragraph, is measured, and spliced in.
 func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -1399,6 +1414,7 @@ func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
 // render of the room all hold the text of both transactions, and the commit that brought them is
 // a content change.
 func TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked(t *testing.T) {
+	t.Parallel()
 	service, artifactID, sh := newWarmRenderReuseRoom(t)
 	live := service.srv.GetDoc(artifactID)
 	replica := service.replicaOf(live)
@@ -1408,7 +1424,7 @@ func TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked(t *testing.T
 	// A log of the test's own, opened before the peer's commits, to read what each one parked:
 	// the replica's log hands its updates to the observer, which drains it.
 	parked := live.OpenUpdateLog()
-	t.Cleanup(parked.Close)
+	testcleanup.Add(t, parked.Close)
 
 	const firstText = "A paragraph the peer's first transaction wrote."
 	const secondText = "A paragraph the peer's second transaction wrote."
@@ -1678,6 +1694,7 @@ func insertBlocksAfter(t *testing.T, prefix, markdown string) func(*pmdoc.Node) 
 // split a top-level block, splicing every keystroke's block in and reading nothing for the
 // margin record.
 func TestRenderReuseABrowserTypingScript(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	holdRoomsResident(t, service)
@@ -1783,6 +1800,7 @@ func TestRenderReuseABrowserTypingScript(t *testing.T) {
 // so the test breaks the block in the replica's own copy, the one the walk reads, after the
 // layout that flags it was recorded.
 func TestRenderReuseAnUnreadableAskBlockKeepsTheRoomsAskAuthors(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	holdRoomsResident(t, service)
@@ -1848,6 +1866,8 @@ func topLevelAskElement(t *testing.T, fragment *crdt.YXmlFragment) *crdt.YXmlEle
 // collection in between would otherwise decide the counts; the collector runs again before the
 // shadow renders, so a race build's memory does not grow through the whole test.
 func TestRenderReuseACatchUpTakesTheLoadsRendering(t *testing.T) {
+	// Not parallel: it turns the whole process's collector off (debug.SetGCPercent in
+	// pauseCollections) and forces a collection (runtime.GC).
 	t.Run("the first commit takes the load's rendering", func(t *testing.T) {
 		service, artifactID, sh := newRenderReuseService(t)
 		m := sh.measure()
@@ -1919,7 +1939,7 @@ func pauseCollections(t *testing.T) (resume func()) {
 	previous := debug.SetGCPercent(-1)
 	var once sync.Once
 	resume = func() { once.Do(func() { debug.SetGCPercent(previous) }) }
-	t.Cleanup(resume)
+	testcleanup.Add(t, resume)
 	return resume
 }
 

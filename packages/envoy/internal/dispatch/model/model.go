@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -22,18 +23,50 @@ import (
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
+	// ScopeP0 is the right to make an issue's own priority 0 (P0): a write that names a priority
+	// of 0 on an issue whose own priority is not 0 needs it. A person's own sign-in holds it; a
+	// personal token holds it only where its maker gave it.
+	ScopeP0 = "p0"
 )
 
-// Scopes is every OAuth scope this deployment knows, in the order a credential holding both
-// carries them: the whole set a person's own credential holds, and the set a mint gives a token
-// when its body names none. Read it, never write it — every such credential shares this one
-// slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
-var Scopes = []string{ScopePerson, ScopeApprove}
+// ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
+// DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs it or ScopePerson to write a Legion
+// issue's status, to take the legion label off an issue, or to move a Legion issue out from
+// under every labelled issue, but for the status write of the architect of an issue above
+// (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
+// Dispatch reads it from the broker's answer (brokerTokenActor).
+//
+// It is not in Scopes, and it must stay out. The browser's credential and the words a personal
+// token's scopes may hold both read Scopes, and neither may hold this scope: it is the daemon's
+// broker token's alone. A person-scoped broker token holds ScopePerson alone
+// (brokerPersonScopes), and the approve-only token ScopePerson and ScopeApprove
+// (brokerApproveOnlyScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
+// is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
+// one string.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
+// Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
+// in the order a credential holding all of them carries them: the whole set a person's browser
+// sign-in holds, ScopeP0 among it. A personal token holds the set its row names, which may leave
+// any of them out, and a mint that names none gives every scope its maker holds but ScopeP0 (api's
+// callerScopes). Read it, never write it — every such credential shares this one slice, as every
+// surface shares DISPATCH_SCOPES in @legion/contracts.
+var Scopes = []string{ScopePerson, ScopeApprove, ScopeP0}
+
+// ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
+// a credential's scopes, and a read-only personal token's set holds it: POST
+// /api/v1/me/agent-tokens takes it as a mint word and keeps it in agent_read_tokens.scopes, the
+// token list names it, and PATCH /api/v1/me/agent-tokens/{id} refuses it. No credential holds it
+// as a scope: Credential.ReadOnly marks the credential, Credential.Scopes never carries the word,
+// and no route requires it, so no recorded act names it either.
+const ScopeRead = "read"
 
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
-// scopes that credential holds. A browser's cookie is the person themselves acting, so it names
+// scopes of Scopes that credential holds (api's actScopes: a Legion daemon's ScopeLegionStatus is
+// never recorded). A browser's cookie is the person themselves acting, so it names
 // no agent and carries none of this.
 //
 // Scopes is a snapshot of the credential as it stood at the act, and is never read back from the
@@ -61,10 +94,18 @@ func (a *ActorAct) Holds(scope string) bool {
 }
 
 // Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
-// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
-// which this package's callers and its tests rely on.
+// agent it names, what a broker-issued token's project scope lets it write, and whether it may
+// only read. A pointer, so Actor stays comparable with ==, which this package's callers and its
+// tests rely on.
 type Credential struct {
-	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
+	// Scopes are the OAuth scopes the credential holds, any of ScopePerson, ScopeApprove and
+	// ScopeP0: a browser holds all three, and a personal token the set its row names, which may be
+	// none. A broker-issued token acting for its person holds ScopePerson alone
+	// (brokerPersonScopes), except an approve-only token, which holds ScopePerson and ScopeApprove
+	// (brokerApproveOnlyScopes); no broker-issued token holds ScopeP0. A named broker token (one
+	// the secrets broker scoped to a project) holds ScopeLegionStatus alone where the broker
+	// granted it, which the broker does for a Legion daemon's own token only (brokerTokenActor). No
+	// credential holds ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
@@ -72,23 +113,54 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
-	// one the secrets broker minted from a read entry, naming a service and a session and no
-	// person and no project. Dispatch serves it on the routes its read list names
-	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
-	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
-	// Scopes: those are what a route can require of a credential, and read meets no route's
-	// requirement; it narrows what this credential may call rather than widening it. False for
-	// every other credential.
+	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
+	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
+	// minted from a read entry or narrowed to reading because its trade asked for read; and a
+	// read-only personal token, a row of agent_read_tokens, which a person made holding read
+	// alone or beside person (personalTokenActor in internal/dispatch/api). Dispatch answers it
+	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
+	// before anything else the route does. The scope itself is not among Scopes: those are what a
+	// route can require of a credential, and read meets no route's requirement; it narrows what
+	// this credential may call rather than widening it. whoami lists it as ScopeRead after
+	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
+	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
-	// ProjectScope is a broker-issued token's project scope as the broker answered it
-	// (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry mapped, `person`
-	// for one acting as its person or for a machine nobody signed in on, `none` for a read-only
-	// token. It is what tells a token that names a service and no person apart: a `named` one is
-	// an account entry's that names no person, whose writes are recorded under its account
-	// (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in on,
-	// which writes nothing. Empty for every other credential.
+	// ApproveOnly is a broker-issued token that holds only the scope approve
+	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
+	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
+	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
+	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes whose declaration states
+	// ApproveOnly (api's routeDecl.ApproveOnly) alone, answering it 403 APPROVE_ONLY_TOKEN on every
+	// other (refuseApproveOnlyToken), before anything else the route does. False for every other
+	// credential.
+	ApproveOnly bool
+	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
+	// the zero time for a credential that names no cut. Only a read-only credential carries one.
+	Cut time.Time
+	// ProjectScope is a broker-issued token's `project_scope` as the broker answered it, read as
+	// its base word (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry
+	// mapped to its one project, or to none for an account entry that names a person and no
+	// project or neither; `person`, a token held to no one project, a person's own or a
+	// machine's nobody signed in on; `none`, the read entry's token's; or `public`, a job's token
+	// that names no one project, which writes wherever a token naming no project may, since no
+	// write check reads its list (Projects) at this release. A token narrowed to reading carries
+	// the word it narrows, with ReadOnly beside it. Empty for every other credential. A
+	// broker-issued token that names a service and no person writes only under `named` or
+	// `public` — a job's two shapes, and under `named` an account entry's naming no person, whose
+	// writes are recorded under its account — and is refused every write under any other
+	// (writeNeedsASignedInPerson).
 	ProjectScope string
+	// Principal is who a broker-issued token acts for, in the form that names its kind and scope
+	// (ciphertoken.Caller.Principal): the one the Envoy listener records a registration on that
+	// token as, which a successor's reply is held to (api's callerPrincipal and
+	// actsForSuccessorPrincipal). Empty for every other credential.
+	Principal string
+	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
+	// nil for every other credential until a later slice sets a personal token's
+	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
+	Projects []string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -97,13 +169,29 @@ func (c *Credential) Holds(scope string) bool {
 	return c != nil && slices.Contains(c.Scopes, scope)
 }
 
+// browserCredential is a person's own cookie: it holds every scope and names no agent that acted
+// for them. Every browser caller shares this one value, on the dashboard's hottest path, so nothing
+// writes it or appends to its Scopes.
+var browserCredential = &Credential{Scopes: Scopes}
+
+// BrowserActor is the caller a person's signed-in browser is: the person, with the cookie's
+// credential, so access.Resolve, which reads the credential, reads it as the browser it is. A later
+// slice builds the caller of every reader of a cookie here: api's optionalActor, the GitHub proxy
+// and the document socket.
+func BrowserActor(login string) Actor {
+	return Actor{Kind: "user", ID: login, Credential: browserCredential}
+}
+
 // Actor identifies the user or agent session that caused a change. Service is
 // the verified Kubernetes subject of the projected service-account token a
 // session authenticated with ("system:serviceaccount:<namespace>:<name>"), set
 // by the server from the token and never from a request body. Project is the
-// one project key a broker-issued access token lets its session write, set by
-// the server from that token and never from a request body; it is nil for
-// every other credential and for a token whose scope names no single project.
+// one project key a broker-issued access token names, set by the server from
+// that token and never from a request body. It is nil for every other
+// credential and for a token whose scope names no single project. A token that
+// names a project writes every project's objects that a credential naming none
+// may write, a private project it does not name excepted. A target that
+// resolves to no project or to nothing is refused it (api/project_scope.go).
 type Actor struct {
 	Kind    string       `json:"kind"`
 	ID      string       `json:"id"`
@@ -133,10 +221,14 @@ type Actor struct {
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
 	// onto Act, and Recorded drops it from the actor a handler writes and compares.
 	Credential *Credential `json:"-"`
+	// Viewer is what the caller may see, as access.Resolve answered it for this request: a
+	// fact of the request, like Credential, so it is never serialised. Recorded drops it and
+	// Reader keeps it.
+	Viewer *Viewer `json:"-"`
 }
 
-// Recorded is the actor as a write records it: the request's credential dropped. A stored actor
-// is decoded from JSON, which carries no credential, so the credential never reaches a row.
+// Recorded is the actor as a write records it: the request's credential and viewer dropped. A
+// stored actor is decoded from JSON, which carries neither, so neither ever reaches a row.
 // Dispatch decides "the same writer" by kind and id (SameAs) and "the same credential" by those
 // and the names a credential carries (SameCredential); the one == left that decides anything is
 // the document rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document
@@ -150,8 +242,55 @@ type Actor struct {
 // optionalActor (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
+	a.Viewer = nil
 	return a
 }
+
+// Reader is the actor as a read binds it: the request's credential dropped, as Recorded drops
+// it, and its viewer kept, because what a read may answer is the viewer's to decide.
+func (a Actor) Reader() Actor {
+	a.Credential = nil
+	return a
+}
+
+// MemberKind is how a person belongs to the deployment: a full member signed in under the
+// sign-in domain, and a restricted member signed in because a project's access list names them.
+// MemberNone is a login no `people` row holds.
+type MemberKind string
+
+const (
+	MemberNone       MemberKind = ""
+	MemberFull       MemberKind = "full"
+	MemberRestricted MemberKind = "restricted"
+)
+
+// Viewer is what one caller may see, resolved once a request (access.Resolve). Sees is every
+// project it sees, sorted. Open is a viewer that is not a restricted member: it reads every row
+// that belongs to no project, as every caller did before projects could be private, whatever its
+// credential lists, since a list decides only which private projects a full member's credential
+// sees. All is ServerViewer alone. AnyPrivate is whether the deployment holds a private project at
+// all. Lists is the credential's own list of projects (Credential.Projects) as its caller is told
+// it - every credential's but a broker token's, whose list is answered only while some project is
+// private or its person is a restricted member, as before projects could be private - and nil
+// otherwise: which projects it would see were its person to see them, which tells a read whether
+// the credential read a project before a change took it away. A later slice's whoami answers it.
+type Viewer struct {
+	Person, Session string
+	Restricted      bool
+	Open            bool
+	All             bool
+	Sees            []string
+	AnyPrivate      bool
+	Lists           []string
+}
+
+// ServerViewer is the server's own read of content that belongs to one owner, which each of its
+// uses gates per viewer where it leaves the server: it sees every project and every party.
+var ServerViewer = &Viewer{Open: true, All: true}
+
+// ServerReader is the server's own reader: an actor that proves no author and carries
+// ServerViewer, for a read the server makes for itself rather than for a caller.
+var ServerReader = Actor{Viewer: ServerViewer}
 
 // SameAs reports whether two actors are the same writer: one session id, or one human login.
 // Dispatch compares actors in this way wherever it has to decide "is this the same session" — a
@@ -348,9 +487,175 @@ type Project struct {
 	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
 	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
 	// carries no member, so a client that does not know the member reads the same project.
-	DefaultRepo *string   `json:"default_repo,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	DefaultRepo *string `json:"default_repo,omitempty"`
+	// ProvenSessions is the project's setting that a session's credential must prove the
+	// session: when it is on, an architect's write of an issue's spec or Verification document
+	// passes only on a credential that proves the architect's session, and a role-holder
+	// publication only on one that proves legion-daemon:<project>, or legion-daemon:<P> of
+	// another project's daemon on a broker token that names P
+	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
+	// present, so a reader never has to tell an absent setting from one that is off.
+	ProvenSessions bool      `json:"proven_sessions"`
+	CreatedAt      time.Time `json:"created_at"`
 }
+
+// The two visibilities a project has (projects.visibility). Every full member sees a public
+// project; a private one is seen only by its owner and the people and groups its access list
+// names.
+const (
+	ProjectPublic  = "public"
+	ProjectPrivate = "private"
+)
+
+// ProjectAccess is who may see one project and who changes that: its owner, its visibility, and
+// the people (lowercase emails) and groups its access list names, each list sorted and never
+// null. The access package's writes answer it (access.SetOwner); a later slice adds the route that
+// reads and writes it.
+type ProjectAccess struct {
+	Project    string   `json:"project"`
+	Owner      string   `json:"owner"`
+	Visibility string   `json:"visibility" enum:"public,private"`
+	People     []string `json:"people"`
+	Groups     []string `json:"groups"`
+	// SlackChannels are the Slack channel ids the project's credentials may post to, at most 16,
+	// sorted, always present and [] for none. Its owner names them. The secrets broker reads a
+	// private project's channels to release the Legion Slack bot token to its credentials for those
+	// channels alone (R14).
+	SlackChannels []string `json:"slack_channels"`
+	// SlackChannelsChangedAt is when SlackChannels last changed, always present and null until a
+	// write changes the list. A write of the list it already holds leaves it.
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
+	// rule admits each of them once they sign in.
+	NotSignedIn []string `json:"not_signed_in"`
+	// PrivateBeforeFullSwitch is true while the project is private before its full switch: the
+	// deployment names it in DISPATCH_PRIVATE_BEFORE_FULL_SWITCH and not in
+	// DISPATCH_PRIVATE_PROJECTS, so Dispatch hides it as any private project while its namespace,
+	// stores and bus gate come with its full switch. Absent for every other project, so a
+	// deployment that names no such project answers what it always answered.
+	PrivateBeforeFullSwitch bool `json:"private_before_full_switch,omitempty"`
+}
+
+// AccessGroup is a named list of full members that an access list can name: its one owner, the
+// full member who made it or was given it, and its members, sorted and never null.
+type AccessGroup struct {
+	Name    string   `json:"name"`
+	Owner   string   `json:"owner"`
+	Members []string `json:"members"`
+	// NotSignedIn are the members nobody has signed in as yet, sorted and never null. A group
+	// admits only its full members, so each of them is admitted once they sign in as one.
+	NotSignedIn []string `json:"not_signed_in"`
+}
+
+// MaxGroupsPerOwner is how many groups one owner holds at most: a write that would make, or give
+// them, one more is refused (access.PutGroup).
+const MaxGroupsPerOwner = 100
+
+// AccessGroupPage is one page of the groups (access.ListGroups), which a later slice serves: the
+// groups after the page before it, in name order, and Next, the name the next page starts after,
+// absent on the last page.
+type AccessGroupPage struct {
+	Groups []AccessGroup `json:"groups"`
+	Next   string        `json:"next,omitempty"`
+}
+
+// AccessAnswer is the membership answer the secrets broker is to read, which a later slice
+// serves (access.Answer): one project's owner and visibility, the person's member kind
+// (MemberAnswerFull, MemberAnswerRestricted or MemberAnswerNone), whether the read rule lets that
+// person see the project at a browser, and the project's Slack channels. It names no
+// repositories: GitHub events carry no project, so no reader needs a project's repositories.
+type AccessAnswer struct {
+	Project    string `json:"project"`
+	Visibility string `json:"visibility" enum:"public,private"`
+	Owner      string `json:"owner"`
+	Person     string `json:"person"`
+	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
+	Visible    bool   `json:"visible"`
+	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
+	SlackChannels []string `json:"slack_channels"`
+	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null
+	// until a write changes the list.
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	// Holder is to say whether the credential a question describes holds the person's address.
+	// access.Answer leaves it absent; the later slice that records a person's Google account sets
+	// it, and Visible is then false whenever it is false.
+	Holder *bool `json:"holder,omitempty"`
+}
+
+// PrivateProjectChannels is one private project's Slack channels as the secrets broker is to read
+// them, which a later slice serves (access.PrivateProjects): the project's key, its channels,
+// sorted and [] for none, and when that list last changed, null until a write changes the list.
+type PrivateProjectChannels struct {
+	Project                string     `json:"project"`
+	SlackChannels          []string   `json:"slack_channels" nullable:"false"`
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+}
+
+// PersonAnswer is one person's member kind as the membership answer spells it, which a later
+// slice serves (access.PersonAnswer), with Holder as AccessAnswer carries it. AsOf is the database
+// time of the read the answer rests on. Held, whether Dispatch holds the person's personal tokens
+// and broker credentials until they sign in again, and NotHeldUntil, when an answer that is not
+// held stops being served under IAP identity, are left absent by access.PersonAnswer: the later
+// slice that holds a person's credentials sets them.
+type PersonAnswer struct {
+	Person       string     `json:"person"`
+	MemberKind   string     `json:"member_kind" enum:"full,restricted,none"`
+	Holder       *bool      `json:"holder,omitempty"`
+	Held         *bool      `json:"held,omitempty"`
+	AsOf         time.Time  `json:"as_of"`
+	NotHeldUntil *time.Time `json:"not_held_until,omitempty"`
+}
+
+// The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a
+// login no `people` row holds, which MemberKind leaves empty.
+const (
+	MemberAnswerFull       = string(MemberFull)
+	MemberAnswerRestricted = string(MemberRestricted)
+	MemberAnswerNone       = "none"
+)
+
+// ProjectAccessEventPayload is `project.access_changed`: one write of a project's owner,
+// visibility, access list or Slack channels committed. It names the project and which change it
+// was, and nothing else: every reader of the project's events reads it - the event log, the live
+// socket's events view and the bus, credentials without the person scope included - so it carries
+// no email, group name or channel id. Who the change named, and the project's owner and visibility
+// as it left them, are the server's own record of the event (project_access_changes), which a
+// later slice's live resume is to read to tell whether the change moved what its caller sees. A
+// reader that needs the list reads it under the read rule of the route a later slice adds, and
+// every reader that resolved a viewer resolves again. It is owned by the project and never
+// notifies.
+type ProjectAccessEventPayload struct {
+	Project string `json:"project"`
+	Change  string `json:"change"`
+}
+
+// The Change of a ProjectAccessEventPayload.
+const (
+	AccessOwnerChanged      = "owner"
+	AccessVisibilityChanged = "visibility"
+	AccessPersonAdded       = "person_added"
+	AccessPersonRemoved     = "person_removed"
+	AccessGroupAdded        = "group_added"
+	AccessGroupRemoved      = "group_removed"
+	// AccessSlackChannelsChanged is a write of the project's Slack channels.
+	AccessSlackChannelsChanged = "slack_channels"
+)
+
+// AccessGroupEventPayload is `access_group.changed`: one group was made, had its members or owner
+// written, or was deleted. A group belongs to no project, so it names no owner: the outbox
+// publishes it nowhere and it never notifies (events.Quiet), as a priority's write.
+type AccessGroupEventPayload struct {
+	Name string `json:"name"`
+	// Change is AccessGroupCreated, AccessGroupUpdated or AccessGroupDeleted.
+	Change string `json:"change"`
+}
+
+// The Change of an AccessGroupEventPayload.
+const (
+	AccessGroupCreated = "created"
+	AccessGroupUpdated = "updated"
+	AccessGroupDeleted = "deleted"
+)
 
 // GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
 // Project.GatedSteps names, each one a document of the root issue: the issue's decisions
@@ -377,16 +682,26 @@ var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepS
 // row rather than on a read shape of the api package's own (display_trees.go), because no event
 // payload carries a priority: `priority.updated` names the id and the change alone
 // (PriorityEventPayload).
+//
+// DescriptionTreeExact stands beside DescriptionTree, present exactly where it is. It is true
+// where Parse takes the description whole, so a writer's editor may take its markdown; the tree
+// still resets the attributes the server owns (pmdoc.ReadForDisplay), so an answered ask in it
+// draws open, and it is never a text to write back. It is false where Parse refuses a block of
+// the description or the whole of it - a block of HTML, a description past the element limit or
+// nested past the mark bound - which the tree draws as no write would store it
+// (pmdoc.DisplayExact): a writer's editor then shows the tree read-only, since an editor filled
+// from it and written back writes that reading over the text.
 type Priority struct {
-	ID              string      `json:"id"`
-	Title           string      `json:"title"`
-	Description     string      `json:"description"`
-	DescriptionTree DisplayTree `json:"description_tree,omitempty"`
-	Owner           string      `json:"owner"`
-	Rank            string      `json:"rank"`
-	State           string      `json:"state"`
-	MadeAt          time.Time   `json:"made_at"`
-	MadeBy          Actor       `json:"made_by"`
+	ID                   string      `json:"id"`
+	Title                string      `json:"title"`
+	Description          string      `json:"description"`
+	DescriptionTree      DisplayTree `json:"description_tree,omitempty"`
+	DescriptionTreeExact *bool       `json:"description_tree_exact,omitempty" description:"Whether the server's parser takes description whole, so a writer's editor may take its markdown: false where it refuses a block of it or the whole of it, which description_tree draws as no write would store it. description_tree still resets the attributes the server owns either way, so it is drawn and never written back. Present exactly where description_tree is."`
+	Owner                string      `json:"owner"`
+	Rank                 string      `json:"rank"`
+	State                string      `json:"state"`
+	MadeAt               time.Time   `json:"made_at"`
+	MadeBy               Actor       `json:"made_by"`
 }
 
 // PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
@@ -469,10 +784,11 @@ type WorkUnderNoPriority struct {
 	Issues    []PriorityIssue `json:"issues"`
 }
 
-// PriorityWorkParked is the second fault: an issue that advances a live priority and stands in
-// `backlog` or `icebox`. Count is every such issue; ByPriority counts them by priority id, an
-// issue advancing two priorities counted under each, so the counts may add to more than Count;
-// Issues carries the 50 moved there most recently.
+// PriorityWorkParked is the second fault: an open issue in `backlog` or `icebox` whose own row
+// names a live priority that no issue above it carries; a child that only inherits a priority, or
+// restates one an issue above it carries, is none. Count is every such issue; ByPriority counts
+// them by each priority so named, an issue naming two counted under each, so the counts may add
+// to more than Count; Issues carries the 50 moved there most recently.
 type PriorityWorkParked struct {
 	Count      int             `json:"count"`
 	ByPriority map[string]int  `json:"by_priority"`
@@ -827,15 +1143,20 @@ type SearchAsk struct {
 	Resolution *AskResolution     `json:"resolution,omitempty"`
 }
 
-// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
-// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
-// payload gains a tree field. A search hit's ask and a person's answer history both answer with
-// it.
+// AskAnswerWithTree is an answer a read gives with the trees of its texts: its own text, and the
+// label of each option it chose. It is the read's own shape rather than fields on AskAnswer
+// itself: the answer is an event payload's shape, and no payload gains a tree field. A search
+// hit's ask, a person's answer history, an ask's thread and the ask itself all answer with it.
 type AskAnswerWithTree struct {
 	AskAnswer
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
 	TextTree DisplayTree `json:"text_tree,omitempty"`
+	// SelectedTrees is the ProseMirror tree each label of Selected is shown as, at that label's
+	// own index, present only for a caller that sent `Dispatch-Trees: 1` and only where Selected
+	// holds a label. A label is the label of an option the ask held when it was answered, which
+	// the ask's write stored the tree of; it may be one the ask has since renamed or removed.
+	SelectedTrees []DisplayTree `json:"selected_trees,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -1124,7 +1445,14 @@ type RelatedCheckTiming struct {
 // for a refusal. Candidates are the candidates the gate read at or above NudgeScore, at most
 // five, best score first, with each one's title as it then stood; RefuseScore and NudgeScore are
 // the bars the build read them against, and BuildCommit is the legion commit it was built from,
-// null for a build nothing stamped.
+// null for a build nothing stamped. ReadMS is how long the create waited on the gate's read, in
+// milliseconds, from the gate's start until the read returned, its transaction's rollback
+// included, and ReadStage the step the read was in when it answered or ended: connect (taking a
+// pool connection and opening the read transaction), terms (picking the new text's rarest words),
+// keys (reading the lexemes the project's issue keys give) or score (scoring the project's open
+// issues, which every answered read ends in); a row whose reason is bound or failed says by them
+// at which step its read was waiting. Both are null together on a row written before Dispatch
+// recorded them.
 type NearCopyCheck struct {
 	ID          string                   `json:"id"`
 	CreatedAt   time.Time                `json:"created_at"`
@@ -1143,6 +1471,8 @@ type NearCopyCheck struct {
 	RefuseScore float64                  `json:"refuse_score"`
 	NudgeScore  float64                  `json:"nudge_score"`
 	BuildCommit *string                  `json:"build_commit"`
+	ReadMS      *int                     `json:"read_ms"`
+	ReadStage   *string                  `json:"read_stage" enum:"connect,terms,keys,score"`
 }
 
 // NearCopyCheckCandidate is one issue the near-copy gate read for a create, with the score it
@@ -1416,15 +1746,18 @@ const (
 	BasisLearnedUpdatedAt = "updated_at"
 )
 
-// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable and ReasonReadFailed are why a check
-// names nothing to compare its results with (CheckBlock.ComparedNothing), and why a result's
-// commit cannot be placed (ResultCommitStands.Reason). The three are kept apart because each
-// is a different thing for a reader to do: there is no pull request and no branch to compare
-// with, the App cannot read the repository, or a read Dispatch makes did not answer.
+// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed and ReasonNotMerged
+// are why a check names nothing to compare its results with (CheckBlock.ComparedNothing), and the
+// middle two why a result's commit cannot be placed (ResultCommitStands.Reason). They are kept
+// apart because each is a different thing for a reader to do: there is no pull request and no
+// branch to compare with, the App cannot read the repository, a read Dispatch makes did not
+// answer, or Dispatch holds no merge of the work of an `after_merge` check's issue anywhere, in
+// its own repository or through a pull request it links, so no commit can hold one yet.
 const (
 	ReasonNoPullRequestOrBranch = "no_pull_request_or_branch"
 	ReasonRepositoryUnreadable  = "repository_unreadable"
 	ReasonReadFailed            = "read_failed"
+	ReasonNotMerged             = "not_merged"
 )
 
 // CommitAtBasis, CommitOtherCommit and CommitUnknown are where one result's commit stands: at
@@ -1454,19 +1787,32 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
+// of the pull request whose head the commit is. Merged is set on a `pull_request` basis whose
+// pull request merged, whose commit is its final head: a reader tells it from an open pull
+// request's head, and counts it apart. Repo is the `owner/repo` of a basis in a linked
 // repository, one the check's issue links a pull request in and does not resolve to: the head
-// of a pull request the issue links there, and a branch of it that a result whose commit is
-// that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
-// which is of the repository the check's issue resolves to or is the commit a reader named, so
-// a reader can tell pull request #7 or branch main of the linked repository from those of the
-// issue's own.
+// of a pull request the issue links there, and a branch of it where the issue has a merged
+// linked pull request. It is empty for every other basis, which is of the repository the
+// check's issue resolves to or is the commit a reader named, so a reader can tell pull request
+// #7 or branch main of the linked repository from those of the issue's own.
+//
+// MergeCommit is set on a `branch` basis where Dispatch holds the merge of the issue's work on
+// that branch: the merge commit of the issue's newest merged pull request in that basis's
+// repository on the branch it merged into, and on the default branch, where it merged into
+// another, the merge commit of the pull request that landed that branch there. A result stands
+// at the branch only at a commit whose history holds it. A branch basis names none where no merge
+// is asked of its commits (the default branch of a `default_branch` check of an issue with no
+// merged pull request anywhere), where no commit of it can count (a branch of the issue's own
+// repository where its only merges are linked), and where Dispatch cannot learn or order the
+// merge now.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
 	Repo        string          `json:"repo,omitempty"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
+	MergeCommit string          `json:"merge_commit,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
+	Merged      bool            `json:"merged,omitempty"`
 	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
 }
 
@@ -1482,10 +1828,72 @@ type BasisLearnedAt struct {
 // of it stands at what it compared its results with, against the check's words now, and from
 // which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
 // moved does not stand, and a retracted result counts for nothing.
+//
+// A `before_merge` check compared with heads has subjects, the heads a pass must stand at: each
+// open pull request's head, or where the issue has none, the newest merged one's final head. A
+// pass stands only when one stands at each subject, and Subjects says the state of each. Reason
+// is PassStandsReasonPassAndFail where the answer is unknown because a pass and a fail that count
+// at one commit, from any role, make that commit's state unknown (R4), and
+// PassStandsReasonReadFailed where it is unknown because a read Dispatch makes did not answer:
+// the check runs of a check CI proves that has no subject, or the time each merged pull request of
+// an issue with none open merged, so that Dispatch cannot tell which of them is the newest.
+//
+// An `after_merge` or a `default_branch` check is decided by its newest result that counts
+// (R19): Reason is PassStandsReasonFail where that result is a fail, PassStandsReasonNoResult
+// where no result counts, PassStandsReasonPassAndFail where a pass and a fail count at its
+// commit, PassStandsReasonNotPlaced where the newest result is one Dispatch could not place, and
+// PassStandsReasonReadFailed where the check compares with nothing for a read that did not
+// answer. Results names the results that decide the answer, where the rule that answers names
+// them, and Commit is their commit, absent where Results is empty.
 type CheckPassStands struct {
-	Answer string   `json:"answer" enum:"yes,no,unknown"`
-	Roles  []string `json:"roles,omitempty"`
+	Answer   string              `json:"answer" enum:"yes,no,unknown"`
+	Roles    []string            `json:"roles,omitempty"`
+	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail,fail,no_result,not_placed,read_failed,program_not_named,no_deploy,deploy_not_merged,no_result_from_deploy"`
+	Subjects []PassStandsSubject `json:"subjects,omitempty"`
+	Results  []string            `json:"results,omitempty"`
+	Commit   string              `json:"commit,omitempty"`
+	Deploy   *CheckDeploy        `json:"deploy,omitempty"`
 }
+
+// PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
+// PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
+// fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
+// PassStandsReasonPassAndFail where a pass and a fail that count at one commit of a `before_merge`
+// check, from any role, make that commit's state unknown, or with PassSubjectReasonReadFailed
+// where the check is one CI proves and GitHub's check runs at that head could not be read. Roles
+// names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of the
+// results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
+// PassStandsNo with PassSubjectReasonFail the newest fail, for PassStandsReasonPassAndFail the
+// newest pass and the newest fail, and for PassSubjectReasonNoResult and
+// PassSubjectReasonReadFailed none. CI is the read of a check CI proves at that head, in the
+// repository of that head's pull request, and is absent for every other check.
+type PassStandsSubject struct {
+	Basis   CheckBasis `json:"basis"`
+	Answer  string     `json:"answer" enum:"yes,no,unknown"`
+	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail,read_failed"`
+	Roles   []string   `json:"roles,omitempty"`
+	Results []string   `json:"results,omitempty"`
+	CI      *CheckCI   `json:"ci,omitempty"`
+}
+
+// The reasons a pass_stands answer and its subjects give. PassStandsReasonPassAndFail is a pass
+// and a fail that count at one commit, from any role. PassSubjectReasonReadFailed is a subject
+// alone: the check runs at that head, of a check CI proves, could not be read.
+// PassStandsReasonReadFailed is the check's own: a read that decides it did not answer, with no
+// subject to name it at (CheckPassStands). PassStandsReasonFail, PassStandsReasonNoResult and
+// PassStandsReasonNotPlaced are an `after_merge` or `default_branch` check's own: its newest
+// result that counts is a fail, no result counts, or its newest result is one Dispatch could not
+// place.
+const (
+	PassStandsReasonPassAndFail = "pass_and_fail"
+	PassStandsReasonReadFailed  = "read_failed"
+	PassStandsReasonFail        = "fail"
+	PassStandsReasonNoResult    = "no_result"
+	PassStandsReasonNotPlaced   = "not_placed"
+	PassSubjectReasonFail       = "fail"
+	PassSubjectReasonNoResult   = "no_result"
+	PassSubjectReasonReadFailed = "read_failed"
+)
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
@@ -1516,8 +1924,11 @@ type CheckResultRetracted struct {
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
 // of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
 // CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since. CommitStands, CheckWordsMoved
-// and Retracted are read when the results are read and are absent from the record's own answer.
+// a read can tell a result whose check has been reworded since: one whose check's digest and
+// version both moved, since a block respelled by another renderer version takes a new digest
+// and keeps its changed version (refs.BlockIndexing.KeepRespelled). CommitStands,
+// CheckWordsMoved and Retracted are read when the results are read and are absent from the
+// record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -1541,6 +1952,10 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// NotCounted is why this result counts for nothing, where it does. No surface counts such a
+	// result as evidence, a reader prints it after "It counts for nothing: ", and it is left out of
+	// the JSON on every result that counts.
+	NotCounted string `json:"not_counted,omitempty"`
 	// CommitRepo is the linked repository the record route took CommitSHA to be of
 	// (check_results.commit_repo), one the check's issue links a pull request in and does not
 	// resolve to: one with an open or merged linked pull request that GitHub said holds the
@@ -1553,14 +1968,19 @@ type CheckResult struct {
 	// where it is set, and names it in CommitStands.Repo where it decided an other_commit or
 	// unknown answer. It is no part of the wire shape.
 	CommitRepo *string `json:"-"`
+	// CheckSubject and CheckProgram snapshot the resolved block for deploy event recipients.
+	// They are stored facts, not recorder input or fields on a result's wire shape.
+	CheckSubject string `json:"-"`
+	CheckProgram string `json:"-"`
 	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
 	// for a caller that sent `Dispatch-Trees: 1`.
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
-	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
-	// result at the compared commit under an older wording is both, and one word for both
-	// would hide which.
+	// CheckSHA256 and CheckVersion beside the check's SHA256 and Version decide: the words moved
+	// where both differ (api's comparisonReader.answer says why). They are two facts and two
+	// fields: a result at the compared commit under an older wording is both, and one word for
+	// both would hide which.
 	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
 	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
 	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
@@ -1593,7 +2013,9 @@ type CheckResultRetraction struct {
 // one result is the one derived from that run. Text is the block's words with every link and
 // dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
 // content whole, links and references kept, as the reader is shown it, present only for a
-// caller that sent `Dispatch-Trees: 1`.
+// caller that sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored:
+// code, production or graph, and "" where the block names none, which reads as code. Program is
+// the deployed program it reads, its `program` as stored, "" where it names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1606,21 +2028,26 @@ type CheckBlock struct {
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
 	CICheck         string        `json:"ci_check,omitempty"`
+	Subject         string        `json:"subject,omitempty" enum:"code,production,graph"`
+	Program         string        `json:"program,omitempty"`
 	CI              *CheckCI      `json:"ci,omitempty"`
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
 	// ComparedWith is every commit and branch this check's results are compared with, in the
 	// order they are asked about, and ComparedNothing is why there are none where it is empty
-	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
+	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed,
+	// ReasonNotMerged).
 	ComparedWith    []CheckBasis    `json:"compared_with"`
-	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
+	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed,not_merged"`
 	PassStands      CheckPassStands `json:"pass_stands"`
 }
 
 // CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI
 // proves answered (CheckCI.State): the named run passed, it failed, nothing the read found proves
-// the check either way, or GitHub could not be read. Only a pass and a fail carry a result.
+// the check either way, or a read that decides it did not answer: GitHub's, or Dispatch's own read
+// of when each merged pull request of an issue with none open merged, where it cannot tell which
+// of them is the newest (the case read_failed). Only a pass and a fail carry a result.
 const (
 	CIStatePass     = "pass"
 	CIStateFail     = "fail"
@@ -1628,16 +2055,30 @@ const (
 	CIStateUnread   = "unread"
 )
 
-// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
-// pull request head of the check's issue: the run's name, the state of the check, the case that
-// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
-// naming that case, and the line the pull-request body carries for the check.
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at one head of
+// the check's issue, in the repository of that head's pull request: the run's name, the state of
+// the check, the case that decided it (a conclusion GitHub wrote, or one of the cases of no
+// conclusion), one sentence naming that case, and the line the pull-request body carries for the
+// check. Dispatch reads it at the head of each open pull request of the issue, or, where none is
+// open, at the final head of the newest merged one. A check's own `ci` is the read of the open
+// pull request of the highest number; each subject of the check carries the read at its head.
+//
+// Commit and Repo name the head the read is of: its commit, and the repository of the pull
+// request whose head it is, where the check runs were read. Two repositories may hold one commit,
+// each with runs of its own there, so a reader tells the reads of one head apart by both. Neither
+// is set where Dispatch read no head (the cases no_head and read_failed). Result is the id of the
+// result the read derived from the run (CheckResult.ID, `ci-run:` and the check run's id), set
+// where the run passed or failed and only there: a reader picks the derived result of a head by
+// this id, never by the words of Line.
 type CheckCI struct {
 	Run    string `json:"run"`
 	State  string `json:"state" enum:"pass,fail,no_result,unread"`
 	Case   string `json:"case"`
 	Detail string `json:"detail"`
 	Line   string `json:"line"`
+	Commit string `json:"commit,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	Result string `json:"result,omitempty"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
@@ -1696,6 +2137,49 @@ type CheckResultRetractedEventPayload struct {
 	CheckBlockID string `json:"check_block_id"`
 	CommitSHA    string `json:"commit_sha"`
 	Reason       string `json:"reason"`
+}
+
+// RoleUndeliveredEventType is the event Dispatch's outbox appends on an event's own owner when its
+// copy for a role reached no session: every copy the outbox kept for the role on the role's kept
+// lane ended its hour with no session holding the role (RoleUndeliveredExpired), or Envoy no longer
+// held the last copy to keep it again (RoleUndeliveredCopyGone). The outbox writes it as a system
+// actor, so it wakes no route and reaches no role (events.Broker.Notify); a person reads it in the
+// owner's history, and a session that follows the owner's topic is sent it.
+const RoleUndeliveredEventType = "role.undelivered"
+
+// SystemMessage is a message Dispatch itself writes on an issue, as one of its own system actors
+// (api.Background.PostSystemMessage): ID is the id it is stored under, which its writer chooses so
+// that a post made again writes no second message, IssueKey the issue it is posted on, and Body
+// its markdown. Dispatch's outbox posts the message that names the events a role did not take
+// with it.
+type SystemMessage struct {
+	ID       string
+	IssueKey string
+	Body     string
+}
+
+// The reasons a role.undelivered event gives (RoleUndeliveredEventPayload.Reason).
+const (
+	// RoleUndeliveredExpired: each of the copy's keeps ended its hour with no session taking it.
+	RoleUndeliveredExpired = "expired"
+	// RoleUndeliveredCopyGone: the stream no longer held the copy that expired - its retention
+	// passed it, or a stream created again since holds another message at its sequence - so the
+	// outbox had nothing to keep again.
+	RoleUndeliveredCopyGone = "copy_gone"
+)
+
+// RoleUndeliveredEventPayload is the payload of role.undelivered (RoleUndeliveredEventType): the
+// event whose copy reached no session (EventID, EventType), the role it was routed to, how many
+// times its copy was kept on the role's kept lane, when the last copy was kept and when Envoy
+// dropped it, and why the outbox stopped.
+type RoleUndeliveredEventPayload struct {
+	EventID   int64     `json:"event_id"`
+	EventType string    `json:"event_type"`
+	Role      string    `json:"role"`
+	Keeps     int       `json:"keeps"`
+	KeptAt    time.Time `json:"kept_at"`
+	DroppedAt time.Time `json:"dropped_at"`
+	Reason    string    `json:"reason"`
 }
 
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends
@@ -1838,6 +2322,37 @@ type Version struct {
 	Size   *int    `json:"size,omitempty"`
 	MIME   *string `json:"mime,omitempty"`
 	SHA256 *string `json:"sha256,omitempty"`
+	// Token is a file's or an image's version token (FileVersionToken): what an upload replacing
+	// that version names as its precondition's document token, and what `dispatch doc-read`
+	// prints for it. Every read of a version row states it (StateFileTokens). A document's version
+	// carries none here, since a document's token is its live tree's (GET
+	// /api/v1/artifacts/{id}/text).
+	Token *string `json:"token,omitempty"`
+}
+
+// FileVersionToken is the token of a file's or an image's version whose bytes have the SHA-256
+// sha (hex), written as a document token is. It is the one place the token is made, for the
+// reads that state it and the upload that checks it, so what `dispatch doc-read` prints is what
+// the upload compares.
+func FileVersionToken(sha string) string {
+	return "sha256:" + sha
+}
+
+// StateFileTokens sets each version's Token from its SHA256 where kind, the artifact's, is a
+// file or an image, for versions read from their rows. A document's versions get none whatever
+// their rows hold: a document's token is its live tree's, and a hash its row held would be no
+// token an upload of it takes. A file's version stored with no hash gets none either, so an
+// upload naming a token for it is refused.
+func StateFileTokens(kind string, versions []Version) {
+	if kind != "file" && kind != "image" {
+		return
+	}
+	for index := range versions {
+		if sha := versions[index].SHA256; sha != nil {
+			token := FileVersionToken(*sha)
+			versions[index].Token = &token
+		}
+	}
 }
 
 // VersionSize is the SQL a version's Size is selected with, over artifact_versions aliased v. A
@@ -2153,9 +2668,10 @@ type AskEditEventPayload struct {
 	// that an earlier version already moved since it was opened or last handed back
 	// (requested_version below the version it named), which changes only the version the request
 	// names, and a settlement's move that keeps the request waiting on the human because the new
-	// version, which a settlement wrote, holds byte for byte the text of the version the request
-	// names (docs.MoveApprovalAsk), which changes only the number that text is stored under; a
-	// version a route writes moves the request to its agent whatever text it holds. Like a human's
+	// version, which a settlement wrote, holds the text of the version the request names - byte
+	// for byte, or, for a version another renderer version stored or none stamped, as this build
+	// renders it (docs.MoveApprovalAsk) - which changes only the number that text is stored under;
+	// a version a route writes moves the request to its agent whatever text it holds. Like a human's
 	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
 	// follower (the outbox's follower routes), while the event log and the event feed carry it as
 	// they carry every event. The first move after an opening or a hand-back is not quiet, even
@@ -2343,7 +2859,15 @@ type MyReplyRow struct {
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
 	Project *string `json:"project,omitempty"`
-	Subject string  `json:"subject"`
+	// Subject is the thread root's first line, cut by refs.FirstLine: the line the
+	// Inbox draws for the row. SubjectTree is that line read as the document a reader is shown,
+	// present only for a caller that sent `Dispatch-Trees: 1` - the Inbox draws the row's line
+	// through the one renderer every body is drawn with, so without the tree beside it the
+	// browser would parse the line itself (web/src/features/inbox/ThreadTitle.tsx). The tree
+	// stands on this row rather than on a read shape of its own because no event payload
+	// carries a reply row: this shape is the replies read's alone.
+	Subject     string      `json:"subject"`
+	SubjectTree DisplayTree `json:"subject_tree,omitempty"`
 	// EditedAt is the time the author of the thread's root post last edited it, absent on a root
 	// never edited. An ask's thread has no such root and never carries it.
 	EditedAt *time.Time `json:"edited_at,omitempty"`
@@ -3024,7 +3548,7 @@ type Comment struct {
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
 // reference (none for a block of a direct message, which has no address), its id, its stored
-// excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
+// excerpt (its text as refs.BlockExcerpt cuts it, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
 //
 // EditedAt, DeletedAt and DeletedBy are the marks of the quoted post, read from its own row, so a
@@ -3544,7 +4068,9 @@ type HandoffRecordedEventPayload struct {
 // the merge's place, and Report the handoff its ending role named, each null where the run has
 // none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
 // the retro gave the plan the issue ran, and its reason, each null where the record holds none
-// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
+// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are the
+// experiment a draw put the issue in and the variant it drew there, each null where the record
+// holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them).
 type StepRecord struct {
 	ID           string     `json:"id"`
 	Issue        string     `json:"issue"`
@@ -3565,6 +4091,8 @@ type StepRecord struct {
 	Report       *string    `json:"report"`
 	Rating       *int       `json:"rating"`
 	RatingReason *string    `json:"rating_reason"`
+	Experiment   *string    `json:"experiment"`
+	Variant      *string    `json:"variant"`
 }
 
 // StepTask is one task of an issue with every run of its steps, in the order they ran.
@@ -3620,7 +4148,9 @@ type PlanRating struct {
 // work started before Legion wrote plans or that Legion never ran), the rating of each of its
 // retros in the order they ran, the earliest start and the latest end of its step records and the
 // whole seconds between them (each null where no record holds one, and the seconds null too where
-// that end is before that start), and its count of step records of kind step that failed.
+// that end is before that start), its count of step records of kind step that failed, and the
+// experiment a draw put it in and the variant it drew there, as the step records of its newest run
+// name them (each null where they name none).
 type FinishedIssue struct {
 	Issue           string       `json:"issue"`
 	Title           string       `json:"title"`
@@ -3631,6 +4161,8 @@ type FinishedIssue struct {
 	EndedAt         *time.Time   `json:"ended_at"`
 	DurationSeconds *int64       `json:"duration_seconds"`
 	FailedSteps     int          `json:"failed_steps"`
+	Experiment      *string      `json:"experiment"`
+	Variant         *string      `json:"variant"`
 }
 
 // ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest

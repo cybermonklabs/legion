@@ -51,9 +51,10 @@ import { configuredValue } from "./claude-session"
  * daemon has failed this role's claim. The bridge reports each turn's outcome to the daemon, with
  * the status Claude Code named, and marks a turn no prompt of the daemon's ran — a reminder
  * written over the inbox — so the daemon judges that turn from the report (dispatch://INFRA-4508):
- * a refusal whose status cannot clear fails the claim at once and holds the issue, and a refusal
- * that can clear fails nothing, so the reminders keep their pace and the project's controller is
- * told once at six such turns in a row.
+ * a refusal whose status cannot clear fails the claim at once and holds the issue, and a
+ * refusal that can clear fails nothing, so the reminders keep their pace. At six such turns in
+ * a row the daemon sends the `provider-errors` notice once (`providerErrorRunReached` in the
+ * daemon's `workflow.go` says to whom).
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -419,7 +420,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.
-    publisher: () => deps.publish,
+    publisher: async () => deps.publish,
     project: configuredValue(deps.env["LEGION_PROJECT"]),
     limits,
     log: deps.log,
@@ -544,15 +545,15 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
         case "StopFailure": {
           // Claude Code runs this instead of `Stop` when the turn ended on an API error, and
           // `${last_assistant_message}` is then the error text itself rather than anything the
-          // worker said ("Hooks reference", code.claude.com/docs/en/hooks). So this is the
-          // provider refusing the turn, and the machine takes it as one: it earns no
-          // continuation, because the next turn would be refused the same way, and one timer,
-          // because nothing else would wake this worker once the task that turn carried ended
-          // with it. What ends the reminding is the daemon failing the claim, which the timer's
-          // own record check reads: it does at once for a refusal whose status cannot clear, the
-          // status the bridge reports beside the turn's outcome, a reminder's own turn included,
-          // and never for a refusal that can clear, of which the controller is told at six in a
-          // row (dispatch://INFRA-4508).
+          // worker said ("Hooks reference", code.claude.com/docs/en/hooks). So this is the provider
+          // refusing the turn, and the machine takes it as one: it earns no continuation, because
+          // the next turn would be refused the same way, and one timer, because nothing else would
+          // wake this worker once the task that turn carried ended with it. What ends the reminding
+          // is the daemon failing the claim, which the timer's own record check reads: it does at
+          // once for a refusal whose status cannot clear, the status the bridge reports beside the
+          // turn's outcome, a reminder's own turn included, and never for a refusal that can clear,
+          // of which the daemon sends the `provider-errors` notice at six in a row
+          // (dispatch://INFRA-4508; `providerErrorRunReached` in the daemon says to whom).
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })

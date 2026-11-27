@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
@@ -51,6 +52,7 @@ import (
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
+	t.Parallel()
 	name := regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
 	seen := map[string]bool{}
 	for _, row := range settings {
@@ -88,6 +90,7 @@ func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 // `envoy-dispatch settings` is what the docs site's configuration reference is generated from, so
 // it carries every row whole: the _FILE form by name, and null where a row has no default.
 func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	if code := runSubcommand(context.Background(), []string{"settings"}, envGetter(nil), &stdout, &stderr); code != 0 {
 		t.Fatalf("envoy-dispatch settings: exit %d, stderr %q", code, stderr.String())
@@ -122,6 +125,7 @@ func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
 }
 
 func TestSettingValuesRefuseAVariableTheTableDoesNotList(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if recovered := recover(); recovered == nil || !strings.Contains(recovered.(string), "DISPATCH_NOT_A_SETTING") {
 			t.Fatalf("recovered %v, want a panic naming DISPATCH_NOT_A_SETTING", recovered)
@@ -421,6 +425,8 @@ func errorCode(response *httptest.ResponseRecorder) string {
 // each case hands its variable to the reader main hands it to, through the settings read alone,
 // never the process environment, so a reader that reads around the table fails its case.
 func TestEverySettingReachesItsReader(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it sets
+	// environment variables for the whole process.
 	appJSON := func(t *testing.T) string {
 		return filepath.Dir(writeFile(t, "app.json", `{"clientId":"Iv1.file"}`))
 	}
@@ -974,9 +980,12 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			// A token file that could not be read is named by the variable and the system's reason,
+			// never its path: the path is where a person who pasted the token itself put it.
 			missing := filepath.Join(t.TempDir(), "missing")
-			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
-				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS)
+			if err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names a service token file that could not be read: open: no such file or directory") || strings.Contains(err.Error(), missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused by its variable and reason, not its path", err)
 			}
 			token := writeFile(t, "token", "a.b.c\n")
 			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
@@ -1127,6 +1136,72 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("the metadata server was asked for audience %q, want envoy-listener", got)
 			}
 			refusedWith(t, map[string]string{"ENVOY_ACCOUNT_GOOGLE_AUDIENCE": "envoy-listener", "ENVOY_ACCOUNT_TOKEN_FILE": "/run/token"}, "ENVOY_ACCOUNT_GOOGLE_AUDIENCE")
+		},
+		"DISPATCH_PROJECT_OWNER_FALLBACK": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": " operator@example.com "}); boot.ProjectOwnerFallback != "operator@example.com" {
+				t.Errorf("ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			if boot := resolveWith(t, nil); boot.ProjectOwnerFallback != "" {
+				t.Errorf("unset: ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			for _, value := range []string{"Operator@example.com", "operator", "operator@", "@example.com", "operator@example.com,carol@example.com", "op erator@example.com"} {
+				refusedWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": value}, "DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email")
+			}
+			// Its reader is the boot's owner check (store.EnsureProjectOwners): over a project
+			// with no owner a process refuses to serve, naming
+			// the project and both repairs, until the setting names a full member, whom the boot
+			// then makes the project's owner.
+			t.Run("boot", func(t *testing.T) {
+				ctx := context.Background()
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(ctx, `
+					insert into people (email, member_kind) values ('operator@example.com', 'full');
+					alter table projects disable trigger projects_owner_from_default;
+					insert into projects (key, name, default_assignee) values ('STRAY', 'Its default never signed in', 'gone@example.com');
+					alter table projects enable trigger projects_owner_from_default;
+				`); err != nil {
+					t.Fatalf("seed a project with no owner: %v", err)
+				}
+				refused := startDispatchProcess(t, database.Pool.Config().ConnString())
+				refused.WaitExit(t, "its start over a project with no owner")
+				output := refused.Output.String()
+				if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
+					t.Errorf("unset: Dispatch exited %d over a project with no owner, want 1:\n%s", code, output)
+				}
+				for _, named := range []string{"STRAY", "DISPATCH_PROJECT_OWNER_FALLBACK", "envoy-dispatch project-owner <KEY> <email>"} {
+					if !strings.Contains(output, named) {
+						t.Errorf("unset: Dispatch refused its start without naming %q:\n%s", named, output)
+					}
+				}
+				served := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+					Env: map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": "operator@example.com"},
+				})
+				served.waitHealthy(t)
+				var owner string
+				if err := database.Pool.QueryRow(ctx, `select owner from projects where key = 'STRAY'`).Scan(&owner); err != nil || owner != "operator@example.com" {
+					t.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK=operator@example.com: STRAY's owner after the boot = %q, %v; want the operator", owner, err)
+				}
+				// The grant is recorded as an operator's grant is: one project.access_changed of
+				// change owner on STRAY, by the fallback's system actor, and the server's record of
+				// it, naming no previous owner and the operator as the owner it left.
+				var appended, records int
+				var actor, payload, recordOwner string
+				if err := database.Pool.QueryRow(ctx, `
+					select count(*), coalesce(max(e.actor->>'kind') || ':' || max(e.actor->>'id'), '<none>'),
+						coalesce(max(e.payload::text), '<none>'), count(c.event_id),
+						coalesce(max(c.principal), '<none>') || '|' || coalesce(max(c.owner), '<none>')
+					from events e left join project_access_changes c on c.event_id = e.id
+					where e.project_key = 'STRAY' and e.type = 'project.access_changed'
+				`).Scan(&appended, &actor, &payload, &records, &recordOwner); err != nil {
+					t.Fatalf("read STRAY's access events: %v", err)
+				}
+				if appended != 1 || records != 1 || actor != "system:DISPATCH_PROJECT_OWNER_FALLBACK" ||
+					payload != `{"change": "owner", "project": "STRAY"}` || recordOwner != "|operator@example.com" {
+					t.Errorf("STRAY's grant: %d event(s) by %s carrying %s, %d record(s) %s; want one event of change owner by "+
+						"system:DISPATCH_PROJECT_OWNER_FALLBACK and one record naming no previous owner and the operator",
+						appended, actor, payload, records, recordOwner)
+				}
+			})
 		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
@@ -1527,6 +1602,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_PROOF_ORIGINS": func(t *testing.T) {
+			const public, inCluster = "https://dispatch.example", "http://dispatch.internal.example:8766"
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "}); !slices.Equal(boot.ProofOrigins, []string{public, inCluster}) {
+				t.Errorf("ProofOrigins = %q, want each entry trimmed", boot.ProofOrigins)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " "}); boot.ProofOrigins != nil {
+				t.Errorf("a blank value: ProofOrigins = %q, want none", boot.ProofOrigins)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + ",," + inCluster}, "DISPATCH_PROOF_ORIGINS entry 2 of 3 is empty")
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "/"}, `DISPATCH_PROOF_ORIGINS entry 1 of 1 is "`+public+`/"`)
+			// What the verifier main builds takes from it is TestDispatchReadsItsProofOrigins'.
+		},
 		"DISPATCH_EMBEDDER": func(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.Embedder.Place != embed.PlaceBedrock {
 				t.Errorf("unset: Embedder.Place = %q, want bedrock", boot.Embedder.Place)
@@ -1580,14 +1667,21 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY": "", "DISPATCH_AZURE_EMBED_KEY_FILE": file})); boot.Embedder.AzureKey != "file-key" {
 				t.Errorf("file alone: AzureKey = %q, want the file's", boot.Embedder.AzureKey)
 			}
-			// An unreadable or blank file refuses, naming both variables, rather than falling back to
-			// the bare key.
+			// An unreadable or blank file refuses, naming both variables and why, never the path,
+			// rather than falling back to the bare key. A made-up seed pasted where the path goes
+			// is named nowhere in the refusal.
 			missing := filepath.Join(t.TempDir(), "missing")
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": missing}),
-				"DISPATCH_AZURE_EMBED_KEY_FILE names "+missing+", which could not be read, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+			const pastedSeed = "SUAMADEUPPASTEDSEEDSHAPE0123456789ABCDEFGHIJKLMNOPQRSTUV"
+			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": pastedSeed}),
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that cannot be read (it does not exist), and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+			if _, err := resolveBootConfig(bootEnvironment(azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": pastedSeed}))); err == nil || strings.Contains(err.Error(), pastedSeed[:10]) {
+				t.Errorf("a seed pasted as DISPATCH_AZURE_EMBED_KEY_FILE: err = %v, want a refusal holding none of it", err)
+			}
 			blank := writeFile(t, "blank", "\n")
 			refusedWith(t, azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": blank}),
-				"DISPATCH_AZURE_EMBED_KEY_FILE names "+blank+", which is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
+				"DISPATCH_AZURE_EMBED_KEY_FILE names a file that is empty, and DISPATCH_AZURE_EMBED_KEY is not read in its place")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY": "bare-key"}, "DISPATCH_AZURE_EMBED_KEY set, but DISPATCH_EMBEDDER is unset")
 			refusedWith(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": file}, "DISPATCH_AZURE_EMBED_KEY_FILE set, but DISPATCH_EMBEDDER is unset")
 			if _, ok := azureEmbedderFor(t, map[string]string{"DISPATCH_AZURE_EMBED_KEY_FILE": file}).(*embed.AzureClient); !ok {
@@ -2156,6 +2250,64 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
 		},
+		"DISPATCH_LEGION_STATUS_SCOPE": func(t *testing.T) {
+			// on turns the refusal on and is handed to the router, which passes it to the API's
+			// dependencies (routes.BuildAppContext). The router shows no dependencies, so the case
+			// checks the hand-off to it, as the DISPATCH_NATS_DISABLED case does. Unset and off
+			// leave it off. Any other value refuses the boot and names the value, so a misspelt on
+			// never leaves the refusal off in silence.
+			boot := resolveWith(t, map[string]string{"DISPATCH_LEGION_STATUS_SCOPE": "on"})
+			if !boot.LegionStatusScope {
+				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: LegionStatusScope false")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.LegionStatusScope {
+				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: the router is handed LegionStatusScope = false, want true")
+			}
+			for name, overrides := range map[string]map[string]string{
+				"unset": {},
+				"off":   {"DISPATCH_LEGION_STATUS_SCOPE": "off"},
+			} {
+				boot := resolveWith(t, overrides)
+				if boot.LegionStatusScope {
+					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: LegionStatusScope true", name)
+				}
+				if options := appContextOptions(boot, routes.AppContextOptions{}); options.LegionStatusScope {
+					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: the router is handed LegionStatusScope = true, want false", name)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_LEGION_STATUS_SCOPE": "yes"}, `DISPATCH_LEGION_STATUS_SCOPE="yes"`)
+		},
+		"DISPATCH_PARENT_STATUS_RULE": func(t *testing.T) {
+			// Its reader: R25's fix at boot (api.RunParentStatusFixAtBoot), whose answer is the rule
+			// main builds the server with (TestTheServerAnswersOnlyAfterTheParentStatusFix boots the
+			// binary with it). Unset or off, the fix answers the rule off and reads nothing, so it is
+			// given no database.
+			for _, overrides := range []map[string]string{{}, {"DISPATCH_PARENT_STATUS_RULE": "off"}} {
+				boot := resolveWith(t, overrides)
+				if boot.ParentStatusRule {
+					t.Errorf("%v: ParentStatusRule true, want the rule off", overrides)
+				}
+				if rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{}, nil, boot.ParentStatusRule); err != nil || rule.On() {
+					t.Errorf("%v: the boot's fix answered the rule on=%t and %v, want the rule off and no error", overrides, rule.On(), err)
+				}
+			}
+			// On, the fix runs over the database, which holds no issue, and answers the rule on once
+			// its record is there.
+			boot := resolveWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "on"})
+			if !boot.ParentStatusRule {
+				t.Error("DISPATCH_PARENT_STATUS_RULE=on: ParentStatusRule false, want the rule on")
+			}
+			database := storetest.Open(t)
+			rule, err := api.RunParentStatusFixAtBoot(t.Context(), api.Deps{Store: database}, storetest.Leases(t, database.Pool), boot.ParentStatusRule)
+			if err != nil || !rule.On() {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the boot's fix answered the rule on=%t and %v, want the rule on and no error", rule.On(), err)
+			}
+			var recorded bool
+			if err := database.Pool.QueryRow(t.Context(), `select exists (select 1 from parent_status_fix)`).Scan(&recorded); err != nil || !recorded {
+				t.Errorf("DISPATCH_PARENT_STATUS_RULE=on: the record of the fix is there=%t (%v), want it written", recorded, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PARENT_STATUS_RULE": "yes"}, `DISPATCH_PARENT_STATUS_RULE="yes"`)
+		},
 		"DISPATCH_TEST_EMBEDDER_OFF": func(t *testing.T) {
 			// Azure's own environment, the one shape that builds an embedder with no AWS SDK and
 			// no model service reachable, so the switch is what decides and not the credentials.
@@ -2192,6 +2344,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 // (newDocumentService, through documentDeps): boot's seven values, each one distinct, are each
 // found on the dependencies the service is built from.
 func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
+	t.Parallel()
 	boot := bootConfig{
 		SettleDelay:       11 * time.Second,
 		MarkWait:          12 * time.Second,
@@ -2324,6 +2477,7 @@ func sharedAgentTokenListReachesTheAPI(t *testing.T) {
 // unreachable: what is wrong is Dispatch's own credential, which the operator fixes in Dispatch's
 // deployment, not in the broker's.
 func TestACredentialPageWithAnUnreadableAccountTokenDoesNotBlameTheBroker(t *testing.T) {
+	t.Parallel()
 	for name, tokenFile := range map[string]string{
 		"a path that does not exist": filepath.Join(t.TempDir(), "missing"),
 		"an empty file":              writeFile(t, "account-token", "\n"),

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The room cap counts live rooms, and the service forgets a document's state once its room has
@@ -33,13 +34,14 @@ import (
 // documents are opened over a day: what fills the cap is how many were touched, not how many are
 // open at once.
 func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
+	t.Parallel()
 	service, database := newRoomReleaseService(t)
 	const written, read, opened = 100, 100, maxLiveRooms
 	ids := createDocuments(t, database, written+read+opened+1)
 	writtenIDs, readIDs, openedIDs := ids[:written], ids[written:written+read], ids[written+read:len(ids)-1]
 	untouched := ids[len(ids)-1]
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	for _, id := range writtenIDs {
 		appendThroughAPI(t, service, id)
@@ -55,7 +57,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 			return len(service.srv.Rooms()) <= written
 		})
 	}
-	if connection, err := dialDocument(httpServer.URL, untouched); err != nil {
+	if connection, err := dialDocument(t, httpServer.URL, untouched); err != nil {
 		t.Errorf("open a document nobody touched after %d were: %v, want it admitted", len(ids)-1, err)
 	} else {
 		leaveDocument(connection)
@@ -70,11 +72,12 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 // are evicted on the idle schedule too, so touching more documents than the cap through the API
 // alone leaves a new document openable and the service's per-document maps empty once they idle.
 func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
+	t.Parallel()
 	service, database := newRoomReleaseService(t)
 	ids := createDocuments(t, database, maxLiveRooms+51)
 	touched, untouched := ids[:len(ids)-1], ids[len(ids)-1]
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	for index, id := range touched {
 		if index%2 == 0 {
@@ -88,7 +91,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 	waitFor(t, 30*time.Second, "the rooms the API opened to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
-	connection, err := dialDocument(httpServer.URL, untouched)
+	connection, err := dialDocument(t, httpServer.URL, untouched)
 	if err != nil {
 		t.Fatalf("open a document nobody touched after %d were: %v, want it admitted", len(touched), err)
 	}
@@ -103,11 +106,12 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 // timer, and it goes with its room even while another document's settlement timer sits between its
 // registration and its attachment, which the register holds as a nil entry.
 func TestAStateWithNoTimerIsReleasedWhileAnotherRoomArmsOne(t *testing.T) {
+	t.Parallel()
 	service, _ := newRoomReleaseService(t)
 	const id = "00000000-0000-4000-8000-000000000513"
 	timerID := service.nextSettleTimer.Add(1)
 	service.registerSettleTimer(timerID)
-	t.Cleanup(func() { service.unregisterSettleTimer(timerID) })
+	testcleanup.Add(t, func() { service.unregisterSettleTimer(timerID) })
 	state := service.lockState(id)
 	service.unlockState(id, state)
 	if _, kept := service.rooms.Load(id); kept {
@@ -121,6 +125,7 @@ func TestAStateWithNoTimerIsReleasedWhileAnotherRoomArmsOne(t *testing.T) {
 // the document from it whether or not the issue reopens (resumeOwedSettlements), as does its
 // room's next load.
 func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
+	t.Parallel()
 	service, database := newRoomReleaseService(t)
 	service.settle = time.Hour // the issue closes before any settlement runs
 	ctx := context.Background()
@@ -152,6 +157,7 @@ func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
 // lookup hands out, so the write the lookup was for lands on the document's current state: here a
 // seed's author, which the document's settlement attributes its ask blocks to.
 func TestAStateReleasedAsALookupFindsItTakesNoWrite(t *testing.T) {
+	t.Parallel()
 	service, id := newTestService(t)
 	actor := model.Actor{Kind: "session", ID: "seeding-session"}
 	released := false
@@ -208,7 +214,7 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 	})
 	// ygo's idle sweeper reads it when the first room starts it, so it is set before any room.
 	service.srv.RoomIdleTimeout = time.Second
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -301,7 +307,7 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 		go func() {
 			defer workers.Done()
 			for id := range work {
-				connection, err := dialDocument(serverURL, id)
+				connection, err := dialDocument(t, serverURL, id)
 				if err != nil {
 					failures <- fmt.Errorf("open document %s: %w", id, err)
 					continue
@@ -332,10 +338,11 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 	}
 }
 
-// dialDocument opens id's document socket as a browser does; a refusal names the status it
-// answered.
-func dialDocument(serverURL, id string) (*gws.Conn, error) {
-	connection, response, err := gws.DefaultDialer.Dial(
+// dialDocument opens id's document socket as a browser does, through documentDialer; a refusal
+// names the status it answered.
+func dialDocument(t *testing.T, serverURL, id string) (*gws.Conn, error) {
+	t.Helper()
+	connection, response, err := documentDialer(t).Dial(
 		"ws"+strings.TrimPrefix(serverURL, "http")+"/ws/doc/"+id,
 		http.Header{"X-Dispatch-User": []string{"alice"}},
 	)

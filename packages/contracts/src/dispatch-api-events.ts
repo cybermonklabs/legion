@@ -13,6 +13,7 @@ import type {
   ArchitectureSyncFailedEventPayload,
   DisplayTree,
   PriorityUpdatedEventPayload,
+  ProjectAccessChangedEventPayload,
   ProjectDefaultAssigneeUpdatedEventPayload,
   RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
@@ -32,6 +33,7 @@ import type {
   CheckResultRetractedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
+  DeployRecordedEventPayload,
   IssueClaimEventPayload,
   IssueDeployedEventPayload,
   IssueEventPayload,
@@ -43,7 +45,10 @@ import type {
   MessageDeliveryEventPayload,
   MessageEventPayload,
 } from "./dispatch-api-messages";
-import type { SubscriptionRemovedEventPayload } from "./dispatch-api-sessions";
+import type {
+  RoleUndeliveredEventPayload,
+  SubscriptionRemovedEventPayload,
+} from "./dispatch-api-sessions";
 import type {
   UserAgentStateUpdatedEventPayload,
   UserStateUpdatedEventPayload,
@@ -151,6 +156,10 @@ export type DispatchEvent =
       readonly type: "priority.updated";
       readonly payload: PriorityUpdatedEventPayload;
     })
+  | (DispatchEventBase & {
+      readonly type: "project.access_changed";
+      readonly payload: ProjectAccessChangedEventPayload;
+    })
   | (DispatchEventBase & { readonly type: "issue.created"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.updated"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.closed"; readonly payload: IssueEventPayload })
@@ -165,6 +174,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "issue.deployed";
       readonly payload: IssueDeployedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "deploy.recorded";
+      readonly payload: DeployRecordedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "handoff.recorded";
@@ -311,6 +324,12 @@ export type DispatchEvent =
       readonly type: "message.accepted";
       readonly payload: MessageAcceptedEventPayload;
     })
+  /** Appended by Dispatch's outbox, as a system actor, on the owner of the event whose copy for a
+   *  role reached no session: an issue, a project document or a project. It wakes nobody. */
+  | (DispatchEventBase & {
+      readonly type: "role.undelivered";
+      readonly payload: RoleUndeliveredEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "message.answered";
       readonly payload: MessageEventPayload;
@@ -395,6 +414,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
+  "deploy.recorded": true,
   "handoff.recorded": true,
   "issue.claimed": true,
   "issue.closed": true,
@@ -410,10 +430,12 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "message.delivery": true,
   "message.edited": true,
   "priority.updated": true,
+  "project.access_changed": true,
   "project.created": true,
   "project.updated": true,
   "result.recorded": true,
   "result.retracted": true,
+  "role.undelivered": true,
   "settings.architecture_source.updated": true,
   "settings.project_default_assignee.updated": true,
   "settings.repo_project.updated": true,

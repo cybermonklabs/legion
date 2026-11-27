@@ -1,0 +1,20 @@
+-- 20261118181230_projects_slack_channels_changed_at.up.sql — when a project's Slack channels last
+-- changed.
+--
+-- R14: the secrets broker is to release the Legion Slack bot token to a private project's
+-- credentials only for the channels that project names, and to read when that list last changed
+-- beside the list, where its settle time starts; a later slice gives the broker that read, and no
+-- broker reads the column yet. `access.SetSlackChannels` sets the column to
+-- `statement_timestamp()`, the start of the update that writes a list different from the one
+-- stored, which comes after that write's lock waits; a write of the same list leaves it. It is null
+-- until a write changes the list, so a list written before this migration keeps a null time until
+-- its next change.
+--
+-- Adding a nullable column with no default writes the catalog alone, so it holds the table's ACCESS
+-- EXCLUSIVE lock for milliseconds and rewrites no row. The release before this one neither reads
+-- nor writes the column, so it serves beside it unchanged; a write of the channels by that release
+-- during the roll leaves the time where it was.
+--
+-- Its identifier is the UTC moment it was written, as `migrationid` requires of every migration
+-- past the numbered series, which closed at 0161.
+alter table projects add column slack_channels_changed_at timestamptz;

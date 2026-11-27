@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -121,7 +122,7 @@ type storeMove struct {
 	github              *proxyrulestest.Service
 	front               *front
 	db                  *pgx.Conn
-	pods                ciphertest.Pods
+	pods                podclient.Pods
 }
 
 func newStoreMove(t *testing.T, binary, databaseURL string) *storeMove {
@@ -145,7 +146,7 @@ func newStoreMove(t *testing.T, binary, databaseURL string) *storeMove {
 		front: newFront(t),
 		db:    connectToBroker(t, databaseURL),
 	}
-	m.pods = ciphertest.Pods{T: t, Base: m.front.URL, Token: ciphertest.IssuerTokens(t, issuer, podKey, movePodAudience)}
+	m.pods = podclient.Pods{T: t, Base: m.front.URL, Token: podclient.IssuerTokens(t, issuer, podKey, movePodAudience)}
 	return m
 }
 
@@ -316,7 +317,7 @@ func (m *storeMove) move(from, to, second string, carries bool) {
 // under old alone, answers it not served; an ask for it is refused UNKNOWN_SECRET; GET
 // /v1/settings names configured and not old; and a new request for MOVE_FRESH freezes its source
 // under configured.
-func (m *storeMove) requireNothingElseOf(pod ciphertest.Pod, old, configured string) {
+func (m *storeMove) requireNothingElseOf(pod podclient.Pod, old, configured string) {
 	t := m.t
 	t.Helper()
 	status, body := m.signed(pod, http.MethodPost, "/v1/secrets/"+moveOnlyOld+"/reread")
@@ -402,14 +403,14 @@ func (m *storeMove) readRows() moveRows {
 
 // signed sends method path with no body as pod, with its proof of its enrollment at the step's
 // public URL.
-func (m *storeMove) signed(pod ciphertest.Pod, method, path string) (int, []byte) {
+func (m *storeMove) signed(pod podclient.Pod, method, path string) (int, []byte) {
 	m.t.Helper()
 	return m.signedBody(pod, method, path, nil)
 }
 
 // signedBody sends body as JSON to path as pod, with its proof of its enrollment at the step's
 // public URL, and answers the status and the body.
-func (m *storeMove) signedBody(pod ciphertest.Pod, method, path string, body any) (int, []byte) {
+func (m *storeMove) signedBody(pod podclient.Pod, method, path string, body any) (int, []byte) {
 	m.t.Helper()
 	header, err := proof.Sign(pod.Key, pod.EnrollmentID, method, m.front.URL+path, time.Now())
 	if err != nil {
@@ -421,7 +422,7 @@ func (m *storeMove) signedBody(pod ciphertest.Pod, method, path string, body any
 // airlockRelease releases grantID, MOVE_APP_READ's, as pod, and answers what the release hands
 // the command for the name behind the airlock: the proxy's password and the placeholder of the
 // token's slot. A release that is no 200, or that carries no such name, fails the step.
-func (m *storeMove) airlockRelease(pod ciphertest.Pod, grantID string) (password, placeholder string) {
+func (m *storeMove) airlockRelease(pod podclient.Pod, grantID string) (password, placeholder string) {
 	m.t.Helper()
 	status, body := m.signed(pod, http.MethodPost, "/v1/grants/"+grantID+"/values")
 	var release struct {
