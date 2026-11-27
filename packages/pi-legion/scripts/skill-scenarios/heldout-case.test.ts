@@ -369,6 +369,49 @@ describe("parseHeldoutFile", () => {
     ).toThrow("case P05: world.dispatch.comments[1].anchor: a reply holds no anchor");
   });
 
+  // Catches: a world that names two handoffs, two comments or two asks by one id, which the seed's
+  // map of the world's ids (dispatch-fixture.json `ids`) would hold only one of, with no error.
+  test("two handoffs, two comments or two asks with one id are refused", () => {
+    const comment = {
+      id: "cmt-1",
+      author: "ses-acme-12-tester",
+      at: "2030-01-07T13:35:00Z",
+      body: "One.",
+    };
+    const ask = {
+      id: "ask-1",
+      author: "ses-acme-12-tester",
+      at: "2030-01-07T13:36:00Z",
+      question: "Which?",
+      options: ["A", "B"],
+      state: "open",
+      answer: null,
+    };
+    const file = heldoutJson();
+    const { dispatch } = file.cases[0].world;
+    const handoff = dispatch.handoffs[0];
+    if (handoff === undefined) throw new Error("P05's world holds no handoff");
+    const handoffs = JSON.stringify({
+      ...dispatch,
+      handoffs: [handoff, { ...handoff, version: 2 }],
+    });
+    const comments = JSON.stringify({
+      ...dispatch,
+      comments: [comment, { ...comment, body: "Two." }],
+    });
+    const asks = JSON.stringify({ ...dispatch, asks: [ask, { ...ask, question: "And?" }] });
+    for (const [kind, world, id] of [
+      ["handoffs", handoffs, handoff.id],
+      ["comments", comments, "cmt-1"],
+      ["asks", asks, "ask-1"],
+    ] as const) {
+      file.cases[0].world.dispatch = JSON.parse(world);
+      expect(() => parseHeldoutFile(JSON.stringify(file))).toThrow(
+        `case P05: world.dispatch.${kind}[1].id: ${id} is named twice`
+      );
+    }
+  });
+
   test("a plain comment parses with no anchor and no replyTo key, and the rest of the file exactly as written", () => {
     const file = heldoutJson();
     file.cases[0].world.dispatch.comments = [

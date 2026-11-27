@@ -317,6 +317,14 @@ const DispatchWorld = z
       if (key === dispatch.issue.key)
         refuse(context, ["issues", index, "key"], "the case's own issue is no other issue");
     });
+    // The seed maps each of these records by its kind and the world's id (dispatch-fixture.json
+    // `ids`), so one id of a kind names one record.
+    for (const kind of ["handoffs", "comments", "asks"] as const)
+      refuseRepeats(
+        context,
+        dispatch[kind].map(({ id }) => id),
+        (index) => [kind, index, "id"]
+      );
     dispatch.comments.forEach((comment, index) => {
       const at = ["comments", index];
       const { anchor, replyTo } = comment;
