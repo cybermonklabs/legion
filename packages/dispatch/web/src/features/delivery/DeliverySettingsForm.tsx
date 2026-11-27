@@ -7,6 +7,7 @@ import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { compareTimestamps } from "../../lib/timestamps";
 import { borderDefault, textMutedOnCanvas } from "../../theme/classes";
 import {
   ownerRepoPattern,
@@ -74,6 +75,76 @@ interface Draft {
   excluded_repos: string;
 }
 
+/** The fields as the stored record fills them, and empty where there is none. */
+function recordDraft(record: DeliverySettings | null): Draft {
+  return {
+    deploy_repo: record?.deploy_repo ?? "",
+    deploy_workflow_path: record?.deploy_workflow_path ?? "",
+    excluded_repos: record?.excluded_repos?.join("\n") ?? "",
+    population_authors: record?.population_authors?.join("\n") ?? "",
+    pr_checks_workflow_path: record?.pr_checks_workflow_path ?? "",
+    production_job_names: record?.production_job_names?.join("\n") ?? "",
+    production_apply_step_name: record?.production_apply_step_name ?? "",
+    pr_checks_rollup_job_name: record?.pr_checks_rollup_job_name ?? "",
+    staging_apply_job_name: record?.staging_apply_job_name ?? "",
+    staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
+  };
+}
+
+/** The later of two versions of the record, by when Dispatch wrote each (`updated_at`): `held`,
+ *  as a reader of it has it, and `other`, which may be newer - a save's own answer, or the
+ *  cache's record beside the one the form was handed - and wins a tie. No record, or none read
+ *  yet, gives way to any record. */
+function laterRecord(
+  held: DeliverySettings | null | undefined,
+  other: DeliverySettings | null | undefined
+): DeliverySettings | null {
+  if (other == null) return held ?? null;
+  if (held == null) return other;
+  return compareTimestamps(other.updated_at, held.updated_at) >= 0 ? other : held;
+}
+
+/** The fields of `next` that differ from `stored`, as typed: what the reader has changed. */
+function changedFields(next: Draft, stored: Draft): Partial<Draft> {
+  const changed: Partial<Draft> = {};
+  for (const field of Object.keys(next) as (keyof Draft)[]) {
+    if (next[field] !== stored[field]) changed[field] = next[field];
+  }
+  return changed;
+}
+
+/** The entries of `sent` that `edited` still holds as sent: the fields this tab's Save sent that
+ *  the reader has not typed in since. */
+function stillSent(sent: Partial<Draft>, edited: Partial<Draft>): Partial<Draft> {
+  const kept: Partial<Draft> = {};
+  for (const field of Object.keys(sent) as (keyof Draft)[]) {
+    if (edited[field] === sent[field]) kept[field] = sent[field];
+  }
+  return kept;
+}
+
+/** What the reader has changed over the record, and what this tab's newest Save sent of it. */
+interface Changes {
+  /** The fields the reader has changed, as typed. */
+  readonly edited: Partial<Draft>;
+  /** The newest Save's: the fields it sent that the reader has not typed in since (`stillSent`),
+   *  and the Save itself, so only its own landing retires them. `null` before any Save, and once
+   *  Dispatch has refused it or its landing has retired them. */
+  readonly sent: { readonly fields: Partial<Draft>; readonly save: object } | null;
+}
+
+const NO_CHANGES: Changes = { edited: {}, sent: null };
+
+/** `changes` once the Save `save` has landed and the record holds what it sent: the fields it
+ *  sent that the reader has not typed in since follow the record again. Where a newer Save is out
+ *  or this one was refused, nothing changes. */
+function retired(changes: Changes, save: object): Changes {
+  if (changes.sent?.save !== save) return changes;
+  const edited = { ...changes.edited };
+  for (const field of Object.keys(changes.sent.fields) as (keyof Draft)[]) delete edited[field];
+  return { edited, sent: null };
+}
+
 /** The three optional job names the Pipeline page follows, in the order the form lists them. */
 const PIPELINE_JOB_FIELDS = [
   {
@@ -139,27 +210,50 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
     }
     record = settings.data;
   }
-  // Keyed by the record's write time, so a save (anyone's) starts the fields over from the record
-  // as the server stored it, and so does a caller handing over another record.
-  return <DeliverySettingsFields key={record?.updated_at ?? "unset"} record={record} />;
+  return <DeliverySettingsFields record={record} />;
 }
 
+/**
+ * The form itself, over a record `DeliverySettingsForm` has read. Its groups, in this order:
+ * Fields - Deploy repository, Deploy workflow, Production jobs, Production apply step, the three
+ * Pipeline job names, PR checks workflow, Population authors and Excluded repositories, each one
+ * item - then Save, and under them the refusal of a save. Fields are two columns from `sm` and
+ * one below it; Save stays on its own line under them. A one-line value longer than its field
+ * ends in an ellipsis with the whole value as its title; a list wraps inside its own box.
+ */
 function DeliverySettingsFields({ record }: { record: DeliverySettings | null }): ReactNode {
   const queryClient = useQueryClient();
   const id = useId();
   const submitGuard = useSubmitGuard();
-  const [draft, setDraft] = useState<Draft>(() => ({
-    deploy_repo: record?.deploy_repo ?? "",
-    deploy_workflow_path: record?.deploy_workflow_path ?? "",
-    excluded_repos: record?.excluded_repos?.join("\n") ?? "",
-    population_authors: record?.population_authors?.join("\n") ?? "",
-    pr_checks_workflow_path: record?.pr_checks_workflow_path ?? "",
-    production_job_names: record?.production_job_names?.join("\n") ?? "",
-    production_apply_step_name: record?.production_apply_step_name ?? "",
-    pr_checks_rollup_job_name: record?.pr_checks_rollup_job_name ?? "",
-    staging_apply_job_name: record?.staging_apply_job_name ?? "",
-    staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
-  }));
+  // The record the fields start from: the one the form was handed, or the cache's where that is
+  // newer. A save writes its own answer there in the callback that retires the fields it sent,
+  // and this read of the cache takes it in that same render, while TanStack Query has not yet
+  // told the form's host of it - in a browser, a timer later.
+  const cached = useQuery({ ...deliverySettingsQuery(), enabled: false }).data;
+  const written = laterRecord(record, cached);
+  const stored = recordDraft(written);
+  // What the reader has changed, over the record as the server now holds it: a save from anywhere
+  // refreshes the fields the reader has not touched and keeps the ones they have as they typed
+  // them, so a line break typed to start the next entry stays, and the caret after it. `sent`
+  // holds the changed fields this tab's newest Save sent, as typed, until the reader types in one
+  // again; a refusal of that Save drops them all. That Save's own landing retires them: they
+  // follow the record its answer is, so a list typed with a trailing line break or with commas,
+  // which Save rewrites, shows as saved, and a later writer's record after it shows too. While the
+  // Save is out, a record - another writer's - is no answer to it and keeps every field as typed.
+  const [changes, setChanges] = useState<Changes>(NO_CHANGES);
+  const { edited, sent } = changes;
+  const kept = changedFields({ ...stored, ...edited }, stored);
+  if (Object.keys(kept).length !== Object.keys(edited).length) {
+    setChanges({ edited: kept, sent: sent && { ...sent, fields: stillSent(sent.fields, kept) } });
+  }
+  const draft: Draft = { ...stored, ...edited };
+  const setDraft = (next: Draft) => {
+    const changed = changedFields(next, stored);
+    setChanges({
+      edited: changed,
+      sent: sent && { ...sent, fields: stillSent(sent.fields, changed) },
+    });
+  };
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -179,20 +273,45 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    submitGuard.guard(() =>
-      save.mutate({
-        deploy_repo: draft.deploy_repo,
-        deploy_workflow_path: draft.deploy_workflow_path.trim(),
-        excluded_repos: listEntries(draft.excluded_repos),
-        population_authors: listEntries(draft.population_authors),
-        pr_checks_workflow_path: draft.pr_checks_workflow_path.trim(),
-        production_job_names: lineEntries(draft.production_job_names),
-        production_apply_step_name: textOrNull(draft.production_apply_step_name),
-        pr_checks_rollup_job_name: textOrNull(draft.pr_checks_rollup_job_name),
-        staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
-        staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
-      })
-    );
+    submitGuard.guard(() => {
+      // This Save, by identity: its own landing, and no record that arrives meanwhile, retires
+      // what it sent, and the landing of an earlier Save leaves a newer one's fields as typed.
+      const press = {};
+      setChanges({ edited, sent: { fields: edited, save: press } });
+      save.mutate(
+        {
+          deploy_repo: draft.deploy_repo,
+          deploy_workflow_path: draft.deploy_workflow_path.trim(),
+          excluded_repos: listEntries(draft.excluded_repos),
+          population_authors: listEntries(draft.population_authors),
+          pr_checks_workflow_path: draft.pr_checks_workflow_path.trim(),
+          production_job_names: lineEntries(draft.production_job_names),
+          production_apply_step_name: textOrNull(draft.production_apply_step_name),
+          pr_checks_rollup_job_name: textOrNull(draft.pr_checks_rollup_job_name),
+          staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
+          staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
+        },
+        {
+          onError: () =>
+            setChanges((current) =>
+              current.sent?.save === press ? { ...current, sent: null } : current
+            ),
+          onSuccess: (answer) => {
+            // A `PUT` goes under no key (`goesUnderKey`), so Dispatch keeps nothing under one for
+            // it and answers each with the record it stored: a landing with no answer (`null`) is
+            // a keyed write's alone, and here the type's only.
+            if (answer === null) return;
+            // The answer is the record from now on, written where the form and every other
+            // reader of it read it, unless a newer one is there already: another writer's, read
+            // meanwhile. The fields it sent follow it in the render that takes it in.
+            queryClient.setQueryData(deliverySettingsQuery().queryKey, (current) =>
+              laterRecord(current, answer)
+            );
+            setChanges((current) => retired(current, press));
+          },
+        }
+      );
+    });
   };
 
   return (
@@ -208,6 +327,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               pattern={ownerRepoPattern}
               placeholder="owner/repo"
               required
+              title={draft.deploy_repo === "" ? undefined : draft.deploy_repo}
               value={draft.deploy_repo}
             />
           </label>
@@ -221,6 +341,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               }
               placeholder=".github/workflows/<deploy>.yml"
               required
+              title={draft.deploy_workflow_path === "" ? undefined : draft.deploy_workflow_path}
               value={draft.deploy_workflow_path}
             />
           </label>
@@ -260,6 +381,11 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                   setDraft({ ...draft, production_apply_step_name: event.target.value })
                 }
                 placeholder="The step whose success means the job applied (optional)"
+                title={
+                  draft.production_apply_step_name === ""
+                    ? undefined
+                    : draft.production_apply_step_name
+                }
                 value={draft.production_apply_step_name}
               />
             </label>
@@ -277,6 +403,7 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
                 id={`${id}-${key}`}
                 onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
                 placeholder={placeholder}
+                title={draft[key] === "" ? undefined : draft[key]}
                 value={draft[key]}
               />
             </label>
@@ -295,6 +422,9 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               }
               placeholder=".github/workflows/<checks>.yml"
               required
+              title={
+                draft.pr_checks_workflow_path === "" ? undefined : draft.pr_checks_workflow_path
+              }
               value={draft.pr_checks_workflow_path}
             />
           </label>

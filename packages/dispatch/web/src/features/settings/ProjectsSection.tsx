@@ -670,6 +670,7 @@ function DefaultRepositoryCell({
           }}
           placeholder="None"
           spellCheck={false}
+          title={(draft ?? repo ?? "") === "" ? undefined : (draft ?? repo ?? "")}
           value={draft ?? repo ?? ""}
         />
         <button

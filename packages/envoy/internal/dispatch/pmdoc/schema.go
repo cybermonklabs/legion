@@ -195,6 +195,11 @@ func normalizeSchemaDefaults(value *BlockSchema) error {
 // every structural edge kind matches, and nothing a `?kind=` comma list would split.
 var linkKindPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+// ParentAttribute is the name of the attribute that places a typed block under another block of
+// its plan: a `block[]` attribute holding at most one reference, because a block has one parent.
+// Its twin is PARENT_ATTRIBUTE in @legion/contracts.
+const ParentAttribute = "parent"
+
 func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) error {
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeBool, BlockAttributeEnum, BlockAttributeStringList,
@@ -212,6 +217,9 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 	} else if attr.Targets != nil {
 		return fmt.Errorf("type %q attribute %q has targets, which only a block[] attribute may carry", typeName, name)
 	}
+	if name == ParentAttribute && attr.Kind != BlockAttributeBlockList {
+		return fmt.Errorf("type %q attribute %q places a block in its tree, so it must be a block[] attribute", typeName, name)
+	}
 	if attr.Kind == BlockAttributeEnum {
 		if len(attr.Choices) == 0 {
 			return fmt.Errorf("type %q attribute %q enum has no choices", typeName, name)
@@ -228,7 +236,7 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 		}
 	}
 	if attr.Default != nil {
-		if err := validateAttributeValue(attr, attr.Default); err != nil {
+		if err := validateAttributeValue(name, attr, attr.Default); err != nil {
 			return fmt.Errorf("type %q attribute %q default: %w", typeName, name, err)
 		}
 		if items, _ := stringSlice(attr.Default); attr.Kind == BlockAttributeBlockList && len(items) > 0 {
@@ -238,7 +246,9 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 	return nil
 }
 
-func validateAttributeValue(attr BlockAttributeSchema, value any) error {
+// validateAttributeValue refuses value, a tree's value of the attribute name declared as attr,
+// unless it is one of attr's kind. ParentAttribute holds at most one reference.
+func validateAttributeValue(name string, attr BlockAttributeSchema, value any) error {
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeActor:
 		if _, ok := value.(string); !ok {
@@ -290,7 +300,10 @@ func validateAttributeValue(attr BlockAttributeSchema, value any) error {
 		if !ok {
 			return fmt.Errorf("must be an array of block references, got %T", value)
 		}
-		return validateBlockPointerValues(items)
+		if err := validateBlockPointerValues(items); err != nil {
+			return err
+		}
+		return parentCount(name, items)
 	}
 	return nil
 }
@@ -344,14 +357,14 @@ func validateBlockPointerValues(values []string) error {
 	return nil
 }
 
-func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
+func parseTypedAttributeValue(name string, attr BlockAttributeSchema, raw any) (any, error) {
 	text, ok := raw.(string)
 	if !ok {
 		return nil, fmt.Errorf("must be encoded as a string, got %T", raw)
 	}
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp:
-		if err := validateAttributeValue(attr, text); err != nil {
+		if err := validateAttributeValue(name, attr, text); err != nil {
 			return nil, err
 		}
 		return text, nil
@@ -370,15 +383,33 @@ func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
 			}
 			value = legacy
 		}
-		if err := validateAttributeValue(attr, value); err != nil {
+		if err := validateAttributeValue(name, attr, value); err != nil {
 			return nil, err
 		}
 		return value, nil
 	case BlockAttributeBlockList:
-		return ParseBlockPointerValue(text)
+		values, err := ParseBlockPointerValue(text)
+		if err != nil {
+			return nil, err
+		}
+		if err := parentCount(name, values); err != nil {
+			return nil, err
+		}
+		return values, nil
 	default:
 		return nil, fmt.Errorf("has unknown kind %q", attr.Kind)
 	}
+}
+
+// parentCount refuses values, the references the attribute name holds, when name is
+// ParentAttribute and they are more than one: a block has one parent. Its twin is parentProblem in
+// @legion/contracts, which the proof editor calls; both are held to the rows of
+// testdata/block-pointer-values.json that name an attribute (DISPATCH_BLOCK_POINTER_VALUES).
+func parentCount(name string, values []string) error {
+	if name == ParentAttribute && len(values) > 1 {
+		return fmt.Errorf("holds %d references; a block has one parent, so it holds at most one", len(values))
+	}
+	return nil
 }
 
 // stringListWrittenWithGoEscapes reads a `string[]` attribute a version stored before this reader

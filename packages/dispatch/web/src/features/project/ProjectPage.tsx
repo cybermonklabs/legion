@@ -42,6 +42,15 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
 
 type IssueView = "list" | "board";
 
+/**
+ * A project's page. Its header's groups, in this order: Identity (the project's name and its
+ * key), Attention (the questions on this project that wait on the reader), Navigation (the tabs,
+ * and beside them, while the read of the project's architecture sources is pending or failed, that
+ * read's state, since the Architecture tab exists only once it says there is a source) and View
+ * (list or board, and the board's two toggles). A row too narrow for them all moves the last
+ * group that does not fit to the next line whole. Below `md` Identity and Attention share the
+ * first line and the rest start the next; from `md` Attention goes last, after the view controls.
+ */
 export function ProjectPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
@@ -161,37 +170,32 @@ export function ProjectPage(): ReactNode {
 
   return (
     <section>
-      {/* One strip at `md` and above. Every control is `shrink-0`, so something has to give
-          when they outgrow the row. The title gives, truncating, which is what a long project
-          name should do; otherwise the last control - the blocked-on-you pill - would be pushed
-          off the right edge and unreachable. */}
-      <header className="flex flex-wrap items-center gap-2 md:min-h-12 md:flex-nowrap">
-        {/* `flex-initial` at `md`: the title takes the width its name needs and no more, so
-            the project key sits beside a short name instead of 380px away, and only a long
-            name truncates - carrying the whole name as its `title`. */}
-        <h1
-          className={`order-1 min-w-0 flex-1 truncate text-[22px] font-semibold tracking-tight md:flex-initial ${textPrimaryOnCanvas}`}
-          title={project.name}
-        >
-          {project.name}
-        </h1>
-        <Link
-          className={`order-2 inline-flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-semibold md:min-h-9 md:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
-          to={buildProjectPath({ kind: "issues", project: route.project })}
-        >
-          {route.project}
-        </Link>
+      <header className="flex flex-wrap items-center gap-2 md:min-h-12">
+        <div className="flex min-w-0 max-w-full items-center gap-2 md:max-w-[50%]">
+          <h1
+            className={`min-w-0 truncate text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}
+            title={project.name}
+          >
+            {project.name}
+          </h1>
+          <Link
+            className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-semibold md:min-h-9 md:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
+            to={buildProjectPath({ kind: "issues", project: route.project })}
+          >
+            {route.project}
+          </Link>
+        </div>
         {/* The reader's own questions on this project, and no credential request: the pending
             list is global (a request belongs to no project), so counting one here would make
             this project's number partly about another page. */}
         <BlockedOnYou
           asks={inbox.data ?? []}
-          className="order-3 shrink-0 md:order-5"
+          className="shrink-0 md:order-last"
           variant="pill"
           viewer={viewer}
         />
-        <div aria-hidden className="order-4 basis-full md:hidden" />
-        <div className="order-5 shrink-0 md:order-3">
+        <div aria-hidden className="basis-full md:hidden" />
+        <div className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-1">
           <Tabs
             activeTab={activeTab}
             ariaLabel="Project"
@@ -200,50 +204,72 @@ export function ProjectPage(): ReactNode {
             onSelect={selectTab}
             tabs={hasSource ? [architectureTab, ...tabs] : tabs}
           />
-        </div>
-        {activeTab === "issues" ? (
-          <fieldset
-            className={`order-6 inline-flex shrink-0 rounded-xl border p-1 md:order-4 md:ml-auto ${borderDefault}`}
-          >
-            <legend className="sr-only">Issue view</legend>
-            {(["list", "board"] as const).map((view) => (
+          {/* No source read yet is not no source: the reader sees that the tab strip may still
+              gain Architecture, or why it cannot say. A refetch that fails after a read answered
+              keeps that answer, and the tab strip with it, so it says nothing here. */}
+          {sources.isPending ? (
+            <span className={`text-xs ${textMutedOnCanvas}`} role="status">
+              Checking for an architecture…
+            </span>
+          ) : sources.isError && sources.data === undefined ? (
+            <span
+              className={`flex flex-wrap items-center gap-2 text-xs ${dangerText}`}
+              role="alert"
+            >
+              Could not check for an architecture.
               <button
-                aria-pressed={issueView === view}
-                className={`min-h-11 rounded-lg px-3 text-sm font-medium md:min-h-9 md:px-2 ${
-                  issueView === view ? surfaceMutedStrongBg : surfaceMutedBg
-                } ${textSecondaryOnCanvas}`}
-                key={view}
-                onClick={() => setIssueView(view)}
+                className="font-medium underline"
+                onClick={() => void sources.refetch()}
                 type="button"
               >
-                {view === "list" ? "List" : "Board"}
+                Retry
               </button>
-            ))}
-          </fieldset>
-        ) : null}
-        {activeTab === "issues" && issueView === "board" ? (
-          <button
-            aria-pressed={showEdges}
-            className={`order-7 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
-              showEdges ? surfaceMutedStrongBg : surfaceMutedBg
-            } ${textSecondaryOnCanvas}`}
-            onClick={() => setShowEdges(!showEdges)}
-            type="button"
-          >
-            {showEdges ? "Hide Icebox & Done" : "Show Icebox & Done"}
-          </button>
-        ) : null}
-        {activeTab === "issues" && issueView === "board" ? (
-          <button
-            aria-pressed={lanes}
-            className={`order-8 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
-              lanes ? surfaceMutedStrongBg : surfaceMutedBg
-            } ${textSecondaryOnCanvas}`}
-            onClick={() => setLanes(!lanes)}
-            type="button"
-          >
-            {lanes ? "Hide lanes" : "Show lanes"}
-          </button>
+            </span>
+          ) : null}
+        </div>
+        {activeTab === "issues" ? (
+          <div className="flex flex-wrap items-center gap-2 md:ml-auto">
+            <fieldset className={`inline-flex shrink-0 rounded-xl border p-1 ${borderDefault}`}>
+              <legend className="sr-only">Issue view</legend>
+              {(["list", "board"] as const).map((view) => (
+                <button
+                  aria-pressed={issueView === view}
+                  className={`min-h-11 rounded-lg px-3 text-sm font-medium md:min-h-9 md:px-2 ${
+                    issueView === view ? surfaceMutedStrongBg : surfaceMutedBg
+                  } ${textSecondaryOnCanvas}`}
+                  key={view}
+                  onClick={() => setIssueView(view)}
+                  type="button"
+                >
+                  {view === "list" ? "List" : "Board"}
+                </button>
+              ))}
+            </fieldset>
+            {issueView === "board" ? (
+              <button
+                aria-pressed={showEdges}
+                className={`min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:min-h-9 md:px-2 ${borderDefault} ${
+                  showEdges ? surfaceMutedStrongBg : surfaceMutedBg
+                } ${textSecondaryOnCanvas}`}
+                onClick={() => setShowEdges(!showEdges)}
+                type="button"
+              >
+                {showEdges ? "Hide Icebox & Done" : "Show Icebox & Done"}
+              </button>
+            ) : null}
+            {issueView === "board" ? (
+              <button
+                aria-pressed={lanes}
+                className={`min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:min-h-9 md:px-2 ${borderDefault} ${
+                  lanes ? surfaceMutedStrongBg : surfaceMutedBg
+                } ${textSecondaryOnCanvas}`}
+                onClick={() => setLanes(!lanes)}
+                type="button"
+              >
+                {lanes ? "Hide lanes" : "Show lanes"}
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </header>
       {hasSource ? (
