@@ -1,8 +1,9 @@
 /**
  * The quoted words a thread's card draws first (R4): their text up to the first line break, cut
  * in script at the last word end before the 80th character with an ellipsis, so that no style
- * clamps them. The card draws `anchor.quote` with no clamp of its own (`ThreadCard.tsx`), so the
- * cut is this function's alone; `text-threads.ts` passes each thread's quote through it.
+ * clamps them. The card draws its `quoteLine` with no clamp of its own (`ThreadCard.tsx`), so the
+ * cut is this function's alone; `TextThreadCard.tsx` passes each thread's quote through it, and
+ * the card's suggestion diff draws the whole quote, the words Accept replaces.
  */
 
 /** The most characters a quoted line keeps, its ellipsis included. */

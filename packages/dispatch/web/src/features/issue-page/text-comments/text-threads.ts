@@ -20,7 +20,6 @@ import {
   type ReadMessage,
   type TextPlace,
 } from "./on-text";
-import { quoteLine } from "./quote-line";
 import { matchAt } from "./selection-quote";
 
 /**
@@ -55,14 +54,15 @@ export interface TextThread {
   readonly occurrence: number;
   /** Whether the words left the node's text: an orphaned anchor, or a reply's `removed` block. */
   readonly orphaned: boolean;
-  /** The quoted words whole, as the read holds them, which the column finds in the row. */
+  /** The quoted words whole, as the read holds them, which the column finds in the row and the
+   *  card cuts to one line at its top (`quoteLine`, R4). */
   readonly quote: string;
   /** Whether the root is a reply with a quote, whose card draws no Resolve or Reopen (R4). */
   readonly replyRoot: boolean;
   /** The thread as the margin's card draws it (`ThreadCard`): its root's anchor and its own hold
-   *  the quoted words cut to one line (`quoteLine`), and a thread rooted in a message is of the
-   *  kind `"message"`, whose card draws no Resolve or Reopen and whose reply writes a message
-   *  (R4). */
+   *  the quoted words whole, which a suggestion's diff strikes through as Accept replaces them,
+   *  and a thread rooted in a message is of the kind `"message"`, whose card draws no Resolve or
+   *  Reopen and whose reply writes a message (R4). */
   readonly thread: Thread;
 }
 
@@ -398,7 +398,7 @@ function* ancestorsOf(
   }
 }
 
-/** The anchor the card draws: the place's own, with its quote cut to one line (`quoteLine`). */
+/** The anchor the card draws: the place's own, with its quote whole. */
 function cardAnchorOf(place: TextPlace): Anchor {
   switch (place.kind) {
     case "block": {
@@ -408,7 +408,7 @@ function cardAnchorOf(place: TextPlace): Anchor {
         block_id: anchor.block_id,
         mark_id: anchor.mark_id,
         orphaned: anchor.orphaned,
-        quote: quoteLine(anchor.quote),
+        quote: anchor.quote,
         version: anchor.version,
       };
     }
@@ -418,7 +418,7 @@ function cardAnchorOf(place: TextPlace): Anchor {
         block_id: null,
         mark_id: "",
         orphaned: place.orphaned,
-        quote: quoteLine(place.quote),
+        quote: place.quote,
         version: 0,
       };
     case "item":
@@ -427,7 +427,7 @@ function cardAnchorOf(place: TextPlace): Anchor {
         block_id: place.block.block_id,
         mark_id: "",
         orphaned: place.block.removed,
-        quote: quoteLine(place.quote),
+        quote: place.quote,
         version: 0,
       };
   }

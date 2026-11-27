@@ -138,7 +138,7 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers("TextThreadCard | ThreadCard | address prop | owner={host.owner}", row(REPLY, ISSUE)),
   ...answers(
-    "TextThreadCard | ThreadCard | address prop | replyMutationKey={marginReplySendKey(card.key)}",
+    "TextThreadCard | ThreadCard | address prop | replyMutationKey={replyKey}",
     row(REPLY, NARROWED),
     row(REPLY, VIEW),
     row(REPLY_SHEET, VIEW)

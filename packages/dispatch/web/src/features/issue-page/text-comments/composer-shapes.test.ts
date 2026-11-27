@@ -6,6 +6,7 @@ import { settle } from "../../../__tests__/fake-clock";
 import { keptTab } from "../../../__tests__/kept-sends-harness";
 import { api } from "../../../api/client";
 import type { ComposerAnchor, ReplyTarget } from "../../conversation/composer-model";
+import { draftSource } from "../../conversation/draft-pills";
 import { heldOf, request } from "../../conversation/held-sends-fixture";
 import { type SentRequest, sendAttempt } from "../../conversation/send-request";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -62,9 +63,9 @@ const STATEMENT: TextWriteTarget = {
   id: "spec-md#r1",
 };
 
-/** An item of its own: its id, its author, and the issue's spec beside it. */
+/** An item of its own: its id and its author. */
 function item(id: string): TextWriteTarget {
-  return { author: [{ id: "alice", kind: "user" }], id, spec: "artifact-spec" };
+  return { author: [{ id: "alice", kind: "user" }], id };
 }
 
 /** The composer's send of `BODY` as `MentionComposer` freezes it at Send: the held sends' request
@@ -151,6 +152,16 @@ test("a node anchor sends node, quote and occurrence", async () => {
       route: "comments",
     },
   ]);
+});
+
+// A comment on a node's words names no document (`artifact: ""`), so a reference in it is read
+// in the issue's spec, as one in a comment on the issue is, and never in a document of that name.
+test("a node anchor reads its references in the issue's spec", () => {
+  const { anchor, replyTo } = addressOf("lens", "item", item("lens-1"));
+  expect(anchor?.node, "the lens's words are anchored to the lens").toBe("lens-1");
+  expect(draftSource({ issueKey: ISSUE, kind: "issue" }, replyTo, anchor)).toStrictEqual({
+    needsSpecOf: ISSUE,
+  });
 });
 
 test("a reply to a comment's block sends reply_to, reply_to_block, quote and occurrence", async () => {

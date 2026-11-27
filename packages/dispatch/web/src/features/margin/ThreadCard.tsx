@@ -1,6 +1,5 @@
 import { hashKey, type MutationKey } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
@@ -152,10 +151,20 @@ export interface ThreadCardProps {
    *  reply the reader left - the Conversation's Expand thread. A card with none draws a Reply of
    *  its own beside the line. */
   reopenControl?: string;
+  /** The quoted words the card draws first, in place of its root's whole quote: the margin of
+   *  comments on text cuts them to one line (INFRA-5706, R4). A suggestion's diff still strikes
+   *  through the whole quote, the words that Accept replaces. With none, the card draws the whole
+   *  quote, as it always has. */
+  quoteLine?: string;
   /** `false` draws no Resolve and no Reopen: a thread whose root is a message, which no route of a
    *  message resolves, or a reply with a quote, whose resolution nobody could undo, since the
    *  server reopens a thread's root alone (INFRA-5706, R4). */
   rootActions?: boolean;
+  /** `false` hands the reply composer no agents, so it reads no list of them for its mention
+   *  picker, until the host passes `true`: the margin of comments on text draws every reply
+   *  composer from the load and reads the list only once the reader uses one (INFRA-5706, R9).
+   *  With none, the reply composer reads the list as it mounts, as it always has. */
+  replyAgents?: boolean;
   /** Names the reply composer's send and the thread the held-send store holds it for, so the
    *  reply composer that mounts whenever the card expands shows a reply still out, or its refusal
    *  and draft, whatever unmounted the last one; and a host that holds its own Replies while one
@@ -217,12 +226,14 @@ function CommentBody({
   artifactSlug,
   comment,
   owner,
+  quoteLine,
   showOrphan,
   showReference,
 }: {
   artifactSlug: string | undefined;
   comment: ThreadComment;
   owner: MarginOwner;
+  quoteLine?: string;
   showOrphan: boolean;
   showReference: boolean;
 }): ReactNode {
@@ -265,6 +276,53 @@ function CommentBody({
   // text changed, with no link (INFRA-5706, R4). No root of today's margin is such a reply.
   if (showOrphan && orphanNotice === null && anchor?.orphaned && comment.reply_block?.removed) {
     orphanNotice = <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>Text changed.</p>;
+  }
+  // A card that cuts its quote line (`ThreadCardProps.quoteLine`) draws that line in its quote,
+  // while a suggestion's diff strikes through the whole quote, the words Accept replaces.
+  if (quoteLine !== undefined && anchor !== null && quoteLine !== anchor.quote) {
+    if (suggestion === null) {
+      return (
+        <CommentBody
+          artifactSlug={artifactSlug}
+          comment={{ ...comment, anchor: { ...anchor, quote: quoteLine } }}
+          owner={owner}
+          showOrphan={showOrphan}
+          showReference={showReference}
+        />
+      );
+    }
+    return (
+      <>
+        <blockquote className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}>
+          {/* The words the anchor quotes, cut to one line: the reading list's `anchor-quote`. */}
+          {quoteLine}
+        </blockquote>
+        {orphanNotice}
+        <div className="space-y-1 font-mono text-xs">
+          <SuggestionDiff clamp={false} quote={anchor.quote} suggestion={suggestion} />
+          {comment.body === "Suggested replacement." ? null : (
+            <div className={`font-sans ${textSecondaryOnSurface}`}>
+              <PostBody
+                deleted={deleted}
+                markdown={comment.body}
+                source={textSourceOf("comment", comment.id, comment.issue_key)}
+                surface="margin-comment-body"
+                tree={comment.body_tree}
+              />
+            </div>
+          )}
+        </div>
+        <p
+          className={`mt-2 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}
+        >
+          <span>
+            <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+            <EditedMark at={comment.edited_at} deleted={deleted} />
+          </span>
+          {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
+        </p>
+      </>
+    );
   }
   return (
     <>
@@ -397,7 +455,9 @@ export function ThreadCard({
   pendingAction,
   pulseOrphanBlock = true,
   renderDeliveries,
+  quoteLine,
   reopenControl,
+  replyAgents = true,
   rootActions = true,
   replyMutationKey,
   thread,
@@ -489,17 +549,6 @@ export function ThreadCard({
           replyTo: { actor: root.author, excerpt: "", id: root.id, parentKind: "message" as const },
         }
       : {};
-  // A fixed-open card's reply composer stands open from the load (INFRA-5706, R4), so it is handed
-  // no agents, and reads no list of them for its mention picker, until the reader uses it: the
-  // focus in a composer of the card, or a reply of theirs that the held-send store or the kept
-  // drafts hold under the thread's reply send name. So a page of such cards sends no read that the
-  // page without them does not (R9). Every other card's reply composer reads the list as it mounts.
-  const [replyActive, setReplyActive] = useState(false);
-  const replyHeld = useHeldSend(replyMutationKey) !== undefined;
-  const replyKept = useUnsentDrafts().useKept(
-    replyMutationKey === undefined ? "" : hashKey(replyMutationKey)
-  );
-  const hasReplyDraft = replyHeld || replyKept;
   /* Mounted while the card is expanded, under the thread's reply send name, so a reply still
      out or refused - which the held-send store keeps for the thread - is there each time the
      card expands. A closed issue takes a reply as it takes any comment, so the composer shows
@@ -518,7 +567,7 @@ export function ThreadCard({
     expanded && rootDeleted === null ? (
       <div className="contents" hidden={hideReplyComposer}>
         <MentionComposer
-          agents={!fixedOpen || replyActive || hasReplyDraft ? undefined : EMPTY_AGENTS}
+          agents={replyAgents ? undefined : EMPTY_AGENTS}
           box="margin-thread-reply"
           closed={isClosed}
           finishing={terminalSuggestion}
@@ -591,17 +640,6 @@ export function ThreadCard({
             focusBlock(thread.anchor.block_id);
           }
         }}
-        // The focus entering a composer of a fixed-open card - its reply, or an editor the reader
-        // opened - is the reader using it, from which its reply composer reads the agents' list.
-        onFocusCapture={(event) => {
-          if (
-            fixedOpen &&
-            event.target instanceof Element &&
-            event.target.closest("form") !== null
-          ) {
-            setReplyActive(true);
-          }
-        }}
         onKeyDown={(event) => {
           if (
             event.target !== event.currentTarget ||
@@ -667,6 +705,7 @@ export function ThreadCard({
                   artifactSlug={artifactSlug}
                   comment={root}
                   owner={owner}
+                  quoteLine={quoteLine}
                   showOrphan
                   showReference={showReference}
                 />

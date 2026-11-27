@@ -11,7 +11,7 @@ import { api } from "../../../api/client";
 import type { Anchor, Comment } from "../../../api/types";
 import type { Thread, ThreadComment } from "../../margin/useMarginItems";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { AGENT, KEY } from "../decisions-filter/decisions-fixtures";
+import { AGENT, KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { buildIssueTree, type IssueTreeReads, type TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
@@ -32,9 +32,11 @@ import {
   readAgain,
   SERVES,
   type SeededReads,
+  STATEMENT,
   seededIssue,
   seededNodes,
   type TextThreadSeed,
+  threadOn,
 } from "./margin-fixtures";
 import type { QuotedReplyBlock } from "./on-text";
 import { cardIn as cardOf } from "./TextMargin";
@@ -420,6 +422,39 @@ test("the quote comes first, then each entry whole", async () => {
       },
       "an entry is drawn without its author or its time"
     ).toEqual({ replyTime: true, rootAuthor: true, rootTime: true });
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+// R4: the card draws its quote line cut to one line of at most 80 characters, while a
+// suggestion's diff strikes through the whole quote, the characters Accept writes over.
+test("a long suggestion's diff strikes through the whole quote under the cut quote line", async () => {
+  const words = Array.from({ length: 11 }, (_, at) => `segment-${at + 10}`);
+  const quote = words.join(" ");
+  expect(Array.from(quote), "the quote is not 120 characters long").toHaveLength(120);
+  const seed = threadOn("on-long", SPEC_DOCUMENT, STATEMENT, quote, 8);
+  const suggested: TextThreadSeed = {
+    ...seed,
+    comment: { ...seed.comment, suggestion: { accepted: null, replace_with: "the new words" } },
+  };
+  const { client, column, view } = await drawnColumn({ threads: [suggested] });
+  try {
+    const card = await cardIn(column, seed.comment.id);
+    await waitFor(() =>
+      expect(
+        card.querySelector("del")?.textContent,
+        "the diff does not strike through the whole quote"
+      ).toBe(quote)
+    );
+    const lines = [...card.querySelectorAll("blockquote")].map((quoted) => quoted.textContent);
+    const line = lines[0] ?? "";
+    expect(line, "the card's quote line is not the quote cut to one line").toBe(
+      `${words.slice(0, 7).join(" ")}\u2026`
+    );
+    expect(Array.from(line).length, "the quote line passes 80 characters").toBeLessThan(81);
+    expect(lines, "the card draws the whole quote as its quote line").not.toContain(quote);
   } finally {
     view.finish();
     client.clear();

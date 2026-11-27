@@ -189,8 +189,7 @@ export interface QuotedWords {
 
 /** The node the words are in, as the tree read answers it, with what the page knows beside it:
  *  the `tree` artifact of the issue it belongs to, which a block written in the room is anchored
- *  in (G3a), and that issue's spec, which a reference in a comment on a node's words is read in
- *  (`ComposerAnchor.node`). */
+ *  in (G3a). */
 export interface TextWriteTarget {
   /** The item's authors as the read lists them: a reply names the first as whom it answers. */
   readonly author?: readonly Actor[] | null;
@@ -201,7 +200,6 @@ export interface TextWriteTarget {
   /** The node's store kind in the tree read (`lens`, `risk`, `constraint`, `result`, or `block`
    *  for a finding), used to form the store address `anchor.node` takes when `id` is bare. */
   readonly kind?: string;
-  readonly spec?: string;
   readonly tree?: string | null;
 }
 
@@ -237,10 +235,10 @@ export function composerAddressOf(
     };
   }
   if (write.request === "node") {
-    // A node anchor names no document; its `artifact`, which the send leaves out, is the spec a
-    // reference in the comment is read in, or none where the issue has none.
+    // A node anchor names no document (`artifact: ""`), and a reference in the comment is read in
+    // the issue's spec (`draftSource`).
     return {
-      anchor: { artifact: at.spec ?? "", node: nodeAddressOf(at), occurrence, quote },
+      anchor: { artifact: "", node: nodeAddressOf(at), occurrence, quote },
       replyTo: null,
     };
   }
@@ -250,12 +248,10 @@ export function composerAddressOf(
     anchor: undefined,
     replyTo: {
       actor,
-      block: words.block,
       excerpt: "",
       id: at.id,
-      occurrence,
       parentKind: REPLY_PARENTS[write.request],
-      quote,
+      quoted: { block: words.block, occurrence, quote },
     },
   };
 }

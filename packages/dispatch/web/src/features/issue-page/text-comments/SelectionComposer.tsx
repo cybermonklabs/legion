@@ -9,7 +9,6 @@ import {
 } from "react";
 
 import { ApiError } from "../../../api/client";
-import { primarySpec } from "../../../api/issue-cache";
 import type { IssueDetails } from "../../../api/types";
 import type { ComposerAnchor, ComposerKind } from "../../conversation/composer-model";
 import { composerSend, useHeldSend } from "../../conversation/held-sends";
@@ -125,7 +124,7 @@ function quoteKept(block: WrittenPost["reply_block"]): boolean {
  *  (4)). Undefined for an answer that names no post. */
 function landingOf(answer: unknown, sent: SentRequest): TextComposerOutcome | undefined {
   if (!writtenPost(answer)) return undefined;
-  return sent.replyTo?.quote !== undefined && !quoteKept(answer.reply_block)
+  return sent.replyTo?.quoted !== undefined && !quoteKept(answer.reply_block)
     ? { notice: MARGIN_ANSWERS.quote_not_kept }
     : { root: answer.id };
 }
@@ -185,12 +184,7 @@ export function sendTargetOf(
 ): SendTarget | null {
   const write = writeFor(subjectOf(node, issue.key));
   if (write === null) return null;
-  const spec = write.issue === issue.key ? primarySpec(issue)?.id : undefined;
-  const address = composerAddressOf(
-    write,
-    { ...node, ...(spec === undefined ? {} : { spec }), tree: treeOf(view, write.issue) },
-    words
-  );
+  const address = composerAddressOf(write, { ...node, tree: treeOf(view, write.issue) }, words);
   return address === null ? null : { address, issue: write.issue };
 }
 

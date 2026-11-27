@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useContext, useId, useMemo, useState } from "react";
 
 import type { WriteBounds } from "../../../api/client";
@@ -6,11 +6,13 @@ import { whoAmIQuery } from "../../../api/queries";
 import type { Anchor, Comment, IssueDetails } from "../../../api/types";
 import { commentWritten } from "../../../api/write-events";
 import { pageRowActs } from "../../../theme/classes";
+import { useHeldSend } from "../../conversation/held-sends";
 import {
   type CarriedBlockIds,
   type SaveCommentEdit,
   saveCommentEdit,
 } from "../../conversation/send-request";
+import { useUnsentDrafts } from "../../conversation/unsent-drafts";
 import { marginReplySendKey } from "../../margin/margin-context";
 import { ThreadCard } from "../../margin/ThreadCard";
 import {
@@ -28,6 +30,7 @@ import { NODE_ROW_LAYOUT, RowMargin, rowNameIds, type Tone } from "../NodeRow";
 import { authorText, pageChrome } from "../page-structure";
 import { authorKind, isReader, LENS_WORDS } from "../page-words";
 import { RowText } from "../RowText";
+import { quoteLine } from "./quote-line";
 import type { TextThread } from "./text-threads";
 import { threadCommentNode } from "./thread-node";
 
@@ -170,6 +173,8 @@ function keepOpen(): void {}
  * The card of `thread`, with the item `currentReplyId` names marked as the card marks the reply a
  * link names (`aria-current`). Its stored text is marked as authors' text by the box the column
  * and the sheet draw it in, inside `NoTooltips`, as `IssueMarginCards` draws the margin's cards.
+ * It draws first the thread's quoted words cut to one line (`quoteLine`, R4), while a
+ * suggestion's diff strikes through the whole quote, the words Accept replaces.
  */
 export function TextThreadCard({
   currentReplyId,
@@ -182,38 +187,58 @@ export function TextThreadCard({
 }): ReactNode {
   const card = thread.thread;
   const root = card.root.comment.id;
+  const replyKey = marginReplySendKey(card.key);
+  // The card's reply composer stands open from the load (R4), so it is handed no agents, and reads
+  // no list of them for its mention picker, until the reader uses it: the focus in a composer of
+  // the card, or a reply of theirs that the held-send store or the kept drafts hold under the
+  // thread's reply send name. So a page of cards sends no read that the page without them does
+  // not (R9).
+  const [used, setUsed] = useState(false);
+  const replyHeld = useHeldSend(replyKey) !== undefined;
+  const replyKept = useUnsentDrafts().useKept(hashKey(replyKey));
   return (
-    <ThreadCard
-      actionFailure={host.actionFailure?.id === root ? host.actionFailure : undefined}
-      artifactSlug={host.artifactSlugOf(card.anchor)}
-      {...(currentReplyId === undefined ? {} : { currentReplyId })}
-      editingCommentId={host.editingCommentId}
-      expanded
-      fixedOpen
-      hovered={false}
-      isClosed={host.isClosed}
-      onAction={host.onAction}
-      onEdit={host.onEdit}
-      onEditingChange={host.onEditingChange}
-      onRetryAction={host.onRetryAction}
-      onToggle={keepOpen}
-      owner={host.owner}
-      pendingAction={host.pendingActionIds.has(root)}
-      rootActions={!thread.replyRoot && thread.kind !== "message"}
-      pulseOrphanBlock={false}
-      // Under each comment of the thread, its lenses (R7): the card's one place under each
-      // comment's own body, which the margin fills with deliveries where an owner has them.
-      renderDeliveries={(comment: ThreadComment) => (
-        <>
-          <ThreadActs comment={comment} kind={thread.kind} />
-          <ThreadLenses lenses={thread.lenses.get(comment.id)} />
-        </>
-      )}
-      replyMutationKey={marginReplySendKey(card.key)}
-      savingCommentEditId={host.savingCommentEditId}
-      thread={card}
-      viewerLogin={host.viewerLogin}
-    />
+    <div
+      className="contents"
+      onFocusCapture={(event) => {
+        if (event.target instanceof Element && event.target.closest("form") !== null) {
+          setUsed(true);
+        }
+      }}
+    >
+      <ThreadCard
+        actionFailure={host.actionFailure?.id === root ? host.actionFailure : undefined}
+        artifactSlug={host.artifactSlugOf(card.anchor)}
+        {...(currentReplyId === undefined ? {} : { currentReplyId })}
+        editingCommentId={host.editingCommentId}
+        expanded
+        fixedOpen
+        hovered={false}
+        isClosed={host.isClosed}
+        onAction={host.onAction}
+        onEdit={host.onEdit}
+        onEditingChange={host.onEditingChange}
+        onRetryAction={host.onRetryAction}
+        onToggle={keepOpen}
+        owner={host.owner}
+        pendingAction={host.pendingActionIds.has(root)}
+        rootActions={!thread.replyRoot && thread.kind !== "message"}
+        pulseOrphanBlock={false}
+        quoteLine={quoteLine(thread.quote)}
+        // Under each comment of the thread, its lenses (R7): the card's one place under each
+        // comment's own body, which the margin fills with deliveries where an owner has them.
+        renderDeliveries={(comment: ThreadComment) => (
+          <>
+            <ThreadActs comment={comment} kind={thread.kind} />
+            <ThreadLenses lenses={thread.lenses.get(comment.id)} />
+          </>
+        )}
+        replyAgents={used || replyHeld || replyKept}
+        replyMutationKey={replyKey}
+        savingCommentEditId={host.savingCommentEditId}
+        thread={card}
+        viewerLogin={host.viewerLogin}
+      />
+    </div>
   );
 }
 
