@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The repository cache's log of objects under its repository's prefix that it does not write
+  counts them and names none: `bucket <name> holds objects under the repository's prefix that are
+  no pack or index the cache writes, 1 of them not seen before by this process and named nowhere
+  ...`, where it logged each by name. A name is what the bucket's list answered, which whatever
+  answers in Cloud Storage's place can make the bearer the list carried. Each name is still counted
+  once by a process and never deleted.
+time: 2026-11-27T01:55:21Z
+custom:
+    Issue: pr4368

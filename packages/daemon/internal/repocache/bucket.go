@@ -372,8 +372,9 @@ func (b *bucket) objectName(path string) (string, error) {
 // list is every pack and index of the repository in the bucket, by object name: the objects under
 // its prefix, which the list request names (storage.Query.Prefix), so that Cloud Storage answers
 // nothing of another repository's, and of those each whose name is one the cache writes
-// (clonePath). Every other name the list answered is in ignored, for its caller to log; the
-// caller never deletes one, since the cache did not write it.
+// (clonePath). Every other name the list answered is in ignored, for its caller to count: such a
+// name is Cloud Storage's words, which can quote the bearer the list carried, and prints nowhere.
+// The caller never deletes one, since the cache did not write it.
 func (b *bucket) list(ctx context.Context) (objects map[string]storedObject, ignored []string, err error) {
 	objects = map[string]storedObject{}
 	it := b.handle.Objects(ctx, &storage.Query{Prefix: b.prefix})

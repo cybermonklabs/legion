@@ -186,21 +186,26 @@ func (c *cache) publishPacks(ctx context.Context) error {
 
 // listBucket is the sync's one list of the bucket (bucket.list): every pack and index of the
 // repository's prefix it holds, by object name, from which the sync both puts back what the listed
-// set names and the bucket lost (putObjects) and retires what no set names (retire). Each name
-// under the prefix that the cache does not write is logged, once by this process, and never
-// deleted. It answers nil where the list fails, which it logs: the sync then neither puts back nor
-// retires anything, and the next sync lists again.
+// set names and the bucket lost (putObjects) and retires what no set names (retire). The names
+// under the prefix that the cache does not write are counted in the log, each once by this
+// process, and never deleted; none is named, since such a name is Cloud Storage's words, which can
+// quote the bearer the list carried. It answers nil where the list fails, which it logs: the sync
+// then neither puts back nor retires anything, and the next sync lists again.
 func (c *cache) listBucket(ctx context.Context) map[string]storedObject {
 	stored, foreign, err := c.store.list(ctx)
 	if err != nil {
 		c.opts.Log("list the bucket's packs to put back those the listed set names and retire those no set names; tried again at the next sync: " + oneLine(err))
 		return nil
 	}
+	fresh := 0
 	for _, name := range foreign {
 		if !c.foreign[name] {
 			c.foreign[name] = true
-			c.opts.Log(fmt.Sprintf("bucket %s holds %s under the repository's prefix, which is no pack or index the cache writes: it is left as it is", c.store.name, name))
+			fresh++
 		}
+	}
+	if fresh > 0 {
+		c.opts.Log(fmt.Sprintf("bucket %s holds objects under the repository's prefix that are no pack or index the cache writes, %d of them not seen before by this process and named nowhere (a name is the bucket's words): they are left as they are", c.store.name, fresh))
 	}
 	return stored
 }
