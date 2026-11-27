@@ -169,11 +169,11 @@ jobs:
 
       # What typecheck builds: the vet behind the e2e tag. It is the one build of this family an
       # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
-      # typecheck's darwin vet is the one build left out: its darwin objects, about 1.65 GB of build
-      # cache on a devbox, would ride in an entry every job that restores go-daemon downloads, and
-      # the step builds them in about two minutes (run 43990864191).
+      # why: .github/ci-notes/ci-caches.md#why-typechecks-darwin-vet-is-left-out-of-go-daemon
       - name: Build what typecheck builds of the daemon module
-        run: go vet -tags e2e ./...
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go vet -tags e2e ./...
         working-directory: packages/daemon
 
       # What daemon-go builds: the test binary of every package, and the race build of the five
@@ -189,8 +189,9 @@ jobs:
       - name: Build what daemon-go builds of the daemon module
         if: runner.arch == 'X64'
         run: |
-          go test -c -o /dev/null ./...
-          go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -c -o /dev/null ./...
+          ci_log_guard go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
 
       - name: Delete the build cache's entries the builds did not use, and the module zips
@@ -341,7 +342,9 @@ jobs:
       # a devbox, would ride in an entry every job that restores go-envoy downloads. They have a
       # family of their own, go-envoy-darwin-vet, which the envoy-darwin-vet job fills.
       - name: Build the listener and natsd of the envoy module
-        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
 
       # This fill runs no go vet, on purpose (PR #5289): with one, full or -stdmethods alike, the
@@ -416,7 +419,9 @@ jobs:
 
       # The envoy job's build of the same name, so this entry holds those objects too.
       - name: Build the listener and natsd of the envoy module
-        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
 
       # envoy-go's set, the natslive build of its natslive step's five packages among it. Each
@@ -425,8 +430,9 @@ jobs:
       # why: .github/ci-notes/ci-caches.md#why-the-go-envoy-test-fill-starts-each-test-binary
       - name: Build and start the test binary of every package of the envoy module, running no test
         run: |
-          go test -count=1 -run '^$' ./...
-          go test -count=1 -run '^$' -tags natslive ./internal/testnats/ ./internal/bus/ ./internal/cipher/natscallout/ ./natsgrant/ ./cmd/listener/
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -count=1 -run '^$' ./...
+          ci_log_guard go test -count=1 -run '^$' -tags natslive ./internal/testnats/ ./internal/bus/ ./internal/cipher/natscallout/ ./natsgrant/ ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Delete the build cache's entries neither envoy build used, and the module zips
@@ -571,10 +577,11 @@ jobs:
         env:
           GOCACHE: ${{ runner.temp }}/go-build-darwin
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
           while IFS= read -r flag; do
             echo "Vetting for darwin with $flag"
-            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+            GOOS=darwin GOARCH=arm64 ci_log_guard go vet "$flag" ./...
           done <<< "$flags"
         working-directory: packages/envoy
 
@@ -763,17 +770,18 @@ jobs:
       - name: Build what envoy-infra-build and envoy-infra-go build
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |
+          . ../../../.github/scripts/ci-log-guard.sh
           flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
-          go vet -tags pulumilive,natslive ./...
+          ci_log_guard go vet -tags pulumilive,natslive ./...
           while IFS= read -r flag; do
-            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+            GOOS=darwin GOARCH=arm64 ci_log_guard go vet "$flag" ./...
           done <<< "$flags"
           if [ "$RUNNER_ARCH" = ARM64 ]; then
             scripts/race-unit.sh compile
           else
-            go test -c -o /dev/null ./...
+            ci_log_guard go test -c -o /dev/null ./...
           fi
-          go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
+          ci_log_guard go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
         working-directory: packages/envoy/infra
 
       # This fill builds from nothing, so it runs no `begin`/`end` pair, only the zips half of `end`.
@@ -1022,7 +1030,9 @@ jobs:
       # airlock-lean will find rather than elan alone.
       - name: Build what airlock-lean builds
         if: steps.elan-cache.outputs.cache-hit != 'true'
-        run: lake build
+        run: |
+          . ../../../../../../.github/scripts/ci-log-guard.sh
+          ci_log_guard lake build
         working-directory: packages/envoy/internal/cipher/proxyrules/lean
 
       # Under the key the lookup computed, as every hashed key of this workflow is saved.

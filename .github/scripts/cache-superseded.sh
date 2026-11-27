@@ -30,9 +30,15 @@
 # a newline cannot add a line of its own, such as `--all`, to that list. Each gh call waits out a
 # spent API budget within the job's limit (JOB_TIMEOUT_MINUTES) and fails by name past it
 # (gh-read.sh). A mode it does not know, or one missing its family, exits 2 naming the usage.
+# gh's output, GitHub's error replies among them, reaches the log only inside a
+# .github/scripts/ci-log-guard.sh block, where it cannot become a workflow command: each list runs
+# under ci_log_guard_stderr (its JSON captured, its stderr guarded) and each delete under
+# ci_log_guard (its output to the log).
 set -euo pipefail
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(dirname "$0")/gh-read.sh"
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(dirname "$0")/ci-log-guard.sh"
 
 mode=${1:-}
 family=${2:-}
@@ -53,7 +59,7 @@ delete() {
       exit 1
     fi
     echo "Deleting $1 entry $id, $2"
-    gh_wait_reset gh cache delete "$id"
+    ci_log_guard gh_wait_reset gh cache delete "$id"
   done
 }
 
@@ -79,14 +85,14 @@ case "$mode" in
     fi
     # Newest first, by GitHub's own creation order, so the new entry is among the entries read
     # however many older ones a failed run left behind.
-    entries=$(gh_wait_reset gh cache list --ref "$REF" --key "$base" --sort created_at --order desc --limit 100 --json id,key,ref)
+    entries=$(ci_log_guard_stderr gh_wait_reset gh cache list --ref "$REF" --key "$base" --sort created_at --order desc --limit 100 --json id,key,ref)
     kept "$entries" "$family" || exit 0
     jq -r --arg keep "$KEEP" --arg base "$base" --arg ref "$REF" \
       "$INDEXED"' | select(.ref == $ref and $at > $kept and (.key == $base or (.key | startswith($base + "-")))) | .id' \
       <<<"$entries" | delete "$family" "which the new entry supersedes"
     ;;
   hash)
-    entries=$(gh_wait_reset gh cache list --ref "$REF" --key "$family-" --limit 100 --json id,key,ref)
+    entries=$(ci_log_guard_stderr gh_wait_reset gh cache list --ref "$REF" --key "$family-" --limit 100 --json id,key,ref)
     kept "$entries" "$family" || exit 0
     jq -r --arg keep "$KEEP" --arg ref "$REF" --arg family "$family-" \
       'def base: gsub("-[0-9a-f]{64}"; "");
@@ -104,7 +110,7 @@ case "$mode" in
     prefix=${prefix%-*}-
     # Every ref's entries, newest first by GitHub's creation order; gh pages past 100 up to the
     # limit, far above what one build holds.
-    entries=$(gh_wait_reset gh cache list --key "$prefix" --sort created_at --order desc --limit 1000 --json id,key,ref)
+    entries=$(ci_log_guard_stderr gh_wait_reset gh cache list --key "$prefix" --sort created_at --order desc --limit 1000 --json id,key,ref)
     kept "$entries" "$prefix" || exit 0
     jq -r --arg keep "$KEEP" --arg ref "$REF" --arg prefix "$prefix" \
       "$INDEXED"' | select((.key | startswith($prefix)) and (.ref != $ref or $at > $kept)) | .id' \

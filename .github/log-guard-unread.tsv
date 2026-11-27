@@ -1,0 +1,25 @@
+# Every word naming a shell script that a step, or a script a step runs, executes, and that no file of this repository
+# answers, with the reason .github/scripts/check-log-guard.sh need not read it: the check refuses such a word no row
+# names, and a row whose word now names a file it reads or that no script holds. Tab-separated: the file that holds
+# the word, the word as the check reads it, the reason.
+.github/scripts/check-ci-filters.test.sh	$root/.github/scripts/check-ci-filters.sh	the harness's link to check-ci-filters.sh in each fixture tree; the check reads check-ci-filters.sh itself
+.github/scripts/check-ci-filters.test.sh	$root/.github/scripts/ci-filters-generate.sh	the harness's copy of ci-filters-generate.sh in each fixture tree; the check reads ci-filters-generate.sh itself
+.github/scripts/check-ci-filters.test.sh	$root/step.sh	the run: of ci-job-typecheck.yaml's darwin vet step, which the harness writes to a file; the check reads that step in its workflow
+.github/scripts/check-ci-tools.test.sh	$1/.github/scripts/check-ci-tools.sh	the harness's link to check-ci-tools.sh in each fixture tree; the check reads check-ci-tools.sh itself
+.github/scripts/check-daemon-api-contract.test.sh	$1/.github/scripts/check-daemon-api-contract.sh	the harness's link to check-daemon-api-contract.sh in each miniature repository; the check reads check-daemon-api-contract.sh itself
+.github/scripts/check-fireevent-reasons.test.sh	$1/.github/scripts/check-fireevent-reasons.sh	the harness's link to check-fireevent-reasons.sh in each fixture tree; the check reads that script itself
+.github/scripts/check-log-guard.test.sh	$1/.github/scripts/check-log-guard.sh	the harness's link to check-log-guard.sh in each fixture tree; the check reads check-log-guard.sh itself
+.github/scripts/check-log-guard.test.sh	./forms.sh	the reader's forms, which the harness writes to a file and runs under bash with stand-in clients
+.github/scripts/ci-filters-generate.sh	$scratch/base/.github/scripts/check-ci-filters.sh	the base commit's own copy of check-ci-filters.sh, whose output the script prints only inside its stop-commands block; the check reads this head's copy
+.github/scripts/ci-log-guard.test.sh	$work/state-sh.sh	a probe the harness writes at run time to compare the shell's state before and after sourcing the library
+.github/scripts/ci-log-guard.test.sh	$work/state.sh	a probe the harness writes at run time to compare the shell's state before and after sourcing the library
+.github/scripts/ci-router-outputs.test.sh	$fallback_tree/.github/scripts/ci-filters-generate.sh	the harness's copy of ci-filters-generate.sh in a fallback tree; the check reads ci-filters-generate.sh itself
+.github/scripts/release-push.test.sh	$1/.github/scripts/release-push.sh	release-push.sh in the fixture tree the harness passes; the check reads release-push.sh itself
+.github/scripts/release-push.test.sh	$work/bump4/release-push.sh	the harness's copy of release-push.sh; the check reads release-push.sh itself
+.github/scripts/worker-image-contract-order.test.sh	${scratch}/step.sh	the run: of worker-image.yaml's contract_order step, which the harness writes to a file; the check reads that step in its workflow
+packages/envoy/loadtest/cluster/cluster.test.sh	$gg_dir/probe.sh	a probe the harness writes at run time to check proof-wait.sh's deadline, run under bash with a stand-in clock
+packages/envoy/loadtest/cluster/cluster.test.sh	$tmp/cluster-fake-clock.sh	a wrapper the harness writes at run time, which runs cluster.sh under a stand-in clock
+packages/envoy/loadtest/cluster/cluster.test.sh	$tmp/step-bounded.sh	a wrapper the harness writes at run time, which runs cluster.sh's step under a bound
+packages/envoy/loadtest/cluster/cluster.test.sh	$tree/loadtest/cluster/render-nats.sh	the harness's copy of render-nats.sh in a fake git tree; the check reads render-nats.sh itself
+packages/envoy/scripts/callout-check.test.sh	$url_copy/callout-check.sh	the harness's copy of callout-check.sh; the check reads callout-check.sh itself
+packages/envoy/scripts/legacy-subjects-gate.test.sh	$root/broken/legacy-subjects-gate.sh	the harness's copy of legacy-subjects-gate.sh beside a broken judge; the check reads legacy-subjects-gate.sh itself

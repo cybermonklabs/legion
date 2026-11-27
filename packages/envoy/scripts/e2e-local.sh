@@ -115,6 +115,10 @@ envoy_dir="$(cd "${script_dir}/.." && pwd)"
 readonly envoy_dir
 repo_root="$(cd "${envoy_dir}/../.." && pwd)"
 readonly repo_root
+# The go builds below put a module proxy's reply into the log inside a ci-log-guard.sh block, where
+# it cannot become a workflow command.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/.github/scripts/ci-log-guard.sh"
 fixture_dir="${script_dir}/fixtures/github"
 readonly fixture_dir
 out_dir="${envoy_dir}/out/e2e"
@@ -297,8 +301,8 @@ mkfifo "$session_ready_fifo" "$subscriber_ready_fifo" "$nocursor_ready_fifo"
 printf 'building listener and NATS server\n'
 (
   cd "$envoy_dir"
-  go build -o "$listener_binary" ./cmd/listener
-  go build -o "$nats_binary" ./internal/testnats/cmd/natsd
+  ci_log_guard go build -o "$listener_binary" ./cmd/listener
+  ci_log_guard go build -o "$nats_binary" ./internal/testnats/cmd/natsd
 )
 
 printf 'starting NATS\n'

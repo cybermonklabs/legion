@@ -90,7 +90,7 @@ check "a wrapper with no go command behind it is left in place" \
   "$(is "$(command_of '../../.github/scripts/race_memory.py --help')" "../../.github/scripts/race_memory.py --help")"
 check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "NAME=value")"
 
-echo "case: the step whose line this harness exists for is read as ci.yaml writes it"
+echo "case: the step whose line this harness exists for is read as ci.yaml writes it, through ci-log-guard.sh's reader"
 file=.github/workflows/ci-job-envoy-go-race-docs.yaml
 # Its go test is behind an xargs now: the step pipes go_legs.py's lines into `env NAME=value …
 # race_memory.py go test …`, so the reading is the xargs tail with the variables and the wrapper

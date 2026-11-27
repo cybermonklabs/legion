@@ -87,6 +87,10 @@ ENVOY="$(cd "$SCRIPT_DIR/.." && pwd)"
 COUNTER="$SCRIPT_DIR/database-skips.sh"
 MODULE="$(awk '$1 == "module" { print $2; exit }' "$ENVOY/go.mod")"
 API="$MODULE/internal/dispatch/api"
+# The harness's own go list calls print go's messages, a module proxy's reply among them, inside a
+# ci-log-guard.sh block, where they cannot become workflow commands.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$SCRIPT_DIR/../../.." && pwd)/.github/scripts/ci-log-guard.sh"
 # A test of the API package that passes in any run, which its narrowed runs hold beside the
 # skips.
 API_ANCHOR=TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound
@@ -169,7 +173,7 @@ fi
 # BODY; its path is NAME.overlay.
 plant() {
   local name="$1" dir="$2" body="$3" package
-  package="$(cd "$ENVOY" && go list -f '{{.Name}}' "./$dir/")"
+  package="$(cd "$ENVOY" && ci_log_guard_stderr go list -f '{{.Name}}' "./$dir/")"
   [ ! -e "$ENVOY/$dir/zz_planted_skip_test.go" ] || {
     echo "database-skips.test.sh: $dir/zz_planted_skip_test.go exists, so an overlay would replace a real file" >&2
     exit 1

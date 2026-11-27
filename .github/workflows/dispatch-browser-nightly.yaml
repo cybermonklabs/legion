@@ -164,7 +164,9 @@ jobs:
       # Built here rather than left to run-server.sh, which would build it inside the harness's
       # own boot wait, as the multiprocess job does for the same reason.
       - name: Build the Dispatch server
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Build dispatch dashboard
         run: bun run build:web

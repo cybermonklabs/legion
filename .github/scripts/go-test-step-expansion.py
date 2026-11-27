@@ -158,7 +158,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from ci_filter_coverage import called_workflows, script_lines, step_workdir
+from ci_filter_coverage import called_workflows, script_lines, step_workdir, unguarded
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.
@@ -472,7 +472,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m":
                 "go test -json -count=1 -race -timeout 70m",
         },
-        sha256="1fda7c677b2f277920e8a5f16f9da79ab9613e6ba5c356df7bf3c0606ec24670",
+        sha256="05a8bcb64029d97dc2689faebe0b348875454d62b177e3aa116495a4167415ff",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -486,7 +486,7 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
+        sha256="ac3ef6d1c5df2a8d0f9d86248b6ee67f9422f6add3709e84e21cf5ec078dcd66",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
     # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
@@ -500,7 +500,7 @@ AUDITED_SCRIPTS = {
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
-        sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
+        sha256="fc915671fa45df718f2febc4d39e3eab6cbd6f1aee32ae87c51b2868601890fa",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
@@ -639,7 +639,7 @@ def steps_of(found: dict) -> list[Step]:
     for path, document in found.items():
         for job, body in (document.get("jobs") or {}).items():
             for index, step in enumerate((body or {}).get("steps", []) or []):
-                script = step.get("run")
+                script = unguarded(step.get("run") or "")
                 if not script:
                     continue
                 workdir = step_workdir(document, body, step)

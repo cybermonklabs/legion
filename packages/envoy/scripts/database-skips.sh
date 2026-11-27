@@ -71,6 +71,10 @@ export LC_ALL=C
 
 # A relative --report is the caller's path; every go command runs from packages/envoy.
 caller="$PWD"
+# go's own messages (a module proxy's reply among them) reach the log only inside a
+# ci-log-guard.sh block, where they cannot become workflow commands.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/.github/scripts/ci-log-guard.sh"
 cd "$(dirname "$0")/.."
 
 # The broker's packages, its command and the writer hold's client (internal/holdrecord, whose
@@ -156,8 +160,8 @@ failures() {
     | .[0] as $misfiled | .[1]
     | select($misfiled or .Test == null or ($passed[._run] | not))
     | .Output' "$report" >&2 || true
-  jq -rj 'select(.Action == "build-output") | .Output' "$report" >&2 || true
-  [ -z "$go_test_exit" ] || cat "$work/stderr" >&2
+  ci_log_guard jq -rj 'select(.Action == "build-output") | .Output' "$report" || true
+  [ -z "$go_test_exit" ] || ci_log_guard cat "$work/stderr"
 }
 
 unknown() {
@@ -260,7 +264,7 @@ if [ ${#packages[@]} -eq 0 ] || [ -n "$count_table" ]; then
   go list "${race[@]}" "${DEFAULT_PACKAGES[@]}" >"$work/default" 2>"$work/list" || {
     echo "database_skips=UNKNOWN"
     echo "database-skips.sh: go list ${DEFAULT_PACKAGES[*]} failed, so no test ran and no skip was counted:" >&2
-    cat "$work/list" >&2
+    ci_log_guard cat "$work/list"
     exit 1
   }
   # grep -Ev '' would take every line out, since an empty pattern matches all of them, so an
@@ -310,7 +314,7 @@ else
   go list "${race[@]}" -f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' "${runs[@]}" >"$work/listed" 2>"$work/list" || {
     echo "database_skips=UNKNOWN"
     echo "database-skips.sh: go list ${packages[*]} failed, so no test ran and no skip was counted:" >&2
-    cat "$work/list" >&2
+    ci_log_guard cat "$work/list"
     exit 1
   }
 fi

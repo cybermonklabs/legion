@@ -277,18 +277,19 @@ jobs:
       # this step.
       - name: Test the rows whose bound is on time, alone
         run: |
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestIdentity)$' ./cmd/cipher/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget)$' ./cmd/dispatch/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestADeletedBucketFailsAWriteWithinTheBudget)$' ./internal/cistore/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestSyncDeadlineIsRecordedOnTheRow)$' ./internal/dispatch/architecture/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail)$' ./internal/dispatch/duty/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestAWriteIsEmbeddedOnItsNotification|TestReserveTokensSharesItsBudgetAcrossConnections|TestScanPassReturnsWhenThePendingRowsFallDue|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds)$' ./internal/dispatch/embedqueue/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestOnlyOneOutboxPublishesAtATime|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./internal/dispatch/outbox/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStandbyTakesAFreeHoldWithNoNotification|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds)$' ./internal/dispatch/textversions/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStalledListingFailsWithinTheReadTimeout)$' ./internal/legionagents/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestTheListenerReplacesAHalfOpenConnection)$' ./internal/pglisten/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime)$' ./internal/testnats/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestSamplerHeapReadDelaysNoSample)$' ./loadtest/
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestIdentity)$' ./cmd/cipher/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget)$' ./cmd/dispatch/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestADeletedBucketFailsAWriteWithinTheBudget)$' ./internal/cistore/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestSyncDeadlineIsRecordedOnTheRow)$' ./internal/dispatch/architecture/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail)$' ./internal/dispatch/duty/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestAWriteIsEmbeddedOnItsNotification|TestReserveTokensSharesItsBudgetAcrossConnections|TestScanPassReturnsWhenThePendingRowsFallDue|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds)$' ./internal/dispatch/embedqueue/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestOnlyOneOutboxPublishesAtATime|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./internal/dispatch/outbox/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStandbyTakesAFreeHoldWithNoNotification|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds)$' ./internal/dispatch/textversions/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStalledListingFailsWithinTheReadTimeout)$' ./internal/legionagents/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestTheListenerReplacesAHalfOpenConnection)$' ./internal/pglisten/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime)$' ./internal/testnats/
+          ci_log_guard go test -count=1 -parallel 1 -timeout 10m -run '^(TestSamplerHeapReadDelaysNoSample)$' ./loadtest/
         working-directory: packages/envoy
       # The rows of the plain run the race build cannot make that measure time, alone for the same
       # reason (ci_job_reads.py's RACE_IMPOSSIBLE_ALONE_*): every xid window test, which judges the
@@ -300,11 +301,12 @@ jobs:
       # lane's packages and their files' //go:build !race and raceEnabled, as that step's are.
       - name: Test the xid window rows, the API's issue-list bound and the auth service's storm, alone
         run: |
-          go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
-          go test -count=1 -timeout 10m -run '^(TestABeginThatFindsNoTracerMemoryIsUnknown|TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
-          go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
-          go test -count=1 -timeout 10m -run '^(TestAPriorityListAnswersWithinItsBoundOnEveryPlan|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
-          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
+          ci_log_guard go test -count=1 -timeout 10m -run '^(TestABeginThatFindsNoTracerMemoryIsUnknown|TestACommitThatEndsAfterTheCaptureIsInsideTheTrace|TestAGapsDeviceSoftirqsHoldOnlyTheirMeasuredTime|TestAMeasureUnderGoTestTraceSaysSo|TestAQuotasReadingSeesASleepAsASleep|TestAQuotasThrottlingReadsAsAWaitForACPU|TestARigProblemHidesNoViolation|TestASleepAfterARuntimeHandoffIsNotErasedByIt|TestASoftirqCountIsReadAtItsCPUsColumn|TestASoftirqCountThatWrappedInAGapReadsItsRuns|TestAStallInTheTracesCalibrationShiftsNoMoment|TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade|TestAStatementTheRigCouldNotReadIsUnknown|TestAStoppedMeasureLeavesTheNextItsOwnTrace|TestAWaitOnAPHandedToALockedThreadDecidesNothing|TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown|TestRuleTwoReadsTheStatementsTheCodeMade|TestTheKernelsInterruptAccountingIsReadOffProcStat|TestTheRigCountsTheSoftirqsItsPinnedCPURuns|TestTheTracersEventsInAWindowTouchNoFreshPage|TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted|TestXidGapJudgmentNeedsReadableThreadClocks)$' ./internal/dispatch/store/storetest
+          ci_log_guard go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
+          ci_log_guard go test -count=1 -timeout 10m -run '^(TestAPriorityListAnswersWithinItsBoundOnEveryPlan|TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec|TestXidWindowsUnderTheParentStatusRule)$' ./internal/dispatch/api
+          GODEBUG=checkfinalizers=1 ci_log_guard go test -v -count=1 -timeout 10m -run '^(TestXidWindowAnchorBlockBackfill|TestXidWindowBlockIndexWindowArm|TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP|TestXidWindowCatchesADocumentCallInsideTheWindow|TestXidWindowClosedIssueSettlementVersionWrite|TestXidWindowEditNoticeSweep|TestXidWindowKeepsD6WhenTheLoadHoldsThePs|TestXidWindowReconcileTaskProgress|TestXidWindowRigCatchesAGapAfterTheFirstWrite|TestXidWindowRigHoldsAGapsSoftirqsToTheirCap|TestXidWindowRigJudgesAWriteThePollerNeverSaw|TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps|TestXidWindowRigNeverExcusesASleepForSoftirqs|TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite|TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes|TestXidWindowRigReadsTheMachinesLoadAsTheMachines|TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes|TestXidWindowSettlementVersionWrite)$' ./internal/dispatch/docs
         working-directory: packages/envoy
         # This step judges the xid window tests' statement-free gaps (storetest.XidJudgesGaps).
         # With this set, a runner whose kernel stops showing a thread's scheduler clocks, or
@@ -404,8 +406,9 @@ jobs:
       # ci-filters job naming this step. 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
-          go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          GODEBUG=checkfinalizers=1 ci_log_guard go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -512,12 +515,16 @@ jobs:
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)
-        run: go vet -tags modellive ./agentloop/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go vet -tags modellive ./agentloop/
         working-directory: packages/envoy
       # The run of the built agent-secrets against moto needs moto, so it sits behind a build tag
       # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
       - name: Vet agent-secrets' moto run (no moto)
-        run: go vet -tags moto ./cmd/cipher/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go vet -tags moto ./cmd/cipher/
         working-directory: packages/envoy
       # The route adopter's rows run under git and under jj, and those that need jj fail rather
       # than skip on GitHub Actions without it, so jj is installed first. -v names each row in the
@@ -528,7 +535,9 @@ jobs:
       - uses: ./.github/actions/install-jj
       - name: Test the route adopter under git and jj
         timeout-minutes: 5
-        run: go test -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -652,20 +661,23 @@ jobs:
       # empty or refused list fails the step instead of running -run "", which matches every test.
       - name: Test the container-backed NATS matrix (natslive)
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          ci_log_guard go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
-          go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+          ci_log_guard go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
-          go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
+          ci_log_guard go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
           grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
-          go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+          ci_log_guard go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
           edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
-          go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
+          ci_log_guard go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
-        run: go test ./internal/integration/ -timeout 300s -count=1
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test ./internal/integration/ -timeout 300s -count=1
         working-directory: packages/envoy
       # check c-callout-live of the NATS auth service's verification: the real broker (twice, one
       # queue group), listener, Dispatch and nats-server behind the auth callout, built and started

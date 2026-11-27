@@ -18,6 +18,13 @@
 # service binds port 0 and names the port it got, and a caller reads it from the service's log
 # once the service is up (natsd_port, listener_addr).
 
+# build_natsd and build_listener print go's own lines, a module proxy's reply among them, inside a
+# .github/scripts/ci-log-guard.sh block, where they cannot become workflow commands in CI's log
+# (ci.yaml's envoy-session-stall job runs smoke-role-takeover.sh). The library defines functions
+# alone, as this file does.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/.github/scripts/ci-log-guard.sh"
+
 # poll_until SECONDS INTERVAL COMMAND...: polls COMMAND every INTERVAL seconds, quietly; its last
 # run's own status once SECONDS have passed.
 poll_until() {
@@ -34,12 +41,12 @@ poll_until() {
 # an older revision's extracted beside it (smoke-role-takeover.sh's --base-rev). Non-zero when the
 # build fails, having let `go build` say why, so the caller refuses in its own words.
 build_natsd() {
-  (cd -- "$1" && go build -o "$2" ./internal/testnats/cmd/natsd)
+  (cd -- "$1" && ci_log_guard go build -o "$2" ./internal/testnats/cmd/natsd)
 }
 
 # build_listener SOURCE OUT: the listener built from SOURCE, the same way.
 build_listener() {
-  (cd -- "$1" && go build -o "$2" ./cmd/listener)
+  (cd -- "$1" && ci_log_guard go build -o "$2" ./cmd/listener)
 }
 
 # set_natsd_argv BIN STORE_DIR [monitor]: sets the array `natsd_argv` to natsd serving a client

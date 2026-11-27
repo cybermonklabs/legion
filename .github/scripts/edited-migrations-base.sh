@@ -33,19 +33,24 @@
 #   MIGRATION_BASE     workflow_dispatch only: ci.yaml's migration-base input; may be empty.
 #
 # Stdout holds the base's sha and nothing else. Every message goes to stderr: the line that names
-# the base and why, a refusal as an ::error:: line, and git's own output. Any other command that
-# fails, a fetch among them, exits with that command's status, so the check fails closed.
+# the base and why, a refusal as an ::error:: line, and git's own output, each fetch's inside a
+# ci-log-guard.sh block, so a server's reply in it cannot become a workflow command. Any other
+# command that fails, a fetch among them, exits with that command's status, so the check fails
+# closed.
 #
 # Run inside the checkout: .github/scripts/edited-migrations-base.sh
 # Its tests are in edited-migrations-base.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh"
+
 event=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
 sha=${GITHUB_SHA:?GITHUB_SHA must name the commit the run checked out}
 
 if [ "$event" != workflow_dispatch ]; then
-  git fetch --no-tags --depth=2 origin "$sha" >&2
+  ci_log_guard git fetch --no-tags --depth=2 origin "$sha"
   base=$(git rev-parse HEAD^1)
   echo "edited-migrations base: $base, the first parent of $sha, the commit this $event run checked out" >&2
   echo "$base"
@@ -54,7 +59,7 @@ fi
 
 ref=${GITHUB_REF:?GITHUB_REF must name the ref the run was started on}
 if [ -n "${MIGRATION_BASE:-}" ]; then
-  git fetch --no-tags --depth=1 origin "$MIGRATION_BASE" >&2
+  ci_log_guard git fetch --no-tags --depth=1 origin "$MIGRATION_BASE"
   echo "edited-migrations base: $MIGRATION_BASE, the migration-base this workflow_dispatch run on $ref names" >&2
   echo "$MIGRATION_BASE"
   exit 0
@@ -90,7 +95,7 @@ fi
 # object), not an answer, so the script prints git's message and exits 2 naming the code.
 main=refs/remotes/origin/main
 depth=64
-git fetch --no-tags --depth="$depth" origin "$sha" "+refs/heads/main:$main" >&2
+ci_log_guard git fetch --no-tags --depth="$depth" origin "$sha" "+refs/heads/main:$main"
 main_sha=$(git rev-parse "$main")
 shallow_file=$(git rev-parse --git-path shallow)
 while :; do
@@ -120,7 +125,7 @@ while :; do
     fi
   fi
   depth=$((depth * 4))
-  git fetch --no-tags --depth="$depth" origin "$sha" "$main_sha" >&2
+  ci_log_guard git fetch --no-tags --depth="$depth" origin "$sha" "$main_sha"
 done
 echo "edited-migrations base: $base, the merge base of HEAD $sha with main $main_sha: this workflow_dispatch run on $ref names no migration-base, and a branch lands onto main" >&2
 echo "$base"

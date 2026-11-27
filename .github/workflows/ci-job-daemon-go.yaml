@@ -226,8 +226,9 @@ jobs:
       # cannot come to name different tests.
       - name: Test the Go daemon
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          { python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'; } 2>&1 | ci_log_guard cat
         working-directory: packages/daemon
 
       # The shape gate of internal/api again, stamped with HEAD's contract entries in main's merge
@@ -251,7 +252,8 @@ jobs:
         id: contract-order
         run: |
           head=$(git rev-parse HEAD)
-          git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
           stamp=$(bash ../../scripts/daemon-contract-order.sh --stamp HEAD)
           echo "$stamp"
           echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
@@ -273,7 +275,8 @@ jobs:
       - name: Test what the race build cannot run
         if: matrix.leg == 2
         run: |
-          go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 
       # The daemon's forced-order tests (packages/envoy/scripts/forced-order.sh -C packages/daemon):
@@ -533,8 +536,9 @@ jobs:
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
+          { python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'; } 2>&1 | ci_log_guard cat
         working-directory: packages/daemon
 
       - name: Report the service's peak connections

@@ -77,17 +77,19 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static
       - name: Build the binaries the browser suite runs
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
-          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
+          CGO_ENABLED=0 ci_log_guard go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          CGO_ENABLED=0 ci_log_guard go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
         working-directory: packages/envoy
       # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
       # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.
       - name: Read the connections each stack's Postgres must allow
         id: connections
         run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          . ../../.github/scripts/ci-log-guard.sh
+          connections=$(ci_log_guard_stderr go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number" >&2; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-artifacts-name-holds-no-run-attempt
@@ -339,7 +341,9 @@ jobs:
         working-directory: packages/contracts
       - name: Build the Dispatch server
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-the-dispatch-server-itself
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # why: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
@@ -354,8 +358,9 @@ jobs:
         id: connections
         timeout-minutes: 2
         run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          . ../../.github/scripts/ci-log-guard.sh
+          connections=$(ci_log_guard_stderr go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number" >&2; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against two server processes
@@ -420,7 +425,9 @@ jobs:
         working-directory: packages/contracts
       - name: Build the Dispatch server for the embedder lane
         # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # Browsers only, no apt: .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
@@ -436,8 +443,9 @@ jobs:
         id: connections
         timeout-minutes: 2
         run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          . ../../.github/scripts/ci-log-guard.sh
+          connections=$(ci_log_guard_stderr go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number" >&2; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test the bar's two tiers against a counting embedder
@@ -505,8 +513,9 @@ jobs:
       - name: Read the connections the visual stack's Postgres must allow
         id: connections
         run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          . ../../.github/scripts/ci-log-guard.sh
+          connections=$(ci_log_guard_stderr go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number" >&2; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines

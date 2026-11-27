@@ -114,7 +114,12 @@ left() { echo $((LIMIT - ($(date +%s) - started))); }
 base=${CI_FILTERS_BASE:-}
 [ -n "$base" ] || exit 0
 if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-  timeout -k 5 60 git fetch -q --no-tags --depth=1 origin "$base" 2>&1 | tail -3
+  # git's own lines, a server's `remote:` text among them, reach the log only inside a
+  # ci-log-guard.sh block, where they cannot become workflow commands. The script runs from the
+  # repository root since the cd above, so the library is named from there.
+  # shellcheck source=.github/scripts/ci-log-guard.sh
+  . .github/scripts/ci-log-guard.sh
+  { timeout -k 5 60 git fetch -q --no-tags --depth=1 origin "$base" 2>&1 | tail -3; } 2>&1 | ci_log_guard cat
 fi
 # --no-renames: a renamed file is its old path deleted and its new one added, so a tsconfig moved
 # away is counted as touched by its old name too.

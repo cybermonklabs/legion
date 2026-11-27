@@ -48,6 +48,10 @@ for test in "$@"; do
 done
 run="^($(IFS='|'; echo "$*"))\$"
 
+# go test's own messages (a module proxy's reply among them) reach the log only inside a
+# ci-log-guard.sh block, where they cannot become workflow commands.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/.github/scripts/ci-log-guard.sh"
 cd "$(dirname "$0")/.."
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -57,7 +61,7 @@ go_test_exit=0
 go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" >"$events" 2>"$work/stderr" || go_test_exit=$?
 if [ ! -s "$events" ]; then
   echo "backend-count.sh: go test wrote no events (exit $go_test_exit), so nothing was counted:" >&2
-  cat "$work/stderr" >&2
+  ci_log_guard cat "$work/stderr"
   exit 1
 fi
 
@@ -77,6 +81,6 @@ if [ "$go_test_exit" -ne 0 ]; then
   status=1
   jq -r 'select(.Action == "fail" and .Test != null) | "FAIL \(.Package) \(.Test)"' "$events" >&2
   jq -rsj '[.[] | select(.Action == "fail" and .Test != null) | .Test] as $failed | .[] | select(.Action == "output" and .Test != null) | select(.Test as $t | any($failed[]; . == $t)) | .Output' "$events" >&2
-  cat "$work/stderr" >&2
+  ci_log_guard cat "$work/stderr"
 fi
 exit "$status"

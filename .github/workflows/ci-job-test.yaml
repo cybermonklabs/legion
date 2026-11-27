@@ -361,6 +361,18 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"race_memory_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/race_memory.test.sh .github/scripts/race_memory.test.sh
 
+      # The stop-commands block every guarded network command's output goes through, read by a
+      # parser of the runner's rules, with the copy the release steps that hold credentials define
+      # inline, read out of their workflows; then the check that every network command a step or a
+      # script it runs makes is guarded. One filter selects both steps, each through a gate of its own.
+      - name: Test the log guard that keeps a server's text from becoming a workflow command
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"log_guard_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-log-guard.test.sh .github/scripts/ci-log-guard.test.sh
+
+      - name: Test the check that every network command a step runs is guarded
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"log_guard_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-log-guard.test.sh .github/scripts/check-log-guard.test.sh
+
       # The machine watch's test runs as the first process of its own unprivileged user, mount and
       # PID namespaces, so no sampler it starts outlives it, and its falling-least case watches a
       # tmpfs it mounts in a further namespace, so that no other writer moves the free space it

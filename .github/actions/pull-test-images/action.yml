@@ -28,6 +28,7 @@ runs:
         CONSTS: ${{ inputs.consts }}
         IMAGES: ${{ inputs.images }}
       run: |
+        . .github/scripts/ci-log-guard.sh
         images=()
         while read -r file name; do
           [ -n "$file" ] || continue
@@ -40,5 +41,5 @@ runs:
         done <<<"$IMAGES"
         [ "${#images[@]}" -gt 0 ] || { echo "::error::no image to pull"; exit 1; }
         for image in "${images[@]}"; do
-          docker pull "$image"
+          ci_log_guard docker pull "$image"
         done

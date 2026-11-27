@@ -168,10 +168,14 @@ jobs:
       # start no container, so this job needs no Docker.
       - name: Vet envoy-infra, its live-test tags included
         if: steps.version.outputs.skip != 'true'
-        run: go -C packages/envoy/infra vet -tags pulumilive,natslive ./...
+        run: |
+          . .github/scripts/ci-log-guard.sh
+          ci_log_guard go -C packages/envoy/infra vet -tags pulumilive,natslive ./...
       - name: Unit test envoy-infra
         if: steps.version.outputs.skip != 'true'
-        run: go -C packages/envoy/infra test ./...
+        run: |
+          . .github/scripts/ci-log-guard.sh
+          ci_log_guard go -C packages/envoy/infra test ./...
       # The address the plugin's schema names as its download URL, derived from the repository
       # this run is in (.github/scripts/repo-paths.sh plugin_download_url), so a renamed or
       # transferred repository releases a plugin that points at its own releases instead of a

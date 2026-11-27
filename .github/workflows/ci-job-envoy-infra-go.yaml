@@ -156,7 +156,9 @@ jobs:
           fi
         working-directory: packages/envoy/infra
       - name: Vet envoy-infra, its live-test tags included
-        run: go vet -tags pulumilive,natslive ./...
+        run: |
+          . ../../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go vet -tags pulumilive,natslive ./...
         working-directory: packages/envoy/infra
       # The same vet as macOS compiles the module: its commands ship for darwin
       # (.github/envoy-infra-targets.json), and a file with no build constraint that uses a symbol
@@ -166,10 +168,11 @@ jobs:
       # One darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
       - name: Vet envoy-infra for darwin, its live-test tags included
         run: |
+          . ../../../.github/scripts/ci-log-guard.sh
           flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
           while IFS= read -r flag; do
             echo "Vetting for darwin with $flag"
-            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+            GOOS=darwin GOARCH=arm64 ci_log_guard go vet "$flag" ./...
           done <<< "$flags"
         working-directory: packages/envoy/infra
       # Every package of the module except internal/textcheck, whose tests are the text-check

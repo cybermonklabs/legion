@@ -139,10 +139,11 @@ jobs:
       - name: Fetch main's history and the release tags, without their files
         timeout-minutes: 2
         run: |
+          . .github/scripts/ci-log-guard.sh
           for attempt in 1 2 3; do
             args=(--no-tags --filter=blob:none)
             [[ -f .git/shallow ]] && args+=(--unshallow)
-            if timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
+            if ci_log_guard timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
               '+refs/heads/main:refs/remotes/origin/main' \
               '+refs/tags/legion-envoy-v*:refs/tags/legion-envoy-v*'; then
               echo "attempt $attempt: $(git rev-list --count HEAD) commits in the history of HEAD, $(git tag --list 'legion-envoy-v*' | wc -l) release tags"
@@ -154,7 +155,7 @@ jobs:
             while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
             find .git -name '*.lock' -delete
           done
-          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
+          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each." >&2
           exit 1
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -247,8 +248,9 @@ jobs:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          ci_log_guard go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
       # dispatch-browser.yaml's shard job's step of this name, for the reason
       # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
@@ -265,7 +267,9 @@ jobs:
         # Dispatch A's; run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, A finds it current
         # and starts in seconds.
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium
         # No apt in this step: Playwright's `chromium` entry in its ubuntu24.04-x64 table adds no
@@ -286,8 +290,9 @@ jobs:
         id: connections
         timeout-minutes: 2
         run: |
-          connections=$(go run ./internal/dispatch/store/cmd/connections)
-          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          . ../../.github/scripts/ci-log-guard.sh
+          connections=$(ci_log_guard_stderr go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number" >&2; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test each build's page against the other build's server
@@ -413,10 +418,11 @@ jobs:
       - name: Fetch main's history and the release tags, without their files
         timeout-minutes: 2
         run: |
+          . .github/scripts/ci-log-guard.sh
           for attempt in 1 2 3; do
             args=(--no-tags --filter=blob:none)
             [[ -f .git/shallow ]] && args+=(--unshallow)
-            if timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
+            if ci_log_guard timeout -k 5 30 git fetch "${args[@]}" origin "$(git rev-parse HEAD)" \
               '+refs/heads/main:refs/remotes/origin/main' \
               '+refs/tags/legion-envoy-v*:refs/tags/legion-envoy-v*'; then
               echo "attempt $attempt: $(git rev-list --count HEAD) commits in the history of HEAD, $(git tag --list 'legion-envoy-v*' | wc -l) release tags"
@@ -428,7 +434,7 @@ jobs:
             while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
             find .git -name '*.lock' -delete
           done
-          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each."
+          echo "::error::Three fetches of main's history and the release tags did not complete within 30 s each." >&2
           exit 1
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -466,8 +472,9 @@ jobs:
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-same
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
-          go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
+          ci_log_guard go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

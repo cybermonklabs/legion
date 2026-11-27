@@ -319,7 +319,9 @@ jobs:
       # 1.88 s, and a loaded devbox 2.2–20.7 s across four runs; the bound is deliberate headroom
       # over those plus that pull, not a build budget.
       - name: Container smoke test (testcontainers)
-        run: go test -tags smoke -v -timeout 5m ./internal/smoke/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -tags smoke -v -timeout 5m ./internal/smoke/
         working-directory: packages/envoy
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -441,15 +443,25 @@ jobs:
             fi
             sources+=("$IMAGE@sha256:$hex")
           done
-          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index-metadata.json" \
-            --tag "$IMAGE:$SHA" "${sources[@]}"
+          # why: .github/ci-notes/release-envoy-listener.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
+          ci_log_guard_stderr docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index-metadata.json" \
+            --tag "$IMAGE:$SHA" "${sources[@]}" >&2
           digest=$(jq -r '."containerimage.descriptor".digest' "$RUNNER_TEMP/index-metadata.json")
           if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::imagetools create reported $(printf '%q' "$digest"), which is not a sha256 digest"
+            echo "::error::imagetools create reported $(printf '%q' "$digest"), which is not a sha256 digest" >&2
             exit 1
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          docker buildx imagetools inspect "$IMAGE@$digest"
+          ci_log_guard_stderr docker buildx imagetools inspect "$IMAGE@$digest" >&2
 
   # A GitHub artifact attestation of the index image_index wrote, stored with GitHub. The
   # `envoy:<sha>` tag alone cannot say which run published an image: a workflow_dispatch from any
@@ -727,7 +739,17 @@ jobs:
           OWN_DIGEST: ${{ needs.image_index.outputs.digest }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch origin main --tags
+          # why: .github/ci-notes/release-envoy-listener.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
+          ci_log_guard_stderr git fetch origin main --tags >&2
 
           image_digest() {
             local sha=$1
@@ -744,25 +766,27 @@ jobs:
               rm -f "$error_file"
               return 1
             fi
-            cat "$error_file" >&2
+            ci_log_guard_stderr cat "$error_file" >&2
             rm -f "$error_file"
             exit 1
           }
 
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "should_tag_latest=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Latest promotion skipped::The event SHA is no longer on main."
+            echo "::notice title=Latest promotion skipped::The event SHA is no longer on main." >&2
           else
             latest_exists=false
             if image_digest latest; then
               latest_exists=true
               latest_digest="$IMAGE_DIGEST"
-              if ! latest_manifest=$(docker buildx imagetools inspect --raw "$IMAGE:latest"); then
-                echo "::error title=Cannot establish latest provenance::Unable to read latest's manifest."
+              if ! latest_manifest=$(ci_log_guard_stderr docker buildx imagetools inspect --raw "$IMAGE:latest"); then
+                echo "::error title=Cannot establish latest provenance::Unable to read latest's manifest." >&2
                 exit 1
               fi
               latest_has_revision=$(printf '%s\n' "$latest_manifest" | jq -r '(.annotations // {}) | has("org.opencontainers.image.revision")')
-              latest_sha=$(printf '%s\n' "$latest_manifest" | jq -r '(.annotations // {})["org.opencontainers.image.revision"] // empty')
+              # Only a full commit sha: any other annotation (a ref such as `origin/main^{/…}` that
+              # git resolves, carrying the registry's text) is refused below by name.
+              latest_sha=$(printf '%s\n' "$latest_manifest" | jq -r '(.annotations // {})["org.opencontainers.image.revision"] // empty | strings | select(test("^[0-9a-f]{40}$"))')
 
               # Resolve the one legacy unannotated latest tag through its GHCR package-version
               # metadata. The package is the image without its registry and owner
@@ -772,13 +796,13 @@ jobs:
               if [ "$latest_has_revision" = false ]; then
                 package=${IMAGE#"ghcr.io/$GITHUB_REPOSITORY_OWNER/"}
                 package=${package//\//%2F}
-                if ! legacy_source=$(gh api "users/$GITHUB_REPOSITORY_OWNER/packages/container/$package/versions?per_page=100" --paginate --jq '.[] | select(.metadata.container.tags | index("latest")) | [.name, (.metadata.container.tags[] | select(test("^[0-9a-f]{40}$")))] | @tsv'); then
-                  echo "::error title=Cannot establish latest provenance::Unable to resolve legacy latest through GHCR."
+                if ! legacy_source=$(ci_log_guard_stderr gh api "users/$GITHUB_REPOSITORY_OWNER/packages/container/$package/versions?per_page=100" --paginate --jq '.[] | select(.metadata.container.tags | index("latest")) | [.name, (.metadata.container.tags[] | select(test("^[0-9a-f]{40}$")))] | @tsv'); then
+                  echo "::error title=Cannot establish latest provenance::Unable to resolve legacy latest through GHCR." >&2
                   exit 1
                 fi
                 case "$legacy_source" in
                   *$'\n'*)
-                    echo "::error title=Cannot establish latest provenance::GHCR returned multiple latest sources."
+                    echo "::error title=Cannot establish latest provenance::GHCR returned multiple latest sources." >&2
                     exit 1
                     ;;
                 esac
@@ -786,13 +810,13 @@ jobs:
                 if [ -z "$legacy_digest" ] || [ -z "$latest_sha" ] || [ "$legacy_digest" != "$latest_digest" ] ||
                   ! git cat-file -e "${latest_sha}^{commit}" 2>/dev/null ||
                   ! git merge-base --is-ancestor "$latest_sha" origin/main; then
-                  echo "::error title=Cannot establish latest provenance::Legacy latest has no matching main SHA image."
+                  echo "::error title=Cannot establish latest provenance::Legacy latest has no matching main SHA image." >&2
                   exit 1
                 fi
                 echo "Resolved legacy latest to $latest_sha"
               elif [ -z "$latest_sha" ] || ! git cat-file -e "${latest_sha}^{commit}" 2>/dev/null ||
                 ! git merge-base --is-ancestor "$latest_sha" origin/main; then
-                echo "::error title=Cannot establish latest provenance::latest has an unknown or non-main revision annotation."
+                echo "::error title=Cannot establish latest provenance::latest has an unknown or non-main revision annotation." >&2
                 exit 1
               fi
             fi
@@ -802,7 +826,7 @@ jobs:
             promote_sha="$GITHUB_SHA"
             promote_digest="$OWN_DIGEST"
             if ! candidate_shas=$(git rev-list --first-parent "$GITHUB_SHA..origin/main"); then
-              echo "::error title=Cannot establish latest provenance::Unable to enumerate newer main commits."
+              echo "::error title=Cannot establish latest provenance::Unable to enumerate newer main commits." >&2
               exit 1
             fi
             if [ -n "$candidate_shas" ]; then
@@ -831,7 +855,7 @@ jobs:
               fi
             else
               echo "should_tag_latest=false" >> "$GITHUB_OUTPUT"
-              echo "latest already names descendant $latest_sha"
+              ci_log_guard_stderr echo "latest already names descendant $latest_sha" >&2
             fi
           fi
 
@@ -854,11 +878,21 @@ jobs:
           SHA: ${{ steps.latest.outputs.latest_sha }}
           DIGEST: ${{ steps.latest.outputs.latest_digest }}
         run: |
+          # why: .github/ci-notes/release-envoy-listener.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           test -n "$DIGEST"
-          docker buildx imagetools create \
+          ci_log_guard_stderr docker buildx imagetools create \
             --annotation "index:org.opencontainers.image.revision=$SHA" \
             --tag "$IMAGE:latest" \
-            "$IMAGE@$DIGEST"
+            "$IMAGE@$DIGEST" >&2
 
       # release_build decided the version outside this concurrency group, from the tags as they
       # were then. Inside it, with the tags "Determine latest" fetched, the same computation must
@@ -982,8 +1016,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if ! gh workflow run ci-caches.yaml --ref main -f only=dispatch-builds; then
-            echo "::warning::ci-caches.yaml was not dispatched, so dispatch-two-builds builds this release until the next push to main fills it"
+          # why: .github/ci-notes/release-envoy-listener.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
+          if ! ci_log_guard_stderr gh workflow run ci-caches.yaml --ref main -f only=dispatch-builds >&2; then
+            echo "::warning::ci-caches.yaml was not dispatched, so dispatch-two-builds builds this release until the next push to main fills it" >&2
           fi
       # Build provenance for the host binaries a mise pin installs, linux or darwin, which the
       # release below uploads exactly. `--repo` alone accepts an archive any workflow of this

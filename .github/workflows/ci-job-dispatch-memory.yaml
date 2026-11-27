@@ -82,8 +82,9 @@ jobs:
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Memory tests of the Dispatch server
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          ci_log_guard go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

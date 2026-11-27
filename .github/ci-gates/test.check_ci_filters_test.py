@@ -17,6 +17,8 @@ GATE = harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/
     (".github/ci-gates/*.py", "the derived function's import of ci_job_reads.py loads every gate file"),
     (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                 "over a module with a negated tag"),
+    (f"{SCRIPTS}/ci-log-guard.sh", "that run text sources it, and the harness links it into the fixture; a case "
+                                   "reads a step guarded by it"),
     (FORCED_ORDER, "check-ci-filters.test.sh reads its go flags, which must pass -tags odatrace, the one name "
                    "beyond the toolchain's that go_build_tags.py leaves out of every vet"),
 ])

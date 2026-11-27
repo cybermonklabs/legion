@@ -24,6 +24,10 @@
 # CI runs it in release.yaml's legion_build job, at the step "Build legion".
 set -euo pipefail
 
+# go build's own lines, a module proxy's reply among them, reach the log only inside a
+# ci-log-guard.sh block, where they cannot become workflow commands.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh"
 : "${LEGION_CONTRACT_ORDER:?is unset or empty: set it to the stamp scripts/daemon-contract-order.sh --stamp prints for this commit}"
 
 mkdir -p out assets
@@ -32,7 +36,7 @@ for target in $(jq -r '.legion[]' .github/go-release-targets.json); do
   arch=${target#*/}
   dir="legion-$os-$arch"
   mkdir -p "out/$dir"
-  CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go -C packages/daemon build -buildvcs=false \
+  CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" ci_log_guard go -C packages/daemon build -buildvcs=false \
     -ldflags "-X main.revision=$GITHUB_SHA -X main.release=v$VERSION -X main.piLegionVersion=$PI_LEGION_VERSION -X main.piEnvoyVersion=$PI_ENVOY_VERSION -X github.com/sjawhar/legion/daemon/internal/api.contractOrder=$LEGION_CONTRACT_ORDER" \
     -o "$GITHUB_WORKSPACE/out/$dir/legion" ./cmd/legion
   (cd packages/daemon && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \

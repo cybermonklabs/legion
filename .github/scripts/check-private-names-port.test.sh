@@ -73,13 +73,17 @@ tee_pid=$!
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+# The engine's build prints go's own lines, a module proxy's reply among them, inside a
+# ci-log-guard.sh block, where they cannot become workflow commands.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$script_dir/ci-log-guard.sh"
 
 command -v git > /dev/null || { echo "  FAIL: git is required" >&2; exit 1; }
 command -v go > /dev/null || { echo "  FAIL: go is required: this test builds the legion binary" >&2; exit 1; }
 
 echo "building the engine: the legion binary of this head, once for the whole run"
 engine="$work/legion"
-(cd "$repo_root/packages/daemon" && go build -o "$engine" ./cmd/legion) || {
+(cd "$repo_root/packages/daemon" && ci_log_guard go build -o "$engine" ./cmd/legion) || {
   echo "  FAIL: the legion binary did not build, so there is no port to compare with" >&2
   exit 1
 }
@@ -470,7 +474,7 @@ check "the frozen script names the file and the line" \
 check "the frozen script does not repeat the name" "$(is "$(contains "$frozen_out" "$repo")" false)"
 check "the engine names the record it refused" "$(contains "$door_out" '^  the title: names the private deployment repository')"
 check "the engine names the match as written, and the line of the record it stands on" \
-  "$(contains "$door_out" "^  the title: names the private deployment repository or its Dispatch project key: matched \"[^\"]*$repo[^\"]*\" on line 1: \"the $repo repository\"\$")"
+  "$(contains "$door_out" "^  the title: names the private deployment repository or its Dispatch project key: matched \"[^\"]*${repo}[^\"]*\" on line 1: \"the $repo repository\"\$")"
 note "rule-9-record" "names the file and the line a hit is on, and never the text" \
   "names the record of the write (for a text its title or its body), the text that matched and the line of that record it stands on" \
   "the engine scans a write's records, not a checkout's files, so its line counts from the record's first line; it shows the text because the agent it refuses wrote that text, and this suite reads the class alone out of its report"

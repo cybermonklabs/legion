@@ -553,6 +553,297 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names go" "$(contains "$out" "job 'pi_envoy_publish' holds a credential, but step 'Build the daemon' runs 'go'")"
 
+# A here-document a shell reads as its script runs its lines: `bash <<'EOT'` holding `bunx …` runs
+# bunx, whatever the delimiter's quoting. An unquoted body's `$(…)` runs, and so does a
+# substitution inside arithmetic. This check reads every body as commands, as main's reader did.
+echo "case: a dependency command in a here-document a shell reads, in a credentialed job"
+root=$(fixture heredoc-shell)
+add_publish_step "$root" $'      - name: Run a script from a here-document\n        run: |\n          bash <<\'EOT\'\n          bunx evil-package\n          EOT\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names bunx" "$(contains "$out" "job 'pi_envoy_publish' holds a credential, but step 'Run a script from a here-document' runs 'bunx'")"
+root=$(fixture heredoc-substitution)
+add_publish_step "$root" $'      - name: Expand a here-document\n        run: |\n          cat <<EOF\n          $(bun install)\n          EOF\n          n=$(( $(bunx count) + 1 ))\n'
+run_check "$root"
+check "an unquoted body's substitution exits 1" "$(is "$status" 1)"
+check "names bun, and the substitution in arithmetic, bunx" \
+  "$(contains "$out" "step 'Expand a here-document' runs 'bun', 'bunx'")"
+root=$(fixture heredoc-text)
+add_publish_step "$root" $'      - name: Print a here-document\n        run: |\n          cat <<\'EOF\'\n          bunx evil-package\n          $(bun install)\n          EOF\n'
+run_check "$root"
+# Main's rule, which this check keeps (every_body): a body is read as commands even where no shell
+# of its line reads it, so a quoted `cat` body naming bunx is refused too, reading more than bash
+# runs rather than less.
+check "a quoted body no shell of its line reads is read too: exits 1" "$(is "$status" 1)"
+
+# The forms main's reader read as commands and the here-document reader first missed (review
+# 6052147931): a process substitution among an array's values, an array whose quoted `(` hides
+# the lines up to a later `)`, a shell after the pipe a here-document feeds, a shell given
+# /dev/stdin, and a shell behind setsid or timeout's long option. Each runs bunx in a credentialed
+# job, and each is refused by name.
+echo "case: dependency code in the forms a shell runs from an array or a here-document, in a credentialed job"
+root=$(fixture heredoc-and-array-forms)
+add_publish_step "$root" $'      - name: Array process substitution\n        run: files=(<(bunx evil-package))\n      - name: Array quoted paren\n        run: |\n          x=("(")\n          bunx evil-package\n          # )\n      - name: Pipe to a shell\n        run: |\n          cat <<\'EOT\' | bash\n          bunx evil-package\n          EOT\n      - name: Shell given stdin\n        run: |\n          bash /dev/stdin <<\'EOT\'\n          bunx evil-package\n          EOT\n      - name: Shell behind setsid\n        run: |\n          setsid bash <<\'EOT\'\n          bunx evil-package\n          EOT\n      - name: Shell behind timeout\n        run: |\n          timeout --signal KILL 5m bash <<\'EOT\'\n          bunx evil-package\n          EOT\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Array process substitution' 'Array quoted paren' 'Pipe to a shell' 'Shell given stdin' \
+  'Shell behind setsid' 'Shell behind timeout'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
+# The forms of review 6054247075: a here-document body that reaches a shell by a route the line
+# rule does not follow, which the release check reads anyway because it reads every body as
+# commands; a `((` that is two subshells to bash, not arithmetic; a substitution in a case
+# pattern, which bash expands; and env with an expansion of many words before the shell. Each runs
+# bunx in a credentialed job under bash, and each is refused by name.
+echo "case: the routes into a shell the line rule misses, in a credentialed job"
+root=$(fixture every-body-forms)
+add_publish_step "$root" $'      - name: Eval of a substitution\n        run: |\n          eval "$(cat <<\'EOT\'\n          bunx evil-package\n          EOT\n          )"\n      - name: Bash -c of a substitution\n        run: |\n          bash -c "$(cat <<\'EOT\'\n          bunx evil-package\n          EOT\n          )"\n      - name: Source of a process substitution\n        run: |\n          . <(cat <<\'EOT\'\n          bunx evil-package\n          EOT\n          )\n      - name: Bash of a process substitution\n        run: |\n          bash <(cat <<\'EOT\'\n          bunx evil-package\n          EOT\n          )\n      - name: Pipe after the body\n        run: |\n          cat <<\'EOT\' |\n          bunx evil-package\n          EOT\n          bash\n      - name: Shell behind taskset\n        run: |\n          taskset -c 0 bash <<\'EOT\'\n          bunx evil-package\n          EOT\n      - name: Body ended by EOF paren\n        run: |\n          x=$(cat <<\'EOF\'\n          bunx evil-package\n          EOF)\n          eval "$x"\n      - name: Two subshells\n        run: |\n          ((bunx evil-package) || true)\n      - name: Case pattern\n        run: |\n          case x in "$(bunx evil-package)") : ;; esac\n      - name: Env with an expansion\n        run: |\n          env "${args[@]}" bash <<\'EOT\'\n          bunx evil-package\n          EOT\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Eval of a substitution' 'Bash -c of a substitution' 'Source of a process substitution' \
+  'Bash of a process substitution' 'Pipe after the body' 'Shell behind taskset' 'Body ended by EOF paren' \
+  'Two subshells' 'Case pattern' 'Env with an expansion'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
+# The forms of review 6058074395 and of 5aef29db5a's reviews: a string handed a shell (`bash -c`,
+# eval) is read by the release check's own every-body rule and with the arrays of the text around
+# it; a quoted paren counts for nothing in `((` or in a case pattern's substitution, as bash parses
+# them; and each command word a shell builds that the text says what it is: a trap's string, a
+# coprocess, a one-line function, a here-string, an echo piped to a shell, xargs -I running a
+# shell's script, an alias, an ANSI-C escape, env -S, and env's `set -u` form of an array. Each runs
+# bunx in a credentialed job under bash, and each is refused by name.
+echo "case: the strings, quoted parens and built command words that run bunx, in a credentialed job"
+root=$(fixture built-word-forms)
+add_publish_step "$root" "$(cat <<'YAML'
+      - name: Bash -c of eval of a body
+        run: |
+          bash -c 'eval "$(cat <<"EOT"
+          bunx evil-package
+          EOT
+          )"'
+      - name: Eval of eval of a body
+        run: |
+          eval 'eval "$(cat <<"EOT"
+          bunx evil-package
+          EOT
+          )"'
+      - name: Bash -c of a body ended by EOF paren
+        run: |
+          bash -c 'x=$(cat <<"EOF"
+          bunx evil-package
+          EOF)
+          eval "$x"'
+      - name: Eval of a body that sets an array
+        run: |
+          eval "$(cat <<'EOT'
+          a=(bunx evil-package)
+          "${a[@]}"
+          EOT
+          )"
+      - name: Piped body that sets an array
+        run: |
+          cat <<'EOT' |
+          a=(bunx evil-package)
+          "${a[@]}"
+          EOT
+          bash
+      - name: Quoted paren in two subshells
+        run: |
+          ((echo "))"; bunx evil-package) || true)
+      - name: Quoted paren in a case pattern
+        run: |
+          case x in "$(echo ")"; bunx evil-package)") : ;; esac
+      - name: Trap
+        run: |
+          trap 'bunx evil-package' EXIT
+      - name: Coprocess
+        run: |
+          coproc bunx evil-package
+      - name: Named coprocess
+        run: |
+          coproc C { bunx evil-package; }
+      - name: One-line function
+        run: |
+          function f { bunx evil-package; }
+          f
+      - name: Here-string
+        run: |
+          bash <<< 'bunx evil-package'
+      - name: Echo piped to a shell
+        run: |
+          echo 'bunx evil-package' | bash
+      - name: Xargs running a shell script
+        run: |
+          cat <<'EOT' | xargs -I{} bash -c '{}'
+          bunx evil-package
+          EOT
+      - name: Alias
+        run: |
+          shopt -s expand_aliases
+          alias b='bunx evil-package'
+          b
+      - name: ANSI-C escape
+        run: |
+          $'\x62unx' evil-package
+      - name: Env -S
+        run: |
+          env -S 'bunx evil-package'
+      - name: Env with a set -u array
+        run: |
+          env ${args[@]+"${args[@]}"} bash <<'EOT'
+          bunx evil-package
+          EOT
+YAML
+)"$'\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Bash -c of eval of a body' 'Eval of eval of a body' 'Bash -c of a body ended by EOF paren' \
+  'Eval of a body that sets an array' 'Piped body that sets an array' 'Quoted paren in two subshells' \
+  'Quoted paren in a case pattern' 'Trap' 'Coprocess' 'Named coprocess' 'One-line function' 'Here-string' \
+  'Echo piped to a shell' 'Xargs running a shell script' 'Alias' 'ANSI-C escape' 'Env -S' 'Env with a set -u array'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
+# The forms of review 6065555289: an array that an eval or a `bash -c` string assigns is the text's
+# too, so the text after the string, or a function of it, runs its values; a `#` comment inside a
+# `$(…)` hides the parens and quotes after it, as bash reads a command substitution; and env takes a
+# slice of an array or of the positional parameters as its arguments. Each runs bunx in a
+# credentialed job under bash, and each is refused by name.
+echo "case: an array an eval string assigns, a comment inside a substitution, and env slices, in a credentialed job"
+root=$(fixture eval-array-comment-forms)
+add_publish_step "$root" "$(cat <<'YAML'
+      - name: Eval of a single-quoted array
+        run: |
+          eval 'a=(bunx evil-package)'
+          "${a[@]}"
+      - name: Eval of a double-quoted array
+        run: |
+          eval "a=(bunx evil-package)"
+          "${a[@]}"
+      - name: Eval of a declared array
+        run: |
+          eval 'declare -a a=(bunx evil-package)'
+          "${a[@]}"
+      - name: Eval of an array a function runs
+        run: |
+          eval 'a=(bunx evil-package)'
+          f() { "${a[@]}"; }
+          f
+      - name: Bash -c of an eval of an array
+        run: |
+          bash -c 'eval "a=(bunx evil-package)"; "${a[@]}"'
+      - name: Comment in a case pattern's substitution
+        run: |
+          case x in "$(: # )
+          bunx evil-package)") : ;; esac
+      - name: Comment hiding a quote in a case pattern's substitution
+        run: |
+          case "" in "$(: # "
+          )") bunx evil-package ;; esac
+      - name: Comment in arithmetic's substitution
+        run: |
+          (( $(: # )
+          bunx evil-package)))
+      - name: Env with a slice of the parameters
+        run: |
+          env "${@:2}" bunx evil-package
+      - name: Env with a slice of an array
+        run: |
+          env "${a[@]:0}" bunx evil-package
+YAML
+)"$'\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Eval of a single-quoted array' 'Eval of a double-quoted array' 'Eval of a declared array' \
+  'Eval of an array a function runs' 'Bash -c of an eval of an array' 'Comment in a case pattern'"'"'s substitution' \
+  'Comment hiding a quote in a case pattern'"'"'s substitution' 'Comment in arithmetic'"'"'s substitution' \
+  'Env with a slice of the parameters' 'Env with a slice of an array'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
+# The forms of review 6066469064: an assignment or an alias definition that bash never runs (a trap
+# that never fires, a `bash -c` child, an eval under `if false`, an uncalled function) shadows no
+# other, so an array appended to after such a decoy and an alias redefined by one still read as
+# what bash runs; a `#` after the `)` of a nested substitution continues the word; and a copy, a
+# slice, an element or a nameref of an array runs its values, which this check reads as a command.
+# Each runs bunx in a credentialed job under bash, and each is refused by name.
+echo "case: decoy assignments, a hash after a substitution, and built array words, in a credentialed job"
+root=$(fixture decoy-and-hash-forms)
+add_publish_step "$root" "$(cat <<'YAML'
+      - name: Append after a trap decoy
+        run: |
+          trap 'a=(true)' USR1
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Append after a bash -c decoy
+        run: |
+          bash -c 'a=(true)'
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Append after a subshell decoy
+        run: |
+          ( bash -c 'a=(true)' )
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Append after an uncalled function decoy
+        run: |
+          f() { eval 'a=(true)'; }
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Append after an if false decoy
+        run: |
+          if false; then eval 'a=(true)'; fi
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Alias after a trap decoy
+        run: |
+          shopt -s expand_aliases
+          alias b='bunx evil-package'
+          trap "alias b=true" USR1
+          b
+      - name: Alias after a bash -c decoy
+        run: |
+          shopt -s expand_aliases
+          alias b='bunx evil-package'
+          bash -c "alias b=true"
+          b
+      - name: Alias after an if false decoy
+        run: |
+          shopt -s expand_aliases
+          alias b='bunx evil-package'
+          if false; then eval "alias b=true"; fi
+          b
+      - name: Hash after a nested substitution
+        run: |
+          case x in "$(echo $(echo y)#)") : ;; esac
+          bunx evil-package
+      - name: Hash after a process substitution
+        run: |
+          case x in "$(cat <(echo a)#)") : ;; esac
+          bunx evil-package
+      - name: Array copy
+        run: |
+          base=(bunx evil-package)
+          args=("${base[@]}")
+          "${args[@]}"
+      - name: Array nameref
+        run: |
+          a=(bunx evil-package)
+          declare -n r=a
+          "${r[@]}"
+YAML
+)"$'\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Append after a trap decoy' 'Append after a bash -c decoy' 'Append after a subshell decoy' \
+  'Append after an uncalled function decoy' 'Append after an if false decoy' 'Alias after a trap decoy' \
+  'Alias after a bash -c decoy' 'Alias after an if false decoy' 'Hash after a nested substitution' \
+  'Hash after a process substitution' 'Array copy' 'Array nameref'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
 echo "case: a built binary under out/ in a credentialed job"
 root=$(fixture out-path)
 add_publish_step "$root" $'      - name: Smoke test\n        run: out/legion version\n'
@@ -606,6 +897,14 @@ check "exits 1" "$(is "$status" 1)"
 check "names the script behind bash" "$(contains "$out" "job 'pi_envoy_publish' holds a credential, but step 'Notices' runs 'scripts/go-third-party-notices.sh'")"
 check "names the script behind sh" "$(contains "$out" "step 'Notices under sh' runs 'scripts/foo.sh'")"
 check "names the sourced script" "$(contains "$out" "step 'Source a helper' runs 'scripts/lib/helpers.sh'")"
+
+echo "case: a repository script named like a runner or interpreter in a credentialed job"
+root=$(fixture scripts-named-like-programs)
+add_publish_step "$root" $'      - name: Script named env\n        run: scripts/env bunx evil-package\n      - name: Output script named sh\n        run: out/sh build.sh\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names scripts/env as a script" "$(contains "$out" "step 'Script named env' runs 'scripts/env'")"
+check "names out/sh as a script" "$(contains "$out" "step 'Output script named sh' runs 'out/sh'")"
 
 echo "case: a step whose shell is an interpreter in a credentialed job"
 root=$(fixture shell-python)

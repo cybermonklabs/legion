@@ -139,8 +139,9 @@ jobs:
       # through xargs, which runs a program and not a shell.
       - name: Race-test the document service
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r env GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m
+          { python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r env GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m; } 2>&1 | ci_log_guard cat
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

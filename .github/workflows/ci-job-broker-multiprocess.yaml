@@ -70,8 +70,9 @@ jobs:
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Two-process tests of the secrets broker
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/cipherd)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
+          ci_log_guard go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

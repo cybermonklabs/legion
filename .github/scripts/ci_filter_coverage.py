@@ -133,13 +133,105 @@ def read_repository_text(path: Path) -> str:
 def load_repository_yaml(path: Path):
     """Parse a repository YAML file, retaining its path if the parser refuses it. A mapping that
     holds one key twice is refused (UniqueKeyLoader), as js-yaml and GitHub's workflow parser
-    refuse it, rather than read as its last copy."""
+    refuse it, rather than read as its last copy. A workflow's or a composite action's steps come
+    back read through the log guard (unguard_steps)."""
     try:
-        return yaml.load(read_repository_text(path), Loader=UniqueKeyLoader)
+        document = yaml.load(read_repository_text(path), Loader=UniqueKeyLoader)
     except RepositoryInputError:
         raise
     except yaml.YAMLError as exc:
         raise RepositoryInputError(repository_path(path), exc) from exc
+    unguard_steps(repository_path(path) if path.is_absolute() else str(path), document)
+    return document
+
+
+# .github/scripts/ci-log-guard.sh, which a step runs a network command under so that a server's
+# text the command copies to the log cannot become a workflow command: `ci_log_guard CMD` and
+# `ci_log_guard_stderr CMD` run CMD, and `{ CMD; } 2>&1 | ci_log_guard cat` runs CMD's pipeline,
+# each with its output inside a stop-commands block, and none changes what CMD compiles, reads or
+# runs. So every rule here reads a step as the commands behind the wrapper: load_repository_yaml
+# takes the wrapper, and the line that sources it, out of each step's run: (unguarded). The file
+# itself stays a read: of each job a step of which sources it, itself (GUARDED_JOBS) or through a
+# local composite action that does (guarded_action), and of each gate that reads a script that
+# sources it (reads_log_guard).
+LOG_GUARD = ".github/scripts/ci-log-guard.sh"
+LOG_GUARD_SOURCE = re.compile(r"\.[ \t]+(?:\.\./)*\.github/scripts/ci-log-guard\.sh")
+# The group's body may hold workflow expressions (`${{ matrix.leg }}`), whose braces are the
+# expression's, not a group's.
+LOG_GUARD_GROUP = re.compile(r"\{[ \t]*((?:[^{}]|\$\{\{[^{}]*\}\})*?);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_guard[ \t]+cat")
+LOG_GUARD_WORD = re.compile(r"(?<![\w-])ci_log_guard(?:_stderr)?[ \t]+")
+# A line of a script that sources the guard, in any form: `. <path>/ci-log-guard.sh`.
+LOG_GUARD_SCRIPT_SOURCE = re.compile(r"(?m)^[ \t]*\.[ \t].*ci-log-guard\.sh")
+# (workflow or action path, job id) of each job a step of which sources the guard; a composite
+# action's job id is "".
+GUARDED_JOBS: set = set()
+
+
+def unguarded(script: str) -> str:
+    """A run: script with the log guard taken out: its source line dropped, `ci_log_guard` and
+    `ci_log_guard_stderr` dropped before the command they run, and a guarded pipeline group read as
+    its pipeline. Every other line is kept byte for byte."""
+    lines = []
+    for line in script.split("\n"):
+        body = line.strip(" \t")
+        if LOG_GUARD_SOURCE.fullmatch(body):
+            continue
+        group = LOG_GUARD_GROUP.fullmatch(body)
+        if group or LOG_GUARD_WORD.search(body):
+            line = line[:len(line) - len(line.lstrip(" \t"))] + LOG_GUARD_WORD.sub("", group.group(1) if group else body)
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def unguard_steps(path: str, document) -> None:
+    """Read every step of a workflow or a composite action through the log guard, in place, and
+    note each job a step of which sources it."""
+    if not isinstance(document, dict) or not path.startswith((".github/workflows/", ".github/actions/")):
+        return
+    holders = [(name, job) for name, job in (document.get("jobs") or {}).items() if isinstance(job, dict)]
+    if isinstance(document.get("runs"), dict):
+        holders.append(("", document["runs"]))
+    for name, holder in holders:
+        for step in holder.get("steps") or []:
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                if any(LOG_GUARD_SOURCE.fullmatch(line.strip(" \t")) for line in step["run"].split("\n")):
+                    GUARDED_JOBS.add((path, name))
+                step["run"] = unguarded(step["run"])
+
+
+_SOURCES_LOG_GUARD: dict = {}
+
+
+def guarded_action(uses, seen: frozenset = frozenset()) -> bool:
+    """Whether a step's `uses:` names a local composite action a step of which sources the guard,
+    itself or through a local action it uses in turn: unguard_steps marks the action as
+    load_repository_yaml reads it."""
+    if not isinstance(uses, str) or not uses.startswith("./.github/actions/"):
+        return False
+    directory = uses[2:].split("@")[0].rstrip("/")
+    path = next((f"{directory}/{name}" for name in ("action.yml", "action.yaml") if (REPO / directory / name).is_file()), "")
+    if not path or path in seen:
+        return False
+    document = load_repository_yaml(REPO / path)
+    steps = ((document.get("runs") or {}).get("steps") or []) if isinstance(document, dict) else []
+    return (path, "") in GUARDED_JOBS or any(
+        guarded_action(step.get("uses"), seen | {path}) for step in steps if isinstance(step, dict))
+
+
+def reads_log_guard(g, reads: set, guarded_owners: frozenset) -> bool:
+    """Whether a gate reads LOG_GUARD: its job runs a step that sources it (guarded_owners), or a
+    script among the files the gate reads (`reads`) sources it. gate_read_sets adds LOG_GUARD to the
+    gate's reads then, so the computed filter of every job that runs the guard selects a change to
+    it."""
+    if g.job in guarded_owners:
+        return True
+    for f in sorted(f for f in reads if f.endswith(".sh")):
+        if f not in _SOURCES_LOG_GUARD:
+            path = REPO / f
+            _SOURCES_LOG_GUARD[f] = path.is_file() and bool(LOG_GUARD_SCRIPT_SOURCE.search(path.read_text()))
+        if _SOURCES_LOG_GUARD[f]:
+            return True
+    return False
 
 
 def load_repository_yaml_text(path: str, text: str):
@@ -2234,7 +2326,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                 problems.append(error(r.source, f"{r.source} no longer holds `{r.text}`, the go command "
                                                 f"gate {g.filter} lists; update or remove the Run"))
                 continue
-            source_text = read_repository_text(REPO / r.source)
+            source_text = unguarded(read_repository_text(REPO / r.source))
             if squash(r.text) not in squash(source_text):
                 problems.append(error(r.source, f"{r.source} no longer holds `{r.text}`, the go command "
                                                 f"gate {g.filter} lists; update or remove the Run"))
@@ -3406,7 +3498,8 @@ class Computed:
         return [*self.positives, *self.listed, *self.negations]
 
 
-def gate_read_sets(session: Session, data, files: list, expander: Expander, unreduced: dict) -> tuple:
+def gate_read_sets(session: Session, data, files: list, expander: Expander, unreduced: dict,
+                   guarded_owners: frozenset) -> tuple:
     """(per filter, the GateFiles of the gates on it; the report lines). A gate reads the
     closure of each go command it runs, the RULES of the files those compile, and its declared
     reads; a go command this check does not reduce counts as reading every Go file of the
@@ -3414,7 +3507,8 @@ def gate_read_sets(session: Session, data, files: list, expander: Expander, unre
     the report names. A gate on a job's own `if:` reads what each gate on one of that job's steps
     reads too: a step runs only in a run its job's filter selected, so a change only the step
     reads must start the job, which is why the test job's filter holds every harness its steps
-    test."""
+    test. A gate whose job runs a step that sources .github/scripts/ci-log-guard.sh, or that reads a
+    script that sources it, reads the guard too (reads_log_guard; `guarded_owners` names those jobs)."""
     gate_files: dict = defaultdict(GateFiles)
     own: dict = defaultdict(set)  # id of a gate -> the files it reads
     report = []
@@ -3441,6 +3535,8 @@ def gate_read_sets(session: Session, data, files: list, expander: Expander, unre
                 fallback = module_trees_and_go_files(files)
             reads.update(fallback)
             widened.append(f"{command}, which this check does not reduce ({why_not})")
+        if reads_log_guard(g, reads, guarded_owners):
+            reads.add(LOG_GUARD)
         own[id(g)] = reads
         where = g.job + (f' step "{g.step}"' if g.step else "")
         gate_files[g.filter].reads.update(reads)
@@ -3732,7 +3828,14 @@ def check() -> int:
         if mode == "generate":
             import ci_ts_listing
             listing = beside.submit(ci_ts_listing.listed_files, {g.filter for g in data.GATES}, listed_problems)
-        gate_files, report = gate_read_sets(session, data, files, expander, unreduced)
+        # The ci.yaml jobs that run a step sourcing ci-log-guard.sh, itself (unguard_steps noted each
+        # while workflow_documents loaded their files) or through a local composite action that
+        # does: each one's gates read the guard.
+        guarded_owners = frozenset(
+            own for own, path, name, _, job in step_holders(documents)
+            if (path, name) in GUARDED_JOBS
+            or any(isinstance(step, dict) and guarded_action(step.get("uses")) for step in job.get("steps") or []))
+        gate_files, report = gate_read_sets(session, data, files, expander, unreduced, guarded_owners)
         problems += session.problems
         session.problems = []
         # A branch made before the filters were computed keeps the committed filters file when it

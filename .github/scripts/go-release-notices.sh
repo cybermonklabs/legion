@@ -37,17 +37,22 @@ notices=${1:-}
 mkdir -p "$notices"
 notices=$(cd "$notices" && pwd)
 cd "$(dirname "$0")/../.."
+# The cross-builds below print go's own lines, a module proxy's reply among them, inside a
+# ci-log-guard.sh block, where they cannot become workflow commands.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. .github/scripts/ci-log-guard.sh
 
 # One subshell per release target, rather than one around each command: the GOOS, GOARCH and
 # CGO_ENABLED it exports, and the cd below, end with it, so no target's build reaches the next.
 # Those three are exported rather than written in front of the command, and each go command names
 # its module with `go -C` rather than being run from inside it, so that every one of these lines
-# is a bare go command .github/scripts/check-ci-filters.sh can read: it reduces neither a line
-# that sets a name choosing the files go compiles nor one wrapped in a cd-ing subshell, and an
-# unreduced line would count as reading every Go file of the repository. The Run pinning each line
-# in .github/scripts/ci_job_reads.py declares that target's three names instead. The notices
-# script is the one command still run from inside its module: it reads the module of the directory
-# it runs in (`go list -m`, and go-licenses over the packages it is given), and takes no -C.
+# is a bare go command .github/scripts/check-ci-filters.sh can read (it reads a line through
+# ci-log-guard.sh's wrapper): it reduces neither a line that sets a name choosing the files go
+# compiles nor one wrapped in a cd-ing subshell, and an unreduced line would count as reading every
+# Go file of the repository. The Run pinning each line in .github/scripts/ci_job_reads.py declares
+# that target's three names instead. The notices script is the one command still run from inside
+# its module: it reads the module of the directory it runs in (`go list -m`, and go-licenses over
+# the packages it is given), and takes no -C.
 for target in $(jq -r '.legion[]' .github/go-release-targets.json); do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
@@ -76,7 +81,7 @@ done
 for target in $(jq -r '.["agent-secrets-client"][]' .github/agent-secrets-client-targets.json); do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
-    go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/cipher
+    ci_log_guard go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/cipher
     cd packages/envoy
     ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/cipher
   )
@@ -84,7 +89,7 @@ done
 for target in $(jq -r '.["envoy-infra"][]' .github/envoy-infra-targets.json); do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
-    go -C packages/envoy/infra build -buildvcs=false -o /dev/null ./cmd/...
+    ci_log_guard go -C packages/envoy/infra build -buildvcs=false -o /dev/null ./cmd/...
     cd packages/envoy/infra
     ../../../scripts/go-third-party-notices.sh "$notices/pulumi-resource-envoy-infra-${target%/*}-${target#*/}" ./cmd/pulumi-resource-envoy-infra
     ../../../scripts/go-third-party-notices.sh "$notices/envoy-infra-${target%/*}-${target#*/}" ./cmd/envoy-infra

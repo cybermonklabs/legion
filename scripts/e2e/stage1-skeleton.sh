@@ -85,6 +85,10 @@ stop_daemon() {
 }
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# A module proxy's or a registry's reply that go build or docker run copies to the log goes there
+# inside a ci-log-guard.sh block, where it cannot become a workflow command.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/.github/scripts/ci-log-guard.sh"
 trap cleanup EXIT
 mkdir -p "$work/state" "$work/xdg" "$work/home"
 # The daemon runs from here, so mise resolves its tmux from here too, whatever directory the run
@@ -181,7 +185,7 @@ project="E2E$$$(date +%s)"        # daemon_boot counts per project; a fresh key 
 # names that port, and each start serves on a copy of the socket (LEGION_LISTEN_FD), so the restart
 # serves the same port and nothing else can take it in between.
 keep_port daemon_keeper port
-go build -o "$work/legion" ./cmd/legion
+ci_log_guard go build -o "$work/legion" ./cmd/legion
 bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   /'
 
 # CI passes its service's DSN; the devbox brings its own container on an ephemeral port.
@@ -189,7 +193,7 @@ if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
   # version CI's service and Cloud SQL run
-  docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  ci_log_guard_stderr docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion \
     -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
   # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the

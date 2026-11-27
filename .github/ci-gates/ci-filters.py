@@ -3,6 +3,7 @@
 # the runs above expand, reads every workflow of .github/workflows, and is its own script,
 # engine, data, rules and path model. The job runs the workflow-file size check beside it,
 # which reads that same directory and is a script of its own.
+LOG_GUARD_CHECK_STEP = "Check every network command a step runs is guarded or allowed with its reason"
 GATE = gate("ci_filters", "ci-filters", runs=[
     run(DAEMON, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the daemon module", mode="vet", step=CHECK_STEP,
         text=".github/scripts/check-ci-filters.sh"),
@@ -57,6 +58,15 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     ("**/*_test.go", "check-ci-filters.sh reads the //ci: lines of the tests and computes each filter's `!` "
                      "patterns out of the repository's Go test files, so one added, deleted or edited changes "
                      "this check's own answer"),
+    # The log guard's check reads every workflow, every composite action and every shell script a
+    # step of them runs, and holds what it finds to its allow list, so a change to any of those,
+    # or to the check and its scanner, must start this job, which runs it on a pull request.
+    (".github/log-guard-allow.tsv", at("ci-filters", LOG_GUARD_CHECK_STEP)),
+    (".github/log-guard-unread.tsv", at("ci-filters", LOG_GUARD_CHECK_STEP)),
+    (".github/scripts/check-log-guard.sh", at("ci-filters", LOG_GUARD_CHECK_STEP)),
+    (".github/scripts/shell_commands.py", f"{at('ci-filters', LOG_GUARD_CHECK_STEP)}: the scanner the check "
+                                          "imports"),
+    ("**/*.sh", f"{at('ci-filters', LOG_GUARD_CHECK_STEP)} reads each shell script a step runs"),
 ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
             for name, path in PUSH_WORKFLOWS.items()))
   + setup_go("ci-filters", f"{DAEMON}/go.mod"))

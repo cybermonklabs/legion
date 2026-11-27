@@ -25,7 +25,13 @@ kilobytes, so it runs whatever ci.yaml weighs, and it reports the reason in word
 It is not a required check and nothing adds it to a ruleset: it reports, and a person reads the
 failure and acts on it. The verdict main requires is still `ci-ok`.
 
-A pull request touching .github/workflows runs it, draft or not. The trigger names no `types:`,
+A pull request touching .github/workflows runs it, draft or not, and so does one touching what
+.github/scripts/check-log-guard.sh, its second step, reads: the composite actions, the allow list
+.github/log-guard-allow.tsv, the list of script names it need not read
+.github/log-guard-unread.tsv, the check and its scanner .github/scripts/shell_commands.py, and any
+`*.sh` file, since the check reads each shell script a step runs. The ci-filters job of ci.yaml
+runs the same check on the same changes (its gate, .github/ci-gates/ci-filters.py, reads them all).
+The trigger names no `types:`,
 so it is GitHub's default of `opened, synchronize, reopened`, which a draft's own pushes arrive
 as; and no job or step here reads `github.event.pull_request.draft`, because a draft is exactly
 where an oversized ci.yaml is written, and a draft whose CI has otherwise gone quiet is the head
@@ -51,6 +57,15 @@ No scope at all. The checkout needs no `contents: read`, because this repository
 and GitHub serves a public repository's git data to any valid token, as
 .github/workflows/main-bypass-check.yaml records of its own checkout; the check reads files
 of the tree and writes nothing, here or anywhere.
+
+## What the sparse checkout holds
+
+`.github` and every `*.sh` file of the tree, as non-cone patterns (`/.github/` and `*.sh`, with
+`sparse-checkout-cone-mode: false`; cone mode takes directories alone). check-workflow-files.sh
+reads `.github/workflows` only, but .github/scripts/check-log-guard.sh reads each shell script a
+step runs, under `packages/` and `scripts/` as under `.github/scripts`, and a row of
+.github/log-guard-allow.tsv that names a script this checkout lacked would read as a row no
+command matches. Every script that check reads ends in `.sh`; its `scripts` mode lists them.
 
 ## What the check step measures, and with which copy of the check
 

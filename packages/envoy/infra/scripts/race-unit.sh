@@ -37,11 +37,15 @@ compile) flags=(-c -o /dev/null) ;;
 	;;
 esac
 
+# The go command's output goes to the log inside a ci-log-guard.sh block, so a module proxy's reply
+# copied into it cannot become a workflow command.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/.github/scripts/ci-log-guard.sh"
 cd "$(dirname "$0")/.."
-listed=$(go list ./...)
+listed=$(ci_log_guard_stderr go list ./...)
 mapfile -t packages < <(grep -Ev "$EXCLUDE" <<<"$listed" || true)
 if [ "${#packages[@]}" -eq 0 ]; then
 	echo "race-unit.sh: go list ./... kept no package once EXCLUDE ($EXCLUDE) was taken out" >&2
 	exit 1
 fi
-exec go test "${flags[@]}" -race "${packages[@]}"
+ci_log_guard go test "${flags[@]}" -race "${packages[@]}"

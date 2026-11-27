@@ -62,7 +62,9 @@ jobs:
       # With the e2e tag, vet also compiles the live proofs behind it (the Stage 4a harness,
       # sandbox/live*_test.go), which run on the devbox against a real cluster.
       - name: Vet the Go daemon, its e2e-tagged live proofs included
-        run: go vet -tags e2e ./...
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go vet -tags e2e ./...
         working-directory: packages/daemon
 
       # The same vet as macOS builds the module: `legion` ships for darwin
@@ -74,10 +76,11 @@ jobs:
       # imports, tells amd64 from arm64 on darwin.
       - name: Vet the Go daemon for darwin, its e2e-tagged live proofs included
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
           while IFS= read -r flag; do
             echo "Vetting for darwin with $flag"
-            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+            GOOS=darwin GOARCH=arm64 ci_log_guard go vet "$flag" ./...
           done <<< "$flags"
         working-directory: packages/daemon
 

@@ -112,7 +112,9 @@ jobs:
       # daemon-go race step's `-skip` from PLUGIN_PACK_TESTS and holds both steps to what it
       # builds.
       - name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
-        run: go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
         working-directory: packages/daemon
 
       - name: Report ci-ok when this job decides a merge-group run

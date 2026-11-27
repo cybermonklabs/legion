@@ -174,11 +174,7 @@ jobs:
       - name: Resolve plugin versions for the smoke test and worker image
         id: plugin_versions
         run: .github/scripts/release-plugin-versions.sh
-      # The stamp of this commit's contract entries in main's merge order, which the build links in
-      # (.github/scripts/release-build-legion.sh says why it refuses to build without one). The
-      # checkout's fetch-depth 0 holds this commit's history and main's: it fetches every branch
-      # into refs/remotes/origin, so refs/remotes/origin/main is there, the main the script reads.
-      # As the tags are, it is read before setup-go, so no dependency code has run yet.
+      # why: .github/ci-notes/release.md#why-legion_build-reads-the-contract-order-before-setup-go
       - name: Read the contract entries' merge order
         id: contract_order
         if: steps.version.outputs.skip != 'true'
@@ -214,13 +210,7 @@ jobs:
           LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: .github/scripts/release-build-legion.sh
 
-      # `legion version` names the release, the commit and the linked plugin pair. Then `legion
-      # version --contracts` is held line by line to the stamp the build linked: `contract` L plus
-      # the stamp's count of ids, L the greatest number of
-      # packages/contracts/fixtures/daemon-api/released-contracts.json; `order stamped`, for the
-      # stamp `v1:` of no entry too; and each id of the stamp in its order, the k-th numbered L + k
-      # and followed by its slug. An archive linked with no stamp prints `order id`, so it fails
-      # here even where its ids fall in the stamp's order.
+      # why: .github/ci-notes/release.md#what-legion_builds-smoke-test-holds
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
@@ -251,10 +241,7 @@ jobs:
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
 
-      # This release's own changelog entries, as in pi_envoy_build and for the reasons
-      # .github/ci-notes/release.md#what-the-envoy-plugins-changelog-step-renders gives: the
-      # fragments under packages/daemon/.changes/unreleased/ that this release's own commits first
-      # added, and the `notes` line fold-notes prints says whether there were any.
+      # why: .github/ci-notes/release.md#what-legion_builds-changelog-step-renders
       - name: Render this release's changelog entries
         id: notes
         if: steps.version.outputs.skip != 'true'
@@ -356,11 +343,7 @@ jobs:
       - name: Point extensions at the packed bundle
         if: steps.version.outputs.skip != 'true'
         run: |
-          # The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts
-          # (dev sessions) load the source without a build. The published tarball ships only the
-          # self-contained dist bundle, and scripts/pi-plugin-prepack.sh refuses to pack any other
-          # omp.extensions. Nothing restores the manifest: this job's tree is discarded, and no job
-          # commits a version, so the committed manifest keeps whatever it last held.
+          # why: .github/ci-notes/release.md#why-pi_envoy_build-points-its-manifest-at-the-packed-bundle
           jq '.omp.extensions = ["dist/envoy.js"]' \
             packages/pi-envoy/package.json > tmp.json \
             && mv tmp.json packages/pi-envoy/package.json
@@ -377,11 +360,7 @@ jobs:
       - name: Check the packed tarball names the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # Read repository.url back out of the tarball the publish job will hand npm, not out of
-          # the working tree the step above wrote: npm refuses a publish with provenance whose url
-          # is not the publishing repository's, so this is the check that catches a regression at
-          # the moment it would refuse the publish, here in the build job rather than in the job
-          # holding the credentials.
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           tar -xzOf packages/pi-envoy/*.tgz package/package.json \
             | jq -e --arg u "$url" '.repository.url == $u'
@@ -468,9 +447,7 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         run: bun install --frozen-lockfile
 
-      # The committed manifest declares no contract number: the pack writes the one of this tree
-      # (scripts/daemon-contract.sh), which the prepack's bundle inlines with the rest of the
-      # manifest, as it writes the version.
+      # why: .github/ci-notes/release.md#why-pi_legion_build-writes-the-contract-number
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
         env:
@@ -488,12 +465,7 @@ jobs:
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # As in pi_envoy_build, and for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
-          # gives: npm refuses a publish with
-          # provenance whose repository.url is not the publishing repository's, case for case, and
-          # the publish job packs nothing of its own. The committed manifest keeps today's
-          # repository; this writes whichever one the job runs in, and this job's tree is
-          # discarded.
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           jq --arg u "$url" '.repository.url = $u' \
             packages/pi-legion/package.json > tmp.json \
@@ -507,8 +479,7 @@ jobs:
       - name: Check the packed tarball names the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # pi_envoy_build's check, over this package's tarball: the packed manifest, which is
-          # what npm verifies the provenance against, must name the publishing repository.
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           tar -xzOf packages/pi-legion/*.tgz package/package.json \
             | jq -e --arg u "$url" '.repository.url == $u'
@@ -758,10 +729,20 @@ jobs:
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
           STEM: ${{ steps.pi_envoy_handed.outputs.stem }}
         run: |
+          # why: .github/ci-notes/release.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           if npm view "$(jq -r .name package.json)@$VERSION" version >/dev/null 2>&1; then
             echo "npm already has $VERSION; skipping publish"
           else
-            npm publish "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz" --access public --provenance
+            ci_log_guard_stderr npm publish "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz" --access public --provenance >&2
           fi
         working-directory: packages/pi-envoy
 
@@ -845,10 +826,20 @@ jobs:
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
           STEM: ${{ steps.pi_legion_handed.outputs.stem }}
         run: |
+          # why: .github/ci-notes/release.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           if npm view "$(jq -r .name package.json)@$VERSION" version >/dev/null 2>&1; then
             echo "npm already has $VERSION; skipping publish"
           else
-            npm publish "$RUNNER_TEMP/pi-legion-tarball/$STEM.tgz" --access public --provenance
+            ci_log_guard_stderr npm publish "$RUNNER_TEMP/pi-legion-tarball/$STEM.tgz" --access public --provenance >&2
           fi
         working-directory: packages/pi-legion
 
@@ -931,10 +922,20 @@ jobs:
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
           STEM: ${{ steps.claude_envoy_handed.outputs.stem }}
         run: |
+          # why: .github/ci-notes/release.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           if npm view "$(jq -r .name package.json)@$VERSION" version >/dev/null 2>&1; then
             echo "npm already has $VERSION; skipping publish"
           else
-            npm publish "$RUNNER_TEMP/claude-envoy-tarball/$STEM.tgz" --access public --provenance
+            ci_log_guard_stderr npm publish "$RUNNER_TEMP/claude-envoy-tarball/$STEM.tgz" --access public --provenance >&2
           fi
         working-directory: packages/claude-envoy
 
@@ -1266,13 +1267,28 @@ jobs:
       # why: .github/ci-notes/release.md#why-the-version-tag-is-a-carbon-copy-of-the-manifest-the-build-pushed
       - name: Tag the worker image with the legion version
         run: |
+          # why: .github/ci-notes/release.md#the-inline-stop-commands-block
+          ci_log_guard_stderr() {
+            local t s=0
+            t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+            [ "${#t}" -eq 32 ] || return 1
+            printf '::stop-commands::%s\n' "$t" >&2
+            "$@" || s=$?
+            printf '\n::%s::\n' "$t" >&2
+            return "$s"
+          }
           test -n "$IMAGE"
           test -n "$DIGEST"
           test -n "$VERSION"
-          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
-          tagged=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$IMAGE:$VERSION")
+          ci_log_guard_stderr docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST" >&2
+          tagged=$(ci_log_guard_stderr docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$IMAGE:$VERSION")
+          # The registry's answer is printed only once it is a digest's form.
+          if ! [[ $tagged =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::$IMAGE:$VERSION names no sha256 digest in the registry's answer" >&2
+            exit 1
+          fi
           if [ "$tagged" != "$DIGEST" ]; then
-            echo "::error::$IMAGE:$VERSION names $tagged, not $DIGEST, the digest worker_image pushed"
+            echo "::error::$IMAGE:$VERSION names $tagged, not $DIGEST, the digest worker_image pushed" >&2
             exit 1
           fi
           echo "$IMAGE:$VERSION names $DIGEST"

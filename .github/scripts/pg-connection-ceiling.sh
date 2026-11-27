@@ -24,7 +24,11 @@ set -euo pipefail
 container=${1:?the service container id}
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-server=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)
+# go run's own output (a module proxy's reply among it) goes to the log inside a block, and only
+# its standard output, the number, comes back.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-log-guard.sh"
+server=$(cd -- "$repo_root/packages/envoy" && ci_log_guard_stderr go run ./internal/dispatch/store/cmd/connections)
 reserved=$(docker exec "$container" psql -U postgres -Atc "select current_setting('superuser_reserved_connections')")
 want=$((server + reserved))
 allowed=$(docker exec "$container" psql -U postgres -Atc "show max_connections")

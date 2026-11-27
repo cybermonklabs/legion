@@ -126,15 +126,18 @@ jobs:
       # The image's notices (packages/envoy/docker/Dockerfile): the build fails when a license cannot
       # be determined, and the listing shows the image ships both files.
       - name: List the image's third-party notices
-        run: >-
-          docker run --rm --entrypoint ls "$ENVOY_SMOKE_IMAGE" -l
-          /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
+        run: |
+          . .github/scripts/ci-log-guard.sh
+          ci_log_guard docker run --rm --entrypoint ls "$ENVOY_SMOKE_IMAGE" -l \
+            /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
       # 5m bounds only what the test does: pull NATS, start both containers behind the test's
       # own 60 s health wait, and assert. This job has measured 1.82 s, 3.16 s and 1.88 s (the
       # last in run 36508580490), and 2.2–20.7 s across four runs on a devbox at load average
       # 80, so the bound is deliberate headroom, not a build budget.
       - name: Container smoke test (testcontainers)
-        run: go test -tags smoke -v -timeout 5m ./internal/smoke/
+        run: |
+          . ../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -tags smoke -v -timeout 5m ./internal/smoke/
         working-directory: packages/envoy
       # The envoy-infra plugin's live tests (packages/envoy/infra/host/live_test.go) apply Pulumi
       # YAML programs with the pinned Pulumi CLI (.github/actions/install-pulumi) against this
@@ -169,7 +172,9 @@ jobs:
       - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
       - name: Live tests of envoy-infra's host:Listener
-        run: go test -tags pulumilive -v -timeout 15m ./host/
+        run: |
+          . ../../../.github/scripts/ci-log-guard.sh
+          ci_log_guard go test -tags pulumilive -v -timeout 15m ./host/
         working-directory: packages/envoy/infra
         env:
           ENVOY_INFRA_DOCKER_PLUGIN: ${{ steps.docker-plugin.outputs.tarball }}
@@ -188,8 +193,9 @@ jobs:
       # the docker provider's tarball above does.
       - name: The envoy-infra plugin's schema carries the version and the download URL it was built with
         run: |
+          . ../../../.github/scripts/ci-log-guard.sh
           url=$(GITHUB_REPOSITORY=cybermonklabs/legion ../../../.github/scripts/repo-paths.sh plugin_download_url)
-          go build -ldflags "-X main.version=1.2.3 -X 'github.com/sjawhar/envoy/infra/provider.downloadURL=$url'" -o "$RUNNER_TEMP/pr" ./cmd/pulumi-resource-envoy-infra
+          ci_log_guard go build -ldflags "-X main.version=1.2.3 -X 'github.com/sjawhar/envoy/infra/provider.downloadURL=$url'" -o "$RUNNER_TEMP/pr" ./cmd/pulumi-resource-envoy-infra
           # shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion
           pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
         working-directory: packages/envoy/infra

@@ -3969,6 +3969,50 @@ check "names the file, the step, the gate and both lines" \
 check "and still reads the step as its runs, not as everything" \
   "$(is "$(contains "$out" '::error file=mod/other/other.go::')" false)"
 
+# .github/scripts/ci-log-guard.sh's wrapper changes nothing a go command compiles, so a guarded step
+# reads as the commands behind it: its pin holds, its runs' closure is what it reads, and the file
+# it sources is a read of its job, so the computed filter takes it (reads_log_guard).
+echo "case: a step that sources ci-log-guard.sh and runs its go command under the wrapper reads as its pin"
+root=$(fixture exact-step-guarded)
+exact_step_table "$root"
+ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
+run_generate "$root"
+check "control: without the guard in the step the filter takes no ci-log-guard.sh" \
+  "$(is "$(contains "$(filter_of app)" '^\.github/scripts/ci-log-guard\.sh$')" false)"
+replace "$root/.github/workflows/ci.yaml" $'        run: |\n          for pkg' \
+  $'        run: |\n          . ../.github/scripts/ci-log-guard.sh\n          for pkg'
+replace "$root/.github/workflows/ci.yaml" 'go test -count=1 "$pkg"' 'ci_log_guard go test -count=1 "$pkg"'
+run_check "$root"
+check "passes: the step is on its pin" "$(is "$status" 0)"
+check "and counts the runs' closure and the guard" "$(contains "$out" '^report: app: 9 files (filter app)$')"
+run_generate "$root"
+check "the computed filter takes the guard the step sources" \
+  "$(contains "$(filter_of app)" '^\.github/scripts/ci-log-guard\.sh$')"
+replace "$root/.github/workflows/ci.yaml" 'ci_log_guard go test -count=1 "$pkg"' 'ci_log_guard go test -count=2 "$pkg"'
+run_check "$root"
+check "still holds the command behind the wrapper to the pin" \
+  "$(contains "$out" 'its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`')"
+
+# A job can run the guard through a local composite action a step of which sources it, as the jobs
+# that pull their test images through .github/actions/pull-test-images do: that job's gate reads
+# the guard too (guarded_action).
+echo "case: a job that runs a local composite action sourcing ci-log-guard.sh reads the guard"
+root=$(fixture guard-action)
+ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
+mkdir -p "$root/.github/actions/pull"
+printf 'name: Pull\ndescription: Pull.\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: |\n        echo pulling\n' \
+  >"$root/.github/actions/pull/action.yml"
+replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+  $'      - name: Pull\n        uses: ./.github/actions/pull\n      - name: Test the app'
+run_generate "$root"
+check "control: computed, with no guard in the action, the filter takes no ci-log-guard.sh" \
+  "$(is "$(contains "$(head -1 <<<"$generated")" '^# FAIL-OPEN: ')$(contains "$(filter_of app)" '^\.github/scripts/ci-log-guard\.sh$')" falsefalse)"
+replace "$root/.github/actions/pull/action.yml" "        echo pulling" \
+  $'        . .github/scripts/ci-log-guard.sh\n        ci_log_guard echo pulling'
+run_generate "$root"
+check "with the guard sourced in the action, the computed filter takes it" \
+  "$(is "$(contains "$(head -1 <<<"$generated")" '^# FAIL-OPEN: ')$(contains "$(filter_of app)" '^\.github/scripts/ci-log-guard\.sh$')" falsetrue)"
+
 echo "case: a step pinned whole that runs in another directory is refused, naming both"
 root=$(fixture exact-step-moved)
 exact_step_table "$root"
@@ -5087,6 +5131,8 @@ jobs = yaml.safe_load(open(sys.argv[1]))["jobs"].values()
 step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith("Vet the Go daemon for darwin"))
 open(sys.argv[2], "w").write(step["run"])
 PY
+# The step sources ci-log-guard.sh from the module's ../../.github/scripts, as packages/daemon's does.
+ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
 status=0
 loop=$(cd "$root/deep/module" && GOWORK=off bash -e "$root/step.sh" 2>&1) || status=$?
 check "fails" "$(is "$status" 1)"

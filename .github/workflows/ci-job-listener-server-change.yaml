@@ -57,8 +57,9 @@ jobs:
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Server-change soak of the listener
         run: |
+          . ../../.github/scripts/ci-log-guard.sh
           pattern=$(../../.github/scripts/go-tagged-tests.sh serverchange ./cmd/listener)
-          go test -tags serverchange -count=1 -timeout 15m -v -run "$pattern" ./cmd/listener
+          ci_log_guard go test -tags serverchange -count=1 -timeout 15m -v -run "$pattern" ./cmd/listener
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

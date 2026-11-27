@@ -2428,7 +2428,11 @@ echo "Case: release-envoy-listener.yaml's 'Determine latest' reads only buildx's
 # stand-in docker.
 listener_workflow="$script_dir/../workflows/release-envoy-listener.yaml"
 latest_step=$(workflow="$listener_workflow" workflow_step_run release_publish "Determine latest")
-image_digest_fn=$(awk '/^image_digest\(\) \{$/ { on = 1 } on { print } on && /^\}$/ { exit }' <<<"$latest_step")
+# The step runs image_digest after its inline ci_log_guard_stderr, which image_digest prints a
+# refusal through, so the copy carries that definition first, as the step does.
+guard_fn=$(awk '/^ci_log_guard_stderr\(\) \{$/ { on = 1 } on { print } on && /^\}$/ { exit }' <<<"$latest_step")
+check "the step defines its inline ci_log_guard_stderr" "$(contains "$guard_fn" '^ci_log_guard_stderr() {$')"
+image_digest_fn=$guard_fn$'\n'$(awk '/^image_digest\(\) \{$/ { on = 1 } on { print } on && /^\}$/ { exit }' <<<"$latest_step")
 check "the step defines image_digest" "$(contains "$image_digest_fn" '^image_digest() {$')"
 mkdir -p "$work/buildx-bin"
 cat > "$work/buildx-bin/docker" <<'SH'
