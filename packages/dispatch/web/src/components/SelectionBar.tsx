@@ -149,17 +149,18 @@ export interface MarkedList {
  * whatever the page draws over the list (`markAtPlace`, `firstMarkShown`, which read the sticky
  * head the hand-off is given); else the list's own stop, with no scroll, which is given
  * `tabindex="-1"` where it has none. The mark takes the focus with no scroll of the engine's own,
- * which centres a control it scrolls to, and is shown whole at its nearest edge below that head,
- * the least scroll (`landNearest`). Every landing is made once the foot's own pass has given the
- * list the room the bar's foot had back (`hooks/useFootInset.ts`'s `afterFootPass`), since that
- * pass moves the box the reader sees the rows through. Before fitting the list (`MarkedList`'s
- * `fit`), the hand-off runs `footPassNow` to account for floats whose boxes changed before their
- * observers ran. Where the list holds the row marked last and its window has not drawn it,
- * a list with `drawRow` draws and lands on the row itself after the fit. The hand-off owes that
- * landing and holds what takes it back. Without `drawRow`, `land` answers false and leaves the
- * landing to the list's own stop. Right after a landing's scroll, the hand-off runs `footPassNow`
- * again, fits the box and checks the landing against that box in the same task. A scroll off the
- * box's end can release kept end room before the first painted frame.
+ * which centres a control it scrolls to, and is shown whole at its nearest edge below that head
+ * and inside a box's own scroll padding, the least scroll (`landNearest`). Every landing is made
+ * once the foot's own pass has given the list the room the bar's foot had back
+ * (`hooks/useFootInset.ts`'s `afterFootPass`), since that pass moves the box the reader sees the
+ * rows through. Before fitting the list (`MarkedList`'s `fit`), the hand-off runs `footPassNow`
+ * to account for floats whose boxes changed before their observers ran. Where the list holds the
+ * row marked last and its window has not drawn it, a list with `drawRow` draws and lands on the
+ * row itself after the fit. The hand-off owes that landing and holds what takes it back. Without
+ * `drawRow`, `land` answers false and leaves the landing to the list's own stop. Right after a
+ * landing's scroll, the hand-off runs `footPassNow` again, fits the box and checks the landing
+ * against that box in the same task. A scroll off the box's end can release kept end room before
+ * the first painted frame.
  *
  * **Cancelled.** The reader's own press, key or wheel (`READER_ACTS`) ends what is owed when
  * it leaves focus on a control that stays or puts focus on the body. A press outside every row
