@@ -9339,6 +9339,7 @@ The release does five things, in this order:
    A claim held by the daemon's own suspension keeps it, since that source ranks above `project_release`, and the next boot does not start that claim.
    A pod no read through a role reached, since no role process ran there at any read, is read through its launcher now, once its claims are stopped (step 2), and that read is its last.
    Then it deletes the pod's Sandbox, with the pod and its disk.
+   A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is a volume claim the Sandbox owns, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
 
    - Under the pod's launch turn, which the delete holds, and before the delete writes anything, it settles each standing record of a replacement of the pod that an update round or a launch wrote before acting (`pod_replacements`, [The disk dies with its pod](#the-disk-dies-with-its-pod)), reading each act from the Kubernetes API as the next boot's sweep would.
      A record whose act was not made, the pod still running as the issue's own, is forgotten, and the daemon logs one line naming the issue, the pod and the record's operation: such a record is one the release's mark left standing, a launch that read the round's pod as replaced just before the mark and was then refused, or a round's replacement whose call failed, one that ran out waiting for the pod's launch turn among them, which no sweep reads while the mark holds.
@@ -9347,15 +9348,14 @@ The release does five things, in this order:
      A record the daemon cannot say was made, or whose read failed, leaves the pod, with a reason that names the record's operation and what was uncertain or failed, and the release forgets no record of the pod then, since it reads every record of the pod before it forgets any.
      A forget that fails leaves the pod too, with a reason that names that record's operation and the error, and each record the release forgot before it stays forgotten.
      When the daemon cannot read the records from its database, the pod is left with a reason that says the records could not be read, with the error, and names no record.
-     A kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)) is a volume claim the Sandbox owns, so it goes with the Sandbox too, as at a suspension of the issue (`SuspendIssue`).
 
-   - Then it ends the pod's hold streaks; when it cannot end them, it logs the error and goes on, and the streaks stand until the idle pass reads the issue after the next boot.
-     A pod it asked nothing is deleted as soon as its last read and its stop are done.
-     A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
-     The daemon pushes nothing for a role.
-     The release opens no pod update round, replaces no pod, and takes each claim it stops out of any round it was in.
-     A pod update round still open over the pod passes over a claim the release stopped, as it passes over every claim the daemon suspended: it neither asks that claim nor waits for it, since only the next boot starts it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
-     A claim of the project whose issue has no Sandbox, one whose role is starting where no pod stands yet, is stopped at the same time as the pods and waited for in the same way, and its line says so when it was not stored suspended in that time.
+   Then it ends the pod's hold streaks; when it cannot end them, it logs the error and goes on, and the streaks stand until the idle pass reads the issue after the next boot.
+   A pod it asked nothing is deleted as soon as its last read and its stop are done.
+   A turn the bound cuts can write between the last read and the stop, and that write goes with the pod with no line that names it.
+   The daemon pushes nothing for a role.
+   The release opens no pod update round, replaces no pod, and takes each claim it stops out of any round it was in.
+   A pod update round still open over the pod passes over a claim the release stopped, as it passes over every claim the daemon suspended: it neither asks that claim nor waits for it, since only the next boot starts it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+   A claim of the project whose issue has no Sandbox, one whose role is starting where no pod stands yet, is stopped at the same time as the pods and waited for in the same way, and its line says so when it was not stored suspended in that time.
 
 5. Once every issue pod ended, it lists the project's Sandboxes again, from the Kubernetes API rather than the daemon's watch of it, since a Sandbox whose create the daemon sent just before the mark can land after the first list.
    Each Sandbox that the first list did not hold gets a line: an issue's pod is taken as in steps 2 to 4, from its claims as they stand then, and every other Sandbox goes with the rest of this step.

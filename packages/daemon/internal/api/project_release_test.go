@@ -254,10 +254,8 @@ func TestProjectReleaseRefusesTheControllersResumeRetryAndPodUpdate(t *testing.T
 		t.Fatal(err)
 	}
 	calls := len(h.runtime.Calls())
-	wantReleaseRefusal(t, h.request(http.MethodPost, "/legion/v1/agents/resume",
-		ClaimRequest{GrantID: grant, Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil), "resume")
-	wantReleaseRefusal(t, h.request(http.MethodPost, "/legion/v1/agents/retry",
-		ClaimRequest{GrantID: grant, Issue: "LEGION-209", Role: string(claim.RoleTester)}, nil), "retry")
+	wantReleaseRefusal(t, askAgentAction(t, h, "/legion/v1/agents/resume", "LEGION-209", claim.RoleImplementer), "resume")
+	wantReleaseRefusal(t, askAgentAction(t, h, "/legion/v1/agents/retry", "LEGION-209", claim.RoleTester), "retry")
 	wantReleaseRefusal(t, askPodUpdate(h, grant, "LEGION-209"), "the pod update of LEGION-209")
 	after, err := h.store.Claims(h.ctx)
 	if err != nil {
