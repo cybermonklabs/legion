@@ -46,6 +46,8 @@ func (r echoesTheToken) Run(_ context.Context, command Command) (Result, error) 
 // signal ended it: the shared clone's fetch (ensureFetchConfiguration) and its clone from GitHub
 // (ensureRepoClone's `jj git clone`) scrub their stderr, as Fetch's transfers do, before an error
 // is made from it, through commandFailure for an exit and through runFailure for a signal's death.
+// The URL git names with the token as its user information prints with its authority as the mark
+// of a URL with credentials (redact.URLCredentials).
 func TestARunUnderTheProvisioningCredentialReturnsItsTokenScrubbed(t *testing.T) {
 	const token = "ghs_provisioningTokenThatMustNotLeak"
 	killed := exec.Command("sh", "-c", "kill -KILL $$").Run()
@@ -59,7 +61,7 @@ func TestARunUnderTheProvisioningCredentialReturnsItsTokenScrubbed(t *testing.T)
 				t.Fatal(err)
 			}
 			err = ensureFetchConfiguration(context.Background(), echoesTheToken{word: "fetch", token: token, end: ending.end}, t.TempDir(), source)
-			if err == nil || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "unable to access 'https://github.com/acme/widgets/'") {
+			if err == nil || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "unable to access 'https://[a URL with credentials]/acme/widgets/'") {
 				t.Errorf("ensureFetchConfiguration = %v, want the failure with its token scrubbed", err)
 			}
 		})
@@ -70,11 +72,63 @@ func TestARunUnderTheProvisioningCredentialReturnsItsTokenScrubbed(t *testing.T)
 			}
 			cloneDir := filepath.Join(t.TempDir(), "repos", "acme", "widgets")
 			err = ensureRepoClone(context.Background(), echoesTheToken{word: "clone", token: token, end: ending.end}, clock.Real(), cloneDir, "https://github.com/acme/widgets", "main", source)
-			if err == nil || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "unable to access 'https://github.com/acme/widgets/'") {
+			if err == nil || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "unable to access 'https://[a URL with credentials]/acme/widgets/'") {
 				t.Errorf("ensureRepoClone = %v, want the failure with its token scrubbed", err)
 			}
 		})
 	}
+}
+
+// TestWhatGitSaysOfAURLWithCredentialsPrintsWithTheMark: git names the URL it was given whole
+// (`fatal: unable to access 'https://x-access-token:<token>@github.com/…'`), and the URL rule
+// writes the authority of a URL that holds user information, or an "@" past its host, as the mark
+// of a URL with credentials, which holds spaces and a '[' no host holds. What an error prints of
+// git's words (shownWithoutCredentials) is those words with the mark in the authority's place and
+// the rest read by the fail-closed rule: a user name and a password (userinfo), a password holding
+// an "@" whose tail reads as the host (at-tail), a credential holding a "/" with an "@" past it
+// (past-host), and the token echoed on a second line (two-lines, which prints Go-quoted on one)
+// print as the mark, and none of them as WordsNotReadable. The mark does not make the rest of the
+// words readable: beside a URL whose user information is percent-encoded, which the URL rule
+// cannot read, they print as the rule prints that URL, its words not printed (beside-encoded), and
+// that case's twin, the URL rule's text alone, holds the user name and the password. Words that
+// name the host the rule reads in the mark's place print the mark there, which names less
+// (named-host). The cases whose words hold the probe's user and password run under
+// testInstallationToken, which shares no run with them, so only the rules can take them out;
+// two-lines runs under the token it echoes. Captures workspace.git-shown/<case>.
+func TestWhatGitSaysOfAURLWithCredentialsPrintsWithTheMark(t *testing.T) {
+	const (
+		user     = "not-a-secret-user"
+		password = "not-a-secret-password"
+		failed   = "': The requested URL returned error: 502"
+	)
+	encoded := "https://" + user + "%3A" + password + "%40example.com/x"
+	for _, c := range []struct{ name, token, stderr, want string }{
+		{"userinfo", testInstallationToken, "fatal: unable to access 'https://" + user + ":" + password + "@github.com/acme/widgets/" + failed,
+			"fatal: unable to access 'https://[a URL with credentials]/acme/widgets/" + failed},
+		{"at-tail", testInstallationToken, "fatal: unable to access 'https://" + user + ":" + password + "@tail@github.com/acme/widgets/" + failed,
+			"fatal: unable to access 'https://[a URL with credentials]/acme/widgets/" + failed},
+		{"past-host", testInstallationToken, "fatal: unable to access 'https://" + user + "/" + password + "@github.com/acme/widgets/" + failed,
+			"fatal: unable to access 'https://[a URL with credentials]" + failed},
+		{"two-lines", echoedToken, "remote: Invalid username or token " + echoedToken + ".\nfatal: Authentication failed for 'https://x-access-token:" + echoedToken + "@github.com/acme/widgets/'\n",
+			strconv.Quote("remote: Invalid username or token ***.\nfatal: Authentication failed for 'https://[a URL with credentials]/acme/widgets/'")},
+		{"beside-encoded", testInstallationToken, "fatal: unable to access 'https://x-access-token:" + testInstallationToken + "@github.com/acme/widgets/': redirect: " + encoded,
+			oauth2calltest.Said(encoded).String()},
+		{"named-host", testInstallationToken, "fatal: unable to access 'https://url-with-credentials.invalid/acme/widgets/" + failed,
+			"fatal: unable to access 'https://[a URL with credentials]/acme/widgets/" + failed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			shown := shownWithoutCredentials(c.stderr, c.token)
+			oauth2calltest.RequireNoPiece(t, "workspace.git-shown/"+c.name, shown, user, password, c.token)
+			if shown != c.want {
+				t.Errorf("shownWithoutCredentials = %q, want %q", shown, c.want)
+			}
+		})
+	}
+	t.Run("beside-encoded twin", func(t *testing.T) {
+		if said := withoutCredentials("redirect: "+encoded, testInstallationToken); !strings.Contains(said, user) || !strings.Contains(said, password) {
+			t.Fatalf("the URL rule's text is %q, want the user name and the password in it: the case proves nothing", said)
+		}
+	})
 }
 
 // redirectRefusal is git's refusal of a redirect it will not follow, as git 2.43 printed it against a
@@ -158,10 +212,11 @@ func requireNoEcho(t *testing.T, capture, text, token string) {
 // fail-closed rule too, so the error Fetch returns, the line its retry logs, and the shared
 // clone's fetch's and clone's errors hold none of them, nor a run of the token or of the Basic
 // credential, as written or percent-decoded. The controls: each error and line still names git's
-// refusal and the Location's host and path, or the words around the echo, with the token's place
-// redacted, and the one the rule cannot read prints as the rule prints that Location, its words
-// not printed. The cases whose stderr holds the probe's user and password run under
-// testInstallationToken, which shares no run with them. Captures
+// refusal and the Location's host and path - for a Location with user information, its path after
+// the mark of a URL with credentials, which the URL rule writes in place of its authority - or the
+// words around the echo, with the token's place redacted, and the one the rule cannot read prints
+// as the rule prints that Location, its words not printed. The cases whose stderr holds the probe's
+// user and password run under testInstallationToken, which shares no run with them. Captures
 // workspace.git-redirect/<run>-<case>.
 func TestARunFromGitHubPrintsNoRedirectTargetsCredentials(t *testing.T) {
 	realGit, err := exec.LookPath("git")
@@ -184,7 +239,7 @@ func TestARunFromGitHubPrintsNoRedirectTargetsCredentials(t *testing.T) {
 		shows               []string
 	}{
 		{"query", testInstallationToken, redirectRefusal("https://github.example/moved/widgets.git/info/refs?service=git-upload-pack&access_token=not-a-secret-token"), refused(moved("widgets.git"))},
-		{"userinfo", testInstallationToken, redirectRefusal("https://not-a-secret-user:not-a-secret-password@github.example/moved/widgets.git/info/refs"), refused(moved("widgets.git"))},
+		{"userinfo", testInstallationToken, redirectRefusal("https://not-a-secret-user:not-a-secret-password@github.example/moved/widgets.git/info/refs"), refused("https://[a URL with credentials]/moved/widgets.git/info/refs")},
 		{"run", echoedToken, redirectRefusal(moved(echoedToken[1:])), refused(moved("[redacted]"))},
 		{"encoded", echoedToken, redirectRefusal(moved(percentEncoded(echoedToken, every, true))), refused(moved("***"))},
 		{"encoded-in-part", echoedToken, redirectRefusal(moved(percentEncoded(echoedToken, everyOther, false))), refused(moved("***"))},

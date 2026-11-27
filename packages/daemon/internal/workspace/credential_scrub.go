@@ -37,9 +37,28 @@ func withoutCredentials(text string, tokens ...string) string {
 // refusal would print as WordsNotReadable. What that order gives up is a query value whitespace
 // parts from its URL (`?access_token= <value>`): the URL rule takes its `?…=` away, and the
 // fail-closed rule then reads the value as a word.
+//
+// The URL rule writes the authority of a URL that held user information, or an "@" past its host,
+// as redact.URLWithCredentials, which holds spaces and a '[' that no host holds, so the fail-closed
+// rule cannot read that URL as clean, and every line in which git names its credentialed URL
+// (`fatal: unable to access 'https://x-access-token:<token>@github.com/…'`) would print as
+// WordsNotReadable alone. So the rule reads each such mark as a host (markedAuthorityRead), and
+// what it answers has the mark back in that host's place: the rest of the text, the path after the
+// mark among it, is read as the rule reads any URL's, and nothing of the authority the mark took
+// out is in the text the rule reads.
 func shownWithoutCredentials(text string, tokens ...string) string {
-	return oauth2call.Field(strings.TrimSpace(withoutCredentials(text, tokens...)))
+	read := strings.ReplaceAll(strings.TrimSpace(withoutCredentials(text, tokens...)), markedAuthority, markedAuthorityRead)
+	return strings.ReplaceAll(oauth2call.Field(read), markedAuthorityRead, markedAuthority)
 }
+
+// markedAuthority is the URL rule's mark of an authority that held a credential as it stands in
+// the rule's text, after its URL's "://" (redact.URLCredentials).
+const markedAuthority = "://" + redact.URLWithCredentials
+
+// markedAuthorityRead is what the fail-closed rule reads in markedAuthority's place
+// (shownWithoutCredentials): "://" and a host under .invalid, a name that no address has (RFC
+// 6761). A text that names this host itself prints the mark in its place, which names less.
+const markedAuthorityRead = "://url-with-credentials.invalid"
 
 // scrubTokens is text with each of tokens, the tokens a run holds - the provisioning tokens git
 // presented, and in a fetch from the repository cache the cache's bearer too (Fetch) - taken out
