@@ -229,7 +229,8 @@ func (e *Engine) queueBesideDelete(ctx context.Context, tx pgx.Tx, issue record.
 			"generation", issue.Generation, "task", task, "error", err)
 		return nil
 	}
-	deletion := record.BesideBranchesDelete{Generation: issue.Generation, Task: task, Through: latest.Fix}
+	// CONTROL (fb8-ctl-3): the row carries no Through, so it names no newest fix to delete through.
+	deletion := record.BesideBranchesDelete{Generation: issue.Generation, Task: task}
 	if err := e.enqueue(ctx, tx, issue.Key, deletion); err != nil {
 		return err
 	}
