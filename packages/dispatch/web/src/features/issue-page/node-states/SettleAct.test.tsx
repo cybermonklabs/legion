@@ -795,3 +795,47 @@ test("the refusal's sentence goes at the reader's next act", async () => {
     drawn.unmount();
   }
 });
+
+// The sentence is the node's and not its act's (R4): where the tree read the page holds then
+// answers the node settled - another person settled it, which is why the press was refused - the
+// row draws no mark and no act, and the sentence stays in its place, saying why the press did
+// nothing, until the reader's next act ends it.
+test("a refusal's sentence stays once the tree read draws the node settled, until the reader's next act", async () => {
+  const user = userEvent.setup();
+  const drawn = drawRow(() =>
+    Promise.reject(new ApiError(409, { code: "NODE_NOT_PROPOSED", error: "node not proposed" }))
+  );
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.sentence()?.textContent).toBe(SETTLE_ANSWERS.not_proposed));
+    expect(drawn.row().querySelector('[data-node-mark="proposed"]')).not.toBeNull();
+
+    // The answer holds Requirement 7 by the id `PROPOSED.readId` names, settled.
+    const settledNode = treeNode("r7", "requirement", KEY, { in: "spec-md", state: "settled" });
+    act(() => {
+      drawn.client.setQueryData(
+        OUTLINE.queryKey,
+        fixtureAnswer([settledNode], [], { converted: true })
+      );
+    });
+    expect(
+      drawn.row().querySelector("[data-node-mark]"),
+      "the settled row keeps a mark"
+    ).toBeNull();
+    expect(
+      drawn.row().querySelector('[data-row-act="settle"]'),
+      "the settled row keeps Settle"
+    ).toBeNull();
+    const sentence = drawn.sentence();
+    expect(sentence?.textContent, "the sentence went with the act").toBe(
+      SETTLE_ANSWERS.not_proposed
+    );
+    expect(sentence?.getAttribute("role")).toBe("status");
+    expect(sentence?.closest("[data-node-row]"), "the sentence left the row").toBe(drawn.row());
+
+    await user.keyboard("j");
+    await waitFor(() => expect(drawn.sentence(), "the reader's act left the sentence").toBeNull());
+  } finally {
+    drawn.unmount();
+  }
+});

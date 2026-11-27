@@ -56,6 +56,7 @@ import {
   heldAnswer,
   OWED_BY,
   outlineAnswerOf,
+  outlineReads,
   owedUnless,
   type TreeAnswerWatch,
   type TreeView,
@@ -65,6 +66,7 @@ import {
   viewAnswerOf,
   viewCount,
 } from "./issue-page-t-tree";
+import { holdTreeReads } from "./issue-page-u";
 import { checkLegendCounts, verificationCheck } from "./issue-page-v";
 import {
   drawnIdOf,
@@ -111,7 +113,15 @@ import {
   treeItemsDrawn,
   UNDRAWN_KINDS,
 } from "./issue-page-x";
-import { type Browser, expect, type Locator, type Page, type Route, test } from "./test";
+import {
+  type Browser,
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  type Route,
+  test,
+} from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { asUser } from "./users";
 
@@ -1353,29 +1363,33 @@ const REFUSALS = [
 
 /**
  * Holds one writer's query-version events while keeping the real live socket and its other
- * traffic open. A successful node-state write publishes these versions after draining its
- * query updates (`writeNodeStateAs`). Install the route before the page opens the socket.
+ * traffic open, from `hold` until `release`, and tells `passed` of each such event it sends the
+ * page unheld. A successful node-state write publishes these versions after draining its query
+ * updates (`writeNodeStateAs`). Install the route before the page opens the socket.
  */
-async function holdQueryVersions(page: Page, key: string, writer: string) {
+async function holdQueryVersions(page: Page, key: string, writer: string, passed?: () => void) {
   const unsent: (() => void)[] = [];
   let holding = false;
   await page.routeWebSocket(/\/ws\/live$/u, (route) => {
     const server = route.connectToServer();
     server.onMessage((message) => {
-      if (holding && typeof message === "string") {
-        // Dispatch sends only the contract's server frames, each one JSON object.
-        const frame = JSON.parse(message) as LiveServerFrame;
-        if (
-          frame.type === "event" &&
-          frame.event.type === "artifact.version" &&
-          frame.event.issue_key === key &&
-          frame.event.actor.id === writer
-        ) {
-          unsent.push(() => route.send(message));
-          return;
-        }
+      // Dispatch sends only the contract's server frames, each one JSON object. A frame is read
+      // only where a use of it can apply: while holding, or where `passed` is told.
+      const frame =
+        (holding || passed !== undefined) && typeof message === "string"
+          ? (JSON.parse(message) as LiveServerFrame)
+          : null;
+      const version =
+        frame?.type === "event" &&
+        frame.event.type === "artifact.version" &&
+        frame.event.issue_key === key &&
+        frame.event.actor.id === writer;
+      if (version && holding) {
+        unsent.push(() => route.send(message));
+        return;
       }
       route.send(message);
+      if (version) passed?.();
     });
   });
   return {
@@ -1485,6 +1499,129 @@ test("a refused settle says why and leaves the row as it was", async ({ browser 
         message: "statement 7 keeps its mark once bob's versions reach alice's page",
       })
       .toEqual([]);
+  });
+});
+
+// The refusal's sentence is the node's and not its act's (R4, INFRA-1196's ruling on it): bob
+// settles statement 7 through the server, and his version, let through to alice's page over the
+// live socket, asks it for a read of the tree, which is held at the network, so her page still
+// draws the row proposed when she presses Settle, and the server refuses her settle. Once the held
+// read draws the row settled, with no mark and no act, the sentence still says why her press did
+// nothing, until her next act. Row 2 holds bob's versions off the socket instead.
+// SLOW(>=2s): a whole seeded issue with ten node states, two questions with the two nodes under one
+// and a lens written, the outline's load waited out, and a settle refused while the read of the
+// tree another person's settle asked for is held at the network, then let go and drawn.
+test("a refused settle still says why after the tree read draws the row settled, until the reader acts", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedGateIssue, async (page, gateIssue) => {
+    owedUnless(await treeReadGate(page, gateIssue));
+    owedUnless(await convertedGate(page, gateIssue));
+    const whole = await seedWholeIssue();
+    const key = whole.key;
+    const seeded = await seedNodeStates(whole);
+    await page.setViewportSize(DESKTOP);
+    // What the page met, each the first time it met it, in that order: the order below is read
+    // from this record, never from when a wait of the row ended. The stack's order is bob's settle
+    // through the server, his version reaching alice's page, the read of the tree it asks for,
+    // alice's press, the server's 409, and the held read let go. The record holds the two the
+    // socket and the page decide; the row's own code takes the last three in that order after them.
+    const met: string[] = [];
+    const meet = (what: string) => {
+      if (!met.includes(what)) met.push(what);
+    };
+    const tree = treeAnswerOf(page);
+    const traffic = watchApiRequests(page);
+    // Nothing calls `hold`: bob's versions go to alice's page as they come, each one met as it goes.
+    await holdQueryVersions(page, key, "bob", () => meet("bob's version"));
+    await gotoIssue(page, presetPath(key, "conversation"));
+    await heldTreeAnswer(tree, "the load", (held) =>
+      (held.nodes ?? []).some(
+        (node) => node.id === seeded.ids.statement7 && node.state === "proposed"
+      )
+    );
+    await expectLoadSettled(traffic);
+    const { row, settle } = await reachSettle(
+      page,
+      seeded.ids.statement7,
+      "statement 7",
+      "the focused row offers Settle"
+    );
+    const answer = row.locator("[data-settle-answer]");
+    const reads = await holdTreeReads(page, key);
+    // Each read of an outline of the issue the page sends from now on, Conversation's or Graph's,
+    // as `outlineReads` counts one.
+    const seeRead = (request: Request) => {
+      const url = new URL(request.url());
+      const sent = [{ method: request.method(), path: `${url.pathname}${url.search}`, route: "" }];
+      if (outlineReads(sent, key, "conversation") + outlineReads(sent, key, "graph") > 0) {
+        meet("the read of the tree");
+      }
+    };
+    page.on("request", seeRead);
+    try {
+      // Bob settles statement 7 first, through the server. His version reaches alice's page, which
+      // asks for a read of the tree; the read is held, so her page still draws the row proposed.
+      await settleNodeApi(key, seeded.addresses.statement7, "bob");
+      await expect
+        .poll(() => met, {
+          message: "bob's settle sends alice's page no version of the issue's queries",
+        })
+        .toContain("bob's version");
+      await expect
+        .poll(() => met, { message: "bob's version asks alice's page for no read of the tree" })
+        .toContain("the read of the tree");
+      expect(
+        met,
+        "alice's page asked for a read of the tree before bob's version reached it"
+      ).toEqual(["bob's version", "the read of the tree"]);
+      await expect
+        .poll(() => ownMarks(row), {
+          message: "statement 7 loses its mark while the read of the tree is held",
+        })
+        .toEqual([PROPOSED]);
+      await expect(
+        settle,
+        "Settle loses the focus while the read of the tree is held"
+      ).toBeFocused();
+
+      // Alice presses Settle on the row her page still draws proposed, and the server refuses it.
+      const refused = page.waitForResponse(SETTLE_ROUTE);
+      await page.keyboard.press("Enter");
+      expect((await refused).status(), "the server does not refuse alice's settle 409").toBe(409);
+      await expect(answer, "a settle of a node no longer proposed does not say so").toHaveText(
+        SETTLE_ANSWERS.not_proposed
+      );
+      await expect
+        .poll(() => ownMarks(row), { message: "the refused settle takes statement 7's mark" })
+        .toEqual([PROPOSED]);
+    } finally {
+      page.off("request", seeRead);
+      await reads.release();
+    }
+
+    // The held read reaches the server now, which answers it with statement 7 as bob left it.
+    await expect
+      .poll(() => ownMarks(row), {
+        message: "statement 7 keeps its mark once the held read of the tree reaches alice's page",
+      })
+      .toEqual([]);
+    await expect(row.locator(SETTLE_ACT), "statement 7, drawn settled, offers Settle").toHaveCount(
+      0
+    );
+    // The sentence stays beside the row drawn settled: it tells alice why her press did nothing.
+    await expect(
+      answer,
+      "the refusal's sentence goes once the read of the tree draws statement 7 settled"
+    ).toHaveText(SETTLE_ANSWERS.not_proposed);
+    await expect(answer, "the refusal's sentence is no status").toHaveAttribute("role", "status");
+
+    // Her next act ends it. Shift moves nothing, so the focus stays on the row, and the sentence
+    // goes for the act alone, not for the row losing the focus.
+    await page.keyboard.press("Shift");
+    await expect(answer, "the reader's next act leaves the refusal's sentence").toHaveCount(0);
+    await expect(row, "Shift moves the focus off statement 7").toBeFocused();
   });
 });
 

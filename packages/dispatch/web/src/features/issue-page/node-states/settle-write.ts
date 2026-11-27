@@ -15,10 +15,12 @@ import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { writesOf } from "../../writes/write-store";
 import { CONTROL_LABELS } from "../page-words";
 import { dropViews, outlineTargets } from "../tree-read/tree-read";
+import { abortOnReaderAct } from "../useNodeEditing";
 
 /**
- * What the page writes around a node's life: the settle of a proposed node, and the wait of its
- * act until the read that tells of its landing.
+ * What the page writes around a node's life: the settle of a proposed node, the wait of its act
+ * until the read that tells of its landing, and the refusal its sentence says until the reader's
+ * next act.
  */
 
 /** `POST /api/v1/issues/{key}/nodes/{id}/settle`: a person settles the proposed node `reference`
@@ -198,6 +200,86 @@ export function useSettleWaits(reference: string): boolean {
 }
 
 /**
+ * The refused settles of one client's page (`useSettle`), by the node's reference: each node's
+ * newest refusal, from that refusal until the reader's next act (`abortOnReaderAct`, read in the
+ * capture phase, so a handler that answers the act and stops it still ends it), which ends every
+ * refusal held, or until a new press of the node's Settle, which ends its own. Kept for the client
+ * rather than for the act that was refused, so the sentence that says why the press did nothing
+ * (`SettleAct.tsx`'s `SettleRefusal`) outlives the act: where a read draws the node settled
+ * meanwhile - another person settled it, which is what the refusal says - the act goes from the
+ * row and the sentence stays (R4). The reader's act ends it whether or not an act of the node is
+ * drawn then, so it never comes back on a row the reader focuses again.
+ */
+class SettleRefusals {
+  /** The newest refusal of each node, by the node's reference. */
+  readonly #refusals = new Map<string, Error>();
+  readonly #listeners = new Set<() => void>();
+  /** Ends every refusal at the reader's next act; undefined while none is held. */
+  #acts: AbortController | undefined;
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    // Told through TanStack Query's scheduler, as the settles that wait are (`SettleLandings`).
+    const told = notifyManager.batchCalls(listener);
+    this.#listeners.add(told);
+    return () => this.#listeners.delete(told);
+  };
+
+  /** The refusal held of the node `reference` names; undefined where none is. */
+  of(reference: string): Error | undefined {
+    return this.#refusals.get(reference);
+  }
+
+  /** Holds `refusal` of the node `reference` names, in place of an earlier one of that node,
+   *  until the reader's next act. */
+  hold(reference: string, refusal: Error): void {
+    this.#refusals.set(reference, refusal);
+    this.#acts ??= abortOnReaderAct(() => {
+      this.#acts = undefined;
+      this.#refusals.clear();
+      this.#publish();
+    });
+    this.#publish();
+  }
+
+  /** Lets go of the refusal of the node `reference` names, where one is held: a new press of its
+   *  Settle. With none left, the reader's next act is no longer listened for. */
+  drop(reference: string): void {
+    if (!this.#refusals.delete(reference)) return;
+    if (this.#refusals.size === 0) {
+      this.#acts?.abort();
+      this.#acts = undefined;
+    }
+    this.#publish();
+  }
+
+  #publish(): void {
+    for (const listener of this.#listeners) listener();
+  }
+}
+
+/** Each client's refused settles (`SettleRefusals`), as `settleLandings` keeps its settles that
+ *  wait: one for each app, as there is one client. */
+const settleRefusals = new WeakMap<QueryClient, SettleRefusals>();
+
+function refusalsOf(client: QueryClient): SettleRefusals {
+  let refusals = settleRefusals.get(client);
+  if (refusals === undefined) {
+    refusals = new SettleRefusals();
+    settleRefusals.set(client, refusals);
+  }
+  return refusals;
+}
+
+/** The refusal of the newest settle of the node `reference` names (`useSettle`), from the refusal
+ *  until the reader's next act or a new press of the node's Settle; undefined where none is held.
+ *  Read from the client's refused settles, not the act's own press, so the read that draws the
+ *  node settled and takes its act from the row leaves it (`SettleRefusals`). */
+export function useSettleRefusal(reference: string): Error | undefined {
+  const refusals = refusalsOf(useQueryClient());
+  return useSyncExternalStore(refusals.subscribe, () => refusals.of(reference));
+}
+
+/**
  * The settle of the proposed node `reference` names, under the issue `key`: one keyed write
  * per press, which the act that makes it shows refused itself (`inline`), so the shell's
  * indicator names it only while it is out, and the settles of one node go in press order. A 5xx
@@ -224,7 +306,10 @@ export function useSettleWaits(reference: string): boolean {
  * query of the page's. The write is one of the issue the tree is drawn for (`issue`), whatever
  * issue its path names, since the subscription holds for the writes of its own issue alone;
  * `subscribeTreeFreshness` says what it holds while the write is out.
- * A refusal reads nothing again.
+ * A refusal reads nothing again. It is held for the node (`SettleRefusals`), in place of any
+ * earlier one, until the reader's next act, and a new press of the node lets go of it first:
+ * `useSettleRefusal` answers it, so its sentence says why the press did nothing until that act,
+ * also after a read draws the node settled and its act goes (R4).
  *
  * The read that tells of the landing is the first read of an outline of `drawn` the cache holds
  * to begin with no write of `drawn` out; `subscribeTreeFreshness` (in `tree-read/tree-read.ts`)
@@ -236,12 +321,19 @@ export function useSettle(key: string, reference: string, landed: () => void) {
   const queryClient = useQueryClient();
   const drawn = useSettleIssue() ?? key;
   const landings = landingsOf(queryClient);
+  const refusals = refusalsOf(queryClient);
   return useKeyedWrite({
     inline: true,
     issue: drawn,
     label: () => CONTROL_LABELS.settle,
-    onError: (_refusal, _variables, watch) => landings.end(reference, watch),
-    onMutate: () => landings.watch(reference, drawn),
+    onError: (refusal, _variables, watch) => {
+      landings.end(reference, watch);
+      refusals.hold(reference, refusal);
+    },
+    onMutate: () => {
+      refusals.drop(reference);
+      return landings.watch(reference, drawn);
+    },
     onSuccess: (_answer, _variables, watch) => {
       landed();
       landings.land(reference, watch);
