@@ -346,8 +346,8 @@ func TestEachTakenTaskReadsTasksOfAtMostMostEnumeratedSteps(t *testing.T) {
 // MovesBackPairs loses no pair to its bound: the pairs are finite, and the tasks of one step more
 // than MostEnumeratedSteps make none that the tasks of at most MostEnumeratedSteps do not
 // (MostEnumeratedSteps says why), and MovesBackPairs is the pairs of those. The fault is a bound
-// one step too low: the tasks of two steps make no move back from implementing to testing,
-// reviewing or accepting, which tasks of three make, and the test then fails naming them.
+// one step too low: the tasks of at most two steps make 20 of the 44 pairs, implementing-reviewing
+// and testing-reviewing not among them, and the test then fails naming the 24 they lose.
 func TestMovesBackPairsLoseNoPairPastMostEnumeratedSteps(t *testing.T) {
 	at, past := movesBackPairsOf(MostEnumeratedSteps), movesBackPairsOf(MostEnumeratedSteps+1)
 	if !reflect.DeepEqual(at, past) {

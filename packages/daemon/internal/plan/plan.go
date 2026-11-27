@@ -289,9 +289,10 @@ var movesBackPairs = sync.OnceValue(func() []string { return movesBackPairsOf(Mo
 // holds, but no implementer at all and a step that reads a pull request with no implementer step
 // before it (stepReasons). So the task's first implementer step and the steps a move leaves and
 // reaches, at most three steps, are a task they take whose line makes that move back.
-// TestMovesBackPairsLoseNoPairPastMostEnumeratedSteps reads one step more and finds no pair more;
-// at two steps the set lacks implementing-testing, implementing-reviewing and
-// implementing-accepting, which only a task that names the implementer at two steps makes.
+// TestMovesBackPairsLoseNoPairPastMostEnumeratedSteps reads one step more and finds no pair more.
+// Two steps are too few: their tasks make 20 of the 44 pairs, since a move between two steps,
+// neither of them the first implementer step, needs that step too, as implementer reviewer
+// implementer does for implementing-reviewing.
 const MostEnumeratedSteps = 3
 
 // movesBackPairsOf is each pair of phase.MovePairs, in its order, whose to stands before its from
