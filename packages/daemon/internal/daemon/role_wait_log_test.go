@@ -162,10 +162,10 @@ func (r *roleWaitRig) endsAtItsNextRun() {
 // for a run that ended it, after the executor's own line saying how (ended, "" for none), and
 // "deleted" for a delete that took it out of the outbox.
 type waitLog struct {
-	level      slog.Level
-	attempts   int
-	waitsFor   []any
-	answer     bool
+	level    slog.Level
+	attempts int
+	waitsFor []any
+	answer   bool
 	// longAnswer overrides answer for the 30-minute line alone when the start run and the 30-minute
 	// run differ in whether they published (for example, a registered not-ready claim publishes once
 	// on its first run and then waits without publishing through the 30-minute line). nil uses answer.
@@ -313,32 +313,40 @@ func TestRoleWaitLoggedOnceAtErrorForAReadyRoleThatTakesNothing(t *testing.T) {
 			attempts: roleWaitLongAttempts, waitsFor: []any{"role", string(token)}, answer: true, end: "run",
 			ended: "outbox merge-forward message delivered"})
 	})
-	t.Run("a notice refused delivery_failed while its architect is ready", func(t *testing.T) {
-		t.Parallel()
-		clock := roleWaitClock()
-		start := clock.Now()
-		pool := isolatedOutboxPool(t)
-		records := record.NewStore()
-		noticeTree(t, pool, records, false)
-		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-		sup.deps.Clock = clock
-		architect := mustClaimToken(t, "LEGION-1", claim.RoleArchitect)
-		roleWaitClaim(t, sup, supervise.Claim{Token: architect, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleArchitect,
-			Generation: 1, State: supervise.StateWorking, Session: "ses_architect", SessionFile: t.TempDir() + "/session.jsonl",
-			LastReady: start.Add(-10 * time.Minute), LastTurnStart: start.Add(-5 * time.Minute)})
-		publisher := &outboxPublisher{err: confirmedAnswer(notify.ReasonDeliveryFailed, "ses_architect")}
-		runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion"}
-		id := queueRow(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect,
-			Reason: "review_round_cap"}, start))
-		rig := newRoleWaitRig(t, runner, pool, clock, id)
+	// A notice the listener could not forward to its architect's session (delivery_failed) and one
+	// that session did not confirm (receipt_timeout) each keep their row, which waits for its ready
+	// architect (dispatch://INFRA-4131/spec#b-r-never-given-up).
+	for _, answer := range []struct{ name, reason string }{
+		{"a notice refused delivery_failed while its architect is ready", notify.ReasonDeliveryFailed},
+		{"a notice answered receipt_timeout at each publish while its architect is ready", notify.ReasonReceiptTimeout},
+	} {
+		t.Run(answer.name, func(t *testing.T) {
+			t.Parallel()
+			clock := roleWaitClock()
+			start := clock.Now()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			noticeTree(t, pool, records, false)
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			sup.deps.Clock = clock
+			architect := mustClaimToken(t, "LEGION-1", claim.RoleArchitect)
+			roleWaitClaim(t, sup, supervise.Claim{Token: architect, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleArchitect,
+				Generation: 1, State: supervise.StateWorking, Session: "ses_architect", SessionFile: t.TempDir() + "/session.jsonl",
+				LastReady: start.Add(-10 * time.Minute), LastTurnStart: start.Add(-5 * time.Minute)})
+			publisher := &outboxPublisher{err: confirmedAnswer(answer.reason, "ses_architect")}
+			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion"}
+			id := queueRow(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect,
+				Reason: "review_round_cap"}, start))
+			rig := newRoleWaitRig(t, runner, pool, clock, id)
 
-		rig.runTo(roleWaitRuns)
-		publisher.refuseWith(nil)
-		rig.endsAtItsNextRun()
-		wantWaitLogged(t, rig.logs.String(), id, "LEGION-2", record.OutboxKindNotice, rig.runs, waitLog{level: slog.LevelError,
-			attempts: roleWaitLongAttempts, waitsFor: []any{"role", string(architect)}, answer: true, end: "run",
-			ended: "outbox notice published"})
-	})
+			rig.runTo(roleWaitRuns)
+			publisher.refuseWith(nil)
+			rig.endsAtItsNextRun()
+			wantWaitLogged(t, rig.logs.String(), id, "LEGION-2", record.OutboxKindNotice, rig.runs, waitLog{level: slog.LevelError,
+				attempts: roleWaitLongAttempts, waitsFor: []any{"role", string(architect)}, answer: true, end: "run",
+				ended: "outbox notice published"})
+		})
+	}
 }
 
 // R4: a row whose wait is no fault of a ready role logs its wait once when it starts, once at WARN

@@ -3801,9 +3801,9 @@ func (s projectRecords) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx
 //
 // Unlike the other writes, it refuses a row keyed by another project's issue with an error
 // (claim.ErrKeyOfAnotherProject), as the store's insertOutboxRow does: every caller names the row
-// by the id it answers — the decisions a start claims (ClaimKeptDecisions), the claims a re-held
-// catch-up takes over (MoveKeptClaims), the start a pause's stop released — and an id of no row
-// would name nothing, so the caller's transaction rolls back instead.
+// by the id it answers — the decisions a start or a catch-up claims (ClaimKeptDecisions), the start
+// a pause's stop released — and an id of no row would name nothing, so the caller's transaction
+// rolls back instead.
 func (s projectRecords) EnqueueID(ctx context.Context, tx pgx.Tx, row record.OutboxRow) (int64, error) {
 	if !s.ownsKey(row.Kind, row.Issue) {
 		return 0, fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, claim.ErrKeyOfAnotherProject)

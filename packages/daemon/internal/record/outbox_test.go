@@ -1408,10 +1408,9 @@ func TestNoRowsPostMeasuresAboveLongestPost(t *testing.T) {
 // A published notice of every kind the validation takes is still a payload NewOutboxRow accepts,
 // so every kind can be re-held. The daemon builds a re-held copy out of the payload the publish
 // carried — the listener's report decoded back into a notice (the daemon's exceptionNotice,
-// reholdNotice), with the two paced moments put back by hand on the one path that keeps them
-// (noticeAnswered) — and validates that copy before queueing it, so a field Published drops that
-// the kind's own validation requires makes every re-hold of that kind refused and its architect
-// never told, with nothing else to say so.
+// reholdNotice), with nothing put back — and validates that copy before queueing it, so a field
+// Published drops that the kind's own validation requires makes every re-hold of that kind
+// refused and its architect never told, with nothing else to say so.
 //
 // The table holds one notice of each kind, and the coverage assertion holds it against the
 // validation's own list (validNoticeKinds), in both directions, so a kind added to that list
@@ -1429,16 +1428,16 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	// account of the tree, the three spec decisions and the three basis notices the person who
 	// acted and the reference, and no other kind carries either of those.
 	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
-	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
+	// them, and the publish drops them from it.
 	//
 	// A field every row leaves at zero is compared zero to zero, and proves nothing of the field:
 	// the comparison below would pass on a publish that dropped it. So the pr-blocked row carries
 	// a Resends of 1, since any non-zero value puts the field in the comparison, and it stays
 	// there rather than beside the three set aside. The daemon reads this count off the published
-	// payload and nowhere else: it is what stops the
-	// re-holds at the cap, and what picks the next copy's delay (the daemon's reholdNotice,
-	// notice_exceptions.go). A Published that zeroed it would re-hold every architect notice for
-	// ever, and every check above would stay green.
+	// payload and nowhere else: it is what picks the next copy's wait (the daemon's reholdNotice,
+	// notice_exceptions.go, through RoleWaitBackoff). A Published that zeroed it would make every
+	// copy the first, sent at once to a ready architect and a second later to any other, for ever,
+	// and every check above would stay green.
 	//
 	// The worker-died row carries the failure record the two notices of a claim's failure name
 	// (NoticeFailure), for the same reason: the held row is kept for the escalation, which
@@ -1552,12 +1551,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				t.Fatalf("the notice the daemon writes is refused before any publish: %v", err)
 			}
 			published, _ := notice.Published(41)
-			// The copy the re-hold builds is this payload, with the two paced moments put back by
-			// hand at the site that builds it; what Published dropped of the kind's own fields is
-			// not put back anywhere, so the copy is refused for want of it.
-			copied := published
-			copied.PacedAt, copied.PacedFrom = notice.PacedAt, notice.PacedFrom
-			if _, err := NewOutboxRow("LEGION-208", copied, paced); err != nil {
+			// The copy the re-hold builds is this payload as it is: what Published dropped of the
+			// kind's own fields is not put back anywhere, so the copy is refused for want of it.
+			if _, err := NewOutboxRow("LEGION-208", published, paced); err != nil {
 				t.Fatalf("the re-held copy of a published %s notice is refused, so its architect is never told: %v", notice.Kind, err)
 			}
 

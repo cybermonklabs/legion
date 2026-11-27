@@ -1741,15 +1741,6 @@ func (s *Postgres) ClaimKeptDecisions(ctx context.Context, tx pgx.Tx, tree strin
 	return nil
 }
 
-func (s *Postgres) MoveKeptClaims(ctx context.Context, tx pgx.Tx, from, to int64) error {
-	for _, table := range []string{"parked_decisions", "readmitted_approvals"} {
-		if _, err := tx.Exec(ctx, "update "+table+" set claimed_by = $2 where claimed_by = $1", from, to); err != nil {
-			return fmt.Errorf("move the claims of outbox row %d to %d: %w", from, to, err)
-		}
-	}
-	return nil
-}
-
 func (s *Postgres) ReleaseKeptClaims(ctx context.Context, tx pgx.Tx, row int64) ([]string, error) {
 	trees, err := releasedTrees(ctx, tx, `with decisions as (
 		update parked_decisions set claimed_by = null where claimed_by = $1 returning issue
@@ -4333,14 +4324,14 @@ func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, no
 	// before a lane's claim committed would wait on the claim's row lock and then delete the row it
 	// had read unleased. Under the lock a claim either commits before the lock is taken, and the
 	// delete, a statement of its own, reads the lease it wrote, or it waits for this transaction
-	// and claims nothing when the delete took its row. A copy a re-hold queues while this runs
-	// (reholdNotice, which carries the row's claims onto it) is covered the same way: its own claim
-	// waits here too.
+	// and claims nothing when the delete took its row. A copy an earlier listener's role-lane
+	// exception queues while this runs (the daemon's reholdNotice) is covered the same way: its own
+	// claim waits here too.
 	//
 	// The lock takes no row: a lane finishing a catch-up deletes its row and then waits on the
-	// decisions it claimed, which the callers of this drop have locked first (workflow.Adopt and
-	// spentKept lock them through UnclaimedKept before they queue a catch-up), so a row lock here
-	// would close a deadlock (TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting).
+	// decisions it claimed, which a caller of this drop may have locked first (workflow.Adopt locks
+	// them through UnclaimedKept before it queues a catch-up), so a row lock here would close a
+	// deadlock (TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting).
 	if err := LockCatchUps(ctx, tx, issue); err != nil {
 		return nil, err
 	}
@@ -4404,6 +4395,14 @@ func (s *Postgres) OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseT
 		return false, fmt.Errorf("read the lease of outbox row %d: %w", id, err)
 	}
 	return leased, nil
+}
+
+func (s *Postgres) NoticeQueued(ctx context.Context, tx pgx.Tx, id int64) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, "select exists(select 1 from outbox where id = $1 and kind = $2)", id, string(OutboxKindNotice)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether the outbox still holds notice row %d: %w", id, err)
+	}
+	return queued, nil
 }
 
 func (s *Postgres) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow, now time.Time) (bool, error) {

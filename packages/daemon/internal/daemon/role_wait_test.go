@@ -505,18 +505,19 @@ func publishOffsets(publishes []roleWaitPublish, start time.Time) []time.Duratio
 // 15, 31, 63, 127, 255, 511 s then every 300 s (at most 12 in an hour once at the cap); never
 // ended while the claim stands (except hook_prompt and phase_ended, which end at their hour, as
 // today); and ended once the claim is retired (except controller_notice under `controller: daemon`,
-// whose failed/retired controller is retried by controllerKeeper).
-// Task t7 adds the notice/receipt_timeout subtest once P9 lands.
+// whose failed/retired controller is retried by controllerKeeper). A notice its architect's session
+// does not confirm (receipt_timeout) is one of these: its row is kept, never copied and never given
+// up (dispatch://INFRA-4131/spec#b-r-never-given-up).
 func TestRoleWaitCapDoublesToFiveMinutesForEveryRefusal(t *testing.T) {
 	t.Parallel()
 	type capSubtest struct {
 		tc       roleWaitCase
 		refusals []string
 	}
-	// Every refusal that keeps a row of each kind, per plan ## Readings (task t7 adds
-	// notice/receipt_timeout).
+	// Every refusal that keeps a row of each kind, per plan ## Readings and, for a notice's
+	// receipt_timeout, P9.
 	cases := []capSubtest{
-		{tc: roleWaitCases[0], refusals: []string{"unclaimed", "holder_lapsed_gone", "unresponsive", "delivery_failed"}},
+		{tc: roleWaitCases[0], refusals: []string{"unclaimed", "holder_lapsed_gone", "unresponsive", "receipt_timeout", "delivery_failed"}},
 		{tc: roleWaitCases[1], refusals: []string{"unclaimed", "holder_lapsed_gone", "unresponsive", "receipt_timeout", "delivery_failed", "capability", "denied"}},
 		{tc: roleWaitCases[2], refusals: []string{"unclaimed", "holder_lapsed_gone", "unresponsive", "receipt_timeout", "delivery_failed", "capability", "denied"}},
 		{tc: roleWaitCases[3], refusals: []string{"unclaimed", "holder_lapsed_gone", "unresponsive", "receipt_timeout", "delivery_failed", "capability", "denied"}},

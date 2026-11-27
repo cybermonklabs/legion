@@ -140,13 +140,13 @@ const (
 	// keptRefuses: the holder does not advertise the delivery mode, so the row finishes
 	// undelivered (notify.ErrRefusedByHolder) and releases what it claimed.
 	keptRefuses
-	// keptReceiptTimeout: the holder did not confirm in time, so the daemon re-holds the notice
-	// (notify.ErrNotDelivered) and the copy takes the original's claims over (MoveKeptClaims).
-	// Under the run's own mode only a notice nobody has re-held yet is answered this way, so the
-	// re-hold budget (noticeReholdDelays) is never spent and the copy is never dropped for
-	// exhausting it; the interleaving step answers the one publish it holds open whatever its
-	// resends, which is how a catch-up the run superseded during its publish reaches the
-	// re-hold's superseded branch (raceRow).
+	// keptReceiptTimeout: the holder did not confirm in time (notify.ErrNotDelivered), so the row
+	// waits for its architect without finishing (roleWait), its claims on what it names with it,
+	// and is retried as a failed forward is (keptDeliveryFailed) until a publish is taken, which
+	// tells what it names once, or a run finds it superseded or its architect ended. The
+	// interleaving step answers the one publish it holds open this way too, which is how a
+	// catch-up the run superseded during its publish keeps its row for the run that finds it
+	// superseded and hands what it named over (raceRow, supersededKept).
 	keptReceiptTimeout
 	// keptDenied: the listener's own NATS grant refuses the forward (notify.ErrPublishDenied),
 	// which no retry can change until an operator changes the grant, so the row finishes
@@ -294,10 +294,9 @@ func (p *keptPublisher) generationAtPublish(key string) (uint64, bool, error) {
 	return generation, known, p.genErr
 }
 
-// answer is what this run's mode makes of one publish, and the mode that answer is of: a copy the
-// re-hold already queued is delivered rather than timed out again, so the re-hold budget is never
-// spent. A publish a race held open is answered as the step that armed it chose, whatever the
-// notice's resends: that answer is one the generator picked, not the run's standing mode.
+// answer is what this run's mode makes of one publish, and the mode that answer is of. A publish a
+// race held open is answered as the step that armed it chose: that answer is one the generator
+// picked, not the run's standing mode.
 func (p *keptPublisher) answer(topic string, payload any, key string, raced *keptRace) (keptPublishMode, error) {
 	mode := p.mode
 	if raced != nil {
@@ -317,7 +316,7 @@ func (p *keptPublisher) answer(topic string, payload any, key string, raced *kep
 		return mode, fmt.Errorf("publish notice to %s: listener returned 504 Gateway Timeout: %w", topic,
 			notify.ErrNotDelivered{Reason: notify.ReasonDeliveryFailed, EventID: key})
 	case keptReceiptTimeout:
-		if notice, ok := payload.(record.Notice); ok && (raced != nil || notice.Resends == 0) {
+		if _, ok := payload.(record.Notice); ok {
 			return mode, fmt.Errorf("publish notice to %s: listener returned 504 Gateway Timeout: %w", topic,
 				notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-other"})
 		}
@@ -608,11 +607,6 @@ type keptCounts struct {
 	// that tells what it holds.
 	handedInPublish     int
 	handedBeforeConfirm int
-	// supersededTimeouts is every catch-up whose receipt timeout drew no copy from the re-hold:
-	// the operation that ran inside its publish superseded it, or the copy was the last the
-	// re-hold queues. Either way what the row claims is handed to a fresh catch-up
-	// (notice_exceptions.go's reholdNotice, supersededKept and spentKept).
-	supersededTimeouts int
 	// refusedConfirmations is every send a turn of the agent's own confirmed while it was in
 	// flight and the agent then answered busy, so the machine took that confirmation back
 	// (supervise's refused); lateRefusals every replayed refusal that took back a confirmation a
@@ -645,7 +639,6 @@ func (c *keptCounts) add(other keptCounts) {
 	c.mergeReadyHandOvers += other.mergeReadyHandOvers
 	c.handedInPublish += other.handedInPublish
 	c.handedBeforeConfirm += other.handedBeforeConfirm
-	c.supersededTimeouts += other.supersededTimeouts
 	c.refusedConfirmations += other.refusedConfirmations
 	c.lateRefusals += other.lateRefusals
 	c.interruptedTasks += other.interruptedTasks
@@ -660,7 +653,7 @@ func (c keptCounts) String() string {
 		"%d publishes held open for an interleaving, %d steps ran rows at once, %d members handed over (%d without their run), "+
 		"%d children orphaned by a person's todo, %d queued roots adopted, %d trees closed, "+
 		"%d parks left a merge-ready child behind a lingering root that is not done, of which %d members such a close handed over, "+
-		"%d restarts met a streaming agent, %d foreign turns, %d receipt timeouts the re-hold queued no copy for, "+
+		"%d restarts met a streaming agent, %d foreign turns, "+
 		"%d hand-overs inside a catch-up's publish, %d hand-overs between a held task and its confirmation; "+
 		"%d sends refused busy after a turn of the agent's own confirmed them, %d replayed refusals took a confirmation back, "+
 		"%d processes died in a task's turn; "+
@@ -668,7 +661,7 @@ func (c keptCounts) String() string {
 		c.refusedLaunches, c.failedClaim, c.retriedFailed, c.endedCatchUps, c.endedByFailure,
 		c.raced, c.together, c.handovers, c.handoversWithoutRun, c.orphans, c.adoptions, c.closes,
 		c.mergeReadyParks, c.mergeReadyHandOvers,
-		c.streamed, c.foreign, c.supersededTimeouts, c.handedInPublish, c.handedBeforeConfirm,
+		c.streamed, c.foreign, c.handedInPublish, c.handedBeforeConfirm,
 		c.refusedConfirmations, c.lateRefusals, c.interruptedTasks,
 		c.publishes[keptDelivers], c.publishes[keptNoHolder], c.publishes[keptRefuses],
 		c.publishes[keptReceiptTimeout], c.publishes[keptDenied], c.publishes[keptDeliveryFailed])
@@ -2145,7 +2138,6 @@ func (r *keptRun) raceRow() {
 	}
 	race := r.prepareRace(ops[r.rng.IntN(len(ops))])
 	race.mode = []keptPublishMode{keptDelivers, keptReceiptTimeout}[r.rng.IntN(2)]
-	answered := r.publisher.answers()
 	r.publisher.arm(race)
 	runErr := r.runOne(&row, payload)
 	r.publisher.disarm()
@@ -2166,24 +2158,6 @@ func (r *keptRun) raceRow() {
 	}
 	r.tracef("race-row id=%d what=%s answer=%s during=%s ran=%t [%s] outcome=%s", row.ID, keptRowWhat(payload),
 		race.mode, race.what, race.ran, race.outcome, keptRunOutcome(runErr, false))
-	// A receipt timeout the re-hold answered with no copy of its own is the superseded branch or
-	// the spent one (notice_exceptions.go's reholdNotice): the operation that ran inside the
-	// publish moved the root or its architect past the catch-up, or the row was the last copy the
-	// re-hold queues. Nothing takes over the claims this row holds, so they are handed to a fresh
-	// catch-up.
-	if r.publisher.answers()[keptReceiptTimeout] > answered[keptReceiptTimeout] && r.copiesOf(row.ID) == 0 {
-		r.counts.supersededTimeouts++
-		r.tracef("the re-hold of row %d queued no copy: the publish was superseded while it ran or its re-holds are spent, so what it claimed is handed over", row.ID)
-	}
-}
-
-// copiesOf is how many copies of an outbox row the re-hold has queued (record.Notice.ResendOf).
-func (r *keptRun) copiesOf(row int64) int {
-	var copies int
-	if err := r.pool.QueryRow(r.ctx, "select count(*) from outbox where (payload->>'resend_of')::bigint = $1", row).Scan(&copies); err != nil {
-		r.fatalf("count the copies of outbox row %d: %v", row, err)
-	}
-	return copies
 }
 
 // keptRaceOp is one operation the generator can run inside a catch-up's publish, named before the

@@ -254,7 +254,7 @@ func newNoticeRig(t *testing.T) *noticeRig {
 	architectClaimOn(t, sup, "LEGION-2", supervise.StateWorking, "ses_sub")
 	architectClaimOn(t, sup, "LEGION-9", supervise.StateReady, "ses_other")
 	now := time.Now()
-	architectsWaitingNotices(t, direct, records, now.Add(noticeReholdDelays[1]))
+	architectsWaitingNotices(t, direct, records, now.Add(record.RoleWaitBackoffMost))
 	logged, log := watchedLog()
 	wakes := &laneWakes{}
 	runner := &outbox{log: log, pool: faulted, dispatchProject: "LEGION", supervisor: sup, project: "legion", now: func() time.Time { return now },

@@ -2752,9 +2752,6 @@ type Store interface {
 	// deletion releases it as a last resort (claimed_by is set null with the row), for the next
 	// start or catch-up to name.
 	ClaimKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
-	// MoveKeptClaims moves every claim of outbox row from to row to: the re-hold's copy of a catch-up
-	// carries the claims of the row it copies, which then finishes.
-	MoveKeptClaims(ctx context.Context, tx pgx.Tx, from, to int64) error
 	// ReleaseKeptClaims unclaims every parked decision and readmitted approval outbox row holds,
 	// and reports the tree each released row is owed to now, by key: the hand-over's first step,
 	// since the row told no architect what it named, and what says which trees' architects the
@@ -3364,6 +3361,11 @@ type Store interface {
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
 	// another transaction deleted it while the runner held it (DropCatchUps, DropQueuedChanges).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)
+	// NoticeQueued reports whether the outbox still holds notice row id, leased or not: false once
+	// the row finished or a delete took it. The daemon's re-hold of a notice an earlier listener's
+	// role-lane exception reports reads it, since a row still held runs again by itself and a copy
+	// beside it would send the notice twice (its reholdNotice).
+	NoticeQueued(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
 	// TreeIssues is every issue of tree, the root included, by key.
 	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)
 	// EarlierNotices is every unfinished notice row of tree's issues written before row id, oldest

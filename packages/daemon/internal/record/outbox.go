@@ -484,8 +484,9 @@ type Notice struct {
 	// reach is another claim (the daemon's deliverNotice). Published keeps it, so a re-held copy
 	// is judged the same way.
 	StoppedBy claim.Token `json:"stoppedBy,omitempty"`
-	// Resends counts the times the notice was queued again after the listener could not forward
-	// it to its architect's session (the daemon's rehold), which stops at a cap.
+	// Resends counts the times the notice was queued again after an earlier listener reported that
+	// it could not forward it to its architect's session (the daemon's rehold). It has no cap: it
+	// picks the next copy's wait (RoleWaitBackoff), and only that.
 	Resends int `json:"resends,omitempty"`
 	// PacedAt is the moment the daemon's wake pacing let out a catch-up it held to its turn: the
 	// catch-up the outbox writes in place of a launch when a start row finds an architect already
@@ -503,8 +504,8 @@ type Notice struct {
 	// ahead (Store.ExpediteWaits), so a catch-up still held stays held, and one whose turn
 	// has come is released like any other notice rather than waiting out a backoff the pacing
 	// never asked for. It is the daemon's own bookkeeping, so the publish drops it (Published) as
-	// it drops ResendOf; a re-held copy keeps it for that one line alone, its next_at being the
-	// re-send delay (the daemon's noticeAnswered).
+	// it drops ResendOf, and the row keeps it through its retries, a receipt the architect's session
+	// did not confirm among them (the daemon's noticeAnswered).
 	PacedAt time.Time `json:"paced_at,omitzero"`
 	// PacedFrom is the moment the engine wrote the row held, on the clock the let-out is read on,
 	// and the two travel together: PacedAt less PacedFrom is how long the pacing held this wake,
@@ -519,7 +520,7 @@ type Notice struct {
 	// PacedTurns is how many turns the pacing let out between the row's join of its queue and its
 	// own let-out (wakepace.Let.Turns), which the line its wake writes names beside the queue. The
 	// let-out writes it with PacedAt (ReleaseHeldCatchUp), and it goes where PacedAt goes: dropped
-	// at the publish, kept on a re-held copy.
+	// at the publish, kept by the row through its retries.
 	PacedTurns int `json:"paced_turns,omitempty"`
 	// ResendOf is the outbox row a re-held copy copies. The copy is published under that row's
 	// dedupe key (OutboxKey), so the listener's report of a failed forward names the original row,
@@ -1066,12 +1067,10 @@ func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 // bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
 // notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
 // the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
-// and puts nothing back, and only the receipt-timeout path restores the paced moments and turns
-// by hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
-// (reholdNotice, through NewOutboxRow), so a field validateOutboxPayload requires for its kind,
-// as it requires CatchUp of a catch-up notice, is stripped here only together with a restore of
-// its own there, or every re-hold of that kind is refused for want of it
-// (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
+// and puts nothing back, and the re-hold validates the copy before queueing it (reholdNotice,
+// through NewOutboxRow), so a field validateOutboxPayload requires for its kind, as it requires
+// CatchUp of a catch-up notice, is never stripped here, or every re-hold of that kind is refused
+// for want of it (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
 	n.PacedAt, n.PacedFrom, n.PacedTurns = time.Time{}, time.Time{}, 0
 	if n.ResendOf == 0 {

@@ -318,20 +318,18 @@ func (e *Engine) EnqueueNaming(ctx context.Context, tx pgx.Tx, issue, tree strin
 // at once. A row that holds nothing returns at once, so a row whose settle committed and whose
 // finish did not writes no second catch-up when it runs again.
 //
-// Four finishes hand over, and only four: an architect start whose task reached no claim (the
-// outbox's settleKept), a catch-up a newer one supersedes (catchUpSuperseded, the outbox's
-// notice), a receipt timeout on a catch-up the re-hold finds superseded, which queues no copy
-// to carry its claims on (the daemon's reholdNotice, through the same supersededKept), and a
-// receipt timeout on a catch-up whose re-holds are spent, which queues no copy either while its
-// architect still holds its launch (reholdNotice, through spentKept). Every other
-// undelivered finish keeps the older rule — the row's deletion releases what it claimed, and the
-// architect's next ready names every unclaimed decision in its catch-up. Each of those endings is
-// one where the architect can take no notice at all now — its row was deleted under its lease, it
-// is unroutable, its architect stopped with its finished tree or will not hold its role again, its
-// holder refused the delivery or the listener's grant denied it — so a fresh catch-up would reach
-// nobody either, and what the ending releases waits for that architect's next launch, whose ready
-// names every unclaimed decision. A receipt timeout that draws a copy neither tells nor hands
-// over: the re-held copy carries the claims on (Store.MoveKeptClaims).
+// Two finishes hand over, and only two: an architect start whose task reached no claim (the
+// outbox's settleKept), and a catch-up a newer one supersedes (catchUpSuperseded, the outbox's
+// notice, through supersededKept). Every other undelivered finish keeps the older rule — the row's
+// deletion releases what it claimed, and the architect's next ready names every unclaimed decision
+// in its catch-up. Each of those endings is one where the architect can take no notice at all now
+// — its row was deleted under its lease, it is unroutable, its architect stopped with its finished
+// tree or will not hold its role again, its holder refused the delivery or the listener's grant
+// denied it — so a fresh catch-up would reach nobody either, and what the ending releases waits
+// for that architect's next launch, whose ready names every unclaimed decision. A catch-up whose
+// architect's session did not confirm a publish (receipt_timeout) neither tells nor hands over:
+// its row keeps the claims and runs again until a publish is taken, which tells them (the
+// daemon's noticeAnswered, dispatch://INFRA-4131/spec#b-r-never-given-up).
 func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, from int64, now time.Time) error {
 	trees, err := store.ReleaseKeptClaims(ctx, tx, from)
 	if err != nil || len(trees) == 0 {

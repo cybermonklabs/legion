@@ -2024,13 +2024,15 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // notice of the issue pod's disk (tellControllerOfKeptPod).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
-// denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
-// (noticeAnswered, notice_exceptions.go), which a role-lane exception of an earlier listener
-// reaches by the same route (rehold). A listener of this release never answers that a session
-// did not confirm a delivery (`receipt_timeout`): no session confirms a forward any more, and
-// every forward its stream did not store is `delivery_failed` (dispatch://INFRA-771), so that
-// answer reaches the policy only from a listener of the deployed, older build, until that
-// rollout finishes.
+// denies, a holder only unresponsive, a role nobody holds — is noticeAnswered's
+// (notice_exceptions.go): a delivery the session did not confirm keeps its row, as a holder only
+// unresponsive does, and the row runs again on the capped backoff of a role wait until its
+// architect takes it or will not hold its role again. A role-lane exception of an earlier
+// listener, which reports a forward once its row has finished, queues a copy instead (rehold). No
+// deployed listener answers that a session did not confirm a delivery (`receipt_timeout`): no
+// session confirms a forward any more, and every forward the stream did not store is
+// `delivery_failed` (dispatch://INFRA-771). The daemon still reads that answer because a
+// deployment can roll its listener back to an older build, which gives it.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
 // catch-up a newer ready dropped, or a changes request a clear of its generation dropped,
 // errNoticeRowGone) is found gone in the tree's snapshot and finishes without a publish, and so
@@ -2088,10 +2090,10 @@ func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload recor
 // The pace the line names is the one the daemon holds its machines to (supervise.WakePace, set in
 // openSupervision), the rate and the burst alone. The queue is the pacer's second, which every
 // catch-up waits in (catchUpPacing, dispatch://INFRA-5682 R2), and the turns are the ones its
-// let-out recorded on the notice (record.Notice.PacedTurns), which a re-held copy keeps. A
-// catch-up carries no message, so the line never says it came late for one. A test that builds
-// the runner by hand over a supervisor with no pace reads the pacing off, which is that line's
-// own reading of it.
+// let-out recorded on the notice (record.Notice.PacedTurns), which the row keeps through its
+// retries. A catch-up carries no message, so the line never says it came late for one. A test
+// that builds the runner by hand over a supervisor with no pace reads the pacing off, which is
+// that line's own reading of it.
 func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 	architect, _ := claim.NewToken(r.project, row.Issue, claim.RoleArchitect)
 	pace := r.supervisor.deps.WakePace

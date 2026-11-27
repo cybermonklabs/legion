@@ -2107,8 +2107,8 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 }
 
 // A lane finishing a catch-up and a transaction that locked the tree's decisions and then drops the
-// root's catch-ups (workflow.Adopt and spentKept, which lock them through UnclaimedKept before they
-// queue a catch-up) would take the same two locks in opposite orders if the drop locked the rows.
+// root's catch-ups (workflow.Adopt, which locks them through UnclaimedKept before it queues a
+// catch-up) would take the same two locks in opposite orders if the drop locked the rows.
 // The finish deletes its row and then sets the decisions it claimed back to unclaimed (the foreign
 // key's on delete set null), which waits on the decisions the other transaction locked; a drop that
 // locked every catch-up of the issue, the finishing one included, would wait on the finish, and
@@ -2190,13 +2190,14 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	}
 }
 
-// A re-hold queues a copy of a catch-up and moves the row's claims onto it (reholdNotice,
-// MoveKeptClaims) while a drop of the root's catch-ups runs, and a lane then claims that copy. The
-// drop's lease check reads the outbox in a subquery, which its delete does not recheck against a
-// lease committed after the statement began, so a claim of a copy made after the drop's own reads
-// would leave the copy deleted and its lane publishing it from memory, beside the fresh catch-up
-// naming the decisions the deletion released: told twice. The claim takes the drop's advisory lock,
-// so it waits for the drop and claims nothing of a row the drop took.
+// An earlier listener's role-lane exception queues a copy of a catch-up (the daemon's
+// reholdNotice), naming what the row it copies named, while a drop of the root's catch-ups runs,
+// and a lane then claims that copy. The drop's lease check reads the outbox in a subquery, which
+// its delete does not recheck against a lease committed after the statement began, so a claim of a
+// copy made after the drop's own reads would leave the copy deleted and its lane publishing it from
+// memory, beside the fresh catch-up naming the decisions the deletion released: told twice. The
+// claim takes the drop's advisory lock, so it waits for the drop and claims nothing of a row the
+// drop took.
 func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2218,7 +2219,8 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
 	})
 
-	// The re-hold's copy, queued in a transaction of its own and carrying the row's claims.
+	// The re-hold's copy, queued in a transaction of its own: it names what the row it copies names,
+	// whose claims stay with that row.
 	var copyID int64
 	inTx(t, st, func(tx pgx.Tx) {
 		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
@@ -2226,7 +2228,6 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		must(t, err)
 		copyID, err = records.EnqueueID(ctx, tx, row)
 		must(t, err)
-		must(t, records.MoveKeptClaims(ctx, tx, catchUp, copyID))
 	})
 
 	// The drop, which takes both rows and holds its lock from here until it commits.

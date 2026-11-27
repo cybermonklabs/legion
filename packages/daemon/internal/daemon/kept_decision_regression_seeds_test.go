@@ -32,7 +32,8 @@ import (
 // of a step before any of them runs (runTogether), so it no longer makes that schedule either
 // (dispatch://INFRA-2836); 701 spent a catch-up's re-holds while
 // its architect held its launch, and the row's deletion left the decision with nothing to name it
-// (reholdNotice now hands it to a fresh catch-up, spentKept); 41 published a catch-up (row 112)
+// (a receipt timeout now keeps the row and its claims until a publish is taken, noticeAnswered,
+// and no count spends it); 41 published a catch-up (row 112)
 // whose own telling write then failed, so the decision stood kept and a later catch-up (row 115)
 // named it again — the second telling the architect ruled acceptable
 // (https://github.com/sjawhar/legion/pull/2163#issuecomment-6542200410), which the oracle now
