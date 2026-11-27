@@ -62,7 +62,9 @@ type KVConfig struct {
 	// passed) answers zero, and its unresolved attempt is taken over at once, however young,
 	// since no record of it is coming. One that is still settling answers the time it has left,
 	// and its attempt is deferred until then: the forward it is finishing may already be at the
-	// session, which only its own delivered record, or its giving the attempt up, can say. Nil
+	// session, which only its own delivered record, or its giving the attempt up, can say. An
+	// attempt bus.ListenerStateRecordLife old is asked nothing of: it is taken over whoever made
+	// it, as when the bucket dropped such a record. Nil
 	// treats every other boot as one that may still be delivering.
 	GoneBoot func(boot string) (gone bool, settling time.Duration)
 	// DeliveredAge is DeliveredAge when zero; a test shortens it. There is no field for the
@@ -164,8 +166,9 @@ func (l *KV) value(state string) []byte {
 // reads it: delivered within DeliveredAge is Delivered; attempted by this boot is InFlight while
 // this process holds the attempt that wrote it (unsettled and younger than TakeoverAfter, or
 // kept and younger than AttemptedAge), and taken over otherwise; attempted by a boot GoneBoot
-// reports gone is taken over at once when that boot can settle nothing more, and Deferred for as
-// long as GoneBoot says it is still settling; attempted by another boot (or a record this build
+// reports gone, while younger than bus.ListenerStateRecordLife, is taken over at once when that
+// boot can settle nothing more, and Deferred for as long as GoneBoot says it is still settling;
+// attempted by another boot (or a record this build
 // cannot read) younger than TakeoverAfter is Deferred until it reaches that age; anything older
 // is taken over with Update at its revision, which is Proceed. Two Attempts of this process for
 // one pair run one after the other.
@@ -221,7 +224,11 @@ func (l *KV) judge(pair Key, entry nats.KeyValueEntry) (verdict Verdict, retryIn
 	case record.State == stateAttempted && record.Boot == l.cfg.Boot:
 		return InFlight, 0, l.holds(pair, entry.Revision())
 	}
-	if record.State == stateAttempted && record.Boot != "" && l.cfg.GoneBoot != nil {
+	// An attempt bus.ListenerStateRecordLife old holds no one, whoever made it: the bucket dropped
+	// such a record before its age was sized by the `seen.` records, and a former holder still
+	// settling has no forward that old in flight. Only a younger attempt of a gone boot waits on
+	// GoneBoot; an older one falls to the takeover age below, which it is past.
+	if record.State == stateAttempted && record.Boot != "" && l.cfg.GoneBoot != nil && age < bus.ListenerStateRecordLife {
 		if gone, settling := l.cfg.GoneBoot(record.Boot); gone {
 			return Deferred, settling, settling > 0
 		}

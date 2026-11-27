@@ -100,12 +100,12 @@ func TestEveryPodReportsALapsedSessionsLastSeenAlike(t *testing.T) {
 
 // Every pod answers a lapsed session's last-seen time out of the bucket's `seen.` record alone,
 // so a pod that watched the session answers exactly what a pod that never saw it answers for as
-// long as the window lasts, and nothing once the record is gone. At the registry's default
-// retention (LastSeenMemory) the window outlasts the record, which the bucket drops
-// listenerStateMaxAge (20 minutes) after its write, so a live deployment reaches the second case
-// (lastseen.go). A pod that kept an answer of its own would go on reporting the session after the
-// bucket's record was gone, and two pods would answer GET /v1/interests/ differently for one
-// session.
+// long as the window lasts, and nothing once the record is gone. The listener keeps the record for
+// the whole window and more (cmd/listener's listenerStateAge), so a live deployment reaches the
+// second case for a record that could not be read or that a bucket with a shorter MaxAge dropped,
+// as an earlier build's 20 minutes did inside the window at the default retention (lastseen.go).
+// A pod that kept an answer of its own would go on reporting the session after the bucket's
+// record was gone, and two pods would answer GET /v1/interests/ differently for one session.
 func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
 	const (
 		sessionID = "ses_outlives_record"
@@ -126,8 +126,8 @@ func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
 	if onA, onB := a.LastSeen(context.Background(), sessionID), b.LastSeen(context.Background(), sessionID); onA != onB {
 		t.Fatalf("pod a reports %s last seen %d while the record stands; pod b, started after it lapsed, reports %d", sessionID, onA, onB)
 	}
-	// This delete does what the bucket's MaxAge does to the record listenerStateMaxAge after its
-	// write, a time inside the window at the default retention.
+	// This delete does what a bucket MaxAge shorter than the window does to the record, as an
+	// earlier build's 20 minutes did inside the window at the default retention.
 	if err := a.seen.Delete(lastSeenKey(sessionID)); err != nil {
 		t.Fatalf("remove %s's seen record: %v", sessionID, err)
 	}
@@ -137,6 +137,41 @@ func TestEveryPodAnswersAlikeOnceTheBucketsLastSeenRecordIsGone(t *testing.T) {
 	}
 	if onA != 0 {
 		t.Fatalf("pods report %s last seen %d with no record in the bucket, want none", sessionID, onA)
+	}
+}
+
+// A registry's LastSeenWindow is the span seenUntil adds to a registration write at the TTL and
+// retention the registry runs with: one TTL and then the retention, never less than that TTL, and
+// DefaultLastSeenWindow on a registry opened with no option over a bucket it created. The
+// listener sizes its state bucket's age by it (cmd/listener's listenerStateAge), so a `seen.`
+// record stands for as long as any pod reports it.
+func TestLastSeenWindowIsWhereSeenUntilEndsALapsedSessionsAnswer(t *testing.T) {
+	client := setupNATS(t)
+	opened, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	t.Cleanup(opened.StopWatch)
+	if got := opened.LastSeenWindow(); got != DefaultLastSeenWindow {
+		t.Fatalf("a default registry's last-seen window is %s, want DefaultLastSeenWindow, %s", got, DefaultLastSeenWindow)
+	}
+
+	const at = int64(1_800_000_000_000)
+	for _, row := range []struct {
+		ttl, want time.Duration
+	}{
+		{ttl: time.Hour, want: time.Hour + LastSeenMemory},
+		{ttl: 6 * time.Hour, want: 12 * time.Hour},
+	} {
+		r := newTestRegistry(row.ttl)
+		r.lastSeenRetention = LastSeenMemory
+		window := r.LastSeenWindow()
+		if window != row.want {
+			t.Errorf("the last-seen window at a %s TTL is %s, want %s: the TTL and the retention, never less than the TTL", row.ttl, window, row.want)
+		}
+		if until, want := seenUntil(at, r.ttl, r.retention()), time.UnixMilli(at).Add(window); !until.Equal(want) {
+			t.Errorf("at a %s TTL a lapsed session's answer ends at %v, want the write plus the last-seen window, %v", row.ttl, until, want)
+		}
 	}
 }
 

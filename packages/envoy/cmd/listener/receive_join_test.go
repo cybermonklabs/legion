@@ -177,7 +177,7 @@ func startRefusedJoinRig(t *testing.T, machineID string) (*receiverRig, *natsgo.
 func joinAsMain(rig *receiverRig, conn *natsgo.Conn, machineID string) <-chan *lease {
 	tried := make(chan *lease, 1)
 	rig.receiver.startJoin(func(ctx context.Context) *lease {
-		joined := joinDeliveryLease(ctx, conn, 1, machineID, "pod-a", rig.receiver.logger)
+		joined := joinDeliveryLease(ctx, conn, 1, func() time.Duration { return listenerStateMaxAge }, machineID, "pod-a", rig.receiver.logger)
 		tried <- joined
 		if joined == nil {
 			return nil

@@ -23,8 +23,11 @@ import (
 // stopping pod wrote. A key of its own is what keeps a stop from writing the lease record after
 // another pod has taken it, and keying it by revision keeps a mark of one hand-over from being
 // read as another's, since revisions never repeat. Nothing removes a mark: the bucket's MaxAge
-// (listenerStateMaxAge, 20 minutes) drops it, no pod reads a mark for a revision it did not
-// replace, and the next holder reads its own mark once at most per settle poll.
+// (listenerStateAge, hours, sized by the `seen.` records) drops it, no pod reads a mark for a
+// revision it did not replace, and the next holder reads its own mark once at most per settle
+// poll. A mark may stand for hours after the release it vouches for, and is never read so late:
+// once that released record is bus.ListenerStateRecordLife old, poll takes it as absent, which
+// makes no hand-back candidate, and only a candidate asks for its mark (HandBackMarked).
 //
 // The value names the pod that wrote it and the revision again, so a mark read for the wrong
 // revision - which only a bucket that answered another key could give - is not taken for this

@@ -4,7 +4,9 @@ body: |-
     (`ENVOY_EDGE_PROJECTS`), which opens no lease and runs one pod: any number of
     listeners may run with one `ENVOY_MACHINE_ID`, and only the holder of the machine's delivery
     lease, the key `lease.listener-<machine id>` in the new KV bucket `envoy_listener` (created at
-    `ENVOY_NATS_REPLICAS`, 20 minute `MaxAge`), receives its durable consumer. The holder renews the
+    `ENVOY_NATS_REPLICAS`, with the `MaxAge` its last-seen records need, 4 h 15 min at the default
+    session TTL; a lease record no pod has written for 20 minutes is taken as absent), receives its
+    durable consumer. The holder renews the
     lease every second by compare-and-set and subscribes to the durable's deliver subject with a core
     subscription of its own, never `nats.Bind`, handling a message only while it holds the lease; a
     standby polls every 500 ms and takes an unreleased lease once it has not changed for 5 s, a
@@ -37,7 +39,8 @@ body: |-
     linger read another holder `receiving`, and the server confirmed the drain - writes a
     clean-hand-back mark, the new key
     `handback.<durable>.<the revision it released>` in `envoy_listener` (JSON: `instance`, `boot`,
-    `revision`; the bucket's 20 minute `MaxAge` removes it). A pod that takes the lease over a
+    `revision`; the bucket's `MaxAge` removes it, and a released record 20 minutes old makes no
+    hand-back candidate, so no pod reads its mark). A pod that takes the lease over a
     holder that was killed or lost its node subscribes at once and holds what it
     receives until every message the durable has outstanding is in its hands (its `NumAckPending`
     no more than what it holds, read every 250 ms, capped at one ack wait and a second, 7 s, after

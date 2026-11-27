@@ -3878,7 +3878,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 // request limit.
 func testDeliveryLedger(t testing.TB, conn *natsgo.Conn, machineID, boot string) *dedupe.KV {
 	t.Helper()
-	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}
@@ -5316,9 +5316,10 @@ func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndTwoPassesFitInsideTheGon
 // registered. A retention shorter than either - the fifteen minutes the listener used to set -
 // leaves a row listed with no heartbeat to give and a gone session's refusal unable to say when
 // it was last seen. A listener with a delivery lease reads the time from its state bucket, whose
-// age, listenerStateMaxAge (20 minutes), ends the answer before the gone horizon. It ends the
-// answer before the reaper's deadline too, unless the session TTL and that allowance fit in those
-// 20 minutes (main.go, where the bucket is wired).
+// MaxAge (listenerStateAge: the registry's last-seen window, the session TTL and this retention,
+// plus that allowance, 4 h 15 min at the defaults) keeps the record past both deadlines, so the
+// same retention ends the answer there (main.go, where the bucket is wired). That bucket's lease
+// and ledger records still decide nothing past their own 20 minutes (bus.ListenerStateRecordLife).
 func TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor(t *testing.T) {
 	t.Parallel()
 	if allowance := store.InterestReapAllowance(store.InterestReapGrace); session.LastSeenMemory <= allowance {

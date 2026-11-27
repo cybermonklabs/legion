@@ -67,7 +67,7 @@ func leaderReadListenerState(t *testing.T, cluster *testnats.Cluster) bus.KeyVal
 	t.Helper()
 	conn := testnats.Connect(t, cluster.Servers[0].URL())
 	t.Cleanup(conn.Close)
-	opened, err := openListenerState(t.Context(), conn, 3, listenerStateRequestWait)
+	opened, err := openListenerState(t.Context(), conn, 3, listenerStateMaxAge, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket with three copies: %v", err)
 	}

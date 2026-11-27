@@ -455,6 +455,44 @@ func TestKV_AGoneBootStillSettlingHoldsItsAttempt(t *testing.T) {
 	mustAttempt(t, b, "publish.def", "ses_target", Proceed)
 }
 
+// An attempt bus.ListenerStateRecordLife old holds no one, though its boot is a former holder
+// still settling: the listener state bucket dropped such a record before the `seen.` records sized
+// its age, and a delivery that found none proceeded. A moment before that age the same attempt is
+// deferred for the settling time GoneBoot gives, as a younger one is; at that age it is taken over
+// with Update at its revision. The clock starts at the attempt's own server timestamp.
+func TestKV_AnAttemptTheRecordLifeOldIsTakenOverFromABootStillSettling(t *testing.T) {
+	kv := openTestBucket(t)
+	a := newTestKV(kv, "boot-a", newTestClock())
+	mustAttempt(t, a, "publish.abc", "ses_target", Proceed)
+	key := a.Key("publish.abc", "ses_target")
+	written, err := kv.Get(key)
+	if err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
+	clock := &testClock{now: written.Created()}
+	settling := 2 * time.Second
+	b := NewKV(kv, KVConfig{Durable: testDurable, Boot: "boot-b", TakeoverAfter: testTakeoverAfter, Now: clock.Now,
+		GoneBoot: func(boot string) (bool, time.Duration) { return boot == "boot-a", settling }})
+
+	clock.Advance(bus.ListenerStateRecordLife - time.Nanosecond)
+	if deferred := mustAttempt(t, b, "publish.abc", "ses_target", Deferred); deferred.RetryIn != settling {
+		t.Fatalf("a moment before the record life RetryIn = %s, want the %s boot-a has left to settle", deferred.RetryIn, settling)
+	}
+	clock.Advance(time.Nanosecond)
+	taken := mustAttempt(t, b, "publish.abc", "ses_target", Proceed)
+	after, err := kv.Get(key)
+	if err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
+	if after.Revision() <= written.Revision() || taken.revision != after.Revision() {
+		t.Fatalf("revision after the take-over = %d (attempt's %d), want past boot-a's %d and the attempt's own",
+			after.Revision(), taken.revision, written.Revision())
+	}
+	if record := readRecord(t, kv, key); record.State != stateAttempted || record.Boot != "boot-b" {
+		t.Fatalf("record after the take-over = %+v, want attempted by boot-b", record)
+	}
+}
+
 func TestKV_AnotherBootsOldAttemptIsTakenOverAndItsClearLeavesTheNewOne(t *testing.T) {
 	kv := openTestBucket(t)
 	clock := newTestClock()

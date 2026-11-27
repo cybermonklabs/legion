@@ -21,11 +21,20 @@ import (
 // renewal + leaseTTL - leaseMargin, on its monotonic clock. A standby reads the record every
 // leaseStandbyPoll and takes it once the same revision has stayed unchanged for a full leaseTTL
 // on its own monotonic clock, measured from when it first saw that revision. No wall clocks are
-// compared: the holder's validity ends at its renewal's start + 4 s, and a standby takes no
-// earlier than that write + 5 s, which is safe while the two pods' clock rates differ by less
+// compared for that: the holder's validity ends at its renewal's start + 4 s, and a standby takes
+// no earlier than that write + 5 s, which is safe while the two pods' clock rates differ by less
 // than 20 %. Renewing is not the whole of holding: a holder whose receive connection has been
 // down for leaseReceiveLost releases the record however well its own renewals land, and a
 // standby takes none while its receive connection is down (lease.receiveDown).
+//
+// One age is read off a wall clock: a record whose last write's server timestamp is
+// bus.ListenerStateRecordLife (20 minutes) behind this pod's clock decides nothing, as when the
+// bucket dropped it at that age, and is taken as absent, at its revision (poll). A clock that runs
+// that much fast takes no live holder's record for it: an unreleased record is taken so only once
+// its revision has also stood unchanged for a full leaseTTL on this pod's monotonic clock, as an
+// expired one is, which a holder renewing inside its validity never lets happen; only a released
+// record, which no pod holds, is taken at once. A holder measures its own record's age on its
+// monotonic clock instead, from the start of its last renewal that landed (outlivedLocked).
 const (
 	leaseRenewEvery  = time.Second
 	leaseTTL         = 5 * time.Second
@@ -507,10 +516,11 @@ func (l *lease) Release(ctx context.Context) error {
 // term had lapsed (Release). It records the revision it wrote and the stale_binding it wrote
 // there, which a clean-hand-back mark of this stop would vouch for (MarkHandBack). It returns the
 // released record's revision, or zero when it wrote none: it did not hold the record, another pod
-// had already taken it (no error), or the write failed (its error).
+// had already taken it (no error), the record outlived the record life (outlivedLocked; no error,
+// as when the bucket dropped it), or the write failed (its error).
 func (l *lease) letGo() (uint64, error) {
 	l.mu.Lock()
-	held, rev := l.held, l.rev
+	held, rev, outlived := l.held, l.rev, l.outlivedLocked(l.now())
 	record := l.releasedRecordLocked(l.held && !l.holdingLocked())
 	l.held, l.validUntil = false, time.Time{}
 	l.mu.Unlock()
@@ -518,6 +528,9 @@ func (l *lease) letGo() (uint64, error) {
 		return 0, nil
 	}
 	defer l.signal()
+	if outlived {
+		return 0, nil
+	}
 	return l.writeRelease(record, rev)
 }
 
@@ -594,13 +607,17 @@ func (l *lease) receiveDown(now time.Time) (bool, time.Duration) {
 // the current term, releasing it when this pod's receive connection has been down for the bound,
 // or reading and maybe taking it as a standby, and returns how long to wait before the next. It
 // is where the receiver's signal is read, once a round, for the holder and the standby alike
-// (receiveDown).
+// (receiveDown). A holder whose record has outlived the record life writes none of those over it
+// and reads it as a standby instead (outlivedLocked, outlive).
 func (l *lease) step() time.Duration {
 	down, lasted := l.receiveDown(l.now())
 	l.mu.Lock()
 	held, givingUp := l.held, l.held && l.giveUpTerm == l.term
+	outlived := l.outlivedLocked(l.now())
 	l.mu.Unlock()
 	switch {
+	case outlived:
+		return l.outlive()
 	case givingUp:
 		return l.giveUp()
 	case held && down && lasted >= l.cfg.receiveLost:
@@ -615,6 +632,32 @@ func (l *lease) step() time.Duration {
 		return wait
 	}
 	return l.poll(down)
+}
+
+// outlivedLocked reports whether this process holds the record and its last write that landed,
+// the take or renewal whose start validUntil counts from, started bus.ListenerStateRecordLife or
+// more before now on this pod's monotonic clock: renewals that failed, or a process paused, for
+// that long. Such a record decides nothing more (poll), as when the bucket dropped it at that age
+// and a renewal, a release or a resume over it found no record to write, so the holder writes
+// nothing over it. Callers must hold l.mu.
+func (l *lease) outlivedLocked(now time.Time) bool {
+	return l.held && !now.Before(l.validUntil.Add(bus.ListenerStateRecordLife-(l.cfg.ttl-l.cfg.margin)))
+}
+
+// outlive ends the hold of a record that outlived the record life (outlivedLocked) without a
+// write: no resume and no release lands over it. The loop reads the record again at once as a
+// standby, which takes it as absent at its revision once its server timestamp is that old and its
+// revision has stood unchanged for the ttl (poll), a term that settles nothing, as a take of the
+// record the bucket had dropped did. Only the loop calls it, as it calls stepDown.
+func (l *lease) outlive() time.Duration {
+	l.mu.Lock()
+	l.held, l.rev, l.validUntil = false, 0, time.Time{}
+	l.mu.Unlock()
+	l.seenRev, l.lapseSignalled = 0, false
+	l.logger.Warn("listener lease outlived: no renewal landed for the record life, so the record is read again as a standby",
+		slog.String("lease", l.key), slog.String("record_life", bus.ListenerStateRecordLife.String()))
+	l.signal()
+	return 0
 }
 
 // giveUp releases the record as letGo does and leaves the loop a standby that does not take that
@@ -807,6 +850,21 @@ func (l *lease) ownRevision() (uint64, bool, error) {
 // revision (Update at that revision). The released revision this process wrote on giving the
 // lease up it takes only two standby polls after that (GiveUp), so another standby takes it first.
 //
+// A record whose last write is bus.ListenerStateRecordLife old by this pod's clock against the
+// write's server timestamp is absent, though the bucket still holds it: the bucket dropped such a
+// record before the `seen.` records sized its age, and a pod that found none settled nothing and
+// waited a push binding out as a pre-lease build's. A released one is taken so at once. An
+// unreleased or unreadable one is taken so only once its revision has also stood unchanged for
+// the ttl on this pod's monotonic clock, where a younger one is taken as expired. The age is read
+// off the wall clock, and a clock that runs that far fast reads a live holder's fresh renewal as
+// that old; but that holder renews inside the ttl, so its revision never stands that long, and no
+// standby takes it before the holder's validity ends (UntilLoss). Until then the record is read as
+// any unreleased one, so /healthz names its holder. Either way it is taken with Update at the
+// revision read, so a write that lands over it first wins as over any record, and nothing of it is
+// kept in the record written: no holder, flag, former boot or service_since, and no hand-back
+// candidate. A standby whose receive connection is down times no revision (below), so it takes
+// no unreleased record this way until the connection is back and the ttl has passed.
+//
 // down is whether this pod's receive connection is down (receiveDown): it then reads the record,
 // so its /healthz still names the holder, and takes none, since a pod that receives nothing would
 // hold the machine's lease and deliver nothing from it. It forgets the revision it was timing
@@ -816,20 +874,14 @@ func (l *lease) poll(down bool) time.Duration {
 	seen := l.now()
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		l.recovered()
-		l.mu.Lock()
-		l.record = leaseRecord{}
-		l.mu.Unlock()
-		l.seenRev = 0
-		if down {
-			return l.cfg.standbyPoll
-		}
-		return l.acquire(nil, leaseRecord{}, leaseTakenAbsent)
+		return l.absentOver(nil, down)
 	}
 	if err != nil {
 		l.noteFailure("read", err)
 		return l.cfg.standbyPoll
 	}
 	l.recovered()
+	outlived := !seen.Before(entry.Created().Add(bus.ListenerStateRecordLife))
 	record, err := decodeLeaseRecord(entry.Value())
 	if err != nil {
 		// An unreadable record is taken as one that is not released, once it stays unchanged for
@@ -839,6 +891,9 @@ func (l *lease) poll(down bool) time.Duration {
 				slog.Uint64("revision", entry.Revision()), slog.String("error", err.Error()))
 		}
 		record = leaseRecord{}
+	}
+	if outlived && record.Released {
+		return l.absentOver(entry, down)
 	}
 	l.mu.Lock()
 	l.record = record
@@ -856,12 +911,31 @@ func (l *lease) poll(down bool) time.Duration {
 		return l.cfg.standbyPoll
 	case seen.Sub(l.seenAt) < l.cfg.ttl:
 		return l.cfg.standbyPoll
+	case outlived:
+		// Stood unchanged for the ttl as an expired record must, and the record life old: taken
+		// as absent, at the revision timed, with nothing of it written again.
+		return l.acquire(entry, leaseRecord{}, leaseTakenAbsent)
 	default:
 		return l.acquire(entry, record, leaseTakenExpired)
 	}
 }
 
-// acquire writes this process's record over previous (nil: none) and, once it reads back the
+// absentOver reads the record as absent and, unless down, takes it so (poll): over previous, nil
+// when the bucket holds no record (Create), or a released record that outlived the record life
+// (Update at its revision), with an empty record, so nothing of previous is shown or written.
+func (l *lease) absentOver(previous nats.KeyValueEntry, down bool) time.Duration {
+	l.mu.Lock()
+	l.record = leaseRecord{}
+	l.mu.Unlock()
+	l.seenRev = 0
+	if down {
+		return l.cfg.standbyPoll
+	}
+	return l.acquire(previous, leaseRecord{}, leaseTakenAbsent)
+}
+
+// acquire writes this process's record over previous (nil: none; a record poll took as absent for
+// its age comes with an empty record, so only its revision is used) and, once it reads back the
 // write's server timestamp, holds the lease from the write's start. service_since starts again
 // at that timestamp when no record was there, when it carried none, or when its last write is
 // more than two ttl older than this one, since then no pod of the machine was serving; otherwise

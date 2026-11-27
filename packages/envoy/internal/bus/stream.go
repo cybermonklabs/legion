@@ -109,6 +109,19 @@ func ListenerBuckets() []string {
 // would leave every such read with no record to find.
 const LastSeenPrefix = "seen."
 
+// ListenerStateRecordLife is how long past its last write a delivery lease record
+// (ListenerLeaseKey) or a delivery ledger record (ListenerLedgerPrefix) in ListenerStateBucket
+// decides anything: 20 minutes, the bucket's MaxAge before the `seen.` records (LastSeenPrefix)
+// sized that age to the sessions' last-seen window. The bucket now keeps every key for that
+// longer age, so each reader of the two families judges a record's age itself, on its own clock
+// against the server's timestamp of the write, and decides as it did when the bucket had dropped
+// the record: the lease takes a record that old as absent, at its revision, an unreleased one only
+// once its revision has also stood the lease's ttl (cmd/listener, lease.poll), and the ledger takes
+// an attempt that old over from whichever boot made it
+// (dedupe.KV). A clean-hand-back mark (ListenerHandBackPrefix) needs no age: only the term that
+// replaced the revision it names reads it.
+const ListenerStateRecordLife = 20 * time.Minute
+
 // ListenerLeaseKey is the key of machine machineID's delivery lease in ListenerStateBucket. The
 // listener's grant writes this key and no other machine's. The machine's token in it is its
 // durable's name in the bucket's spelling (listenerStateToken).

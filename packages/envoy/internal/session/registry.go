@@ -271,6 +271,13 @@ func WithSessionReplicas(n int) SessionRegistryOption {
 // (WithSessionMaxAge) changes it, and a bucket an older build created was created at 5 minutes.
 const BucketMaxAge = GoneHorizon + time.Hour
 
+// DefaultLastSeenWindow is the LastSeenWindow of a registry opened with no TTL or last-seen
+// retention option over a bucket it created: BucketMaxAge, the life of the session's last
+// registration, and then the retention, LastSeenMemory and never less than that TTL
+// (retention), 4 hours at these values. The listener keeps its state bucket's records for no
+// less than this and the interest reaper's allowance (cmd/listener's listenerStateMaxAge).
+const DefaultLastSeenWindow = BucketMaxAge + max(LastSeenMemory, BucketMaxAge)
+
 func WithSessionTTL(d time.Duration) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.ttl = d }
 }
@@ -289,9 +296,10 @@ func WithSessionMaxAge(d time.Duration) SessionRegistryOption {
 // The default is LastSeenMemory (2 hours), longer than the gone horizon so that a caller told a
 // session is gone can still say when it was last seen; any value shorter than the session
 // bucket's TTL is one TTL. With WithLastSeenBucket the answer also ends when the listener state
-// bucket drops the session's `seen.` record, its MaxAge after the last write. That end comes
-// first where the MaxAge is shorter than one TTL plus this retention, as listenerStateMaxAge (20
-// minutes) is at the default retention (lastseen.go).
+// bucket no longer holds the session's `seen.` record. The listener keeps that bucket's records
+// for at least the registry's LastSeenWindow and the interest reaper's allowance past their last
+// write (cmd/listener's listenerStateAge), so the record outlasts the answer, which ends at
+// seenUntil on every pod alike (lastseen.go).
 func WithLastSeenRetention(d time.Duration) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.lastSeenRetention = d }
 }
@@ -739,6 +747,18 @@ func (r *SessionRegistry) TTL() time.Duration {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.ttl
+}
+
+// LastSeenWindow is how long past a registration write LastSeen still reports that write's time
+// for a lapsed session, at the TTL the registry runs with now: the span seenUntil adds to the
+// write, one TTL and the retention after it (retention), DefaultLastSeenWindow on a registry
+// with no option over a bucket it created. It moves with the TTL (SetTTL, sessionCache.BeginRead).
+// The listener sizes its state bucket's age by it, so a `seen.` record stands for as long as any
+// pod reads it (cmd/listener's listenerStateAge).
+func (r *SessionRegistry) LastSeenWindow() time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.ttl + r.retention()
 }
 
 // SetTTL moves the bucket's maximum age the registry expires its rows by, for a caller that has

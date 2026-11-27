@@ -207,3 +207,85 @@ func TestLeaseServiceSinceIsKeptOverARecentlyExpiredRecord(t *testing.T) {
 		t.Fatalf("record service_since = %v, want %v", record.ServiceSince, old)
 	}
 }
+
+// outlivedHolder is pod-a holding the lease, its clock then moved to bus.ListenerStateRecordLife
+// past its last renewal that landed, on its own clock and against the record's server timestamp
+// both: a holder paused, or cut off from the bucket, that long while no other pod took its record.
+// It returns the bucket, pod-a, the record as pod-a last wrote it, and pod-a's clock.
+func outlivedHolder(t *testing.T) (bus.KeyValue, *lease, natsgo.KeyValueEntry, *fakeLeaseClock) {
+	t.Helper()
+	kv := leaseBucket(t)
+	started := time.Now().Round(0)
+	clock := &fakeLeaseClock{at: started}
+	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
+	a.step()
+	if !a.Holding() {
+		t.Fatal("pod-a did not take the absent record")
+	}
+	drainChanges(a)
+	_, entry := readLease(t, kv)
+	// From the later of the renewal's start and its server timestamp, so the record life has passed
+	// by both.
+	from := entry.Created()
+	if started.After(from) {
+		from = started
+	}
+	clock.mu.Lock()
+	clock.at = from.Add(bus.ListenerStateRecordLife)
+	clock.mu.Unlock()
+	return kv, a, entry, clock
+}
+
+// A holder whose last renewal that landed is bus.ListenerStateRecordLife old writes nothing over
+// its record: the record decides nothing more, as when the bucket dropped it at that age and the
+// renewal, the resume or the release found no record to write. So its next round resumes nothing
+// and ends its hold, signalled, and it then takes the record as absent at its revision once that
+// revision has stood unchanged for the ttl, as any unreleased record must, a new term that settles
+// nothing; and a release instead writes no record and marks no hand-back.
+func TestLeaseHolderWritesNothingOverItsRecordOnceItOutlivedTheRecordLife(t *testing.T) {
+	t.Parallel()
+	t.Run("its next round", func(t *testing.T) {
+		t.Parallel()
+		kv, a, entry, clock := outlivedHolder(t)
+		term := a.Status().Term
+		if wait := a.step(); wait != 0 || a.Holding() {
+			t.Fatalf("the round past the record life waits %s holding %v, want the hold ended and the record read again at once", wait, a.Holding())
+		}
+		if !drainChanges(a) {
+			t.Fatal("ending the hold signalled no change")
+		}
+		if _, now := readLease(t, kv); now.Revision() != entry.Revision() {
+			t.Fatalf("the lease record is at revision %d, want %d: the holder wrote over the record it outlived", now.Revision(), entry.Revision())
+		}
+		if wait := a.step(); wait != leaseStandbyPoll || a.Holding() {
+			t.Fatalf("the poll after the hold ended waits %s holding %v, want pod-a standing by until its record's revision stood the ttl", wait, a.Holding())
+		}
+		clock.advance(leaseTTL)
+		a.step()
+		status := a.Status()
+		if !status.Holding || status.Term != term+1 || status.How != leaseTakenAbsent || status.Settle || status.Resumed {
+			t.Fatalf("status = %+v, want term %d held, taken from an absent record, not settling and no resume", status, term+1)
+		}
+		if record, written := readLease(t, kv); written.Revision() <= entry.Revision() || record.Holder != "pod-a" || record.Unsettled || len(record.FormerBoots) != 0 {
+			t.Fatalf("record = %+v at revision %d, want pod-a's new term written over revision %d, not unsettled, with no former boot",
+				record.leaseFields, written.Revision(), entry.Revision())
+		}
+	})
+	t.Run("its release", func(t *testing.T) {
+		t.Parallel()
+		kv, a, entry, _ := outlivedHolder(t)
+		if err := a.Release(t.Context()); err != nil {
+			t.Fatalf("release: %v", err)
+		}
+		if a.Holding() || !drainChanges(a) {
+			t.Fatalf("after the release: holding %v, want no hold and a change signalled", a.Holding())
+		}
+		if record, now := readLease(t, kv); now.Revision() != entry.Revision() || record.Released {
+			t.Fatalf("record = %+v at revision %d after the release, want revision %d as the holder last wrote it, not released",
+				record.leaseFields, now.Revision(), entry.Revision())
+		}
+		if marked, err := a.MarkHandBack(t.Context()); marked || err != nil {
+			t.Fatalf("the stop marked the hand-back %v (%v), want none: its release wrote no record", marked, err)
+		}
+	})
+}

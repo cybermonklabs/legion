@@ -128,7 +128,7 @@ func newReceiverRigAs(t *testing.T, busURI, stateURI, seed, machineID, instance 
 		stateConn.Close()
 		t.Fatalf("connect %s: %v", instance, err)
 	}
-	kv, err := openListenerState(t.Context(), stateConn, 1, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), stateConn, 1, listenerStateMaxAge, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket for %s: %v", instance, err)
 	}
@@ -264,7 +264,7 @@ func putLeaseRecord(t *testing.T, uri, machineID, record string) uint64 {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	defer conn.Close()
-	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}

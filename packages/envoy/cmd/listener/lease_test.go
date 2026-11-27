@@ -52,7 +52,7 @@ func leaseBucket(t *testing.T) bus.KeyValue {
 	t.Helper()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}
@@ -231,6 +231,235 @@ func TestLeaseStandbyTakesAnUnreleasedRecordOnlyAfterTheTTL(t *testing.T) {
 	}
 	if record, _ := readLease(t, kv); record.Holder != "pod-b" || !record.Unsettled {
 		t.Fatalf("record = %+v, want pod-b's, unsettled", record.leaseFields)
+	}
+}
+
+// takeRecordingKV is the listener state bucket recording how each write of the lease record is
+// sent: how many Creates, and the revision each Update compares against.
+type takeRecordingKV struct {
+	natsgo.KeyValue
+	mu      sync.Mutex
+	creates int
+	updates []uint64
+}
+
+func (k *takeRecordingKV) Create(key string, value []byte) (uint64, error) {
+	k.mu.Lock()
+	k.creates++
+	k.mu.Unlock()
+	return k.KeyValue.Create(key, value)
+}
+
+func (k *takeRecordingKV) Update(key string, value []byte, last uint64) (uint64, error) {
+	k.mu.Lock()
+	k.updates = append(k.updates, last)
+	k.mu.Unlock()
+	return k.KeyValue.Update(key, value, last)
+}
+
+// writes is how many Creates were sent and the revisions the Updates compared against, in order.
+func (k *takeRecordingKV) writes() (int, []uint64) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.creates, append([]uint64(nil), k.updates...)
+}
+
+// recordLifeLease writes the lease record as another pod last wrote it, and returns the bucket,
+// that record's entry as the bucket holds it, pod-b's lease over the bucket recording how its
+// takes write (takeRecordingKV), the recorder, and pod-b's clock, set to the record's own server
+// timestamp.
+func recordLifeLease(t *testing.T, record string) (bus.KeyValue, natsgo.KeyValueEntry, *lease, *takeRecordingKV, *fakeLeaseClock) {
+	t.Helper()
+	kv := leaseBucket(t)
+	putLease(t, kv, record)
+	_, entry := readLease(t, kv)
+	recording := &takeRecordingKV{KeyValue: kv.Legacy()}
+	clock := &fakeLeaseClock{at: entry.Created()}
+	b := testLease(bus.NewKeyValue(recording, kv.WatchHandle(), kv.Streams()), "pod-b", productionLeaseConfig(), clock.now)
+	return kv, entry, b, recording, clock
+}
+
+// A lease record whose last write is bus.ListenerStateRecordLife old decides nothing, though the
+// bucket, whose age the `seen.` records size, still holds it: the bucket dropped such a record
+// before, and a pod that found none took the lease, settled nothing and waited a push binding out
+// as a pre-lease build's. A standby takes it so: as absent, with an Update at the record's revision
+// and no Create, keeping none of its holder, flags, former boots or service_since; a released one
+// at its first poll, whose stop's hand-back mark then makes no hand-back candidate, and an
+// unreleased one only once its revision has stood unchanged for the ttl, as any unreleased record
+// must, so nothing is taken or written while the receive connection is down or before that ttl. A
+// moment before that age the same record is what it always was: an unreleased one is the holder's,
+// taken as expired once it stood the ttl, with a settle hold, and a released one is taken at once
+// as a hand-back candidate whose mark is read. Each row's clock starts at the record's server
+// timestamp.
+func TestLeaseTakesARecordTheRecordLifeOldAsAbsent(t *testing.T) {
+	t.Parallel()
+	const (
+		deadBoot   = "0011223344556677"
+		unreleased = `{"holder":"pod-gone","boot":"0011223344556677","deliver_subject":"_INBOX.gone","service_since":"2026-01-01T00:00:00Z","acquired_at":"2026-01-01T00:00:00Z","released":false,"stale_binding":true,"unsettled":true,"ack_wait_owed":true,"receiving":true,"former_boots":[{"boot":"8899aabbccddeeff","stopped":"2026-01-01T00:00:00Z"}]}`
+		released   = `{"holder":"pod-gone","boot":"0011223344556677","service_since":"2026-01-01T00:00:00Z","released":true,"unsettled":true}`
+	)
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// absent checks pod-b's take of entry's record as an absent one: held over the record at its
+	// revision, with nothing of it kept.
+	absent := func(t *testing.T, kv bus.KeyValue, entry natsgo.KeyValueEntry, b *lease, recording *takeRecordingKV) {
+		t.Helper()
+		status := b.Status()
+		if !status.Holding || status.Term != 1 || status.How != leaseTakenAbsent || status.ActiveInstance != "pod-b" || status.Settle || status.HandBack || status.Replaced != 0 {
+			t.Fatalf("status = %+v, want pod-b holding term 1 taken from an absent record, not settling and no hand-back candidate", status)
+		}
+		if creates, updates := recording.writes(); creates != 0 || len(updates) == 0 || updates[0] != entry.Revision() {
+			t.Fatalf("the take sent %d creates and updates at revisions %v, want its first write an update at the record's revision %d and no create", creates, updates, entry.Revision())
+		}
+		record, written := readLease(t, kv)
+		if written.Revision() <= entry.Revision() || record.Holder != "pod-b" || record.Boot == deadBoot || record.Released ||
+			record.StaleBinding || record.Unsettled || record.AckWaitOwed || record.Receiving || len(record.FormerBoots) != 0 {
+			t.Fatalf("record = %+v at revision %d, want pod-b's written over revision %d, with no flag and no former boot", record.leaseFields, written.Revision(), entry.Revision())
+		}
+		if !record.ServiceSince.Equal(record.AcquiredAt) || record.ServiceSince.Equal(old) || !status.ServiceSince.Equal(record.ServiceSince) {
+			t.Fatalf("service_since %v (status %v), acquired_at %v: want service_since started again at the acquiring write, not the record's %v",
+				record.ServiceSince, status.ServiceSince, record.AcquiredAt, old)
+		}
+		if former, settling := b.FormerHolder(deadBoot); former || settling != 0 || b.FormerSettleWait() != 0 {
+			t.Fatalf("pod-b names %s a former holder (%v, %s) and its relays wait %s, want no former holder and no wait", deadBoot, former, settling, b.FormerSettleWait())
+		}
+	}
+
+	t.Run("an unreleased record a moment before the record life", func(t *testing.T) {
+		t.Parallel()
+		kv, _, b, _, clock := recordLifeLease(t, unreleased)
+		clock.advance(bus.ListenerStateRecordLife - leaseTTL - time.Nanosecond)
+		b.step()
+		if status := b.Status(); status.Holding || status.ActiveInstance != "pod-gone" || !status.ServiceSince.Equal(old) {
+			t.Fatalf("standby status = %+v, want pod-gone named as the holder with its service_since %v", status, old)
+		}
+		clock.advance(leaseTTL)
+		b.step()
+		if status := b.Status(); !status.Holding || status.How != leaseTakenExpired || !status.Settle {
+			t.Fatalf("status = %+v, want pod-b holding over an expired record, settling", status)
+		}
+		if record, _ := readLease(t, kv); !record.Unsettled || len(formerBootNames(record)) != 1 || formerBootNames(record)[0] != deadBoot {
+			t.Fatalf("record = %+v, want it unsettled, naming %s as its one former boot", record.leaseFields, deadBoot)
+		}
+	})
+	t.Run("an unreleased record at the record life", func(t *testing.T) {
+		t.Parallel()
+		kv, entry, b, recording, clock := recordLifeLease(t, unreleased)
+		var up atomic.Bool
+		b.SetReceiveSignal(up.Load)
+		clock.advance(bus.ListenerStateRecordLife)
+		b.step()
+		if status := b.Status(); status.Holding || status.ActiveInstance != "pod-gone" {
+			t.Fatalf("receive connection down at the record life: status = %+v, want pod-gone read as the holder and nothing taken", status)
+		}
+		up.Store(true)
+		for waited := time.Duration(0); waited < leaseTTL; waited += leaseStandbyPoll {
+			if wait := b.step(); wait != leaseStandbyPoll || b.Holding() {
+				t.Fatalf("%s after the receive connection came back the poll waits %s holding %v, want no take before the record's revision stood the ttl, %s", waited, wait, b.Holding(), leaseTTL)
+			}
+			if creates, updates := recording.writes(); creates != 0 || len(updates) != 0 {
+				t.Fatalf("%s after the receive connection came back pod-b sent %d creates and updates at %v, want no write before the ttl", waited, creates, updates)
+			}
+			clock.advance(leaseStandbyPoll)
+		}
+		if wait := b.step(); wait != leaseRenewEvery {
+			t.Fatalf("the poll once the revision stood the ttl waits %s, want the renewal interval %s: the record taken", wait, leaseRenewEvery)
+		}
+		absent(t, kv, entry, b, recording)
+	})
+	t.Run("a released record with its hand-back mark a moment before the record life", func(t *testing.T) {
+		t.Parallel()
+		kv, entry, b, _, clock := recordLifeLease(t, released)
+		putHandBackMark(t, kv, leaseTestMachine, entry.Revision())
+		clock.advance(bus.ListenerStateRecordLife - time.Nanosecond)
+		b.step()
+		status := b.Status()
+		if !status.Holding || status.How != leaseTakenReleased || !status.Settle || !status.HandBack || status.Replaced != entry.Revision() {
+			t.Fatalf("status = %+v, want pod-b holding from a released record, settling, a hand-back candidate of revision %d", status, entry.Revision())
+		}
+		if marked, err := b.HandBackMarked(t.Context(), status.Term); !marked || err != nil {
+			t.Fatalf("pod-b reads its term marked %v (%v), want the mark written for revision %d", marked, err, entry.Revision())
+		}
+		if former, settling := b.FormerHolder(deadBoot); !former || settling == 0 {
+			t.Fatalf("pod-b names %s a former holder %v with %s to settle, want it named, still settling", deadBoot, former, settling)
+		}
+	})
+	t.Run("a released record with its hand-back mark at the record life", func(t *testing.T) {
+		t.Parallel()
+		kv, entry, b, recording, clock := recordLifeLease(t, released)
+		putHandBackMark(t, kv, leaseTestMachine, entry.Revision())
+		clock.advance(bus.ListenerStateRecordLife)
+		b.step()
+		absent(t, kv, entry, b, recording)
+		if marked, err := b.HandBackMarked(t.Context(), b.Status().Term); marked || err != nil {
+			t.Fatalf("pod-b reads its term marked %v (%v), want unmarked: a term taken from an absent record is no hand-back candidate", marked, err)
+		}
+	})
+}
+
+// A standby whose clock runs far enough fast to read every renewal of a live holder as
+// bus.ListenerStateRecordLife old takes none of them: an unreleased record is taken as absent only
+// once its revision has also stood unchanged for the ttl on the standby's monotonic clock, and a
+// holder renewing inside its validity never lets it. So the standby writes nothing while the
+// holder's validity lasts, and once the holder stops renewing it takes the record, at the revision
+// the holder last wrote, only after that validity has ended: the fence a holder counts on
+// (UntilLoss) holds whatever the standby's wall clock reads.
+func TestLeaseAFastStandbyClockTakesNoLiveHoldersRecord(t *testing.T) {
+	t.Parallel()
+	kv := leaseBucket(t)
+	holderClock := newFakeLeaseClock()
+	a := testLease(kv, "pod-a", productionLeaseConfig(), holderClock.now)
+	a.step()
+	if !a.Holding() {
+		t.Fatal("pod-a did not take the absent record")
+	}
+	_, first := readLease(t, kv)
+	// An hour past the record life ahead of the server, so every record pod-b reads is that old.
+	standbyClock := &fakeLeaseClock{at: first.Created().Add(bus.ListenerStateRecordLife + time.Hour)}
+	recording := &takeRecordingKV{KeyValue: kv.Legacy()}
+	b := testLease(bus.NewKeyValue(recording, kv.WatchHandle(), kv.Streams()), "pod-b", productionLeaseConfig(), standbyClock.now)
+	advance := func() {
+		holderClock.advance(leaseStandbyPoll)
+		standbyClock.advance(leaseStandbyPoll)
+	}
+	noWrite := func(when string) {
+		t.Helper()
+		if creates, updates := recording.writes(); creates != 0 || len(updates) != 0 {
+			t.Fatalf("%s pod-b sent %d creates and updates at %v, want no write while pod-a's validity lasts", when, creates, updates)
+		}
+	}
+
+	for elapsed := time.Duration(0); elapsed < 3*leaseTTL; elapsed += leaseStandbyPoll {
+		if elapsed%leaseRenewEvery == 0 {
+			a.step()
+		}
+		b.step()
+		if !a.Holding() || b.Holding() {
+			t.Fatalf("at %s: pod-a holding %v, pod-b holding %v; want pod-a alone", elapsed, a.Holding(), b.Holding())
+		}
+		noWrite("at " + elapsed.String())
+		advance()
+	}
+	if active := b.Status().ActiveInstance; active != "pod-a" {
+		t.Fatalf("pod-b names active instance %q, want pod-a", active)
+	}
+
+	// pod-a stops renewing.
+	_, last := readLease(t, kv)
+	for waited := time.Duration(0); !b.Holding(); waited += leaseStandbyPoll {
+		if waited > 2*leaseTTL {
+			t.Fatalf("pod-b took no record %s after pod-a's last renewal", waited)
+		}
+		if a.Holding() {
+			noWrite(waited.String() + " after pod-a's last renewal")
+		}
+		b.step()
+		if a.Holding() && b.Holding() {
+			t.Fatalf("%s after pod-a's last renewal both pods hold the lease: pod-b took it inside pod-a's validity", waited)
+		}
+		advance()
+	}
+	if creates, updates := recording.writes(); creates != 0 || len(updates) == 0 || updates[0] != last.Revision() {
+		t.Fatalf("pod-b's take sent %d creates and updates at %v, want its first write an update at pod-a's last revision %d", creates, updates, last.Revision())
 	}
 }
 

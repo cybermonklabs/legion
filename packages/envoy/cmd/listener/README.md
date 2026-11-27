@@ -43,12 +43,19 @@ A standby runs none of them, never creates or updates the durable, and registers
 
 ### The delivery lease
 
-The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV bucket `envoy_listener` (`bus.ListenerStateBucket`), which the listener creates at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and a 20 minute `MaxAge` (`listenerStateMaxAge`), raising a bucket an earlier build created with a shorter one on every open.
+The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV bucket `envoy_listener` (`bus.ListenerStateBucket`), which the listener creates at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and the `MaxAge` below (`listenerStateAge`), raising a bucket that keeps its keys for less on every open and lowering none.
 The `<durable>` of every key of this bucket, the lease's, the hand-back marks' and the ledger's, is the durable's name as one KV key token (`bus.ListenerLeaseKey`, `bus.ListenerHandBackPrefix`, `bus.ListenerLedgerPrefix`): each byte outside nats.go's key alphabet, and a `.`, is `/` and two upper-case hex digits, since nats.go refuses the `%` a dotted machine id's durable spells its dots with.
 So `host.example.internal`, whose durable is `listener-host%2Eexample%2Einternal`, holds the lease `lease.listener-host/252Eexample/252Einternal`, and an id with none of the characters the durable escapes keeps the key it has always had.
 The age is sized by the `seen.` records beside the lease, not by the lease:
-every pod answers a lapsed session's `last_seen` out of that record alone, and the session registry would report it for the session TTL and its last-seen retention (`session.LastSeenMemory`, 2 hours) past the session's last registration write, so the bucket's age, which drops the record 20 minutes after that write, is what ends the answer.
-Its value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
+every pod answers a lapsed session's `last_seen` out of that record alone, for the session TTL and then its last-seen retention (`session.LastSeenMemory`, 2 hours, never less than the TTL) past the session's last registration write (`session.SessionRegistry.LastSeenWindow`), so the bucket keeps every key that long and the interest reaper's 15 minutes more (`store.InterestReapAllowance`), and that window, not the bucket, ends the answer on every pod at once.
+At the default 2 hour session TTL the age is 4 h 15 min (`listenerStateMaxAge`).
+A longer session TTL raises it: `ENVOY_SESSION_MAX_AGE`, or a session bucket that already keeps its records longer, at 6 h makes it 12 h 15 min.
+The start's open of the bucket, once the session registry has read its TTL, and a late join's open (`joinDeliveryLease`) each ask for that age at every try, and a TTL raised while the pods run reaches the bucket at the next pod's start or join.
+The age keeps the other keys' bytes and none of their decisions:
+a lease record or a delivery ledger record decides nothing once 20 minutes, the bucket's `MaxAge` before the `seen.` records sized it, have passed since its last write (`bus.ListenerStateRecordLife`), and a hand-back mark is read only by the term that replaced its revision.
+A standby takes a lease record that old as absent, with an update at its revision, and keeps none of its holder, flags, `former_boots` or `service_since`: a released one at once, an unreleased or unreadable one only once its revision has also stood unchanged for the TTL, as any unreleased record must, so a standby whose clock runs 20 minutes fast still takes no live holder's record; a holder whose own renewals have not landed for that long writes nothing over its record and takes it the same way.
+The ledger takes an attempt that old over, whoever made it.
+The lease record's value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
 `former_boots` names the boots that held the lease before `holder` (`formerBoots`, `lease_record.go`):
 each entry holds `boot`, `stopped` and `released`.
@@ -64,7 +71,7 @@ Beside the lease, a pod that stopped gracefully writes one key per hand-over it 
 `handback.<durable>.<revision>` (`bus.ListenerHandBackPrefix`), the clean-hand-back mark, named for the revision of the lease record its own release wrote.
 Its value is JSON: `instance`, `boot` and `revision`.
 The pod that takes that very revision reads it inside its settle hold and ends the hold at the hand-back delay instead of an ack wait ("Take-over" below).
-Nothing deletes a mark: the bucket's 20 minute `MaxAge` drops it, no pod reads a mark for a revision it did not replace, and revisions never repeat, so an old mark is never read as a newer hand-over's.
+Nothing deletes a mark: the bucket's `MaxAge` drops it, no pod reads a mark for a revision it did not replace, and revisions never repeat, so an old mark is never read as a newer hand-over's.
 
 | Constant (`lease.go`) | Value | What it does |
 | --- | --- | --- |
@@ -74,7 +81,7 @@ Nothing deletes a mark: the bucket's 20 minute `MaxAge` drops it, no pod reads a
 | `leaseStandbyPoll` | 500 ms | How often a standby reads the record. |
 | `leaseReceiveLost` | 3 s | How long this pod's receive connection may be down before the holder stops renewing and releases the record ("Take-over" below). |
 
-A standby takes an absent record with a create, a released one at once, and an unreleased one only once the TTL has passed; no wall clocks are compared.
+A standby takes an absent record with a create, a released one at once, and an unreleased one only once the TTL has passed on its own monotonic clock; the one wall-clock reading, a record's 20 minute age above, takes no unreleased record before that TTL either.
 A holder whose renewal finds its record taken (a compare-and-set conflict) steps down and unsubscribes.
 The holder receives with a core subscription on the durable's deliver subject, never `nats.Bind`, and handles a message only while it holds the lease:
 one received while it does not (the moment before an unsubscribe lands, or a subscription nats.go sent again after a reconnect in place) is dropped with no ack and no NAK, and the durable redelivers it to the holder after its ack wait.
@@ -399,12 +406,12 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
 
 - **Clean-hand-back marks** (`handback.<durable>.<revision>` in `envoy_listener`):
   a pod that stopped gracefully vouches for the lease record it released, and the pod that took that record reads the mark inside its settle hold ("Take-over" above).
-  A mark nobody reads leaves the bucket with its 20 minute `MaxAge`.
+  A mark nobody reads leaves the bucket with its `MaxAge`; a mark for a released record that has outlived its 20 minutes (`bus.ListenerStateRecordLife`) is never read, since a pod takes that record as absent, which makes no hand-back candidate.
 
 - **Last seen** (`seen.<session token>` in `envoy_listener`, the same session token as in the ledger key above):
   every session registration write records when the session was last seen, and every pod answers a lapsed session's `last_seen` out of that record alone, so two pods never answer one session differently - a pod that watched the session keeps no answer of its own.
-  The registry would report it for the session TTL and 2 hours (`session.LastSeenMemory`) past the last write, but the bucket's `MaxAge` drops the record 20 minutes after that write, so the answer lasts 20 minutes past the last write.
-  With no record in the bucket - it was never written, its age removed it, or it could not be read within the request's budget - no pod answers one.
+  The registry reports it for the session TTL and then its last-seen retention (`session.LastSeenMemory`, 2 hours, never less than the TTL) past the last write, 4 hours at the default 2 hour TTL, and the bucket keeps the record that long and 15 minutes more, raised with a longer TTL ("The delivery lease" above), so the answer lasts that whole window on every pod.
+  With no record in the bucket - it was never written, a bucket with a shorter age removed it, or it could not be read within the request's budget - no pod answers one.
 
 - **Role-claim grace** counts from the machine's service start, `service_since` in the lease record:
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).
@@ -473,9 +480,10 @@ this build's lease holder, finding the durable push-bound when it took an absent
 subscriber's push binding to end`) and subscribes within a second of that binding's end.
 Past 135 s it logs `lease holder cannot deliver from the durable` at ERROR, and again every 5 min, which the AWS `subscribe-exhausted` alarm matches; it never exits for it.
 
-An unreleased record stays in the bucket for the bucket's `MaxAge`, 20 minutes, where an earlier build of this release kept it 10:
+An unreleased record counts as its holder's for 20 minutes after its last write (`bus.ListenerStateRecordLife`), where an earlier build of this release kept it 10:
 after every pod of this build died hard, a pod starting within 20 minutes finds that record, takes it as an expired one and counts a push binding it finds as the dead holder's rather than a pre-lease build's - the window in which that reading holds is now twice as long.
-A pod starting later finds no record and waits such a binding out as a pre-lease build's, as it always has.
+A pod starting later takes the record, which the bucket keeps for its whole `MaxAge`, as absent and waits such a binding out as a pre-lease build's, as it always has.
+An earlier build of this release reads a record by its presence alone and lowers no bucket's age, so rolled back to over a bucket this build raised, it counts such a record as its holder's for that bucket's whole `MaxAge`, 4 h 15 min at the defaults, where this build counts it for 20 minutes.
 
 Rolling back to a build before this release works: that build corrects the durable's filter to its own list and binds once this build's pods have stopped.
 But a hard stop of this build's lease holder while a build from before the release is up and polling to bind can deliver messages twice:

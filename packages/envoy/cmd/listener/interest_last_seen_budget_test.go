@@ -51,7 +51,7 @@ func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *te
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	state, err := openListenerState(t.Context(), client.Conn, 1, listenerStateRequestWait)
+	state, err := openListenerState(t.Context(), client.Conn, 1, listenerStateMaxAge, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}

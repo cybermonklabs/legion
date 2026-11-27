@@ -160,7 +160,7 @@ func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
 		t.Fatalf("connect as box-a's user: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	kv, err := openListenerState(t.Context(), conn, 1, 2*time.Second)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, 2*time.Second)
 	if err != nil {
 		t.Fatalf("open the listener state bucket under box-a's grant: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEv
 		t.Fatalf("connect as box-b's user: %v", err)
 	}
 	t.Cleanup(connB.Close)
-	kvB, err := openListenerState(t.Context(), connB, 1, 2*time.Second)
+	kvB, err := openListenerState(t.Context(), connB, 1, listenerStateMaxAge, 2*time.Second)
 	if err != nil {
 		t.Fatalf("open the listener state bucket under box-b's grant: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEv
 		t.Fatalf("connect as box-a's user: %v", err)
 	}
 	t.Cleanup(connA.Close)
-	kvA, err := openListenerState(t.Context(), connA, 1, 2*time.Second)
+	kvA, err := openListenerState(t.Context(), connA, 1, listenerStateMaxAge, 2*time.Second)
 	if err != nil {
 		t.Fatalf("open the listener state bucket under box-a's grant: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t 
 		t.Fatalf("connect as %s's user: %v", leaseTestMachine, err)
 	}
 	t.Cleanup(conn.Close)
-	if _, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait); err != nil {
+	if _, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait); err != nil {
 		t.Fatalf("open the absent listener state bucket under %s's grant: %v", leaseTestMachine, err)
 	}
 
@@ -372,7 +372,7 @@ func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t 
 	if _, err := adminJS.UpdateStream(&earlier); err != nil {
 		t.Fatalf("shorten %s's age as an earlier build had it: %v", stream, err)
 	}
-	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket of an earlier build's age under %s's grant: %v", leaseTestMachine, err)
 	}

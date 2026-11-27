@@ -29,11 +29,13 @@ func WithLastSeenBucket(kv bus.KeyValue) SessionRegistryOption {
 }
 
 // SetLastSeenBucket gives a registry opened without the listener state bucket that bucket from
-// here on, as WithLastSeenBucket gives it at the open: the listener calls it once a pod that
-// started without the grant for the bucket opens it and joins its machine's delivery lease
-// (cmd/listener's joinDeliveryLease). From then on every registration write records the session's
-// last-seen time in the bucket, and LastSeen answers a lapsed session from the bucket's record
-// alone, as every other pod of the fleet does: the times this process kept before (seenLocal)
+// here on, as WithLastSeenBucket gives it at the open. The listener opens that bucket only after
+// the registry, whose TTL the bucket's age follows, so it calls this at its start once it has
+// opened the bucket, and again when a pod that started without the grant for the bucket opens it
+// and joins its machine's delivery lease (cmd/listener's joinDeliveryLease). From then on every
+// registration write records the session's last-seen time in the bucket, and LastSeen answers a
+// lapsed session from the bucket's record alone, as every other pod of the fleet does: the times
+// this process kept before (seenLocal), those its watcher delivered before the call included,
 // answer nothing more, and each goes at its own deadline.
 func (r *SessionRegistry) SetLastSeenBucket(kv bus.KeyValue) {
 	r.mu.Lock()
@@ -51,11 +53,12 @@ func (r *SessionRegistry) SetLastSeenBucket(kv bus.KeyValue) {
 // With the listener state bucket (WithLastSeenBucket) that time is the session's `seen.` record
 // alone, the server's timestamp of the write, which every pod reads alike, a pod started after the
 // session lapsed included: every pod of the fleet answers one time for one session through the
-// whole window, and a record the bucket has not got (it was never written, its MaxAge removed it,
-// or it could not be read) is no answer on any of them. The bucket keeps a record for
-// listenerStateMaxAge (20 minutes) after its last write, which is shorter than this window at the
-// registry's default retention (LastSeenMemory, 2 hours), so the bucket's age ends the answer
-// there, and no pod answers once the record is gone. Without the bucket the time is this
+// whole window, and a record the bucket has not got (it was never written, a bucket MaxAge shorter
+// than the window removed it, or it could not be read) is no answer on any of them. The listener
+// keeps a record for this registry's LastSeenWindow and the interest reaper's allowance past its
+// last write, and longer when the bucket already keeps it longer (cmd/listener's
+// listenerStateAge), so the window, not the bucket, ends the answer, and every pod ends it at the
+// same moment. Without the bucket the time is this
 // process's own record (seenLocal), the UpdatedAt of every registration this process wrote or its
 // watcher saw, which a restart forgets. The window is measured on this process's clock against
 // the server's timestamp; a skew of seconds against a TTL of minutes moves its end by that skew.
@@ -96,7 +99,8 @@ func (r *SessionRegistry) LastSeen(ctx context.Context, sessionID string) int64 
 }
 
 // seenUntil is when a lapsed session's last-seen time at (Unix milliseconds) stops being reported:
-// the retention after the expiry of the registration written at at.
+// the retention after the expiry of the registration written at at, at plus the registry's
+// LastSeenWindow when ttl and retention are the registry's own.
 func seenUntil(at int64, ttl, retention time.Duration) time.Time {
 	return time.UnixMilli(at).Add(ttl + retention)
 }

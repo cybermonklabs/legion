@@ -1682,8 +1682,9 @@ func refusesBucket(err error, bucket string) bool {
 // the wait before the next try: the listener then delivers without a lease, as the machine's one
 // deliverer receiving only while no other subscriber holds the durable, says so in /healthz, and
 // tries the bucket again on that connection until a grant lets it open it (joinDeliveryLease). ctx
-// is the start's (openListenerState).
-func openDeliveryLease(ctx context.Context, urls []string, replicas int, machineID, instance string, logger *logging.Logger) (*lease, *nats.Conn) {
+// is the start's (openListenerState). age is the bucket's MaxAge each try asks for, created at or
+// raised to and never lowered (listenerStateAgeOf).
+func openDeliveryLease(ctx context.Context, urls []string, replicas int, age func() time.Duration, machineID, instance string, logger *logging.Logger) (*lease, *nats.Conn) {
 	var conn *nats.Conn
 	clusterWait := clusterStateWait{next: durableBindPoll}
 	for {
@@ -1693,7 +1694,7 @@ func openDeliveryLease(ctx context.Context, urls []string, replicas int, machine
 		}
 		if err == nil {
 			var kv bus.KeyValue
-			if kv, err = openListenerState(ctx, conn, replicas, listenerStateRequestWait); err == nil {
+			if kv, err = openListenerState(ctx, conn, replicas, age(), listenerStateRequestWait); err == nil {
 				return newLease(kv, machineID, instance, productionLeaseConfig(), time.Now, logger), conn
 			}
 		}
@@ -1740,6 +1741,7 @@ const listenerStateOpenFailedLine = "listener state bucket open failed; retrying
 // next try, twice durableBindPoll after the first refusal, doubling up to durableRefusedRetryCap;
 // an open the cluster's state answers after the wait logClusterState returns, and any other
 // failure after startRetry, as the start's open does. The pod delivers without a lease meanwhile.
+// Each try asks for age, as the start's open does (listenerStateAgeOf).
 //
 // Every wait between two tries is the loop's waitUnlessDone, which ends when ctx ends, and the
 // open itself runs under ctx (openListenerState), so the join returns nil as soon as ctx has
@@ -1751,11 +1753,11 @@ const listenerStateOpenFailedLine = "listener state bucket open failed; retrying
 // the open's result, so an open that ctx's end failed logs none of listenerStateRefusedLine,
 // clusterStateLine (logClusterState) and listenerStateOpenFailedLine, and an open that succeeded
 // once ctx had ended makes no lease.
-func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, machineID, instance string, logger *logging.Logger) *lease {
+func joinDeliveryLease(ctx context.Context, conn *nats.Conn, replicas int, age func() time.Duration, machineID, instance string, logger *logging.Logger) *lease {
 	wait, refusedWait := durableBindPoll, nextRefusedWait(durableBindPoll)
 	clusterWait := clusterStateWait{next: durableBindPoll}
 	for waitUnlessDone(ctx, wait) == nil {
-		kv, err := openListenerState(ctx, conn, replicas, listenerStateRequestWait)
+		kv, err := openListenerState(ctx, conn, replicas, age(), listenerStateRequestWait)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -2355,34 +2357,12 @@ func runListener(credentialWait time.Duration) {
 	} else if err != nil {
 		logger.Warn("durable consumer check failed; the receive loop retries it", slog.String("consumer", consumer), slog.String("error", err.Error()))
 	}
-	// The delivery lease makes one pod of this machine id its deliverer and every other a standby
-	// (lease.go). It is created here, after the durable check so a refused start opens no bucket,
-	// and started once /v1 serves and the shutdown can release it. A pod that opened the bucket
-	// has the grant for it, so its keeper raises that bucket to the deployment's copies every
-	// period too (bus.Client.KeepBucket): naming it at the connect would have a pod whose grant
-	// lacks it, which delivers without a lease, refused on it every period instead. Such a pod
-	// keeps the lease's connection and joins the lease once a grant lets it open the bucket
-	// (joinDeliveryLease, below); podLease is the lease from whichever of the two, and what reads
-	// the lease outside the receive loop reads it there, so it follows the join.
-	//
-	// An edge listener opens no lease and dials no lease connection: its grant holds no call of the
-	// listener state bucket (natsgrant.Edge), so every request of that connection would be refused,
-	// and none is ever granted to join on. It delivers as a listener without a lease does, the
-	// machine's one deliverer, receiving from the durable only while no other subscriber holds it,
-	// with its ledger and last-seen times in process: one edge pod runs per machine id.
-	var deliveryLease *lease
-	var leaseConn *nats.Conn
-	if edge == nil {
-		deliveryLease, leaseConn = openDeliveryLease(starting, cfg.NATSURLs, cfg.NATSReplicas, cfg.MachineID, instance, logger)
-	} else {
-		logger.Info("delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease",
-			slog.String("bucket", bus.ListenerStateBucket))
-	}
+	// podLease is the delivery lease this pod runs: the one opened below, once the session registry
+	// has read the TTL the listener state bucket's age follows, or the one a pod whose grant refused
+	// that bucket joins later (joinDeliveryLease). What reads the lease outside the receive loop
+	// reads it here, so it follows the join; until a lease is stored it reads none, as a listener
+	// with no lease does, and nothing reads it before /v1 serves.
 	var podLease atomic.Pointer[lease]
-	if deliveryLease != nil {
-		podLease.Store(deliveryLease)
-		client.KeepBucket(bus.ListenerStateBucket)
-	}
 	// CI-summary aggregation state. Its WatchAll cache warms asynchronously like the registries
 	// below; the summary loop tolerates an empty cache until it fills. It opens ahead of them, as the
 	// one store the webhooks need, and after the durable check, so a refused start opens no bucket.
@@ -2464,14 +2444,6 @@ func runListener(credentialWait time.Duration) {
 	}
 	cacheReadyCancel()
 
-	// A session's last-seen time lives in the listener state bucket beside the lease, so every pod
-	// answers it alike for a lapsed session; a listener with no lease keeps it in process
-	// (session.WithLastSeenBucket) until it joins the lease (session.SessionRegistry.SetLastSeenBucket,
-	// joinDeliveryLease below). The registry would answer a departed session's last heartbeat
-	// for its own session.LastSeenMemory (2 hours), which this listener does not shorten, but the
-	// state bucket drops the seen. record listenerStateMaxAge (20 minutes) after its last write,
-	// and with the bucket that ends the answer (internal/session/lastseen.go).
-	//
 	// The windows every reader of the registry judges a record's age against. Each defaults to
 	// the compiled constant (session.LiveWindow, session.GoneHorizon). The live window's is the
 	// declaration contracts.SessionLiveWindow, which the Go test
@@ -2514,9 +2486,6 @@ func runListener(credentialWait time.Duration) {
 		session.WithSessionLiveWindow(sessionLiveWindow),
 		session.WithSessionGoneHorizon(sessionGoneHorizon),
 	}
-	if deliveryLease != nil {
-		sessionOptions = append(sessionOptions, session.WithLastSeenBucket(deliveryLease.kv))
-	}
 	sessions := openStartStore(client, logger, grantName(edge), "session registry", []string{bus.SessionBucket}, cfg.NATSReplicas, func(conn *nats.Conn) (*session.SessionRegistry, error) {
 		return session.OpenSessionRegistry(starting, conn, sessionOptions...)
 	})
@@ -2542,6 +2511,47 @@ func runListener(credentialWait time.Duration) {
 		logger.Warn("session store keeps a record no longer than the gone horizon; a stalled session's record ends before it reads gone; raise ENVOY_SESSION_MAX_AGE",
 			slog.String("session_max_age", maxAge.String()),
 			slog.String("session_gone_horizon", sessionGoneHorizon.String()))
+	}
+
+	// The delivery lease makes one pod of this machine id its deliverer and every other a standby
+	// (lease.go). It is created here, after the durable check so a refused start opens no bucket,
+	// and after the session registry, whose TTL the listener state bucket's age follows: the open
+	// creates the bucket at the registry's last-seen window, the session TTL and its last-seen
+	// retention, and the interest reaper's allowance, raises a bucket that keeps its keys for less
+	// to that, and lowers none (listenerStateAgeOf, which a late join reads at each try too), so a
+	// session's `seen.` record stands for as long as any pod answers its last_seen from it. It is
+	// started once /v1 serves and the shutdown can release it, so nothing before that needs it. A
+	// pod that opened the bucket has the grant for it, so its keeper raises that bucket to the
+	// deployment's copies every period too (bus.Client.KeepBucket): naming it at the connect would
+	// have a pod whose grant lacks it, which delivers without a lease, refused on it every period
+	// instead. Such a pod keeps the lease's connection and joins the lease once a grant lets it
+	// open the bucket (joinDeliveryLease, below).
+	//
+	// From the open on, the session registry records each session's last-seen time in the bucket
+	// beside the lease (session.SessionRegistry.SetLastSeenBucket), so every pod answers it alike
+	// for a lapsed session, for the registry's whole last-seen window. No registration is written
+	// before this, since no route serves yet, and the times the registry's watcher kept in process
+	// meanwhile answer nothing once it has the bucket. A listener with no lease keeps them in
+	// process until it joins the lease.
+	//
+	// An edge listener opens no lease and dials no lease connection: its grant holds no call of the
+	// listener state bucket (natsgrant.Edge), so every request of that connection would be refused,
+	// and none is ever granted to join on. It delivers as a listener without a lease does, the
+	// machine's one deliverer, receiving from the durable only while no other subscriber holds it,
+	// with its ledger and last-seen times in process: one edge pod runs per machine id.
+	stateAge := listenerStateAgeOf(sessions)
+	var deliveryLease *lease
+	var leaseConn *nats.Conn
+	if edge == nil {
+		deliveryLease, leaseConn = openDeliveryLease(starting, cfg.NATSURLs, cfg.NATSReplicas, stateAge, cfg.MachineID, instance, logger)
+	} else {
+		logger.Info("delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease",
+			slog.String("bucket", bus.ListenerStateBucket))
+	}
+	if deliveryLease != nil {
+		podLease.Store(deliveryLease)
+		client.KeepBucket(bus.ListenerStateBucket)
+		sessions.SetLastSeenBucket(deliveryLease.kv)
 	}
 
 	// Wait for the session cache to finish its initial scan before we accept
@@ -3089,7 +3099,7 @@ func runListener(credentialWait time.Duration) {
 	// does.
 	if deliveryLease == nil && leaseConn != nil {
 		receiver.startJoin(func(ctx context.Context) *lease {
-			joined := joinDeliveryLease(ctx, leaseConn, cfg.NATSReplicas, cfg.MachineID, instance, logger)
+			joined := joinDeliveryLease(ctx, leaseConn, cfg.NATSReplicas, stateAge, cfg.MachineID, instance, logger)
 			if joined == nil {
 				return nil
 			}

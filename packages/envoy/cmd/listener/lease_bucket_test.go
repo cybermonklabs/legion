@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -43,7 +45,7 @@ func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 	t.Run("three replicas reach the server", func(t *testing.T) {
 		conn := testnats.Connect(t, testnats.URL(t))
 		t.Cleanup(conn.Close)
-		_, err := openListenerState(t.Context(), conn, 3, listenerStateRequestWait)
+		_, err := openListenerState(t.Context(), conn, 3, listenerStateMaxAge, listenerStateRequestWait)
 		if err == nil || !strings.Contains(err.Error(), "replicas > 1 not supported") {
 			t.Fatalf("open at 3 replicas on one server: %v, want the server's refusal of replicas > 1", err)
 		}
@@ -53,8 +55,13 @@ func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 	})
 }
 
-// The listener state bucket's age (listenerStateMaxAge) is at least the session TTL plus the
-// interest reaper's allowance (store.InterestReapAllowance of store.InterestReapGrace).
+// The listener state bucket's age (listenerStateMaxAge) is at least the whole window a default
+// session registry reports a lapsed session's last_seen for past its last registration write, the
+// span seenUntil adds (session.SessionRegistry.LastSeenWindow: the session TTL and its last-seen
+// retention), plus the interest reaper's allowance (store.InterestReapAllowance of
+// store.InterestReapGrace), and so at least the session TTL plus that allowance; a bucket the
+// open creates under that registry keeps its keys that long. No pod's answer then outlives the
+// `seen.` record it is read from.
 func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
 	t.Parallel()
 	conn := testnats.Connect(t, testnats.URL(t))
@@ -64,10 +71,101 @@ func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
-	window := sessions.TTL() + store.InterestReapAllowance(store.InterestReapGrace)
-	if listenerStateMaxAge < window {
-		t.Fatalf("the listener state bucket's age is %s, want at least the session TTL plus the interest reaper's allowance, %s", listenerStateMaxAge, window)
+	allowance := store.InterestReapAllowance(store.InterestReapGrace)
+	if ttlWindow := sessions.TTL() + allowance; listenerStateMaxAge < ttlWindow {
+		t.Fatalf("the listener state bucket's age is %s, want at least the session TTL plus the interest reaper's allowance, %s", listenerStateMaxAge, ttlWindow)
 	}
+	window := sessions.LastSeenWindow() + allowance
+	if listenerStateMaxAge < window {
+		t.Fatalf("the listener state bucket's age is %s, want at least the session's last-seen window (the TTL and its last-seen retention) plus the interest reaper's allowance, %s", listenerStateMaxAge, window)
+	}
+	if _, err := openListenerState(t.Context(), conn, 1, listenerStateAgeOf(sessions)(), listenerStateRequestWait); err != nil {
+		t.Fatalf("open the listener state bucket: %v", err)
+	}
+	if got := listenerStateStreamAge(t, conn); got < window {
+		t.Fatalf("the listener state bucket keeps a record for %s, want at least %s", got, window)
+	}
+}
+
+// listenerStateStreamAge is the MaxAge the listener state bucket's stream carries, read over conn.
+func listenerStateStreamAge(t *testing.T, conn *natsgo.Conn) time.Duration {
+	t.Helper()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	info, err := js.StreamInfo("KV_" + bus.ListenerStateBucket)
+	if err != nil {
+		t.Fatalf("read the bucket's stream: %v", err)
+	}
+	return info.Config.MaxAge
+}
+
+// A longer session TTL reaches the listener state bucket. The session registry opened under a
+// longer ENVOY_SESSION_MAX_AGE (session.WithSessionMaxAge) runs with that TTL, and each open of the
+// bucket under it, the start's and a late join's (joinDeliveryLease) alike, asks for the
+// registry's last-seen window and the interest reaper's allowance (listenerStateAgeOf): the
+// start's open creates an absent bucket at that age, a join raises a bucket the default age
+// created to it, and an open at the default age afterwards lowers it to nothing shorter.
+func TestALongerSessionTTLRaisesTheListenerStateBucketsAge(t *testing.T) {
+	t.Parallel()
+	const configured = 6 * time.Hour
+	// longer opens the session registry over conn as the listener does under an
+	// ENVOY_SESSION_MAX_AGE of configured, and returns what each open of the bucket asks for.
+	longer := func(t *testing.T, conn *natsgo.Conn) func() time.Duration {
+		t.Helper()
+		sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionReplicas(1), session.WithSessionMaxAge(configured))
+		if err != nil {
+			t.Fatalf("open the session registry at a %s maximum age: %v", configured, err)
+		}
+		t.Cleanup(sessions.StopWatch)
+		if ttl := sessions.TTL(); ttl != configured {
+			t.Fatalf("the session registry runs with a %s TTL, want the configured %s", ttl, configured)
+		}
+		age := listenerStateAgeOf(sessions)
+		if want := sessions.LastSeenWindow() + store.InterestReapAllowance(store.InterestReapGrace); age() != want || want <= listenerStateMaxAge {
+			t.Fatalf("the listener state bucket's age under a %s session TTL is %s, want %s, the registry's last-seen window and the interest reaper's allowance, longer than the default %s",
+				configured, age(), want, listenerStateMaxAge)
+		}
+		return age
+	}
+
+	t.Run("the start's open creates the bucket at it", func(t *testing.T) {
+		t.Parallel()
+		conn := testnats.Connect(t, testnats.URL(t))
+		t.Cleanup(conn.Close)
+		age := longer(t, conn)
+		if _, err := openListenerState(t.Context(), conn, 1, age(), listenerStateRequestWait); err != nil {
+			t.Fatalf("open the absent bucket: %v", err)
+		}
+		if got := listenerStateStreamAge(t, conn); got != age() {
+			t.Fatalf("the bucket keeps a record for %s after the open, want %s", got, age())
+		}
+		if _, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait); err != nil {
+			t.Fatalf("open the bucket at the default age: %v", err)
+		}
+		if got := listenerStateStreamAge(t, conn); got != age() {
+			t.Fatalf("the bucket keeps a record for %s after an open at the default %s, want %s: an open lowers no age", got, listenerStateMaxAge, age())
+		}
+	})
+	t.Run("a late join's open raises the bucket to it", func(t *testing.T) {
+		t.Parallel()
+		conn := testnats.Connect(t, testnats.URL(t))
+		t.Cleanup(conn.Close)
+		if _, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait); err != nil {
+			t.Fatalf("open the absent bucket at the default age: %v", err)
+		}
+		if got := listenerStateStreamAge(t, conn); got != listenerStateMaxAge {
+			t.Fatalf("the bucket keeps a record for %s, want the default %s", got, listenerStateMaxAge)
+		}
+		age := longer(t, conn)
+		if joined := joinDeliveryLease(t.Context(), conn, 1, age, leaseTestMachine, "pod-a", logging.NewWithWriter(leaseTestMachine, io.Discard)); joined == nil {
+			t.Fatal("the join made no lease")
+		}
+		if got := listenerStateStreamAge(t, conn); got != age() {
+			t.Fatalf("the bucket keeps a record for %s after the join, want it raised to %s", got, age())
+		}
+	})
 }
 
 // A bucket an earlier build created with a shorter MaxAge is raised to listenerStateMaxAge when
@@ -91,7 +189,7 @@ func TestOpeningTheListenerStateBucketRaisesAnEarlierBuildsMaxAge(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("create the bucket as an earlier build did: %v", err)
 	}
-	if _, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait); err != nil {
+	if _, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait); err != nil {
 		t.Fatalf("open the bucket: %v", err)
 	}
 	info, err := js.StreamInfo("KV_" + bus.ListenerStateBucket)
@@ -117,7 +215,7 @@ func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 	}
 	t.Cleanup(conn.Close)
 
-	_, err = openListenerState(t.Context(), conn, 1, 500*time.Millisecond)
+	_, err = openListenerState(t.Context(), conn, 1, listenerStateMaxAge, 500*time.Millisecond)
 	if !errors.Is(err, errListenerStateRefused) || !errors.Is(err, natsgo.ErrPermissionViolation) {
 		t.Fatalf("open without the grant: %v, want errListenerStateRefused wrapping the server's violation", err)
 	}
@@ -128,7 +226,7 @@ func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 	}
 
 	grant.Grant(t, "_INBOX.>", "$JS.API.>", "$KV.envoy_listener.>")
-	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open with the grant: %v", err)
 	}
@@ -139,7 +237,7 @@ func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 	}
 
 	conn.Close()
-	if _, err := openListenerState(t.Context(), conn, 1, 500*time.Millisecond); err == nil || errors.Is(err, errListenerStateRefused) {
+	if _, err := openListenerState(t.Context(), conn, 1, listenerStateMaxAge, 500*time.Millisecond); err == nil || errors.Is(err, errListenerStateRefused) {
 		t.Fatalf("open on a closed connection: %v, want a connection error that is not the refusal", err)
 	}
 }
