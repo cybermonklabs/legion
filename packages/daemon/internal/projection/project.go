@@ -758,18 +758,13 @@ func handshakeTimes(h supervise.EntryHandshake, generation uint64) (*time.Time, 
 }
 
 // fixDir is the directory of the working copy a fix of issue works in, beside the workspace
-// workspaceDir places the issue's roles in (workspace.FixDir), as the shim makes it from its own
-// workspace. It is "" where no function places a workspace, or where the function places none for
-// the issue.
+// workspaceDir places the issue's roles in, as the shim makes it from its own workspace
+// (workspace.FixDir, which owns the rule). It is "" where no function places a workspace.
 func fixDir(workspaceDir func(record.Issue) string, issue record.Issue) string {
 	if workspaceDir == nil {
 		return ""
 	}
-	dir := workspaceDir(issue)
-	if dir == "" {
-		return ""
-	}
-	return workspace.FixDir(dir)
+	return workspace.FixDir(workspaceDir(issue))
 }
 
 // checkView is an open production check as the state shows it (api.CheckView): the role the check

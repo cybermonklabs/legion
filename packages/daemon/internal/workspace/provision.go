@@ -321,11 +321,18 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 }
 
 // FixDir is the directory of the working copy a fix of the issue works in, beside the issue's own
-// working copy dir (a role's LEGION_WORKSPACE): dir with "-fix" after it. A role's shim derives it
-// from its own workspace, never from a path anyone sends. Its name is no issue key and holds no
-// dot, so no issue's own working copy, and none named for a part of an issue (`<key>.<part>`),
-// carries it.
-func FixDir(dir string) string { return dir + "-fix" }
+// working copy dir (a role's LEGION_WORKSPACE): dir with "-fix" after it, and "" for a dir of ""
+// (no working copy is placed, so no fix's is either). It is the one owner of both, which the
+// engine's task (workflow's fixDirOf) and the served state (projection's fixDir) each call. A
+// role's shim derives it from its own workspace, never from a path anyone sends. Its name is no
+// issue key and holds no dot, so no issue's own working copy, and none named for a part of an
+// issue (`<key>.<part>`), carries it.
+func FixDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return dir + "-fix"
+}
 
 // locationOf is the workspace Location puts at dir, read out of dir's path alone: the owner and
 // the name are the two directories above dir's own, the issue is dir's own base name, and the

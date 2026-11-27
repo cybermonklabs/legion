@@ -816,17 +816,12 @@ func prRepo(issue record.Issue, pr *record.PullRequest) string {
 }
 
 // fixDirOf is dir, the directory the runtime gives an issue's working copy, as the directory of a
-// fix's own working copy beside it (workspace.FixDir): nil and "" stay none.
+// fix's own working copy beside it (workspace.FixDir, which owns the rule): nil stays none.
 func fixDirOf(dir func(record.Issue) string) func(record.Issue) string {
 	if dir == nil {
 		return nil
 	}
-	return func(issue record.Issue) string {
-		if at := dir(issue); at != "" {
-			return workspace.FixDir(at)
-		}
-		return ""
-	}
+	return func(issue record.Issue) string { return workspace.FixDir(dir(issue)) }
 }
 
 // fixSentence is the sentence of a fix's task that names what it fixes, from its start facts: its
