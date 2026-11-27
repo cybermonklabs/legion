@@ -107,6 +107,7 @@ import { BodySlot } from "./slots/body";
 import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
+import { answerCommentReads } from "./slots/stage-fixtures";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { markedCommentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import {
@@ -1482,10 +1483,10 @@ test("on a block of the focused row that keeps its tab stop, the keys the browse
 });
 
 // A row whose node Enter puts the caret in - a block of one of the issue's documents, a statement
-// and a check among them - carries `data-editable` (`useNodeEditing.ts`'s `nodeEditable`), which
-// draws the cue that it takes typing (`styles.css`). A comment, a result and a child issue are no
-// block of a document and take no caret, and a closed issue's documents are read-only, so none of
-// its rows carries the mark.
+// and a check among them - carries `data-editable` (`useNodeEditing.ts`'s `nodeTakesTyping` with
+// `NodeRow`'s `useDocumentReadOnly`), which draws the cue that it takes typing (`styles.css`). A
+// comment, a result and a child issue are no block of a document and take no caret, and a closed
+// issue's documents are read-only, so none of its rows carries the mark.
 test("a statement's and a check's rows carry data-editable, a comment's, a result's and a child's do not, and no row of a closed issue does", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -9478,9 +9479,9 @@ function AddressedBody({
 }
 
 /** The page's body opened at `path`, every read the tree is built from answered: the issue
- *  holds `comments`, the tree read's `nodes` - a question, a step - and nothing else, and its
- *  comments' read is left unread where `comments` is undefined, as is each read `unread` names by
- *  its query key. `follow` follows a link to an address, as a row's link or the router's does;
+ *  holds `comments`, none where they are undefined (`seedBodyReads`), and the tree read's
+ *  `nodes` - a question, a step - and nothing else, and each read `unread` names by its query
+ *  key is left unread. `follow` follows a link to an address, as a row's link or the router's does;
  *  `redraw` draws the same location again, as a read answering does, of `next` where it is
  *  given, as the issue's own read answering with a document added does; `reopen` takes the page
  *  off and draws it anew over the same reads, as a later visit to it does; `client` holds the
@@ -9761,19 +9762,6 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
     read.mockRestore();
   }
 });
-
-/** Answers each comment's own read (`GET /api/v1/comments/{id}`) from `comments`: the comment
- *  and every comment that replies to it, as the server answers it. */
-function answerCommentReads(comments: readonly Comment[]) {
-  return spyOn(api, "getComment").mockImplementation(async (id: string) => {
-    const comment = comments.find((one) => one.id === id);
-    if (comment === undefined) throw noSuchComment();
-    return {
-      comment,
-      replies: comments.filter((one) => one.reply_to === id),
-    } as never;
-  });
-}
 
 // A turn of a thread only agents wrote in is no node of the outline, on purpose (`agents-only.ts`):
 // its address is no missing item. It lands on the turn's nearest drawn ancestor - the issue here,

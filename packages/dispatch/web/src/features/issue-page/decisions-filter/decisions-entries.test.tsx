@@ -8,6 +8,7 @@ import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
 import type { Actor, ArtifactBlock, Comment, IssueDecisions } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
+import { readComment } from "../outline-fixtures";
 import { presetView } from "../presets";
 import { commentNode, markedCommentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
@@ -16,6 +17,7 @@ import {
   AGENT,
   answeredAsk,
   closing,
+  commentsTree,
   decision,
   decisionNode,
   decisionsRead,
@@ -46,15 +48,6 @@ import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
-/** Conversation's tree read of the issue holding `comments` under the issue and nothing else:
- *  no decision node, so each Change is found by its quote. */
-function commentsAnswer(comments: readonly Comment[]): TreeAnswer {
-  return treeAnswer([
-    treeNode(KEY, "issue", null),
-    ...comments.map((comment) => commentNode(comment, KEY)),
-  ]);
-}
-
 /** The seam mounted over the issue whose tree holds `children`, with `decisions`, `asks` and
  *  Conversation's tree read as the cache holds them - holding `comments`, or the answer the case
  *  gives (`answer`) - and the spec's `blocks` there too, which the seam never reads, until the
@@ -81,7 +74,7 @@ async function mountEntries(
   if (comments !== null) {
     client.setQueryData(
       outlineQuery(KEY, "conversation").queryKey,
-      answer ?? commentsAnswer(comments),
+      answer ?? commentsTree(comments),
       given
     );
   }
@@ -283,7 +276,7 @@ function twoChanges(marks: Partial<Comment> = {}) {
     decision("quoted", { text: ":::decision{#quoted}\nKeep the model pure.\n:::\n" }),
   ];
   const changeOf = (id: string, quote: string | null): Comment => ({
-    ...commentDeliveryFields(),
+    ...readComment(id, 0, null, READER_ACTOR),
     anchor:
       quote === null
         ? null
@@ -295,19 +288,8 @@ function twoChanges(marks: Partial<Comment> = {}) {
             quote,
             version: 1,
           },
-    ask_id: null,
-    author: READER_ACTOR,
     body: `Change ${id}.`,
     created_at: "2026-11-15T09:00:00Z",
-    edited_at: null,
-    id,
-    issue_key: KEY,
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
     ...marks,
   });
   const onNode = changeOf("c-noded", null);
@@ -522,7 +504,7 @@ test("an empty decisions member gives the questions alone and no error", async (
       starts: 1,
     },
     {
-      answer: commentsAnswer([]),
+      answer: commentsTree([]),
       heldWhileOut: true,
       queryKey: outlineQuery(KEY, "conversation").queryKey,
       mount: () => mountEntries(children, noDecision, [], null),

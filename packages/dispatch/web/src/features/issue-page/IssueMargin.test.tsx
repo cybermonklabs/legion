@@ -291,7 +291,7 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
 
 /** The reads Details makes of a fixture's issue, each answering the API's empty shape, and the
  *  issue's PATCH answered as the server does, with the narrow `Issue`. A read that reached the
- *  network would fail the file (`__tests__/network-guard.ts`). */
+ *  network would fail the file (`__tests__/network.ts`). */
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({

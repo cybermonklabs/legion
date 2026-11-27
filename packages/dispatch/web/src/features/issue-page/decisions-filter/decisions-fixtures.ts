@@ -2,6 +2,7 @@ import type {
   Actor,
   Artifact,
   AskResolutionWithTrees,
+  Comment,
   Decision,
   DecisionEntry,
   DecisionLink,
@@ -10,6 +11,8 @@ import type {
 } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
+import { markedCommentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import type { TreeAnswer } from "../tree-read/tree-read";
 import type { DecisionsAsk } from "./decisions-parts";
 
 /**
@@ -351,4 +354,15 @@ export function decisionsRead(
     entries: made.map((row) => entryOf(row, spec)),
     open_questions: [],
   };
+}
+
+/** Conversation's tree read of the issue holding `comments` under the issue and nothing else, as
+ *  the read hangs a comment of a decision it holds no node for: each Change is found by its
+ *  quote, with its author's corrections as the read answers them on its node, and as a correction
+ *  writes them into the answer the cache holds (`api/corrected-post.ts`). */
+export function commentsTree(comments: readonly Comment[]): TreeAnswer {
+  return treeAnswer([
+    treeNode(KEY, "issue", null),
+    ...comments.map((comment) => markedCommentNode(comment, KEY)),
+  ]);
 }

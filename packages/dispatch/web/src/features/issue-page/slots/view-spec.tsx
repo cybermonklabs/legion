@@ -49,7 +49,11 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   // What the first group's two rows count, over the whole tree and under the same words filter as
   // the view row's signals, once the tree may be counted (`briefCounts`).
   const counts = useMemo(
-    () => briefCounts({ namesHeld, readsHeld, root }, address.filter, address.preset),
+    () =>
+      briefCounts(
+        { namesHeld, readsHeld, root },
+        { filter: address.filter, preset: address.preset }
+      ),
     [address.filter, address.preset, namesHeld, readsHeld, root]
   );
   // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads

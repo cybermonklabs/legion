@@ -106,7 +106,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
     owedUnless(await treeReadGate(page, seeded.key));
     // The seed's architecture source holds now what the server's own import pass would find, so
     // that pass sends no event the page answers with reads while this row counts them.
-    await architectureSettled(page, seeded.key);
+    await architectureSettled(seeded.key);
     const views = {
       plan: viewAnswerOf(page, "plan"),
       spec: viewAnswerOf(page, "spec"),

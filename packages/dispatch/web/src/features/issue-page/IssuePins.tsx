@@ -100,6 +100,7 @@ export function IssuePins({
   const unheldReads = useQueries({
     queries: unheld.map((id) => ({ ...commentQuery(id), ...EVENT_FRESH, enabled: open })),
   });
+  const unheldComments = new Map(unheld.map((id, at) => [id, unheldReads[at]?.data?.comment]));
   // The history's own log, under its key (`IssueHistory.tsx`), which the history under this list
   // reads: watched here and never asked for, so a pinned line is drawn from the pages it holds.
   const log = useQuery<InfiniteData<DispatchEvent[]>>({
@@ -121,7 +122,7 @@ export function IssuePins({
     }
     const post =
       kind === "comment"
-        ? (held.get(id) ?? unheldReads[unheld.indexOf(id)]?.data?.comment)
+        ? (held.get(id) ?? unheldComments.get(id))
         : kind === "message"
           ? (messages.data ?? [])
               .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])

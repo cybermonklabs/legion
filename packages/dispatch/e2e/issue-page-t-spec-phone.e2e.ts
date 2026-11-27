@@ -5,8 +5,10 @@
 import type { Page } from "@playwright/test";
 
 import { createComment, createIssue, createProject, editArtifact } from "./api";
+import { PHONE } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
 import { ROW_MS } from "./issue-page-t-rows";
+import { inBursts } from "./issue-page-t-scale";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -33,9 +35,6 @@ function caseWords(at: number): string {
   return `Case ${at} is written up here.`;
 }
 
-/** The page a phone draws: 390 px wide, a phone's screen, and touch. */
-const PHONE_CONTEXT = { hasTouch: true, isMobile: true, viewport: { height: 844, width: 390 } };
-
 /** What React's stop prints, from a development build and from a production one. */
 const STOPPED = /Maximum update depth exceeded|Minified React error #185/u;
 
@@ -52,11 +51,13 @@ async function seedCitations(): Promise<{ readonly key: string }> {
     spec: "# Cases\n",
     title: "A statement cites many comments",
   });
-  const cited: string[] = [];
-  for (let at = 1; at <= CITED; at += 1) {
-    const comment = await createComment(issue.key, { body: caseWords(at) });
-    cited.push(`dispatch://${issue.key}/comment/${comment.id}`);
-  }
+  const cited = await inBursts(
+    Array.from({ length: CITED }, (_, index) => index + 1),
+    async (at) => {
+      const comment = await createComment(issue.key, { body: caseWords(at) });
+      return `dispatch://${issue.key}/comment/${comment.id}`;
+    }
+  );
   await editArtifact(issue.primary_artifact_id, {
     ops: [
       {
@@ -90,7 +91,9 @@ test("the Spec view at 390 px names thirty comments a statement cites, each read
 }) => {
   test.setTimeout(ROW_MS);
   const seeded = await seedCitations();
-  const context = await asUser(browser, "alice", PHONE_CONTEXT);
+  // 390 px wide, a phone's screen; touch and a phone's browser are the `iphone` project's own
+  // (`devices["iPhone 13"]`), the one project a `@phone-only` row runs in.
+  const context = await asUser(browser, "alice", { viewport: PHONE });
   try {
     await withIssuePage(context, "alice");
     const page = await context.newPage();

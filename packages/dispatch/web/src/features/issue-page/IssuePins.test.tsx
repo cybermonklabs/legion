@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
 import { issueAskThreadsQuery } from "../../api/queries";
@@ -12,7 +11,9 @@ import { conversationItemId, pinnedItemMarker } from "../issue/pins";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { IssuePins } from "./IssuePins";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { readComment } from "./outline-fixtures";
 import { CONTROL_LABELS } from "./page-words";
+import { answerCommentReads } from "./slots/stage-fixtures";
 import { commentNode, markedCommentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswerNode } from "./tree-read/tree-read";
 import { issueMessagesQuery } from "./useIssueTree";
@@ -43,24 +44,7 @@ const drawer = (open: boolean): MarginDrawer => ({
 
 /** A comment of the issue, by `id`, with `body` and the server's reading of it. */
 function commentOf(id: string, body: string): CommentWithTrees {
-  return {
-    ...commentDeliveryFields(),
-    anchor: null,
-    ask_id: null,
-    author: { id: "alice", kind: "user" },
-    body,
-    body_tree: displayTree(body),
-    created_at: "2026-11-05T01:00:00Z",
-    edited_at: null,
-    id,
-    issue_key: KEY,
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-  };
+  return { ...readComment(id, 0), body, body_tree: displayTree(body) };
 }
 
 /** `comment`'s node in the tree read's answer, with the server's reading of its words. */
@@ -100,14 +84,10 @@ function pinsOf(client: QueryClient, ids: readonly string[], open: boolean) {
 }
 
 /** Spies on the issue's comments list and on a comment's own read, which answers `comments` by
- *  id. */
+ *  id (`answerCommentReads`). */
 function spyCommentReads(comments: readonly CommentWithTrees[]) {
   const reads = {
-    getComment: spyOn(api, "getComment").mockImplementation(async (id: string) => {
-      const comment = comments.find((one) => one.id === id);
-      if (comment === undefined) throw new Error(`no comment ${id}`);
-      return { comment: { ...comment, anchor_node: null }, replies: [] } as never;
-    }),
+    getComment: answerCommentReads(comments),
     listComments: spyOn(api, "listComments").mockResolvedValue([]),
   };
   restore = () => {
