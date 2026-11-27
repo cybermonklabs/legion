@@ -201,6 +201,10 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       return event.payload.reason === "closed" ? "Claim released on close" : "Claim released";
     case "issue.deployed":
       return `Deployed by run ${event.payload.run_id}`;
+    case "issue.role_holders_changed":
+      return event.payload.holders.length === 0
+        ? "Role holders cleared"
+        : `Roles given: ${event.payload.holders.map((holder) => `${holder.role} ${holder.session}`).join(", ")}`;
     case "deploy.recorded":
       return `Recorded a deploy of ${event.payload.program} in ${event.payload.repo} at ${event.payload.commit}, deployed ${event.payload.deployed_at}.`;
     case "handoff.recorded":

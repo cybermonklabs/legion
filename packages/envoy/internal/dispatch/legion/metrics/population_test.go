@@ -146,6 +146,46 @@ func TestReadProjectGathersEveryFactTheRulesRead(t *testing.T) {
 	}
 }
 
+// seedTitledEvent seeds a comment event that session wrote on issue at seq, stamping the given
+// session title, which readRoleEvents and the phase-work read resolve.
+func seedTitledEvent(t *testing.T, database *store.Store, issue string, seq int, session, title string, at time.Time) {
+	t.Helper()
+	actor := fmt.Sprintf(`{"kind":"session","id":%q,"origin":{"session_title":%q}}`, session, title)
+	if _, err := database.Pool.Exec(t.Context(), `insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		values ($1, $2, 'comment.created', $3::jsonb, '{}'::jsonb, false, $4)`, issue, seq, actor, at); err != nil {
+		t.Fatalf("seed %s's %s event on %s: %v", session, title, issue, err)
+	}
+}
+
+// TestReadIgnoresTheLegionDaemonsOwnEvents: the Legion daemon writes on its issues as
+// `legion-daemon:<PROJECT>` (its role-holder publications among them). That session stamps no
+// title of its own, so resolving it would read every event it wrote for nothing; readRoleEvents
+// leaves it out before the title read (legion.DaemonSession). This seeds the daemon an event that
+// does carry a role title for the issue, which the old code would resolve into a role event, and
+// holds that the read records none: its control is that the same title from an ordinary session
+// is recorded, so the title path does record a role event at all.
+func TestReadIgnoresTheLegionDaemonsOwnEvents(t *testing.T) {
+	database := corpus(t)
+	seedTitledEvent(t, database, "INFRA-2", 100, "legion-daemon:INFRA", "Legion reviewer · INFRA-2", after(3))
+	seedTitledEvent(t, database, "INFRA-2", 101, "s-plain", "Legion tester · INFRA-2", after(3))
+
+	population, err := ReadProject(t.Context(), database.Pool, "INFRA", after(24))
+	if err != nil {
+		t.Fatalf("read the population: %v", err)
+	}
+	child := population.Issues["INFRA-2"]
+	if child == nil {
+		t.Fatalf("the population holds %v, want INFRA-2 among them", population.Keys)
+	}
+	if _, ok := child.FirstRoleEvent["reviewer"]; ok {
+		t.Errorf("a role event was recorded for the daemon's reviewer title, which the daemon skip must drop")
+	}
+	if at, ok := child.FirstRoleEvent["tester"]; !ok || !at.Equal(after(3)) {
+		t.Errorf("the ordinary session's tester event = %v (%t), want %v: the control that the title path records a role event at all",
+			at, ok, after(3))
+	}
+}
+
 // TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne: the tree an issue belongs to is the
 // daemon's own `tree` (dispatch://INFRA-980) where a read recorded one, and the parent chain only
 // where none did. Nothing reads a slot to decide it.

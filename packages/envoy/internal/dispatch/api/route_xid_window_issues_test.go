@@ -45,12 +45,15 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	// The issue holds the tester ses-a and the publication moves it to ses-b (readyRoleHolders),
 	// so the window opens at the delete of the pair the publication no longer names. The read of
 	// the stored set the route answers with runs after the insert, in the same transaction, so it
-	// is inside the window too.
+	// is inside the window too, and so is the append of issue.role_holders_changed, which the
+	// change of the set writes. The read of the set before the write runs before the delete, so
+	// it is outside the window.
 	{
 		name: "the role holders route", route: "PUT /api/v1/issues/{key}/role-holders (putIssueRoleHolders)",
-		ready: readyRoleHolders, window: storetest.XidWindowOf(4,
+		ready: readyRoleHolders, window: storetest.XidWindowOf(5,
 			"the delete of the pairs the publication no longer names, the insert of the ones not stored yet, "+
-				"the read of the stored set it answers with and the COMMIT ending them"),
+				"the read of the stored set it answers with, the batch appending issue.role_holders_changed "+
+				"and the COMMIT ending them"),
 	},
 	{
 		name: "the project default assignee route", route: "PUT /api/v1/projects/{key}/default-assignee (putProjectDefaultAssignee)",

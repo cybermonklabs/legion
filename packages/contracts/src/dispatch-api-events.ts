@@ -39,6 +39,7 @@ import type {
   IssueEventPayload,
   IssuePullRequestAttributionEventPayload,
   IssueReleasedEventPayload,
+  IssueRoleHoldersChangedEventPayload,
 } from "./dispatch-api-issues";
 import type {
   MessageAcceptedEventPayload,
@@ -170,6 +171,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "issue.released";
       readonly payload: IssueReleasedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "issue.role_holders_changed";
+      readonly payload: IssueRoleHoldersChangedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "issue.deployed";

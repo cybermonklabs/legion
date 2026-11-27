@@ -864,6 +864,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "issue.deployed": true,
   "issue.pull_request_attribution_changed": true,
   "issue.released": true,
+  "issue.role_holders_changed": true,
   "issue.updated": true,
   "message.accepted": true,
   "message.answered": true,
