@@ -10,10 +10,11 @@ body: |-
   50 ms until the stream answers with the earlier attempt's copy. The webhook routes
   (`/webhook/github`, `/webhook/slack`, `/webhook/ghostwispr`) do not: such a delivery is still
   answered `503` while the earlier publish stores the one copy, and a redelivery is answered with
-  that copy. Nor do the sweep's wake report, a kept copy's dead letter and a delivery exception,
-  whose earlier publish stores the one copy all the same; the
-  first two still log a failed publish. A role send's forward refused that way is sent again
-  inside the same attempt, not counted as a forward that failed and made again. A request whose
+  that copy. Nor do the sweep's wake report and a kept copy's dead letter, whose earlier publish
+  stores the one copy all the same; both still log a failed publish. A delivery exception is
+  published under no message id, so no stream refuses it that way. A role send's forward refused
+  that way is sent again inside the same attempt, not counted as a forward that failed and made
+  again. A request whose
   budget ends while the earlier attempt is still in process, a role send's included, is answered
   `503` with
   `Retry-After: 1`, the body `envoy: an earlier attempt of this message is still being stored: …`

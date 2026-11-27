@@ -471,16 +471,18 @@ func Quiet(e model.Event) bool {
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
 		"user_thread_state.updated", "decision.kept", "priority.updated",
-		"project.access_changed", "access_group.changed":
+		"project.access_changed", "access_group.changed", "issue.role_holders_changed":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
 		// and nobody is asked anything by. A change of a project's access list, owner or
 		// visibility, or of a group, is who may see what: every reader resolves its viewer again
-		// on it, and nobody is asked anything by it. This build writes no
-		// settings.repo_project.updated; the case stays for the events and outbox rows an earlier
-		// build wrote (outbox/publisher.go).
+		// on it, and nobody is asked anything by it. A change of an issue's role holders is the
+		// Legion daemon's own record of which session it gave each role: a reader of the issue's
+		// log reads it to learn who held a role at a past time, and it asks nobody anything. This
+		// build writes no settings.repo_project.updated; the case stays for the events and outbox
+		// rows an earlier build wrote (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

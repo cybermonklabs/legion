@@ -224,9 +224,12 @@ func startDispatchServer(t *testing.T, image string, grant core.Permissions) (di
 // own entry and it can create or delete none of the consumers it inspects. Added to the host's
 // set are the exact calls its checks make, so it leans on nothing of Dispatch's grant: each
 // Dispatch durable's consumer info and the redelivery bucket's reads, writes and watch — not the
-// bucket's create or the update that raises its copies, which are Dispatch's to make.
+// bucket's create or the update that raises its copies, which are Dispatch's to make. It also
+// plays the listener that receives GitHub's webhook, since requireDurablesAcknowledge publishes a
+// GitHub event, so GitHub's lane is taken off the host set's publish deny.
 func testClientPermissions() core.Permissions {
 	client := core.HostPermissions(testClientMachineID)
+	client.Publish.Deny = slices.DeleteFunc(client.Publish.Deny, func(lane string) bool { return lane == contracts.GithubTopicPrefix+">" })
 	redelivery := "KV_" + bus.WebhookRedeliveryBucket
 	client.Publish.Allow = append(client.Publish.Allow,
 		"$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.DispatchDeliveryDurable,

@@ -340,13 +340,13 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 // starts, on a goroutine of its own, so a caller that keeps a count across the call
 // (publishHandBack) sees the decrement when the call finishes, even when the goroutine is
 // descheduled past the wait. A call NATS has not answered by then goes on, with a WARN line
-// (callLeftRunning), and answered is false. That goroutine holds nothing of the stop's; a call
-// through the bus client that holds the client's own lock while it reads nats.go's state
-// (Connected, and DrainSubscription through it) holds that lock until nats.go answers. Its failure
-// is logged when it ends, with attrs, to the intake's logger (tuning.log), as the WARN line is; a
-// connection already closed is how a call that outlived the stop ends when the client closes at
-// shutdown, and is logged as that rather than as an error; a publish refused because the
-// connection is reconnecting (ErrReconnectBufExceeded) is logged at INFO.
+// (callLeftRunning), and answered is false. That goroutine holds nothing of the stop's, nor any
+// lock of the bus client's while it waits for nats.go: the client reads its connection's state
+// with its own lock released (Connected, and DrainSubscription through it). Its failure is logged
+// when it ends, with attrs, to the intake's logger (tuning.log), as the WARN line is; a connection
+// already closed is how a call that outlived the stop ends when the client closes at shutdown, and
+// is logged as that rather than as an error; a publish refused because the connection is
+// reconnecting (ErrReconnectBufExceeded) is logged at INFO.
 func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), attrs ...any) (value T, answered bool) {
 	answers := make(chan T, 1)
 	go func() {

@@ -984,7 +984,7 @@ func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDeli
 func (d *heldDurable) flushHandBacks() bool {
 	flushing, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
 	defer cancel()
-	settled, _, _ := bus.Bounded(flushing, func() (bool, error) { return d.handBacksSettled(), nil })
+	settled, _, _ := bus.Bounded(flushing, nil, func() (bool, error) { return d.handBacksSettled(), nil })
 	return settled
 }
 
