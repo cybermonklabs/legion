@@ -47,7 +47,7 @@ func triaged(key string) *Issue {
 		statusAt(hour(6), "done")
 }
 
-// triagedAndObserved is the triaged issue with what the sampler saw of it: the daemon puts a
+// triagedAndObserved is the triaged issue with what Dispatch observed of it: the daemon puts a
 // child that leaves the workflow, for `triage` among the rest, in phase `done` (the daemon's
 // workflow/linger.go, leave), and reports it again in its phase once a `todo` takes it back.
 func triagedAndObserved(key string) *Issue {
@@ -180,7 +180,7 @@ func TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar(t *testing.T) {
 	}
 }
 
-// TestBothTimelinesAnswerAnIssueOutOfTheWorkflowTheSameWay: an issue the sampler observed from its
+// TestBothTimelinesAnswerAnIssueOutOfTheWorkflowTheSameWay: an issue Dispatch observed from its
 // first hour takes its phases from the observations, and the same issue with no observation takes
 // them from its event log. Where the daemon reports `done` exactly where the event log's statuses
 // say the issue was out of the workflow, and the phase each names after it agrees, the two

@@ -40,7 +40,7 @@ import (
 // ask to a person and the two that take it back (api/events.go names the same family).
 var askTurnEventTypes = []string{"ask.opened", "ask.handed_back", "ask.answered", "ask.resolved"}
 
-// Mark is one value of one field as of a moment: an observation the sampler recorded, or a status
+// Mark is one value of one field as of a moment: an observation Dispatch recorded, or a status
 // an event snapshotted. The value of an observation is the JSON text legion_observations holds; a
 // status's is the status itself.
 type Mark struct {
@@ -73,7 +73,7 @@ type Issue struct {
 
 	// Tree is the issue's tree root as the daemon named it, from the `tree` field
 	// dispatch://INFRA-980 adds to each issue of `GET /legion/v1/state`, where a read carried
-	// one. Every issue of the project carries the newest one the sampler recorded, whether or
+	// one. Every issue of the project carries the newest one Dispatch recorded, whether or
 	// not the window's observation read covered the issue (readObservations, fillReportedTrees).
 	// Empty is "no read named one", which is every daemon before that change: TreeRoot then
 	// walks the parent chain. Nothing reads a slot to decide a root.
@@ -231,10 +231,10 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
 	if err := filed(ctx, population); err != nil {
 		return nil, err
 	}
-	// What the sampler writes — the project's reported set with its trees and the daemon's
+	// What the Legion intake writes — the project's reported set with its trees and the daemon's
 	// admission block, and the observations of the scope's issues — is read in one repeatable-read,
-	// read-only transaction, so the trees, the block and the timelines answer one moment: a sampler
-	// commit between two reads would give an issue a tree from a read its timeline does not hold,
+	// read-only transaction, so the trees, the block and the timelines answer one moment: an intake
+	// commit between two reads would give an issue a tree from a record its timeline does not hold,
 	// or a timeline past its tree. The transaction opens here, on a hold mark of its own
 	// (store.ForConcurrentRead), because the scope is chosen from its first read, and the read
 	// that takes the observations in the group below commits it (readSampled): it holds that one
@@ -586,6 +586,10 @@ func (p *Population) readRoleEvents(ctx context.Context, pool *store.Pool, keys 
 		if err := rows.Scan(&one.issue, &one.session, &one.at); err != nil {
 			return fmt.Errorf("scan a session event: %w", err)
 		}
+		// The daemon's own session has no title and cannot be a Legion role (DaemonSession).
+		if legion.DaemonSession(one.session) {
+			continue
+		}
 		found = append(found, one)
 		sessions[one.session] = true
 	}
@@ -826,10 +830,10 @@ func (p *Population) readSampled(ctx context.Context, tx pgx.Tx, project string,
 	return tx.Commit(ctx)
 }
 
-// readObservations reads every change the sampler recorded of the issues, whenever it recorded it:
+// readObservations reads every change Dispatch recorded of the issues, whenever it recorded it:
 // an observation older than the window is what says what the issue's phase was when the window
-// opened. The field is kept as the sampler wrote it, so a field a later daemon adds (the `tree` of
-// dispatch://INFRA-980) is read the day the sampler records it and is absent, not wrong, until
+// opened. The field is kept as Dispatch wrote it, so a field a later daemon adds (the `tree` of
+// dispatch://INFRA-980) is read the day Dispatch records it and is absent, not wrong, until
 // then.
 func (p *Population) readObservations(ctx context.Context, tx pgx.Tx, project string, keys []string) error {
 	rows, err := tx.Query(ctx, `

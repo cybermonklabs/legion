@@ -12,7 +12,7 @@ import (
 // `admitted` and it holds no slot, over the whole life, with the hours in backlog or icebox left
 // out. Each issue below stands admitted for a while: one with no slot through the first part of it
 // and in backlog for an hour of that part, before its first worker event; one holding a slot the
-// whole time; and one the sampler never saw.
+// whole time; and one Dispatch never observed.
 func TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife(t *testing.T) {
 	// Created at hour -4, admitted from hour -3 with no slot until it takes one at hour 1, in
 	// backlog from hour -2 to hour -1, its architect's first event at hour 0, planning from hour 5.

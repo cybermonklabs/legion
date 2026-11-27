@@ -876,11 +876,8 @@ func TestAClosingTreeNamesEveryDecisionStillOwedToItsArchitect(t *testing.T) {
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		row := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
 			Generation: root.Generation, Phase: phase.Admitted, Task: "a person decided on the tree", Kept: &naming}, time.Now())
-		if err := records.Enqueue(ctx, tx, row); err != nil {
-			return err
-		}
-		var id int64
-		if err := tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id); err != nil {
+		id, err := records.EnqueueID(ctx, tx, row)
+		if err != nil {
 			return err
 		}
 		return records.ClaimKeptDecisions(ctx, tx, root.Key, naming, id)
