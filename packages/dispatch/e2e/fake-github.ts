@@ -41,6 +41,8 @@ interface FakePull {
    *  describes a pull request that attributes nobody. */
   readonly head_repo?: string;
   readonly base_ref?: string;
+  /** When the pull request last changed. Without it, every route answers updatedOf's default,
+   *  so a pull request read over REST and over GraphQL reads the same. */
   readonly updated_at?: string;
   /** The commit GitHub made when the pull request merged, which a merged one answers. */
   readonly merge_commit_sha?: string;
@@ -227,6 +229,16 @@ function mergedAtOf(pull: FakePull): string | undefined {
   return pull.merged === true ? (pull.merged_at ?? pull.updated_at) : undefined;
 }
 
+/** When the pull request last changed, as every route of this fake answers it: the seed's
+ *  `updated_at`, or one fixed time where the seed gives none. Its REST routes and its GraphQL
+ *  nodes answered two different times for such a seed, and Dispatch, which stores a pull
+ *  request's texts as describing its head only while both carry the head's time
+ *  (texts_current), took the pull request a GraphQL read stored after a REST one to be of
+ *  nobody. */
+function updatedOf(pull: FakePull): string {
+  return pull.updated_at ?? "2026-01-01T00:00:00Z";
+}
+
 /** The author date and the committer date of each commit of a pull request that `completes`
  *  selects: 2 hours before `updated_at`. Without `updated_at`, a commit has no date, and the
  *  completion of the pull request fails. */
@@ -315,7 +327,7 @@ function pullNode(fullName: string, number: number, pull: FakePull, first: numbe
     number,
     state: pull.merged === true ? "MERGED" : pull.state === "open" ? "OPEN" : "CLOSED",
     title: pull.title,
-    updatedAt: pull.updated_at ?? null,
+    updatedAt: updatedOf(pull),
     url: `https://github.com/${fullName}/pull/${number}`,
   };
 }
@@ -896,7 +908,7 @@ const server = Bun.serve({
         number: Number(pull[3]),
         state: seeded.state,
         title: seeded.title,
-        updated_at: seeded.updated_at ?? "2026-01-01T00:00:00Z",
+        updated_at: updatedOf(seeded),
       });
     }
 
@@ -993,7 +1005,7 @@ const server = Bun.serve({
               number,
               state: seeded.state,
               title: seeded.title,
-              updated_at: seeded.updated_at ?? "2026-01-01T00:00:00Z",
+              updated_at: updatedOf(seeded),
             },
           ];
         })
