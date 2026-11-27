@@ -4,7 +4,7 @@ import path from "node:path";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import { resetEnvoyPluginInterfaceForTests } from "@legion/pi-shared/interface";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
-import { legionRoleClaimBridge } from "@legion/pi-shared/role-claim-bridge";
+import { legionRoleClaimBridge, RoleNotHeldError } from "@legion/pi-shared/role-claim-bridge";
 import { RoleClaimStoppingError } from "@legion/pi-shared/role-claim-stopping";
 import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
@@ -59,18 +59,29 @@ class ListenerAskedToClaimAgain extends Error {
  * controller asks for, in order. */
 type EnvoyStep = () => Promise<void>;
 
+/** One message the controller's process handed its session (`pi.sendMessage`), with its options. */
+interface Told {
+  readonly message: { readonly customType?: string; readonly content?: unknown };
+  readonly options: unknown;
+}
+
 /**
- * The controller the daemon launched (`LEGION_CONTROLLER=1` and a boot token), against a daemon
- * that answers its health, its registration and its ready, the last with `answers.ready` (a 204
- * by default). Envoy's one bound instance answers each role claim with the next of `claims` and
- * each notice subscription with the next of `subscriptions` (both default to landing), recording
- * each. The host's stop is `answers.hostStop`; by default none has begun. Every exit is recorded,
- * in `exits` and as `exit <code>` on `answers.steps`, and `exited` settles at the first. Every
- * line the Oh My Pi log takes is recorded too.
+ * The controller the daemon launched (`LEGION_CONTROLLER=1` and a boot token, and
+ * `answers.slackChannels` as its LEGION_SLACK_CHANNELS, none by default), against a daemon that
+ * answers its health, its registration and its ready, the last with `answers.ready` (a 204 by
+ * default). Envoy's one bound instance answers each role claim with the next of `claims` and each
+ * notice subscription with the next of `subscriptions`, or with `subscribe` of its topic where
+ * given (all default to landing), recording each. The host's stop is `answers.hostStop`; by
+ * default none has begun. Every exit is recorded, in `exits` and as `exit <code>` on
+ * `answers.steps`, and `exited` settles at the first. Every line the Oh My Pi log takes, every
+ * message the process hands its session (`told`), and every daemon route and subscription in the
+ * order they were asked (`order`) is recorded too.
  */
 function daemonLaunchedController(answers: {
   readonly claims?: readonly EnvoyStep[];
   readonly subscriptions?: readonly EnvoyStep[];
+  readonly subscribe?: (topic: string) => Promise<void>;
+  readonly slackChannels?: string;
   readonly ready?: () => Response;
   readonly register?: () => Response | Promise<Response>;
   readonly hostStop?: () => Promise<void> | undefined;
@@ -82,14 +93,16 @@ function daemonLaunchedController(answers: {
   delete process.env.LEGION_CONTROLLER_START_MESSAGE;
   process.env.LEGION_BOOT_TOKEN = fixtureSecret("boot");
   process.env.LEGION_PROJECT = "legion";
-  process.env.LEGION_SLACK_CHANNELS = "";
+  process.env.LEGION_SLACK_CHANNELS = answers.slackChannels ?? "";
   process.env.LEGION_DAEMON_URL = "http://daemon.test";
   const posted: string[] = [];
+  const order: string[] = [];
   const daemon = createLegionDaemonClient("http://daemon.test", {
     pluginContract: 60,
     fetch: (async (input) => {
       const route = new URL(input.toString()).pathname;
       posted.push(route);
+      order.push(`post ${route}`);
       if (route === "/healthz") {
         return new Response(daemonFixture("health.json"), {
           headers: { "content-type": "application/json" },
@@ -115,16 +128,23 @@ function daemonLaunchedController(answers: {
     },
     subscribe: async (_sessionID, topic) => {
       subscriptions.push(topic);
+      order.push(`subscribe ${topic}`);
+      if (answers.subscribe !== undefined) return answers.subscribe(topic);
       await (answers.subscriptions?.[subscriptions.length - 1] ?? (async () => undefined))();
     },
     sessionID: () => CONTROLLER_SESSION,
   });
   const exits: number[] = [];
   const exited = Promise.withResolvers<void>();
+  const told: Told[] = [];
   const controller = createControllerSession({
     daemon: () => daemon,
     persistedTranscript: async () => ({ sessionFile: TRANSCRIPT, agentId: CONTROLLER_SESSION }),
-    pi: {} as PiApi,
+    pi: {
+      sendMessage: (message: Told["message"], options: unknown) => {
+        told.push({ message, options });
+      },
+    } as unknown as PiApi,
     exitProcess: (code) => {
       exits.push(code);
       answers.steps?.push(`exit ${code}`);
@@ -150,6 +170,8 @@ function daemonLaunchedController(answers: {
     exited: exited.promise,
     lines,
     posted,
+    order,
+    told,
     stopSink,
   };
 }

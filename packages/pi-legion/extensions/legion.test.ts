@@ -1318,6 +1318,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         managedSessions: new Set(),
         regained: undefined,
         slackRoleOwned: false,
+        watchedWorkflowsRoleOwned: false,
       },
       injectedUserTurns: new Map(),
       bootstrappedSession: { file: undefined },

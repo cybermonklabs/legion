@@ -30,6 +30,7 @@ import {
   canonicalTopic,
   type Envelope,
   EnvelopeSchema,
+  githubDefaultBranchWorkflowSubject,
   IDEMPOTENCY_KEY_COMMITTED,
   legacyDispatchIssueSubject,
   type SessionAnswer,
@@ -83,6 +84,7 @@ import type {
 import {
   claimEnvoyRole,
   onEnvoyRoleRegained,
+  refusedForRoleNotHeld,
   subscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
 import { testAgentRoster } from "@legion/pi-shared/test/host-registry";
@@ -3762,6 +3764,131 @@ describe("envoy OMP extension", () => {
     // heartbeat, not an `envoy_unsubscribe` target.
     expect(natsState.controls.has("notifications.role.legion-controller")).toBe(false);
     expect(roleClaims).toEqual([{ session_id: "ses_omp", role: "legion-controller" }]);
+  });
+
+  // A watched workflow's default-branch topic is one the controller's plugin subscribes for as
+  // long as the session holds its controller role, and never registers as a plain interest
+  // (pi-legion's controller-session.ts). The listener stores it in the session's row all the same,
+  // and an edge listener judges every GitHub topic of that row at each registration: while it
+  // cannot read the project's repositories it refuses the whole registration 503, so a restored
+  // one would cost a relaunched controller its role claim and its notice lane. Every controller
+  // sets `watchedWorkflowsRoleOwned` (pi-legion's legion.ts), and its resumed session unregisters
+  // each such topic of its stored row before it restores the rest. The Slack topics follow their
+  // own flag, which only the daemon's controller sets: the operator's controller restores its
+  // stored Slack topic as before. The two rows after this one are the daemon's controller, with
+  // both flags, and the control, a session with neither.
+  const watchedTopic = githubDefaultBranchWorkflowSubject(
+    "acme",
+    "widgets",
+    "nightly.yaml",
+    "completed",
+    "schedule"
+  );
+  const storedSlackTopic = "notifications.slack.T00000000.C00000000.mention";
+  const storedIssueTopic = "notifications.github.acme.widgets.issue.91.>";
+  /** Resumes `ses_omp`, whose stored row holds the three topics above, with the bridge's two
+   * flags as given, and answers every listener request it made, in order. */
+  const resumeController = async (
+    label: string,
+    owned: { readonly watched: boolean; readonly slack: boolean }
+  ) => {
+    const requests: { readonly path: string; readonly topics: readonly string[] }[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      requests.push({
+        path: url.pathname,
+        topics: Array.isArray(body?.topics) ? body.topics : [],
+      });
+      if (url.pathname === "/v1/interests/ses_omp") {
+        return response({
+          session_id: "ses_omp",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: ["notifications.agent.ses_omp", watchedTopic, storedSlackTopic, storedIssueTopic],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    // A fresh module per row, as every test here loads one: the entry keeps its state in module
+    // scope.
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${label}`);
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    // As pi-legion's entry sets them at its load, before the Envoy entry's session_start.
+    envoyPluginInterface().roleClaim.watchedWorkflowsRoleOwned = owned.watched;
+    envoyPluginInterface().roleClaim.slackRoleOwned = owned.slack;
+    const resumed = {
+      ...sessionContext(),
+      sessionManager: { ...sessionContext().sessionManager, getBranch: () => [{}] },
+    };
+    await fixture.handlers.get("session_start")?.({}, resumed);
+    const unregistered = requests.findIndex(({ path }) => path === "/v1/interests/unsubscribe");
+    return {
+      /** What the session follows now, so what every registration from here carries. */
+      followed: () => followedTopics(fixture.tools, resumed),
+      /** The topics of each removal from the listener's row. */
+      unregistered: requests
+        .filter(({ path }) => path === "/v1/interests/unsubscribe")
+        .map(({ topics }) => topics),
+      /** The topics of each registration, and of those sent after the first removal. */
+      registered: requests
+        .filter(({ path }) => path === "/v1/interests/subscribe")
+        .map(({ topics }) => topics),
+      registeredBeforeRemoval: requests
+        .slice(0, unregistered === -1 ? requests.length : unregistered)
+        .filter(({ path }) => path === "/v1/interests/subscribe")
+        .map(({ topics }) => topics),
+    };
+  };
+
+  test("a resumed controller unregisters its stored watched default-branch topics before it restores the rest", async () => {
+    const resumed = await resumeController("watched-retired-operator", {
+      watched: true,
+      slack: false,
+    });
+
+    expect(resumed.unregistered).toEqual([[watchedTopic]]);
+    // Nothing restored was registered before the removal, and no registration names the topic.
+    for (const topics of resumed.registeredBeforeRemoval) {
+      expect(topics).not.toContain(storedIssueTopic);
+      expect(topics).not.toContain(storedSlackTopic);
+    }
+    for (const topics of resumed.registered) expect(topics).not.toContain(watchedTopic);
+    const followed = await resumed.followed();
+    expect(followed).not.toContain(watchedTopic);
+    expect(followed).toContain(storedSlackTopic);
+    expect(followed).toContain(storedIssueTopic);
+    expect(resumed.registered.at(-1)).toEqual(
+      expect.arrayContaining([storedSlackTopic, storedIssueTopic])
+    );
+  });
+
+  test("a resumed daemon controller unregisters its stored watched default-branch topics and its Slack topics together, and restores the rest", async () => {
+    const resumed = await resumeController("watched-retired-daemon", {
+      watched: true,
+      slack: true,
+    });
+
+    expect(resumed.unregistered).toEqual([[watchedTopic, storedSlackTopic]]);
+    for (const topics of resumed.registered) {
+      expect(topics).not.toContain(watchedTopic);
+      expect(topics).not.toContain(storedSlackTopic);
+    }
+    const followed = await resumed.followed();
+    expect(followed).not.toContain(watchedTopic);
+    expect(followed).not.toContain(storedSlackTopic);
+    expect(followed).toContain(storedIssueTopic);
+  });
+
+  test("control: a resumed session that is no controller restores its stored watched default-branch topics with the rest", async () => {
+    const resumed = await resumeController("watched-kept", { watched: false, slack: false });
+
+    expect(resumed.unregistered).toEqual([]);
+    const followed = await resumed.followed();
+    expect(followed).toEqual(
+      expect.arrayContaining([watchedTopic, storedSlackTopic, storedIssueTopic])
+    );
   });
 
   // The listener's record keeps a claimed role's lane in the form it writes it,
@@ -10937,6 +11064,36 @@ console.log(JSON.stringify(args));
     });
     expect((await second).details).toEqual({ role: "reviewer", released: "release-captain" });
     await expect(subscribed).rejects.toThrow("does not hold role release-captain");
+    expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
+  });
+
+  // The Legion plugin tells this refusal from any other by its name, since it crosses the two
+  // plugins' bundles: the controller's plugin stops subscribing its role's watched workflow topics
+  // with one log line once its session holds the role no more (pi-legion's
+  // controller-session.ts), rather than giving each of them up and telling the session so.
+  test("a plugin's subscription while the session does not hold the role it names is refused with the error the Legion plugin reads by name", async () => {
+    const notice = "notifications.legion.ACME.release";
+    const { fixture, context } = await gatedRoleFixture(
+      "subscription-role-not-held",
+      "ses_role_not_held"
+    );
+
+    const refused: unknown = await subscribeLegionNotice(
+      "ses_role_not_held",
+      notice,
+      context,
+      "release-captain"
+    ).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(refused).toBeInstanceOf(Error);
+    expect((refused as Error).name).toBe("RoleNotHeldError");
+    expect((refused as Error).message).toBe(
+      "Envoy session ses_role_not_held does not hold role release-captain for a notice subscription"
+    );
+    expect(refusedForRoleNotHeld(refused)).toBe(true);
     expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
   });
 
