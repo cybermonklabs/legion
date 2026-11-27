@@ -1675,16 +1675,18 @@ interface ViewEntry {
 /**
  * Each decision and each answered question of the Decisions view's read `view`, with the part it
  * stands in by R2's rules: a decision that waits for alice's review in the review list
- * (`decisionsWaitingOnAlice`, its ties read from the Spec view's read `spec`, which holds each
- * decision whose tie names one of its statements, as `view` holds no statement); an agent's
- * decision no tie binds to a statement, a replaced one among them, at the foot; and a question a
- * person answered, which is that person's decision, under Your decisions where alice answered it
- * and under Decided by others where another person did. A decision in none of those parts - one
- * a person kept, changed or decided - is one this row reads no part for, and it fails the row,
- * named.
+ * (`decisionsWaitingOnAlice`, over `ties`, the `shaped` ties read from the Spec view's read, as
+ * `view` holds no statement); an agent's decision no tie binds to a statement, a replaced one
+ * among them, at the foot; and a question a person answered, which is that person's decision,
+ * under Your decisions where alice answered it and under Decided by others where another person
+ * did. A decision in none of those parts - one a person kept, changed or decided - is one this
+ * row reads no part for, and it fails the row, named.
  */
-function viewEntries(view: IssueTreeRead, spec: IssueTreeRead, reads: TreeIdReads): ViewEntry[] {
-  const ties = tiesToStatements(spec, reads);
+function viewEntries(
+  view: IssueTreeRead,
+  ties: readonly { readonly from: IssueTreeNode }[],
+  reads: TreeIdReads
+): ViewEntry[] {
   const waiting = new Set(decisionsWaitingOnAlice(view, ties).map((node) => node.id));
   const tied = new Set(ties.map(({ from }) => from.id));
   return (view.nodes ?? []).flatMap((node): ViewEntry[] => {
@@ -1839,12 +1841,12 @@ test("every decision of a paged issue is in its part, the header's count and the
       readTree(key, "spec"),
     ]);
     owedUnless(decisionNodesGate(whole, held));
-    const specTies = tiesToStatements(spec, reads);
+    const ties = tiesToStatements(spec, reads);
     /** What waits for alice as the header counts it over `answer`, a read of the Decisions view:
      *  each question that waits on her and each decision of `answer` that waits for her review. */
     const waitingOnAlice = (answer: IssueTreeRead) =>
-      asksWaitingOnAlice(reads.issue) + decisionsWaitingOnAlice(answer, specTies).length;
-    const entries = viewEntries(view, spec, reads);
+      asksWaitingOnAlice(reads.issue) + decisionsWaitingOnAlice(answer, ties).length;
+    const entries = viewEntries(view, ties, reads);
     expect(
       paged.flatMap(({ name, of }) => (entries.some(({ node }) => of(node)) ? [] : [name])),
       "each of the three nodes past Conversation's first page is an entry of the Decisions view's read"
@@ -1885,7 +1887,6 @@ test("every decision of a paged issue is in its part, the header's count and the
     const column = await steadily(page, traffic, "the Spec view's column", () => specColumn(page));
     const cells = await steadily(page, traffic, "the Spec view's cells", () => specCells(page));
     const idOf = treeIdOf(spec, reads);
-    const ties = tiesToStatements(spec, reads);
     expect(
       paged.flatMap(({ name, of }) => (ties.some(({ from }) => of(from)) ? [] : [name])),
       "each of the three nodes past Conversation's first page has a tie to a statement the Spec view's read holds"
