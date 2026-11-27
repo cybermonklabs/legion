@@ -338,9 +338,10 @@ func wantOthersWaiting(t *testing.T, others []*Machine, why string) {
 // show one, or no credit has come back yet and the gate has granted at most K.
 //
 // The negative control is main at 8868205a18f3: each subtest gives the claim's credit back when
-// its launch leaves the pacing, the sweep admits the (K+1)th claim onto that credit, and the
-// path's wake then parks with no credit, reading 9 waiting plugin-refresh wakes against the
-// bound of 8.
+// its launch leaves the pacing (paths 1 to 3 and the pod gate's road) or when the pause's gate
+// takes it (path 4, whose launch never enters the pacing before the pause holds it), the sweep
+// admits the (K+1)th claim onto that credit, and the path's wake then parks with no credit,
+// reading 9 waiting plugin-refresh wakes against the bound of 8.
 func TestRefreshBoundEachPathKeepsTheLaneWithinTheRate(t *testing.T) {
 	const queueDepth = 12
 
