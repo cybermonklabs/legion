@@ -12,11 +12,11 @@ package api_test
 //	git worktree remove --force <tmp>/main
 //
 // Never write the records again from the code they check: a record written by the code it checks
-// compares that code with itself and proves nothing. Until the stores move, a field main itself
-// adds or changes is recorded again by the commands above at that commit of main, and the change
-// that does so names the commit here and says which lines of the records moved and which change of
-// main moved them. A change that means to move a field changes the settings every deployed CLI
-// reads: it edits the record in the form -record writes, which the test holds the file to.
+// compares that code with itself and proves nothing. A change to main that adds, drops or changes a
+// field of either body fails this test in its own pull request: that change edits the record there,
+// in the form -record writes, which the test holds the file to, and names itself here with the
+// lines of the records that moved. The field is part of the settings every deployed CLI reads, so
+// that pull request's review decides whether it may move.
 
 import (
 	"bytes"

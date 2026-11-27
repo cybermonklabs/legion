@@ -14,16 +14,15 @@
 //	git worktree remove --force <tmp>/main
 //
 // Never write the records again from the code they check: a record written by the code it checks
-// compares that code with itself and proves nothing. Until the stores move, a text main itself
-// changes is recorded again by the commands above at that commit of main, and the change that does
-// so names the commit here and says which lines of the records moved and which change of main moved
-// them. A change that means to move one of these texts for the AWS or the GCP store changes what a
-// deployment's CLI prints: it edits the record in the form -record writes, which the test holds
-// source-words.json to. The usage record holds every row from AWS_PROFILE to the blank line above
-// "exit codes:", and the refusal record the whole refusal, so a later store that adds its own row
-// or clause changes them too: that change may write them again with -record, and its review must
-// then find, in the records' diff, only that store's lines added and every AWS and GCP line as it
-// was.
+// compares that code with itself and proves nothing. A change to main that adds, drops or changes
+// one of these texts for the AWS or the GCP store fails this test in its own pull request: that
+// change edits the record there, in the form -record writes, which the test holds source-words.json
+// to, and names itself here with the lines of the records that moved; it changes what a
+// deployment's CLI prints, so that pull request's review decides whether it may. The usage record
+// holds every row from AWS_PROFILE to the blank line above "exit codes:", and the refusal record the
+// whole refusal, so a later store that adds its own row or clause changes them too: that change may
+// write those two again with -record, and its review must then find, in the records' diff, only that
+// store's lines added and every AWS and GCP line as it was.
 package main
 
 import (
@@ -117,13 +116,15 @@ func firstDifference(got, want string) string {
 // TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints, byte for
 // byte, the refusal main printed, which names the variables each store's own tools read.
 func TestProfileRefusalRecordedOnMain(t *testing.T) {
-	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:121); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:120); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { clientConfig = nil })
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"secret", "list", "--profile", "x"}, &stdout, &stderr)
-	if code != exitUsageError {
-		t.Fatalf("secret list --profile x exited %d (stderr %q), want %d", code, stderr.String(), exitUsageError)
+	// 2 is the code main exits with here, written as a number: a change to exitUsageError moves
+	// the exit code, and this test fails on it.
+	if code != 2 {
+		t.Fatalf("secret list --profile x exited %d (stderr %q), want 2", code, stderr.String())
 	}
 	if *recordStoreWords {
 		writeRecord(t, "profile-refusal.txt", stderr.Bytes())

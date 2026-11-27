@@ -14,11 +14,13 @@ package secrets_test
 //	git worktree remove --force <tmp>/main
 //
 // Never write the records again from the code they check: a record written by the code it checks
-// compares that code with itself and proves nothing. Until the stores move, a source main itself
-// changes is recorded again by the commands above at that commit of main, and the change that does
-// so names the commit here and says which lines of the records moved and which change of main moved
-// them. A change that means to move a source of either store ends the grants that hold it: it edits
-// the record in the form -record writes, which the test holds the file to.
+// compares that code with itself and proves nothing. A change to main that adds, drops or changes a
+// source of either store fails this test in its own pull request: that change edits the record
+// there, in the form -record writes, which the test holds the file to, and names itself here with
+// the lines of the records that moved. A moved source ends the live grants that hold it, so that
+// pull request's review decides whether it may move. The AWS sources carry the region "local" and
+// the account 000000000000 because the AWS fake (secrets.Local) answers its ARNs so; the record
+// holds their form, which a real store answers with its own region and account.
 
 import (
 	"bytes"
