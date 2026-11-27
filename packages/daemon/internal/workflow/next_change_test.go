@@ -383,7 +383,7 @@ func TestANextChangeOfARootAsksNoApproval(t *testing.T) {
 func ownersPlanRows(t *testing.T, rig *waitRig, issue string, generation uint64, steps ...string) {
 	t.Helper()
 	fact := ownersPlan(t, issue, generation, 1, givenTask(t, "Build the widget.", steps...))
-	version, tasks, planSteps := givenRows(fact, nil, nil, rig.engine.cfg.DefaultSteps, rig.now)
+	version, tasks, planSteps := givenRows(fact, givenVersion{changed: []string{}, source: record.PlanSourceOwner}, rig.engine.cfg.DefaultSteps, rig.now)
 	seedRecord(t, rig.pool, func(tx pgx.Tx) error { return record.NewStore().PutPlan(t.Context(), tx, version, tasks, planSteps) })
 }
 
