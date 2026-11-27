@@ -1057,14 +1057,6 @@ file its steps live in.
 
 The Envoy client's job (envoy-client).
 
-## envoy_client: The test that no text states the old rule reads
-
-`packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts#no text states the old rule` reads
-every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md,
-the root's and the nested ones among them, so a text there that states the
-replaced rule must start this job. The recordings under packages/dispatch/e2e
-start it too, though the row leaves them out: this filter takes no `!` pattern.
-
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
 The shared race job: the closure of `go test -race` over delivery, the Dispatch

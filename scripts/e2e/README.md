@@ -374,7 +374,7 @@ Each item below names a script, then what it proves.
   once the merger's merge lands it is told to merge only once the reviewer's approval of the new head is on the pull request, and the reviewer is asked to read the merge with `git show --remerge-diff`;
   a required check that settles red on the new head is told to the merger and the architect, not the implementer;
   GitHub's merge closes the issue, every move the daemon logged for it went from `accepting` to `retro`, `merging` and `done`, no read of the state ever showed it in `implementing`, nor did the daemon write `in_progress`;
-  and the merger's prompt as its launch carries it is printed beside the messages the daemon sent it
+  and the merger's launch names the role prompt parts the daemon composed for a merger, not the driver's own prompt, whose headings are printed beside the messages the daemon sent it
 
 - `behind-entry-fence.sh`
 
@@ -412,7 +412,7 @@ Each item below names a script, then what it proves.
   an OpenAI `finish_reason: content_filter` with no fallback model left carries no HTTP status at all, so the task goes again after 30 s, holding the issue for nobody;
   an HTTP 400, a client error that is none of 401, 403, 408 and 429, fails the claim and holds its issue for its architect;
   and `legion claims stop`, `legion claims retry --fresh-session` and `legion claims list`, the built binary against that daemon, drive and read the claims the first and the fourth leave.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`), `git` and `jj` 0.38 or later; no cluster and no tmux, so a Legion pod and a devbox both run it
+  Needs an Oh My Pi (`LEGION_OMP_PATH`), `git` and `jj` 0.38 or later; no cluster and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it
 
 - `claim-compaction.sh`
 
@@ -424,19 +424,18 @@ Each item below names a script, then what it proves.
   a suspended, a stopped, a failed and a Claude Code worker, a worker in a turn and role `controller` are each refused in their own words through both doors;
   a fresh session starts the phase worker on its issue's current phase task and the root architect on its catch-up;
   and a fresh session starts a worker whose pane's process group was killed out from under a daemon that took no report of that death, the planner through the operator's command and the root architect through the controller's door, where the same request against the same pane while its process is alive and in a turn is refused.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`), `git` and `jj` 0.38 or later; no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
+  Needs an Oh My Pi (`LEGION_OMP_PATH`), `git` and `jj` 0.38 or later; no cluster, no Claude Code and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it
 
 - `role-prompt-rule.sh`
 
-  a role process is launched with the rules its own system prompt carries, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each answered by a model stand-in of the driver's own:
+  a role process is launched with the role prompt the daemon composed for its role, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three real `omp --mode rpc` panes under the real `legion worker-shim`, each answered by a model stand-in of the driver's own:
   one tree with one child is seeded, so the daemon starts three roles, its root architect and its planner and the architect of the child;
   once every pane has registered and reported ready, the driver takes the `legion worker-shim` pid that claim's locator carries, finds that shim's child whose argv[0] is `LEGION_OMP_PATH` (the shim starts Oh My Pi as a child), reads that Oh My Pi's own command line from `/proc/<pid>/cmdline`, takes the word after `--append-system-prompt` from it, the path of the prompt file, and reads that file;
-  the phase worker's eight sentences of the pod memory rule and every architect's six are each held in that prompt, and so are the planner's three parts of the rule that its completion reports work already done — the `head` its handoff body names, the clause that carries that head to the daemon, and the sentence that records the `plan` handoff with `dispatch handoff-write` and then reports completion;
-  the child's architect's prompt holds the sub-architect's own heading rather than the root's, and the addressing clause that names the root's architect as the architect above it;
-  and a part that is not there fails the proof naming the role, the Oh My Pi pid and that part's own text.
-  That command line and the file it names are the only places this proof reads.
-  The composer, the role prompt files below the state directory and the recorded launch specification each hold those rules before any process took them, and the unit tests already read them there, so none of the three says a role was launched with them.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`), `git` and `jj` 0.38 or later; no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
+  each role's prompt is the bytes of every part the composer gives that role, read from the composer's snapshot below the state directory and in the composer's order, followed by a blank line and the addressing its launch carried, and nothing after it;
+  the child's architect's addressing names the root's architect as the architect above it;
+  and a part that is not where its role's composition puts it fails the proof naming the role, the Oh My Pi pid, the part and where its bytes stand.
+  The proof holds no word of any prompt, so a changed sentence or heading of a part passes it.
+  Needs an Oh My Pi (`LEGION_OMP_PATH`), `git` and `jj` 0.38 or later, and no model route; no cluster, no Claude Code and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it
 
 - `late-completion.sh`
 
@@ -446,7 +445,7 @@ Each item below names a script, then what it proves.
   the tester completes testing naming its own test record and the issue moves to `reviewing`;
   the finished tester, given a second turn the same way, calls `handoff_complete` again, the tool names its own test record, and the call is refused `409 HANDOFF_NOT_CURRENT_PHASE` in one request;
   and the reviewer the pass started, its turn held while its review App's approval moves the issue to `accepting`, then completes, the tool names its own review record, and the completion is taken, which `GET /legion/v1/state` shows on the reviewer's phases row, with the issue still in `accepting`.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`), `jj`, `git` and `bun`; no cluster, no Claude Code, no GitHub and no tmux, so a Legion pod and a devbox both run it
+  Needs an Oh My Pi (`LEGION_OMP_PATH`), `jj`, `git` and `bun`; no cluster, no Claude Code, no GitHub and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it
 
 - `busy-relaunch-delivery.sh`
 
@@ -468,7 +467,7 @@ Each item below names a script, then what it proves.
   the first request after the cooldown goes to that model again;
   the retried 429 ends as a timeout after ten minutes, and its return waits on the host's five-minute suppression;
   the final 429 returns after its sixty-second suppression, with requests ten seconds apart so an early return is observable.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`), `go` for its NATS server, `bun` with the checkout's dependencies and twenty-one minutes of driving time.
+  Needs an Oh My Pi (`LEGION_OMP_PATH`), `go` for its NATS server, `bun` with the checkout's dependencies and twenty-one minutes of driving time; no cluster, no PostgreSQL and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it.
 
 - `handoff-records.sh`
 
@@ -655,9 +654,11 @@ Each item below names a script, then what it proves.
 
 [`.github/workflows/e2e.yaml`](../../.github/workflows/e2e.yaml) runs one proof per job on `ubuntu-24.04`, against a Postgres service.
 Every script the `hosted` list of `.github/e2e-scripts.json` names runs there, and the `daemon-go` job of `ci.yaml` also runs `stage1-skeleton.sh`.
+A proof whose row sets `omp` gets the Oh My Pi `.omp-pin` names, installed by `.github/actions/install-omp` and named to the script as `LEGION_OMP_PATH`:
+`role-prompt-rule.sh`, `late-completion.sh`, `claim-compaction.sh`, `provider-error-retry.sh` and `refusal-fallback-omp.sh` run their panes on it, each pane answered by a model stand-in of its driver's own, so they need no model route.
 None of them needs a secret, and none there may:
 Sami answered that no API key goes into this repository, and that a smoke test which calls a model runs in the deployment repository on workload identity federation (sjawhar/legion#2512).
-Every other script needs a devbox, a throwaway kind cluster, a real cluster or a model key, and the workflow refuses it by name with what its own header says it needs.
+Every other script needs a devbox, a throwaway kind cluster, a real cluster or a model key, and the workflow refuses it by name with that row's `needs` text.
 `.github/e2e-scripts.json` holds both lists, and a script in neither fails the run.
 
 A person or a role starts a proof two ways, and takes no devbox for either:
@@ -680,9 +681,9 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
-It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` leave a reader:
-they take no evidence variable and keep a work directory of their own, whose path that output names.
+The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `REFUSAL_FALLBACK_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `SHARED_CLONE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
+It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh`, `dispatch-broker.sh` and `verification-results.sh` leave a reader:
+they take no evidence variable, and that output names the path of what each keeps: a work directory of its own, or each test's tables under `TMPDIR` for `dispatch-broker.sh`.
 
 ## TestRealGitHubCredentialSurface
 
@@ -4745,7 +4746,7 @@ So the order of the moves is read from the daemon's own `workflow: phase changed
 | `step3-the-mergers-push-lands-and-the-reviewer-is-asked-to-read-the-merge` | the merger's push of `head-merged`, its merge of the base, as `legion-implementer[bot]`, and GitHub's synchronize, GitHub answering it mergeable | the landing on the merger's role topic, naming both heads and telling it to merge only once the reviewer's approval of the new head is on the pull request; the review ask on the reviewer's, naming both heads and `git show --remerge-diff head-merged`; the record's merge forward asked of the merger, landed at `head-merged`, with the review asked; over three seconds nothing on the merger's connection; the issue still in `merging` |
 | `step4-a-red-check-in-merging-reaches-the-merger-and-not-the-implementer` | CI's settlement of `head-merged` with `ci` failed, while the implementer's claim is `idle`, so a message to it would be published | the settled checks on the merger's role topic and on the architect's; over three seconds nothing on the implementer's or any other topic, and no role message logged to the implementer; the issue still in `merging` |
 | `step5-githubs-merge-closes-the-issue-which-never-entered-implementing` | GitHub's merge of the pull request at `head-merged` | the issue `done`; the moves the daemon logged for it (`workflow: phase changed`), exactly `accepting` to `retro`, `retro` to `merging` and `merging` to `done`; every read of the state over the whole run showed `accepting` first and `done` last, each phase in that order, and never `implementing`; the statuses the daemon wrote to Dispatch, none of them `in_progress`; the merge-forward messages the daemon logged, to the merger and the reviewer and none to the implementer |
-| `step6-the-mergers-prompt-as-its-launch-carries-it` | nothing: the role prompt parts the merger's launch names, which the daemon composed at boot | its section `A head that conflicts with its base`, with `A check that failed` beneath it, printed whole beside the messages steps 2 to 4 printed |
+| `step6-the-mergers-prompt-as-its-launch-carries-it` | nothing: the role prompt parts the merger's launch names, which the daemon composed at boot | exactly the parts the composer gives a merger, in its order, below the state directory's `prompts/`: `shared/mechanics/headless.md`, `shared/merger.md`, `go/merger.md` and `go/worker-common.md`, each read and none empty, so not the driver's own prompt file `prompts/<token>.md`, which a launch names alone once a seed writes one (`specs.rolePromptPaths`) and which a failure names; and each part's Markdown headings, the lines outside a fenced block that start with `#`, printed beside the messages steps 2 to 4 printed |
 
 What the proof stands in for lies outside the change:
 the broker is a native `nats-server`, GitHub is a REST stand-in for the pull request (its `mergeable` as the driver sets it, the base branch's ruleset requiring `ci` and the branch otherwise unprotected, its reviews and the repository a launch reads, with a GraphQL root that knows no pull request), Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), which keeps every status the daemon writes, Envoy's listener is the package's `noticeListener`, which takes every publish whether or not a session holds the role, the two Apps' tokens are placeholders, and no agent runs:
@@ -4928,7 +4929,7 @@ LEGION_OMP_PATH=/opt/omp/bin/omp \
 ```
 
 dispatch://INFRA-956's live proof that a turn ending in a provider error keeps the worker's task (its R2) and that the operator restarts the claims such turns leave (its R3), with real agents rather than a fake runtime.
-It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context and no tmux, so a Legion pod and a devbox both run it.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable:
 the proof launches real agents and guesses no build, and in a Legion worker pod that binary is the fleet's build rather than the branch's fetch, which the driver prints.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
@@ -4985,7 +4986,7 @@ dispatch://INFRA-956's live proof of the two operations an operator and a projec
 Each is driven through both of its doors, with real agents rather than a fake runtime.
 It is a script of its own rather than more steps of [`provider-error-retry.sh`](#provider-error-retrysh), which proves the ladder those operations rescue a claim from:
 the two runs would otherwise share a wall clock, and this one starts four panes and waits out a compaction its endpoint holds.
-It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`provider-error-retry.sh`](#provider-error-retrysh), the DSN's host must be loopback as it must there, and the broker is the run's own.
 Two runs of the proof took 134 s and 135 s on a devbox (Oh My Pi 18.18.6-sami.20261123-024918) with a warm Go build cache, and a cold cache adds the driver's own build:
 four panes start Oh My Pi once each and the five fresh sessions of steps 7 and 8 start one more each, each of the three phase workers answers the task its phase's start left pending on its claim, and the one wait is step 5's held handoff — Oh My Pi writes the handoff document in one request, the stand-in holds it for 35 s, and that compaction answers after about 35 s.
@@ -5048,16 +5049,19 @@ LEGION_OMP_PATH=/opt/omp/bin/omp \
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/role-prompt-rule.sh     # → "role prompt rule e2e: PASS in <n>s", exit 0
 ```
 
-dispatch://INFRA-3079's live proof that a role process is launched with the rules its own system prompt carries, which dispatch://INFRA-3146 extended by a rule of the planner's own and dispatch://INFRA-3915 by the prompt of a child's own architect.
-The pod memory rule is the paragraph every phase worker is given (`packages/daemon/internal/prompts/roles/mechanics/headless.md`, "What you run in the pod") and the paragraph every architect is given (`packages/daemon/internal/prompts/go/architect-common.md`).
-The planner's own rule is that its completion reports work already done: the paragraph that names the `head` its handoff body carries, what the daemon does with it, and the order that records the handoff before the completion is reported (`internal/prompts/roles/planner.md`, "Plan handoff").
-A child's architect, a sub-architect, is launched on the sub-architect's own part (`internal/prompts/roles/architect.md`, `# Legion Sub-Architect`), where a root architect's is the root's (`roles/architect-root.md`), and its addressing line names the architect above it (`addressingFragment`, in `internal/daemon/specs.go`).
-Unit tests already read the pod memory rule out of each composed prompt and hold it to one part of each tree (`internal/prompts/prompts_test.go` and `internal/prompts/roles_test.go`), and hold the planner's rule in the planner's own part alone (`internal/prompts/roles_test.go`).
-Neither file starts anything, so neither says a role process was ever launched with the text, and that is what this proof is for.
-It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
+The live proof that a role process is launched with the role prompt the daemon composed for its role, and so with every rule that prompt carries: among them the pod memory rule every phase worker and every architect is given, the planner's own rule that its completion reports work already done, and the sub-architect's own part, which a child's architect is given in place of a root architect's.
+It holds no word of any prompt.
+It holds each role's composition: the parts of the composer's snapshot that `prompts.Composer.Compose` gives the role, in its order, named by their paths below the state directory's `prompts/`, where `prompts.New` writes `shared/` from the role prompts the daemon embeds and `go/` from the daemon's own parts at boot.
+It reads the bytes of those parts from the snapshot once the panes run, so a changed sentence or heading of a part passes it, and a part left out of a role's composition, or one added to it, fails it for that role.
+A marker planted in the snapshot would need a write between the boot's `prompts.New` and the launch's read of the parts, and this rig has no such moment: `New` rewrites every snapshot file that does not hold its embedded bytes, and the boot relaunches the three seeded claims at once.
+A child's architect's addressing names the architect above it (`addressingFragment`, in `internal/daemon/specs.go`), and the proof holds that clause, which is the daemon's own Go text and no prompt part's.
+The unit tests of `internal/prompts` compose each role's parts, but none of them starts a process, so none says a role process was ever launched with them, and that is what this proof is for.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code, no tmux and no model route — so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it.
+On the hosted runner `.github/actions/install-omp` installs the Oh My Pi `.omp-pin` names, and the job names it to the script as `LEGION_OMP_PATH`.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`claim-compaction.sh`](#claim-compactionsh), the DSN's host must be loopback as it must there, and the broker is the run's own.
-Two runs of this proof, with its three panes and five steps, took 76 s and 70 s in a Legion worker pod (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s and 16 s into its first step.
+Two runs of this proof, with its three panes, took 76 s and 70 s in a Legion worker pod (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s and 16 s into its first step.
 A first run in such a pod took 179 s, with the Go build cache cold and the pinned `nats-server` installed by the run itself.
+All three runs were made when the proof had a fifth step, since removed, which read files and waited on nothing.
 Each of these figures is from a Legion worker pod, which runs under gVisor.
 The proof waits on no clock of its own: its one wait is the panes starting Oh My Pi, loading the two plugins and reporting ready, and the command line it reads is on each process from the moment that process began.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
@@ -5067,7 +5071,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | `prerequisites` | what [`claim-compaction.sh`](#claim-compactionsh)'s holds, in the same words and with the same refusals |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
 | `driver` | a test binary of `TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive` (`internal/daemon/role_prompt_rule_live_test.go`, `-tags e2e`) |
-| `proof` | the five steps below, each printing what it read between its own `== <name>` and `ok <name>` |
+| `proof` | the four steps below, each printing what it read between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, and seeds one tree with one child, so that the daemon starts three real panes of three different kinds: the tree's root architect, the planner of the same issue, which stands in `planning`, and the architect of the child, which stands in `planning` on a slot of its own.
 Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`), with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own.
@@ -5079,19 +5083,14 @@ such a file is an operator's own prompt and a launch that finds one gives the pa
 | step | driven by | read back as |
 | :--- | :--- | :--- |
 | `step1-every-role-of-the-tree-runs-a-pane-whose-own-argv-carries-a-system-prompt` | the three claims waited for until their panes register and report ready, then, for each, the child of the `legion worker-shim` at the pid that claim's locator carries whose argv[0] is `LEGION_OMP_PATH`, and that Oh My Pi's own `/proc/<pid>/cmdline` | one `--append-system-prompt` word in each, the path of its prompt file, with the Oh My Pi pid, its shim's pid and the bytes that file holds |
-| `step2-the-phase-worker-was-launched-with-the-pod-memory-rule` | the planner's own prompt file | the pod memory rule's eight sentences, each with the byte it stands at |
-| `step3-the-root-architect-was-launched-with-the-pod-memory-rule` | the root architect's own prompt file | the architect's own six sentences, each with the byte it stands at |
-| `step4-the-planner-was-launched-with-the-completion-after-work-rule` | the planner's own prompt file again | the three parts of the planner's completion rule — the `head` its handoff body names, with the one thing that value is; the clause that carries that head to the daemon, which names the planner's own phase word; and the paragraph's order sentence, copied from `planner.md` byte for byte, which records the `plan` handoff with `dispatch handoff-write` and then reports completion — each with the byte it stands at |
-| `step5-the-childs-architect-was-launched-with-the-sub-architect-prompt-and-the-pod-memory-rule` | the child's architect's own prompt file, and the root architect's again | `# Legion Sub-Architect` at byte 0 and the clause ``the architect above you is `notifications.role.<the root architect's claim>` `` in the child's architect's prompt, each with the byte it stands at; no `# Legion Root Architect` in it and no `# Legion Sub-Architect` in the root architect's; and the architect's own six sentences of the pod memory rule in the child's architect's prompt |
+| `step2-the-planner-was-launched-with-the-prompt-composed-for-the-planner` | the planner's own prompt file, the composer's snapshot, and the planner's launch | from byte 0, the bytes of `shared/core/common.md`, `shared/core/planner.md`, `shared/mechanics/headless.md`, `shared/planner.md`, `go/planner.md` and `go/worker-common.md`, one after the other, the last with its trailing newlines dropped, each with the bytes it stands at; then a blank line and the addressing the planner's launch carried, and nothing after it, since that launch names no deployment or variant instructions, which this rig gives no launch and which end the step by name |
+| `step3-the-root-architect-was-launched-with-the-prompt-composed-for-a-root-architect` | the root architect's own prompt file, the composer's snapshot, and the root architect's launch | the same of `shared/architect-root.md`, `go/architect-root.md` and `go/architect-common.md`, and the addressing the root architect's launch carried, and nothing after it |
+| `step4-the-childs-architect-was-launched-with-the-prompt-composed-for-a-sub-architect-under-the-root-architect` | the child's architect's own prompt file, the composer's snapshot, and the child's architect's launch | the same of `shared/architect.md`, `go/architect.md` and `go/architect-common.md`, and the addressing the child's architect's launch carried, and nothing after it; in that addressing the clause ``the architect above you is `notifications.role.<the root architect's claim>` ``, with the byte it stands at |
 
-The command line and the file it names are the only places this proof reads.
-The composer, the role prompt files below the state directory and the recorded launch specification each hold that text before any process took it, so none of the three says a role was launched with it; only the kernel's copy of Oh My Pi's own argv does, and the shim's argv does not, since a shim that dropped or rewrote the prompt would still carry it.
-A part it cannot find ends the proof naming the role, its Oh My Pi pid, the prompt's length and that part's own text, which is what a negative control's run reads.
-The same proof against a checkout whose two pod-rule parts are at the merge base fails in step 2 on the first sentence, and against one whose `internal/prompts/roles/planner.md` has the `head` taken out of its handoff paragraph it fails in step 4 on the first part:
-``the planner legion-teste4efebf18d84-teste4efebf18d84-1-planner ran Oh My Pi as pid 31352, launched with a prompt of 44137 bytes that does not carry part 1 of 2 of the completion-after-work rule: "`head` (the 40-character lower-case commit"``,
-which a run from before the rule had its third part printed.
-Against one whose order sentence in that paragraph has `, then report completion` taken out it fails in step 4 on the third part:
-``the planner legion-test6a865c2ec3b9-test6a865c2ec3b9-1-planner ran Oh My Pi as pid 42729, launched with a prompt of 45112 bytes that does not carry part 3 of 3 of the completion-after-work rule: "Record it with `dispatch handoff-write --issue <issue> --phase plan --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, then report completion"``.
+The command line and the file it names are where this proof reads each prompt, and the composer's snapshot is where it reads what that prompt must be.
+Only the kernel's copy of Oh My Pi's own argv says which file a role was launched with; the shim's argv does not, since a shim that dropped or rewrote the prompt would still carry it.
+A part that is not where its role's composition puts it ends the proof naming the role, its Oh My Pi pid, the part, the byte it was looked for at, where its bytes stand instead and the parts the launch named, which is what a negative control's run reads.
+Bytes after the addressing end it naming the role, its Oh My Pi pid, the byte the addressing ends at and how many bytes follow it, with the first of them.
 What the proof stands in for lies outside the rule, and is what [`claim-compaction.sh`](#claim-compactionsh) stands in for: the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share, Dispatch is their board, Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and each pane's provider is a stand-in of the driver's own, which answers every turn alike.
 `ROLE_PROMPT_RULE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own and the driver's output;
 the run's work directory, the driver binary among it, is under `TMPDIR` too.
@@ -5109,7 +5108,7 @@ A finished implementer that completes again while the issue is in `testing`, wit
 A finished tester that completes again, naming its own test record, is refused the same in one request, and a reviewer whose own approval moved the issue to `accepting` before it completed has its completion taken, naming its own review record.
 Unit tests already hold each half: `packages/pi-shared/src/handoff-record.test.ts` the record the tool's `findHandoffReport` reads once the issue has moved on, and `internal/api/handoff_test.go` and `internal/workflow/handoff_test.go` what the route and the engine answer such a completion.
 None of them runs the tool a pane loads against the daemon a pane talks to, and that is what this proof is for.
-It runs on any Linux host with `go`, `awk`, `tar`, `jj`, `git`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code, no GitHub and no tmux, so a Legion pod and a devbox both run it.
+It runs on any Linux host with `go`, `awk`, `tar`, `jj`, `git`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code, no GitHub and no tmux, so a Legion pod, a devbox and `e2e.yaml`'s hosted runner all run it.
 `LEGION_OMP_PATH` is required and means what it means for [`claim-compaction.sh`](#claim-compactionsh).
 `LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server, so the DSN's role must be allowed to create databases and the server must offer `pgvector`.
 The broker is the run's own.
