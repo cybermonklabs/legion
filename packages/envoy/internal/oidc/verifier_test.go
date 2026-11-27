@@ -119,6 +119,101 @@ func TestVerifyClassifiesRejection(t *testing.T) {
 	}
 }
 
+// A verifier of a list of audiences judges a token by the listed audience it carries, so a token
+// fails for the reason a verifier of that one audience fails it: an expired token of the second
+// listed audience is expired, and a token of an audience the list does not hold is for another
+// audience, expired or not. A verifier of one audience judges as it always has. Each row is a row
+// of the state table of dispatch://INFRA-5514/artifact/plan-md, O1 to O15: "list" is the verifier
+// of a and b, "one" the verifier of a alone, both on the one key set.
+func TestAVerifierOfAListOfAudiencesJudgesATokenByTheAudienceItCarries(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, signing := keysFor(t, issuer, "signing-key")
+	list := NewWithKeysFor(issuer.URL(), []string{"a", "b"}, keys)
+	one := NewWithKeys(issuer.URL(), "a", keys)
+	// Same key id as the published key, different key material: the key set resolves, only the
+	// signature fails.
+	foreign := oidctest.NewKey(t, signing.KeyID())
+	unpublished := oidctest.NewKey(t, "never-published")
+
+	// mint signs a sound token whose aud is aud, a string or an array as the row writes it, once
+	// change (when not nil) has spoiled one claim of it.
+	mint := func(key *oidctest.Key, aud any, change func(claims map[string]any)) string {
+		claims := issuer.Claims(testSubject, "")
+		claims["aud"] = aud
+		if change != nil {
+			change(claims)
+		}
+		return issuer.Mint(t, key, claims)
+	}
+	expired := func(claims map[string]any) {
+		claims["iat"] = time.Now().Add(-2 * time.Hour).Unix()
+		claims["exp"] = time.Now().Add(-time.Hour).Unix()
+	}
+	otherIssuer := func(claims map[string]any) { claims["iss"] = "https://oidc.eks.example.invalid/id/OTHER" }
+
+	tests := []struct {
+		name     string
+		verifier *Verifier
+		token    string
+		// wantAudience is an accepted token's Audience. want is a refused token's class, nil for
+		// a token the verifier accepts, and wantText holds what the refusal's text must contain.
+		wantAudience []string
+		want         error
+		wantText     []string
+	}{
+		{name: "O1 list: aud a", verifier: list, token: mint(signing, []string{"a"}, nil), wantAudience: []string{"a"}},
+		{name: "O2 list: aud b", verifier: list, token: mint(signing, []string{"b"}, nil), wantAudience: []string{"b"}},
+		{name: "O3 list: aud an array that holds b", verifier: list, token: mint(signing, []string{"x", "b"}, nil), wantAudience: []string{"x", "b"}},
+		{name: "O4 list: aud b as a bare string", verifier: list, token: mint(signing, "b", nil), wantAudience: []string{"b"}},
+		{name: "O5 list: aud x", verifier: list, token: mint(signing, []string{"x"}, nil), want: ErrAudience, wantText: []string{`"a"`, `"b"`}},
+		{name: "O6 list: aud x, expired", verifier: list, token: mint(signing, []string{"x"}, expired), want: ErrAudience},
+		{name: "O7 list: aud b, expired", verifier: list, token: mint(signing, []string{"b"}, expired), want: ErrExpired},
+		{name: "O8 list: aud b, another issuer", verifier: list, token: mint(signing, []string{"b"}, otherIssuer), want: ErrIssuer},
+		{name: "O9 list: aud x, another issuer", verifier: list, token: mint(signing, []string{"x"}, otherIssuer), want: ErrIssuer},
+		{name: "O10 list: aud b, signed by a key the issuer does not publish", verifier: list, token: mint(foreign, []string{"b"}, nil), want: ErrSignature},
+		{name: "O11 list: three segments that are not a token", verifier: list, token: "not.a.jwt", want: ErrMalformed},
+		{name: "O12 list: aud b, signed under a key id the issuer does not publish", verifier: list, token: mint(unpublished, []string{"b"}, nil), want: ErrSignature},
+		{name: "O13 one: aud x, expired", verifier: one, token: mint(signing, []string{"x"}, expired), want: ErrAudience, wantText: []string{`["x"], want "a"`}},
+		{name: "O14 one: aud a, expired", verifier: one, token: mint(signing, []string{"a"}, expired), want: ErrExpired},
+		{name: "O15 one: aud b", verifier: one, token: mint(signing, []string{"b"}, nil), want: ErrAudience},
+	}
+
+	classes := []error{ErrMalformed, ErrIssuer, ErrAudience, ErrExpired, ErrCancelled, ErrIssuerUnavailable, ErrSignature}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			claims, err := tt.verifier.Verify(context.Background(), tt.token)
+			if tt.want == nil {
+				if err != nil {
+					t.Fatalf("Verify: %v, want the token accepted", err)
+				}
+				if claims.Subject != testSubject || claims.Issuer != issuer.URL() || !reflect.DeepEqual(claims.Audience, tt.wantAudience) {
+					t.Errorf("Verify claims = %+v, want subject %q, issuer %q and audience %q", claims, testSubject, issuer.URL(), tt.wantAudience)
+				}
+				return
+			}
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Verify error = %v, want %v", err, tt.want)
+			}
+			for _, class := range classes {
+				if class != tt.want && errors.Is(err, class) {
+					t.Errorf("Verify error %q is %v as well as %v, want one class", err, class, tt.want)
+				}
+			}
+			for _, text := range tt.wantText {
+				if !strings.Contains(err.Error(), text) {
+					t.Errorf("Verify error %q does not contain %s", err, text)
+				}
+			}
+			if !reflect.DeepEqual(claims, Claims{}) {
+				t.Errorf("Verify returned claims %+v on a rejected token, want the zero value", claims)
+			}
+			if strings.Contains(err.Error(), tt.token) {
+				t.Errorf("Verify error %q repeats the token", err)
+			}
+		})
+	}
+}
+
 // Verify reads what it always has, whatever a token holds of the claims a domain-mode sign-in reads
 // (email, email_verified, hd): a Cognito ID token whose email_verified is a number, null, an object
 // or either spelling of true verifies with its Cognito fields, and the Workspace claims stay empty,

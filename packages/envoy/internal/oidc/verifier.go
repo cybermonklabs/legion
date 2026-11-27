@@ -1,4 +1,4 @@
-// Package oidc verifies OIDC tokens against one issuer and one audience — a
+// Package oidc verifies OIDC tokens against one issuer and one or more audiences — a
 // Kubernetes pod's projected service-account token, for the Dispatch server and
 // the Envoy listener — and signs a person in to Dispatch with the authorization
 // code flow against its sign-in issuer (CodeFlow).
@@ -102,12 +102,15 @@ type cognitoClaims struct {
 	} `json:"identities"`
 }
 
-// Verifier verifies bearer tokens issued by one issuer to one audience.
+// Verifier verifies bearer tokens issued by one issuer to one or more audiences.
 type Verifier struct {
-	verifier *gooidc.IDTokenVerifier
-	issuer   string
-	audience string
-	// skipExpiry is set when verifier skips the exp check (gooidc.Config.SkipExpiryCheck), as
+	// audiences are the audiences a token may be issued to, in the order the caller listed them,
+	// and verifiers[i] is go-oidc's verifier of audiences[i]: the same issuer, the same keys, and
+	// ClientID audiences[i]. verify checks each token with one of them (verifierOf).
+	audiences []string
+	verifiers []*gooidc.IDTokenVerifier
+	issuer    string
+	// skipExpiry is set when verifiers skip the exp check (gooidc.Config.SkipExpiryCheck), as
 	// IAPVerifier's does, which checks the verified exp itself. classify then reports no failure
 	// as ErrExpired: an exp it reads is from a payload whose signature, issuer or audience failed,
 	// and says nothing about a token's age.
@@ -137,19 +140,35 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 // one per MinRefresh while reads succeed, and one per FailureSpacing while they
 // fail, across both of them.
 func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
-	return &Verifier{
-		// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the
-		// verifier a discovered provider builds, defaults to RS256 alone: the
-		// pair named here is the pair keySet parses and the pair a cluster
-		// signs its projected tokens with, so an ES256 cluster's tokens go on
-		// verifying.
-		verifier: gooidc.NewVerifier(issuer, keySet{keys: keys}, &gooidc.Config{
+	return NewWithKeysFor(issuer, []string{audience}, keys)
+}
+
+// NewWithKeysFor is NewWithKeys for tokens issuer issued to any of audiences, all checked against
+// the one keys. The caller passes one or more audiences and none of them twice; config.Load holds
+// that for the broker's BROKER_K8S_OIDC_AUDIENCE.
+//
+// A token is judged by the listed audience it carries, so a token fails for the reason it fails
+// at a verifier of that audience alone: Verify checks it with the go-oidc verifier of the first
+// listed audience its own aud names, or of the first listed audience when it names none
+// (verifierOf). An expired token of the second listed audience is thus ErrExpired, and a token of
+// an audience the list does not hold is ErrAudience, expired or not, as at a verifier of one
+// audience. Each token gets one signature check. An aud written into a forged token gains
+// nothing, because the verifier chosen checks aud again on the payload the signature covers.
+func NewWithKeysFor(issuer string, audiences []string, keys *Keys) *Verifier {
+	set := keySet{keys: keys}
+	// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the verifier a discovered
+	// provider builds, defaults to RS256 alone: the pair named here is the pair keySet parses and
+	// the pair a cluster signs its projected tokens with, so an ES256 cluster's tokens go on
+	// verifying.
+	algs := supportedSigningAlgs()
+	verifiers := make([]*gooidc.IDTokenVerifier, len(audiences))
+	for i, audience := range audiences {
+		verifiers[i] = gooidc.NewVerifier(issuer, set, &gooidc.Config{
 			ClientID:             audience,
-			SupportedSigningAlgs: supportedSigningAlgs(),
-		}),
-		issuer:   issuer,
-		audience: audience,
+			SupportedSigningAlgs: algs,
+		})
 	}
+	return &Verifier{audiences: audiences, verifiers: verifiers, issuer: issuer}
 }
 
 // supportedSigningAlgs names keySetAlgorithms as go-oidc's configuration takes them.
@@ -167,14 +186,14 @@ func supportedSigningAlgs() []string {
 // so there is no second reader to share a *Keys with (codeflow.go).
 func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 	return &Verifier{
-		verifier: provider.Verifier(&gooidc.Config{ClientID: audience}),
-		issuer:   issuer,
-		audience: audience,
+		audiences: []string{audience},
+		verifiers: []*gooidc.IDTokenVerifier{provider.Verifier(&gooidc.Config{ClientID: audience})},
+		issuer:    issuer,
 	}
 }
 
-// Verify checks raw against the issuer's published keys, the configured
-// audience, and the token's expiry. Every error wraps exactly one of
+// Verify checks raw against the issuer's published keys, a listed audience
+// (NewWithKeysFor), and the token's expiry. Every error wraps exactly one of
 // ErrMalformed, ErrIssuer, ErrAudience, ErrExpired, ErrCancelled,
 // ErrIssuerUnavailable, and ErrSignature.
 func (v *Verifier) Verify(ctx context.Context, raw string) (Claims, error) {
@@ -211,7 +230,7 @@ func (v *Verifier) VerifyClaims(ctx context.Context, raw string, into ...any) (C
 // dots, so the one serialization taken is the one whose middle segment is the signed payload.
 // This refusal is the only compact check the sign-in's verifier has, since its keys come from
 // go-oidc's own RemoteKeySet (newVerifier). A refusal's class is read from raw as given, as it
-// was before.
+// was before. The go-oidc verifier that checks the token is verifierOf's.
 func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Claims, error) {
 	compact := stripSpaces(raw)
 	if !compactSerialization(compact) {
@@ -220,7 +239,7 @@ func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Cla
 	// The slot the key source's own error comes back in: go-oidc flattens it
 	// (keyset.go, keySetError).
 	keyCtx, keySetErr := withKeySetError(ctx)
-	token, err := v.verifier.Verify(keyCtx, compact)
+	token, err := v.verifierOf(compact).Verify(keyCtx, compact)
 	if err != nil {
 		return nil, Claims{}, v.classify(ctx, raw, err, keySetErr.err)
 	}
@@ -242,6 +261,25 @@ func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Cla
 		Providers: providers,
 		Nonce:     person.Nonce,
 	}, nil
+}
+
+// verifierOf is the go-oidc verifier verify checks compact with. A verifier of one audience has
+// one, and verifierOf reads nothing of compact to pick it. Of a list it is the verifier of the
+// first listed audience that compact's own aud names, read unverified, else the first listed
+// audience's, so a token whose payload cannot be read is refused by go-oidc as it always was. The
+// unverified aud picks a verifier and admits nothing: the verifier picked checks aud again on the
+// payload the signature covers.
+func (v *Verifier) verifierOf(compact string) *gooidc.IDTokenVerifier {
+	if len(v.verifiers) > 1 {
+		if claims, err := decodeUnverifiedClaims(compact); err == nil {
+			for i, listed := range v.audiences {
+				if slices.Contains(claims.Audience, listed) {
+					return v.verifiers[i]
+				}
+			}
+		}
+	}
+	return v.verifiers[0]
 }
 
 // classify decides the failure class from the token's own claims rather than
@@ -284,8 +322,11 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 		return fmt.Errorf("%w: %v", ErrMalformed, decodeErr)
 	case !v.namesIssuer(claims.Issuer):
 		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
-	case !slices.Contains(claims.Audience, v.audience):
-		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)
+	case !slices.ContainsFunc(claims.Audience, v.lists):
+		if len(v.audiences) == 1 {
+			return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audiences[0])
+		}
+		return fmt.Errorf("%w: %q, want one of %q", ErrAudience, []string(claims.Audience), v.audiences)
 	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
 		return fmt.Errorf("%w at %s", ErrExpired, time.Unix(int64(claims.Expiry), 0).UTC().Format(time.RFC3339))
 	case errors.Is(keySetErr, ErrKeySet):
@@ -294,6 +335,9 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 		return ErrSignature
 	}
 }
+
+// lists reports whether audience is one of the verifier's listed audiences.
+func (v *Verifier) lists(audience string) bool { return slices.Contains(v.audiences, audience) }
 
 // LooksLikeJWT reports whether s is three dot-separated non-empty segments. It
 // is the callers' cheap discriminator between a JWT and the other bearer shapes
