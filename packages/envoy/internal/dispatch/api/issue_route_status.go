@@ -261,7 +261,7 @@ func (s *server) readRouteRosterLeaving(ctx context.Context, left time.Duration)
 		// transaction-tracking mark among them) belong to that request alone; the fetch bound
 		// still limits it, and a shutdown ends it. now, the database's clock on the read that
 		// found the row stale, is when its call counts as sent.
-		go s.fetchRouteRoster(s.lifetime, fetch, now)
+		s.goReadWorker(func() { s.fetchRouteRoster(s.lifetime, fetch, now) })
 	}
 	cache.mu.Unlock()
 	select {

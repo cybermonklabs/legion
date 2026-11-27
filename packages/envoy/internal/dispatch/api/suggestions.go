@@ -464,7 +464,7 @@ func (s *server) runRelatedCheck(
 		}
 		stage.took = time.Since(stagesStarted)
 		keyword <- stage
-	}()
+	})
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
 	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
@@ -523,7 +523,7 @@ func (s *server) runRelatedCheck(
 			stage := s.relatedMeaningStage(meaningRead, crossRead, input.who, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
-		}()
+		})
 	}
 
 	select {
@@ -681,7 +681,7 @@ func (s *server) relatedMeaningStage(
 		// its wait for the leg is over: an overrunning query then gives its pool connection
 		// back at the grace rather than at the meaning deadline.
 		cross = make(chan []model.SearchResult, 1)
-		go func() {
+		s.goReadWorker(func() {
 			reader := s.readDisplayTrees(crossRead, trees)
 			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), who, reader)
 			if err != nil {
@@ -691,7 +691,7 @@ func (s *server) relatedMeaningStage(
 			// the answers by the time any other goroutine can read one.
 			reader.resolve()
 			cross <- results
-		}()
+		})
 	}
 	select {
 	case <-pick.ready:
