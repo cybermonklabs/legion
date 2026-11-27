@@ -136,7 +136,7 @@ const UNASKED: readonly unknown[] = [
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
-  ...WORD_FILES.flatMap(({ module }) => module.default.unasked),
+  ...WORD_FILES.flatMap<unknown>(({ module }) => module.default.unasked),
 ];
 
 const ANSWERS: readonly unknown[] = [
@@ -144,7 +144,7 @@ const ANSWERS: readonly unknown[] = [
   BLOCKED_BY_REFUSALS,
   HELP_LINES,
   KEY_REPORTS,
-  ...WORD_FILES.flatMap(({ module }) => module.default.answers),
+  ...WORD_FILES.flatMap<unknown>(({ module }) => module.default.answers),
 ];
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];

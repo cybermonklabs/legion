@@ -244,11 +244,11 @@ export function joinWords<Name extends TableName, Main extends object>(
 /** The parts' own tables that the page draws on load, in file order. `UNASKED_SOURCES` of
  *  `page-words.ts` holds them. */
 export const PART_UNASKED_SOURCES: readonly unknown[] = freeze(
-  WORD_FILES.flatMap(({ module }) => module.default.unasked)
+  WORD_FILES.flatMap<unknown>(({ module }) => module.default.unasked)
 );
 
 /** The parts' own tables that the page draws only after an act of the reader, in file order.
  *  `ANSWER_SOURCES` of `page-words.ts` holds them. */
 export const PART_ANSWER_SOURCES: readonly unknown[] = freeze(
-  WORD_FILES.flatMap(({ module }) => module.default.answers)
+  WORD_FILES.flatMap<unknown>(({ module }) => module.default.answers)
 );
