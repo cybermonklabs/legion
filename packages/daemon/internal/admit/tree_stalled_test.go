@@ -665,7 +665,7 @@ func lineMoves(t *testing.T, pool *pgxpool.Pool, admission *Admission) bool {
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, ownSlots(issues, slots), facts, nil, now)
+		rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, record.OwnSlots(issues, slots), facts, nil, now)
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}

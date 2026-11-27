@@ -173,6 +173,9 @@ func (r *observedRig) seedObserved(t *testing.T) {
 		observedIssue("LEGION-303", "LEGION-300", "LEGION-300", "needs_review", phase.Reviewing),
 		observedIssue("LEGION-304", "LEGION-300", "LEGION-300", "needs_review", phase.Accepting),
 		observedIssue("LEGION-305", "LEGION-300", "LEGION-300", "in_progress", phase.Retro),
+		// A merged child whose close waits for the checks of its goal: verifying holds no slot,
+		// and Dispatch shows it at testing.
+		observedIssue("LEGION-307", "LEGION-300", "LEGION-300", "testing", phase.Verifying),
 		held,
 	}
 	approved := 1

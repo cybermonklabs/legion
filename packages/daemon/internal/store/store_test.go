@@ -1144,7 +1144,7 @@ var thisRelease = map[int]bool{
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
 	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124033010: true,
-	true, 20261126163320: true, 20261126223725: true,
+	20261126110259: true, 20261126163320: true, 20261126223725: true,
 }
 
 const idleRelease = 20261101222956
@@ -1170,9 +1170,9 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
 // it out, and the three state kinds would be, had the state events' 20261126163320 stood below the
 // merge holds' 20261126110259, whose list leaves them out. step_record, plan_record,
-// conflict_confirm, merge_forward, design_changes, the two basis seeds and merge_holds_changed are
-// refused too, unless the state events' list, which runs after each list that names them, names
-// them too.
+// conflict_confirm, merge_forward, design_changes, the two basis seeds, merge_holds_changed and the
+// three state kinds are refused too, unless the done-by-checks list of 20261126223725, which runs
+// after each list that names them, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()
