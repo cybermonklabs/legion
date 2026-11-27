@@ -9,9 +9,6 @@ const badgeSelectFrame = "relative inline-flex min-h-11 shrink-0 items-center ro
  *  whose trigger shows the badge (the priority, the issue header's assignee, an ask card's
  *  hand-on, an Inbox Snooze: `badgeSelectTrigger`). */
 export const badgeSelectWrapper = `${badgeSelectFrame} md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
-/** The same wrapper in the issue header's details rail (the repository), 28 px from `md` like
- *  the rail's other controls, so it never makes the rail's row taller. */
-export const badgeSelectRailWrapper = `${badgeSelectFrame} md:min-h-7 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
 /** The same wrapper in the new issue page's header properties line, where the controls are the
  *  line's own height, as the pictures draw them: 24 px, the least a touch target may be (WCAG
  *  2.5.8), because the header at 390 px is held to eight lines and 250 px, nine and 280 px while
@@ -23,6 +20,13 @@ export const badgeSelectHeaderWrapper = `relative inline-flex min-h-6 min-w-0 ma
 /** The visible badge; the caller appends its tone's `bg` and `text`. */
 export const badgeSelectBadge =
   "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold";
+/** `badgeSelectBadge` for a value that can be longer than its row - today's Repository list in
+ *  its row of the issue header's Details: a block of one line, as wide as its text up to its
+ *  row's width, that ends what does not fit in an ellipsis. A flex box's own text takes no
+ *  ellipsis (`TruncatedText`), so this badge is a block, and the caller passes its whole text as
+ *  its `title`. */
+export const badgeSelectTruncatedBadge =
+  "inline-block max-w-full truncate rounded-sm px-1.5 py-0.5 align-middle text-xs font-semibold";
 /** Inside `NoTooltips` (the new issue page) every value a shared control draws wraps: it keeps
  *  `max-w-full` and breaks anywhere, and nothing around it keeps its width, so a long login with
  *  no space stays inside Details' row rather than running past it. These are
@@ -30,7 +34,10 @@ export const badgeSelectBadge =
  *  `badgeSelectBadge` with `max-w-full [overflow-wrap:anywhere]`. The list's trigger over the
  *  badge stays usable however many lines the badge takes: it stretches to the wrapper's height
  *  and narrows with it (`badgeSelectPageTrigger`), so it covers every line of a badge that
- *  wraps. */
+ *  wraps. The wrapper and the trigger also hold today's Repository list in its row of the issue
+ *  header's Details (`RepoControl.tsx`, `RepositoryList`), which narrows to the row the same way;
+ *  there the badge ends a long name in an ellipsis (`badgeSelectTruncatedBadge`), with the whole
+ *  name as its title, rather than wrap, since a `title` can give back what it cut. */
 const badgeSelectPageFrame =
   "relative inline-flex min-h-11 min-w-0 max-w-full items-center rounded-sm";
 export const badgeSelectPageWrapper = `${badgeSelectPageFrame} md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
@@ -54,10 +61,6 @@ export const badgeSelectPageTrigger = `${badgeSelectTrigger} min-w-0 max-w-full`
  *  the trigger is the 44 px target the select laid over it was; from 1280 px it is the wrapper's
  *  height. It narrows with its wrapper, so the value inside it wraps within the line. */
 export const badgeSelectHeaderTrigger = `${badgeSelectTriggerFrame} min-w-0 max-w-full max-xl:-my-2.5`;
-/** The same trigger in `badgeSelectRailWrapper` (the issue header's repository), which is 28 px
- *  from `md`: there the 44 px trigger overhangs it by 8 px above and below, so the rail's line is
- *  28 px from `md` (`md:min-h-7`), the height of the rail's other controls. */
-export const badgeSelectRailTrigger = `${badgeSelectTriggerFrame} md:max-xl:-my-2`;
 
 /** The handlers a badge-select wrapper spreads. A press on the trigger, or in the list it opens
  *  (portalled, but a React child of the wrapper), is kept out of the row, card or header under

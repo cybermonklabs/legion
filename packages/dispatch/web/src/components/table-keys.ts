@@ -48,9 +48,16 @@ export interface RowKeymap {
 
 /** Focuses the row whose id is `key`, or the element `selector` names inside it. The selection
  *  bar asks for `"nearest"` to show its checkbox whole without the engine's focus scroll. A row
- *  the table has not drawn is scrolled to and focused once it is drawn; the answer takes that
- *  focus back while it is still to come, and does nothing once it has been made. */
-export type FocusRow = (key: string, selector?: string, placement?: "nearest") => () => void;
+ *  the table has not drawn is scrolled to and focused once it is drawn; `onLand` runs right after
+ *  the focus lands, in that same task, whether the row was already drawn or drawn in a later
+ *  render. The answer takes a pending focus back while it is still to come, and does nothing once
+ *  it has been made. */
+export type FocusRow = (
+  key: string,
+  selector?: string,
+  placement?: "nearest",
+  onLand?: (element: HTMLElement) => void
+) => () => void;
 
 /** What `FocusRow` answers when it leaves no focus to come: a drawn row is focused at once, and a
  *  key the table does not hold focuses nothing. */
@@ -98,7 +105,12 @@ export function useRowKeymap<TData>({
   scrollToIndex: (index: number) => void;
 }): FocusRow {
   /** The row and control that take the focus once drawn, with the origin of a nearest-edge hand-off. */
-  const pendingFocus = useRef<{ key: string; selector?: string; from?: number } | null>(null);
+  const pendingFocus = useRef<{
+    key: string;
+    selector?: string;
+    from?: number;
+    onLand?: (element: HTMLElement) => void;
+  } | null>(null);
   // The row in hand: the row of this table that holds the focus, or one of its controls does. A
   // row of another table on the page, under the same attribute, is none of this table's.
   const focusedRow = () => {
@@ -109,7 +121,7 @@ export function useRowKeymap<TData>({
     scrollRef.current?.querySelector<HTMLElement>(`[${rowAttribute}="${CSS.escape(key)}"]`);
   // Focuses a drawn row or control directly, scrolls an undrawn row in first and focuses it once
   // it lands, and ignores a key no row of this page holds.
-  const focusRow: FocusRow = (key, selector, placement) => {
+  const focusRow: FocusRow = (key, selector, placement, onLand) => {
     const row = rowElement(key);
     if (row) {
       pendingFocus.current = null;
@@ -117,13 +129,14 @@ export function useRowKeymap<TData>({
       if (element !== null) {
         if (placement === "nearest") landNearest(element);
         else element.focus();
+        onLand?.(element);
       }
       return NOTHING_PENDING;
     }
     const index = displayRows.findIndex(({ row }) => row.id === key && !row.getIsGrouped());
     if (index === -1) return NOTHING_PENDING;
     const from = placement === "nearest" ? scrollRef.current?.scrollTop : undefined;
-    const pending = { from, key, selector };
+    const pending = { from, key, onLand, selector };
     pendingFocus.current = pending;
     scrollToIndex(index);
     return () => {
@@ -156,6 +169,7 @@ export function useRowKeymap<TData>({
     if (element === null) return;
     if (pending.from !== undefined) landNearest(element, pending.from);
     else element.focus({ preventScroll: true });
+    pending.onLand?.(element);
   });
   const openFocusedRow = () =>
     focusedRow()?.querySelector<HTMLElement>(`[${linkAttribute}]`)?.click();

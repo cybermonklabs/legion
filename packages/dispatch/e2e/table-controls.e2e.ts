@@ -111,6 +111,7 @@ import {
   type ViewRow,
   valuesOf,
 } from "./inbox-view";
+import { openIssueDetails } from "./issue-details";
 import { focusThePage } from "./issue-page-g";
 import { rowSnooze } from "./keyboard-inbox";
 import { seedLegionDaemon } from "./legion-seed";
@@ -4251,14 +4252,15 @@ const ASKED_OF_LINE = 32;
  *  below 1280 px (`badgeSelectTrigger`). */
 const ASSIGNEE_BADGE = 32;
 
-/** The issue header's `Repository:` line in its details rail from `md`, around the shared list
- *  trigger's wrapper: the 28 px of that wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), which
- *  the trigger overhangs below 1280 px (`badgeSelectRailTrigger`). The reference is the head's own
- *  shared trigger box, not a reading at the base: R3's intended difference from main's visible
- *  text box, which this change replaces with the shared list's trigger. At 6ef60ff0, the merge
- *  base when that line was read, the line holds that text box, and the same read of that line,
- *  this row's run over that commit's build, measured 44 px at 1024x768. */
-const REPOSITORY_LINE = 28;
+/** The Repository row's value in the Details of today's issue header from `md`: the line around
+ *  the shared list trigger's wrapper, which is that wrapper's 32 px (`badgeSelectPageWrapper`'s
+ *  `md:min-h-8`), since the trigger overhangs the wrapper below 1280 px (`badgeSelectPageTrigger`).
+ *  The reference is still the head's own shared trigger box, not a reading at the base: R3's
+ *  intended difference from main's visible text box, which this change replaces with the shared
+ *  list's trigger. At 6ef60ff0, the merge base when that line was read, the line holds that text
+ *  box, and the same read of that line, this row's run over that commit's build, measured 44 px at
+ *  1024x768. */
+const REPOSITORY_LINE = 32;
 
 /** The parts a Board card or a List row draws now where it drew `parts` at the base. R3 changes
  *  one of them, the issue's priority: the base drew the badge's words with a native select laid
@@ -4276,10 +4278,11 @@ function priorityAtTheHead(parts: string): string {
 // which is the shared list's trigger now (`priorityAtTheHead`), in a box of the same
 // size, where a height the fonts decide is the one its lines and the base's classes give it
 // (`linedHeights`). It holds an ask card's "Asked of" line and the issue header's Assignee badge
-// to their heights at the base too, and the header's `Repository:` line to the box of the shared
-// trigger that replaces the base's text box (`REPOSITORY_LINE`), at 1024x768, between `md` and
-// `xl`, the widths where every button is 44 px tall. The Delivery list draws its clock times in
-// the browser's own zone and words, so both are pinned to the ones the base was read in.
+// to their heights at the base too, and the Repository row's value in the header's Details to the
+// box of the shared trigger that replaces the base's text box (`REPOSITORY_LINE`), at 1024x768,
+// between `md` and `xl`, the widths where every button is 44 px tall. The Delivery list draws its
+// clock times in the browser's own zone and words, so both are pinned to the ones the base was
+// read in.
 test.describe("R8's rows and cards", () => {
   test.use({ locale: "en-US", timezoneId: "UTC" });
 
@@ -4447,12 +4450,13 @@ test.describe("R8's rows and cards", () => {
       ]
     );
 
-    // The issue header's two controls, read once CORE has a default repository, so its rail
-    // names one: the Assignee's wrapper, the control's parent at the base as now and the badge's
-    // own item in the wrapping row, and the `Repository:` line, the control's grandparent, around
-    // the shared trigger's wrapper.
+    // The issue header's two controls, read once CORE has a default repository, so its
+    // Repository names one: the Assignee's wrapper, the control's parent at the base as now and
+    // the badge's own item in the wrapping row, and the Repository row's value in Details, which
+    // the reader opens, the control's grandparent: the line around the shared trigger's wrapper.
     await putProjectDefaultRepository("CORE", "acme/widgets");
     await page.goto(`/issues/${issue}`);
+    await openIssueDetails(page);
     const assigneeControl = page.getByLabel(`Assignee of ${issue}`);
     const repositoryControl = page.getByLabel(`Repository of ${issue}`);
     await expect(assigneeControl, "the issue header draws no Assignee at 1024x768").toBeVisible();
@@ -4471,7 +4475,7 @@ test.describe("R8's rows and cards", () => {
         "at the base",
       ],
       [
-        "the issue header's `Repository:` line",
+        "the Repository row's value in the issue header's Details",
         await repositoryControl.evaluate(
           (control) =>
             Math.round(
@@ -6136,8 +6140,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
    *  with no band in it. Below the reading column's width a row's Snooze is picked in the reading
    *  view, which stands in the list's place and keeps the list mounted and hidden until the
    *  reader goes back to it: while the view shows, the band is read in that hidden list, the
-   *  count the reader finds there on going back. The list was drawn before the view opened from
-   *  it, and a Snooze's pick is read by a poll, so one read of it is the answer. */
+   *  count the reader finds there on going back. Its words are read until two reads a poll apart
+   *  agree (`settledValue`), with no band reading `Later (0)`. */
   const later = async () => {
     const band = page.getByRole("button", { name: /^Later \(\d+\)/ });
     const shown = await settledState("the Inbox's Later band", [
@@ -6149,8 +6153,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     if (shown === "band") {
       return /Later \(\d+\)/.exec((await band.innerText()).replace(/\s+/g, " "))?.[0] ?? "";
     }
-    // In the reading view the band is in the hidden list, which `settledState` reads as not shown,
-    // so its words are read until two reads a poll apart agree; no band there is `Later (0)`.
     return settledValue("the Inbox's Later band in the hidden list", async () => {
       const words = await inboxList(page)
         .getByRole("button", { includeHidden: true, name: /^Later \(\d+\)/ })
@@ -6404,6 +6406,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       // Its value is the badge: the trigger's words of its own, which say whether the issue
       // inherits it, are what its name goes on to after its label and are never shown.
       name: "the issue header's Repository",
+      // The list is the value of the Repository row of the header's Details, which the reader
+      // opens, on the issue the Assignee's list was read on.
+      reach: async () => {
+        await openIssueDetails(page);
+      },
       trigger: repository,
       // The badge, the one hidden element of the trigger that is not its chevron's `svg`.
       value: async () =>
@@ -6701,6 +6708,8 @@ test("every list of options a reader picks from holds a text box that narrows it
         ? ["queue", /^#\d+ Cut the review queue$/]
         : ["ledger", /^#\d+ Retire the old ledger$/];
     await page.goto(`/issues/${seed.header}`);
+    // Edit priorities and the chips are the Advances row of the header's Details.
+    await openIssueDetails(page);
     const header = page.getByTestId("issue-header");
     const editPriorities = header.getByRole("button", { exact: true, name: "Edit priorities" });
     const chipLink = header.getByRole("link", { name: priorityOption });
@@ -6931,6 +6940,8 @@ test("Edit priorities opens its list in view with the focus in its text box, and
     for (const press of ["Enter", "click"] as const) {
       const at = `${size.width}x${size.height}, by ${press}`;
       await page.goto(`/issues/${issue.key}`);
+      // Edit priorities is in the Advances row of the header's Details, which the reader opens.
+      await openIssueDetails(page);
       const trigger = page
         .getByTestId("issue-header")
         .getByRole("button", { exact: true, name: "Edit priorities" });
@@ -11821,18 +11832,13 @@ test("the Inbox bar's Dismiss with the row marked last cut by 70% at the list's 
   ).toBe(true);
 });
 
-// INFRA-3135, round 30 (the implementer's own row, by the architect's ruling M2): below 1280 px a
-// row the reader opens is read in place of the list, which the page keeps mounted under `hidden`
-// (#5223), and a focus put in the hidden list falls to the page's body. So in that reading view the
-// selection bar's hand-off reads the view: the view's row is the one row drawn, the view's own
-// checkbox is that row's mark, and the view's scroller is the list's own stop. At 390x664, with
-// one row marked in the list and another row's reading view open, Clear selection takes the bar
-// away with the focus in it, and the focus lands on the view's own checkbox for the open row,
-// wholly in the window and drawn over by nothing: not on the body, and not on the marked row's
-// checkbox in the hidden list.
-// Its engines: the clause of the `webkit` and `firefox` projects that names the row INFRA-3135's
-// round 30 gave main's reading view (e2e/playwright.config.ts): the bar's going takes its focused
-// Clear selection away, a focused control taken away with no `focusout` in those engines.
+// Below 1280 px the Inbox's reading view replaces the list, which the page keeps mounted under
+// `hidden` (#5223). A focus put in the hidden list falls to the page's body. The selection bar's
+// hand-off therefore uses the reading view's row, checkbox and scroller. At 390x664, with one row
+// marked in the list and another open, Clear selection removes the bar while it holds focus.
+// Focus lands on the open row's checkbox, wholly in view and unobscured, not in the hidden list.
+// The `webkit` and `firefox` projects include this case (e2e/playwright.config.ts) because those
+// engines remove the focused Clear selection control without firing `focusout`.
 // SLOW(>=2s): six asks seeded, and a reading view opened before the press.
 test("at 390 with a row marked and another row's reading view open, Clear selection on the Inbox bar lands the focus on the view's own checkbox for the open row, wholly in sight @firefox @webkit", async ({
   page,

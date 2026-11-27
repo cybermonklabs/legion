@@ -168,8 +168,8 @@ export interface TableShellProps {
   /** Whether the head stays at the top of the box while the rows scroll under it. */
   readonly stickyHead?: boolean;
   /** Whether the box wears the trailing fade (`scrollFadeTrailing`) while columns lie past its
-   *  edge, as the tablist and the details rail do, so a cut column reads as more to scroll rather
-   *  than as clipped text (`useScrollEnds`). */
+   *  edge, so a cut column reads as more to scroll rather than as clipped text
+   *  (`useScrollEnds`). */
   readonly fadeTrailing?: boolean;
 }
 

@@ -320,10 +320,13 @@ func TestCredentialRouteTransportFailureIsAgentSecretsUnavailable(t *testing.T) 
 
 // A token file Dispatch cannot read stops the call before the broker is asked, so the answer
 // names Dispatch's own credential, never the unreachable broker 503 AGENT_SECRETS_UNAVAILABLE
-// would send the operator to, and the one log line it writes names the file to fix.
+// would send the operator to, and the one log line it writes names the setting that holds the
+// file and why it could not be read, never the path: the path here is a made-up token, as one
+// pasted where the path goes would be.
 func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(t *testing.T) {
 	rig := newFakeBrokerRig(t)
-	missing := filepath.Join(t.TempDir(), "missing")
+	const pasted = "madeUpAccountToken0123456789abcdef"
+	missing := filepath.Join(t.TempDir(), pasted)
 	handler := newCredentialTestHandlerReading(t, rig.server.URL, missing)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
@@ -348,8 +351,9 @@ func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(
 			lines = append(lines, line)
 		}
 	}
-	if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], "path="+missing) {
-		t.Fatalf("logged %q, want one ERROR line naming %s beside the access line", logs.String(), missing)
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], "setting=DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE") ||
+		!strings.Contains(lines[0], `reason="it does not exist"`) || strings.Contains(logs.String(), pasted[:10]) {
+		t.Fatalf("logged %q, want one ERROR line naming the setting and why, and no part of the path, beside the access line", logs.String())
 	}
 }
 

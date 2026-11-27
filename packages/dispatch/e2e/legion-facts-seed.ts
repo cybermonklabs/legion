@@ -1,7 +1,8 @@
 // The per-issue Legion facts' e2e fixture (dispatch://INFRA-2915), written straight into
 // Postgres beside `legion-seed.ts`: a board of 24 cards in one project, where every use a held
-// slot is put to and every reason a card waits is reached by some card, and every one of the
-// board's eleven columns holds a card. ACME's board (`seedLegionFixture`) draws five cards, which
+// slot is put to and every reason a card waits is reached by some card, and eleven of the
+// board's twelve columns hold a card: Waiting on children (`awaiting_children`) holds none, since
+// no card is in that phase. ACME's board (`seedLegionFixture`) draws five cards, which
 // states each rule at most once; a row that reads the facts or the waiting rules over a whole
 // board needs one that holds every state at once.
 //
@@ -65,8 +66,9 @@ interface Card {
  *  ready (8, 9 and 23, in the daemon's line with nothing holding them), waiting for a slot to
  *  come back (10 and 24, in the line and already in a phase of their own), blocked (11, which a
  *  blocker link holds) and waiting on a person (3 and 12). The rest fill the columns the board
- *  draws, so no column of `legion.PhaseColumns` is empty: Retro holds 16, and Merging holds the
- *  `merging` card 17 and the `awaiting_merge` cards 6 and 18. */
+ *  draws, so no column of `legion.PhaseColumns` is empty but Waiting on children, which no card's
+ *  phase reaches: Retro holds 16, and Merging holds the `merging` card 17 and the
+ *  `awaiting_merge` cards 6 and 18. */
 const CARDS: readonly Card[] = [
   {
     number: 1,

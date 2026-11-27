@@ -30,7 +30,7 @@ import {
   patchPriority,
 } from "./api";
 import { actionBar, placeCaretAtEnd } from "./editor";
-import { listTrigger } from "./filters";
+import { issueDetailsRow, openIssueDetails } from "./issue-details";
 import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
@@ -436,11 +436,11 @@ async function chooseTabAndReload(page: Page, tab: "none" | "backlog"): Promise<
  *  draws two spans and no third. */
 const railEntry = (page: Page): Locator => page.getByRole("link", { name: /^Priorities/ });
 
-/** The priorities an issue advances in its header from a tablet's width up: the chips and the
- *  picker's "+", which stand in the header's state row, the row of the status, the P0-P3 tag and
- *  the assignee. On a phone they open the details row instead. */
+/** The priorities an issue advances in its header: the chips and the picker's "+", the value of
+ *  the Advances row of the header's Details at every width (dispatch://INFRA-5200). A caller
+ *  opens Details first (`openIssueDetails`). */
 const chipsLine = (page: Page): Locator =>
-  page.getByTestId("issue-header").getByTestId("issue-state-actions").getByTestId("issue-advances");
+  issueDetailsRow(page, "advances").getByTestId("issue-advances");
 
 // SLOW(>=2s): three projects, three priorities and ten issues, then the whole page read cell by
 // cell, on a desktop and on a phone, and two reloads.
@@ -2711,6 +2711,8 @@ test("no tab of the priorities page, no priority's page and no issue header uses
       // The archive's own page, whose header names #3 while the issue stands in the backlog.
       await page.goto(`/issues/${seed.archive}`);
       await expect(page.getByText("Ledger archive").first()).toBeVisible();
+      // The priorities the issue advances are drawn in Details, which the reader opens.
+      await openIssueDetails(page);
       soft(
         await settledValue(`${where}: the archive's page`, () => holding(page)),
         `${where}: an issue's header holds no line, title, label or address with the word`
@@ -3078,12 +3080,14 @@ test("an issue's header names the priorities it advances and links to each", asy
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.rollout}`);
-    // Each priority is a chip of its place alone, in the header's state row directly after the
-    // P0-P3 tag, with its title in its name and its tooltip: no word of the header says
-    // "Advances", and no row of the header is the priorities'. The details row under it, which
-    // scrolls sideways, holds none of them.
+    // Each priority is a chip of its place alone, with its title in its name and its tooltip, in
+    // the Advances row of the header's Details: that row's name is the only "Advances", and the
+    // header's state row, which holds the issue's own status and P0-P3 tag, holds none of them
+    // (dispatch://INFRA-5200, which moves them from the state row #4316 placed them in).
+    await openIssueDetails(page);
     const header = page.getByTestId("issue-header");
     const stateRow = header.getByTestId("issue-state-actions");
+    const advancesRow = issueDetailsRow(page, "advances");
     const line = chipsLine(page);
     const link = line.getByRole("link", { name: `#1 ${seed.titles[0]}` });
     await expect(link).toBeVisible();
@@ -3091,24 +3095,11 @@ test("an issue's header names the priorities it advances and links to each", asy
     await expect(link).toHaveAttribute("title", seed.titles[0]);
     // An own chip is a filled badge with a solid border; an inherited one, below, is dashed.
     await expect(link.locator("span")).toHaveCSS("border-top-style", "solid");
-    await expect(header).not.toContainText("Advances");
-    const rail = header.getByTestId("issue-metadata-rail");
-    await expect(rail.getByTestId("issue-advances")).toHaveCount(0);
-    // The P0-P3 tag is the shared list's single pick, named for its list and then what it shows
-    // (`listTrigger`), and it stands in the element right before the chips.
-    const tag = listTrigger(
-      line.locator("xpath=preceding-sibling::*[1]"),
-      `Priority of ${seed.rollout}`
-    );
-    await expect(tag).toBeVisible();
-    const tagBox = await tag.boundingBox();
-    const lineBox = await line.boundingBox();
-    expect(lineBox?.x ?? Number.NaN).toBeGreaterThan(tagBox?.x ?? Number.NaN);
-    expect(lineBox?.width ?? Number.POSITIVE_INFINITY).toBeLessThan(120);
-    // That row wraps rather than scrolls at 1440 by 900: nothing of it lies past its edge, and the
-    // chips stand inside it on the tag's line. Below 768 px the state row has no room left on its
-    // first line, so the chips stand first in the details row instead, which scrolls: the first
-    // item of that row, inside the viewport with the row unscrolled, and the state row holds none.
+    await expect(advancesRow).toContainText("Advances");
+    await expect(line).not.toContainText("Advances");
+    await expect(stateRow.getByTestId("issue-advances")).toHaveCount(0);
+    // At 1440 by 900 and on a phone the state row wraps rather than scrolls, and the chips stand
+    // inside their row of Details and inside the viewport.
     for (const size of [WIDE, PHONE]) {
       await page.setViewportSize(size);
       await expect
@@ -3123,42 +3114,37 @@ test("an issue's header names the priorities it advances and links to each", asy
           })
         )
         .toEqual({ overflow: "visible", past: 0, wrap: "wrap" });
-      if (size === PHONE) {
-        await expect(line).toHaveCount(0);
-        const inRail = rail.getByTestId("issue-advances");
-        await expect(inRail.getByRole("link", { name: `#1 ${seed.titles[0]}` })).toBeVisible();
-        expect(
-          await rail.evaluate(
-            (element) => element.firstElementChild?.getAttribute("data-testid") ?? null
-          )
-        ).toBe("issue-advances");
-        expect(await rail.evaluate((element) => element.scrollLeft)).toBe(0);
-        const railBox = await rail.boundingBox();
-        const inRailBox = await inRail.boundingBox();
-        const right = (inRailBox?.x ?? Number.NaN) + (inRailBox?.width ?? 0);
-        expect(inRailBox?.x ?? Number.NaN).toBeGreaterThanOrEqual(0);
-        expect(right).toBeLessThanOrEqual((railBox?.x ?? Number.NaN) + (railBox?.width ?? 0));
-        expect(right).toBeLessThanOrEqual(PHONE.width);
-      } else {
-        const rowBox = await stateRow.boundingBox();
-        const chipsBox = await line.boundingBox();
-        expect((chipsBox?.x ?? Number.NaN) + (chipsBox?.width ?? 0)).toBeLessThanOrEqual(
-          (rowBox?.x ?? Number.NaN) + (rowBox?.width ?? 0)
-        );
-        const statusBox = await stateRow.getByLabel("Status", { exact: true }).boundingBox();
-        const statusBottom = (statusBox?.y ?? Number.NaN) + (statusBox?.height ?? 0);
-        expect(chipsBox?.y ?? Number.NaN).toBeLessThan(statusBottom);
-      }
+      const rowBox = await advancesRow.boundingBox();
+      const chipsBox = await line.boundingBox();
+      const right = (chipsBox?.x ?? Number.NaN) + (chipsBox?.width ?? 0);
+      expect(chipsBox?.x ?? Number.NaN).toBeGreaterThanOrEqual(0);
+      expect(right).toBeLessThanOrEqual((rowBox?.x ?? Number.NaN) + (rowBox?.width ?? 0));
+      expect(right).toBeLessThanOrEqual(size.width);
       await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
+      if (size === PHONE) {
+        // On a phone the picker's square stands 8 px after the last chip's edge, though the
+        // chips sit inside their capped group's element (`PRIORITY_TRIGGER_AFTER_CHIP`).
+        const gap = await line.evaluate((element) => {
+          const chips = element.querySelectorAll('[data-layout-group="advances"] > a > span');
+          const chip = chips.item(chips.length - 1)?.getBoundingClientRect();
+          const square = element
+            .querySelector('button[aria-label="Edit priorities"] > span')
+            ?.getBoundingClientRect();
+          return chip === undefined || square === undefined ? null : square.left - chip.right;
+        });
+        expect(gap).not.toBeNull();
+        expect(Math.abs((gap ?? Number.NaN) - 8)).toBeLessThanOrEqual(1);
+      }
     }
     await priorityPage(page);
     await link.click();
     await expect(page).toHaveURL(`/priorities/${seed.ids[0]}`);
     await expect(titleHeading(page)).toHaveText(seed.titles[0]);
 
-    // An issue that advances none carries no line at all: no label, no name, only the trigger of
-    // the picker that places it under a priority.
+    // An issue that advances none carries no chip and no word of its own, only the trigger of the
+    // picker that places it under a priority.
     await page.goto(`/issues/${seed.clock}`);
+    await openIssueDetails(page);
     await expect(chipsLine(page).getByRole("link")).toHaveCount(0);
     await expect(chipsLine(page)).not.toContainText("Advances");
     await expect(page.getByRole("button", { name: "Edit priorities" })).toBeVisible();
@@ -3167,6 +3153,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     // that relation is the ancestor's, and a relation on a child places nothing above it. The
     // row the child could add is read first, so the absence is read off a list that has loaded.
     await page.goto(`/issues/${seed.child}`);
+    await openIssueDetails(page);
     const inherited = chipsLine(page);
     const inheritedChip = inherited.getByRole("link", { name: `#3 ${seed.titles[2]}` });
     await expect(inheritedChip).toBeVisible();
@@ -3292,9 +3279,10 @@ test("a person places an issue under a priority from the issue and takes it off 
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.clock}`);
+    await openIssueDetails(page);
 
-    // The picker after the chips in the header's state row, as the labels' is in the row under
-    // it: a tick stages the set and the close writes it.
+    // The picker after the chips in the Advances row of the header's Details, as the labels' is
+    // after theirs: a tick stages the set and the close writes it.
     const picker = chipsLine(page).getByRole("button", { name: "Edit priorities" });
     const option = page
       .getByRole("listbox", { name: "Priorities options" })
@@ -3319,6 +3307,7 @@ test("a person places an issue under a priority from the issue and takes it off 
 
     // Taken off from the same picker, and gone from both ends after a reload.
     await page.goto(`/issues/${seed.clock}`);
+    await openIssueDetails(page);
     await expect(named).toBeVisible();
     await picker.click();
     await expect(option).toHaveAttribute("aria-selected", "true");
@@ -3372,6 +3361,7 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     await reader.evaluate(() => {
       document.documentElement.dataset.heldOpen = "yes";
     });
+    await openIssueDetails(reader);
     const line = reader.getByTestId("issue-advances");
     const kept = line.getByRole("link", { name: `#1 ${seed.titles[0]}` });
     const deleted = line.locator(`a[href="/priorities/${seed.ids[2]}"]`);

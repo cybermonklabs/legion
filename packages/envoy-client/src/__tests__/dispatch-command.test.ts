@@ -4,10 +4,12 @@ import { z } from "zod";
 import { fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
 import {
+  COMMANDS_OUTSIDE_THE_SPECS,
   commandFlags,
   commandHelp,
   commandLine,
   commandName,
+  commandsHelp,
   flagName,
   parseCommand,
   toolForCommand,
@@ -62,8 +64,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 43 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(43);
+  test("names map both ways for all 45 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(45);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);
@@ -291,6 +293,24 @@ describe("the dispatch command surface", () => {
 
   test("an unknown command is refused with the list of commands", () => {
     expect(parseCommand(["isue"], noFiles)).toMatchObject({ kind: "refused" });
+  });
+
+  test("dispatch --help lists every command as a row, and an unknown command's refusal names each", () => {
+    const outside = COMMANDS_OUTSIDE_THE_SPECS.map(({ name }) => name);
+    expect(outside).toEqual(["proxy", "login"]);
+    const names = [...dispatchToolSpecs.map((spec) => commandName(spec.name)), ...outside];
+    const rows = commandsHelp()
+      .split("\n")
+      .flatMap((line) => /^ {2}([a-z][a-z0-9-]*) {2,}\S/.exec(line)?.[1] ?? []);
+    expect(rows).toEqual(names);
+    // Each row of a command outside the specs is the first sentence of its own help.
+    for (const { name, sentence, help } of COMMANDS_OUTSIDE_THE_SPECS) {
+      expect(commandsHelp()).toContain(`  ${sentence}\n`);
+      expect(help().split("\n\n")[1], name).toStartWith(sentence);
+    }
+    const refused = parseCommand(["isue"], noFiles);
+    if (refused.kind !== "refused") throw new Error(`isue was not refused: ${refused.kind}`);
+    expect(refused.problems.join("\n")).toContain(`the commands are: ${names.join(", ")}`);
   });
 
   test("a bare issue key first is the --issue of a command that takes --issue", () => {

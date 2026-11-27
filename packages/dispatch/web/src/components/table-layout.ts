@@ -140,7 +140,8 @@ export interface TableLayoutModel {
   readonly boxWidth: number;
   /** Gives the box the height the page lays out for it now (`boxHeight`), at once, as its
    *  `ResizeObserver` does a frame after any change of the page. The selection bar's hand-off
-   *  calls it right before each landing, once the foot's pass has given the page its room, so the
+   *  calls it right before each landing, once the foot's pass (`afterFootPass`) has given the
+   *  page its room, and again right after a landing's scroll once `footPassNow()` runs, so the
    *  box the focus lands against is the box the reader keeps (`MarkedList`'s `fit`, given by
    *  `features/project/issues-table-frame.tsx`). The widths are left to that observer: a change of
    *  them can draw the rows anew, which would take the focus the hand-off is about to land. */

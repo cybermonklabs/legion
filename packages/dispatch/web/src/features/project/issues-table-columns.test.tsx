@@ -129,6 +129,7 @@ function board(
     header: {
       facts_cursor_age_seconds: null,
       facts_updated_at: null,
+      p0_holders: null,
       queue_length: 0,
       read_at: null,
       read_error: null,

@@ -313,6 +313,7 @@ function legionBoard(
     header: {
       facts_cursor_age_seconds: null,
       facts_updated_at: null,
+      p0_holders: null,
       queue_length: (cards.queue ?? []).length,
       read_at: "2026-11-17T08:00:00Z",
       read_error: null,

@@ -1,5 +1,5 @@
 import {
-  matchQuery,
+  hashKey,
   type Query,
   type QueryClient,
   queryOptions,
@@ -144,7 +144,7 @@ export function useRegistryPolling(active: boolean): void {
 const failures = new WeakMap<Query, Error>();
 
 /** What picks the agent list query out of a client's cache. */
-const AGENT_LIST = { exact: true, queryKey: agentsQuery().queryKey } as const;
+const AGENT_LIST_HASH = hashKey(agentsQuery().queryKey);
 
 /** The clients whose cache `recordFailures` already listens to. */
 const recordedClients = new WeakSet<QueryClient>();
@@ -158,7 +158,7 @@ const recordedClients = new WeakSet<QueryClient>();
 function recordFailures(client: QueryClient): void {
   if (recordedClients.has(client)) return;
   recordedClients.add(client);
-  const listed = client.getQueryCache().find(AGENT_LIST);
+  const listed = client.getQueryCache().get(AGENT_LIST_HASH);
   if (listed?.state.status === "error" && listed.state.error !== null) {
     failures.set(listed, listed.state.error);
   }
@@ -166,7 +166,7 @@ function recordFailures(client: QueryClient): void {
     if (event.type !== "updated") return;
     const { action, query } = event;
     if (action.type !== "error" && action.type !== "success") return;
-    if (!matchQuery(AGENT_LIST, query)) return;
+    if (query.queryHash !== AGENT_LIST_HASH) return;
     if (action.type === "error") failures.set(query, action.error);
     else failures.delete(query);
   });
@@ -174,7 +174,7 @@ function recordFailures(client: QueryClient): void {
 
 /** Why `client`'s agent list query last failed, while no read of it has succeeded since. */
 function keptFailure(client: QueryClient): Error | undefined {
-  const query = client.getQueryCache().find(AGENT_LIST);
+  const query = client.getQueryCache().get(AGENT_LIST_HASH);
   return query === undefined ? undefined : failures.get(query);
 }
 

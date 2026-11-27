@@ -100,6 +100,7 @@ function legionBoard(
     header: {
       facts_cursor_age_seconds: null,
       facts_updated_at: null,
+      p0_holders: null,
       queue_length: 0,
       read_at: null,
       read_error: null,
@@ -173,7 +174,7 @@ test("by Status the columns are the picked statuses in order, Icebox a rail unti
   expect(statusColumns(["done"], false, true)).toEqual(["done"]);
 });
 
-test("by Legion phase the columns are the eleven phases in the board's order and the None rail, kept by the filter's picks", () => {
+test("by Legion phase the columns are the twelve phases in the board's order and the None rail, kept by the filter's picks", () => {
   const phaseColumns = (phaseFilterPicks: readonly string[]) =>
     ids(
       boardColumns({

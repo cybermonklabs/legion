@@ -986,7 +986,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
 	}
 	transport := cipherclient.NewTokenTransport(client, http.DefaultTransport)
-	daemonDispatch := dispatch.New(cfg.DispatchURL, transport)
+	daemonDispatch := daemonDispatchClient(cfg, transport)
 	var caller dispatch.Caller
 	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
 		var err error
@@ -1006,6 +1006,20 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 	}
 	log.Info(dispatchCredentialLine, attrs...)
 	return transport, nil
+}
+
+// daemonDispatchClient is the daemon's Dispatch client of cfg, whose every request goes through
+// transport (dispatchCredential). Under dispatch_token_broker every write names the session the
+// daemon's broker token proves, legion-daemon:<its own project> (dispatch.WritesAs). Dispatch
+// refuses a write whose actor names another session (403 ACTOR_SESSION_MISMATCH), and the daemon
+// writes the issues of other projects too, when it runs a claim on one (legion claims spawn). With
+// the setting off the bearer proves no session, and each write names the session of the daemon of
+// the issue's project (dispatch.DaemonSession), as it did before the setting.
+func daemonDispatchClient(cfg config.Config, transport http.RoundTripper) *dispatch.HTTPClient {
+	if !cfg.DispatchTokenBroker {
+		return dispatch.New(cfg.DispatchURL, transport)
+	}
+	return dispatch.New(cfg.DispatchURL, transport, dispatch.WritesAs(dispatch.DaemonSession(cfg.Project)))
 }
 
 // renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
@@ -1074,12 +1088,14 @@ func tradeTransient(err error) bool {
 	return !(errors.As(err, &refused) && refused.Permanent())
 }
 
-// checkDaemonCaller refuses a broker token Dispatch takes for a caller whose every write it would
-// refuse: another session than the daemon's (403 ACTOR_SESSION_MISMATCH, every write of the
-// daemon's naming its own session as the actor), another project than the daemon's (403
-// PROJECT_SCOPE) or no person (SIGN_IN_REQUIRED). The outbox reads a 401 and a 403 as an outage
-// (dispatch.PermanentRefusal), so it would wait on each such write for ever; each is a fault of
-// the secrets broker's exchange entry for the daemon's own account, which the refusal names.
+// checkDaemonCaller refuses a broker token that is not the daemon's own, as GET /api/v1/whoami
+// reads it. Dispatch refuses every write of a token whose session is not the daemon's (403
+// ACTOR_SESSION_MISMATCH, every write of the daemon's naming its own session as the actor). The
+// outbox reads a 401 and a 403 as an outage (dispatch.PermanentRefusal), so it would wait on each
+// such write for ever. A token whose project is not the daemon's, and one that names no owner (an
+// exchange entry that names a project names the person it acts for), are not the daemon's own
+// either. Each of the three is a fault of the secrets broker's exchange entry for the daemon's own
+// account, which the refusal names.
 func checkDaemonCaller(caller dispatch.Caller, project string) error {
 	session := dispatch.DaemonSession(project)
 	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
@@ -1088,10 +1104,10 @@ func checkDaemonCaller(caller dispatch.Caller, project string) error {
 		return fmt.Errorf("GET /api/v1/whoami answers the session %s for the daemon's broker token, not %s, and Dispatch refuses every write the daemon makes as %s with it (403 ACTOR_SESSION_MISMATCH): %s so that it fixes the session %s",
 			whoamiValue(caller.Session), session, session, entry, session)
 	case caller.Project == nil || *caller.Project != project:
-		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s, and Dispatch refuses every write of the daemon's to %s with it (403 PROJECT_SCOPE): %s so that it names the project %s",
-			whoamiValue(caller.Project), project, project, entry, project)
+		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s: the token's project is not the daemon's, which is a fault of the exchange entry that gave it, and %s so that it names the project %s",
+			whoamiValue(caller.Project), project, entry, project)
 	case caller.Owner == nil:
-		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, and Dispatch refuses every write of a token that acts for no person (SIGN_IN_REQUIRED): %s so that it names the person the daemon acts for",
+		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, which names the daemon's project, and an exchange entry that names a project names the person it acts for: %s so that it names the person the daemon acts for",
 			entry)
 	}
 	return nil
@@ -1193,8 +1209,8 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
-	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
-	// in a provider error; nil without a workflow, where nobody is told.
+	// providerErrorRunReached tells of a claim whose turns keep ending in a provider error, to the
+	// roles its own doc comment names; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
@@ -1492,7 +1508,8 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			roleReferences: p.roleReferences,
 			log:            log,
 		}
-		image := capabilities.Image{Launch: omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), Env: environPairs(env), WorkDir: cfg.StateDir}
+		image := capabilities.Image{Launch: omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), Shown: omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation),
+			Prefix: cfg.OmpLaunchPrefix, Env: environPairs(env), WorkDir: cfg.StateDir}
 		// The role overlays first: a cheap read whose refusal names the operator's file, before the
 		// plugin gate's slower load probes.
 		p.gate = func(ctx context.Context) error {
@@ -1798,15 +1815,37 @@ type supervision struct {
 	reports      map[claim.Token]capabilities.Report
 	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
 	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
-	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
-	// pace the sweep's openings under `pod_update_rounds_per_minute` and
-	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
-	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
-	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
-	// caller.
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue, each
+	// with the reasons it posted. The two pace the sweep's openings, and the controller's
+	// (requestPodUpdate), under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
+	// nothing of either is in the store, because neither decides a round, and a daemon that has
+	// just booted opens its first round at its first sweep. The sweep runs on one goroutine and the
+	// controller's request on an API one, and the mutex is what keeps their reads whole.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
-	podUpdateOpened   map[string]string
+	podUpdateOpened   map[string]podUpdateOpening
+	// podUpdateWalk is the turn the sweep's walk over the issues (walkPodUpdates) and the
+	// controller's request for one issue's round (requestPodUpdate) each hold: the walk from before
+	// its read of the pause holds, through its finish of each standing replacement record
+	// (finishReplacements, two API server reads of up to 30 seconds for each) and its read of the
+	// project's limits, to the last opening it makes on them; the request from its read of the
+	// claims to its post. The request comes on an API goroutine, and an opening weighed against
+	// limits another opening has moved since they were read would take the project over them: two
+	// openings each reading the one slot left. The sweep's replacements and its reads of kept pods
+	// run after the walk, outside it, since each waits on a pod. It is a one-slot semaphore rather
+	// than a mutex so the request waits for it only while its own context lives and at most
+	// roundRecordBound (postRequestedPodUpdate), as stream.Conn's negotiation is, and is refused
+	// POD_UPDATE_BUSY after that; the walk waits for it as long as it takes. podUpdateWalkOnce makes
+	// it at its first use (podUpdateWalkTurn), so a supervision a test builds by hand needs none of
+	// its own.
+	podUpdateWalkOnce sync.Once
+	podUpdateWalk     chan struct{}
+	// podRoundRecordBound is how long the controller's request for a pod's round waits for a claim
+	// to record the round it posted (awaitPodRoundRecorded), and at most how long it waits for the
+	// sweep's walk to give it the turn (postRequestedPodUpdate), both read through roundRecordBound;
+	// zero is defaultPodRoundRecordBound, the value the daemon runs. A test sets a shorter one so it
+	// need not wait out the default.
+	podRoundRecordBound time.Duration
 	// podUpdateRoundsMu guards podUpdateRounds, what the last sweep decided under those two limits
 	// as the operator's claim listing serves it (api.PodUpdateRounds, podUpdateRoundsView): the
 	// issues that held an open round and the issues each limit held back. It is the sweep's own
@@ -2122,6 +2161,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			PromptFailures: cfg.PromptFailureLimit,
 			PromptRetires:  cfg.PromptRetireLimit,
 		},
+		// The project controller's session age past which a daemon-driven relaunch starts a fresh
+		// session (supervise.Deps.ControllerSessionMaxAge, dispatch://INFRA-2045 R3).
+		ControllerSessionMaxAge: cfg.ControllerSessionMaxAge,
 		Timeouts: supervise.Timeouts{
 			Boot:                  cfg.WorkerBootTimeout,
 			RegistrationIntervals: cfg.WorkerBootRegistrationDeadlineIntervals,
@@ -3065,7 +3107,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
 	var keeper *controllerKeeper
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
-		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
+		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, cfg.ControllerTurnBound, s.log)
 	}
 	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
 	// this runs the runtime is built and the launcher acceptor installed, and what is left of the
@@ -3079,6 +3121,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			projectToken: p.project,
 			runtime:      cfg.Runtime.Name,
 			admissionCap: cfg.AdmissionCap,
+			p0Bound:      cfg.AdmissionP0Bound,
 			startedAt:    startedAt,
 			now:          p.clock.Now,
 			secretsLogin: p.secretsLogin,
@@ -3108,6 +3151,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Supervisor:         s.supervisor,
 		AwaitStream:        s.awaitStream,
 		PodUpdateRounds:    s.podUpdateRoundsView,
+		RequestPodUpdate:   s.requestPodUpdate,
 		BootTokens:         s.tokens,
 		Project:            p.project,
 		DispatchProject:    cfg.Project,
@@ -3150,6 +3194,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
 		GateRegistrationRead: p.gateRegistrationRead,
 		Pause:                pauses,
+		P0BoundConfigured:    cfg.AdmissionP0Bound,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -3250,7 +3295,10 @@ type source struct {
 	projectToken string
 	runtime      string
 	admissionCap int
-	startedAt    time.Time
+	// p0Bound is legion.yaml's P0 bound (config.Config.AdmissionP0Bound), nil for none: the bound
+	// in force while no value set while the daemon runs stands.
+	p0Bound   *int
+	startedAt time.Time
 	// now is the daemon's one clock (overrides.clock, the wall clock in production), the moment
 	// the state is read at; nil, in a source a test builds by hand, is the wall clock.
 	now func() time.Time
@@ -3337,16 +3385,18 @@ type source struct {
 // Its writes take the same rule from the other side: no row is written into the outbox keyed by
 // another project's issue (ownsKey, claim.KeyOfProject). Every write of record.Store that inserts,
 // upserts, expedites or deletes outbox rows by a key — Enqueue, EnqueueID, EnqueueStart,
-// ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps, DropStatusWrites, and
-// ClearGeneration and ClearTreeGeneration, which queue the publication of the gates they empty —
-// refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
+// NameUndeliveredHookPrompt, ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps,
+// DropStatusWrites, and ClearGeneration and ClearTreeGeneration, which queue the publication of
+// the gates they empty — refuses a key of another project, and EnqueueID refuses it with
+// claim.ErrKeyOfAnotherProject.
 // The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
 // (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
 // here.
 //
-// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
-// ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
-// the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
+// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue,
+// NameUndeliveredHookPrompt where it opens a message, and ExpediteOutbox — wakes the row's lane
+// (outbox.wake) once the transaction has committed, through the transaction's commit hooks
+// (store.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
 // its own lanes once it commits: the API-only daemon, the state route's reads, the stranded report
 // and the project's pause (projectPause.stopped).
@@ -3518,6 +3568,23 @@ func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.
 	}
 	s.wakeOnCommit(ctx, row)
 	return nil
+}
+
+// NameUndeliveredHookPrompt refuses a key of another project and wakes the lane of the message row
+// it opens as Enqueue does. A prompt it names in a message already open writes no new row, and that
+// row's lane already waits for it.
+func (s projectRecords) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (time.Time, bool, error) {
+	if !s.ownsKey(record.OutboxKindDispatchMessage, issue) {
+		return time.Time{}, false, nil
+	}
+	posts, opened, err := s.Store.NameUndeliveredHookPrompt(ctx, tx, issue, role, paragraph, now, window)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if opened {
+		s.wakeOnCommit(ctx, record.OutboxRow{Kind: record.OutboxKindDispatchMessage, Issue: issue})
+	}
+	return posts, opened, nil
 }
 
 // EnqueueID wakes the row's lane as Enqueue does: a start or catch-up naming kept decisions is
@@ -3782,6 +3849,12 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state.Settings = s.settings
 	state.Admission.Cap = s.admissionCap
+	// The P0 bound in force, read through tx as every admission pass reads it (api.P0BoundStateTx).
+	p0Bound, err := api.P0BoundStateTx(ctx, tx, s.project, s.p0Bound)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	state.Admission.P0Bound = &p0Bound
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err

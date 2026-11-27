@@ -13,6 +13,10 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", reads=reads(
     (f"{ENVOY}/loadtest/cluster/nats-*.tgz",
      f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh runs render-nats.sh, which checks "
      "the vendored archive's sha256 and renders it"),
+    # The cluster suite's guard and its one wait, from the e2e library.
+    ("scripts/e2e/lib/proof-wait.sh",
+     f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh sources it and sets its guard with "
+     "`packages/envoy/loadtest/cluster/cluster.test.sh#proof_guard_from_env`"),
     # The helm the cluster suite's render runs, installed by its own step from the helm row.
     (".github/actions/install-helm/**", at("envoy-go-checks", "./.github/actions/install-helm")),
     (".github/ci-tools.yaml", "`.github/actions/install-helm/action.yml#ci_tools_fetch` installs the tarball of the helm row"),

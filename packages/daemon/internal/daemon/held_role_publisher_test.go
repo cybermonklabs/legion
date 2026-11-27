@@ -56,7 +56,8 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 // lane for the role's next live holder, which is the unheld session's process while it lives. So
 // the gate holds a kept publish as it holds every other (outbox.publishKept, the merge of
 // cybermonklabs/legion#4088 into #4220): to a claim that records a session it does not hold, a hook
-// prompt publishes nothing, kept or not, and finishes undelivered. To a claim holding its own
+// prompt publishes nothing, kept or not, and its row waits for a session to hold the role as it
+// waits on the listener's own no-holder answer (publishKeptToRole). To a claim holding its own
 // session, it is published with keep as before (R9). One hook prompt to each claim stands in for
 // the kept rows, since a hook prompt and a phase-ended message are the two kinds publishKeptToRole
 // publishes, and one stands in for both.
@@ -77,8 +78,15 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 		Count: 1, Counts: map[string]int{"testing-implementing": 1}, Prompt: "Read the tester's thread before you write anything."}
 	for i, issue := range []string{"LEGION-942", "LEGION-941"} {
 		row := mustOutboxRow(t, issue, hook, time.Now())
-		row.ID = int64(80 + i)
-		if err := runner.execute(ctx, row); err != nil {
+		row.ID, row.CreatedAt = int64(80+i), time.Now()
+		err := runner.execute(ctx, row)
+		if issue == "LEGION-942" {
+			if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) {
+				t.Fatalf("execute %s's hook prompt row = %v, want a wait on the gate's no-holder answer", issue, err)
+			}
+			continue
+		}
+		if err != nil {
 			t.Fatalf("execute %s's hook prompt row: %v", issue, err)
 		}
 	}
@@ -189,7 +197,7 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 		}
 	}
 
-	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared})
+	forgot := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared, By: supervise.SuspendedByOperator})
 	for _, id := range []int64{90, 91, 90, 91} {
 		message(id)
 	}
@@ -206,7 +214,7 @@ func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T)
 	}
 
 	listener.free(string(contained))
-	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared}); err != nil {
+	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: contained, Session: shared, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the forget once the listener names no holder of the role = %v, want it admitted", err)
 	}
 	message(92)

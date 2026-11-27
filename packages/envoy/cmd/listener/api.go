@@ -609,6 +609,14 @@ func expectsReplyAnswer(requested json.RawMessage, answered contracts.ExpectsRep
 // same drop point (session.SessionRegistry.Get), so a row this cache calls expired is one the
 // bucket no longer holds. A registration that carries no title is a hit with an empty value rather
 // than a miss, so it reaches the bucket not at all.
+//
+// A read-through that answers neither the row nor the bucket's word that it holds none - one the
+// window ended, or one the bus failed - is logged at WARN through the registry's logger, with its
+// bound (senderStampReadTimeout) and its error: the stamp it left short says nothing of why. A
+// cache hit makes no read, a sender with no row is answered nats.ErrKeyNotFound, and an interest
+// read's answer about the record (interestReadAnswered) is no failed read either, so the line is
+// never one a healthy bus writes per message; a record that does not decode is left to the
+// registry's own line.
 func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
 	if sourceSession == "" {
 		return nil
@@ -616,13 +624,20 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	sender := &contracts.EnvelopeSender{SessionID: sourceSession}
 	readCtx, cancel := context.WithTimeout(ctx, senderStampReadTimeout)
 	defer cancel()
+	var unansweredInterest, titleErr error
 	interest, interestErr := registry.Get(readCtx, sourceSession)
+	if interestErr != nil && !errors.Is(interestErr, nats.ErrKeyNotFound) && !interestReadAnswered(interestErr) {
+		unansweredInterest = interestErr
+	}
 	if held, err := registry.RolesHeldBy(sourceSession); err == nil {
 		sender.Roles = held
 	}
 	entry, entryErr := sessions.Get(sourceSession)
 	if errors.Is(entryErr, nats.ErrKeyNotFound) {
 		entry, entryErr = sessions.Refresh(readCtx, sourceSession)
+		if entryErr != nil && !errors.Is(entryErr, nats.ErrKeyNotFound) {
+			titleErr = entryErr
+		}
 	}
 	if entryErr == nil {
 		sender.Title = entry.Title
@@ -632,6 +647,13 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 		sender.Machine, sender.Cwd = interest.MachineID, interest.Dir
 	case entryErr == nil:
 		sender.Machine, sender.Cwd = entry.MachineID, entry.Dir
+	}
+	if readErr := errors.Join(unansweredInterest, titleErr); readErr != nil {
+		registry.Logger().Warn("listener sender stamp left out what a read-through did not answer within its bound",
+			slog.String("session_id", sourceSession),
+			slog.Duration("bound", senderStampReadTimeout),
+			slog.String("error", readErr.Error()),
+		)
 	}
 	return sender
 }
@@ -1218,7 +1240,9 @@ const publishDedupePrefix = "publish."
 // passes keep: false, which keeps nothing and answers 404 unclaimed or holder_lapsed. It is read by
 // this route's give-up alone (roleSend.noHolder) and rides no envelope, which travels on to the
 // holder and back in the answer. A role token no claim can name keeps nothing either, which the
-// keep itself refuses, for this route and the role lane alike (keepForNextHolder).
+// keep itself refuses, for this route and the role lane alike (keepForNextHolder), and neither does
+// a send that names no source session, whose copy's expiry no dead letter could report
+// (roleSend.keepTellsNobody): both are answered that 404.
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()

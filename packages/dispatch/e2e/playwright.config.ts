@@ -425,9 +425,8 @@ const parallelProjects = [
   // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; and
   // that after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
   // nothing.
-  // The row INFRA-3135's round 30 gave main's reading view (INFRA-5200), measured in this engine:
-  // `table-controls`'s row that at 390 with a row marked and another row's reading view open,
-  // Clear selection on the Inbox bar lands the focus on the view's own checkbox.
+  // The Inbox's reading view (INFRA-5200): `table-controls` covers Clear selection at 390 with
+  // one row marked and another row's reading view open. Focus lands on the view's own checkbox.
   // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
   // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
   // one drag row, which drags a row of the priorities table by its grip and reads the order back.
@@ -552,9 +551,8 @@ const parallelProjects = [
   // owed leaves the focus on a control of the Inbox list once the rows the bar took have gone; and
   // that after the Inbox bar's Snooze lands with the pointer travelling the list's box scrolls by
   // nothing.
-  // The row INFRA-3135's round 30 gave main's reading view (INFRA-5200), measured in this engine:
-  // `table-controls`'s row that at 390 with a row marked and another row's reading view open,
-  // Clear selection on the Inbox bar lands the focus on the view's own checkbox.
+  // The Inbox's reading view (INFRA-5200): `table-controls` covers Clear selection at 390 with
+  // one row marked and another row's reading view open. Focus lands on the view's own checkbox.
   // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the
   // grip writes the id it moves into the drag: `priorities`' one drag row, which drags a row of the
   // priorities table by its grip and reads the order back.

@@ -1292,9 +1292,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     return targets;
   }
-  // A pull request that moves to another issue changes what this issue's results are compared
-  // with, and the event is on each of the two issues, so each refetches its own results read.
-  if (event.type === "issue.pull_request_attribution_changed") {
+  // Attribution changes arrive at both issues. Deploy events name each affected result owner.
+  // Each receiver refetches only its own verification results.
+  if (event.type === "issue.pull_request_attribution_changed" || event.type === "deploy.recorded") {
     targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     return targets;
   }
