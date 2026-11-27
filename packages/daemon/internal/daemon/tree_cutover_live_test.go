@@ -309,26 +309,32 @@ func treeBoard(t *testing.T, world *treeWorld, since time.Time) map[string]strin
 }
 
 // treeDump is every table the conversion writes, as text (conversionDump), left out of the outbox
-// the publications of current state each boot queues and Dispatch takes.
+// the publications of current state each boot queues and Dispatch takes, and the state lane's rows
+// (record.LaneState): each boot queues a state_boot row of its own run, and what a state change
+// reports of an issue's phase and tree and of its claims stands in the issues and claims tables
+// the dump compares.
 func treeDump(t *testing.T, pool *store.Pool) map[string][]string {
 	t.Helper()
 	dump := conversionDump(t, pool)
 	dump["outbox"] = slices.DeleteFunc(dump["outbox"], func(row string) bool {
 		kind, _, _ := strings.Cut(row, " ")
 		return kind == string(record.OutboxKindRoleHoldersPublish) || kind == string(record.OutboxKindDesignGatesPublish) ||
-			kind == string(record.OutboxKindGatedStepsPublish)
+			kind == string(record.OutboxKindGatedStepsPublish) || record.LaneOf(record.OutboxKind(kind)) == record.LaneState
 	})
 	return dump
 }
 
 // drained waits until the outbox has tried every row that has come due: the publications a boot
 // queues taken by Dispatch, and every row that cannot be delivered (a notice, whose Envoy address
-// answers nothing here) tried at least once.
+// answers nothing here) tried at least once. The state lane's rows are left out (notStateRows):
+// the lane publishes them strictly in sequence (record.LaneState), so its oldest row, which that
+// Envoy address never takes, is retried for ever, and every state row behind it is held in SQL,
+// never leased, and so never tried.
 func (r *treeDaemon) drained() {
 	r.t.Helper()
 	pool := store.NewPool(r.pool)
 	testwait.Eventually(r.t, "the outbox to try every row that came due", func() bool {
-		return treeCount(r.t, pool, `select count(*) from outbox where next_at <= now() and attempts = 0`) == 0
+		return treeCount(r.t, pool, `select count(*) from outbox where next_at <= now() and attempts = 0 and `+notStateRows) == 0
 	})
 }
 
@@ -690,6 +696,19 @@ func TestTheTreeCutoverLive(t *testing.T) {
 	})
 
 	step("the last boot changes nothing", func() {
+		// The boot before stops once it has done the admission work it owes: it held roots for its
+		// Dispatch consumer to catch up (admit's Reconcile), and its hold poll admits them at the
+		// release it makes once the consumer has caught up, so a boot stopped before that release
+		// leaves the last boot to admit them, which writes the issues, claims and outbox the dump
+		// compares. The held set lives in admission's memory, so the boot's log says it: no hold, or
+		// a release after the last hold, since a repository's recovery can hold again in one boot.
+		testwait.Eventually(t, "this boot to release the roots it held for the Dispatch consumer", func() bool {
+			logs := r.logs.String()
+			held := strings.LastIndex(logs, holdingMessage)
+			return held < 0 || held < strings.LastIndex(logs, releaseMessage)
+		})
+		r.caughtUp()
+		r.drained()
 		r.d.stop()
 		before := treeDump(t, pool)
 		rebindHeldPorts(t, &r.cfg)

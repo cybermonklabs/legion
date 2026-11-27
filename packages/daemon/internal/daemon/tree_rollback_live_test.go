@@ -176,6 +176,7 @@ func treeEffects(t *testing.T, project, w string, architect claim.Token, artifac
 	option := record.OrdinaryStatusWrite("done", "in_progress", "")
 	option.IncludeChildren = true
 	const head, body = "c0ffee0123456789abcdef0123456789abcdef01", "The tree proof's queued effect."
+	stateRun := uuid.NewString()
 	return map[string]treeEffect{
 		string(record.OutboxKindDispatchStatus):     {w, record.OrdinaryStatusWrite("in_progress", "in_progress", "")},
 		string(record.OutboxKindDispatchMessage):    {w, record.MessagePost{Body: body}},
@@ -214,6 +215,12 @@ func treeEffects(t *testing.T, project, w string, architect claim.Token, artifac
 		string(record.OutboxKindDesignChanges): {w, record.DesignNewsReconcile{}},
 		// The project's merge-holds change notice to w's merger (record.MergeHoldsChanged, #4065).
 		string(record.OutboxKindMergeHoldsChanged): {w, record.MergeHoldsChanged{Project: project}},
+		// The project's state events, whose rows carry the bare project key as their issue, as every
+		// state row does, so they run on the project's one state lane (record.LaneState).
+		string(record.OutboxKindStateChange): {project, record.StateChange{Project: project, Run: stateRun, Issue: w,
+			Changes: []record.StateFieldChange{{Field: record.StateFieldPhase, Old: json.RawMessage(`"planning"`), New: json.RawMessage(`"implementing"`)}}}},
+		string(record.OutboxKindStateAdmission): {project, record.StateAdmission{Project: project, Run: stateRun, Admission: json.RawMessage(`{}`)}},
+		string(record.OutboxKindStateBoot):      {project, record.StateBoot{Project: project, Run: stateRun, Settings: json.RawMessage(`{}`), SchemaVersion: 1}},
 		// What the release before cannot run, which the step deletes or strips.
 		"dispatch_status with an option": {w, option},
 	}

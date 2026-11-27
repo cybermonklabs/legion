@@ -14,11 +14,12 @@
 // the file LEGION_E2E_TREE_WORLD names (treeWorld).
 //
 // So this file names only what both releases carry: the package's test rig as both have it (the
-// fake runtime, workflowConfig, startDaemonLogging, the scratch Dispatch's request helpers), the
-// API's request types, the store's tables in SQL, and no Go symbol either release added or
-// removed. This checkout compiles it too (`go vet -tags e2e ./...`), and the head drivers use its
-// helpers. One read of the fake runtime goes through reflection (treeCleanups), since only the
-// release before's fake records a tree's cleanup (fake.Call's Tree).
+// fake runtime, workflowConfig, startDaemonLogging, the scratch Dispatch's request helpers, the
+// Envoy listener's stand-in newNoticeListener), the API's request types, the store's tables in
+// SQL, and no Go symbol either release added or removed. This checkout compiles it too (`go vet
+// -tags e2e ./...`), and the head drivers use its helpers. One read of the fake runtime goes
+// through reflection (treeCleanups), since only the release before's fake records a tree's cleanup
+// (fake.Call's Tree).
 //
 // What the release before cannot be made to leave in the minutes a run has, it is not asked to:
 // a tree that lingers with its deadline two days ahead, its reserved cleanup, the hand-over rows a
@@ -35,9 +36,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,6 +57,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -193,7 +197,9 @@ type treeDaemon struct {
 // treeConfig is a daemon's configuration over the world's rig, the same for both releases: the
 // world's project, database and Dispatch, the script's broker, the proof's cap, no controller tick
 // (an hour before the first), and no design step gated, so an architect's registration opens its
-// own gate. EnvoyURL stays workflowConfig's unreachable default, so every notice stays queued.
+// own gate. EnvoyURL stays workflowConfig's unreachable default, so every notice stays queued; the
+// last part of the rollback gives its one boot an Envoy that takes the state events alone
+// (TestTreeRollbackReleaseBeforeAfterTheStep).
 func treeConfig(t *testing.T, world *treeWorld, natsURL string) config.Config {
 	t.Helper()
 	cfg := workflowConfig(t, natsURL)
@@ -965,10 +971,11 @@ func activity(token claim.Token, held treeClaim) map[string]any {
 // TestTreeRollbackReleaseBeforeAfterTheStep is the release before's last part of k44: the head
 // driver has run this release over the world, stopped it and run the rollback step of
 // docs/kubernetes.md, and the release before boots on the database as it then is. It holds that
-// the outbox carries no row its own decoder refuses, boots, makes due each effect the head driver
-// queued (Queued), and holds: each claim acts, its activity taken and an architect's grant minted
-// on the tree the release before stores for it, and the architect of F, a root this release
-// recorded after its conversion, registers F's gate, which the release before refuses
+// the outbox carries no row its own decoder refuses, makes due each effect the head driver queued
+// (Queued), boots with an Envoy that takes the project's state events and no other request, and
+// holds: each claim acts, its activity taken and an architect's grant minted on the tree the
+// release before stores for it, and the architect of F, a root this release recorded after its
+// conversion, registers F's gate, which the release before refuses
 // ISSUE_OUTSIDE_TREE where F's stored tree is not its claim's; the step printed K's held write and
 // the release before writes K's reassert, so Dispatch shows K's recorded status again while K works
 // on; a new root and its claims start; each queued effect runs and none is refused; A2, whose
@@ -984,6 +991,26 @@ func TestTreeRollbackReleaseBeforeAfterTheStep(t *testing.T) {
 	}
 	queued := slices.Collect(maps.Values(world.Queued))
 	r.exec("the queued effects come due", `update outbox set next_at = now() where id = any($1)`, queued)
+	// This boot's Envoy takes the project's state events and answers every other request 503, as a
+	// listener that is down does, which every caller treats as it treats treeConfig's unreachable
+	// default, an outage to ask again about: so every notice stays queued as before, while the state
+	// lane, which publishes strictly in sequence (record.LaneState), publishes the oldest state row,
+	// which no earlier boot could, and every state row behind it, the queued ones among them.
+	stateTopic := notify.StateTopic(r.projectToken())
+	listener := newNoticeListener()
+	envoy := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		body, err := io.ReadAll(req.Body)
+		var published listenerPublish
+		if err != nil || req.Method != http.MethodPost || req.URL.Path != "/v1/messages/publish" || json.Unmarshal(body, &published) != nil ||
+			published.Topic != stateTopic {
+			rw.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		listener.ServeHTTP(rw, req)
+	}))
+	t.Cleanup(envoy.Close)
+	r.cfg.EnvoyURL = envoy.URL
 	r.boot("the release before, after the rollback step")
 	r.caughtUp()
 	key := func(name string) string { return world.key(t, name) }
