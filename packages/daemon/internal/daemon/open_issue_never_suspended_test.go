@@ -218,8 +218,8 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 
 	apply("running-reentry", intake.DispatchIssue{Key: running, ResolvedRepo: "acme/widgets", Seq: 20, Type: "issue.updated", Status: "todo", Title: "running", Parent: root, Rank: "D"})
 	apply("check-reentry", intake.DispatchIssue{Key: checking, ResolvedRepo: "acme/widgets", Seq: 21, Type: "issue.updated", Status: "todo", Title: "checking", Parent: root, Rank: "E"})
-	if got := readProductionCheck(t, pool, records, checking); got.Open() || got.Outcome != record.CheckNotRun {
-		t.Fatalf("production check after re-entry = %+v, want closed not_run", got)
+	if got := readProductionCheck(t, pool, records, checking); !got.Open() || got.Looks != check.Looks || !got.LookOpen || got.CurrentLookID() != check.LookID {
+		t.Fatalf("production check after re-entry = %+v, want it open at look %d with its look and its look id: a check outlives a re-entry", got, check.Looks)
 	}
 	assertOpen("child re-entry")
 

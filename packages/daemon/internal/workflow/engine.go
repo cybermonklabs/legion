@@ -916,11 +916,16 @@ func recordedResolution(issue record.Issue) Resolution {
 // admission's promotion of a stranded child no live event ever reopened, so the run is exported
 // for that caller too: one re-entry, not two.
 //
-// A done child's open production check closes as not run before the new run starts
-// (markCheckClosed), and the task of its look ends with it (retireLook), so the new run's worker
-// on the checking role's claim is never sent it. The run's generation fences a completion left by
-// an interrupted phase, and the closed check refuses an old look's report, so both claims stay
-// live.
+// A done child's open production check stays open, at its look, through the new run, as a
+// re-admitted root's does: no look starts while the run holds the child (endLookPending,
+// checkWakeDue), and the check closes by its own report, at its bound (checkBound), when the run's
+// merge opens the check that replaces it (openCheck), or when the run leaves the workflow with no
+// merge (leave). Only the task of its look ends here (RetireOpenLook), so the new run's worker on
+// the checking role's claim is never sent it. The run's generation fences a completion left by an
+// interrupted phase, and the look id keeps a completion of the old run from counting as a report
+// on the check, as the close at the re-entry did before: only a report that gives the id of the
+// check's current look, which that look's own task alone gave, is one (dispatch://INFRA-3518). So
+// both claims stay live, and a report of the look its role read still counts while the child runs.
 func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue, fact intake.DispatchIssue) error {
 	root, err := e.store.Issue(ctx, tx, child.Tree)
 	if err != nil || root == nil {
@@ -943,14 +948,8 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	// (supervise.ErrHeldForCyberPolicy), and the outbox's refusal of the start of its phase holds
 	// the issue for the architect above it (the daemon outbox's heldStartRefused), whose retry
 	// starts that agent again in a new session.
-	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
-	if err != nil {
+	if err := e.RetireOpenLook(ctx, tx, child.Key); err != nil {
 		return err
-	}
-	if check != nil && check.Open() {
-		if err := e.markCheckClosed(ctx, tx, check, record.CheckNotRun); err != nil {
-			return err
-		}
 	}
 	if err := e.ClearGeneration(ctx, tx, child, e.now()); err != nil {
 		return err

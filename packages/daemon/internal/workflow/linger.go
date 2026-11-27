@@ -76,6 +76,13 @@ import (
 // the review it asked for are of the run that is leaving, and a run that comes back asks about a
 // conflict afresh. This is the one place an issue leaves the workflow, so it is the one clear of
 // a departure.
+//
+// Nor does the open production check of an issue that ran again outlive a leave with no merge of
+// the new run (closeCheckOfARunThatLeft): a check that outlived a child's re-entry or a root's
+// re-admission waited on that run, and the run ends here. It closes before any claim of the leave
+// is closed, whichever of the callers above left the issue, and it is a close of the check alone:
+// no Dispatch status, no issue close and no suspension of its own, since the leave decides those
+// for the issue's claims and its pod as for an issue with no check.
 func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: issue left the workflow", "issue", issue.Key, "tree", issue.Tree, "status", status)
 	if err := e.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
@@ -85,6 +92,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	if _, err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
+		return err
+	}
+	if err := e.closeCheckOfARunThatLeft(ctx, tx, issue, status); err != nil {
 		return err
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -307,13 +317,44 @@ func (e *Engine) LeaveUnslotted(ctx context.Context, tx pgx.Tx, root record.Issu
 // with no merged pull request — a root closed before its first phase (close_root), a human's done
 // on an issue short of its merge — has nothing to check in production and opens none, and neither
 // does a merged one of a project that checks nothing in production, whose openCheck opens no
-// record, queues no bound row and starts no look (Engine.checkRole).
+// record, queues no bound row and starts no look (Engine.checkRole), and closes only a check of an
+// earlier merge that is still open.
 func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, wake bool) error {
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
 	return e.openCheck(ctx, tx, issue, *pr, wake)
+}
+
+// closeCheckOfARunThatLeft closes issue's open production check as not run when issue ran again
+// since the check opened (ranAgain) and this leave at status opens no check of a new merge: a park
+// in backlog, icebox or triage, a close_root, or a done with no merged pull request, or with the
+// merged pull request of the check's own merge (checksMerge), through dispatchIssue, transition or
+// LeaveUnslotted alike. A done whose merged pull request is another merge's leaves the check to
+// openCheck, which the same leave calls and which closes it as replaced by that merge. The close
+// is markCheckClosed's alone: the check closed with its look and that look's task ended
+// (retireLook), and no Dispatch status, no issue close and no suspension, since the leave queues
+// what the issue's claims and pod take as for an issue with no check. A done child that a person
+// parks and sets done again, also under a root reopened inside its linger (whose re-admission
+// leaves a member's generation as it was), never ran again, and keeps its check.
+func (e *Engine) closeCheckOfARunThatLeft(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
+	check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+	if err != nil || check == nil || !check.Open() || !ranAgain(issue, *check) {
+		return err
+	}
+	if status == record.DoneStatus {
+		pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		if pr != nil && pr.State == record.PullRequestMerged && !e.checksMerge(*check, *pr) {
+			return nil
+		}
+	}
+	e.logOnCommit(ctx, "workflow: production check of a run that left with no merge closes as not run", "issue", issue.Key,
+		"mergeCommit", check.MergeSHA, "status", status, "generation", issue.Generation, "openedGeneration", check.OpenedGeneration)
+	return e.markCheckClosed(ctx, tx, check, record.CheckNotRun, "")
 }
 
 // closeAwaitingMerge closes merged when its own merge was waiting on the issues beneath it: an
@@ -536,14 +577,15 @@ func (e *Engine) handOver(ctx context.Context, tx pgx.Tx, root, child record.Iss
 // tree's Sandbox, on its volume, which the close deletes, so the fact returns a wait naming the
 // moment the earliest open check is bound to have ended its last look (its bound plus the look
 // bound), rolls back unapplied, and its row runs again then — or sooner, since the close of the
-// tree's last open check re-arms the row (closeCheck). A tree whose root was reopened, or that
-// lingers at a later generation, changes nothing.
+// tree's last open check the close waits on re-arms the row (closeCheck). It waits only on the
+// checks a tree waited on before a check outlived a child's re-entry (checksTheLingerWaitsOn). A
+// tree whose root was reopened, or that lingers at a later generation, changes nothing.
 func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.LingerExpired) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Generation != fact.Generation || !issue.Lingers() {
 		return intake.Result{}, err
 	}
-	open, err := e.store.OpenProductionChecksOfTree(ctx, tx, issue.Tree)
+	open, err := e.checksTheLingerWaitsOn(ctx, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -589,6 +631,38 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 		}
 	}
 	return intake.Result{}, nil
+}
+
+// checksTheLingerWaitsOn is every open production check of tree that the close of its linger
+// waits on (lingerExpired, and closeCheck's re-arm): each open check but one whose issue ran again
+// since the check opened (ranAgain). Such a check is one a release before dispatch://INFRA-3518
+// closed at the child's re-entry. It now stays open while the run holds the issue, starts no look
+// there (endLookPending, checkWakeDue), and ends at the run's merge (openCheck), at the run's
+// leave with no merge (leave) or at its own bound (checkBound). A child re-enters only under a
+// live tree (ReenterChild), but its root can leave while the child runs, which lingers the tree
+// with the child still in the workflow, and the close of that tree hands the child over or leaves
+// it in its phase. A wait on its check would hold the tree's Sandbox up to that check's bound, past
+// the moment the tree closed before (decision 10 of dispatch://INFRA-3518/spec), and no look of
+// that check runs in the Sandbox the close deletes. A root's own check never counts here: a root
+// that ran again lingers only through its leave, which closes such a check. Each check's issue is
+// read as recorded, since an issue handed over as a root of its own keeps its check's tree.
+func (e *Engine) checksTheLingerWaitsOn(ctx context.Context, tx pgx.Tx, tree string) ([]record.ProductionCheck, error) {
+	open, err := e.store.OpenProductionChecksOfTree(ctx, tx, tree)
+	if err != nil {
+		return nil, err
+	}
+	waits := open[:0]
+	for _, check := range open {
+		issue, err := e.store.Issue(ctx, tx, check.Issue)
+		if err != nil {
+			return nil, err
+		}
+		if issue != nil && ranAgain(*issue, check) {
+			continue
+		}
+		waits = append(waits, check)
+	}
+	return waits, nil
 }
 
 // warnKeptDecisionsOfAClosedTree names every decision a person made while nobody in this tree

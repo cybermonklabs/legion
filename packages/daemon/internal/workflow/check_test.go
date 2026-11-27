@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -247,22 +248,22 @@ func TestCheckLookEndedEndsASilentLook(t *testing.T) {
 	}
 }
 
-// A fact of a check a later merge of the same issue replaced — the first check closed as not run
-// when the child was set back to todo, and the rerun's merge opened the second, which counts its
-// looks from one again — changes nothing of the second: a look bound naming the first check's
-// OpenedAt leaves the second's look 1 open, where the same fact naming the second check ends the
-// look.
+// A fact of a check a later merge of the same issue replaced — the first check, opened at the
+// child's generation 6, outlived the child's re-entry open at its look 1, and the rerun's merge at
+// generation 7 closed it as not run and opened the second, which counts its looks from one again —
+// changes nothing of the second: a look bound naming the first check's OpenedAt leaves the
+// second's look 1 open, where the same fact naming the second check ends the look.
 func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 	t.Parallel()
 	rig := newCheckRig(t)
 	seedMergingChild(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	firstOpened := checkOpened.Add(-24 * time.Hour)
-	firstClosed := firstOpened.Add(2 * time.Hour)
 	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutProductionCheck(t.Context(), tx, record.ProductionCheck{
-			Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41",
-			OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound), Looks: 1, LookWakeAt: &firstOpened,
-			LastWakeKind: "merge", LastWakeDetail: "merge-41", LastWakeAt: &firstOpened, ClosedAt: &firstClosed, Outcome: record.CheckNotRun,
+			Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41", Role: claim.RoleTester,
+			OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound), Looks: 1, LookOpen: true, LookWakeAt: &firstOpened,
+			LastWakeKind: "merge", LastWakeDetail: "merge-41", LastWakeAt: &firstOpened,
+			LookID: "LOOKIDOFTHEREPLACEDCHECKAA", LookIDLook: 1, LookIDOpenedAt: firstOpened, OpenedGeneration: 6,
 		})
 	})
 	rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
@@ -532,8 +533,8 @@ func TestAReopenedRootsCheckStartsNoLookWhileItRunsAgain(t *testing.T) {
 
 // A done child a person parks and sets done again leaves twice more, each a close of the same
 // merge: the check it has stands, recorded or open, and no second check is opened over it, no
-// second bound row queued, no look started. A rerun's merge, of another pull request after a
-// re-entry closed the check, still replaces it (openCheck).
+// second bound row queued, no look started. A rerun's merge, of another pull request, still
+// replaces it (openCheck; TestAReplacedOpenCheckClosesNotRunNamingTheMergeThatReplacedIt).
 func TestADoneChildSetDoneAgainKeepsItsChecks(t *testing.T) {
 	t.Parallel()
 	rig := childCheckRig(t)
@@ -691,32 +692,480 @@ func TestTheTreesCloseWaitsForAnOpenCheckAndRunsOnceItCloses(t *testing.T) {
 	}
 }
 
-// A done child set back to todo closes its open check as not run before its new run starts. The
-// tester's live claim stays live: the closed check rejects its old look's report.
-func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
+// A done child set back to todo keeps its open check through its new run (ReenterChild): the same
+// check, open at the same look, with the same look id, so a report its role makes from that
+// look's task still counts. Only the task of the look ends: the re-entry queues one retire_look
+// row, of that look and check, unreported. The tester's claim is neither closed nor suspended, and
+// neither is the issue's Sandbox: they are the new run's. No look starts while the child runs: the
+// look's bound ends look 1 and suspends nobody, and the wake it names, due while the child still
+// runs, starts no look and is queued again.
+func TestReenterChildKeepsItsOpenCheckAndItsLook(t *testing.T) {
 	t.Parallel()
 	rig := childCheckRig(t)
-	seedSlot(t, rig.pool, record.Slot{Issue: "LEGION-208", Index: 0})
-	rig.apply("todo", intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V"})
+	before := productionCheck(t, rig.pool, "LEGION-209")
+	retires := len(superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look"))
+	looks := len(lookStarts(t, rig.pool, "LEGION-209"))
+	reenterChild(t, rig)
 	check := productionCheck(t, rig.pool, "LEGION-209")
-	if check.Open() || check.Outcome != record.CheckNotRun || check.LookOpen {
-		t.Fatalf("the re-entered child's check = %+v, want it closed as not run", check)
+	if check == nil || !check.Open() || !check.OpenedAt.Equal(before.OpenedAt) || check.Looks != 1 || !check.LookOpen ||
+		check.CurrentLookID() == "" || check.CurrentLookID() != before.CurrentLookID() {
+		t.Fatalf("the re-entered child's check = %+v, want the check opened at %s open at look 1, its look open with the same look id", check, before.OpenedAt)
 	}
 	var generation uint64
 	var childPhase phase.Phase
 	if err := rig.pool.QueryRow(context.Background(), "select generation, phase from issues where key = 'LEGION-209'").Scan(&generation, &childPhase); err != nil || generation != 8 || childPhase != phase.Admitted {
 		t.Fatalf("the re-entered child = generation %d in %s, %v; want generation 8 admitted", generation, childPhase, err)
 	}
+	if got := superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look")[retires:]; len(got) != 1 || got[0].Role != claim.RoleTester ||
+		got[0].CheckLook != 1 || !got[0].CheckOpenedAt.Equal(before.OpenedAt) || got[0].Reported {
+		t.Fatalf("retire_look rows of the re-entry = %+v, want one, unreported, of the tester's look 1 of the check opened at %s", got, before.OpenedAt)
+	}
 	if got := superviseRequests(t, rig.pool, "issue_close"); got["LEGION-209/tester"] != 0 {
 		t.Fatalf("issue_close rows = %v, want none for the tester the rerun reuses", got)
 	}
-	suspends := superviseRowsOf(t, rig.pool, "LEGION-209", "suspend")
-	if len(suspends) != 0 {
+
+	rig.clock.now = checkOpened.Add(CheckLookBound)
+	rig.apply("look-bound", intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "look bound", OpenedAt: checkOpened})
+	check = productionCheck(t, rig.pool, "LEGION-209")
+	if !check.Open() || check.Looks != 1 || check.LookOpen || check.WakeAt == nil {
+		t.Fatalf("the check after its look's bound while the child runs = %+v, want open at look 1, the look ended and a wake named", check)
+	}
+	wake := *check.WakeAt
+	rig.clock.now = wake
+	rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, WakeAt: wake, Reason: "the retry of a look nobody reported: look bound"})
+	if check = productionCheck(t, rig.pool, "LEGION-209"); !check.Open() || check.Looks != 1 || check.LookOpen || check.WakeAt == nil || !check.WakeAt.After(wake) {
+		t.Fatalf("the check at its wake while the child runs = %+v, want look 1 still ended and the wake deferred past %s", check, wake)
+	}
+	if got := len(lookStarts(t, rig.pool, "LEGION-209")); got != looks {
+		t.Fatalf("look start rows = %d, want %d: no look starts while the child runs", got, looks)
+	}
+	if suspends := superviseRowsOf(t, rig.pool, "LEGION-209", "suspend"); len(suspends) != 0 {
 		t.Fatalf("suspend rows = %+v, want none while the child is back in the workflow", suspends)
 	}
 	if got := issueSuspensions(t, rig.pool, "LEGION-209"); len(got) != 0 {
 		t.Fatalf("issue suspensions = %+v, want none: the pod is the new run's", got)
 	}
+}
+
+// A rerun's merge replaces the check that outlived its child's re-entry (openCheck): the earlier
+// check, still open at look 1, closes first as not run, and the line of its close names the merge
+// that replaced it (replacedBy) and comes before the line of the new check's open. The close ends
+// the earlier look's task (one retire_look row of that look and check, unreported) and is a close
+// of the check alone: the merge's own close queues the same claim closes, suspensions and status
+// writes as it does for a twin whose earlier check is gone, so the replaced check's close queues
+// no issue_close and no suspension of its own. The new check opens at the child's new generation.
+func TestAReplacedOpenCheckClosesNotRunNamingTheMergeThatReplacedIt(t *testing.T) {
+	t.Parallel()
+	rerun := checkOpened.Add(24 * time.Hour)
+	merge := func(t *testing.T, earlier bool) (checkRig, []string, int) {
+		t.Helper()
+		rig := childCheckRig(t)
+		reenterChild(t, rig)
+		if !earlier {
+			if _, err := rig.pool.Exec(context.Background(), "delete from production_checks where issue = 'LEGION-209'"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		after, retires := lastOutboxID(t, rig.pool), len(superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look"))
+		mergeRerun(t, rig, rerun)
+		return rig, closeAndSuspendRows(t, rig.pool, after), retires
+	}
+	rig, rows, retires := merge(t, true)
+	_, twin, _ := merge(t, false)
+	if !slices.Equal(rows, twin) {
+		t.Fatalf("rows the rerun's merge queued = %q, want those of a twin with no earlier check %q: the replaced check's close queues none of its own", rows, twin)
+	}
+	if got := superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look")[retires:]; len(got) != 1 || got[0].Role != claim.RoleTester ||
+		got[0].CheckLook != 1 || !got[0].CheckOpenedAt.Equal(checkOpened) || got[0].Reported {
+		t.Fatalf("retire_look rows of the merge = %+v, want one, unreported, of look 1 of the earlier check", got)
+	}
+	check := productionCheck(t, rig.pool, "LEGION-209")
+	if check == nil || !check.Open() || check.MergeSHA != "merge-44" || check.Number != 44 || !check.OpenedAt.Equal(rerun) ||
+		check.OpenedGeneration != 8 || check.Looks != 1 || !check.LookOpen {
+		t.Fatalf("the check after the rerun's merge = %+v, want the check of merge-44 opened at %s at generation 8, at look 1", check, rerun)
+	}
+	closed, opened := -1, -1
+	lines := strings.Split(rig.logged.String(), "\n")
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line, `msg="workflow: production check closed"`) && strings.Contains(line, "replacedBy="):
+			closed = i
+		case strings.Contains(line, `msg="workflow: production check opened"`) && strings.Contains(line, "mergeCommit=merge-44"):
+			opened = i
+		}
+	}
+	if closed < 0 || opened < 0 || closed > opened {
+		t.Fatalf("the journal =\n%s\nwant the replaced check's close (line %d) before the new check's open (line %d)", rig.logged.String(), closed, opened)
+	}
+	for _, key := range []string{"issue=LEGION-209", "mergeCommit=merge-43", "outcome=not_run", "looks=1", "replacedBy=merge-44"} {
+		if !strings.Contains(lines[closed], key) {
+			t.Fatalf("the replaced check's close = %q, want %s", lines[closed], key)
+		}
+	}
+}
+
+// ranAgainLeave is one leave of an issue whose open production check was opened at an earlier
+// generation than the issue's: setup builds that state, leave moves the issue out of the workflow,
+// and issue is its key.
+type ranAgainLeave struct {
+	name  string
+	issue string
+	setup func(t *testing.T) checkRig
+	leave func(t *testing.T, rig checkRig)
+}
+
+// ranAgainLeaves is every way an issue that ran again leaves the workflow with no merge of its new
+// run: a re-entered child parked in backlog, icebox or triage, or set done with no merged pull
+// request; a re-admitted root parked in backlog, set done with no merge, closed by close_root, and
+// moved to done by a transition on no merge of its new run. The table's one transition to done is
+// the merge's (TableOf), so the last is a transition on the merge its check already checks.
+func ranAgainLeaves() []ranAgainLeave {
+	var leaves []ranAgainLeave
+	for _, status := range []string{"backlog", "icebox", "triage", "done"} {
+		leaves = append(leaves, ranAgainLeave{
+			name: "a re-entered child to " + status, issue: "LEGION-209",
+			setup: func(t *testing.T) checkRig {
+				rig := childCheckRig(t)
+				reenterChild(t, rig)
+				return rig
+			},
+			leave: func(t *testing.T, rig checkRig) {
+				rig.apply("leave", intake.DispatchIssue{Key: "LEGION-209", Seq: 4, Type: "issue.updated", Status: status, Title: "child", Parent: "LEGION-208", Rank: "V"})
+			},
+		})
+	}
+	for _, status := range []string{"backlog", "done"} {
+		leaves = append(leaves, ranAgainLeave{
+			name: "a re-admitted root to " + status, issue: "LEGION-208", setup: readmittedRootRig,
+			leave: func(t *testing.T, rig checkRig) {
+				rig.apply("leave", intake.DispatchIssue{Key: "LEGION-208", Seq: 3, Type: "issue.updated", Status: status, Title: "root", Rank: "U"})
+			},
+		})
+	}
+	return append(leaves,
+		ranAgainLeave{
+			name: "a re-admitted root closed by close_root", issue: "LEGION-208", setup: readmittedRootRig,
+			leave: func(t *testing.T, rig checkRig) {
+				if result := rig.apply("close-root", intake.CloseRoot{Issue: "LEGION-208", Reason: "moot"}); result.Refusal != nil {
+					t.Fatalf("close_root of the re-admitted root = %+v, want it accepted", result.Refusal)
+				}
+			},
+		},
+		ranAgainLeave{
+			name: "a re-admitted root moved to done by a transition on no merge of its new run", issue: "LEGION-208",
+			setup: func(t *testing.T) checkRig {
+				rig := readmittedRootRig(t)
+				if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'merging', status = 'retro' where key = 'LEGION-208'"); err != nil {
+					t.Fatal(err)
+				}
+				seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
+				return rig
+			},
+			leave: func(t *testing.T, rig checkRig) {
+				rig.apply("merged-again", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"})
+				if got := issueAt(t, rig.pool, "LEGION-208"); got != phase.Done {
+					t.Fatalf("the root after the merge = %s, want done by the merge's transition", got)
+				}
+			},
+		},
+	)
+}
+
+// An issue that ran again since its open check opened (its generation above the check's
+// OpenedGeneration) and leaves the workflow with no merge of its new run closes that check as not
+// run, at the leave, through each path a leave takes (ranAgainLeaves): the same check, its look
+// ended, one retire_look row of its look, and a close line with no replacedBy. The controls close
+// nothing: a done child a person parks and sets done again, also under a root reopened inside its
+// linger, whose re-admission deleted the child's merged pull request and left its generation as it
+// was; and a first merge, which opens the check at the issue's generation.
+func TestAnIssueThatRanAgainAndLeftWithNoMergeClosesItsCheck(t *testing.T) {
+	t.Parallel()
+	for _, tc := range ranAgainLeaves() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := tc.setup(t)
+			before := productionCheck(t, rig.pool, tc.issue)
+			if before == nil || !before.Open() || before.OpenedGeneration == 0 {
+				t.Fatalf("the check before the leave = %+v, want one open with the generation it opened at", before)
+			}
+			retires := len(superviseRowsOf(t, rig.pool, tc.issue, "retire_look"))
+			mark := rig.logged.Len()
+			tc.leave(t, rig)
+			check := productionCheck(t, rig.pool, tc.issue)
+			if check == nil || check.Open() || check.Outcome != record.CheckNotRun || check.LookOpen || !check.OpenedAt.Equal(before.OpenedAt) {
+				t.Fatalf("the check after the leave = %+v, want the check opened at %s closed as not run", check, before.OpenedAt)
+			}
+			if got := superviseRowsOf(t, rig.pool, tc.issue, "retire_look")[retires:]; len(got) != 1 || got[0].CheckLook != before.Looks ||
+				!got[0].CheckOpenedAt.Equal(before.OpenedAt) || got[0].Reported {
+				t.Fatalf("retire_look rows of the leave = %+v, want one, unreported, of look %d of the check", got, before.Looks)
+			}
+			journal := rig.logged.String()[mark:]
+			closes := checkCloseLines(journal, tc.issue)
+			if len(closes) != 1 || !strings.Contains(closes[0], "outcome=not_run") || strings.Contains(closes[0], "replacedBy=") ||
+				!strings.Contains(journal, `msg="workflow: production check of a run that left with no merge closes as not run" issue=`+tc.issue) {
+				t.Fatalf("the journal of the leave =\n%s\nwant one close of %s's check as not run, naming no merge that replaced it", journal, tc.issue)
+			}
+		})
+	}
+
+	park := func(t *testing.T, rig checkRig) {
+		t.Helper()
+		rig.apply("parked", intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "backlog", Title: "child", Parent: "LEGION-208", Rank: "V"})
+		// Admission, which runs after the engine on each event, records the parked status; the
+		// rig's admission stub records nothing, so the row is moved by hand to what the daemon
+		// would hold at the next event.
+		if _, err := rig.pool.Exec(context.Background(), "update issues set status = 'backlog', dispatch_status = 'backlog', last_dispatch_seq = 3 where key = 'LEGION-209'"); err != nil {
+			t.Fatal(err)
+		}
+		rig.apply("done-again", intake.DispatchIssue{Key: "LEGION-209", Seq: 4, Type: "issue.updated", Status: "done", Title: "child", Parent: "LEGION-208", Rank: "V"})
+		if got := superviseRequests(t, rig.pool, "issue_close"); got["LEGION-209/planner"] < 1 {
+			t.Fatalf("issue_close rows = %v, want the second done to have left again", got)
+		}
+	}
+	for _, tc := range []ranAgainLeave{
+		{name: "a done child parked and set done again", setup: childCheckRig, leave: park},
+		{
+			name: "a done child of a root reopened inside its linger, parked and set done again",
+			setup: func(t *testing.T) checkRig {
+				rig := childCheckRig(t)
+				rig.apply("root-closed", intake.DispatchIssue{Key: "LEGION-208", Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
+				// admit's readmit, as it leaves the tree: the root at its next generation in
+				// admitted, its linger ended, and the merged pull requests of the whole tree deleted
+				// with the generation (record.Store.ClearTreeGeneration); the done child keeps its own.
+				if _, err := rig.pool.Exec(context.Background(), `update issues set generation = 8, phase = 'admitted', status = 'todo',
+					dispatch_status = 'todo', linger_until = null, last_dispatch_seq = 3 where key = 'LEGION-208'`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := rig.pool.Exec(context.Background(), "delete from pull_requests where issue in (select key from issues where tree = 'LEGION-208')"); err != nil {
+					t.Fatal(err)
+				}
+				return rig
+			},
+			leave: park,
+		},
+		{
+			name: "a first merge",
+			setup: func(t *testing.T) checkRig {
+				rig := newCheckRig(t)
+				seedMergingChild(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+				return rig
+			},
+			leave: func(t *testing.T, rig checkRig) {
+				rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := tc.setup(t)
+			before := productionCheck(t, rig.pool, "LEGION-209")
+			retires := len(superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look"))
+			mark := rig.logged.Len()
+			tc.leave(t, rig)
+			check := productionCheck(t, rig.pool, "LEGION-209")
+			if check == nil || !check.Open() || check.OpenedGeneration != 7 || before != nil && (!check.OpenedAt.Equal(before.OpenedAt) || check.Looks != before.Looks) {
+				t.Fatalf("the check after the leave = %+v, want the check of generation 7 open as it was (%+v)", check, before)
+			}
+			if got := len(superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look")); got != retires {
+				t.Fatalf("retire_look rows = %d, want %d: the leave ended no look", got, retires)
+			}
+			if closes := checkCloseLines(rig.logged.String()[mark:], "LEGION-209"); len(closes) != 0 {
+				t.Fatalf("check closes the leave logged = %q, want none", closes)
+			}
+		})
+	}
+}
+
+// The close of a check at a leave (ranAgainLeaves) is a close of the check alone: the claim closes,
+// suspensions and Dispatch status writes the leave queues are those the same leave queues for the
+// same issue with no check. The close's own retire_look row is neither, and is left out.
+func TestTheCloseOfACheckAtALeaveQueuesNothingOfItsOwn(t *testing.T) {
+	t.Parallel()
+	for _, tc := range ranAgainLeaves() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			leave := func(t *testing.T, check bool) []string {
+				t.Helper()
+				rig := tc.setup(t)
+				if !check {
+					if _, err := rig.pool.Exec(context.Background(), "delete from production_checks where issue = $1", tc.issue); err != nil {
+						t.Fatal(err)
+					}
+				}
+				after := lastOutboxID(t, rig.pool)
+				tc.leave(t, rig)
+				if got := productionCheck(t, rig.pool, tc.issue); check && (got == nil || got.Open()) {
+					t.Fatalf("the check after the leave = %+v, want it closed", got)
+				}
+				return closeAndSuspendRows(t, rig.pool, after)
+			}
+			rows, twin := leave(t, true), leave(t, false)
+			if len(rows) == 0 || !slices.Equal(rows, twin) {
+				t.Fatalf("rows the leave queued = %q, want those it queues for the issue with no check %q", rows, twin)
+			}
+		})
+	}
+}
+
+// The close of a lingering tree waits only on a check a tree waited on before a check outlived a
+// child's re-entry (checksTheLingerWaitsOn). A child that re-entered and then merged holds the
+// check of its new merge, which the close waits on; one that re-entered and then left closed its
+// check at the leave, and the close waits on nothing; one still running when its root's close
+// lingers the tree holds a check that the release before closed at the re-entry, and the close
+// waits on nothing and leaves that check open. The control is a done child that never ran again,
+// whose check the close waits on.
+func TestALingeringTreeWaitsOnNoCheckThatARunClosed(t *testing.T) {
+	t.Parallel()
+	rerun := checkOpened.Add(24 * time.Hour)
+	for _, tc := range []struct {
+		name    string
+		reenter bool
+		run     func(t *testing.T, rig checkRig)
+		// waits is the merge commit whose check the close waits on, "" for none.
+		waits string
+		// open says the child's check stays open through the close.
+		open bool
+	}{
+		{name: "a child that re-entered and then merged", reenter: true, waits: "merge-44", open: true,
+			run: func(t *testing.T, rig checkRig) { mergeRerun(t, rig, rerun) }},
+		{name: "a child that re-entered and then left", reenter: true, run: func(t *testing.T, rig checkRig) {
+			rig.apply("parked", intake.DispatchIssue{Key: "LEGION-209", Seq: 4, Type: "issue.updated", Status: "backlog", Title: "child", Parent: "LEGION-208", Rank: "V"})
+		}},
+		{name: "a child that re-entered and still runs", reenter: true, open: true, run: func(*testing.T, checkRig) {}},
+		{name: "a done child that never ran again", waits: "merge-43", open: true, run: func(*testing.T, checkRig) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := childCheckRig(t)
+			if tc.reenter {
+				reenterChild(t, rig)
+			}
+			tc.run(t, rig)
+			rig.apply("root-closed", intake.DispatchIssue{Key: "LEGION-208", Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
+			rig.clock.now = rig.clock.now.Add(2 * time.Hour)
+			_, err := intake.ApplyFact(context.Background(), rig.pool, "outbox", "linger:LEGION-208:7", intake.LingerExpired{Issue: "LEGION-208", Generation: 7}, rig.engine, admissionStub{})
+			check := productionCheck(t, rig.pool, "LEGION-209")
+			if check == nil || check.Open() != tc.open {
+				t.Fatalf("the child's check after the linger's expiry = %+v, want open %t", check, tc.open)
+			}
+			if tc.waits == "" {
+				if err != nil {
+					t.Fatalf("the linger's expiry = %v, want the tree closed", err)
+				}
+				if got := superviseRequests(t, rig.pool, "tree_close"); got["LEGION-209/tester"] != 1 {
+					t.Fatalf("tree_close rows = %v, want the child's tester's", got)
+				}
+				return
+			}
+			if at, ok := wait.UntilAt(err); !errors.Is(err, wait.ErrWaiting) || !ok || check.MergeSHA != tc.waits || !at.Equal(check.BoundAt.Add(CheckLookBound)) ||
+				!strings.Contains(err.Error(), "member LEGION-209's production check is open") {
+				t.Fatalf("the linger's expiry = %v (until %s), want a wait on the check of %s to %s", err, at, tc.waits, check.BoundAt.Add(CheckLookBound))
+			}
+			if got := superviseRequests(t, rig.pool, "tree_close"); len(got) != 0 {
+				t.Fatalf("tree_close rows = %v, want none while the close waits", got)
+			}
+		})
+	}
+}
+
+// reenterChild sets childCheckRig's done child LEGION-209 back to todo under its live root, which
+// holds its slot: the child's new run is its generation 8, at admitted (ReenterChild).
+func reenterChild(t *testing.T, rig checkRig) {
+	t.Helper()
+	seedSlot(t, rig.pool, record.Slot{Issue: "LEGION-208", Index: 0})
+	rig.apply("todo", intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V"})
+}
+
+// mergeRerun is the new run of the re-entered child LEGION-209 reaching merging on
+// sjawhar/legion#44 and GitHub merging it at merge-44 at at.
+func mergeRerun(t *testing.T, rig checkRig, at time.Time) {
+	t.Helper()
+	rig.clock.now = at
+	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'merging', status = 'retro' where key = 'LEGION-209'"); err != nil {
+		t.Fatal(err)
+	}
+	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 44, Branch: "legion/LEGION-209", HeadSHA: "head-44", Failing: []string{}})
+	rig.apply("rerun-merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 44, MergeSHA: "merge-44"})
+	if got := issueAt(t, rig.pool, "LEGION-209"); got != phase.Done {
+		t.Fatalf("the rerun after its merge = %s, want done", got)
+	}
+}
+
+// readmittedRootRig is a root LEGION-208 with no issue under it, closed at generation 7 by its own
+// merge of sjawhar/legion#42 at merge, which opened its check at look 1, and then reopened inside
+// its linger as admit's readmit leaves it: at generation 8 in admitted with status todo and no
+// linger, its merged pull request deleted with its generation (record.Store.ClearTreeGeneration),
+// and its check open.
+func readmittedRootRig(t *testing.T) checkRig {
+	t.Helper()
+	rig := newCheckRig(t)
+	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 7, Status: "retro", Rank: "U", LastDispatchSeq: 1})
+	seedPhase(t, rig.pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "root-merger", HandoffCommit: "head"})
+	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
+	rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"})
+	if check := productionCheck(t, rig.pool, "LEGION-208"); check == nil || !check.Open() || check.OpenedGeneration != 7 {
+		t.Fatalf("the root's check after its merge = %+v, want it open at generation 7", check)
+	}
+	if _, err := rig.pool.Exec(context.Background(), `update issues set generation = 8, phase = 'admitted', status = 'todo',
+		dispatch_status = 'todo', linger_until = null, last_dispatch_seq = 2 where key = 'LEGION-208'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rig.pool.Exec(context.Background(), "delete from pull_requests where issue = 'LEGION-208'"); err != nil {
+		t.Fatal(err)
+	}
+	return rig
+}
+
+// lookStarts is issue's supervise start rows of a look of its production check, oldest first.
+func lookStarts(t *testing.T, pool *pgxpool.Pool, issue string) []record.SuperviseRequest {
+	t.Helper()
+	var looks []record.SuperviseRequest
+	for _, start := range superviseRowsOf(t, pool, issue, "start") {
+		if start.CheckLook > 0 {
+			looks = append(looks, start)
+		}
+	}
+	return looks
+}
+
+// lastOutboxID is the id of the newest outbox row, 0 for none.
+func lastOutboxID(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), "select coalesce(max(id), 0) from outbox").Scan(&id); err != nil {
+		t.Fatalf("read the newest outbox row: %v", err)
+	}
+	return id
+}
+
+// closeAndSuspendRows is every row queued after the row after that closes or suspends a claim,
+// suspends an issue's Sandbox or writes a Dispatch status: a supervise row of op issue_close or
+// suspend, an issue_suspend row and a dispatch_status row, each as its issue, its kind and its
+// payload, in queue order.
+func closeAndSuspendRows(t *testing.T, pool *pgxpool.Pool, after int64) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select issue || ' ' || kind || ' ' || payload::text from outbox where id > $1
+		and (kind in ('issue_suspend', 'dispatch_status') or (kind = 'supervise' and payload->>'op' in ('issue_close', 'suspend')))
+		order by id`, after)
+	if err != nil {
+		t.Fatalf("read the close and suspend rows: %v", err)
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("collect the close and suspend rows: %v", err)
+	}
+	return got
+}
+
+// checkCloseLines is each line of journal that logs the close of issue's production check.
+func checkCloseLines(journal, issue string) []string {
+	var closes []string
+	for _, line := range strings.Split(journal, "\n") {
+		if strings.Contains(line, `msg="workflow: production check closed" issue=`+issue+" ") {
+			closes = append(closes, line)
+		}
+	}
+	return closes
 }
 
 // The boot's sweep closes a migrated issue that awaits a merge GitHub already reported, as the
