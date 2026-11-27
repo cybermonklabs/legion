@@ -359,6 +359,7 @@ type connectCallbacks struct {
 	// and nats.Conn.Status waits for it.
 	state func(*nats.Conn, bool)
 }
+
 // options starts from nats.GetDefaultOptions: Connect fills in only some zero fields, and the
 // defaults are what turn on reconnecting, the client's pings and the drain and flusher timeouts. A
 // lost server is reconnected in place, forever, so JetStream handles taken from the connection

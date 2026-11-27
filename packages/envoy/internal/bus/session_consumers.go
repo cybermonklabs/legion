@@ -1021,16 +1021,14 @@ func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, sub
 }
 
 // StreamID returns the stream's identity, its StreamIDMetadataKey metadata, which a relay frame
-// carries and a session's resume point names.
+// carries and a session's resume point names, and ErrNoStreamID for a stream that carries none
+// (sessionStreamState.streamID), as Client.StreamID does.
 func (s *SessionConsumers) StreamID(ctx context.Context) (string, error) {
 	state, err := s.streamState(ctx)
 	if err != nil {
 		return "", err
 	}
-	if state.id == "" {
-		return "", ErrNoStreamID
-	}
-	return state.id, nil
+	return state.streamID()
 }
 
 // sessionConsumerTarget names sessionID's consumer and reduces subjects to its filters

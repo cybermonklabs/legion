@@ -798,6 +798,7 @@ func newRelayBench(b *testing.B) *relayBench {
 		roleDeadLetters:     met.NewCounter("bench_role_dead_letters", "bench"),
 		roleKeptUndecodable: met.NewCounter("bench_role_kept_undecodable", "bench"),
 		publishDeadLetter:   client.PublishStoredAs,
+		publishExpiryNotice: client.PublishKeptCopyExpiry,
 		keepPublish:         client.PublishStoredAck,
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		roleKeepDrains:      newRoleKeepGuards(),
