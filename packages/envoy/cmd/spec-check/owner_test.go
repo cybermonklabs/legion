@@ -113,10 +113,10 @@ func TestSameOwnerAsksForWhatTheProcessMayGive(t *testing.T) {
 			uid, gid int
 			want     string
 		}{
-			{"as root: another user and the group that the entry already has", 1, 0, "1:-1"},
+			{"as root: another user and the group that the entry already has", 1, os.Getegid(), "1:-1"},
 			{"as root: root and another group", 0, group, fmt.Sprintf("-1:%d", group)},
 			{"as root: another user and another group", 1, group, fmt.Sprintf("1:%d", group)},
-			{"the control as root: root and its group, which the entry already has", 0, 0, ""},
+			{"the control as root: root and its group, which the entry already has", 0, os.Getegid(), ""},
 		} {
 			sameOwnerAsks(t, row.name, row.uid, row.gid, row.want)
 		}
@@ -164,20 +164,23 @@ func sameOwnerAsks(t *testing.T, name string, uid, gid int, want string) {
 }
 
 // A refusal names what print asked the system for, the owner alone, the group alone or both, and
-// the way out that fits it: a run as root that asked for the owner alone is told to run as the
-// owner, not as root, which it already is.
+// a way out that fits the process: a run as root, which may give any owner and group, is told to
+// run as the owner, not as root, which it already is; a run as a user, which asked only for a
+// group that it already belongs to, is told to run as root, not as a member of that group.
 func TestARefusalOfAnOwnerNamesWhatPrintAskedFor(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
 		uid, gid      int
+		root          bool
 		asked, wayOut string
 	}{
-		{7, 8, "the owner and the group of f, 7:8", "run print as the owner of f or as root"},
-		{7, -1, "the owner of f, 7", "run print as the owner of f"},
-		{-1, 8, "the group of f, 8", "run print as a member of that group or as root"},
+		{7, 8, true, "the owner and the group of f, 7:8", "run print as the owner of f"},
+		{7, -1, true, "the owner of f, 7", "run print as the owner of f"},
+		{-1, 8, true, "the group of f, 8", "run print as the owner of f"},
+		{-1, 8, false, "the group of f, 8", "run print as root"},
 	} {
-		if asked, wayOut := refusedOwner("f", row.uid, row.gid); asked != row.asked || wayOut != row.wayOut {
-			t.Errorf("refusedOwner(%d, %d) = %q, %q; want %q, %q", row.uid, row.gid, asked, wayOut, row.asked, row.wayOut)
+		if asked, wayOut := refusedOwner("f", row.uid, row.gid, row.root); asked != row.asked || wayOut != row.wayOut {
+			t.Errorf("refusedOwner(%d, %d, root %t) = %q, %q; want %q, %q", row.uid, row.gid, row.root, asked, wayOut, row.asked, row.wayOut)
 		}
 	}
 }

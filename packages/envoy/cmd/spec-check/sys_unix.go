@@ -77,24 +77,30 @@ func sameOwner(fsys fileSystem, path, what, of string, old fs.FileInfo) error {
 		return nil
 	}
 	if err := fsys.lchown(path, uid, gid); err != nil {
-		asked, wayOut := refusedOwner(of, uid, gid)
+		asked, wayOut := refusedOwner(of, uid, gid, os.Geteuid() == 0)
 		return fmt.Errorf("print gives %s %s, and the system refused it (%w): %s, then run print again", what, asked, err, wayOut)
 	}
 	return nil
 }
 
 // refusedOwner is what print asked the system to give an entry in the place of of, the owner uid
-// and the group gid with -1 for one that it did not ask for, and the way out of a refusal of it:
-// the one that it asked for, or both, as the ids say.
-func refusedOwner(of string, uid, gid int) (asked, wayOut string) {
+// and the group gid with -1 for one that it did not ask for, and the way out of a refusal of it,
+// which depends on whether the process is root: a run as root, which may give any owner and
+// group, is told to run as the owner of of; a run as a user, which asked only for a group it
+// already belongs to, is told to run as root.
+func refusedOwner(of string, uid, gid int, root bool) (asked, wayOut string) {
 	switch {
 	case uid >= 0 && gid >= 0:
-		return fmt.Sprintf("the owner and the group of %s, %d:%d", of, uid, gid), "run print as the owner of " + of + " or as root"
+		asked = fmt.Sprintf("the owner and the group of %s, %d:%d", of, uid, gid)
 	case uid >= 0:
-		return fmt.Sprintf("the owner of %s, %d", of, uid), "run print as the owner of " + of
+		asked = fmt.Sprintf("the owner of %s, %d", of, uid)
 	default:
-		return fmt.Sprintf("the group of %s, %d", of, gid), "run print as a member of that group or as root"
+		asked = fmt.Sprintf("the group of %s, %d", of, gid)
 	}
+	if root {
+		return asked, "run print as the owner of " + of
+	}
+	return asked, "run print as root"
 }
 
 // mayGive is the owner and the group that this process may give an entry that it owns, of the
