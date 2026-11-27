@@ -1,0 +1,5 @@
+kind: Added
+body: 'Declare program deploys, their writer and their known or unknown workflow attempt.'
+time: 2026-11-24T18:15:48Z
+custom:
+    Issue: pr5416

@@ -10,7 +10,8 @@
 // clean URL and a request URL Call prints, and only where that text is a transport failure's, text
 // the allow-list passes, or the broker's own OAuth words; beside any other URL it prints the
 // failure's class alone, except words an earlier Error, Cause or Named already gave, which print
-// as given (below). The broker's OAuth words are trusted, not checked, so
+// as given (below), and a context's end, which Cause prints as its own fixed text, since that text
+// names no part of a URL. The broker's OAuth words are trusted, not checked, so
 // whatever the broker puts in them prints: an OAuth error answer (*oauth2.RetrieveError) of the
 // broker's own with a nonempty error code and an empty error_uri prints its error code and
 // error_description whole, as the broker wrote them, since they are the reason for a refusal a
@@ -281,14 +282,47 @@ func (c *called) Unwrap() error { return c.err }
 // Cause is Error without the *url.Error's own wrapper, for a message that names the call itself:
 // the error the *url.Error wraps when that error's text is the text printable checked, and
 // otherwise that text, or the class alone where printable does not pass err, unwrapping to err.
+// A context's end (contextEnd) printable does not pass prints its own fixed text in place of its
+// class, beside any URL, so a call its context's cancel, its context's deadline or its client's
+// Timeout ended says which. A context ended with a cause of its own (context.WithCancelCause,
+// context.WithTimeoutCause) ends net/http's call with that cause (context.Cause). Where printable
+// does not pass it, a cause that wraps one of the three still prints that one's text, since
+// contextEnd walks the cause's chain, and a cause that is none of them and wraps none of them
+// prints as its class.
 func Cause(err error, raw string) error {
+	return printedCause(err, raw, func(named string) bool { return callClean(raw, named) }, "the broker")
+}
+
+// CauseAt is Cause for a client that calls one fixed URL of its own, callURL, built from raw (the
+// configured endpoint) and a route and query the client holds: it passes a *url.Error that names
+// callURL exactly, as it passes one naming raw followed by a broker route, so a clean endpoint's
+// failure prints its own text (a TLS failure's x509 cause, a refused dial's address) and not its
+// class alone. raw must still be clean, and callURL must begin with raw, so an endpoint holding a
+// credential prints the class alone; a URL net/http names other than callURL, a redirect's
+// target, prints the class alone too.
+func CauseAt(err error, raw, callURL string) error {
+	return printedCause(err, raw, func(named string) bool {
+		return callClean(raw, named) || named == callURL && ownCall(raw, callURL)
+	}, "the endpoint")
+}
+
+// printedCause is Cause's and CauseAt's answer for err beside raw, accepted saying which URL a
+// *url.Error may name for its failure to print (printableAt). Where none of err's text may print,
+// it prints a context's end's fixed text (contextEnd), and otherwise the class (class), server
+// being who answered an HTTP status; where some may, the error the *url.Error wraps, or err
+// itself, when its own text is the text printableAt checked, and that text over err otherwise. It
+// unwraps to err.
+func printedCause(err error, raw string, accepted func(named string) bool, server string) error {
 	if err == nil {
 		return nil
 	}
-	ue, checked, printable := printable(err, raw)
+	ue, checked, ok := printableAt(err, raw, accepted)
 	switch {
-	case !printable:
-		return &classified{class(err, "the broker"), err}
+	case !ok:
+		if text, ended := contextEnd(err); ended {
+			return &classified{text, err}
+		}
+		return &classified{class(err, server), err}
 	case ue != nil && ue.Err != nil && ue.Err.Error() == checked:
 		return ue.Err
 	case ue == nil && err.Error() == checked:
@@ -296,6 +330,50 @@ func Cause(err error, raw string) error {
 	default:
 		return &classified{checked, err}
 	}
+}
+
+// clientTimeoutText is net/http's whole text for a call its client's Timeout ended on the
+// deadline it set before the answer's headers came (Client.do, at the Go release go.mod names).
+const clientTimeoutText = "context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+
+// contextEnd is the text of the context's end err is, if it is one: on err or the first error
+// down its chain (errors.Unwrap) that is context.Canceled or context.DeadlineExceeded itself, or a
+// timeout whose whole text is clientTimeoutText, net/http's error that holds no error under it.
+// Each is fixed text from the context package or net/http, which names no part of a URL, so Cause
+// and CauseAt print it beside any URL; words around it, a caller's or net/http's quote of the URL,
+// drop as checked drops them. An error that only holds such words is none, and neither is an error
+// this package already put in words (classified), whose words stand.
+func contextEnd(err error) (string, bool) {
+	var worded *classified
+	if errors.As(err, &worded) {
+		return "", false
+	}
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if e == context.Canceled || e == context.DeadlineExceeded {
+			return e.Error(), true
+		}
+		if timeout, ok := e.(interface{ Timeout() bool }); ok && timeout.Timeout() && e.Error() == clientTimeoutText {
+			return clientTimeoutText, true
+		}
+	}
+	return "", false
+}
+
+// ownCall reports whether callURL begins with raw, a clean URL: its scheme in any case, since
+// net/url lowers it, then the rest of raw as written, a trailing "/" aside, and then nothing or a
+// "/", "?" or "#". A URL that only begins with raw's text (`http://h:1` beside `http://h:10/x`,
+// `…/models` beside `…/modelsX/…`) is another server's or another route's.
+func ownCall(raw, callURL string) bool {
+	if !clean(raw) {
+		return false
+	}
+	n := strings.Index(raw, "://") + len("://")
+	base := strings.TrimRight(raw, "/")
+	if len(callURL) < len(base) || !strings.EqualFold(callURL[:n], raw[:n]) || !strings.HasPrefix(callURL[n:], base[n:]) {
+		return false
+	}
+	rest := callURL[len(base):]
+	return rest == "" || strings.ContainsRune("/?#", rune(rest[0]))
 }
 
 // printable answers the *url.Error err holds, if any, the text of the failure under it that may
@@ -320,6 +398,12 @@ func Cause(err error, raw string) error {
 // fmt.Errorf("grant %s: %w", id, cause) is that failure to errors.Is and errors.As, but its words
 // are the caller's, and checking the failure says nothing about them.
 func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
+	return printableAt(err, raw, func(named string) bool { return callClean(raw, named) })
+}
+
+// printableAt is printable with accepted in place of callClean: whether the URL the *url.Error
+// names is one whose failure may print.
+func printableAt(err error, raw string, accepted func(named string) bool) (ue *url.Error, text string, ok bool) {
 	if !errors.As(err, &ue) {
 		ue = nil
 	}
@@ -333,7 +417,7 @@ func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
 	inner := err
 	if ue != nil {
 		// A *url.Error that wraps nothing names no failure to check.
-		if !callClean(raw, ue.URL) || ue.Err == nil {
+		if !accepted(ue.URL) || ue.Err == nil {
 			return ue, "", false
 		}
 		inner = ue.Err
@@ -464,10 +548,11 @@ func trustedAnswer(err error) bool {
 }
 
 // classified is an error whose text is its class alone: fixed text naming the kind of failure,
-// which Error, Cause, Class and File make and Masked takes from its caller, or the text printable
-// checked of the failure beneath a caller's wrapper (Error, Cause), and never a URL, a path, an
-// id or other detail of a request. class() reads it as the failure's class, so text that named a
-// call here would print again in every line made from the error; that text is a called.
+// which Error, Cause, Class and File make and Masked takes from its caller, a context's end's own
+// fixed text (Cause, contextEnd), or the text printable checked of the failure beneath a caller's
+// wrapper (Error, Cause), and never a URL, a path, an id or other detail of a request. class()
+// reads it as the failure's class, so text that named a call here would print again in every line
+// made from the error; that text is a called.
 type classified struct {
 	text string
 	err  error

@@ -15,10 +15,10 @@ import (
 // why it does not, in a `Not parallel:` comment (TestEveryTestCallsParallelOrSaysWhyNot fails a
 // test that does neither): each opens a database of its own (testdb.Database) and its own pools on
 // it, and none changes anything the whole process shares (the environment, the default logger, a
-// package variable, flags). A pool holds up to testdb.PoolConns connections and each database its
-// admin connection, and go test's default of GOMAXPROCS would run as many tests at once as the
-// machine has cores: four on CI's runner, hundreds on a dev box, where it would open more
-// connections than the test server allows. Four is the runner's own count.
+// package variable, flags). A pool holds the pool_max_conns LEGION_TEST_PG_DSN names, or
+// testpool.PoolConns where it names none, and each database its admin connection. Four concurrent
+// tests is the CI runner's own count and stays below the test server's connection limit on a large
+// dev box.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const storeTestParallelism = 4
