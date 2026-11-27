@@ -261,7 +261,17 @@ func (h *History) recordDue(c *Written) {
 	}
 	switch {
 	case c.Cause.K == KSuspend && c.Row.Hold.By != 0:
-		h.HoldDue = earlier(h.HoldDue, requestDue(c.Cause.A, c.Now))
+		due := requestDue(c.Cause.A, c.Now)
+		if c.Prev.Hold.By == 0 {
+			// A request that starts a hold where the store held none
+			// starts its own deadline. The earlier hold's bound ended with
+			// that hold, even where the write that ended it lost its reply
+			// and a later read-back installed it, so that no commit the
+			// driver read showed the hold go.
+			h.HoldDue = due
+		} else {
+			h.HoldDue = earlier(h.HoldDue, due)
+		}
 	case c.Cause.K == KOutcome && c.Cause.A == OcAck && c.Cause.R < NA:
 		h.TurnDue[c.Cause.R] = earlier(h.TurnDue[c.Cause.R], after(c.Now, 1))
 	}

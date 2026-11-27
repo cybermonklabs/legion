@@ -140,6 +140,11 @@ func orderSeeds() []seed {
 		seed{"fatal-redelivery-before-recovered-intent", launch, "op death!2.1 fatalReport!3.1 drain :failed"},
 		seed{"working-root-start", Start(PhWork, true), "op bound :H4"},
 		seed{"working-worker-start", Start(PhWork, false), "daemonDL bound :H4"},
+		// The daemon's hold ends in a start-row write whose reply is lost;
+		// the release request's read-back installs it and starts a hold of
+		// its own, which the old hold's deadline does not bound (depth 3,
+		// Job legion-holdmodel-depth3-8fj4k at 87bd6c73).
+		seed{"lost-start-row-reply-then-release", Start(PhWork, false), "daemonDL st!2.1 :daemon :pending release :release bound :H4"},
 		seed{"launching-root-start", Start(PhLaunch, true), "op ready :H4"},
 	)
 	return cs

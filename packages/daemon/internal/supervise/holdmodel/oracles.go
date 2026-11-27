@@ -51,27 +51,39 @@ func creditPromptOpen(s *State, l uint8) bool {
 	return false
 }
 
+// memoryForgotten is the restart projection the oracle holds the model to,
+// stated apart from forgetMemory, the transition it judges: a check that ran
+// the transition's own projection would move with any defect in it, and did
+// (the third read's Wake and Relaunch, which survived a boot with Check 0).
+// The product keeps each field below in memory only: the hold and its timers
+// (supervise/suspend.go), the turn bounds, the parked wake (machine.go's
+// Machine.wake, 1823-1835), the stale-plugin relaunch (Machine.staleRelaunch,
+// 1641-1648) and relaunchLater's retry (Machine.relaunch, 1775-1778).
+func memoryForgotten(r Row) Row {
+	r.Hold = Hold{}
+	r.TurnBy = 0
+	for k := range r.Att {
+		r.Att[k].TurnBy = 0
+	}
+	r.Wake, r.Relaunch = false, false
+	return r
+}
+
 // bootMemoryBad is the restart projection rule. A boot starts from the
 // committed delivery and the world: the whole memory row must be the stored
-// row with every memory-only field forgotten, and no field is listed here, so
-// none can slip past. An intent is persisted separately, so its stop progress
-// is derived from the world.
+// row with every memory-only field forgotten, and the rows are compared
+// whole, so no other field can slip past. An intent is persisted separately,
+// so its stop progress is derived from the world.
 func bootMemoryBad(s *State) bool {
 	if !s.Booted {
 		return false
 	}
-	want := s.M
-	forgetMemory(&want)
-	if s.M != want {
+	if s.M != memoryForgotten(s.M) {
 		return true // a memory-only field the boot should have forgotten
 	}
-	if s.P.Kind == 0 {
+	if s.P.Kind == 0 && s.M != memoryForgotten(s.S) {
 		// With no write pending, memory is exactly the stored row rebuilt.
-		stored := s.S
-		forgetMemory(&stored)
-		if s.M != stored {
-			return true
-		}
+		return true
 	}
 	if s.Prepared != 0 || s.Sending != 0 || s.Resend || s.Deferred != (Event{}) {
 		return true
