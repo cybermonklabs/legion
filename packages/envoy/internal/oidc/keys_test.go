@@ -254,6 +254,360 @@ func TestKeyReadsTheSetOnceForConcurrentCallers(t *testing.T) {
 	}
 }
 
+// hookRuns is a context carrying a before-wait hook (WithBeforeWait) that counts its runs into
+// runs, and records into atRead how many reads the issuer had answered when it last ran.
+func hookRuns(issuer *oidctest.Issuer, runs, atRead *int) context.Context {
+	return WithBeforeWait(context.Background(), func() {
+		*runs++
+		*atRead = issuer.JWKSFetches()
+	})
+}
+
+// requireHookAtTheRead holds a Key's before-wait hook to the read it made: run once, before the
+// read reached the issuer, where the Key read the set, and not at all where it answered from
+// memory.
+func requireHookAtTheRead(t *testing.T, step string, reads bool, runs, atRead, before int) {
+	t.Helper()
+	switch {
+	case reads && runs != 1:
+		t.Errorf("%s: Key read the set and ran its before-wait hook %d times, want once", step, runs)
+	case reads && atRead != before:
+		t.Errorf("%s: the before-wait hook ran with %d reads answered, want %d: before the read", step, atRead, before)
+	case !reads && runs != 0:
+		t.Errorf("%s: Key answered from memory and ran its before-wait hook %d times, want none", step, runs)
+	}
+}
+
+// Key runs the before-wait hook its context carries exactly where it reads the set, once and
+// before the read: for a set never read, for a key id the set does not hold while the miss window
+// is open, and once the set is past Lifetime + MinRefresh (a set stale by less, which answers at
+// once, is TestKeyAnsweredAtOnceRunsNoBeforeWaitHook's); never for a key the fresh set holds, nor
+// for a key id the set does not hold inside the window, which are answered from memory. ahead is
+// how far the key source's clock (Keys.Now) reads past the wall clock.
+func TestKeyRunsTheBeforeWaitHookExactlyWhereItReadsTheSet(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	for _, step := range []struct {
+		name, kid string
+		ahead     time.Duration
+		reads     bool
+	}{
+		{name: "a set never read", kid: "exchange-key", reads: true},
+		{name: "a key the fresh set holds", kid: "exchange-key", reads: false},
+		{name: "a key id the set does not hold, the window open", kid: "never-published", reads: true},
+		{name: "a key id the set does not hold, inside the window", kid: "never-published", reads: false},
+		{name: "a set past Lifetime + MinRefresh", kid: "exchange-key", ahead: DefaultKeysLifetime + DefaultKeysMinRefresh, reads: true},
+	} {
+		keys.Now = func() time.Time { return time.Now().Add(step.ahead) }
+		before := issuer.JWKSFetches()
+		var runs, atRead int
+		_, _ = keys.Key(hookRuns(issuer, &runs, &atRead), step.kid, testAlgorithm)
+		if read := issuer.JWKSFetches() > before; read != step.reads {
+			t.Errorf("%s: Key read the set %t, want %t", step.name, read, step.reads)
+		}
+		requireHookAtTheRead(t, step.name, step.reads, runs, atRead, before)
+	}
+}
+
+// Key runs the before-wait hook around a read that failed as it reads: for a set never read, which
+// Key reads; not inside FailureSpacing of that failed first read, where Key answers the failure at
+// once and reads nothing; once the spacing has passed, and once the issuer answers again; for a
+// key id the fresh set does not hold while the miss window is open, and not inside MinRefresh once
+// that read has failed, where Key answers ErrKeySet at once (settleMiss) and reads nothing.
+func TestKeyRunsTheBeforeWaitHookAroundAFailedRead(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	for _, step := range []struct {
+		name, kid string
+		failing   bool
+		spacing   time.Duration
+		reads     bool
+	}{
+		{name: "a set never read, the issuer failing", kid: "exchange-key", failing: true, spacing: DefaultKeysFailureSpacing, reads: true},
+		{name: "inside FailureSpacing of the failed first read", kid: "exchange-key", failing: true, spacing: DefaultKeysFailureSpacing, reads: false},
+		{name: "once FailureSpacing has passed", kid: "exchange-key", failing: true, spacing: 0, reads: true},
+		{name: "the issuer answering again", kid: "exchange-key", spacing: 0, reads: true},
+		{name: "a key id the fresh set does not hold, the issuer failing", kid: "never-published", failing: true, spacing: DefaultKeysFailureSpacing, reads: true},
+		{name: "inside MinRefresh of that failed read", kid: "never-published", failing: true, spacing: DefaultKeysFailureSpacing, reads: false},
+	} {
+		if step.failing {
+			issuer.FailKeys(http.StatusInternalServerError)
+		} else {
+			issuer.FailKeys(0)
+		}
+		keys.FailureSpacing = step.spacing
+		before := issuer.JWKSFetches()
+		var runs, atRead int
+		_, _ = keys.Key(hookRuns(issuer, &runs, &atRead), step.kid, testAlgorithm)
+		if read := issuer.JWKSFetches() > before; read != step.reads {
+			t.Errorf("%s: Key read the set %t, where the row says %t", step.name, read, step.reads)
+		}
+		requireHookAtTheRead(t, step.name, step.reads, runs, atRead, before)
+	}
+}
+
+// A verification that waits twice - on the issuer's discovery and then on its key set - runs its
+// before-wait hook once, before the first wait, and a verification answered from what both reads
+// left in memory runs it not at all.
+func TestALazyVerificationRunsItsBeforeWaitHookOnceAcrossItsWaits(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "lazy-key")
+	verifier := NewLazyVerifier(issuer.URL(), "dispatch")
+	token := issuer.Mint(t, signing, issuer.Claims("system:serviceaccount:legion:worker", "dispatch"))
+	for _, step := range []struct {
+		name string
+		runs int
+	}{
+		{name: "the first token, which discovers the issuer and reads its key set", runs: 1},
+		{name: "the same token again, answered from memory", runs: 0},
+	} {
+		runs := 0
+		if _, err := verifier.Verify(WithBeforeWait(context.Background(), func() { runs++ }), token); err != nil {
+			t.Fatalf("%s: Verify: %v", step.name, err)
+		}
+		if runs != step.runs {
+			t.Errorf("%s: the before-wait hook ran %d times, want %d", step.name, runs, step.runs)
+		}
+	}
+	if discovered, read := issuer.DiscoveryRequests(), issuer.JWKSFetches(); discovered != 1 || read != 1 {
+		t.Errorf("the issuer was discovered %d times and its key set read %d times, want once each", discovered, read)
+	}
+}
+
+// heldKeyReads is a key-set transport that holds each read at its start until release is closed,
+// and says on entered that a read has begun, so a test can ask about a read while it is under way.
+type heldKeyReads struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newHeldKeyReads() *heldKeyReads {
+	return &heldKeyReads{entered: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+func (h *heldKeyReads) RoundTrip(request *http.Request) (*http.Response, error) {
+	select {
+	case h.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-h.release:
+	case <-request.Context().Done():
+		return nil, request.Context().Err()
+	}
+	return http.DefaultTransport.RoundTrip(request)
+}
+
+// A Key for a key id the fresh set does not hold, arriving while the read another token naming it
+// prompted is under way (which has closed the miss window), runs its before-wait hook and then
+// waits for that read (settleMiss), and is answered from the set it reads, with no read of its own.
+// The read is held at its start until the test lets it go, so it is under way throughout.
+func TestKeyRunsTheBeforeWaitHookBeforeJoiningTheReadAKeyIDNeeds(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "key-a")
+	if _, err := keys.Key(context.Background(), "key-a", testAlgorithm); err != nil {
+		t.Fatalf("Key(the cached key): %v", err)
+	}
+	issuer.PublishKey(t, "key-b")
+	held := newHeldKeyReads()
+	keys.HTTPClient = &http.Client{Transport: held}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(held.release)
+		}
+	}
+	defer release()
+	first := make(chan error, 1)
+	go func() {
+		_, err := keys.Key(context.Background(), "key-b", testAlgorithm)
+		first <- err
+	}()
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first token naming key-b prompted no read within 5 s")
+	}
+	hooked := make(chan struct{}, 1)
+	second := make(chan error, 1)
+	go func() {
+		_, err := keys.Key(WithBeforeWait(context.Background(), func() { hooked <- struct{}{} }), "key-b", testAlgorithm)
+		second <- err
+	}()
+	select {
+	case <-hooked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a second Key(key-b) ran no before-wait hook within 5 s while the read it needs was held, want it run before the Key waits for that read")
+	}
+	select {
+	case err := <-second:
+		t.Fatalf("a second Key(key-b) answered %v while the read it needs was held, want it to wait for that read", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	for name, answered := range map[string]chan error{"the first token naming key-b": first, "the second": second} {
+		select {
+		case err := <-answered:
+			if err != nil {
+				t.Errorf("%s: %v, want key-b from the read under way", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no answer within 5 s of the read's release", name)
+		}
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Fatalf("key set read %d times, want 2: the cached read and the one the first token prompted", fetches)
+	}
+}
+
+// Key answers at once, waiting on no read and so running no before-wait hook, wherever the
+// spacing #4838 added answers without a read the caller waits for: a stale set (older than
+// Lifetime by less than MinRefresh) that holds the key, whose refresh runs in the background; a
+// set past Lifetime + MinRefresh within FailureSpacing of that refresh's failure, which the
+// cached set answers for a key it holds and the failure answers for one it does not; and a key id
+// the fresh set does not hold, the miss window open again within FailureSpacing of a failed read,
+// which that failure answers. The hook is where the Dispatch API gives the request's admission
+// unit back, so none of these gives anything back, and the take-back after the verification has
+// nothing to take (admission.Away.TakeBack). The key source reads the test's clock (Keys.Now),
+// with MinRefresh a second against the default five-second FailureSpacing, so each boundary
+// falls where the row puts it.
+func TestKeyAnsweredAtOnceRunsNoBeforeWaitHook(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	clock := newTestClock()
+	keys.Now = clock.Now
+	keys.MinRefresh = time.Second
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("the first read: %v", err)
+	}
+	atOnce := func(step, kid string, reads bool) error {
+		t.Helper()
+		before := issuer.JWKSFetches()
+		var runs, atRead int
+		_, err := keys.Key(hookRuns(issuer, &runs, &atRead), kid, testAlgorithm)
+		if runs != 0 {
+			t.Errorf("%s: Key answered %v at once and ran its before-wait hook %d times, want none: it waited on nothing", step, err, runs)
+		}
+		if !reads && issuer.JWKSFetches() != before {
+			t.Errorf("%s: the key set was read %d times, want none", step, issuer.JWKSFetches()-before)
+		}
+		return err
+	}
+	failureRecorded := func(step string) {
+		t.Helper()
+		if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+			keys.mu.Lock()
+			defer keys.mu.Unlock()
+			return keys.failure != nil
+		}) {
+			t.Fatalf("%s: no failed read recorded within 5 s (key set read %d times)", step, issuer.JWKSFetches())
+		}
+	}
+
+	issuer.FailKeys(http.StatusInternalServerError)
+	clock.advance(DefaultKeysLifetime + keys.MinRefresh/2)
+	// The background refresh this starts reads the key set, and fails.
+	if err := atOnce("a stale set that holds the key", "exchange-key", true); err != nil {
+		t.Fatalf("a stale set that holds the key: %v, want the cached key", err)
+	}
+	failureRecorded("the stale set's background refresh")
+	clock.advance(keys.MinRefresh)
+	if err := atOnce("a set past Lifetime + MinRefresh, its refresh failed within FailureSpacing", "exchange-key", false); err != nil {
+		t.Fatalf("a set past Lifetime + MinRefresh within FailureSpacing of its failed refresh: %v, want the cached key", err)
+	}
+	if err := atOnce("a key id that set does not hold, within FailureSpacing", "never-published", false); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("a key id the old set does not hold within FailureSpacing of its failed refresh: %v, want ErrKeySet", err)
+	}
+
+	// A fresh set again, and a miss read that fails: a second later the miss window is open again
+	// (MinRefresh), inside FailureSpacing of that failure.
+	issuer.FailKeys(0)
+	clock.advance(keys.FailureSpacing)
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key once the spacing has passed and the key set answers: %v", err)
+	}
+	issuer.FailKeys(http.StatusInternalServerError)
+	if _, err := keys.Key(context.Background(), "never-published", testAlgorithm); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("a key id whose miss read fails: %v, want ErrKeySet", err)
+	}
+	failureRecorded("the failed miss read")
+	clock.advance(keys.MinRefresh)
+	if err := atOnce("a key id the fresh set does not hold, the window open within FailureSpacing", "never-published", false); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("a key id the fresh set does not hold, the miss window open within FailureSpacing of a failed read: %v, want ErrKeySet", err)
+	}
+}
+
+// A rotation miss whose read failed is looked for again once FailureSpacing has passed, well
+// inside MinRefresh (#4838). That retry reads the key set, and Key runs the before-wait hook -
+// where the Dispatch API gives the request's admission unit back - before it blocks on the read:
+// the hook has run while the read is held at its start, before it reaches the issuer, and the
+// retry is answered key-b once the read goes on. Within the spacing the same key id is ErrKeySet
+// at once, with no hook. The key source reads the test's clock (Keys.Now), so the spacing passes
+// where the row says.
+func TestARotationMissRetryAfterTheSpacingRunsTheHookBeforeItsRead(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "key-a")
+	clock := newTestClock()
+	keys.Now = clock.Now
+	if _, err := keys.Key(context.Background(), "key-a", testAlgorithm); err != nil {
+		t.Fatalf("Key(the cached key): %v", err)
+	}
+	issuer.PublishKey(t, "key-b")
+	issuer.FailKeys(http.StatusInternalServerError)
+	if _, err := keys.Key(context.Background(), "key-b", testAlgorithm); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("the first token naming key-b, whose read fails: err = %v, want ErrKeySet", err)
+	}
+	var runs, atRead int
+	if _, err := keys.Key(hookRuns(issuer, &runs, &atRead), "key-b", testAlgorithm); !errors.Is(err, ErrKeySet) || runs != 0 {
+		t.Fatalf("key-b within FailureSpacing of its failed read: err = %v and the before-wait hook ran %d times, want ErrKeySet at once and no hook", err, runs)
+	}
+	reads := issuer.JWKSFetches()
+
+	issuer.FailKeys(0)
+	clock.advance(keys.FailureSpacing)
+	held := newHeldKeyReads()
+	keys.HTTPClient = &http.Client{Transport: held}
+	release := sync.OnceFunc(func() { close(held.release) })
+	defer release()
+	hooked := make(chan int, 1)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := keys.Key(WithBeforeWait(context.Background(), func() { hooked <- issuer.JWKSFetches() }), "key-b", testAlgorithm)
+		answered <- err
+	}()
+	select {
+	case at := <-hooked:
+		if at != reads {
+			t.Errorf("the retry's before-wait hook ran with %d reads answered, want %d: before its read reached the issuer", at, reads)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry of key-b once FailureSpacing passed ran no before-wait hook within 5 s while its read was held, want it run before Key blocks on that read")
+	}
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry of key-b once FailureSpacing passed started no read within 5 s")
+	}
+	select {
+	case err := <-answered:
+		t.Fatalf("the retry of key-b answered %v while its read was held, want it to wait for that read", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("the retry of key-b once its read went on: %v, want key-b", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry of key-b gave no answer within 5 s of its read's release")
+	}
+	if fetches := issuer.JWKSFetches(); fetches != reads+1 {
+		t.Fatalf("key set read %d times, want %d: one more read, the retry's", fetches, reads+1)
+	}
+}
+
 // A key set that fails at once, read while no set has ever been read, is read once per
 // FailureSpacing however many tokens arrive: every other caller in that time is answered the
 // failure with no read. Once the spacing has passed, the next caller reads again, and a set that

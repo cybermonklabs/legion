@@ -264,7 +264,7 @@ func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
 	t.Parallel()
 	server := websocket.NewServer()
 	server.RoomIdleTimeout = time.Hour
-	service := &Service{srv: newRoomServer(server)}
+	service := &Service{srv: newRoomServer(server, nil)}
 	testcleanup.Add(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

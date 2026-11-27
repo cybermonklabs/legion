@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/persistence"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // compactTail is how long a stored row stays as it was written: no compaction folds or rewrites a
@@ -173,7 +175,7 @@ func (p *PgVersioned) compactRoom(ctx context.Context, room string, rule compact
 // later, so the eviction that recovery waits for has to queue behind the repair's commit, and the
 // room that loads next reads the repair from the store and is born at the head. A compaction that
 // does not wait passes nothing.
-func (p *PgVersioned) passRoomLock(ctx context.Context, pool *pgxpool.Pool, room string, wait bool) error {
+func (p *PgVersioned) passRoomLock(ctx context.Context, pool *store.RawPool, room string, wait bool) error {
 	if !wait {
 		return nil
 	}
@@ -184,7 +186,7 @@ func (p *PgVersioned) passRoomLock(ctx context.Context, pool *pgxpool.Pool, room
 // its transaction has ended when they total at most foldBufferBytes, streamed inside it otherwise
 // (foldRead, which a load shares). It returns no rows, and the outcome the compaction ends with,
 // when there is nothing to fold or the negative cache already holds this fold point.
-func (p *PgVersioned) readCompaction(ctx context.Context, pool *pgxpool.Pool, room string, rule compactRule) (compactFold, compactOutcome, error) {
+func (p *PgVersioned) readCompaction(ctx context.Context, pool *store.RawPool, room string, rule compactRule) (compactFold, compactOutcome, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return compactFold{}, compactNothing, fmt.Errorf("begin compaction read: %w", err)
@@ -244,7 +246,14 @@ func (p *PgVersioned) readCompaction(ctx context.Context, pool *pgxpool.Pool, ro
 // writeCompaction writes folded back under the room's lock, on a connection of pool, when the rows
 // at or below its fold point are still the ones it folded (compactRoom), and takes the document off
 // the sweep's list (doc_compaction_owed) when no row stands above the fold point.
-func (p *PgVersioned) writeCompaction(ctx context.Context, pool *pgxpool.Pool, room string, wait bool, folded compactFold) (compactResult, error) {
+//
+// Its transaction's first statement bounds its own idle time (store.BoundIdleInTransaction): it
+// takes the document's advisory lock, which every request writing the document waits on until the
+// write lock bound runs out (store.LockWithinBound), so one orphaned with its connection would hold
+// that lock, refusing those requests, until Postgres noticed.
+// The compaction pool's connections carry no bound of their own, because a compaction's read
+// (readCompaction) may sit idle in its transaction for longer while it folds a large log.
+func (p *PgVersioned) writeCompaction(ctx context.Context, pool *store.RawPool, room string, wait bool, folded compactFold) (compactResult, error) {
 	result := compactResult{outcome: compactDropped}
 	point := folded.point()
 	err := p.lockRoom(ctx, room, wait, pool, func(conn *pgxpool.Conn) error {
@@ -253,8 +262,14 @@ func (p *PgVersioned) writeCompaction(ctx context.Context, pool *pgxpool.Pool, r
 			return fmt.Errorf("begin compact document: %w", err)
 		}
 		defer tx.Rollback(ctx)
+		if err := store.BoundIdleInTransaction(ctx, tx); err != nil {
+			return err
+		}
 		if err := lockDocumentRoom(ctx, tx, room); err != nil {
 			return err
+		}
+		if p.duringCompactionWrite != nil {
+			p.duringCompactionWrite(room, tx)
 		}
 		_, recovered, err := p.recoverPruneTx(ctx, tx, room)
 		if err != nil {

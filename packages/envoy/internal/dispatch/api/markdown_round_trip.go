@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
-// markdownRoundTrip is the round trip's answer to content, the text an upload would store as a
+// roundTripAnswer is the round trip's answer to content, the text an upload would store as a
 // markdown document - inline, as a JSON upload's `content`, or with file, a file's bytes, as a
 // multipart upload's file part: the refusal that upload makes of it for the text alone, or else
 // the markdown it stores. The refusals are the upload's own, in its order, served as the upload
@@ -36,7 +36,7 @@ import (
 // (measured through the upload route on 2026-11-21). The route answers "" so that its answer to
 // every text within the limits is the one it gave before it read the seed, and `dispatch artifact`
 // takes only a refusal from it for such inline text (goBlankPattern) and for a file.
-func markdownRoundTrip[T string | []byte](content T, file, newDocument bool) (string, error) {
+func roundTripAnswer[T string | []byte](content T, file, newDocument bool) (string, error) {
 	if refusal := documentTextRefusal(content, file); refusal != nil {
 		return "", refusal
 	}
@@ -58,10 +58,11 @@ func markdownRoundTrip[T string | []byte](content T, file, newDocument bool) (st
 // markdownRoundTripPattern is the inline round trip's pattern and markdownRoundTripRoute that
 // route, and fileRoundTripPattern and fileRoundTripRoute the file round trip's: with the handoff
 // write, the JSON routes whose body limit is their own rather than maxJSONRequestBytes
-// (routeBody). The file's check is a route of its own rather than a member of the inline one,
-// since a Dispatch that does not know such a member ignores it (decodeJSON) and would answer a
-// file's check as the check of no text at all; a Dispatch that does not know the route answers
-// 404 or 405, which `dispatch artifact` reads as a Dispatch that cannot check the file.
+// (markdownRoundTrip, fileRoundTrip). The file's check is a route of its own rather than a
+// member of the inline one, since a Dispatch that does not know such a member ignores it
+// (decodeJSON) and would answer a file's check as the check of no text at all; a Dispatch that
+// does not know the route answers 404 or 405, which `dispatch artifact` reads as a Dispatch that
+// cannot check the file.
 const (
 	markdownRoundTripPattern = "/api/v1/markdown/round-trip"
 	markdownRoundTripRoute   = http.MethodPost + " " + markdownRoundTripPattern
@@ -95,7 +96,7 @@ const fileRoundTripLimit = 4*((maxDocumentMarkdownBytes+2)/3) + 1<<10
 
 // errMarkdownRoundTripTooLarge and errFileRoundTripTooLarge are the two round trips' answers to a
 // body past its limit, which the drain, the keyed layer and the handler all give alike
-// (routeBody). Each names its body's own bound, which is applied before any text in the body is
+// (bodyTooLarge). Each names its body's own bound, which is applied before any text in the body is
 // read. `dispatch artifact` sends no text past the bytes one document holds, which it refuses
 // itself, so no body it sends is past either.
 var (
@@ -108,7 +109,7 @@ var (
 // markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip: Markdown, the text a
 // caller is about to store as a Markdown document, as an inline upload sends it as `content`, and
 // NewDocument, which asks for the refusals only a new document's seed makes of it
-// (markdownRoundTrip). A body without NewDocument is answered as the most permissive replacement
+// (roundTripAnswer). A body without NewDocument is answered as the most permissive replacement
 // of a document takes the text; it is the body this route took before it made any refusal. A body
 // naming no markdown asks about the empty text.
 type markdownRoundTripInput struct {
@@ -134,7 +135,7 @@ type markdownRoundTripResponse struct {
 // postMarkdownRoundTrip answers POST /api/v1/markdown/round-trip, and postFileRoundTrip POST
 // /api/v1/markdown/file-round-trip. Neither writes anything or reads a row: each checks the text
 // as an upload of a markdown document checks it, parses it and renders it, as that upload's write
-// does, and answers what that write would store (markdownRoundTrip): a new document's seed for a
+// does, and answers what that write would store (roundTripAnswer): a new document's seed for a
 // body with new_document true, and otherwise the most permissive replacement. A caller compares
 // the two and refuses its own call where they differ.
 //
@@ -167,40 +168,40 @@ type markdownRoundTripResponse struct {
 // fileRoundTripLimit).
 func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 	var input markdownRoundTripInput
-	if !s.decodeRoundTrip(w, r, markdownRoundTripPattern, &input) {
+	if !s.decodeRoundTrip(w, r, markdownRoundTripLimit, errMarkdownRoundTripTooLarge, &input) {
 		return
 	}
 	// The JSON upload's decode refuses U+0000 in its `content` before anything else of the text
 	// (unstorableJSON), so this route makes that refusal first, in those words; a JSON string
 	// holds no byte that is not UTF-8, since decoding writes each as U+FFFD.
 	if refusal := unstorableText("content", input.Markdown); refusal != nil {
-		s.writeTextRefusal(w, refusal)
+		s.writeTextRefusal(w, r, refusal)
 		return
 	}
-	stored, err := markdownRoundTrip(input.Markdown, false, input.NewDocument)
-	s.writeRoundTrip(w, stored, err)
+	stored, err := roundTripAnswer(input.Markdown, false, input.NewDocument)
+	s.writeRoundTrip(w, r, stored, err)
 }
 
 // postFileRoundTrip answers POST /api/v1/markdown/file-round-trip (postMarkdownRoundTrip).
 func (s *server) postFileRoundTrip(w http.ResponseWriter, r *http.Request) {
 	var input fileRoundTripInput
-	if !s.decodeRoundTrip(w, r, fileRoundTripPattern, &input) {
+	if !s.decodeRoundTrip(w, r, fileRoundTripLimit, errFileRoundTripTooLarge, &input) {
 		return
 	}
-	stored, err := markdownRoundTrip(input.File, true, input.NewDocument)
-	s.writeRoundTrip(w, stored, err)
+	stored, err := roundTripAnswer(input.File, true, input.NewDocument)
+	s.writeRoundTrip(w, r, stored, err)
 }
 
-// decodeRoundTrip decodes the body of the round trip at pattern into input, within that route's
-// own limit (routeBody), and reports whether it did; a refusal is written here.
-func (s *server) decodeRoundTrip(w http.ResponseWriter, r *http.Request, pattern string, input any) bool {
+// decodeRoundTrip decodes the body of a round trip into input, within that route's own limit and
+// with its own refusal past it (markdownRoundTrip, fileRoundTrip), and reports whether it did; a
+// refusal is written here.
+func (s *server) decodeRoundTrip(w http.ResponseWriter, r *http.Request, limit int64, tooLarge *apiError, input any) bool {
 	if !s.requireAuthenticated(w, r) {
 		return false
 	}
-	limit, tooLarge := routeBody(http.MethodPost, pattern)
 	body, err := readJSONBodyAllowingNUL(r, input, limit, tooLarge)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return false
 	}
 	logUndeclaredMembers(r, input, body)
@@ -209,9 +210,9 @@ func (s *server) decodeRoundTrip(w http.ResponseWriter, r *http.Request, pattern
 
 // writeRoundTrip writes a round trip's answer: err, the refusal of the text, or the markdown
 // stored.
-func (s *server) writeRoundTrip(w http.ResponseWriter, stored string, err error) {
+func (s *server) writeRoundTrip(w http.ResponseWriter, r *http.Request, stored string, err error) {
 	if err != nil {
-		s.writeTextRefusal(w, err)
+		s.writeTextRefusal(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, markdownRoundTripResponse{Markdown: stored})
@@ -224,7 +225,7 @@ const textRefusalMark = "text"
 // writeTextRefusal writes refusal, an upload's refusal of a text for the text alone, marked as
 // such (contracts.TextRefusalHeader). Every error a round trip answers after its body is read is
 // one: its checks read the text and nothing else.
-func (s *server) writeTextRefusal(w http.ResponseWriter, refusal error) {
+func (s *server) writeTextRefusal(w http.ResponseWriter, r *http.Request, refusal error) {
 	w.Header().Set(contracts.TextRefusalHeader, textRefusalMark)
-	s.writeHandlerError(w, refusal)
+	s.writeHandlerError(w, r, refusal)
 }

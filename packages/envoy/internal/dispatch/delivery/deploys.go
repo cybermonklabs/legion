@@ -65,9 +65,12 @@ func (e *DeployNotNewest) Error() string {
 	return fmt.Sprintf("the current deploy is %s at %s", e.Current.Commit, e.Current.DeployedAt.Format(time.RFC3339Nano))
 }
 
+// lockDeployRepository takes the repository's deploy lock in a bounded wait (store.LockWithinBound),
+// as every advisory lock a request's write takes: the route's record and the intake's and the
+// reconcile's pass take the same lock, so a write behind a pass, or a pass behind a write, is
+// refused store.ErrPoolBusy at the bound rather than waiting for as long as the holder stands.
 func lockDeployRepository(ctx context.Context, tx pgx.Tx, repo string) error {
-	_, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('deploy:' || $1, 0))`, repo)
-	return err
+	return store.LockWithinBound(ctx, tx, `select pg_advisory_xact_lock(hashtextextended('deploy:' || $1, 0))`, repo)
 }
 
 // liveCheckIssues reads stored result attributes, never a document. Both an open recording

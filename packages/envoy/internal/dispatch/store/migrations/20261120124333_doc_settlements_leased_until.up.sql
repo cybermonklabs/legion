@@ -1,0 +1,55 @@
+-- 20261120124333_doc_settlements_leased_until.up.sql
+--
+-- INFRA-592: how long a settlement under way holds its document's pending-settlement row against
+-- the settlement resumption (docs.leaseSettlementPending, docs.releaseSettlementLease,
+-- docs.Service.resumeOwedSettlements).
+--
+--   leased_until   the database's now() plus docs.settlementLease (210 seconds), written by a
+--                  settlement as it begins its work on the document - once it holds a settlement
+--                  slot, before it warms a cold room - in whichever process runs it and however it
+--                  was armed: a write's timer, the room's last browser leaving, a retry, the
+--                  resumption, an issue's close, the shutdown drain. Null for a row no settlement
+--                  holds. A resumption pass skips a row whose leased_until is still ahead. A
+--                  settlement that commits deletes the row, the lease with it; one that ends any
+--                  other way - it ran out of time, the database did not serve it, a newer write's
+--                  settlement superseded it, it failed - sets the column null again where it
+--                  still holds the value it wrote. Only a settlement whose process dies, or whose
+--                  give-back fails, leaves the lease to run out, and the first pass after that
+--                  arms the document again.
+--
+-- The release before this one arms every owed row a minute old at each pass, whatever is running.
+-- Arming moves the room's generation, and a settlement whose generation moved after it read the
+-- room ends writing nothing, so a document whose every settlement took longer than one
+-- resumption period was armed again under each one and never committed.
+--
+-- tried_at cannot carry the lease: it says when a pass last armed the row, null for a row no pass
+-- has armed, and the pass orders on it to arm those rows first and the tried ones oldest try
+-- first (20261114100038). A lease written there by a write's settlement would put a row no pass
+-- ever armed behind every untried row, and the one column would hold two times the pass could
+-- not tell apart, the past moment of a try and the future end of a lease. marked_at cannot either:
+-- it is the age of the document's latest owed write, which the pass's age and the closed issues'
+-- ask repair filter on, and which a closing room's write of its latest edit source compares to
+-- catch an append (docs.settlementRowFacts).
+--
+-- A row owed before this migration carries null here, which the pass reads as held by no
+-- settlement, as the release before read every row. No backfill writes the column: a census that
+-- rewrites a row refuses the deploy (cmd/dispatch/README.md, "Pre-deploy census").
+--
+-- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
+-- takes ACCESS EXCLUSIVE on doc_settlements_pending, which every document append and every
+-- settlement writes, and holds it only for the catalog write. It must first wait for every
+-- transaction that holds the table, as 20261114100038's alter of this table does: the runner
+-- bounds that wait at pgmigrate.LockTimeout (five seconds) and tries again up to
+-- pgmigrate.LockTimeoutAttempts times, after which the migration fails the boot, and every append
+-- queued behind the ALTER waits as long as it does. The table holds one row per document that
+-- owes a settlement, a few dozen in production.
+--
+-- The release before this one neither reads nor writes the column, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"). Its appends' upsert of the row and its pass's
+-- stamp of tried_at leave the column as it is, and its settlements take no lease. While a process
+-- of that release holds the resumption's lease, its pass arms every owed row a minute old, a row
+-- this release's settlement holds included, as it does today: the settlement it arms runs in that
+-- process, whose generation is its own, so it supersedes nothing the other process runs and waits
+-- for the document's lock behind it. Rolling back past this migration is an image rollback alone;
+-- the column left behind is read by nothing.
+alter table doc_settlements_pending add column leased_until timestamptz;

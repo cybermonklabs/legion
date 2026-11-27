@@ -1,10 +1,12 @@
 package ratelimit
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"time"
 
+	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -174,5 +176,48 @@ func TestPreviewStrikeReadsTheResetAndWritesNothing(t *testing.T) {
 	}
 	if stored.Strikes != 2 {
 		t.Fatalf("the preview wrote the row: it holds %d strikes, want the 2 it held before", stored.Strikes)
+	}
+}
+
+// A store OnBackground made - the ledger of the GitHub client a route's architecture import and
+// the background loops call through (api's Deps.BackgroundGitHub) - is handed the request pool.
+// Each read and write opens the background pool as it runs and runs there, taking no connection
+// of the request pool. Once the background pool cannot open, each read and write fails with the
+// open's error, and none of them runs on the request pool instead.
+func TestAStoreOnTheBackgroundPoolReadsAndWritesThereAndNowhereElse(t *testing.T) {
+	database := storetest.Open(t)
+	limits := OnBackground(database.Pool)
+	background, err := database.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	requests, backgrounds := database.Pool.Stat().AcquireCount(), background.Stat().AcquireCount()
+	if err := limits.Record(t.Context(), scope, time.Minute); err != nil {
+		t.Fatalf("record a limit of %s: %v", scope, err)
+	}
+	if wait, _, err := limits.Wait(t.Context(), scope); err != nil || wait <= 0 {
+		t.Fatalf("read the limit of %s back: wait=%s err=%v, want the minute recorded", scope, wait, err)
+	}
+	if got := database.Pool.Stat().AcquireCount() - requests; got != 0 {
+		t.Errorf("the read and the write took %d request-pool connections, want none", got)
+	}
+	if background.Stat().AcquireCount() == backgrounds {
+		t.Errorf("the read and the write took no background-pool connection, want their statements there")
+	}
+
+	refused := errors.New("test: the background pool cannot open")
+	database.Pool.SetOpenFailureForTest(dispatchstore.BackgroundPool, refused)
+	requests = database.Pool.Stat().AcquireCount()
+	if _, _, err := limits.Wait(t.Context(), scope); !errors.Is(err, refused) {
+		t.Errorf("a read with the background pool refused: %v, want the open's error", err)
+	}
+	if err := limits.Record(t.Context(), scope, time.Minute); !errors.Is(err, refused) {
+		t.Errorf("a write with the background pool refused: %v, want the open's error", err)
+	}
+	if _, err := limits.Strike(t.Context(), scope, 0); !errors.Is(err, refused) {
+		t.Errorf("a strike with the background pool refused: %v, want the open's error", err)
+	}
+	if got := database.Pool.Stat().AcquireCount() - requests; got != 0 {
+		t.Errorf("with the background pool refused the reads and writes took %d request-pool connections, want none", got)
 	}
 }

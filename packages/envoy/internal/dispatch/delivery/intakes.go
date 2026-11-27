@@ -94,10 +94,13 @@ func ReserveDurableLeases(callers *store.LeaseCallers, durable string) (DurableL
 // StartIntakes runs Intake and JobIntake until ctx is cancelled, each on a bus client of its own
 // that connect opens under the name it is given (dispatch-intake, dispatch-job-intake). It connects
 // both before it returns, and returns the error of a connect that fails with neither intake
-// started. Without the GitHub App neither intake reads anything, so neither connects. broker is the
-// server's event broker, through which Intake appends issue.deployed (RecordDeployedEvents).
-// pushes is what Intake hands a push of a branch to (PushImports): in the server, the
-// architecture importer, which imports nothing without the App either. nil hands pushes nowhere.
+// started. Without the GitHub App neither intake reads anything, so neither connects. pool is what
+// both intakes read and write through: cmd/dispatch hands them the background pool
+// (store.Pool.Background), so a message's handling neither waits for the requests' connections nor
+// takes one. broker is the server's event broker, through which Intake appends issue.deployed
+// (RecordDeployedEvents). pushes is what Intake hands a push of a branch to (PushImports): in the
+// server, the architecture importer, which imports nothing without the App either. nil hands
+// pushes nowhere.
 //
 // leases is each intake's reservation of the lease pool (ReserveIntakeLeases), taken by the
 // caller while it wires itself rather than here, so that a configuration these intakes are idle
@@ -130,18 +133,26 @@ func ReserveDurableLeases(callers *store.LeaseCallers, durable string) (DurableL
 //
 // Each intake delivers from its durable only while it holds that durable's hold
 // (intakeHoldName), and changes the durable only under that durable's own consumer lease
-// (consumerLease), both taken and the hold renewed on the pool's lease connections, so that of
-// every envoy-dispatch process one delivers from each durable at a time -- and so that neither
-// intake's take-over can block the other's, which one lease over both durables did (the
+// (consumerLease), both taken and the hold renewed on its reservation of the lease pool (leases),
+// so that of every envoy-dispatch process one delivers from each durable at a time -- and so that
+// neither intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
-func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
+func StartIntakes(
+	ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases,
+	github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports,
+	attributor *Attributor,
+) (stop func(), err error) {
 	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, settingsWake, pushes, attributor)
 }
 
 // startIntakes is StartIntakes with both intakes, and the settings cache they route by, timed by
 // tuning and logging to its logger (intakeTuning.log): production's values from StartIntakes, or a
 // test's.
-func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
+func startIntakes(
+	ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool,
+	leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{},
+	pushes PushImports, attributor *Attributor,
+) (stop func(), err error) {
 	if github == nil {
 		tuning.log.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil

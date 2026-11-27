@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -12,6 +13,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: searchDescription(searchDeclaresFour),
 	Handler:     (*server).search,
+	Lane:        admission.Search,
 	Read:        readEntry{Writes: readWritesNothing},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
 })

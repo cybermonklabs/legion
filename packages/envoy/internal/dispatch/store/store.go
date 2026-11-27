@@ -42,7 +42,7 @@ type Store struct {
 var migrationFiles embed.FS
 
 // poolSizeParam is the connection-string parameter Open refuses. Open fixes MaxConns at
-// sharedPoolSize, so a connection string that asks for a pool size is asking for something
+// SharedPoolSize, so a connection string that asks for a pool size is asking for something
 // that will not happen, and ignoring it silently would leave the operator tuning a number
 // nobody reads.
 //
@@ -55,14 +55,18 @@ const poolSizeParam = "pool_max_conns"
 const DSNSetting = "DATABASE_URL"
 
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
-// sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
-// string that names its database. Every connection it opens scans timestamptz in UTC
+// SharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
+// string that names its database. It is the request pool (RequestsPool): its connections carry
+// dispatch-requests in application_name, after the connection string's own name where it names one
+// (applicationName), and the write lock bound in lock_timeout, and its acquires are bounded at
+// requestAcquireBound. Every connection it opens scans timestamptz in UTC
 // (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
-// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration. A URL
-// holding an "@" after its user part, where a password holding an "@" or a "/" leaves part of
-// itself, is refused by DSNSetting alone before anything connects (pgdsn.Refusal), and every
-// failure to parse, open or reach the database is named without the URL's password
-// (pgdsn.ConnectError), since Dispatch logs it.
+// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration, and is
+// refused where its session does not carry the lock bound its configuration asks for
+// (requireLockBound, connected). A URL holding an "@" after its user part, where a password
+// holding an "@" or a "/" leaves part of itself, is refused by DSNSetting alone before anything
+// connects (pgdsn.Refusal), and every failure to parse, open or reach the database is named
+// without the URL's password (pgdsn.ConnectError), since Dispatch logs it.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err := pgdsn.Refusal(DSNSetting, databaseURL); err != nil {
 		return nil, err
@@ -73,25 +77,41 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	if declared {
 		return nil, fmt.Errorf(
-			"DATABASE_URL sets %s, which Dispatch does not honour: the pool is fixed at %d in code (store.sharedPoolSize). Remove the parameter",
-			poolSizeParam, sharedPoolSize)
+			"DATABASE_URL sets %s, which Dispatch does not honour: the pool is fixed at %d in code (store.SharedPoolSize). Remove the parameter",
+			poolSizeParam, SharedPoolSize)
 	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
-	config.MaxConns = sharedPoolSize
-	config.AfterConnect = scanTimestampsInUTC
+	config.MaxConns = SharedPoolSize
+	// The argument release goes in before configurePool, so it is the tracer the acquire tracer is
+	// composed with (acquireTracer.inner), which every separate pool's configurePool composes its
+	// own acquire tracer with again.
 	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
+	configurePool(config, RequestsPool, requestAcquireBound)
+	config.AfterConnect = connected
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
-	if err := pool.Ping(ctx); err != nil {
+	// The process's first connection, dialled before anything is served: it waits under
+	// coldDialBound, not the request pool's own bound (forColdDial).
+	if err := pool.Ping(forColdDial(ctx)); err != nil {
 		pool.Close()
 		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	return &Store{Pool: NewPool(pool)}, nil
+}
+
+// connected readies each new connection of a pool opened from Open's configuration, the separate
+// pools copied from it included: its timestamps scan in UTC (scanTimestampsInUTC), and a session
+// that does not carry the lock_timeout its pool asks for is refused (requireLockBound).
+func connected(ctx context.Context, conn *pgx.Conn) error {
+	if err := scanTimestampsInUTC(ctx, conn); err != nil {
+		return err
+	}
+	return requireLockBound(ctx, conn)
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone
@@ -196,6 +216,11 @@ func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) err
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("migrate: store pool required")
 	}
+	// Every acquire below is the boot's, before the process serves anything, and each may pay a
+	// fresh dial: a concurrent index's migration hijacks the connection it runs on and closes it
+	// (applyNonTransactionalMigration), so the migration after it finds the pool empty. They
+	// wait under coldDialBound rather than the request pool's own three seconds (forColdDial).
+	ctx = forColdDial(ctx)
 	migrations, err := pgmigrate.LoadBuilt(fsys, "migrations")
 	if err != nil {
 		return fmt.Errorf("migrations refused, none applied: %w", err)
@@ -213,6 +238,15 @@ func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) err
 		if err := s.applyMigration(ctx, migrations, migration); err != nil {
 			return fmt.Errorf("apply migration %d: %w", migration.Version, err)
 		}
+	}
+	// Leave the request pool with a warm connection, as Open left it before migrations ran: when
+	// the last migration checked is non-transactional, applyNonTransactionalMigration hijacks the
+	// pool's one connection and closes it, so the boot's reads that follow Migrate
+	// (ReadRepoRenames, FillDocumentSearch, FillSessionTitles) would otherwise meet an empty pool
+	// under requestAcquireBound and fail behind a slow dial. Where the last migration was
+	// transactional, the pool already holds an idle connection and Ping reuses it without dialing.
+	if err := s.Pool.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("warm the pool after migrations: %w", err)
 	}
 	return nil
 }

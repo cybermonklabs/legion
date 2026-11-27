@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -287,6 +288,47 @@ func (s *server) readGoingStream(ctx context.Context, requestID string, after in
 		return nil, goingRunState{}, err
 	}
 	return frames, state, nil
+}
+
+// goingPoll is what one poll of an open stream found (pollGoingStream): the frames past the
+// reader's sequence and the run's state, read together, and where that state asked for it the
+// ending the poll stored - the withdrawal's frame of a withdrawn run (goingWithdrawal), or the
+// deadline's error ending a run past its ends_at that holds no ending yet - with that store's
+// failure (ended). A skipped poll found no place of the request pool's share free and read nothing.
+type goingPoll struct {
+	frames     []goingEvent
+	state      goingRunState
+	withdrawal goingEvent
+	ended      error
+	skipped    bool
+}
+
+// pollGoingStream is one poll of an open stream. Its read, and the ending it may store, are the
+// request pool's work outside admission, made every goingStreamPoll for every open stream however
+// many a run has, so they hold a place of that pool's share admission leaves while they run
+// (admission.Outside), and take it only where one is free at once (TryTake): a poll that finds
+// every place held, or work waiting for one, reads nothing and is skipped, counted as the share's
+// skip of a stream (admission.OutsideStats.Skipped), and the stream polls again a tick later. No
+// stream waits on the pool, and one that stops moving under overload shows on the metrics
+// endpoint. The place is given back before any frame is written, so a reader slow to read holds
+// none. Its error is the read's, which ends the stream.
+func (s *server) pollGoingStream(ctx context.Context, requestID string, after int) (goingPoll, error) {
+	if !s.outside.TryTake(admission.Stream) {
+		return goingPoll{skipped: true}, nil
+	}
+	defer s.outside.Release()
+	frames, state, err := s.readGoingStream(ctx, requestID, after)
+	if err != nil {
+		return goingPoll{}, err
+	}
+	poll := goingPoll{frames: frames, state: state}
+	switch {
+	case state.Withdrawn:
+		poll.withdrawal, poll.ended = s.goingWithdrawal(ctx, requestID, state)
+	case state.Terminal == 0 && state.PastDeadline:
+		_, poll.ended = s.endGoingRun(ctx, requestID, going.Fault(contracts.GoingErrorAnswerDidNotArrive))
+	}
+	return poll, nil
 }
 
 // goingWithdrawal is the one frame a reader of a withdrawn run is written, and all a reader of it

@@ -46,7 +46,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -77,7 +77,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		limit $2 offset $3
 	`, model.CanonicalLogin(caller.ID), limit, offset)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -119,7 +119,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 			&name,
 			&total,
 		); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("scan my answer: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("scan my answer: %w", err))
 			return
 		}
 		row.EditedAt = timestampPtr(editedAt)
@@ -130,7 +130,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		}
 		if row.Kind == "answer" {
 			if err := json.Unmarshal(answer, &row.Answer); err != nil {
-				s.writeHandlerError(w, fmt.Errorf("decode my answer: %w", err))
+				s.writeHandlerError(w, r, fmt.Errorf("decode my answer: %w", err))
 				return
 			}
 		} else {
@@ -138,7 +138,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 			// caller deleted reads as deleted and not as an empty line.
 			deletedAt, deletedBy, err := model.DeletedPostMark(replyDeletedAt, replyDeletedBy)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			row.Reply = &model.MyAnswerReply{
@@ -149,7 +149,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		response.Rows = append(response.Rows, row)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("list my answers: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("list my answers: %w", err))
 		return
 	}
 	// Each row's texts are registered once the page is whole: the question the answer was given

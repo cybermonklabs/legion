@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  A load step that never opens its window now leaves a record of why. Every exit of `run-step.sh`
+  before the window, whatever refuses the step (a flag, the lock another run holds, a step
+  directory that already holds a step, the build, the reset, the GOMAXPROCS refusal, `loadgen run`
+  ending before the window, a signal), writes `<step dir>.not-run.json` beside the step directory
+  with the exit status, the refusal's own message and the last 40 lines the step wrote. A later run
+  of the same name is never refused for it, and a run that opens its window leaves none.
+  `common.sh` gains `wait_for_window`, the one wait for a step's window: it prints the window's
+  start once `meta.json` names it, and returns at once with the record's reason and exit status
+  when the step's process ends without a window, so a job no longer waits 30 minutes for a file
+  that a refused step never writes. `restart-step.sh` waits for its window with it.

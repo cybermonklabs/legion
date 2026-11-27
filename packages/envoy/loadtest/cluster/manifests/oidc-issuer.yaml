@@ -87,6 +87,7 @@ spec:
         app.kubernetes.io/part-of: dispatch-loadtest
         dispatch-loadtest/run: __RUN_ID__
         dispatch-loadtest/role: oidc-issuer
+        theorem.dev/omp-session: __OMP_SESSION__
       annotations:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:

@@ -47,23 +47,36 @@ var (
 )
 
 // ownTransactionFunctions are the functions that run in a transaction of their own, never their
-// caller's, and commit it before they return (see TestCopyLockComesBeforeEveryPendingRowAndEvent):
+// caller's, and end it before they return (see TestCopyLockComesBeforeEveryPendingRowAndEvent):
 // each settlement settleOwedNow runs opens and commits its own, and SettleIssueDocuments, which
 // settleIssueBeforeClose calls, refuses a joined context; sweepClosedIssueAsks begins and commits
-// its own; writeIssue, the PATCH's write core, begins and commits its own, so what one call of it
-// takes does not order its caller's later calls; the pass of R25's boot fix under its lease
-// (parentStatusFixPass.run) holds no transaction and no ledger across its steps: its planning
-// transaction rolls back before the first step, each step commits its own in writeIssue, and its
-// record is a statement of its own, so the pass holds nothing when it returns and a later try of
-// the lease is not ordered after it; and the two boot one-shots that main runs before that fix
-// (api.RunParentStatusFixAtBoot) and that take a pending row or append an event hold nothing when
-// they return, so main holds neither when the fix runs: restoreDecidedWordings runs
-// docs.Service.RestoreDecidedWordings, which begins one transaction and commits it or rolls it
-// back before it returns; and repairIssueAsks runs api.RepairIssueAsks, which repairs each issue
-// in a transaction of its own (repairIssueAsksOf) that its ledger commits or its deferred rollback
-// ends.
+// its own; settleRoomWithin calls settlePass in a loop, each pass opening a transaction of its
+// own and committing or rolling it back, so what one pass took is released before the next pass
+// takes the copy lock; leaseSettlementPending, which settleRoomWithin calls before its first
+// pass, extendSettlementLease, which a pass calls through leaseThroughWrite before it opens its
+// transaction, and releaseSettlementLease, which settleRoomWithin calls as it returns, each run
+// their one statement on the settlements pool outside any transaction, so the row lock it takes
+// ends with that statement (leaseThroughWrite is listed beside extendSettlementLease because a
+// call is ordered by what its callee reaches, and settlePass calls leaseThroughWrite, whose only
+// lock is that statement's); writeIssue, the PATCH's write core, begins and commits its own, so
+// what one call of it takes does not order its caller's later calls; the pass of R25's boot fix
+// under its lease (parentStatusFixPass.run) holds no transaction and no ledger across its steps:
+// its planning transaction rolls back before the first step, each step commits its own in
+// writeIssue, and its record is a statement of its own, so the pass holds nothing when it returns
+// and a later try of the lease is not ordered after it; and the two boot one-shots that main runs
+// before that fix (api.RunParentStatusFixAtBoot) and that take a pending row or append an event
+// hold nothing when they return, so main holds neither when the fix runs: restoreDecidedWordings
+// runs docs.Service.RestoreDecidedWordings, which begins one transaction and commits it or rolls
+// it back before it returns; and repairIssueAsks runs api.RepairIssueAsks, which repairs each
+// issue in a transaction of its own (repairIssueAsksOf) that its ledger commits or its deferred
+// rollback ends.
 var ownTransactionFunctions = []string{
 	"docs.Service.settleOwedNow",
+	"docs.settlement.settlePass",
+	"docs.leaseSettlementPending",
+	"docs.extendSettlementLease",
+	"docs.settlementPass.leaseThroughWrite",
+	"docs.releaseSettlementLease",
 	"api.server.settleIssueBeforeClose",
 	"api.server.sweepClosedIssueAsks",
 	"api.server.writeIssue",
@@ -107,7 +120,7 @@ var ownTransactionFunctions = []string{
 // markSettlementPending, clearSettlementPending, lockProjectCopies and events.Broker.Append each
 // run theirs. Nor does it tell transactions apart, so a function that commits one transaction and
 // takes the copy lock in the next reads as one, except across a call of a function
-// ownTransactionFunctions lists: that function runs in a transaction of its own and commits it, so
+// ownTransactionFunctions lists: that function runs in a transaction of its own and ends it, so
 // what it takes does not order its caller's later calls. Its own body is checked as every other is,
 // and a call of it that takes the copy lock is still refused after its caller took a pending row or
 // appended an event, whose transaction can still be open while it waits. The guard fails when a
@@ -492,20 +505,7 @@ func (g *lockGraph) addStored(source moduleSource) {
 				break
 			}
 			for index, value := range n.Rhs {
-				switch target := ast.Unparen(n.Lhs[index]).(type) {
-				case *ast.Ident:
-					if object := g.info.Defs[target]; object != nil {
-						store(object, value)
-					} else {
-						store(g.info.Uses[target], value)
-					}
-				case *ast.SelectorExpr:
-					if selection, ok := g.info.Selections[target]; ok {
-						store(selection.Obj(), value)
-					} else {
-						store(g.info.Uses[target.Sel], value)
-					}
-				}
+				store(g.objectOf(n.Lhs[index]), value)
 			}
 		case *ast.ValueSpec:
 			for index, value := range n.Values {
@@ -520,6 +520,24 @@ func (g *lockGraph) addStored(source moduleSource) {
 		}
 		return true
 	})
+}
+
+// objectOf is the object an identifier or a selector names: the one it defines or uses, or the
+// field or method a selector selects.
+func (g *lockGraph) objectOf(expression ast.Expr) types.Object {
+	switch e := ast.Unparen(expression).(type) {
+	case *ast.Ident:
+		if object := g.info.Defs[e]; object != nil {
+			return object
+		}
+		return g.info.Uses[e]
+	case *ast.SelectorExpr:
+		if selection, ok := g.info.Selections[e]; ok {
+			return selection.Obj()
+		}
+		return g.info.Uses[e.Sel]
+	}
+	return nil
 }
 
 // functionValue is what calling value would run: a function literal, or a function or method
@@ -891,7 +909,7 @@ func (c *orderCheck) evaluate(node ast.Node) {
 
 func (c *orderCheck) call(call *ast.CallExpr) {
 	// held leaves out what a function running in a transaction of its own takes: that
-	// transaction has committed once the call returns.
+	// transaction has ended once the call returns.
 	var effect, held lockEffect
 	for _, callee := range c.graph.callees(call) {
 		effect |= callee.reach

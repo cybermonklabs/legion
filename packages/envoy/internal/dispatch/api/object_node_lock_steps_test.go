@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -125,10 +126,12 @@ func (r *storeWriterRig) approvalRequest() storeWriter {
 // node and then its row (createAskBlock), appends the ask.opened with the settlement's other
 // events, and then the facts the node write stated, under that event (appendEvents). Each run
 // uploads a document holding a block of its own and settles it in settler, a document service of
-// its own on the rig's one connection, so the settlement's transaction runs on the backend the
-// test watches; the rig's own service settles an hour on, never inside the test. A settlement
-// runs on the service's own goroutine, so a run's write ends once the block's ask is there, which
-// the settlement's commit puts there.
+// its own on the rig's one-connection store; the rig's own service settles an hour on, never inside
+// the test. A settlement's transaction runs on its store's settlements pool rather than on the
+// store's one connection (docs' settleRoomWithin, store.Pool.Settlements), so the test holds every
+// connection of that pool but one, and the settlement's transaction runs on that one, the backend
+// the test watches (settlementBackend). A settlement runs on the service's own goroutine, so a
+// run's write ends once the block's ask is there, which the settlement's commit puts there.
 func (r *storeWriterRig) askBlockSettle(t *testing.T) storeWriter {
 	settler := docs.New(docs.Deps{Store: r.callStore, Events: r.direct.deps.Events, ServerURL: testServerURL, Settle: time.Hour})
 	t.Cleanup(func() {
@@ -140,6 +143,7 @@ func (r *storeWriterRig) askBlockSettle(t *testing.T) storeWriter {
 		name: "createAskBlock",
 		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
 			objectNodeSteps("the ask", "asks", "insert into asks (")...),
+		backend: r.settlementBackend(t),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			block := r.fresh("lock-block")
 			document := uploadDocument(t, r.handler, "/api/v1/issues/"+r.issue, block+".md",
@@ -149,6 +153,42 @@ func (r *storeWriterRig) askBlockSettle(t *testing.T) storeWriter {
 				return r.askBlockOpened(ctx, document, block)
 			}}
 		},
+	}
+}
+
+// settlementBackend leaves one connection of the settlements pool of the rig's one-connection
+// store free for the rest of t, where a settlement's transaction runs (docs' settleRoomWithin):
+// it takes every other connection that pool may open and holds them until t ends, so every
+// statement of a settlement there, its transaction's among them, runs on that one connection. It
+// answers what reads that connection's backend before each run, as callBackend reads the rig's one
+// connection's, so a connection the pool replaced in between is never watched.
+func (r *storeWriterRig) settlementBackend(t *testing.T) func(*testing.T, context.Context) uint32 {
+	t.Helper()
+	settlements, err := r.callStore.Pool.Settlements()
+	if err != nil {
+		t.Fatalf("open the settlements pool: %v", err)
+	}
+	held := make([]*pgxpool.Conn, 0, settlements.Stat().MaxConns()-1)
+	t.Cleanup(func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	})
+	for range cap(held) {
+		conn, err := settlements.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("hold a connection of the settlements pool: %v", err)
+		}
+		held = append(held, conn)
+	}
+	return func(t *testing.T, ctx context.Context) uint32 {
+		t.Helper()
+		conn, err := settlements.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire the settlement's connection: %v", err)
+		}
+		defer conn.Release()
+		return conn.Conn().PgConn().PID()
 	}
 }
 
@@ -197,8 +237,13 @@ func (r *storeWriterRig) broadcastCopy() storeWriter {
 	}
 }
 
-// attemptRowStatement is the reply route's lock of the delivery attempt a session answers.
-const attemptRowStatement = "select " + messageDeliveryColumns + " from message_deliveries where message_id = $1 and attempt = $2 for update"
+// attemptRowStatement is the reply route's lock of the delivery attempt a session answers: the
+// bounded row lock it takes the attempt in (store.LockRowsWithinBoundAndRead), which is where a
+// reply waits for an attempt another transaction holds. The read of the attempt's columns, `for
+// update` too, runs behind it in the same batch only once the lock is the transaction's, so it
+// waits on nothing: the lock statement is the one that takes the row, at the same point of the
+// order as main's one locking read of those columns.
+const attemptRowStatement = "select 1 from message_deliveries where message_id = $1 and attempt = $2 for update"
 
 // sessionReply is a session's reply to a message on the issue (insertSessionReply), through the
 // reply route: it takes the issue's owner lock (lockIssue) and then the attempt it answers `for

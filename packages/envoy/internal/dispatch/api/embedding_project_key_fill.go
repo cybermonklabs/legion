@@ -18,8 +18,10 @@ import (
 // row the first had already labelled for no row of its own.
 //
 // Lower case and hyphenated, saying what the pass does rather than which release wanted it, as
-// every other lease name is (they are listed in store.LeasePoolSize's comment).
-const embeddingProjectKeyFillLease = "embeddings-project-key-fill"
+// every other lease name is. The name itself is duty's, which spells every periodic loop's lease
+// name once (duty.EmbeddingProjectKeyFillLease); the connection the pass holds is the caller
+// cmd/dispatch reserves for it (store.LeaseCallers).
+const embeddingProjectKeyFillLease = duty.EmbeddingProjectKeyFillLease
 
 // embeddingProjectKeyFillRetry is how long a process waits before trying for the lease again
 // after a try that neither finished the labelling nor ran at all. Five minutes: the pass itself

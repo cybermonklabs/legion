@@ -169,9 +169,11 @@ func writeVersionThroughTheRealPath(t *testing.T, service *Service, artifactID, 
 // calls (requireOpenOwner, requireOpenOwnerStatus); writeVersion takes none, so the owner's lock
 // its transaction holds is the one the document service's calls take themselves: ApplyOps'
 // joinLiveWrite, or with no ops joinRead under NamedVersion's capture, and NamedVersion's own. The
-// event is appended at once (documentEvent), where the route queues it for its write phase. It
-// answers the version and that event, and an error rather than failing the test, so a write run
-// off the test's goroutine can write a version too.
+// event is appended at once (documentEvent), where the route queues it for its write phase. With
+// ops, ctx carries the document's writer gate, which editArtifact takes before its transaction
+// opens and ApplyOps refuses a write without (ErrWriterGateNotHeld); NamedVersion alone, as
+// createNamedVersion runs it, takes no gate. It answers the version and that event, and an error
+// rather than failing the test, so a write run off the test's goroutine can write a version too.
 func writeVersion(ctx context.Context, service *Service, tx pgx.Tx, artifactID string, ops []model.EditOp, summary string) (VersionResult, int64, error) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	joined, ledger := service.Join(ctx, tx)
@@ -710,8 +712,9 @@ func requireNothingBelowTheRevision(t *testing.T, database *store.Store, writer,
 }
 
 // versionWriter is one production write of a document's next version that a race drives: it
-// runs in tx, on the race's own connection, to its commit, and answers the number of the version
-// it wrote, which it picks itself, as a request's write does.
+// runs in tx, on the race's own connection, to its commit, under ctx, which carries the
+// document's writer gate, and answers the number of the version it wrote, which it picks itself,
+// as a request's write does.
 type versionWriter func(ctx context.Context, tx pgx.Tx, document string) (int, error)
 
 // requireTheWriteIsFenced drives one production write of a document's version (write) through the
@@ -725,7 +728,10 @@ type versionWriter func(ctx context.Context, tx pgx.Tx, document string) (int, e
 // statement the connection waits at is the owner's lock, or beside the release before the owner's
 // row. The holder then stores revision 3, above the write's version, while the write waits.
 // Released, the write commits its version, and no tuple and no block row: it decided under the
-// owner, against the revision the holder stored.
+// owner, against the revision the holder stored. The write holds the document's writer gate,
+// taken before its transaction opens and released after its commit or rollback, as the edit and
+// upload routes hold it; the holder stands for a pass, which takes no gate, so the write passes
+// the gate at once and the race stays at the owner.
 //
 // The revision row then reads owed (null), not the holder's 3. The write's read phase decided that
 // it lost the fence (refs' blockStand.admits: 3 is above 2), so its block index queues nothing
@@ -765,19 +771,21 @@ func requireTheWriteIsFenced(t *testing.T, database *store.Store, service *Servi
 		err     error
 	}
 	answered := make(chan written, 1)
+	gated, release := gatedContext(t, service, ctx, document)
 	go func() {
-		// The send is the last thing this goroutine does, and the rollback has already run by
-		// then: the caller closes writeConn as soon as it reads this channel, and a rollback
-		// still in flight on that same connection races that close (pgx answers it "BUG: slow
-		// write timer already active"). Deferring the rollback inside the inner function is
-		// what orders the two.
+		// The send is the last thing this goroutine does, and the rollback and the gate's
+		// release have already run by then: the caller closes writeConn as soon as it reads this
+		// channel, and a rollback still in flight on that same connection races that close (pgx
+		// answers it "BUG: slow write timer already active"). Deferring the rollback inside the
+		// inner function is what orders the two.
 		answered <- func() written {
-			tx, err := writeConn.Begin(ctx)
+			defer release()
+			tx, err := writeConn.Begin(gated)
 			if err != nil {
 				return written{err: err}
 			}
-			defer tx.Rollback(ctx)
-			version, err := write(ctx, tx, document)
+			defer tx.Rollback(gated)
+			version, err := write(gated, tx, document)
 			return written{version, err}
 		}()
 	}()

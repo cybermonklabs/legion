@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -54,12 +55,33 @@ type IAPIdentity struct {
 // (oidc.Verifier's classify), and Login runs before any authorization, so anyone who reaches
 // Dispatch around IAP would choose that text on every request. The person refusals log the email
 // and hd of a verified assertion, which IAP wrote.
+//
+// The verification reads no pool, and it may wait on IAP's key set - oidc.Keys reads it for the
+// first assertion, once the set's Lifetime is up, and for a key id the set does not hold, or waits
+// for another assertion's read of it under way, a round trip of up to its FetchTimeout. Login
+// gives back the unit of the server's room r's request holds - an admitted request's admission
+// units, the place of the request pool's share outside admission a document socket's admission or
+// a heartbeat check holds, and a pinned read's connection (admission.GiveBack) - from the
+// before-wait hook the verification runs where Keys has decided to wait, before it blocks
+// (oidc.WithBeforeWait), so the decision and the give-back are one step and no clock reading or
+// other caller's read comes between them. It takes the unit back once the verification has
+// answered, whatever it answered, before anything else (admission.Away.TakeBack; nothing where
+// the hook never ran), so no unit is held across the wait and none is missing for the person's
+// record and what the request reads after. A take-back refused is Login's answer: admission's
+// refusal for an admitted request, a busy pool (store.ErrPoolBusy) for a place. A verification
+// answered from memory - the set already read and fresh, as for nearly every request and
+// heartbeat - runs no hook, and Login keeps the unit through it.
 func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	raw := r.Header.Get(IAPAssertionHeader)
 	if raw == "" {
 		return "", ErrNoIdentity
 	}
-	claims, err := i.Verifier.Verify(r.Context(), raw)
+	var away admission.Away
+	verifying := oidc.WithBeforeWait(r.Context(), func() { away = admission.GiveBack(r.Context()) })
+	claims, err := i.Verifier.Verify(verifying, raw)
+	if back := away.TakeBack(r.Context()); back != nil {
+		return "", back
+	}
 	var expired *oidc.IAPExpiredError
 	switch {
 	case errors.Is(err, oidc.ErrIssuerUnavailable):
@@ -84,3 +106,6 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	}
 	return email, nil
 }
+
+// presents is whether r carries an IAP assertion, which Login refuses ErrNoIdentity without.
+func (IAPIdentity) presents(r *http.Request) bool { return HasIAPAssertion(r) }

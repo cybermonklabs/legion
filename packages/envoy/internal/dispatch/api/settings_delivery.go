@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -24,7 +25,7 @@ func (s *server) getDeliverySettings(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusOK, nil)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)
@@ -60,7 +61,7 @@ type deliverySettingsInput struct {
 func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	var input deliverySettingsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -69,7 +70,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	}
 	repoOwner, repoName, err := parseSourceRepo(input.DeployRepo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The deploy repository and each excluded one are stored under their new name where a rename
@@ -100,13 +101,22 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The access check runs before any write: a failed re-PUT leaves the stored settings
-	// untouched, matching putArchitectureSource's own ordering.
-	if _, err := s.deps.GitHub.CheckSource(r.Context(), repoOwner, repoName); err != nil {
+	// untouched, matching putArchitectureSource's own ordering. Its GitHub calls hold no admission
+	// unit (awayOnNetwork), and a take-back refused after them is the answer, 429 OVERLOADED.
+	err = awayOnNetwork(r.Context(), func(ctx context.Context) error {
+		_, err := s.deps.GitHub.CheckSource(ctx, repoOwner, repoName)
+		return err
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
+	if err != nil {
 		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) {
 			writeError(w, "DELIVERY_SETTINGS_ACCESS", http.StatusConflict, err.Error())
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -123,7 +133,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		PRChecksRollupJobName:   optionalJobName(input.PRChecksRollupJobName),
 	}, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)

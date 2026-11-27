@@ -73,12 +73,14 @@ const largeArgumentsKey = "dispatch.store.largeArguments"
 // Postgres. A connection whose overwrite fails is closed, with a warning naming the error, and
 // Release destroys a closed connection (pgxpool/conn.go:32-38) rather than keep its arguments.
 //
-// Open installs it on the shared pool's configuration (withArgumentRelease). Every pool opened
-// from a copy of that configuration has it too: the rooms, room-appends, health, lease, outbox,
-// compaction, display-tree-fill and event-horizon pools (Pool.separate) and the process
-// registry's pool (processes.Register). The listener pool's connections are hijacked and never
-// released, so no overwrite runs on them. A test pool that storetest.Traced opens replaces the
-// tracer, so it has no overwrite.
+// Open installs it on the request pool's configuration (withArgumentRelease) before configurePool
+// composes the acquire tracer with it. Every pool opened from a copy of that configuration has it
+// too, since configurePool composes each pool's own acquire tracer with the same tracer
+// (acquireTracer.inner): the background, live, settlements, rooms, room-appends, health, leases,
+// outbox, compaction, text-trees and horizon pools and the server process registry's (newSeparate,
+// Pool.OpenRegistry). The listen pool's connections are hijacked and never released, so no
+// overwrite runs on them. A test pool that storetest.Traced opens replaces the tracer, so it has no
+// overwrite.
 //
 // Only arguments whose size the tracer reads cheaply count: strings, byte slices and raw JSON,
 // pointers to strings and byte slices, and slices of strings, of pointers to strings or of byte

@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  A load step now starts only on a quiet box. After the lock and the stack, while Dispatch is
+  stopped, `run-step.sh` reads how busy the box is with `loadgen box-busy`, the measure of
+  `meta.json`'s `box_busy_before`, and starts the step on a reading at or under
+  `LOADTEST_MAX_BUSY_BEFORE` (default 0.10). Above it, the step waits for the box to go quiet,
+  reading it again every 30 seconds until its pauses add up to `LOADTEST_QUIET_WAIT` seconds
+  (default 900; each reading takes its own 5 seconds besides, about 17.5 minutes in all); a box
+  still busier after that refuses the step, and its not-run record carries every reading, the bar
+  and the wait. A step that starts keeps the gate's readings and bar in `meta.json`
+  (`box_busy_gate`, the reading it started on, `box_busy_gate_readings` and `box_busy_gate_max`)
+  beside its own `box_busy_before`, which is still read after the gate; `summary.json` carries
+  `box_busy_before` and `box_busy_gate` side by side, and the Resources table's `box busy before /
+  gate` column shows both. Other work on the box, and on a shared node its other pods, is in every
+  reading a step takes: a stress step on a node 40 to 43% busy before it degraded in every arm, and
+  its readings had to be set aside by hand.

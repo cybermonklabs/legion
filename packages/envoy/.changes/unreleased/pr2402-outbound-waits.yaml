@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  No request holds its admission unit, its pinned database connection or a transaction while it waits on another server - the Envoy listener, NATS, GitHub, the embedder, the answerer or the secrets broker: each read and write gives its unit back for the wait and takes it again after, answering `429 OVERLOADED` only where nothing outside Dispatch has changed yet, so a slow listener or a slow GitHub no longer fills a class with requests doing no work while every other request is refused; a call that changes something outside Dispatch (a send, an unsubscribe, a NATS publish, a broker decision) runs after the request's own database work, and a route-started architecture import runs on the background pool.

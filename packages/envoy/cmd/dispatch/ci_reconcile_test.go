@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -90,6 +91,71 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 		return false
 	})
 	awaitCIReconcileHeadRecord(t, bucket, key)
+}
+
+// A pass records its row under the id the registry gave this process, and that id reaches the
+// loop before the process begins serving: main fills it in between joinRegistry and
+// serveUntilStopped, which returns only at the shutdown. A set made after that call would leave
+// every pass of a serving process reading an empty instance, writing no row at all (beginPass)
+// and answering GET /api/v1/ci-reconcile/passes with nothing for the whole life of the process,
+// while the head's record in the CI bucket -- the evidence the test above reads -- lands all the
+// same. So this waits for that record and then reads the row itself, joined to the registry row of
+// the live process.
+func TestTheCIReconcilePassRecordsItsRowWhileTheProcessServes(t *testing.T) {
+	database := storetest.Open(t)
+	seedCIReconcileDefault(t, database)
+	_, natsURL := testnats.Start(t)
+	makeCIStateBucket(t, natsURL)
+	github := startCIReconcileGitHub(t)
+	_, pemText := githubapptest.Key(t)
+	bucket := ciStateBucket(t, natsURL)
+
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		NATSURL: natsURL,
+		Env: map[string]string{
+			"DISPATCH_APP_CLIENT_ID":   "Iv1.cireconcile",
+			"DISPATCH_APP_PEM_B64":     pemText,
+			"DISPATCH_GITHUB_API_BASE": github.URL,
+			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
+			// Five minutes is longer than any test may wait for a pass. A pass is bounded at the
+			// one-second interval (Reconciler.PassTimeout), and a write that bound cut off can land
+			// all the same, so the test waits for the head's record in the bucket rather than a
+			// pass line's records count (awaitCIReconcileHeadRecord).
+			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
+		},
+	})
+	process.waitHealthy(t)
+	awaitCIReconcileHeadRecord(t, bucket, cistore.Key(ciReconcileOwner, ciReconcileName, "7", ciReconcileHeadSHA))
+
+	// The first pass of a process can run before the registration it waits on returns, and such
+	// a pass records nothing by design (beginPass), so the row is waited for rather than read
+	// once: the interval is one second and the deadline is thirty of them.
+	var instance, outcome string
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		err := database.Pool.QueryRow(t.Context(), `
+			select p.instance::text, coalesce(p.outcome, '')
+			from ci_reconcile_passes p
+			join server_processes s on s.instance = p.instance
+			order by p.started_at desc, p.id desc
+			limit 1`).Scan(&instance, &outcome)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("read the recorded CI reconcile passes: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a pass of the serving process recorded no row under its registry id: the loop's instance is filled in after serveUntilStopped, which returns only at the shutdown")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if instance == "" {
+		t.Fatal("the recorded pass names no process")
+	}
+	if outcome != "" && outcome != "complete" {
+		t.Errorf("the recorded pass ended %q, want complete or a pass still running", outcome)
+	}
 }
 
 // ciStateBucket binds the CI state bucket on the test's NATS at natsURL.

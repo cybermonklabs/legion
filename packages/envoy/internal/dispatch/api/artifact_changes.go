@@ -113,7 +113,7 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
@@ -133,12 +133,12 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	before, after, err := s.twoVersionsMarkdown(r.Context(), artifact.ID, from, to)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	changes, err := compareVersions(before, after)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	changes.ArtifactID, changes.From, changes.To = artifact.ID, from, to

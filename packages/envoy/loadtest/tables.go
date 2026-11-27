@@ -153,10 +153,14 @@ func p50(s stat) float64  { return s.P50 }
 func p99(s stat) float64  { return s.P99 }
 func smax(s stat) float64 { return s.Max }
 
-// label is the step's name in a table row, marked "(<names> exited)" when a stack process exited
-// during the step, and failedMark when its directory holds step-failed.json.
+// label is the step's name in a table row, marked setAsideMark when the step is set aside
+// (summary.json set_aside), "(<names> exited)" when a stack process exited during the
+// step, and failedMark when its directory holds step-failed.json.
 func (s stepData) label() string {
 	label := s.name
+	if s.sum.SetAside != nil {
+		label += " " + setAsideMark
+	}
 	if len(s.sum.StackExits) > 0 {
 		names := make([]string, len(s.sum.StackExits))
 		for i, x := range s.sum.StackExits {
@@ -240,11 +244,14 @@ func (m *markdown) emptyRow(label string, columns int) {
 func renderTables(steps []stepData) string {
 	var md markdown
 	md.line("# Load test tables\n")
+	setAsideNote(&md, steps)
 	md.line("One row per step. Latencies are ms over the measured window; cores are CPU-seconds per second.\n")
 	eventsTable(&md, steps)
+	pacingTable(&md, steps)
 	populationsTable(&md, steps)
 	kindsTable(&md, steps)
 	resourcesTable(&md, steps)
+	poolsTable(&md, steps)
 	sessionDeliveryTable(&md, steps)
 	commitOrderLockTable(&md, steps)
 	liveTable(&md, steps)
@@ -257,15 +264,38 @@ func renderTables(steps []stepData) string {
 	editorsTable(&md, steps)
 	roomsTable(&md, steps)
 	routesTable(&md, steps)
+	recoveryTable(&md, steps)
+	recoveryWindowsTable(&md, steps)
 	replayTable(&md, steps)
 	return md.String()
+}
+
+// refusalCells are the three cells of a refusalSummary: the refusal codes in refusalCodes' order,
+// the connection failures (connect timeout / refused / reset / response timeout) and the refusal
+// latency p50 / p99. Each is "-" in a summary.json that predates refusals.
+func refusalCells(r refusalSummary) (codes, conn, ms string) {
+	if r.Codes == nil {
+		return "-", "-", "-"
+	}
+	counts := func(m map[string]int, keys []string) string {
+		cells := make([]string, len(keys))
+		for i, k := range keys {
+			cells[i] = num(float64(m[k]), 0)
+		}
+		return strings.Join(cells, " / ")
+	}
+	return counts(r.Codes, refusalCodes), counts(r.ConnectionFailures, connFailureClasses), pair(r.RefusalMs, p50, p99, 0)
 }
 
 func eventsTable(md *markdown, steps []stepData) {
 	md.line("## Events, delivery and requests\n")
 	md.header("step", "start (UTC)", "sessions", "events/s target / offered / committed", "write errors non-2xx / transport",
+		"write refusals OVERLOADED / DATABASE_BUSY / REQUEST_TIMEOUT / EDIT_QUEUE_FULL", "write connect timeout / refused / reset / response timeout",
+		"write refusal ms p50 / p99",
 		"delivery ms from arrival p50 / p99", "delivery ms from commit p50 / p99", "issue-topic receipts got / expected",
-		"req/s target / sent", "req 2xx", "req ms p50 / p99", "requests dropped at the in-flight cap")
+		"req/s target / sent", "req 2xx", "req ms p50 / p99",
+		"req refusals OVERLOADED / DATABASE_BUSY / REQUEST_TIMEOUT / EDIT_QUEUE_FULL", "req connect timeout / refused / reset / response timeout",
+		"req refusal ms p50 / p99", "requests dropped at the in-flight cap")
 	below, exited, unread := false, false, false
 	for _, s := range steps {
 		c, e, q := s.sum.Config, s.sum.Events, s.sum.Requests
@@ -274,15 +304,17 @@ func eventsTable(md *markdown, steps []stepData) {
 			start = s.meta.WindowStart.UTC().Format("2006-01-02 15:04:05")
 		}
 		unread = unread || e.commitsUnread()
+		// The targets are the 1x rates times the schedule's time-weighted mean factor.
+		mean := c.Schedule.meanFactor()
 		events := "0"
 		if c.EventsPerS > 0 {
-			events = fmt.Sprintf("%s / %s / %s", num(c.EventsPerS, 2), num(e.OfferedPerS, 2), s.commitCount(num(e.CommittedPerS, 2)))
+			events = fmt.Sprintf("%s / %s / %s", num(c.EventsPerS*mean, 2), num(e.OfferedPerS, 2), s.commitCount(num(e.CommittedPerS, 2)))
 		}
 		receipts := s.commitCount(fmt.Sprintf("%s / %s", num(float64(e.IssueTopicReceipts), 0), num(float64(e.ExpectedIssueTopicReceipts), 0)))
 		reqRate := "0"
 		share := "-"
 		if c.RequestsPerS > 0 {
-			reqRate = num(c.RequestsPerS, 1) + " / " + num(q.SentPerS, 1)
+			reqRate = num(c.RequestsPerS*mean, 1) + " / " + num(q.SentPerS, 1)
 			if q.BelowTarget {
 				reqRate += " (below 95%)"
 				below = true
@@ -294,10 +326,13 @@ func eventsTable(md *markdown, steps []stepData) {
 		if len(s.sum.StackExits) > 0 {
 			exited = true
 		}
+		wCodes, wConn, wMs := refusalCells(e.Refusals)
+		rCodes, rConn, rMs := refusalCells(q.Refusals)
 		md.row(s.commitsLabel(), start, num(float64(c.Sessions), 0), events,
 			fmt.Sprintf("%s / %s", num(float64(e.WriteErrors.Non2xx), 0), num(float64(e.WriteErrors.Transport), 0)),
+			wCodes, wConn, wMs,
 			pair(e.DeliveryMsFromArrival, p50, p99, 0), pair(e.DeliveryMsFromCommit, p50, p99, 0), receipts,
-			reqRate, share, pair(q.LatencyMs, p50, p99, 0), num(float64(q.DroppedInflightCap), 0))
+			reqRate, share, pair(q.LatencyMs, p50, p99, 0), rCodes, rConn, rMs, num(float64(q.DroppedInflightCap), 0))
 	}
 	if below {
 		md.line("\n(below 95%%): the step sent fewer than 95%% of its target requests per second, so its request columns describe a lighter load than its name.")
@@ -307,6 +342,45 @@ func eventsTable(md *markdown, steps []stepData) {
 	}
 	failedNote(md, slices.ContainsFunc(steps, func(s stepData) bool { return s.failed }))
 	commitsUnreadNote(md, unread, "the committed events/s, the delivery latencies from arrival and from commit, and the issue-topic receipts", "show")
+}
+
+// pacingTable is one row per step: what its generators sent against their schedule in the
+// window, how late its latest arrival of each kind was, whether that set it aside (pacing.go),
+// and the API listener's accept backlog and the box's TCP opens per second (accept.go). A
+// summary.json from before these readings has none, and its cells are `-`.
+func pacingTable(md *markdown, steps []stepData) {
+	md.line("\n## Generator pacing and accept backlog\n")
+	md.line("Sent is when the generator let an arrival go, scheduled when its schedule put it: an arrival counts in its scheduled second unless it was sent more than %s late, and then in the second it was sent. A second is judged against at least %d scheduled arrivals, and a step whose generator sent more than %s over a second's schedule in the window, or recorded nothing scheduled of a kind the step was to send, is set aside. Max lateness is the most any arrival the window's schedule held was sent after its time.\n",
+		lateTolerance, minJudgedSchedule, percent(overScheduleLimit))
+	md.header("step", "requests sent / scheduled", "requests most over schedule", "requests max lateness ms",
+		"events sent / scheduled", "events most over schedule", "events max lateness ms",
+		"set aside", "accept backlog max / limit", "seconds above half the limit", "opens max/s active / passive")
+	var unmeasured []string
+	for _, s := range steps {
+		cells := []string{s.label()}
+		if p := s.sum.Pacing; p != nil {
+			cells = append(cells, p.Requests.sentCell(), overCell(p.Requests.MaxOver, p.Requests.MaxOverSecond), latenessCell(p.Requests.MaxLatenessMs),
+				p.Events.sentCell(), overCell(p.Events.MaxOver, p.Events.MaxOverSecond), latenessCell(p.Events.MaxLatenessMs),
+				s.sum.SetAside.cell())
+		} else {
+			cells = append(cells, "-", "-", "-", "-", "-", "-", "-")
+		}
+		a := s.sum.Accept
+		cells = append(cells, a.backlogCell(), a.aboveHalfCell(), a.opensCell())
+		md.row(cells...)
+		if a == nil {
+			continue
+		}
+		for _, why := range []string{a.BacklogError, a.LimitError, a.OpensError} {
+			if why != "" {
+				unmeasured = append(unmeasured, fmt.Sprintf("- %s: %s.", s.name, mdEscape(why)))
+			}
+		}
+	}
+	if len(unmeasured) > 0 {
+		md.line("\nNot measured (summary.json `accept`), so the cells read `-` and not 0:\n")
+		md.line("%s", strings.Join(unmeasured, "\n"))
+	}
 }
 
 // populationsTable is one row per population of each step that drove two (summary.json
@@ -379,25 +453,22 @@ func resourcesTable(md *markdown, steps []stepData) {
 	// The working-set column exists only when a step holds cgroup.json.
 	withCgroup := slices.ContainsFunc(steps, func(s stepData) bool { return s.cgroup != nil })
 	columns := []string{"step", "Dispatch cores mean / peak 5 s", "Postgres cores", "listener cores", "NATS cores", "loadgen cores", "proxy cores",
-		"box busy", "box busy before", "Dispatch RSS max MiB"}
+		"box busy", "box busy before / gate", "Dispatch RSS max MiB"}
 	if withCgroup {
 		columns = append(columns, cgroupWorkingSetH)
 	}
 	md.header(append(columns, "heap live MiB p50 / max", "goroutines p50 / max",
 		"goroutines waiting for a pool connection p50 / max", "Postgres connections max", "connections waiting on a lock p50",
-		"Dispatch CPU-s per operation")...)
+		"Dispatch CPU-s per operation", podThrottledH)...)
 	marked, unread, cgFailed, cgUnmeasured, memStats := false, false, false, false, false
 	for _, s := range steps {
 		unread = unread || s.sum.Events.commitsUnread()
-		busyBefore := "-"
-		if s.meta != nil && s.meta.BoxBusyBefore != nil {
-			busyBefore = num(100**s.meta.BoxBusyBefore, 0) + "%"
-		}
+		busyBefore := boxBusyBeforeCell(s.meta)
 		label := s.commitsLabel()
-		// With no sampler window every cell is "-" but box busy before, which is meta.json's
-		// reading, not the sampler's, and the cells that cgroup.json gives.
+		// With no sampler window every cell is "-" but box busy before / gate, which are meta.json's
+		// readings, not the sampler's, and the cells that cgroup.json gives.
 		dispatch, pgCores, listener, nats, loadgen, proxy, busy, rss := "-", "-", "-", "-", "-", "-", "-", "-"
-		heap, goroutines, pool, pgMax, lockWait, perOp := "-", "-", "-", "-", "-", "-"
+		heap, goroutines, pool, pgMax, lockWait, perOp, throttled := "-", "-", "-", "-", "-", "-", "-"
 		r := s.sum.Resources
 		if r != nil {
 			marked = marked || r.failedReads() > 0
@@ -432,6 +503,9 @@ func resourcesTable(md *markdown, steps []stepData) {
 			if r.PGConnsTotal.N > 0 {
 				pgMax = num(r.PGConnsTotal.Max, 0)
 			}
+			if r.CPUThrottledPeriods != nil && r.CPUThrottledMs != nil {
+				throttled = num(float64(*r.CPUThrottledPeriods), 0) + " / " + num(*r.CPUThrottledMs, 0)
+			}
 		}
 		workingSet := "-"
 		if s.cgroup != nil {
@@ -453,16 +527,44 @@ func resourcesTable(md *markdown, steps []stepData) {
 		if withCgroup {
 			cells = append(cells, workingSet)
 		}
-		md.row(append(cells, heap, goroutines, pool, pgMax, lockWait, perOp)...)
+		md.row(append(cells, heap, goroutines, pool, pgMax, lockWait, perOp, throttled)...)
 	}
 	failedReadsNote(md, marked, "the 5 s sampler's reads of pg_stat_activity (a failed connect included) and of Dispatch's goroutine and heap profiles",
 		"`resources.pg_read_errors` and `resources.pprof_read_errors`")
 	md.line("\nheap live: the in-use bytes of Dispatch's heap profile (`/debug/pprof/heap`), read every 15 s by a run given -heap-samples, and `-` in a run without it: a sampled estimate of the live heap, not runtime.MemStats HeapInuse.")
+	md.line("\nbox busy before / gate: the box's busy share over 5 s just before the step (`meta.json` `box_busy_before`), then the reading of run-step.sh's quiet-box gate the step started on, at or under `LOADTEST_MAX_BUSY_BEFORE` (`box_busy_gate`); `-` for a reading not taken, as by a step run without the gate.")
+	// Dispatch's own throttling on a cluster copy is the cluster sampler's; the note names
+	// cgroup.json only in a table that holds one, as a table without it names no cgroup.
+	dispatchThrottled := "the cluster sampler's `throttled_s`"
+	if withCgroup {
+		dispatchThrottled = "`cgroup.json`'s `throttled_s`"
+	}
+	md.line("\n%s: how often and how long CFS stopped the processes of the pod `loadgen run` ran in over the window, for passing that pod's CPU quota, from its `cpu.stat` at the window's start and end (`resources.cpu_throttled_periods`, `resources.cpu_throttled_ms`); `-` is a step that read no `cpu.stat`. On the local stack that pod is the server's too, and a pinned server is stopped with the rest of it, so a step whose cell is not 0 / 0 ran with its server throttled; on a cluster copy it is the runner pod alone, and Dispatch's throttling is %s.", podThrottledH, dispatchThrottled)
 	if memStats {
 		md.line("\n%s: the step ran before the sampler read the heap profile, so its heap cell is runtime.MemStats HeapInuse from `/debug/pprof/heap?debug=1` (summary.json `resources.heap_inuse_mib`), a different metric that is not comparable with a heap live cell.", memStatsHeapMark)
 	}
 	commitsUnreadNote(md, unread, "the Dispatch CPU-s per operation (its operations count the committed writes)", "shows")
 	cgroupNotes(md, withCgroup, cgFailed, cgUnmeasured)
+}
+
+// podThrottledH is the Resources table's column of the CFS throttling of the pod loadgen run ran
+// in, over the window.
+const podThrottledH = "pod CPU throttled periods / ms"
+
+// boxBusyBeforeCell is the Resources table's box busy before / gate cell: meta.json's
+// box_busy_before, then box_busy_gate, the quiet-box gate's reading the step started on, each "-"
+// when not read; "-" alone without meta.json or without either reading.
+func boxBusyBeforeCell(m *metaFile) string {
+	if m == nil || (m.BoxBusyBefore == nil && m.BoxBusyGate == nil) {
+		return "-"
+	}
+	reading := func(v *float64) string {
+		if v == nil {
+			return "-"
+		}
+		return num(100**v, 0) + "%"
+	}
+	return reading(m.BoxBusyBefore) + " / " + reading(m.BoxBusyGate)
 }
 
 // memStatsHeapMark follows the heap cell of an older run's step, whose summary.json holds
@@ -875,7 +977,7 @@ func roomsTable(md *markdown, steps []stepData) {
 
 func routesTable(md *markdown, steps []stepData) {
 	md.line("\n## Requests by route\n")
-	md.line("p50 / p99 ms (failures, non-2xx or transport, / count).\n")
+	md.line("p50 / p99 ms (failures, non-2xx or transport, / count; then the refusals among the failures, by code, when there were any).\n")
 	cells := []string{"route"}
 	routes := map[string]bool{}
 	for _, s := range steps {
@@ -893,10 +995,177 @@ func routesTable(md *markdown, steps []stepData) {
 				cells = append(cells, "-")
 				continue
 			}
-			cells = append(cells, fmt.Sprintf("%s (%s/%s)", pair(r.LatencyMs, p50, p99, 0), num(float64(r.Failures), 0), num(float64(r.Count), 0)))
+			var refused []string
+			for _, code := range refusalCodes {
+				if n := r.Refusals[code]; n > 0 {
+					refused = append(refused, code+" "+num(float64(n), 0))
+				}
+			}
+			counts := num(float64(r.Failures), 0) + "/" + num(float64(r.Count), 0)
+			if len(refused) > 0 {
+				counts += "; " + strings.Join(refused, ", ")
+			}
+			cells = append(cells, fmt.Sprintf("%s (%s)", pair(r.LatencyMs, p50, p99, 0), counts))
 		}
 		md.row(cells...)
 	}
+}
+
+// poolNames is the pools of a step's metrics in table order: requests first, then by name.
+func poolNames(pools map[string]poolMetrics) []string {
+	names := slices.Sorted(maps.Keys(pools))
+	slices.SortStableFunc(names, func(a, b string) int {
+		switch {
+		case a == b:
+			return 0
+		case a == "requests":
+			return -1
+		case b == "requests":
+			return 1
+		}
+		return 0
+	})
+	return names
+}
+
+// optNum is *v with d decimals, "-" when v is nil.
+func optNum(v *float64, d int) string {
+	if v == nil {
+		return "-"
+	}
+	return num(*v, d)
+}
+
+// keyedPair is "m[a] / m[b]", each "-" when absent, or "-" alone when m is empty.
+func keyedPair(m map[string]float64, a, b string, d int) string {
+	if len(m) == 0 {
+		return "-"
+	}
+	cell := func(k string) string {
+		if v, ok := m[k]; ok {
+			return num(v, d)
+		}
+		return "-"
+	}
+	return cell(a) + " / " + cell(b)
+}
+
+func poolsTable(md *markdown, steps []stepData) {
+	md.line("\n## Pools and admission\n")
+	md.line("From Dispatch's /metrics, scraped with each 5 s sample in the window: maxima over the samples, deltas from the first to the last. A step whose Dispatch serves no /metrics has every metrics sample skipped.\n")
+	columns := []string{"step", "metrics samples scraped / skipped", "pool waiting max", "pool in use max", "pool acquire p99 ms",
+		"checkouts per request", "HTTP queued max read / write", "HTTP in flight max read / write",
+		"HTTP refused queue_full / wait_exceeded", "doc writer queued max", "settlements running / waiting max", "log records dropped"}
+	md.header(columns...)
+	for _, s := range steps {
+		m := s.sum.Metrics
+		scraped := num(float64(m.Scraped), 0) + " / " + num(float64(m.Skipped), 0)
+		if m.Scraped == 0 {
+			cells := []string{s.label(), scraped}
+			for range len(columns) - 2 {
+				cells = append(cells, "-")
+			}
+			md.row(cells...)
+			continue
+		}
+		var waiting, inUse, acquire []string
+		for _, p := range poolNames(m.Pools) {
+			pm := m.Pools[p]
+			waiting = append(waiting, p+" "+optNum(pm.WaitingMax, 0))
+			inUse = append(inUse, p+" "+optNum(pm.InUseMax, 0))
+			p99 := optNum(pm.AcquireP99Ms, 0)
+			if pm.AcquireP99AboveMs != nil {
+				p99 = ">" + num(*pm.AcquireP99AboveMs, 0)
+			}
+			acquire = append(acquire, p+" "+p99)
+		}
+		list := func(xs []string) string {
+			if len(xs) == 0 {
+				return "-"
+			}
+			return strings.Join(xs, ", ")
+		}
+		settlements := "-"
+		if m.SettlementsRunningMax != nil || m.SettlementsWaitingMax != nil {
+			settlements = optNum(m.SettlementsRunningMax, 0) + " / " + optNum(m.SettlementsWaitingMax, 0)
+		}
+		md.row(s.label(), scraped, list(waiting), list(inUse), list(acquire), optNum(m.CheckoutsPerRequest, 2),
+			keyedPair(m.HTTPQueuedMax, "read", "write", 0), keyedPair(m.HTTPInFlightMax, "read", "write", 0),
+			keyedPair(m.HTTPRefused, "queue_full", "wait_exceeded", 0), optNum(m.DocWriterQueuedMax, 0), settlements, optNum(m.LogDropped, 0))
+	}
+}
+
+// factorText is a load factor as -schedule writes it.
+func factorText(f float64) string { return fmt.Sprintf("%gx", f) }
+
+func recoveryTable(md *markdown, steps []stepData) {
+	md.line("\n## Recovery\n")
+	md.line("After the -schedule's last drop: the time from the drop to the start of the first 10 s window from which every window is recovered (at least 99%% of requests 2xx, at least 95%% of offered events committed, request p99 at most 2x the reference).\n")
+	columns := []string{"step", "schedule", "drop s into the window (factor before -> after)", "reference p99 ms (source)", "recovery s"}
+	md.header(columns...)
+	unread := false
+	for _, s := range steps {
+		r := s.sum.Recovery
+		if r == nil {
+			sched := "-"
+			if len(s.sum.Config.Schedule) > 0 {
+				sched = s.sum.Config.Schedule.String()
+			}
+			md.row(s.label(), sched, "-", "-", "-")
+			continue
+		}
+		ref := "-"
+		if r.RefP99Ms != nil {
+			ref = num(*r.RefP99Ms, 0)
+		}
+		ref += " (" + r.RefSource + ")"
+		// Whether a window recovered depends on its committed events, so with no commit row read
+		// there is no verdict.
+		label, recovered := s.label(), "not recovered"
+		switch {
+		case s.sum.Events.commitsUnread():
+			label, recovered, unread = s.commitsLabel(), "-", true
+		case r.RecoverySeconds != nil:
+			recovered = num(*r.RecoverySeconds, 0)
+		}
+		md.row(label, r.Schedule, fmt.Sprintf("%s (%s -> %s)", num(r.DropS, 0), factorText(r.FactorBefore), factorText(r.FactorAfter)), ref, recovered)
+	}
+	commitsUnreadNote(md, unread, "the recovery seconds", "shows")
+}
+
+func recoveryWindowsTable(md *markdown, steps []stepData) {
+	md.line("\n## Recovery windows\n")
+	md.line("Each whole 10 s window after the drop: requests by their start, events by their scheduled arrival.\n")
+	columns := []string{"step", "s after the drop", "req success", "events committed / offered", "req p99 ms", "recovered"}
+	md.header(columns...)
+	unread := false
+	for _, s := range steps {
+		r := s.sum.Recovery
+		if r == nil || len(r.Windows) == 0 {
+			md.emptyRow(s.label(), len(columns))
+			continue
+		}
+		if s.sum.Events.commitsUnread() {
+			unread = true
+		}
+		for _, w := range r.Windows {
+			success := "-"
+			if w.Requests > 0 {
+				success = num(100*float64(w.RequestsOK)/float64(w.Requests), 1) + "%"
+			}
+			p99 := "-"
+			if w.ReqMs.N > 0 {
+				p99 = num(w.ReqMs.P99, 0)
+			}
+			recovered := "no"
+			if w.Recovered {
+				recovered = "yes"
+			}
+			md.row(s.commitsLabel(), fmt.Sprintf("%s-%s", num(w.StartS, 0), num(w.StartS+r.WindowS, 0)), success,
+				s.commitCount(num(float64(w.Committed), 0))+" / "+num(float64(w.Offered), 0), p99, s.commitCount(recovered))
+		}
+	}
+	commitsUnreadNote(md, unread, "the committed events and whether the window recovered", "show")
 }
 
 // kib renders bytes as KiB.

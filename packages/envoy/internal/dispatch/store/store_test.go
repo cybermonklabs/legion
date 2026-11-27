@@ -115,7 +115,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 			}
 			refused := err != nil &&
 				strings.Contains(err.Error(), poolSizeParam) &&
-				strings.Contains(err.Error(), strconv.Itoa(sharedPoolSize))
+				strings.Contains(err.Error(), strconv.Itoa(SharedPoolSize))
 			if refused != tc.refused {
 				t.Fatalf("refused = %v, want %v; open returned %v", refused, tc.refused, err)
 			}
@@ -2046,5 +2046,24 @@ func TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt
 	kept := []string{`INFRA-1/claim.planner=null@2`, `INFRA-1/phase="reviewing"@4`, `INFRA-2/phase=null@3`}
 	if got := current(); !slices.Equal(got, kept) {
 		t.Fatalf("legion_current after two more rows = %v, want %v", got, kept)
+	}
+}
+
+// Migrate leaves the request pool warm with at least one idle connection, even when the last
+// migration it ran or checked is non-transactional: applyNonTransactionalMigration hijacks and
+// closes its connection, and without a warm-up under coldDialBound the boot reads that follow
+// Migrate (ReadRepoRenames, FillDocumentSearch, FillSessionTitles) meet an empty pool under
+// requestAcquireBound (3 s) and fail behind a slow dial.
+func TestMigrateLeavesTheRequestPoolWarmAfterANonTransactionalMigration(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := openMigratedTestStore(t, math.MaxInt)
+	// MigrateThrough a non-transactional version so this row stays meaningful even after later
+	// transactional migrations are added after it.
+	if err := database.MigrateThrough(ctx, 20261126203311); err != nil {
+		t.Fatalf("migrate through a non-transactional migration: %v", err)
+	}
+	if idle := database.Pool.Stat().IdleConns(); idle < 1 {
+		t.Fatalf("the request pool holds %d idle connections right after MigrateThrough a non-transactional migration, want at least 1 so the boot's reads that follow pay no cold dial under requestAcquireBound", idle)
 	}
 }

@@ -278,21 +278,23 @@ func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner stri
 // under its owner lock, and writes nothing where it has one by then, or no longer exists. It is the
 // boot's fill (store.EnsureProjectOwners): a project the access migration left with no owner goes to
 // DISPATCH_PROJECT_OWNER_FALLBACK's full member, with the same project.access_changed event and
-// project_access_changes record an operator's `envoy-dispatch project-owner` writes.
-func GiveOwnerless(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) error {
+// project_access_changes record an operator's `envoy-dispatch project-owner` writes. It answers the
+// event it appended, for its caller to publish once tx commits, and the zero event where it wrote
+// nothing.
+func GiveOwnerless(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) (model.Event, error) {
 	if err := lockProject(ctx, tx, key); err != nil {
-		return err
+		return model.Event{}, err
 	}
 	var owned bool
 	err := tx.QueryRow(ctx, `select owner is not null from projects where key = $1`, key).Scan(&owned)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && owned {
-		return nil
+		return model.Event{}, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read whether project %s has an owner: %w", key, err)
+		return model.Event{}, fmt.Errorf("read whether project %s has an owner: %w", key, err)
 	}
-	_, _, err = SetOwner(ctx, tx, ev, key, owner, by)
-	return err
+	_, event, err := SetOwner(ctx, tx, ev, key, owner, by)
+	return event, err
 }
 
 // OwnerNotAllowed is the refusal of login as an owner: one who is no full member who has signed in,

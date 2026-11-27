@@ -271,8 +271,9 @@ func (r *docsWriterRig) tick() docsWriter {
 			settle(t, r.database, document)
 			r.recordEvent(t, ctx, "artifact.created", map[string]any{"artifact": map[string]any{"id": document}})
 			r.awaitDurable(t, document)
+			background := testBackgroundPool(t, r.service)
 			return docsRun{document: document, write: func() error {
-				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, owedDocument{id: document, version: 1}, nil)
+				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, background, owedDocument{id: document, version: 1}, nil)
 				if err != nil {
 					return err
 				}
@@ -348,7 +349,8 @@ func (r *docsWriterRig) tickEvents() docsWriter {
 		},
 		ready: func(t *testing.T, ctx context.Context) docsRun {
 			awaitHorizon(t, ctx)
-			if _, _, err := r.service.readEventsAfterCursor(ctx, &BlockIndexTick{}); err != nil {
+			background := testBackgroundPool(t, r.service)
+			if _, _, err := r.service.readEventsAfterCursor(ctx, background, &BlockIndexTick{}); err != nil {
 				t.Fatalf("read the events before the run's: %v", err)
 			}
 			slug := r.fresh("lock-steps-unseen")
@@ -380,7 +382,7 @@ func (r *docsWriterRig) tickEvents() docsWriter {
 				},
 				write: func() error {
 					var tick BlockIndexTick
-					if _, _, err := r.service.readEventsAfterCursor(ctx, &tick); err != nil {
+					if _, _, err := r.service.readEventsAfterCursor(ctx, background, &tick); err != nil {
 						return err
 					}
 					if tick.Marked != 1 || tick.Comments != 1 {
@@ -1000,10 +1002,13 @@ func (r *docsWriterRig) recordEvent(t *testing.T, ctx context.Context, kind stri
 }
 
 // editAsVersion inserts markdown at the end of document as actor's edit and versions it in the
-// same transaction, as POST /api/v1/artifacts/{id}/edits does: the edit, its version, the
-// version's event, and what the version's block index stated appended under that event.
+// same transaction, as POST /api/v1/artifacts/{id}/edits does: holding the document's writer gate,
+// taken before the transaction opens, the edit, its version, the version's event, and what the
+// version's block index stated appended under that event.
 func (r *docsWriterRig) editAsVersion(t *testing.T, ctx context.Context, document string, actor model.Actor, markdown string) {
 	t.Helper()
+	ctx, release := gatedContext(t, r.service, ctx, document)
+	defer release()
 	tx, err := r.service.store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the edit: %v", err)

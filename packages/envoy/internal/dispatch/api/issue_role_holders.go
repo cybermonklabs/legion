@@ -271,12 +271,12 @@ const maxRoleHolderSessionBytes = 256
 func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	var input issueRoleHoldersInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	writer, err := s.requestWriter(r, input.Actor)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	key := r.PathValue("key")
@@ -344,7 +344,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -365,7 +365,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			writeRoleHoldersIssueNotFound(w, key)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Another project's daemon passes isIssueDaemon only on a broker token that proves its session,
@@ -381,7 +381,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	// transaction's first write, so it holds no transaction id.
 	previous, _, err := readIssueRoleHolders(r.Context(), tx, issue)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Mark the project even if the body lists no holders. Update the provenance of each
@@ -399,7 +399,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		where issue_key = $1
 		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
 	`, issue, roles, sessions, daemonProven, project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The delete above is the whole of the publication that names no holder, so the insert runs
@@ -411,13 +411,13 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			from unnest($2::text[], $3::text[]) as published(role, session)
 			on conflict (issue_key, role) do nothing
 		`, issue, roles, sessions, daemonProven); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	stored, _, err := readIssueRoleHolders(r.Context(), tx, issue)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var changed []model.Event
@@ -425,13 +425,13 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		event, err := s.appendEvent(r.Context(), tx, issueOwner(issue).event("issue.role_holders_changed", writer.actor,
 			issueRoleHoldersChange{Key: issue, Holders: stored.Holders, PreviousHolders: previous.Holders}))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		changed = append(changed, event)
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), changed...)
@@ -447,7 +447,7 @@ func (s *server) getIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	read, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !found {

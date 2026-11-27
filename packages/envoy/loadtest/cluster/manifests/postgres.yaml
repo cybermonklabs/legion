@@ -18,7 +18,8 @@
 #   The page's own examples (45 GB: shared_buffers 15085 MB, effective_cache_size 18537160 kB)
 #   compute from 45255 MB, a little less than 45 × 1024; the copy computes from the tier's MB, so
 #   its shared_buffers and effective_cache_size can be up to about 2% above the instance's.
-# Every other setting is PostgreSQL's default, except two of the copy's own:
+# Every other setting is PostgreSQL's default, except jit=off, which is Cloud SQL's (at the
+# argument below), and two of the copy's own:
 #   - track_commit_timestamp=on: the delivery latency from commit (loadgen's commit rows);
 #     production runs with it off.
 #   - log_lock_waits=on: lock waits longer than deadlock_timeout go to the log.
@@ -66,6 +67,7 @@ spec:
         app.kubernetes.io/part-of: dispatch-loadtest
         dispatch-loadtest/run: __RUN_ID__
         dispatch-loadtest/role: postgres
+        theorem.dev/omp-session: __OMP_SESSION__
       annotations:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
         dispatch-loadtest/tier: __PG_TIER__
@@ -94,6 +96,14 @@ spec:
             - track_commit_timestamp=on
             - -c
             - log_lock_waits=on
+            # Cloud SQL runs no JIT: https://cloud.google.com/sql/docs/postgres/features lists
+            # "Low-Level Virtual Machine (LLVM) Just-in-Time (JIT) compilation" under
+            # "Unsupported features for Cloud SQL for PostgreSQL" (read 2026-11-22). PostgreSQL's
+            # default is jit=on, under which INFRA-1950 measured JIT at about 1,330 ms of a
+            # 1,350 ms references statement, so with it on the copy can time out reads production
+            # serves.
+            - -c
+            - jit=off
           env:
             - name: POSTGRES_USER
               value: dispatch

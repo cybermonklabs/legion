@@ -25,10 +25,33 @@ import (
 // Store reads and writes github_rate_limits on a pool.
 type Store struct {
 	pool *store.Pool
+	// background is that pool is the request pool and every read and write runs on its background
+	// pool instead, opened as each runs (OnBackground, on).
+	background bool
 }
 
 // New returns the store on pool.
 func New(pool *store.Pool) *Store { return &Store{pool: pool} }
+
+// OnBackground returns the store on the background pool of pool, the request pool. It opens
+// nothing: each read and write opens the background pool as it runs (store.Pool.Background), as
+// every other background user of the pool does, so a store whose pool is closed is still built,
+// and a background pool that cannot open fails that read or write with the open's error. None of
+// them runs on pool instead.
+func OnBackground(pool *store.Pool) *Store { return &Store{pool: pool, background: true} }
+
+// on is the pool a read or write runs on: the background pool, opened now, for a store
+// OnBackground made, and the store's own pool otherwise.
+func (s *Store) on() (*store.Pool, error) {
+	if !s.background {
+		return s.pool, nil
+	}
+	background, err := s.pool.Background()
+	if err != nil {
+		return nil, fmt.Errorf("open the background pool: %w", err)
+	}
+	return background, nil
+}
 
 // Limit is one scope's row as it was read or written.
 type Limit struct {
@@ -73,7 +96,11 @@ func (s *Store) Wait(ctx context.Context, scope string) (wait time.Duration, rec
 // InForce returns, of the limits in force on scopes, the one that ends last; found is false when
 // none is.
 func (s *Store) InForce(ctx context.Context, scopes ...string) (limit Limit, found bool, err error) {
-	limit, err = scan(s.pool.QueryRow(ctx, `
+	pool, err := s.on()
+	if err != nil {
+		return Limit{}, false, fmt.Errorf("read the GitHub rate limit of %v: %w", scopes, err)
+	}
+	limit, err = scan(pool.QueryRow(ctx, `
 		select `+columns+` from github_rate_limits
 		where scope = any($1) and until > now()
 		order by until desc
@@ -91,7 +118,11 @@ func (s *Store) InForce(ctx context.Context, scopes ...string) (limit Limit, fou
 // Get returns scope's row whether or not its limit is still in force; found is false when scope
 // has none.
 func (s *Store) Get(ctx context.Context, scope string) (limit Limit, found bool, err error) {
-	limit, err = scan(s.pool.QueryRow(ctx, `select `+columns+` from github_rate_limits where scope = $1`, scope))
+	pool, err := s.on()
+	if err != nil {
+		return Limit{}, false, fmt.Errorf("read the GitHub rate limit of %s: %w", scope, err)
+	}
+	limit, err = scan(pool.QueryRow(ctx, `select `+columns+` from github_rate_limits where scope = $1`, scope))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Limit{}, false, nil
 	}
@@ -107,7 +138,11 @@ func (s *Store) Get(ctx context.Context, scope string) (limit Limit, found bool,
 // request makes is: a request whose GitHub call meets a limit is one, and the transaction's
 // commit step marks that request's Idempotency-Key committed with the write.
 func (s *Store) Record(ctx context.Context, scope string, wait time.Duration) error {
-	tx, err := s.pool.Begin(ctx)
+	pool, err := s.on()
+	if err != nil {
+		return fmt.Errorf("record the GitHub rate limit of %s: %w", scope, err)
+	}
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("record the GitHub rate limit of %s: %w", scope, err)
 	}
@@ -174,7 +209,11 @@ const strike = `
 // before a Clear or before StrikeReset of quiet, as GitHub asks of a request that keeps failing on
 // a secondary limit. It returns the row it wrote.
 func (s *Store) Strike(ctx context.Context, scope string, wait time.Duration) (Limit, error) {
-	limit, err := scan(s.pool.QueryRow(ctx, strike, scope, wait.Seconds(), StrikeReset.Seconds()))
+	pool, err := s.on()
+	if err != nil {
+		return Limit{}, fmt.Errorf("record the GitHub rate limit of %s: %w", scope, err)
+	}
+	limit, err := scan(pool.QueryRow(ctx, strike, scope, wait.Seconds(), StrikeReset.Seconds()))
 	if err != nil {
 		return Limit{}, fmt.Errorf("record the GitHub rate limit of %s: %w", scope, err)
 	}
@@ -184,7 +223,11 @@ func (s *Store) Strike(ctx context.Context, scope string, wait time.Duration) (L
 // PreviewStrike returns the row Strike would write, and writes nothing: Strike's own statement in
 // a transaction it rolls back, so the two never differ.
 func (s *Store) PreviewStrike(ctx context.Context, scope string, wait time.Duration) (Limit, error) {
-	tx, err := s.pool.Begin(ctx)
+	pool, err := s.on()
+	if err != nil {
+		return Limit{}, fmt.Errorf("preview the GitHub rate limit of %s: %w", scope, err)
+	}
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return Limit{}, fmt.Errorf("preview the GitHub rate limit of %s: %w", scope, err)
 	}
@@ -199,7 +242,11 @@ func (s *Store) PreviewStrike(ctx context.Context, scope string, wait time.Durat
 // Clear deletes limit's row only if nothing has written it since it was read: a limit another
 // process recorded meanwhile stands.
 func (s *Store) Clear(ctx context.Context, limit Limit) error {
-	if _, err := s.pool.Exec(ctx, `delete from github_rate_limits where scope = $1 and updated_at = $2`, limit.Scope, limit.updatedAt); err != nil {
+	pool, err := s.on()
+	if err != nil {
+		return fmt.Errorf("clear the GitHub rate limit of %s: %w", limit.Scope, err)
+	}
+	if _, err := pool.Exec(ctx, `delete from github_rate_limits where scope = $1 and updated_at = $2`, limit.Scope, limit.updatedAt); err != nil {
 		return fmt.Errorf("clear the GitHub rate limit of %s: %w", limit.Scope, err)
 	}
 	return nil

@@ -213,7 +213,9 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 // Verify checks raw against the issuer's published keys, a listed audience
 // (NewWithKeysFor), and the token's expiry. Every error wraps exactly one of
 // ErrMalformed, ErrIssuer, ErrAudience, ErrExpired, ErrCancelled,
-// ErrIssuerUnavailable, and ErrSignature.
+// ErrIssuerUnavailable, and ErrSignature. A verification whose key lookup
+// reads the issuer's key set, or joins a read of it under way, runs the
+// before-wait hook ctx carries first (WithBeforeWait, Keys.Key).
 func (v *Verifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	_, claims, err := v.verify(ctx, raw)
 	return claims, err

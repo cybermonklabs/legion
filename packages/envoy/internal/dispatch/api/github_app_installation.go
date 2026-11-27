@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -23,18 +24,25 @@ type appInstallationResponse struct {
 // key answers 503 GITHUB_APP_UNCONFIGURED; any other failed lookup 502 GITHUB_UNREADABLE, naming
 // the repository and GitHub's error, worded and cut to its bound as every such 502 words it
 // (gitHubReason): an error GitHub answered with a page that is no JSON carries the page as
-// githubapp.ShownBody shows it, its first 512 characters and its size.
+// githubapp.ShownBody shows it, its first 512 characters and its size. The lookup is a wait on
+// GitHub, or on another request's lookup of the same repository, so the request holds no admission
+// unit and no pinned connection across it (awayOnNetwork), and a take-back refused after it is
+// answered as admission refuses a request.
 func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	owner, name, err := githubRepoPath(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	installed, err := s.deps.GitHub.Installed(r.Context(), owner, name)
-	switch {
+	installed, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) (bool, error) {
+		return s.deps.GitHub.Installed(ctx, owner, name)
+	})
+	switch refused := refusedTakeBack(r.Context()); {
+	case refused != nil:
+		s.writeHandlerError(w, r, refused)
 	case errors.Is(err, githubapp.ErrNoAppKey):
 		writeError(w, "GITHUB_APP_UNCONFIGURED", http.StatusServiceUnavailable, err.Error())
 	case err != nil:

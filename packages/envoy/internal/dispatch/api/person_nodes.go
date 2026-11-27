@@ -195,7 +195,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	login := model.CanonicalLogin(r.PathValue("login"))
@@ -204,14 +204,14 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	seen := refs.VisibilityArg(caller)
 	tx, err := s.deps.Store.Pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The transaction reads only, so its end is a rollback whatever happened.
 	defer tx.Rollback(r.Context())
 	var shown bool
 	if err := tx.QueryRow(r.Context(), personPageShownQuery, login, seen, personPageKinds).Scan(&shown); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !shown {
@@ -231,7 +231,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := tx.Query(r.Context(), personNodesQuery, login, seen, limit, offset)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -243,7 +243,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		var deletedBy []byte
 		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href,
 			&editedAt, &deletedAt, &deletedBy); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		row.Title = refs.FirstLineWithin(body, s.deps.ServerURL, personNodeTitleRunes)
@@ -253,13 +253,13 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 			row.EditedAt = &edited
 		}
 		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		response.Rows = append(response.Rows, row)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, response)

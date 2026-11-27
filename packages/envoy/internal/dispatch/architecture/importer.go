@@ -93,11 +93,15 @@ type loadedSource struct {
 // flight instead of each making its own set of GitHub calls, no lock is held
 // across a GitHub call, and two sources — of one project or of two — never
 // wait on each other here; the source row still orders what every process
-// writes.
+// writes. An importer On derives shares those flights, so the ticker's
+// importer and the routes' join one flight per source rather than one each.
 type Importer struct {
 	store  *store.Store
 	github *githubapp.Client
 	events *events.Broker
+	// onBackground is that store is the request pool's and every statement of this importer runs
+	// on that pool's background pool instead, opened as it runs (NewImporterOnBackground, database).
+	onBackground bool
 
 	// GitHubReads records each pass of the running import (the pass syncAllLeased runs under its
 	// lease) as the newest attempt of githubreads.ArchitectureImport, which GET /healthz answers:
@@ -108,30 +112,37 @@ type Importer struct {
 
 	// owner outlives every caller: the process stopping (Close) is the only
 	// thing that cancels a flight, since a flight runs on behalf of callers
-	// that have since left.
+	// that have since left. It, the counter, the group, the pushes and the
+	// record of ended flights below are held by pointer (the pushes map with
+	// its mutex) and carried into every importer On derives, so one process
+	// has one set of flights and push workers however many pools it syncs
+	// through, and one Close ends them all.
 	owner   context.Context
 	abandon context.CancelFunc
 	// running counts every flight and every push worker, so Close waits for both.
-	running syncCount
+	running *syncCount
 	// syncs is keyed on the source, project and repository both, not on the
 	// project: Sync answers that source's row, and SyncProject needs one
 	// result per repository. Two sources of one project cannot corrupt each
 	// other without a mutex here, because every projection takes
 	// lockProjectSources (`order by id for update`) and judges heldElsewhere
 	// inside that lock.
-	syncs singleflight.Group
+	syncs *singleflight.Group
 	// pushes holds, for each source whose push worker runs and under its
 	// syncKey, the pushes no import has covered yet (push.go). pushMu guards
 	// it, and a push's record and a worker's decision to return are both taken
 	// under it, so no push falls between a worker's last look and its exit.
-	pushMu sync.Mutex
+	// pushMu is held by pointer, as the map is by reference, so an importer On
+	// derives records its pushes under the same lock into the same map.
+	pushMu *sync.Mutex
 	pushes map[string]*pushedSource
 	// ended is, for each source a call of Sync is running for, its newest
 	// flight to have ended, on syncs' keys: what a caller that refused an
 	// older flight takes when it began after the caller's call. Sync enters
 	// its key on the way in and leaves it on the way out, so no entry
-	// outlives the calls of its key.
-	ended endedFlights
+	// outlives the calls of its key. It is held by pointer, as syncs is, so
+	// an importer On derives reads and records the same flights' ends.
+	ended *endedFlights
 
 	// afterFlightTaken runs in Sync once a caller holds the flight it waits
 	// on, joined or started; afterSyncRefusal once it has refused a flight
@@ -151,9 +162,63 @@ type Importer struct {
 func NewImporter(database *store.Store, github *githubapp.Client, broker *events.Broker) *Importer {
 	owner, abandon := context.WithCancel(context.Background())
 	return &Importer{
-		store: database, github: github, events: broker, owner: owner, abandon: abandon,
-		pushes: map[string]*pushedSource{},
+		store:   database,
+		github:  github,
+		events:  broker,
+		owner:   owner,
+		abandon: abandon,
+		running: &syncCount{},
+		syncs:   &singleflight.Group{},
+		pushMu:  &sync.Mutex{},
+		pushes:  map[string]*pushedSource{},
+		ended:   &endedFlights{},
 	}
+}
+
+// NewImporterOnBackground is NewImporter for the importer a server's routes sync through: database
+// is the request pool's store, and every statement the importer makes runs on that pool's
+// background pool, opened as it runs (store.Pool.Background), as every other background user of
+// the pool opens it. A flight opens it as it starts and runs all of its statements there, and a
+// read outside a flight - SyncProject's list of the project's sources, ListEnabled's, Pushed's -
+// opens it as the read runs. A sync route waits on its flight holding no admission unit, so none
+// of the flight's statements may take a request-pool connection. Building the importer opens
+// nothing, so a store whose pool is closed still builds one, and a background pool that cannot
+// open fails the flight or the read that needed it with the open's error: nothing runs on the
+// request pool instead.
+func NewImporterOnBackground(database *store.Store, github *githubapp.Client, broker *events.Broker) *Importer {
+	importer := NewImporter(database, github, broker)
+	importer.onBackground = true
+	return importer
+}
+
+// database is the store a statement of the importer runs on: for an importer on the background
+// pool (NewImporterOnBackground) that pool, opened now, and the importer's own store otherwise.
+func (i *Importer) database() (*store.Store, error) {
+	if !i.onBackground {
+		return i.store, nil
+	}
+	background, err := i.store.Pool.Background()
+	if err != nil {
+		return nil, fmt.Errorf("open the background pool for the architecture import: %w", err)
+	}
+	return &store.Store{Pool: background}, nil
+}
+
+// On is this importer reading and writing through database as it is given, and calling GitHub
+// through github, instead of its own: the same event broker, flights and push workers, so a sync
+// of one source on either importer joins the other's instead of making its own set of GitHub
+// calls, and one Close ends both. cmd/dispatch runs the ticker and the imports a push starts on
+// the background pool's store this way, with a GitHub client whose shared rate limits are read
+// and recorded on that pool too. It derives that importer from the routes' one, which is on the
+// background pool as well (api's NewDeps, NewImporterOnBackground) and calls GitHub through that
+// same client (Deps.BackgroundGitHub): a sync route waits on its flight holding no admission unit,
+// so none of the flight's statements may take a request-pool connection.
+func (i *Importer) On(database *store.Store, github *githubapp.Client) *Importer {
+	derived := *i
+	derived.store = database
+	derived.onBackground = false
+	derived.github = github
+	return &derived
 }
 
 // Close ends the importer's flights and push workers and waits for them:
@@ -161,8 +226,8 @@ func NewImporter(database *store.Store, github *githubapp.Client, broker *events
 // waits background.Wait and waitIntakes, then waitUntilIdle and pool.Close), and
 // a flight or a push worker runs on a context the caller's cancellation no
 // longer reaches, so without this a sync still fetching when the process stops
-// would write into a closing pool. It is safe to call twice, and on a nil
-// importer.
+// would write into a closing pool. It is safe to call twice, on an importer On
+// derived, and on a nil importer.
 func (i *Importer) Close() {
 	if i == nil {
 		return
@@ -186,7 +251,11 @@ type EnabledSource struct {
 // ListEnabled names every enabled architecture source, ordered by project and
 // then by the source's id: the ticker's work list.
 func (i *Importer) ListEnabled(ctx context.Context) ([]EnabledSource, error) {
-	rows, err := i.store.Pool.Query(ctx, `
+	database, err := i.database()
+	if err != nil {
+		return nil, fmt.Errorf("list enabled architecture sources: %w", err)
+	}
+	rows, err := database.Pool.Query(ctx, `
 		select project_key, repo from architecture_sources where enabled order by project_key, id
 	`)
 	if err != nil {
@@ -220,7 +289,11 @@ type SyncResult struct {
 // order. A source deleted while the call runs is left out. A project with no
 // source is ErrNoSource.
 func (i *Importer) SyncProject(ctx context.Context, project string) ([]SyncResult, error) {
-	rows, err := i.store.Pool.Query(ctx,
+	database, err := i.database()
+	if err != nil {
+		return nil, fmt.Errorf("list architecture sources of %s: %w", project, err)
+	}
+	rows, err := database.Pool.Query(ctx,
 		`select repo from architecture_sources where project_key = $1 order by id`, project)
 	if err != nil {
 		return nil, fmt.Errorf("list architecture sources of %s: %w", project, err)
@@ -393,18 +466,30 @@ func (i *Importer) syncAfter(ctx context.Context, project, repo string, after ti
 // touch is the unchanged-model short-circuit's only write: last_sync_at (and
 // the moved head's commit), guarded by the repo/branch/state and the row
 // version the sync began from, so neither a concurrent PUT nor another sync
-// that recorded since is overstamped. No event either way.
+// that recorded since is overstamped. No event either way. The row is taken in
+// a bounded wait and written behind it, in one batch
+// (store.LockRowsWithinBoundAndRead), as lockSourceRow's is: no owner lock orders
+// the source's writers.
 func (i *Importer) touch(ctx context.Context, source loadedSource, commit string) (model.ArchitectureSource, error) {
 	var updated model.ArchitectureSource
 	err := i.inTransaction(ctx, func(tx pgx.Tx) error {
-		var err error
-		updated, err = ScanSource(tx.QueryRow(ctx, `
+		return store.LockRowsWithinBoundAndRead(ctx, tx, `
+			select 1 from architecture_sources
+			where project_key = $1 and id = $2 and repo = $3 and branch = $4 and last_error is null
+			  and xmin::text = $5
+			for update`,
+			[]any{source.Project, source.ID, source.Repo, source.Branch, source.version}, `
 			update architecture_sources
 			set last_sync_at = now(), last_commit = $5
 			where project_key = $1 and id = $2 and repo = $3 and branch = $4 and last_error is null
 			  and xmin::text = $6
-			returning `+SourceColumns, source.Project, source.ID, source.Repo, source.Branch, commit, source.version))
-		return err
+			returning `+SourceColumns,
+			[]any{source.Project, source.ID, source.Repo, source.Branch, commit, source.version},
+			func(row pgx.Row) (err error) {
+				updated, err = ScanSource(row)
+				return err
+			},
+		)
 	})
 	if err == nil {
 		return updated, nil
@@ -476,12 +561,18 @@ func (i *Importer) resolve(ctx context.Context, source *loadedSource) (owner, na
 	}
 	if installation.ID != source.InstallationID {
 		var version string
+		// Taken in a bounded wait and written behind it, as touch's row is.
 		err := i.inTransaction(ctx, func(tx pgx.Tx) error {
-			return tx.QueryRow(ctx, `
+			return store.LockRowsWithinBoundAndRead(ctx, tx, `
+				select 1 from architecture_sources where project_key = $1 and id = $2 and xmin::text = $3
+				for update`,
+				[]any{source.Project, source.ID, source.version}, `
 				update architecture_sources set installation_id = $3
 				where project_key = $1 and id = $2 and xmin::text = $4
 				returning xmin::text`,
-				source.Project, source.ID, installation.ID, source.version).Scan(&version)
+				[]any{source.Project, source.ID, installation.ID, source.version},
+				func(row pgx.Row) error { return row.Scan(&version) },
+			)
 		})
 		switch {
 		case err == nil:
@@ -519,13 +610,20 @@ func (i *Importer) inTransaction(ctx context.Context, write func(pgx.Tx) error) 
 // on one source serialize on the row, and re-reads repo/branch and the row
 // version under the lock. moved reports that the source changed since this
 // sync's fetch began — the caller must abort without writing, because its
-// data describes the old configuration.
+// data describes the old configuration. The lock waits in a bounded wait, the
+// read behind it in the same batch (store.LockRowsWithinBoundAndRead): a route's
+// sync runs this on the request's behalf, and no owner lock orders the
+// source's writers.
 func lockSourceRow(ctx context.Context, tx pgx.Tx, source loadedSource) (locked lockedSource, moved bool, err error) {
 	var repo, branch string
-	if err := tx.QueryRow(ctx, `
+	if err := store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from architecture_sources where project_key = $1 and id = $2 for update`,
+		[]any{source.Project, source.ID}, `
 		select repo, branch, last_commit, last_error, xmin::text <> $3
 		from architecture_sources where project_key = $1 and id = $2 for update`,
-		source.Project, source.ID, source.version).Scan(&repo, &branch, &locked.lastCommit, &locked.lastError, &locked.superseded); err != nil {
+		[]any{source.Project, source.ID, source.version}, func(row pgx.Row) error {
+			return row.Scan(&repo, &branch, &locked.lastCommit, &locked.lastError, &locked.superseded)
+		}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return lockedSource{}, true, nil
 		}
@@ -542,7 +640,13 @@ func lockSourceRow(ctx context.Context, tx pgx.Tx, source loadedSource) (locked 
 // itself, plus every source's repository by id, which names who holds a
 // colliding id. recordFailure takes only its own row's lock, and a lock taken
 // here is never waited for while holding another order, so no cycle forms.
+// The locks are taken in a bounded wait first, as lockSourceRow's is.
 func lockProjectSources(ctx context.Context, tx pgx.Tx, source loadedSource) (locked lockedSource, repos map[int64]string, moved bool, err error) {
+	if err := store.LockRowsWithinBound(ctx, tx, `
+		select 1 from architecture_sources where project_key = $1 order by id for update`,
+		source.Project); err != nil {
+		return lockedSource{}, nil, false, fmt.Errorf("lock architecture sources: %w", err)
+	}
 	rows, err := tx.Query(ctx, `
 		select id, repo, branch, last_commit, last_error, xmin::text <> $2
 		from architecture_sources where project_key = $1 order by id for update`,
@@ -749,7 +853,7 @@ func (i *Importer) project(
 	changed := locked.lastCommit == nil || *locked.lastCommit != commit || locked.lastError != nil
 	var event model.Event
 	if changed {
-		event, err = i.events.Append(ctx, tx, model.Event{
+		event, err = i.events.AppendAfterWrite(ctx, tx, model.Event{
 			ProjectKey: &source.Project,
 			Type:       "architecture.synced",
 			Actor:      SystemActor,
@@ -913,7 +1017,7 @@ func (i *Importer) recordFailure(ctx context.Context, source loadedSource, failu
 	changed := locked.lastError == nil || *locked.lastError != message
 	var event model.Event
 	if changed {
-		event, err = i.events.Append(ctx, tx, model.Event{
+		event, err = i.events.AppendAfterWrite(ctx, tx, model.Event{
 			ProjectKey: &source.Project,
 			Type:       "architecture.sync_failed",
 			Actor:      SystemActor,

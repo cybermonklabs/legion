@@ -139,14 +139,14 @@ func (s *Service) forkPoint(room string, live *crdt.Doc, client crdt.ClientID, a
 }
 
 // treePoint is the tree live, the room document resident for room, holds as of an exact commit
-// position (readSettlementTree): the tree the room's replica holds, read under the replica's lock
-// through pmdoc.ReadUnshared (treeOfUnshared), with the position it was read at (atPoint). Only a
-// holder of the replica's mu reads or writes the replica (renderedReplica), which is what
-// ReadUnshared's lock-free walk of each text asks for, and the tree it hands back is the caller's
-// own (ownedValue), as pmdoc.Read's is. A replica holding no state is started from the copy the
-// read takes from the room, and its tree is then walked. A room whose load listed no replica has
-// no tree to walk, nor has a copy the replica could not start from: that copy is decoded and
-// read here, holding no lock (stateTree).
+// position, which a settlement pass copies the live tree at (settlementPass.take): the tree the
+// room's replica holds, read under the replica's lock through pmdoc.ReadUnshared
+// (treeOfUnshared), with the position it was read at (atPoint). Only a holder of the replica's mu
+// reads or writes the replica (renderedReplica), which is what ReadUnshared's lock-free walk of
+// each text asks for, and the tree it hands back is the caller's own (ownedValue), as pmdoc.Read's
+// is. A replica holding no state is started from the copy the read takes from the room, and its
+// tree is then walked. A room whose load listed no replica has no tree to walk, nor has a copy the
+// replica could not start from: that copy is decoded and read here, holding no lock (stateTree).
 //
 // It arms no settlement for the updates it classified and reports instead whether any is one a
 // settlement follows: the settlement reading them is the one they would arm, and arming another

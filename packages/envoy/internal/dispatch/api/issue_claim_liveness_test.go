@@ -337,10 +337,10 @@ func serveStalledSession(t *testing.T, lastSeen time.Time) (http.Handler, *stall
 		}
 	}))
 	t.Cleanup(listener.Close)
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
-	// Every read asks the listener, so a test that moves the session sees the move at its next
-	// read rather than waiting out the roster's five seconds.
-	served.rosters.ttl, served.rosters.silenceTTL = 0, 0
+	// Every read asks the listener, with no stored copy (ListenerRosterUncached), so a test that
+	// moves the session sees the move at its next read: these rows read how a holder is judged,
+	// not the copy.
+	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, listenerRosterUncached: true})
 	return handler, stalled
 }
 
@@ -492,8 +492,10 @@ func TestIssueReadSaysUnknownWhileAClaimWriteRefusesWithNoListener(t *testing.T)
 		}
 	}))
 	t.Cleanup(listener.Close)
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
-	served.rosters.ttl, served.rosters.silenceTTL = 0, 0
+	// Every read asks the listener, with no stored copy (ListenerRosterUncached), so each case's
+	// read sees the listener as the case left it: this row reads how a holder is judged, not the
+	// copy.
+	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, listenerRosterUncached: true})
 	key := claimIssueKey(t, handler, "todo")
 	if response := bearerRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/claim", map[string]any{
 		"actor": claimActorBody("session-one", "Implementer"),

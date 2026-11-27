@@ -124,6 +124,14 @@ func newDriveRig(t *testing.T) *driveWorld {
 	})
 	world.rig.served.readWorkers = &backgroundWork{}
 	world.tracer.waitWork = world.waitReadWork
+	// The roster's copy serves for an hour and is fetched once now, before anything is seeded or
+	// driven: no read fetches one on this branch, and the refresh loop (issue_route_status.go)
+	// would otherwise write it in some row's window, and a read-only request and its writer could
+	// find the copy past its bound between them.
+	served := world.rig.served
+	served.rosters.ttl = time.Hour
+	served.startRouteRosterRefresh()
+	<-served.rosters.ask().done
 	world.caller = newBrokerCaller(t)
 	seedPeople(t, raw, drivePerson)
 	world.mintTokens(t)
@@ -567,8 +575,8 @@ func (w *driveWorld) seedWrites(t *testing.T) {
 	w.values["going"] = going
 }
 
-// staleRoster makes the stored route roster an hour past its expiry, so the next read that needs
-// it fetches it again.
+// staleRoster makes the stored route roster an hour past its expiry: the copy is then past its
+// bound, which a read answers as such and the refresh loop, once woken, fetches again.
 func (w *driveWorld) staleRoster(t *testing.T) {
 	t.Helper()
 	tag, err := w.raw.Pool.Exec(context.Background(), `update route_roster set expires_at = now() - interval '1 hour'`)

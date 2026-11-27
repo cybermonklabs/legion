@@ -217,18 +217,13 @@ func collectReplayMeta(in replayInputs, pid int, root string) replayMetaRecord {
 	return m
 }
 
-// dispatchGOMAXPROCS is GOMAXPROCS from Dispatch's environment, else the stack's setting
-// (LOADTEST_GOMAXPROCS, default nproc, as stack.sh starts Dispatch).
+// dispatchGOMAXPROCS is the GOMAXPROCS Dispatch runs with, read back from its environment
+// (readDispatchGOMAXPROCS), else LOADTEST_GOMAXPROCS (cluster.sh sets it to Dispatch's container
+// CPU limit for a foreign Dispatch), else nproc.
 func dispatchGOMAXPROCS(pid int) int {
-	if pid > 0 {
-		if b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ"); err == nil {
-			for kv := range strings.SplitSeq(string(b), "\x00") {
-				if v, ok := strings.CutPrefix(kv, "GOMAXPROCS="); ok {
-					if n, err := strconv.Atoi(v); err == nil && n > 0 {
-						return n
-					}
-				}
-			}
+	if v, _ := readDispatchGOMAXPROCS(pid); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
 		}
 	}
 	if n, err := strconv.Atoi(os.Getenv("LOADTEST_GOMAXPROCS")); err == nil && n > 0 {

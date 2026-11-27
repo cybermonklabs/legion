@@ -507,10 +507,13 @@ func (st *step) startEditors(ctx context.Context) *editorWorkload {
 			defer w.schedules.Done()
 			// The schedule and the words come from one stream, which every scheduled update
 			// draws from whether or not it is sent, so two runs offer the same arrivals; where an
-			// update lands in the document comes from another.
+			// update lands in the document comes from another. An editor types at its own rate
+			// from the step's start to the window's end: a -schedule's factors multiply the
+			// events and the requests, not the editors (README.md, "Load schedule and recovery").
 			positions := rand.New(rand.NewPCG(st.cfg.rngSeed, 1<<32+uint64(i)))
 			updates := 0
-			openLoop(ctx, st.cfg.rngSeed, 3+uint64(i), cfg.rate, st.start, st.winStart, st.winEnd, func(r *rand.Rand, in bool) {
+			typing := []rateSegment{{from: st.start, rate: cfg.rate}}
+			openLoop(ctx, st.cfg.rngSeed, 3+uint64(i), typing, st.winStart, st.winEnd, func(r *rand.Rand, _ time.Time, in bool) {
 				word := words[r.IntN(len(words))]
 				c := current.Load()
 				if c == nil || !c.synced.Load() {

@@ -67,7 +67,7 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 		order by created_at desc
 	`, actor.ID)
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("list agent tokens: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("list agent tokens: %w", err))
 		return
 	}
 	defer rows.Close()
@@ -76,13 +76,13 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		token, err := scanAgentToken(rows)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		tokens = append(tokens, token)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("iterate agent tokens: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("iterate agent tokens: %w", err))
 		return
 	}
 	WriteJSON(w, http.StatusOK, tokens)
@@ -112,7 +112,7 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	}
 	var input createAgentTokenInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	input.Name = strings.TrimSpace(input.Name)
@@ -132,23 +132,23 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 
 	plaintext, hash, err := newAgentToken()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	prefix := plaintext[len("dsp_") : len("dsp_")+agentTokenPrefixLength]
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), insert, actor.ID, input.Name, hash[:], prefix, scopes))
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("create agent token: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("create agent token: %w", err))
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("create agent token: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("create agent token: %w", err))
 		return
 	}
 	WriteJSON(w, http.StatusCreated, createAgentTokenResponse{AgentToken: token, Token: plaintext})
@@ -181,7 +181,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	}
 	var input updateAgentTokenScopesInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.Scopes == nil {
@@ -200,7 +200,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -216,7 +216,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		if err := tx.QueryRow(r.Context(), `
 			select exists (select 1 from agent_read_tokens where id = $1 and owner = $2)
 		`, r.PathValue("id"), actor.ID).Scan(&readOnly); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("update agent token scopes: %w", err))
 			return
 		}
 		if readOnly {
@@ -228,11 +228,11 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("update agent token scopes: %w", err))
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("update agent token scopes: %w", err))
 		return
 	}
 	WriteJSON(w, http.StatusOK, token)
@@ -353,7 +353,7 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 		)
 		select (select count(*) from writing) + (select count(*) from reading)
 	`, r.PathValue("id"), actor.ID).Scan(&revoked); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("revoke agent token: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("revoke agent token: %w", err))
 		return
 	}
 	if revoked == 0 {

@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are.",
 	Handler:     (*server).uploadProjectArtifact,
+	BodyLimit:   maxUploadRequestBytes,
 	WriteClass:  scopeProject,
 	Shape: routeShape{
 		Status: http.StatusCreated, Response: artifactUploadResponse{},

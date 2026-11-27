@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -20,7 +21,9 @@ import (
 
 // The codes writeHandlerError answers a document it cannot read or serve and an unclassified
 // failure with, which a comment's or ask's single read also carries as anchor_block_error
-// (anchorBlock).
+// (anchorBlock). The codes of a request the server could not serve, and of a call it never got
+// an answer to, are admission's (admission.CodeDatabaseBusy,
+// admission.CodeCommitOutcomeUnknown).
 const (
 	codeDocSchema             = "DOC_SCHEMA"
 	codeDocNewerContent       = "DOC_NEWER_CONTENT"
@@ -135,7 +138,27 @@ func deletedPostError(kind refs.ItemKind) *apiError {
 	return errorf(http.StatusConflict, "POST_DELETED", "this %s is deleted", kind)
 }
 
-func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
+// writeHandlerError answers r, whose handler failed with err. A request the server could not
+// serve - its deadline passed, its client went away, a bound of the server's own ended one of
+// its calls before the database answered it, or admission refused the units it asked back - and a
+// call it never got an answer to, whose outcome is unknown, are both admission.WriteUnserved's to
+// answer, and it is asked first: a retryable 503, a 429, nothing for a client that is gone, or the
+// 500 naming the unknown outcome. A write that waited for a document's writer gate gave its
+// admission units back while it waited (docs.Service.AcquireDocumentWriter) and found no room to
+// take them back is one of those, its refusal err itself, and is answered as admission refuses a
+// request. Only then is err mapped to the failure it names.
+//
+// Whether this request can have written is what WriteUnserved's answer turns on, and the route's
+// method is what says so (admission.Reads), the four GET rows that write included (their
+// declarations' Read class readWritesState): none of them hands a write's error here. The three delivery reads' insert of
+// a run's configuration warning fails open, logged, and the read answers on (firstToWarn); the
+// going stream writes its run's ending only once its answer has begun, where a failure is logged
+// and ends the stream (streamGoingAnswer, pollGoingStream). So a GET's call the database never
+// answered is a read's, and is answered as one, 503 DATABASE_BUSY.
+func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err error) {
+	if admission.WriteUnserved(w, r.Context(), err, !admission.Reads(r.Method)) {
+		return
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		if apiErr.retryAfter > 0 {
@@ -232,6 +255,8 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, docs.ErrPreconditionBusy) {
+		// Refused before its transaction opened, so nothing ran and the writer may retry.
+		w.Header().Set("Retry-After", admission.RetryAfter)
 		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
 		return
 	}

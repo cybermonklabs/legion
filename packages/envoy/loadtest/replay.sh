@@ -181,7 +181,6 @@ cmd_replay_seed() {
   done
   running dispatch && die "Dispatch is already running (pid $(pid_of dispatch)); stack.sh stop dispatch first"
   [ -x "$BIN/loadgen" ] || die "no $BIN/loadgen; run stack.sh setup first"
-  gomaxprocs >/dev/null
   if [ "$resume" = true ]; then
     db_exists "$REPLAY_DB" || die "--resume: database $REPLAY_DB does not exist; run without --resume"
   fi

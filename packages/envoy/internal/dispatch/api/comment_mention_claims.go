@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // mentionClaimRefresh is how often the mention sender writes the claims of the sends waiting on
@@ -252,6 +254,27 @@ func mentionClaimArrays(claims []mentionClaim) (comments, targets []string, atte
 	return comments, targets, attempts, claimed
 }
 
+// mentionSenderPool is the pool the mention sender's own statements run on: the background pool
+// (store.Pool.Background), as every piece of work a request leaves behind reads and writes
+// through. The claim-refresh ticker and its re-read of the claims a lost refresh may have
+// written, a lane's re-read of its own (claimKnown), and the drain's release run after the
+// requests that queued their sends were answered, and a repeat's claim (claimQueuedMention) is
+// taken for a send that will outlive it, so none of them waits for a request's connection or
+// holds one. A pool that cannot be opened is the statement's error, which its caller logs and
+// tries again at its next tick, as the live pool's is (deliveryHub.liveRead).
+//
+// The sends themselves stay on the request pool: a lane's send is
+// deliverResolvedCommentMention, which a Retry request runs inside its own answer
+// (POST /api/v1/comments/{id}/deliveries/retry) on the server's request-pool transactions
+// (server.begin), so those statements are a request's and not the sender's own.
+func (s *server) mentionSenderPool() (*store.Pool, error) {
+	background, err := s.deps.Store.Pool.Background()
+	if err != nil {
+		return nil, fmt.Errorf("open the mention sender's pool: %w", err)
+	}
+	return background, nil
+}
+
 // refreshMentionClaims is the mention sender's refresh: one statement writes the claim of every
 // attempt the sender holds, and answers the claims it wrote. A row that no longer carries the
 // claim this sender recorded is left alone and not answered - a try has taken it for itself, or
@@ -261,9 +284,17 @@ func mentionClaimArrays(claims []mentionClaim) (comments, targets []string, atte
 // would be one more than a lease past the claim recorded, which no re-read of a lost answer can
 // tell from another sender's (rereadMentionClaims). Every claim this statement writes is
 // therefore less than a lease after the claim it names.
+//
+// It runs on the background pool (mentionSenderPool): the ticker that makes it runs long after
+// the requests whose sends it holds were answered, so it neither waits for a request's
+// connection nor takes one.
 func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
+	pool, err := s.mentionSenderPool()
+	if err != nil {
+		return nil, err
+	}
 	comments, targets, attempts, claimed := mentionClaimArrays(queued)
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		update comment_deliveries d set claimed_at = now()
 		from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
 			as queued(comment_id, target, attempt, claimed_at)
@@ -284,10 +315,14 @@ func (s *server) refreshMentionClaims(ctx context.Context, queued []mentionClaim
 // (model.DeliveryClaimSinceSQL), since another sender takes a claim only once the one on the row
 // has lapsed, and so writes one more than a lease past it. The sender asks it for attempts whose
 // recorded claim a refresh named and got no answer for (mentionClaimState.unsure), and records
-// what it answers.
+// what it answers. It runs on the background pool (mentionSenderPool), as the refresh does.
 func (s *server) rereadMentionClaims(ctx context.Context, unsure []mentionClaim) ([]mentionClaim, error) {
+	pool, err := s.mentionSenderPool()
+	if err != nil {
+		return nil, err
+	}
 	comments, targets, attempts, claimed := mentionClaimArrays(unsure)
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		select d.comment_id::text, d.target, d.attempt, d.claimed_at
 		from comment_deliveries d
 		join unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
@@ -314,10 +349,16 @@ func collectMentionClaims(rows pgx.Rows) ([]mentionClaim, error) {
 // pending and unclaimed. Each is scoped to that claim, so an attempt another sender has since
 // taken keeps that sender's claim. A row that carries a claim a lost refresh wrote, which a failed
 // re-read left unknown, is not given back: its claim lapses a lease after it was written, as a
-// killed process's claims do, and the delivery sweep then takes the attempt.
+// killed process's claims do, and the delivery sweep then takes the attempt. It runs on the
+// background pool (mentionSenderPool), as the drain it belongs to runs after every request has
+// been answered.
 func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) error {
+	pool, err := s.mentionSenderPool()
+	if err != nil {
+		return err
+	}
 	comments, targets, attempts, claimed := mentionClaimArrays(held)
-	_, err := s.deps.Store.Pool.Exec(ctx, `
+	_, err = pool.Exec(ctx, `
 		update comment_deliveries d set claimed_at = null
 		from unnest($1::uuid[], $2::text[], $3::int[], $4::timestamptz[])
 			as held(comment_id, target, attempt, claimed_at)
@@ -331,12 +372,25 @@ func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) 
 // lane (replayComment), so the delivery sweep leaves it to this process exactly as it leaves the
 // attempt a comment of this process's own queued. ok is false when another sender holds it: that
 // sender owns the send, and nothing is queued for it here.
+//
+// It runs on the background pool (mentionSenderPool) as the sender's other statements do: what
+// it claims is a send of the sender's lanes, which runs on past the repeat it was queued by, and
+// the repeat holds no connection of its own while it is made. The claim waits for the attempt's
+// row in a bounded wait, in a batch of its own sent on the pool (store.WriteBatch,
+// QueueWithinBound): a claim, a reply or a settle holding the row takes no lock the repeat holds,
+// and the repeat waits for this claim.
 func (s *server) claimQueuedMention(ctx context.Context, key mentionKey) (claimed time.Time, ok bool, err error) {
-	err = s.deps.Store.Pool.QueryRow(ctx, `
+	pool, err := s.mentionSenderPool()
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	var claim store.WriteBatch
+	claim.QueueWithinBound("", `
 		update comment_deliveries set claimed_at = now()
 		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and `+model.DeliveryClaimFreeSQL+`
 		returning claimed_at
-	`, key.comment, key.target, key.attempt).Scan(&claimed)
+	`, key.comment, key.target, key.attempt).QueryRow(func(row pgx.Row) error { return row.Scan(&claimed) })
+	err = claim.Send(ctx, pool)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}

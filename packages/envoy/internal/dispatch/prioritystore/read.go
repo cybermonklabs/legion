@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // tupleColumns is what every tuple read answers, in the order scanTuples takes them.
@@ -100,13 +102,25 @@ func Read(ctx context.Context, q Queryer, id string) (Node, bool, error) {
 // read committed reads the row again once the holder ends, so two writes that compare against
 // one value cannot both find it there. It refuses an id the store does not hold, and an id whose
 // priority is gone, with ErrNoPriority, as the writes do (liveRow).
+//
+// The lock is a request's row lock, so it waits within the bound every such lock does
+// (store.LockRowsWithinBoundAndRead): a row still held past it is refused store.ErrPoolBusy, and
+// the read that follows sees what the previous holder committed.
 func ReadForWrite(ctx context.Context, tx pgx.Tx, id string) (Node, error) {
-	node, err := scanNode(tx.QueryRow(ctx, `
+	var node Node
+	err := store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from priority_nodes
+		where kind = '`+KindPriority+`' and id = $1`+liveRow+`
+		for update
+	`, []any{id}, `
 		select `+nodeColumns+`
 		from priority_nodes
 		where kind = '`+KindPriority+`' and id = $1`+liveRow+`
-		for update
-	`, id))
+	`, []any{id}, func(row pgx.Row) error {
+		var err error
+		node, err = scanNode(row)
+		return err
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Node{}, fmt.Errorf("read priority %s: %w", id, ErrNoPriority)
 	}

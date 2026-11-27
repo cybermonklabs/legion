@@ -7,6 +7,7 @@ package githubapp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rsa"
 	"encoding/base64"
@@ -315,16 +316,26 @@ func WithLimits(limits Limits) Option {
 	return func(c *Client) { c.limits = limits }
 }
 
+// WithRequestTimeoutForTest replaces RequestTimeout for every call this client makes. It is for
+// tests, which hold a call past the production bound, or make one run it out in milliseconds,
+// without the package variable a test that writes it changes for every client of the process
+// (RequestTimeout). Nothing in production passes it, and a client built without it calls under
+// RequestTimeout.
+func WithRequestTimeoutForTest(bound time.Duration) Option {
+	return func(c *Client) { c.requestTimeout = bound }
+}
+
 // WithRateCounter makes the client count its calls to GitHub on counter, for the rate reading
 // (githubrate): every request it sends goes through counter's Transport, and every installation
 // token it mints is registered with its installation, so each call made with that token is counted
 // under that installation and the caller kind its context carries (githubrate.WithCaller). A
 // transport alone could not do the second half, since only the mint knows whose token it is.
 // Every client of one process that calls with installation tokens takes the one Counter, as
-// Dispatch's two do (the API's, which the architecture importer and the delivery intakes and
-// reconcile share, and the CI reconcile's), because GitHub budgets the installation and the
-// reading reports what the process spent of it, whichever client spent it. A nil counter counts
-// nothing, which is a client built without the option.
+// Dispatch's three do (the API's; the background one, which the architecture importer and the
+// delivery intakes and reconcile share (api.Deps.BackgroundGitHub); and the CI reconcile's),
+// because GitHub budgets the installation and the reading reports what the process spent of it,
+// whichever client spent it. A nil counter counts nothing, which is a client built without the
+// option.
 func WithRateCounter(counter *githubrate.Counter) Option {
 	return func(c *Client) {
 		if counter == nil {
@@ -345,6 +356,9 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
+	// requestTimeout replaces RequestTimeout for this client's calls; zero, which every client the
+	// deployment builds leaves it, keeps it (WithRequestTimeoutForTest).
+	requestTimeout time.Duration
 	// rate counts this client's calls to GitHub for the rate reading (WithRateCounter); nil
 	// counts none.
 	rate *githubrate.Counter
@@ -1159,7 +1173,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 			return nil, 0, nil, held
 		}
 	}
-	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
+	bounded, cancel := context.WithTimeout(ctx, cmp.Or(c.requestTimeout, RequestTimeout))
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {

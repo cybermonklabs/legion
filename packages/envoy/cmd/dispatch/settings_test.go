@@ -806,6 +806,20 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "65536"}, "DISPATCH_PPROF_PORT")
 		},
+		"DISPATCH_METRICS_ADDR": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_METRICS_ADDR": " 0.0.0.0:9090 "}); boot.MetricsAddr != "0.0.0.0:9090" {
+				t.Errorf("MetricsAddr = %q, want 0.0.0.0:9090", boot.MetricsAddr)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_METRICS_ADDR": ":9090"}); boot.MetricsAddr != ":9090" {
+				t.Errorf("MetricsAddr = %q, want every interface at :9090", boot.MetricsAddr)
+			}
+			if boot := resolveWith(t, nil); boot.MetricsAddr != "" {
+				t.Errorf("unset: MetricsAddr = %q, want none", boot.MetricsAddr)
+			}
+			for _, value := range []string{"9090", "127.0.0.1", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:+90", "[::1"} {
+				refusedWith(t, map[string]string{"DISPATCH_METRICS_ADDR": value}, "DISPATCH_METRICS_ADDR")
+			}
+		},
 		"DISPATCH_MAX_LIVE_ROOMS": func(t *testing.T) {
 			documentCapReachesTheService(t, "DISPATCH_MAX_LIVE_ROOMS", func(rooms, _ int) int { return rooms })
 		},
@@ -2083,6 +2097,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_EDIT_NOTICE_QUIET": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_SETTLEMENT_RESUME_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.SettlementResumeInterval != 0 {
+				t.Errorf("DISPATCH_TEST_SETTLEMENT_RESUME_INTERVAL unset: SettlementResumeInterval = %v, want 0 (docs.SettlementResumeInterval's minute)", boot.SettlementResumeInterval)
+			}
+			const quick = time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                      "1",
+				"DISPATCH_TEST_SETTLEMENT_RESUME_INTERVAL": quick.String(),
+			})
+			if boot.SettlementResumeInterval != quick {
+				t.Errorf("DISPATCH_TEST_SETTLEMENT_RESUME_INTERVAL: SettlementResumeInterval = %v, want %v", boot.SettlementResumeInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SETTLEMENT_RESUME_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SETTLEMENT_RESUME_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SETTLEMENT_RESUME_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_RECONCILE_AT_START": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_RECONCILE_AT_START": "1"}); !boot.ReconcileAtStart {
 				t.Error("DISPATCH_TEST_RECONCILE_AT_START=1: ReconcileAtStart false")
@@ -2157,6 +2189,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_INTAKE_WRITE_DEADLINE": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.IntakeWriteDeadline != 0 {
+				t.Errorf("DISPATCH_TEST_INTAKE_WRITE_DEADLINE unset: IntakeWriteDeadline = %v, want 0 (delivery.IntakeWriteDeadline's five seconds)", boot.IntakeWriteDeadline)
+			}
+			const held = time.Minute
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                 "1",
+				"DISPATCH_TEST_INTAKE_WRITE_DEADLINE": held.String(),
+			})
+			if boot.IntakeWriteDeadline != held {
+				t.Errorf("DISPATCH_TEST_INTAKE_WRITE_DEADLINE: IntakeWriteDeadline = %v, want %v", boot.IntakeWriteDeadline, held)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_INTAKE_WRITE_DEADLINE": invalid},
+					fmt.Sprintf("DISPATCH_TEST_INTAKE_WRITE_DEADLINE=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_INTAKE_WRITE_DEADLINE": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.MaintenanceSweepInterval != 0 {

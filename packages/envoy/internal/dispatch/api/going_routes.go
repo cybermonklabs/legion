@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -105,7 +106,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded).
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	actor := caller.Recorded()
@@ -122,7 +123,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	var input createGoingRequestInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	words := strings.TrimSpace(input.Words)
@@ -152,11 +153,11 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	if covers, scoped := s.callerProject(r); scoped && project != "" {
 		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, project)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if !found || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, private) {
-			s.writeHandlerError(w, errProjectNotFound())
+			s.writeHandlerError(w, r, errProjectNotFound())
 			return
 		}
 	}
@@ -166,9 +167,12 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// wait out the deadline for frames nothing was writing.
 	//
 	// On a connection mark of the run's own (store.ForConcurrentRead) and never the request's,
-	// which context.WithoutCancel keeps: the run outlives this handler, and its first search
-	// holds one of the pool's connections while its cursor is open (store.Pool.Query). This
-	// request's own mark is still in use at that moment - keyedWrites settles the
+	// which context.WithoutCancel keeps, and carrying no admission ticket (detachedFromRequest):
+	// the run outlives this handler, its searches wait on the embedder through the request's pairs
+	// (runSearch's awayOnNetwork), and only the request's own goroutine may park or resume its
+	// ticket. Its first search holds one of the pool's connections while its cursor is open
+	// (store.Pool.Query). This request's own mark is still in use at that moment - keyedWrites
+	// settles the
 	// Idempotency-Key with an Exec on it the moment this handler returns - and the pool refuses
 	// a second connection taken under a held mark (store.ErrNestedAcquire), so a shared mark
 	// would lose that settle to the run's first search and the key would store no answer: a
@@ -179,14 +183,14 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// its refusal (comment_create.go): a run that cannot be detached is a run nothing would
 	// answer, so recording the question first would leave the caller a 201 and a stream that
 	// only runs out its deadline.
-	answering, err := store.ForConcurrentRead(context.WithoutCancel(r.Context()))
+	answering, err := store.ForConcurrentRead(detachedFromRequest(r.Context()))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	request, err := s.recordGoingRequest(r.Context(), actor, project, words)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.detached.goDetached(func() { s.startGoingRun(answering, request) })
@@ -297,13 +301,20 @@ func (s *server) goingBodies(requestID string) func(context.Context, []going.Hit
 // (endGoingRun settles which one). That is how a stream ends when the pod that took the POST is
 // gone: nothing else would ever store that run's ending until the sweep ran. A run given a post
 // that has since been deleted is written goingWithdrawal's frame and nothing else.
+//
+// The stream is no request admission counts (apiRoute.Streams), and its reads of the request pool
+// are that pool's work outside admission: its caller's resolution and its run's read hold one
+// place of the share admission leaves between them (underOutsidePlace), given back here before
+// the stream's answer begins, and each poll after takes one without waiting for it, skipping its
+// tick where none is free (pollGoingStream). Neither its own deadline nor how it closes changes:
+// a skipped poll waits its tick as an empty one does.
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
 	// is what this route compares the run's author with, and a credential resolves at a cost -
 	// a token row, the sign-in issuer's confirmation - worth paying once.
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	id := r.PathValue("id")
@@ -320,13 +331,14 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !goingRunIsTheCallers(request.Author, actor) {
 		writeGoingRequestNotFound(w)
 		return
 	}
+	admission.PlaceFrom(r.Context()).Release()
 	after := goingResumeFrom(r)
 
 	// Past this point the answer is a stream: its status and headers are written before the
@@ -349,26 +361,35 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	ctx, done := context.WithDeadline(r.Context(), until)
 	defer done()
 	for {
-		frames, state, err := s.readGoingStream(ctx, id, after)
+		poll, err := s.pollGoingStream(ctx, id, after)
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run under this reader
 			// (contracts.GoingRequestTTL); either way there is nothing left to read.
 			return
 		}
-		if state.Withdrawn {
+		if poll.skipped {
+			// No place of the request pool's share was free: this tick read nothing, and the
+			// next one tries again.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(goingStreamPoll):
+			}
+			continue
+		}
+		if poll.state.Withdrawn {
 			// None of the frames this poll read is written: the withdrawal stands in the place of
 			// the run's ending, unless this reader already holds that ending (goingWithdrawal).
-			ending, err := s.goingWithdrawal(ctx, id, state)
-			if err != nil {
-				slog.Warn("dispatch going: end a withdrawn run", "request", id, "error", err)
+			if poll.ended != nil {
+				slog.Warn("dispatch going: end a withdrawn run", "request", id, "error", poll.ended)
 				return
 			}
-			if after < ending.Sequence && writeGoingFrame(w, ending) == nil {
+			if after < poll.withdrawal.Sequence && writeGoingFrame(w, poll.withdrawal) == nil {
 				_ = stream.Flush()
 			}
 			return
 		}
-		for _, frame := range frames {
+		for _, frame := range poll.frames {
 			if err := writeGoingFrame(w, frame); err != nil {
 				return
 			}
@@ -381,18 +402,19 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		switch {
-		case state.Terminal > 0:
+		case poll.state.Terminal > 0:
 			// The run has stored its one ending. This reader stops on having written that
 			// frame, never on the run merely holding one: a terminal frame committed between
 			// the read of the frames and the read of this state is not in hand yet, and one
 			// more poll answers it, with every frame before it. A reader already past that
 			// sequence is at the end of a stream that is over.
-			if after >= state.Terminal {
+			if after >= poll.state.Terminal {
 				return
 			}
-		case state.PastDeadline:
-			if _, err := s.endGoingRun(ctx, id, going.Fault(contracts.GoingErrorAnswerDidNotArrive)); err != nil {
-				slog.Warn("dispatch going: end the run at its deadline", "request", id, "error", err)
+		case poll.state.PastDeadline:
+			// The poll ended the run with the deadline's error before it gave its place back.
+			if poll.ended != nil {
+				slog.Warn("dispatch going: end the run at its deadline", "request", id, "error", poll.ended)
 				return
 			}
 			// Read again rather than writing that frame here: the answer may have stored frames

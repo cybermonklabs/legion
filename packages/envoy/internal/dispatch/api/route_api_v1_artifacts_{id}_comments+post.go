@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Comment on a document or one of its quotes. A reply names the comment it answers in reply_to, and one block of it in reply_to_block. " + replyQuoteDescription("reply_to_block", "INVALID_COMMENT") + " A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. " + commentPartiesDescription,
 	Handler:     (*server).createArtifactComment,
+	Replay:      func(s *server) keyedReplay { return replayRecovered(s, s.replayComment) },
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
 	Shape: routeShape{

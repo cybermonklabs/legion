@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -62,6 +63,18 @@ type Membership struct {
 // ended (now or earlier), an error matching ErrSignInUnavailable, the refresh's own failure in its
 // chain, when the confirmation has lapsed and the issuer could not renew it now, and any other
 // error when the membership could not be read or recorded.
+//
+// A confirmation that has lapsed is renewed under a flight of the person's, which waits on the
+// sign-in issuer for up to refreshTimeout and reads nothing of the pool while it does. So Confirm
+// gives back the unit of the server's room ctx's request holds before it joins the flight, whether
+// it leads the flight or waits on another request's - an admitted request's admission units, the
+// place of the request pool's share outside admission a document socket's admission or a heartbeat
+// check holds, and a pinned read's connection (admission.GiveBack) - and takes it back once the
+// flight has answered, whatever it answered (admission.Away.TakeBack), so it returns holding what
+// it was called holding, or refused. The flight's refresh holds the unit of the request that leads
+// it for its own reads and writes of the person's row alone, and not while it waits on the issuer
+// (refresh). A take-back refused is Confirm's answer: admission's refusal for an admitted request,
+// a busy pool (store.ErrPoolBusy) for a place, after which nothing of the refresh is written.
 func (m *Membership) Confirm(ctx context.Context, email string) error {
 	membership, found, err := m.People.Membership(ctx, email)
 	if err != nil {
@@ -70,17 +83,31 @@ func (m *Membership) Confirm(ctx context.Context, email string) error {
 	if found && m.fresh(membership) {
 		return nil
 	}
+	away := admission.GiveBack(ctx)
 	// The refresh belongs to the person, not to the request that found it due: a browser
 	// hanging up must neither cancel it nor have its cancellation read as the issuer's refusal.
 	_, err, _ = m.refreshes.Do(email, func() (any, error) {
 		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 		defer cancel()
-		return nil, m.refresh(refreshCtx, email)
+		return nil, m.refresh(refreshCtx, away, email)
 	})
+	if back := away.TakeBack(ctx); back != nil {
+		return back
+	}
 	return err
 }
 
-func (m *Membership) refresh(ctx context.Context, email string) error {
+// refresh renews email's lapsed confirmation with the sign-in issuer, for the flight Confirm
+// shares among the person's requests. away is what the request that leads the flight gave back
+// before it joined it (Confirm): the refresh takes it back for its reads and writes of the
+// person's row, gives it back again while it waits on the issuer, and takes it back for what it
+// writes once the issuer has answered (admission.Away.TakeBack), so the issuer's round trip holds
+// no unit. A take-back refused ends the refresh before it asks the database anything, so nothing
+// of it is written, and every request waiting on the flight is told so and tries again.
+func (m *Membership) refresh(ctx context.Context, away admission.Away, email string) error {
+	if err := away.TakeBack(ctx); err != nil {
+		return err
+	}
 	// Read again under the flight: a refresh that finished just before this one began has
 	// already confirmed the person.
 	membership, found, err := m.People.Membership(ctx, email)
@@ -96,13 +123,20 @@ func (m *Membership) refresh(ctx context.Context, email string) error {
 	if !m.Rule.CanRefresh(membership.Subject) {
 		return m.end(ctx, email, membership.Subject, "the address's sign-in recorded no Google account to confirm")
 	}
+	issuer := admission.GiveBack(ctx)
 	session, err := m.SignIn.Refresh(ctx, membership.RefreshToken)
-	if errors.Is(err, oidc.ErrGrantRefused) {
-		return m.end(ctx, email, membership.Subject, err.Error())
-	}
-	if err != nil {
+	refused := errors.Is(err, oidc.ErrGrantRefused)
+	if err != nil && !refused {
 		slog.Warn("dispatch: the sign-in issuer could not confirm a lapsed membership; the request is refused and the sign-in kept", "email", email, "error", err)
 		return fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
+	}
+	// What follows writes the person's row: the end of the sign-in the issuer refused, or the
+	// confirmation it gave.
+	if busy := issuer.TakeBack(ctx); busy != nil {
+		return busy
+	}
+	if refused {
+		return m.end(ctx, email, membership.Subject, err.Error())
 	}
 	person, err := m.Rule.Person(session.Claims)
 	if err != nil {

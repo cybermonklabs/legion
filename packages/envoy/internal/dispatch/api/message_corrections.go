@@ -65,19 +65,19 @@ func (s *server) lockedMessageForCorrection(
 ) (model.Message, time.Time, bool) {
 	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return model.Message{}, time.Time{}, false
 	}
 	var now time.Time
 	if message.IssueKey != nil {
 		if _, err := s.lockIssue(r.Context(), tx, *message.IssueKey); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return model.Message{}, time.Time{}, false
 		}
 		if message, err = scanMessage(tx.QueryRow(r.Context(), `
 			select `+messageColumns+`, now() from messages where id = $1
 		`, message.ID), &now); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return model.Message{}, time.Time{}, false
 		}
 	}
@@ -93,7 +93,7 @@ func (s *server) lockedMessageForCorrection(
 		return model.Message{}, time.Time{}, false
 	}
 	if message.DeletedAt != nil {
-		s.writeHandlerError(w, deletedPostError(refs.ItemMessage))
+		s.writeHandlerError(w, r, deletedPostError(refs.ItemMessage))
 		return model.Message{}, time.Time{}, false
 	}
 	return message, now.UTC(), true
@@ -108,7 +108,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	var input editMessageInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.correctionActor(w, r, input.Actor)
@@ -124,12 +124,12 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -140,7 +140,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	previousBody := message.Body
 	history, err := postBodyHistoryStep(refs.ItemMessage, message.ID, previousBody, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	message.Body = input.Body
@@ -155,18 +155,18 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	referenceChanges, index, err := s.planEditedItem(
 		r.Context(), tx, message.Author, refs.ItemMessage, message.ID, previousBody, message.Body, editedAt, nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	correction, logins, err := s.messageCorrectionEvent(r.Context(), tx, &message, "message.edited", actor, referenceChanges)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The answer lists the attempts as a read of the message lists them: the edit writes none,
 	// so they are read here, in the read phase, and a read that fails writes nothing.
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The history row, the update, the index, the event and its stamp go in one batch: the
@@ -186,11 +186,11 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.queueLoggedEventOn(b, correction, logins, "message", message.ID, func(appended model.Event) { event = appended })
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -220,7 +220,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -231,7 +231,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	referenceChanges, clear, err := s.clearDeletedPostBody(
 		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, false, message.Author, actor, deletedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	message.Body = ""
@@ -239,7 +239,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	message.DeletedBy = &actor
 	correction, logins, err := s.messageCorrectionEvent(r.Context(), tx, &message, "message.deleted", actor, referenceChanges)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The answer is read here, in the read phase, with the attempts as they stand: the settle is
@@ -247,7 +247,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	// one's receipt is built from that. The settle refuses should a row no longer stand as this
 	// read found it (queueDeletedPostSettlement).
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var pending []model.MessageDelivery
@@ -277,11 +277,11 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.queueLoggedEventOn(b, correction, logins, "message", message.ID, collect)
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), appended...)

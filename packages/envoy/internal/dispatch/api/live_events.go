@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
@@ -137,9 +138,9 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 		// relay subscription began. A cursor above the newest id, or one whose row is gone or
 		// carries another created_at, is a relay whose reset check has not yet run. The same
 		// statement counts what a resume is behind (eventSubscriptionCheck), so a resume reads
-		// the pool once before its replay rather than twice.
+		// the live pool once before its replay rather than twice.
 		var cursorAt *time.Time
-		if head, cursorAt, behind, err = eventSubscriptionCheck(ctx, s.deps.Store.Pool, subscription.head, since); err != nil {
+		if head, cursorAt, behind, err = s.eventSubscriptionCheck(ctx, subscription.head, since); err != nil {
 			endEventsAfterFailure(ctx, stream, sub, "read the event log's head", err)
 			return
 		}
@@ -307,9 +308,19 @@ func (s *server) resolveEventReplay(ctx context.Context, since *int64, published
 // subscription starts at published, not complete, so its page refreshes what it shows. behind is
 // how many events stand there, counted up to maxLiveReplay+1, or below zero when the caller has not
 // counted them, and it counts them itself.
+//
+// The replay's page comes off the live pool, as the relay that feeds this subscription reads
+// (eventStreamRelay): a socket's backlog never queues for a request's connection. The count
+// before it, and the subscription's head check before that (eventSubscriptionCheck), come off the
+// same pool, so the replay waits for one pool and not two; a resume whose own check counted the
+// backlog already counts nothing here.
 func (s *server) replayThrough(ctx context.Context, from, published int64, complete bool, behind int) (eventReplay, error) {
+	live, err := s.deps.Store.Pool.Live()
+	if err != nil {
+		return eventReplay{}, fmt.Errorf("open the live pool: %w", err)
+	}
 	if behind < 0 {
-		if err := s.deps.Store.Pool.QueryRow(ctx, `
+		if err := live.QueryRow(ctx, `
 			select count(*) from (select 1 from events where id > $1 and id <= $2 order by id limit $3) as behind
 		`, from, published, maxLiveReplay+1).Scan(&behind); err != nil {
 			return eventReplay{}, err
@@ -321,7 +332,7 @@ func (s *server) replayThrough(ctx context.Context, from, published int64, compl
 	// The replay serves whoever subscribed, and this read resolves no credential of theirs, so it
 	// reads as one that proves no author: an ask reserved for its author carries no detail here
 	// (refs' visibility registry).
-	missed, err := s.readEventsAfterID(ctx, model.Actor{}, from, published, maxLiveReplay)
+	missed, err := s.readEventsAfterID(ctx, live, model.Actor{}, from, published, maxLiveReplay)
 	if err != nil {
 		return eventReplay{}, err
 	}
@@ -352,7 +363,7 @@ func (s *server) resumeAfterOverflow(ctx context.Context, after int64) (relaySub
 	if err != nil {
 		return relaySubscription{}, eventReplay{}, false
 	}
-	head, cursorAt, behind, err := eventSubscriptionCheck(ctx, s.deps.Store.Pool, next.head, &after)
+	head, cursorAt, behind, err := s.eventSubscriptionCheck(ctx, next.head, &after)
 	if err != nil || events.EventLogWasReset(next.head, next.headAt, head, cursorAt) {
 		next.cancel()
 		return relaySubscription{}, eventReplay{}, false
@@ -370,10 +381,20 @@ func (s *server) resumeAfterOverflow(ctx context.Context, after int64) (relaySub
 // stands behind it: the rows of (since, cursor], counted up to maxLiveReplay+1, which is all the
 // bound needs (replayThrough). behind is -1 when there is nothing to count: no since, or a since
 // above the cursor, which resolveEventReplay answers without a replay read. One statement, so a
-// resume waits for the shared pool once before its replay read rather than twice: on a restart
-// every page resumes at once, behind every request queued for a connection.
-func eventSubscriptionCheck(ctx context.Context, q queryer, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, err error) {
-	if err := q.QueryRow(ctx, `
+// resume waits for a connection once before its replay read rather than twice: on a restart
+// every page resumes at once.
+//
+// It reads the live pool, as the replay after it does (replayThrough) and as the relay feeding the
+// subscription does: a subscription is no request admission counts, and on the request pool every
+// page resuming after a restart queued behind every request for a connection, outside admission
+// and outside its share of that pool. The statement joins no transaction and takes no lock, so it
+// needs nothing of the request pool's.
+func (s *server) eventSubscriptionCheck(ctx context.Context, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, err error) {
+	live, err := s.deps.Store.Pool.Live()
+	if err != nil {
+		return 0, nil, 0, fmt.Errorf("open the live pool: %w", err)
+	}
+	if err := live.QueryRow(ctx, `
 		select coalesce((select max(id) from events), 0), (select created_at from events where id = $1),
 			case when $2::bigint is null or $2::bigint > $1 then -1
 			else (select count(*) from (select 1 from events where id > $2::bigint and id <= $1 order by id limit $3) as b)::int end

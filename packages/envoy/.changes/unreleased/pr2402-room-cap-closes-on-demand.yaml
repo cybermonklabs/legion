@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The room cap now closes an idle room only when a browser waits for a place, not ahead of demand: a document socket that finds the cap full waits up to 2.1 seconds while Dispatch closes the least recently used room nobody has open and that it may close, and is refused `503` with `Retry-After: 1` only if no place frees, where Dispatch used to close idle rooms whenever rooms held more than nine tenths of the cap and, on the load test's 10x step, closed 2.6 rooms a second that the next write or read had to load again.

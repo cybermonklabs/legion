@@ -112,7 +112,7 @@ func TestCommittedLedgerWritePersistsSettlementCreditWhenCallerContextCancelsAft
 		t.Fatalf("begin edit: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	joined, ledger := service.Join(ctx, &cancelAfterCommitTx{Tx: tx, cancel: cancel})
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), &cancelAfterCommitTx{Tx: tx, cancel: cancel})
 	defer ledger.Discard()
 	actor := model.Actor{Kind: "session", ID: "canceled-after-commit-session"}
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{
@@ -290,7 +290,9 @@ func writeThroughLedger(t *testing.T, service *Service, artifactID string, actor
 		t.Fatalf("begin %s's write: %v", actor.ID, err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	writeCtx, release := gatedContext(t, service, ctx, artifactID)
+	defer release()
+	joined, ledger := service.Join(writeCtx, tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: markdown}}, actor, nil); err != nil {
 		t.Fatalf("apply %s's write: %v", actor.ID, err)
@@ -409,7 +411,8 @@ func TestABrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *
 		t.Fatalf("begin the agent's transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	agentCtx, releaseAgent := gatedContext(t, service, ctx, artifactID)
+	joined, ledger := service.Join(agentCtx, tx)
 	defer ledger.Discard()
 	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
 		t.Fatalf("lock the document's owner: %v", err)
@@ -441,6 +444,7 @@ func TestABrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the agent's transaction: %v", err)
 	}
+	releaseAgent()
 
 	// Carol's queued append can now take the lock the commit released.
 	waitForPersistedUpdates(t, service, artifactID, 2)
@@ -586,7 +590,8 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 		t.Fatalf("begin the agent's transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	agentCtx, releaseAgent := gatedContext(t, service, ctx, artifactID)
+	joined, ledger := service.Join(agentCtx, tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: "Agent's paragraph.\n"}}, agent, nil); err != nil {
 		t.Fatalf("apply the agent's edit: %v", err)
@@ -616,6 +621,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the agent's transaction: %v", err)
 	}
+	releaseAgent()
 
 	// Carol's and dave's queued appends can now take the lock the commit released.
 	waitForPersistedUpdates(t, service, artifactID, 3)
@@ -657,7 +663,7 @@ func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 		t.Fatalf("begin the agent's transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: "Agent's paragraph.\n"}}, agent, nil); err != nil {
 		t.Fatalf("apply the agent's edit: %v", err)
@@ -705,7 +711,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 		t.Fatalf("begin the upload transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement text: %v", err)
@@ -751,7 +757,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 		t.Fatalf("begin the upload transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement text: %v", err)
@@ -1207,7 +1213,7 @@ func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 	state := service.lockState(artifactID)
 	record := &inflightCredit{seq: state.creditSeq.Add(1), authors: map[string]model.Actor{actorKey(bob): bob}}
 	state.inflight[record.seq] = record
-	capture := captureAuthors(state, nil, nil, nil, nil, everyCredit)
+	capture := captureAuthors(state, nil, nil, nil, nil, state.creditSeq.Load())
 	service.unlockState(artifactID, state)
 	testcleanup.Add(t, func() {
 		state.mu.Lock()
@@ -1355,7 +1361,7 @@ func closeTestIssue(t *testing.T, service *Service) {
 // rooms, as room sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedIssueWrite(service, "DOC-1", func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
 			return fmt.Errorf("clear the issue's closed_at: %w", err)

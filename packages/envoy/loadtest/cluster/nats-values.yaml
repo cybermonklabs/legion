@@ -14,11 +14,14 @@
 #   - no ServiceAccount (the Role writes none), and no service-account token in any pod.
 #
 # The images are not set here: render-nats.sh resolves each one's tag to its digest and passes
-# it with --set, so every image in nats.yaml is pinned by digest. __NAMESPACE__, __STORAGE_CLASS__
-# and __RUN_ID__ stay in nats.yaml as placeholders; cluster.sh fills them from validated values.
+# it with --set, so every image in nats.yaml is pinned by digest. __NAMESPACE__, __STORAGE_CLASS__,
+# __RUN_ID__ and __OMP_SESSION__ stay in nats.yaml as placeholders; cluster.sh fills them from
+# validated values, and leaves out the session label's line when no session runs it.
 # The quota counts ephemeral-storage requests, so every container requests it explicitly.
 # The chart puts global.labels on every object and pod it renders, but not on the PVC template,
-# which gets the same two labels below so that down finds the claims by the run label.
+# which gets the same two labels below so that down finds the claims by the run label. The
+# session label (theorem.dev/omp-session) is on the two pod templates alone, the pods whose cost
+# the compute spend accounting charges to the session that ran up.
 namespaceOverride: __NAMESPACE__
 global:
   labels:
@@ -89,6 +92,7 @@ podTemplate:
     metadata:
       labels:
         dispatch-loadtest/role: nats
+        theorem.dev/omp-session: __OMP_SESSION__
       annotations:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
     spec:
@@ -119,6 +123,7 @@ natsBox:
       metadata:
         labels:
           dispatch-loadtest/role: nats-box
+          theorem.dev/omp-session: __OMP_SESSION__
         annotations:
           cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
       spec:

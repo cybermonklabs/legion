@@ -213,9 +213,16 @@ func (c *Branches) CommitHolds(
 	case !errors.Is(err, pgx.ErrNoRows):
 		slog.Warn("dispatch: read whether a commit holds a merge", "repo", repoFull, "commit", commit, "merge", merge, "error", err)
 	}
-	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
-	if err == nil {
-		holds, err = client.CommitOnBranch(ctx, token, owner, repo, commit, merge)
+	// The compare read is a stretch the caller's request waits on (onGitHub), as the read of a
+	// commit's branch is (Branches.readCommitOnBranch). One whose wait failed stores nothing and answers
+	// HoldUnknown: the request is answered that failure.
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		var owner, repo, token string
+		if owner, repo, token, err = repositoryRead(ctx, client, repoFull); err == nil {
+			holds, err = client.CommitOnBranch(ctx, token, owner, repo, commit, merge)
+		}
+	}); refused != nil {
+		return HoldUnknown
 	}
 	if err != nil {
 		if !cannotSeeRepository(err) {

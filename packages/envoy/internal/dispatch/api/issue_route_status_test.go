@@ -48,19 +48,29 @@ func (r *fakeRoster) end(sessionID string) {
 
 // routeStatusServer is a Dispatch server whose listener answers GET /v1/sessions from roster,
 // counting every call, answers a plain 503 while roster.down is set, and the listener's
-// refilling answer with Retry-After 7 while roster.refilling is set. Its roster cache keeps no
-// answer (both TTLs zero), so every read asks the listener and a test that edits roster between
-// two reads sees the edit at the second; cachedRouteStatusServer is the server a deployment runs.
+// refilling answer with Retry-After 7 while roster.refilling is set. It keeps no copy of the
+// listener's answer (ListenerRosterUncached): every read asks the listener, so a test that edits
+// roster between two reads sees the edit at the second. Its rows test how a route is judged, not
+// the copy; cachedRouteStatusServer is the server a deployment runs.
 func routeStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, served := cachedRouteStatusServer(t, roster)
-	served.rosters.ttl, served.rosters.silenceTTL = 0, 0
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: fakeRosterListener(t, roster), listenerRosterUncached: true})
 	return handler, database
 }
 
-// cachedRouteStatusServer is routeStatusServer keeping the TTLs register sets, and also returns
-// the server, so a test can shorten them before its first read.
+// cachedRouteStatusServer is routeStatusServer keeping the stored copy and the TTLs register
+// sets, and also returns the server, so a test can shorten them before its first read. A cold
+// process's issue read reads every route unknown at once, so a row that reads the listener's
+// answer through the copy waits for the refresh loop's first fetch first (awaitRoster).
 func cachedRouteStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *store.Store, *server) {
+	t.Helper()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: fakeRosterListener(t, roster)})
+	return handler, database, served
+}
+
+// fakeRosterListener is the listener routeStatusServer and cachedRouteStatusServer ask, answering
+// from roster.
+func fakeRosterListener(t *testing.T, roster *fakeRoster) string {
 	t.Helper()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/sessions" {
@@ -85,8 +95,7 @@ func cachedRouteStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *s
 		_ = json.NewEncoder(w).Encode(rows)
 	}))
 	t.Cleanup(listener.Close)
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
-	return handler, database, served
+	return listener.URL
 }
 
 // routedIssue is the part of an issue read (detail or list row) a route-status test asserts on.
@@ -586,13 +595,17 @@ func TestAStoredRowFromBeforeSessionStatesReadsItsSessionsLive(t *testing.T) {
 // cannot read that row, the failure is the database's: a filter for a judged state answers it as
 // one, never as the listener's silence (503 ENVOY_UNAVAILABLE, whose remedy - route_status=unknown
 // - points an operator at the listener). A read that only shows a route still serves the issue,
-// with its route unknown.
+// with its route unknown. The row makes the stored copy unreadable, so it reads through that copy
+// (cachedRouteStatusServer, a minute's TTL) once the refresh loop has stored it, not through a
+// server that asks the listener on every read.
 func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) {
 	t.Parallel()
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
-	handler, database := routeStatusServer(t, roster)
+	handler, database, served := cachedRouteStatusServer(t, roster)
+	served.rosters.ttl = time.Minute
 	key := routedIssueKey(t, handler, "role:sre")
+	awaitRoster(t, served)
 	requireReach(t, handler, key, "live", "ses-sre", "")
 
 	if _, err := database.Pool.Exec(context.Background(), `alter table route_roster rename to route_roster_unreadable`); err != nil {
@@ -613,8 +626,8 @@ func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) 
 
 // secondRouteStatusServer is a second server process beside served: the same database and the
 // same listener, but a pool of its own (storetest.SecondProcess), a roster cache of its own with
-// served's TTLs and fetch bound, and its own single-flight fetch, so the two share only what
-// Postgres holds, as two envoy-dispatch processes do.
+// served's TTLs and fetch bound, and its own refresh loop, so the two share only what Postgres
+// holds, as two envoy-dispatch processes do.
 func secondRouteStatusServer(t *testing.T, served *server) (http.Handler, *server) {
 	t.Helper()
 	deps := served.deps
@@ -630,7 +643,10 @@ func secondRouteStatusServer(t *testing.T, served *server) (http.Handler, *serve
 // Two server processes judge a route against one listener answer: the one the first stored
 // serves the second for its TTL, so a route the first reads live is never read as reaching nobody
 // on the second because the second asked the listener a moment later, and the second makes no
-// call of its own. Both TTLs are a minute, so a slow machine's reads stay inside them.
+// call of its own: its refresh loop finds the answer with more than its lead left. Both TTLs are
+// a minute, so a slow machine's reads stay inside them. The reads come once the first server's
+// refresh loop has stored its answer (awaitRoster), since a cold process's issue read waits on no
+// fetch.
 func TestTwoServersJudgeARouteAgainstTheOneStoredListenerAnswer(t *testing.T) {
 	t.Parallel()
 	roster := &fakeRoster{}
@@ -640,6 +656,7 @@ func TestTwoServersJudgeARouteAgainstTheOneStoredListenerAnswer(t *testing.T) {
 	other, _ := secondRouteStatusServer(t, served)
 	key := routedIssueKey(t, handler, "role:sre")
 	before := roster.lookups.Load()
+	awaitRoster(t, served)
 
 	if got := detailReach(t, handler, key); got != "live ses-sre" {
 		t.Fatalf("the first server reads %s, want live ses-sre", got)
@@ -658,7 +675,8 @@ func TestTwoServersJudgeARouteAgainstTheOneStoredListenerAnswer(t *testing.T) {
 
 // A listener failure one server meets is every server's: the stored silence has the second read
 // unknown too, without a call of its own, even though the listener answers again by then. The
-// silence is a minute, so a slow machine's reads stay inside it.
+// silence is a minute, so a slow machine's reads stay inside it. The first server's silence is
+// stored (awaitRoster) while the listener is still down.
 func TestAListenerFailureOneServerMetReadsUnknownOnTheOther(t *testing.T) {
 	t.Parallel()
 	roster := &fakeRoster{}
@@ -668,6 +686,7 @@ func TestAListenerFailureOneServerMetReadsUnknownOnTheOther(t *testing.T) {
 	other, _ := secondRouteStatusServer(t, served)
 	key := routedIssueKey(t, handler, "role:sre")
 	before := roster.lookups.Load()
+	awaitRoster(t, served)
 
 	if got := detailReach(t, handler, key); got != "unknown null" {
 		t.Fatalf("the first server reads %s with the listener down, want unknown null", got)
@@ -692,7 +711,8 @@ func TestAListenerFailureOneServerMetReadsUnknownOnTheOther(t *testing.T) {
 // absence or an unreachable listener. The second server reads the answer the first stored, so it
 // must show that same refilling state: route status unknown for the refilling reason, and the
 // Agents read the ENVOY_REFILLING answer with the listener's own Retry-After. Both TTLs are a
-// minute, so a slow machine's reads stay inside them.
+// minute, so a slow machine's reads stay inside them. The reads come once the first server's
+// refresh loop has stored the refill (awaitRoster).
 func TestARefillOneServerMetIsARefillOnTheOther(t *testing.T) {
 	t.Parallel()
 	roster := &fakeRoster{}
@@ -702,6 +722,7 @@ func TestARefillOneServerMetIsARefillOnTheOther(t *testing.T) {
 	served.rosters.ttl, served.rosters.silenceTTL = time.Minute, time.Minute
 	other, _ := secondRouteStatusServer(t, served)
 	key := routedIssueKey(t, handler, "role:sre")
+	awaitRoster(t, served)
 
 	requireReach(t, handler, key, "unknown", "", "refilling")
 	requireReach(t, other, key, "unknown", "", "refilling")
@@ -710,8 +731,10 @@ func TestARefillOneServerMetIsARefillOnTheOther(t *testing.T) {
 
 // A listener answer is stored only over an older one, by when its call was sent: a fetch that was
 // sent first and answers last does not replace the answer a later fetch on the other server
-// stored, and the reads waiting on it are served that newer answer. The listener holds its first
-// call and answers it with nobody; every later call lists ses-sre holding sre.
+// stored, and the cold agents list waiting on it is served that newer answer. The listener holds
+// its first call and answers it with nobody; every later call lists ses-sre holding sre. The reads
+// that wait on a fetch are each server's first agents list (readAgents), the one read that waits
+// on the listener.
 func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32
@@ -738,14 +761,14 @@ func TestAnOlderListenerAnswerNeverReplacesANewerOne(t *testing.T) {
 	_, second := secondRouteStatusServer(t, first)
 
 	older := make(chan routeRoster, 1)
-	go func() { older <- readRoster(t, first, context.Background()) }()
+	go func() { older <- readAgents(t, first, context.Background()) }()
 	awaitCalls(t, &calls, 1)
-	if got := sreReach(readRoster(t, second, context.Background())); got != "live ses-sre" {
+	if got := sreReach(readAgents(t, second, context.Background())); got != "live ses-sre" {
 		t.Fatalf("the second server's own fetch reads %s, want live ses-sre", got)
 	}
 	release()
-	if got := sreReach(testwait.Receive(t, "the read waiting on the older fetch to return", older)); got != "live ses-sre" {
-		t.Fatalf("the read waiting on the older fetch reads %s, want the newer stored live ses-sre", got)
+	if got := sreReach(testwait.Receive(t, "the list waiting on the older fetch to return", older)); got != "live ses-sre" {
+		t.Fatalf("the list waiting on the older fetch reads %s, want the newer stored live ses-sre", got)
 	}
 	if got := sreReach(readRoster(t, first, context.Background())); got != "live ses-sre" {
 		t.Fatalf("the first server's next read reads %s, want the newer stored live ses-sre", got)

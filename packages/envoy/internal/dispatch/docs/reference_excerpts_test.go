@@ -165,9 +165,9 @@ func (r *failedReads) attempts(room string) []time.Time {
 	return attempts
 }
 
-// owedDocuments commits n project documents, each with one mention owed an excerpt, and returns
+// owedExcerptDocuments commits n project documents, each with one mention owed an excerpt, and returns
 // them in the id order the reconciliation reads them in.
-func owedDocuments(t *testing.T, database *store.Store, n int) []string {
+func owedExcerptDocuments(t *testing.T, database *store.Store, n int) []string {
 	t.Helper()
 	documents := make([]string, n)
 	for index := range documents {
@@ -264,7 +264,7 @@ func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *test
 	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
-	documents := owedDocuments(t, database, referenceExcerptBatch)
+	documents := owedExcerptDocuments(t, database, referenceExcerptBatch)
 	first := documents[0]
 	persistence := newUnreadableDocumentStore(database, first)
 	service := newExcerptService(t, database, persistence)
@@ -301,7 +301,7 @@ func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *
 	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
-	documents := owedDocuments(t, database, 3)
+	documents := owedExcerptDocuments(t, database, 3)
 	refused := documents[1]
 	if _, err := database.Pool.Exec(ctx, `
 		create function refuse_excerpt_record() returns trigger language plpgsql as $$
@@ -346,7 +346,7 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 	// fifth plus a second late, and among the package's parallel tests the first retry came 4.42 s
 	// after the attempt (envoy-go-docs-finalizers job 137379091221).
 	database := storetest.Open(t)
-	failing := owedDocuments(t, database, 1)[0]
+	failing := owedExcerptDocuments(t, database, 1)[0]
 	persistence := newUnreadableDocumentStore(database, failing)
 	service := newExcerptService(t, database, persistence)
 	leases := excerptLeases(t, database)
@@ -376,7 +376,7 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
-	documents := owedDocuments(t, database, referenceExcerptBatch+1)
+	documents := owedExcerptDocuments(t, database, referenceExcerptBatch+1)
 	failing, last := documents[:referenceExcerptBatch], documents[referenceExcerptBatch]
 	persistence := newUnreadableDocumentStore(database, failing...)
 	service := newExcerptService(t, database, persistence)
@@ -403,7 +403,7 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
-	documents := owedDocuments(t, database, 3)
+	documents := owedExcerptDocuments(t, database, 3)
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	service := newExcerptService(t, counted, nil)
@@ -432,7 +432,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	// wake, and among the package's parallel tests it was not (envoy-go-docs-finalizers job
 	// 137379091221).
 	database := storetest.Open(t)
-	document := owedDocuments(t, database, 1)[0]
+	document := owedExcerptDocuments(t, database, 1)[0]
 	hub := &pglisten.Hub{Owner: "reference excerpts test", Dial: database.Pool.Listener}
 	wake := hub.Wake(ExcerptsOwedChannel)
 	connected := make(chan struct{})

@@ -11,7 +11,7 @@
 # the helm version HELM names below and nats-values.yaml, with each image pinned to the digest a
 # registry manifest read gives its tag, and refuses a render that holds a kind the load-test Role
 # cannot write or an image not pinned by digest. The output keeps the placeholders __NAMESPACE__,
-# __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
+# __STORAGE_CLASS__, __RUN_ID__ and __OMP_SESSION__, which cluster.sh fills.
 #
 # It needs sha256sum, and one of two helms. Where the helm on PATH answers that version to
 # `helm version --template '{{.Version}}'`, it runs that helm and needs no go: CI's

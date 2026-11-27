@@ -10,8 +10,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 )
 
 // routeAuth names who may call a route. It describes the check the handler performs; the
@@ -171,6 +173,10 @@ func undecidedIDRoutes(routes []apiRoute) []string {
 // caller may reach.
 type routeScopeSet []string
 
+// keyedRefusal answers a refusal the keyed layer decides itself in a route's own shape
+// (keyedRoute.refuse): err, with recovery the point the key held when the layer decided it.
+type keyedRefusal = func(w http.ResponseWriter, r *http.Request, err error, recovery json.RawMessage)
+
 // routeDecl is one route as the file that declares it states it. Every route of this package is a
 // file of its own, route_<path>+<method>.go (internal/dispatch/routefile says how a pattern is
 // written into the name, and TestEachRouteIsDeclaredInTheFileItsNameNames holds each file to it),
@@ -278,6 +284,55 @@ type routeDecl struct {
 	// gate reads it.
 	ApproveOnly bool
 
+	// Download marks a file version download: the read whose deadline bounds the work it does
+	// before its answer rather than the whole of it (downloadDeadline, or the test's
+	// Deps.DownloadDeadline), stopping at the answer's first byte, after which the answer's
+	// transfer bound alone decides how long the bytes may take (servedAsRead,
+	// admission.WithDeadlineUntilAnswer). A download pins no connection either (pinsConnection).
+	// Only a GET route declares it.
+	Download bool
+	// Streams marks a read whose answer is a stream its reader holds open long past the work
+	// behind it: the going run's server-sent events, which a reader keeps for the run's whole
+	// window while the frames the run stores reach it (streamGoingAnswer). Such a route
+	// takes no admission unit and pins no connection, since a reader parked on a stream for
+	// half a minute would hold a unit of the read class and a request-pool connection for all
+	// of it, where the polls that fill it take a connection only while each read runs; the
+	// deadline bounds the reads before its first frame alone, as a Download's does
+	// (servedAsRead), and the run behind it decides the rest. Its answer goes out under the
+	// transfer bounds every answer has, so a reader that stops reading is still cut.
+	Streams bool
+	// Weight is how many of its class's admission units a request takes (admission.Limiter): the
+	// most request-pool connections it holds at once. Zero is one; concurrentReadWeight and
+	// questionReadWeight are the two the routes that run reads side by side declare.
+	Weight int
+	// Lane is the heavy read lane a request of the route takes before it asks its class for
+	// units (admission.Lane): a limit of its own for one route whose reads cost the
+	// database far more than the rest. admission.NoLane for every other route.
+	Lane admission.Lane
+	// BodyLimit is the most bytes the route reads of a request body, which is also how much the
+	// keyed layer spools, how much of an early-answered request's body the server drains before
+	// it answers, and which 413 a body past it is answered with (bodyLimit, drainBeforeAnswer,
+	// bodyTooLarge). Zero is maxJSONRequestBytes, every JSON route's limit.
+	BodyLimit int64
+	// Replay answers a repeat of this route's keyed write whose first run committed a recovery
+	// point (keyedReplay): nil for a route that commits none, which is every route but the writes
+	// that also deliver to sessions. The function binds the replay to the server that mounts the
+	// route (routes), as Handler, a method expression, is bound there:
+	// `func(s *server) keyedReplay { return replayRecovered(s, s.replayComment) }`.
+	Replay func(s *server) keyedReplay
+	// Resumes is whether a repeat of this route's keyed write whose holder is gone takes the key
+	// over and runs the steps its recovery point does not hold (keyedRoute.resumes): true
+	// for the status change alone, a write made of steps that each commit.
+	Resumes bool
+	// Refuse answers a refusal the keyed layer decides itself in this route's own shape
+	// (keyedRoute.refuse): nil for every route but the status change, whose refusals carry the
+	// entries of the steps that committed. Bound to the server that mounts the route in routes(),
+	// as Replay is.
+	Refuse func(s *server) keyedRefusal
+	// RefusesClosedIssue marks the upload whose issue must still be open
+	// (refuseUploadToAClosedIssue).
+	RefusesClosedIssue bool
+
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
 	// reflected out of (routeShape, routes_shapes.go). Every route states one, which
 	// shapelessRoutes holds the table to; the OpenAPI emitter is what reads it.
@@ -335,6 +390,11 @@ func readClassRefusals(routes []apiRoute) []string {
 type apiRoute struct {
 	routeDecl
 	Handler http.HandlerFunc
+	// Replay and Refuse are the declaration's, bound to the server (routes): they shadow the
+	// declaration's own, which are functions of no server yet, as Handler shadows its method
+	// expression. What the keyed layer reads (keyedRoute) is these.
+	Replay keyedReplay
+	Refuse keyedRefusal
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -415,7 +475,14 @@ func (s *server) routes() []apiRoute {
 		if route.TestHook && !s.deps.TestHooksEnabled {
 			continue
 		}
-		routes = append(routes, apiRoute{routeDecl: route, Handler: s.bound(route.Handler)})
+		mounted := apiRoute{routeDecl: route, Handler: s.bound(route.Handler)}
+		if route.Replay != nil {
+			mounted.Replay = route.Replay(s)
+		}
+		if route.Refuse != nil {
+			mounted.Refuse = route.Refuse(s)
+		}
+		routes = append(routes, mounted)
 	}
 	slices.SortFunc(routes, func(left, right apiRoute) int { return byPatternThenMethod(left.routeDecl, right.routeDecl) })
 	return routes
@@ -471,4 +538,50 @@ func (s *server) getRouteIndex(w http.ResponseWriter, _ *http.Request) {
 // the docs site's API reference is generated from that output.
 func WriteRouteIndex(w io.Writer) error {
 	return json.NewEncoder(w).Encode(routeIndexBody(routeIndexEntries((&server{}).routes())))
+}
+
+// pinsConnection reports whether a request of the route runs every request-pool statement on one
+// connection, the one its first statement takes, held until its handler returns
+// (store.PinConnection): an issue read ran twelve statements, a page of its comments four, and
+// each waited for a connection of its own. Every admitted read pins but three kinds:
+//   - a read of weight two (concurrentReadWeight), whose reads run side by side, each on a
+//     connection of its own (store.ForConcurrentRead), which one pinned connection cannot serve;
+//   - a file version download (Download), which moves the file's bytes from the file store for
+//     minutes after its last statement, holding no connection meanwhile;
+//   - a stream (Streams), which its reader holds open for the run behind it, polling for the
+//     frames that run stores, and which is not admitted at all.
+//
+// A write never pins: it waits for its documents' writer gates between statements, which a caller
+// holding a connection is refused (docs.ErrGateWhileHoldingConnection).
+func (r apiRoute) pinsConnection() bool {
+	return admission.Reads(r.Method) && !r.TestHook && !r.Streams && r.Weight <= 1 && !r.Download
+}
+
+// downloadDeadline is the deadline of the four file version downloads: five minutes for the work
+// a download does before its answer begins - its row's read and the file store's open, which the
+// store bounds at files.OpenTimeout of its own - where a read of the database gets
+// defaultReadDeadline. It bounds none of the transfer that follows: from the answer's first byte
+// the file's bytes move at the reader's pace, which the answer's own bound measures (no silence
+// longer than the idle bound, and the floor after the grace), so a file up to
+// files.MaxObjectSize reaches a slow but steady reader however long that takes.
+const downloadDeadline = 5 * time.Minute
+
+// concurrentReadWeight is the weight of a route that runs its reads side by side, at most two at
+// once (readDeliveryRows, readPipelinePopulation, and the two stages of a related-item check
+// whose write is no question, which runs no cross-project leg): two request-pool connections.
+const concurrentReadWeight = 2
+
+// questionReadWeight is the weight of a route whose related-item check is a question's, which
+// runs a third read beside the two: the answered questions of the other projects
+// (relatedOtherProjects, taken only where relatedInput.question). Three request-pool
+// connections.
+const questionReadWeight = 3
+
+// bodyLimit is the most bytes a request of the route may carry: the declaration's own, and
+// maxJSONRequestBytes (decodeJSON) for every row that sets none. It is the most the keyed layer
+// spools before its handler runs - a body past it is refused whatever its key, so the layer
+// answers the 413 itself (bodyTooLarge) rather than spool it - and the most an early answer
+// discards before it is written (drainBeforeAnswer).
+func (r apiRoute) bodyLimit() int64 {
+	return cmp.Or(r.BodyLimit, maxJSONRequestBytes)
 }

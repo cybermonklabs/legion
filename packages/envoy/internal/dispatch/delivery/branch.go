@@ -427,7 +427,14 @@ func (c *Branches) readCommitOnBranch(
 	if holdable && c.unseenHeld(carry, pair, now) {
 		return branchRead{answer: BranchUnseen}
 	}
-	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
+	// The compare read is a stretch the caller's request waits on (onGitHub). One whose wait
+	// failed holds nothing and writes nothing: the request is answered that failure.
+	var answer bool
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		answer, err = askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
+	}); refused != nil {
+		return branchRead{answer: BranchUnknown}
+	}
 	if err != nil {
 		if !cannotSeeRepository(err) {
 			slog.Warn("dispatch: ask whether a commit is on a branch", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
@@ -464,6 +471,10 @@ func branchAnswerOf(onBranch bool) BranchAnswer {
 // branch_commits row is keyed by a branch and the name has to come from somewhere before that
 // row can be asked for at all.
 //
+// The read of GitHub is a stretch the caller's request waits on (onGitHub); one whose wait failed
+// - the request was refused its unit back - answers no name and no and keeps nothing, so no other
+// read of this process takes that refusal for the App being unable to read the repository.
+//
 // carry is a read-only read's (ReadDefaultBranchOf, ReadCommitOnBranch), and nil for a writer's:
 // what it carries for the repository is read before what this process holds, and what GitHub
 // answers is carried in it in place of the cache, so the read-only read's later steps read its
@@ -474,7 +485,13 @@ func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, carry
 	}
 	branch := ""
 	if client != nil {
-		read, err := repositoryDefaultBranch(ctx, client, repoFull)
+		var read string
+		var err error
+		if refused := onGitHub(ctx, func(ctx context.Context) {
+			read, err = repositoryDefaultBranch(ctx, client, repoFull)
+		}); refused != nil {
+			return "", false
+		}
 		if err != nil {
 			if !cannotSeeRepository(err) {
 				slog.Warn("dispatch: read the default branch of a repository", "repo", repoFull, "error", err)

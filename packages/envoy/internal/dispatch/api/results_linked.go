@@ -68,35 +68,57 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	if at := slices.IndexFunc(heads, func(head delivery.AttributedHead) bool { return head.HeadSHA == sha }); at >= 0 {
 		return headRepositoryOther(heads[at], *repo), nil
 	}
-	held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, *repo, sha)
+	// Each stretch of GitHub reads here holds no admission unit (awayOnNetwork): the read of repo
+	// with the reads of the other attributed-head repositories in one wait, and then every linked
+	// read in one wait, since nothing of Dispatch's own runs inside either; the stored heads are
+	// read before the first and the linked list between the two, each under the unit the request
+	// holds. A take-back refused is the record's answer, 429 OVERLOADED, before anything is
+	// written; a read's own error stays the read's.
+	var held bool
+	var err error
+	// An unreadable attributed repository proves no absence. A failed linked read is kept
+	// separately below, because that path refuses a record whose repository is not established.
+	var unread bool
+	checked := []string{*repo}
+	asked := []string{*repo}
+	var attributed *string
+	if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
+		held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, *repo, sha)
+		if (err == nil && held) || headsErr != nil {
+			return nil
+		}
+		unread = err != nil
+		if unread {
+			slog.Info("dispatch: GitHub could not say whether a recorded result's commit is held",
+				"repo", *repo, "commit", sha, "error", err)
+		}
+		for _, other := range otherHeadRepositories(heads, *repo) {
+			asked = append(asked, other)
+			held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, other, sha)
+			switch {
+			case err != nil:
+				slog.Info("dispatch: GitHub could not say whether the repository of a pull request of the issue holds a recorded result's commit",
+					"issue", issueKey, "repo", other, "commit", sha, "error", err)
+				unread = true
+			case held:
+				attributed = &other
+				return nil
+			default:
+				checked = append(checked, other)
+			}
+		}
+		return nil
+	}); stop != nil {
+		return nil, stop
+	}
 	if err == nil && held {
 		return nil, nil
 	}
 	if headsErr != nil {
 		return nil, headsErr
 	}
-	// An unreadable attributed repository proves no absence. A failed linked read is kept
-	// separately below, because that path refuses a record whose repository is not established.
-	unread := err != nil
-	if unread {
-		slog.Info("dispatch: GitHub could not say whether a recorded result's commit is held",
-			"repo", *repo, "commit", sha, "error", err)
-	}
-	checked := []string{*repo}
-	asked := []string{*repo}
-	for _, other := range otherHeadRepositories(heads, *repo) {
-		asked = append(asked, other)
-		held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, other, sha)
-		switch {
-		case err != nil:
-			slog.Info("dispatch: GitHub could not say whether the repository of a pull request of the issue holds a recorded result's commit",
-				"issue", issueKey, "repo", other, "commit", sha, "error", err)
-			unread = true
-		case held:
-			return &other, nil
-		default:
-			checked = append(checked, other)
-		}
+	if attributed != nil {
+		return attributed, nil
 	}
 	links, err := s.linkedRepositories(ctx, q, issueKey)
 	if err != nil {
@@ -106,23 +128,33 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	var failed error
 	var failedRepo string
 	reads := linkedReads{left: linkedPullRequestReads}
-	for _, link := range links {
-		if slices.ContainsFunc(asked, func(name string) bool { return strings.EqualFold(name, link.repo) }) {
-			continue
-		}
-		counts, held, err := s.linkedRepositoryHolds(ctx, link, sha, &reads)
-		switch {
-		case err != nil:
-			slog.Info("dispatch: GitHub could not say whether a linked repository holds a recorded result's commit",
-				"issue", issueKey, "repo", link.repo, "commit", sha, "error", err)
-			if failed == nil {
-				failed, failedRepo = err, link.repo
+	var linked *string
+	if stop := awayOnNetwork(ctx, func(ctx context.Context) error {
+		for _, link := range links {
+			if slices.ContainsFunc(asked, func(name string) bool { return strings.EqualFold(name, link.repo) }) {
+				continue
 			}
-		case held:
-			return &link.repo, nil
-		case counts:
-			checked = append(checked, link.repo)
+			counts, held, err := s.linkedRepositoryHolds(ctx, link, sha, &reads)
+			switch {
+			case err != nil:
+				slog.Info("dispatch: GitHub could not say whether a linked repository holds a recorded result's commit",
+					"issue", issueKey, "repo", link.repo, "commit", sha, "error", err)
+				if failed == nil {
+					failed, failedRepo = err, link.repo
+				}
+			case held:
+				linked = &link.repo
+				return nil
+			case counts:
+				checked = append(checked, link.repo)
+			}
 		}
+		return nil
+	}); stop != nil {
+		return nil, stop
+	}
+	if linked != nil {
+		return linked, nil
 	}
 	switch {
 	case failed != nil:
@@ -387,7 +419,9 @@ func (s *server) linkedRepositories(ctx context.Context, q refs.Queryer, issueKe
 //
 // The error is a read that did not answer — a rate limit, a 5xx, a transport failure — about the
 // commit, or about a pull request's state where no other pull request of the repository is open
-// or merged, which refuseUnknownCommit refuses the record for, to be made again.
+// or merged, which refuseUnknownCommit refuses the record for, to be made again. Its reads run on
+// ctx as it is handed: the caller's one wait for every linked repository holds no admission unit
+// across them (awayOnNetwork).
 func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepository, sha string, reads *linkedReads) (counts, held bool, err error) {
 	for index, number := range link.numbers {
 		if reads.left == 0 {

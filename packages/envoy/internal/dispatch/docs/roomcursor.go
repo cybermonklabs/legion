@@ -97,6 +97,11 @@ type roomLoad struct {
 	// the store itself.
 	size     int
 	rendered admissionRendering
+	// settlement is the document's pending-settlement row as the load read it in the statement
+	// that checked a socket's preload against the head (takePreload), which the room's load takes
+	// rather than reading the row again (takeSettlement); nil for a load that had no preload to
+	// check, which reads the row itself (onLoadDocument).
+	settlement *owedSettlement
 }
 
 // beginRoomLoad records that room is loading, before the load reads the store: every version
@@ -141,6 +146,24 @@ func (load *roomLoad) takeLoaded() (size int, rendered admissionRendering) {
 	size, rendered = load.size, load.rendered
 	load.rendered = admissionRendering{}
 	return size, rendered
+}
+
+// readSettlement records what the load read of the document's pending-settlement row with the
+// head its preload was checked against (takePreload).
+func (load *roomLoad) readSettlement(settlement *owedSettlement) {
+	load.mu.Lock()
+	defer load.mu.Unlock()
+	load.settlement = settlement
+}
+
+// takeSettlement hands over, once, what the load read of the document's pending-settlement row
+// (readSettlement): nil when it read none, and the room's load then reads the row itself.
+func (load *roomLoad) takeSettlement() *owedSettlement {
+	load.mu.Lock()
+	defer load.mu.Unlock()
+	settlement := load.settlement
+	load.settlement = nil
+	return settlement
 }
 
 // takeLoadedState is the state room's load read (servicePersistenceAdapter.LoadDoc), taken off its

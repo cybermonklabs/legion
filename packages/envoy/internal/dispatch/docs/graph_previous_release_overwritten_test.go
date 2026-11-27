@@ -68,13 +68,16 @@ func TestALinkThePreviousReleaseAddsBeforeThisBuildsNextVersionReachesTheStore(t
 	}
 
 	// Before any tick of this build reads that version's event, this build writes the next
-	// version of the document with the edit route's write, keeping the link.
-	tx, err := database.Pool.Begin(ctx)
+	// version of the document with the edit route's write, keeping the link. The write holds the
+	// document's writer gate, taken before its transaction opens and released after its commit,
+	// as the edit route holds it.
+	writeCtx, release := gatedContext(t, service, ctx, document)
+	tx, err := database.Pool.Begin(writeCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	defer tx.Rollback(writeCtx)
+	joined, ledger := service.Join(writeCtx, tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, document, []model.EditOp{{
 		Op: "replace", Find: "Tail of overwritten.", With: "Tail of overwritten, edited through this build.",
@@ -96,13 +99,14 @@ func TestALinkThePreviousReleaseAddsBeforeThisBuildsNextVersionReachesTheStore(t
 	if err != nil {
 		t.Fatalf("encode the version event's payload: %v", err)
 	}
-	event := appendDocumentEvent(t, ctx, tx, "artifact.version", payload)
+	event := appendDocumentEvent(t, writeCtx, tx, "artifact.version", payload)
 	if err := causeInWritePhase(joined, tx, written.Blocks, event); err != nil {
 		t.Fatalf("append what this build's version of %s stated: %v", document, err)
 	}
-	if err := ledger.Commit(ctx); err != nil {
+	if err := ledger.Commit(writeCtx); err != nil {
 		t.Fatalf("commit this build's version of %s: %v", document, err)
 	}
+	release()
 	if after := latestVersionNumber(t, service, document); after == before {
 		t.Fatalf("this build wrote no version of %s after the previous release's, so this test proves nothing", document)
 	}

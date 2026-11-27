@@ -352,7 +352,7 @@ func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 						t.Fatalf("the settle took a row its read did not find as it stands")
 					}
 					recorder := httptest.NewRecorder()
-					(&server{}).writeHandlerError(recorder, settle)
+					(&server{}).writeHandlerError(recorder, httptest.NewRequest(http.MethodDelete, "/api/v1/comments/"+id, nil), settle)
 					if code, _ := refusalOf(t, recorder); recorder.Code != http.StatusConflict || code != deleteContended ||
 						recorder.Header().Get("Retry-After") != "1" {
 						t.Fatalf("the route answers the refusal %d (Retry-After %q) %s, want 409 %s with Retry-After 1",

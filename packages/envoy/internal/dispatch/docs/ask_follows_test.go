@@ -14,7 +14,7 @@ import (
 // api's TestSettlementCannotGrowADocumentPastWhatOneUploadMayHoldByRestoringAnswers. One
 // settlement repairs a block whose ask is answered, recording its block.repaired, and then opens
 // an ask for a new block, recording that ask's follow beside its ask.opened. The document has no
-// room for the answer, so withholdAnswers takes the repair back, and since the block without its
+// room for the answer, so applyAnswers takes the repair back, and since the block without its
 // answer is the block settlement found, it drops the block.repaired too, which moves the
 // ask.opened one place up the events. A follow that remembered the ask.opened's position pointed
 // past the end of the events settlement appended. followsByEvent finds the ask.opened by the ask its
@@ -59,7 +59,8 @@ func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
 	var node, followed graphstore.Uncaused
 	reconciled.follows = append(reconciled.follows, openedFollow{ask: opened.ID, node: &node, followed: &followed})
 	reconciled.events = append(reconciled.events, model.Event{Type: "ask.opened", Payload: model.AskEventPayload{Ask: opened}})
-	reconciled.withholdAnswers("document", tree, before)
+	decision, _, _ := reconciled.weighAnswers(tree, before)
+	reconciled.applyAnswers("document", decision)
 	if len(reconciled.events) != 1 || reconciled.events[0].Type != "ask.opened" {
 		t.Fatalf("the reconciliation's events are %+v, want the ask.opened alone once the block.repaired of the withheld answer is dropped",
 			reconciled.events)

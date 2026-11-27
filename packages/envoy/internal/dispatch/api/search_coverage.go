@@ -32,12 +32,12 @@ func (s *server) searchCoverage(w http.ResponseWriter, r *http.Request) {
 	}
 	report, err := embedqueue.Coverage(r.Context(), s.deps.Store, identity)
 	if errors.Is(err, embedqueue.ErrCoverageTimedOut) {
-		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_TIMEOUT",
+		s.writeHandlerError(w, r, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_TIMEOUT",
 			"the search coverage statement ran past its %s bound, so nothing was counted; try again later", embedqueue.CoverageStatementTimeout()))
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, report)

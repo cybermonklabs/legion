@@ -19,9 +19,11 @@
 #       --browsertype-commit that the git store does not hold, whose tree has no
 #       packages/envoy/loadtest/browsertype or whose built browsertype has no -protect or no
 #       -person flag (below), a loadgen that does not build or whose oidc-mint -h lists no
-#       -sub <subject>=<file> (Dispatch's identity at the copy's listener, below), and a
+#       -sub <subject>=<file>, a prebuilt one's too (Dispatch's identity at the copy's listener,
+#       and Prebuilt binaries, below), a
 #       --pg-volume that is not a whole number of Gi
-#       or is above the 240Gi the namespace's quota leaves beside NATS's three 20Gi claims.
+#       or is above the 240Gi the namespace's quota leaves beside NATS's three 20Gi claims, and a
+#       session id that is no Kubernetes label value (The session label, below).
 #       Refuses with exit 2 while the lock ConfigMap
 #       dispatch-loadtest-lock exists. Then takes the lock, mints the copy's own token issuer
 #       (Dispatch's identity at the copy's listener, below), installs the copy (Postgres 16 CPU /
@@ -34,11 +36,14 @@
 #       Postgres data volume.
 #   cluster.sh seed --namespace NS            loadgen seed, seed-refs and seed-finish, then the template
 #                                             database dispatch_seed.
-#   cluster.sh step --namespace NS NAME FACTOR [--duration 10m] [--reads-only] [--typing
-#                   [--typing-peers 2] [--typing-rate 5] [--typing-docs 20]]
+#   cluster.sh step --namespace NS NAME FACTOR [--duration 10m | --schedule 0.5x:60s,10x:60s,...]
+#                   [--reads-only] [--typing [--typing-peers 2] [--typing-rate 5] [--typing-docs 20]]
 #       Reset, then one loadgen run at FACTOR × (4 events/s, 60 requests/s) with the
 #       series-sessions count (--reads-only: 0 events), then the crash check, the stored-order
 #       check, cgroup-merge, tables. --typing adds browser typing (below).
+#       --schedule changes the rate inside the window (loadgen run -schedule: each segment's
+#       factor multiplies FACTOR's rates, and the window is the segments' total, so it takes no
+#       --duration); summary.json then carries the recovery after the last drop.
 #       FACTOR may be fractional (8.5). Postgres's write-out counters (pg_stat_bgwriter, and
 #       pg_stat_checkpointer from Postgres 17) go into pg-stats-before.json and pg-stats-after.json.
 #   cluster.sh series --namespace NS [--duration 10m]   1x 2x 3x 5x 7x 10x, then 10x-reads, then
@@ -49,6 +54,8 @@
 #   cluster.sh db-size --namespace NS CPU MEMORY        Postgres resized to the Cloud SQL tier of
 #                                                       CPU and MEMORY (Gi), on the same PVC.
 #   cluster.sh redeploy --namespace NS --dispatch-commit SHA   Dispatch's image only, then a reset.
+#       With LOADTEST_CLUSTER_CHECKER set, that file becomes the run's stored-order checker for SHA
+#       (Prebuilt binaries, below), so the steps after the redeploy check with SHA's renderer.
 #   cluster.sh replay-prepare --namespace NS [--manifest FILE] [--from-dir DIR]
 #       INFRA-639's LINUX replay inputs (default manifest ../replay-2026-10-26.json) into the
 #       template database dispatch_replay. Refuses, before it touches the copy, a manifest whose
@@ -104,6 +111,19 @@
 #       valid only with --keep) so it does not go stale while they are typed; cluster.sh hold
 #       extends that hold.
 #
+# The session label: every pod of the copy -- each Deployment's and StatefulSet's pod template and
+# the bare runner pod -- carries theorem.dev/omp-session=<session> (SESSION_LABEL) beside
+# dispatch-loadtest/run=<run id> and dispatch-loadtest/role, so the compute spend accounting
+# (agent_spend) charges its cost to the session that ran up. The session is the first of
+# OMP_SESSION_ID, DISPATCH_SESSION_ID and PI_SESSION_ID that is set and not empty, the order this
+# repository's builds Jobs take for their own (up_session). up records it in state.json (session),
+# and every render of a manifest takes it from there, so the pods a later command of the run makes
+# (db-size's Postgres, redeploy's Dispatch) carry the session that ran up, whoever runs them. up
+# refuses, before it creates anything, a value that is no Kubernetes label value (at most 63
+# characters, letters, digits, '-', '_' and '.', beginning and ending with a letter or digit),
+# naming the variable. With none of the three set (a person running cluster.sh by hand), up says
+# so in one note, state.json records session null, and no pod carries the label.
+#
 # The stored-order checker: up builds a static envoy-dispatch from --dispatch-commit's own tree
 # (git archive of this checkout's git store, built in a scratch directory), so the checker's
 # renderer is the one Dispatch runs. A dispatch tree without the stored-order command
@@ -117,6 +137,16 @@
 # records dispatch_commit, built_from (the commit whose tree was built), overlay_source (or null),
 # overlay_files, registration (the file the overlay edited, or null), renderer_matches and the
 # binary's sha256; up builds the checker before it takes the lock.
+#
+# Prebuilt binaries: a build is heavy work for the pod that drives the copy, so two variables let
+# the caller build elsewhere (a cluster Job) and name the results. LOADTEST_CLUSTER_LOADGEN names a
+# static loadgen, which up copies to the run's loadgen in place of its go build of ./loadtest, and
+# checks before the lock as it checks the one it builds (loadgen_mints).
+# LOADTEST_CLUSTER_CHECKER names a static envoy-dispatch built from the tree the checker would be
+# built from (above), which up copies in place of build_at_commit and redeploy installs as the
+# checker of the commit it deploys. up refuses, before it creates anything, a variable that names
+# no executable file. The caller vouches for the tree a prebuilt checker came from, so state.json
+# stored_order records prebuilt true beside the commits up was given.
 #
 # The stored-order check (INFRA-707's oracle): after each step's and each replay's loadgen run,
 # while Dispatch still runs, the runner runs the checker's `stored-order --since <meta.json
@@ -313,6 +343,8 @@ RUNNER_STOP_GRACE_SECONDS=120
 RUNNER_RUN_SLACK_SECONDS=900
 RUN_LABEL=dispatch-loadtest/run
 ROLE_LABEL=dispatch-loadtest/role
+# The label that names the session that ran up on every pod of the copy (The session label, above).
+SESSION_LABEL=theorem.dev/omp-session
 LEGION_REPO=cybermonklabs/legion
 ENVOY_IMAGE_REPO=ghcr.io/cybermonklabs/legion/envoy
 PG_IMAGE_PREFIX=mirror.gcr.io/pgvector/pgvector:0.8.1-pg
@@ -505,6 +537,7 @@ valid() {
     issue) re='^[A-Z][A-Z0-9]*-[0-9]+$' ;;
     pod) re='^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$' ;;
     uid) re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' ;;
+    label_value) re='^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$' ;;
     rfc3339) re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' ;;
     *) die "valid: no kind $1" ;;
   esac
@@ -653,12 +686,19 @@ declare -A PLACEHOLDER_KIND=(
   [PG_MAX_CONNECTIONS]=pg_setting [PG_SHARED_BUFFERS]=pg_setting [PG_EFFECTIVE_CACHE_SIZE]=pg_setting
   [PG_WORK_MEM]=pg_setting [PG_MAINTENANCE_WORK_MEM]=pg_setting [PG_MAX_WAL_SIZE]=pg_setting
   [PG_PASSWORD]=hex [DISPATCH_TOKEN]=hex [LISTENER_TOKEN]=hex [SIGNING_KEY]=hex [ACCOUNT_JWT]=jwt
-  [OIDC_KEY_ID]=b64url256 [OIDC_KEY_X]=b64url256 [OIDC_KEY_Y]=b64url256
+  [OIDC_KEY_ID]=b64url256 [OIDC_KEY_X]=b64url256 [OIDC_KEY_Y]=b64url256 [OMP_SESSION]=label_value
 )
 
+# The placeholders that are a label's whole value, on that label's own line
+# (`theorem.dev/omp-session: __OMP_SESSION__`): an empty value leaves the line out, as a run with
+# no session labels no pod with one, and any other value is written in double quotes, so YAML
+# reads it as the string a label value must be (123 and true are label values, which YAML would
+# read as a number and a boolean).
+LABEL_PLACEHOLDERS=" OMP_SESSION "
+
 # render_manifest FILE KEY=VALUE...: FILE with each __KEY__ replaced by its VALUE, which must have
-# the key's shape; dies when a placeholder is left. The sed script goes through stdin, so no
-# credential is on a command line.
+# the key's shape (a LABEL_PLACEHOLDERS key's empty value leaves its line out); dies when a
+# placeholder is left. The sed script goes through stdin, so no credential is on a command line.
 render_manifest() {
   local file=$1 kv key value kind script="" out left
   shift
@@ -666,10 +706,15 @@ render_manifest() {
     key=${kv%%=*} value=${kv#*=}
     kind=${PLACEHOLDER_KIND[$key]:-}
     [ -n "$kind" ] || die "render: no placeholder $key"
+    if [[ $LABEL_PLACEHOLDERS == *" $key "* && -z $value ]]; then
+      script+="/__${key}__/d"$'\n'
+      continue
+    fi
     if ! valid "$kind" "$value"; then
       case $kind in hex | jwt) value='<redacted>' ;; esac
       die "render: $key value '$value' is not a valid $kind"
     fi
+    [[ $LABEL_PLACEHOLDERS != *" $key "* ]] || value=\"$value\"
     script+="s|__${key}__|${value}|g"$'\n'
   done
   out=$(sed -f - "$file" <<<"$script")
@@ -678,7 +723,9 @@ render_manifest() {
   printf '%s\n' "$out"
 }
 
-# manifest_values: every placeholder's value from state.json, as KEY=VALUE lines.
+# manifest_values: every placeholder's value from state.json, as KEY=VALUE lines. A state.json
+# that records no session (session null, or a run up started before it recorded one) gives
+# OMP_SESSION an empty value, so no pod carries the session label.
 manifest_values() {
   jq -r '"NAMESPACE=\(.namespace)", "RUN_ID=\(.run)", "STORAGE_CLASS=\(.storage_class)", "OIDC_ISSUER=\(.oidc_issuer)",
     "ENVOY_IMAGE=\(.images.dispatch)", "LISTENER_IMAGE=\(.images.listener)",
@@ -692,7 +739,7 @@ manifest_values() {
     "PG_MAINTENANCE_WORK_MEM=\(.postgres.settings.maintenance_work_mem)",
     "PG_MAX_WAL_SIZE=\(.postgres.settings.max_wal_size)",
     "ACCOUNT_JWT=\(.secrets.account_token)",
-    "OIDC_KEY_ID=\(.oidc_key.kid)", "OIDC_KEY_X=\(.oidc_key.x)", "OIDC_KEY_Y=\(.oidc_key.y)",
+    "OIDC_KEY_ID=\(.oidc_key.kid)", "OIDC_KEY_X=\(.oidc_key.x)", "OIDC_KEY_Y=\(.oidc_key.y)", "OMP_SESSION=\(.session // "")",
     "PG_PASSWORD=\(.secrets.pg_password)", "DISPATCH_TOKEN=\(.secrets.dispatch_token)",
     "LISTENER_TOKEN=\(.secrets.listener_token)", "SIGNING_KEY=\(.secrets.signing_key)"' "$STATE"
 }
@@ -910,7 +957,9 @@ loadgen_local() { LOADTEST_ROOT=$RUN_DIR "$LOADGEN" "$@"; }
 # JOB.<random>, so two starts of one job name, of this command or of another one of the run, never
 # share one. The three credentials are their -…-file forms, naming the files runner_start -c and
 # replay_checksum write there (RUNNER_CREDENTIALS), so no credential is an argument of kubectl here
-# or of anything in the runner pod.
+# or of anything in the runner pod. -metrics is Dispatch's DISPATCH_METRICS_ADDR
+# (manifests/dispatch.yaml), whose series each step's samples.json reads; a build that serves none
+# leaves those samples' metrics empty.
 endpoints() {
   JOB_SECRETS=$RUNNER_SECRETS/$1.$(random_hex 8)
   [[ $JOB_SECRETS =~ ^/work/secrets/[A-Za-z0-9._-]+$ ]] || die "the runner job name '$1' is not letters, digits, '.', '_' and '-' alone"
@@ -918,7 +967,8 @@ endpoints() {
     -url "http://dispatch.$NS.svc:8766" -token-file "$JOB_SECRETS/dispatch-token"
     -listener "http://listener.$NS.svc:9020" -listener-token-file "$JOB_SECRETS/listener-token"
     -nats "nats://nats.$NS.svc:4222" -nats-mon "http://nats-0.nats-headless.$NS.svc:8222"
-    -pprof "http://dispatch-pprof.$NS.svc:6061" -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
+    -pprof "http://dispatch-pprof.$NS.svc:6061" -metrics "http://dispatch-metrics.$NS.svc:6062"
+    -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
   )
 }
 
@@ -2047,6 +2097,14 @@ commit_source() {
 # tree_has COMMIT PATH: COMMIT's tree in this checkout's git store holds PATH.
 tree_has() { git -C "$REPO_DIR" cat-file -e "$1:$2" 2>/dev/null; }
 
+# prebuilt_valid VAR CMD: die, naming VAR and CMD, when VAR is set and names no executable regular
+# file (Prebuilt binaries, above); nothing when it is unset.
+prebuilt_valid() {
+  local path=${!1:-}
+  [ -z "$path" ] || { [ -f "$path" ] && [ -x "$path" ]; } ||
+    die "$2: $1='$path' names no executable file; build the binary first, or unset $1 to build it here"
+}
+
 # build_at_commit COMMIT PACKAGE OUT [SOURCE]: a static binary of COMMIT's Go package PACKAGE (a
 # path under packages/envoy, as ./cmd/dispatch) at OUT (an absolute path): `git archive` of this
 # checkout's git store unpacked in a scratch directory beside OUT, with SOURCE's stored-order
@@ -2172,17 +2230,24 @@ stored_order_build() {
   else
     from=$commit what="dispatch commit $commit"
   fi
-  note "building the stored-order checker, envoy-dispatch (static) of $what"
-  if ! build_at_commit "$from" ./cmd/dispatch "$CHECKER_TMP/envoy-dispatch" "$source" 2>"$err"; then
+  if [ -n "${LOADTEST_CLUSTER_CHECKER:-}" ]; then
+    note "the stored-order checker: the prebuilt $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER), named as envoy-dispatch (static) of $what; nothing is built here"
+    install -m 755 -- "$LOADTEST_CLUSTER_CHECKER" "$CHECKER_TMP/envoy-dispatch" ||
+      die "up: copying the prebuilt checker $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER) failed"
+  else
+    note "building the stored-order checker, envoy-dispatch (static) of $what"
+  fi
+  if [ -z "${LOADTEST_CLUSTER_CHECKER:-}" ] && ! build_at_commit "$from" ./cmd/dispatch "$CHECKER_TMP/envoy-dispatch" "$source" 2>"$err"; then
     cat -- "$err" >&2
     first=$(grep -v -m1 -e '^#' -e '^[[:space:]]*$' "$err") || first="go build failed with no error line"
     die "up: the stored-order checker does not build (dispatch commit $commit, source commit ${source:-none}${checker:+, checker commit $checker}): $first"
   fi
   # shellcheck disable=SC2016 # $d, $b, $s, $f, $r, $m and $sha are jq's variables
   STORED_ORDER_STATE=$(jq -nc --arg d "$commit" --arg b "$from" --arg s "$source" --argjson f "$files" --arg r "$registry" \
-    --argjson m "$matches" --arg sha "$(sha256_of "$CHECKER_TMP/envoy-dispatch")" \
+    --argjson m "$matches" --arg sha "$(sha256_of "$CHECKER_TMP/envoy-dispatch")" --arg p "${LOADTEST_CLUSTER_CHECKER:-}" \
     '{dispatch_commit: $d, built_from: $b, overlay_source: (if $s == "" then null else $s end), overlay_files: $f,
-      registration: (if $r == "" then null else $r end), renderer_matches: $m, sha256: $sha}')
+      registration: (if $r == "" then null else $r end), renderer_matches: $m, sha256: $sha}
+      + (if $p == "" then {} else {prebuilt: true} end)')
   note "the stored-order checker's sha256 is $(jq -r .sha256 <<<"$STORED_ORDER_STATE"), renderer_matches $matches"
 }
 
@@ -2843,11 +2908,23 @@ save_pod_logs() {
   wait "${pids[@]}" || true
 }
 
-# run_step NAME FACTOR DURATION READS_ONLY PHASE: one step (see the header), into steps/NAME; with
-# --typing (TYPING), browser typing into typing_plan_step's documents, the ones its own loadgen
-# run plans the most versions for.
+# run_step NAME FACTOR DURATION READS_ONLY PHASE [SCHEDULE]: one step (see the header), into
+# steps/NAME; with --typing (TYPING), browser typing into typing_plan_step's documents, the ones its
+# own loadgen run plans the most versions for. With SCHEDULE (loadgen run -schedule), DURATION is
+# ignored: the window is the schedule's total.
 run_step() {
-  local name=$1 factor=$2 duration=$3 reads=$4 phase=$5
+  local name=$1 factor=$2 duration=$3 reads=$4 phase=$5 schedule=${6:-}
+  local scheduled=()
+  if [ -n "$schedule" ]; then
+    [[ $schedule =~ ^[0-9]+(\.[0-9]+)?x:[1-9][0-9]*(s|m|h)(,[0-9]+(\.[0-9]+)?x:[1-9][0-9]*(s|m|h))*$ ]] ||
+      die "--schedule '$schedule' is not <factor>x:<duration>,... with whole s, m or h durations"
+    local segment total=0
+    for segment in ${schedule//,/ }; do
+      total=$((total + $(duration_seconds "${segment#*:}")))
+    done
+    duration=${total}s
+    scheduled=(-schedule "$schedule")
+  fi
   valid step "$name" || die "step name '$name' may hold only letters, digits, '.', '_' and '-'"
   if ! valid factor "$factor" || ! awk -v f="$factor" 'BEGIN { exit !(f > 0) }'; then
     die "factor '$factor' is not a number above 0"
@@ -2889,7 +2966,7 @@ run_step() {
     /work/loadgen run -allow-foreign -name "$name" -out "/work/steps/$name" \
     -seed /work/seed.json -copy-meta "/work/meta/$name.json" -build-commit "$(state .dispatch_commit)" \
     -events "$events" -sessions "$sessions" -requests "$requests" -duration "$duration" \
-    -warmup "$warmup" -grace 20s -rng-seed "$rng_seed" -heap-samples "${ENDPOINTS[@]}"
+    -warmup "$warmup" -grace 20s -rng-seed "$rng_seed" -heap-samples "${scheduled[@]}" "${ENDPOINTS[@]}"
   note "step $name done: $dir"
 }
 
@@ -3641,6 +3718,25 @@ up_exit() {
   fi
 }
 
+# up_session: RUN_SESSION, the session that runs up, which every pod of the copy names in its
+# SESSION_LABEL label (The session label, above): the first of OMP_SESSION_ID,
+# DISPATCH_SESSION_ID and PI_SESSION_ID that is set and not empty, named in one note. Dies, naming
+# the variable, on a value that is no Kubernetes label value, which no pod could carry; empty,
+# after one note that says so, when none of the three is set.
+up_session() {
+  local name
+  RUN_SESSION=""
+  for name in OMP_SESSION_ID DISPATCH_SESSION_ID PI_SESSION_ID; do
+    [ -n "${!name:-}" ] || continue
+    valid label_value "${!name}" ||
+      die "up: $name '${!name}' is not a Kubernetes label value (at most 63 characters, letters, digits, '-', '_' and '.', beginning and ending with a letter or digit), and every pod of the copy names the session that runs up in its $SESSION_LABEL label; set $name to the session's id, or unset it"
+    RUN_SESSION=${!name}
+    note "the copy's pods carry $SESSION_LABEL=$RUN_SESSION ($name), so the compute spend accounting charges their cost to that session"
+    return 0
+  done
+  note "none of OMP_SESSION_ID, DISPATCH_SESSION_ID and PI_SESSION_ID is set, so the copy's pods carry no $SESSION_LABEL label and the compute spend accounting charges their cost to no session"
+}
+
 # up_run: up from OPT (also all's first phase).
 up_run() {
   local sc=${OPT[storage-class]:-} commit=${OPT[dispatch-commit]:-} major=${OPT[pg-major]:-}
@@ -3670,7 +3766,10 @@ up_run() {
   valid pod "$HOLDER_POD" || die "up: this pod's name '$HOLDER_POD' is not a pod name"
   valid uid "${POD_UID:-}" || die "up: POD_UID ('${POD_UID:-}') is not a pod uid; the lock names its holder's uid (a Legion pod sets POD_UID)"
   valid issue "${LEGION_ISSUE:-}" || die "up: LEGION_ISSUE ('${LEGION_ISSUE:-}') is not an issue key; the lock names it (a Legion pod sets LEGION_ISSUE)"
+  up_session
   stored_order_args "$commit" "$so_source" "$so_checker"
+  prebuilt_valid LOADTEST_CLUSTER_LOADGEN up
+  prebuilt_valid LOADTEST_CLUSTER_CHECKER up
   if [ -n "$bt_commit" ]; then
     valid commit "$bt_commit" || die "up: --browsertype-commit '$bt_commit' is not a full 40-hex commit sha"
     commit_source browsertype-commit "$bt_commit" packages/envoy/loadtest/browsertype \
@@ -3713,9 +3812,15 @@ up_run() {
   fi
   # loadgen too, before the lock: once the lock is taken up mints the copy's token issuer with its
   # oidc-mint (mint_identity), so a loadgen that does not build, or answers no oidc-mint -sub, is
-  # refused with nothing taken (loadgen_mints).
-  note "building loadgen (static), the run's"
-  (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$CHECKER_TMP/loadgen" ./loadtest) || die "up: go build of loadgen failed"
+  # refused with nothing taken (loadgen_mints), a prebuilt one (LOADTEST_CLUSTER_LOADGEN) as well.
+  if [ -n "${LOADTEST_CLUSTER_LOADGEN:-}" ]; then
+    note "loadgen: the prebuilt $LOADTEST_CLUSTER_LOADGEN (LOADTEST_CLUSTER_LOADGEN), the run's; nothing is built here"
+    install -m 755 -- "$LOADTEST_CLUSTER_LOADGEN" "$CHECKER_TMP/loadgen" ||
+      die "up: copying the prebuilt loadgen $LOADTEST_CLUSTER_LOADGEN (LOADTEST_CLUSTER_LOADGEN) failed"
+  else
+    note "building loadgen (static), the run's"
+    (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$CHECKER_TMP/loadgen" ./loadtest) || die "up: go build of loadgen failed"
+  fi
   loadgen_mints "$CHECKER_TMP/loadgen"
 
   set_run "lt-$(date -u +%Y%m%dt%H%M%S)-$(random_hex 2)"
@@ -3741,11 +3846,13 @@ up_run() {
     --arg issuer "$oidc_issuer" \
     --argjson stored_order "$STORED_ORDER_STATE" \
     --arg repo "$PRODUCTION_REPO" --arg created "$(utc_now)" --arg holder "$HOLDER_POD" --arg pidns "$(pid_ns)" \
+    --arg session "$RUN_SESSION" \
     --arg dispatch "$dispatch_image" --arg listener "$listener_image" --arg listener_ref "$listener_ref" \
     --arg pg "$pg_image" --arg socat "$socat_image" --arg runner "$runner_image" --argjson nats "$nats_images" \
     --argjson tier "$tier" --rawfile pgpw <(random_hex 24) --rawfile dt <(random_hex 32) --rawfile lt <(random_hex 32) \
     --rawfile sk <(random_hex 32) '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit, oidc_issuer: $issuer,
       pg_major: $major, production_repo: $repo, created: $created, holder_pod: $holder, pid_ns: $pidns,
+      session: (if $session == "" then null else $session end),
       images: ({dispatch: $dispatch, listener: $listener, postgres: $pg, socat: $socat, runner: $runner} + $nats),
       image_sources: {listener: $listener_ref}, postgres: $tier, stored_order: $stored_order, browsertype: null,
       secrets: {pg_password: $pgpw, dispatch_token: $dt, listener_token: $lt, signing_key: $sk}}' >"$STATE")
@@ -3855,13 +3962,15 @@ seed_run() {
 }
 
 cmd_step() {
-  parse "namespace run duration typing-peers typing-rate typing-docs" "reads-only typing" "$@"
+  parse "namespace run duration schedule typing-peers typing-rate typing-docs" "reads-only typing" "$@"
   positional 2 "NAME FACTOR"
   use_run
   typing_parse
   local reads=false
   [ -z "${OPT[reads-only]:-}" ] || reads=true
-  run_step "${POS[0]}" "${POS[1]}" "${OPT[duration]:-10m}" "$reads" steps
+  [ -z "${OPT[schedule]:-}" ] || [ -z "${OPT[duration]:-}" ] ||
+    die "step: --schedule sets the window, so give it without --duration"
+  run_step "${POS[0]}" "${POS[1]}" "${OPT[duration]:-10m}" "$reads" steps "${OPT[schedule]:-}"
 }
 
 cmd_series() {
@@ -3900,6 +4009,7 @@ cmd_redeploy() {
   valid commit "$commit" || die "redeploy: --dispatch-commit '$commit' is not a full 40-hex commit sha"
   use_run
   require_own_issuer
+  prebuilt_valid LOADTEST_CLUSTER_CHECKER redeploy
   image=$(image_for_commit "$commit")
   ensure_daemons
   # shellcheck disable=SC2016 # $c and $i are jq's variables
@@ -3907,7 +4017,14 @@ cmd_redeploy() {
   scale_to dispatch 0
   apply_manifest dispatch.yaml
   note "Dispatch now runs $image (commit $commit)"
-  if [ "$(state '.stored_order.dispatch_commit // empty')" != "$commit" ]; then
+  if [ -n "${LOADTEST_CLUSTER_CHECKER:-}" ]; then
+    install -m 755 -- "$LOADTEST_CLUSTER_CHECKER" "$STORED_ORDER_BIN" ||
+      die "redeploy: copying the prebuilt checker $LOADTEST_CLUSTER_CHECKER (LOADTEST_CLUSTER_CHECKER) failed"
+    # shellcheck disable=SC2016 # $c and $s are jq's variables
+    state_set '.stored_order = {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null,
+      renderer_matches: true, sha256: $s, prebuilt: true}' --arg c "$commit" --arg s "$(sha256_of "$STORED_ORDER_BIN")"
+    note "the stored-order checker is now the prebuilt $LOADTEST_CLUSTER_CHECKER, named as dispatch commit $commit's (sha256 $(state .stored_order.sha256))"
+  elif [ "$(state '.stored_order.dispatch_commit // empty')" != "$commit" ]; then
     note "WARNING: the stored-order checker was built for dispatch commit $(state '.stored_order.dispatch_commit // "none"'), not $commit: its renderer may differ from this Dispatch's, so each step's stored-order.json records renderer_matches false"
   fi
   if db_exists dispatch_seed; then

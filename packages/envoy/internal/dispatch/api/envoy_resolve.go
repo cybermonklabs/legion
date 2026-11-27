@@ -18,7 +18,7 @@ import (
 
 // Dispatch's Envoy listener client is a cross-service HTTP call bounded only by its five
 // second timeout (internal/dispatch/envoy/client.go), and each Dispatch process serves every
-// request it takes from its own pool of store.sharedPoolSize connections. A listener call made
+// request it takes from its own pool of store.SharedPoolSize connections. A listener call made
 // while a transaction is open therefore holds one of them - and the rows that transaction
 // locked, which the other processes' requests wait on too - for as long as the listener takes
 // to answer, so that many concurrent ones empty the pool and stall every unrelated Dispatch
@@ -312,29 +312,69 @@ func (s *server) newTakeoverRetry() takeoverRetry {
 	}
 }
 
+// takeoverTries is what one sender's take-over loop runs (takeoverRetry.retry). ready reads, under
+// the request's unit, what the sender must read of Dispatch's own tables before each try - nil for
+// none - and answers a failure of its own that ends the tries ("" lets the try go on). call makes
+// the try's call to the listener and answers its failure, "" for one that succeeded, leaving
+// whatever else it produced - the outcome the sender settles with - in its caller's variables.
+// Before a try after a take-over's failure, resolve resolves again what the attempt names, with
+// the listener, and record renews the claim with that resolution, under the unit, and reports
+// whether this sender still holds the attempt: a sender that no longer does makes no further try
+// and settles with the last one, and an error from record ends the tries with that error. resolve
+// and record are nil for tries that hold no attempt (resolveThroughTakeover).
+type takeoverTries struct {
+	ready   func() string
+	call    func(context.Context) string
+	resolve func(context.Context)
+	record  func() (bool, error)
+}
+
 // retry is the one take-over loop every sender runs: it makes a try, and while again allows
-// another after a take-over's failure, renews and tries again. try makes one try and returns its
-// failure, "" for one that succeeded, leaving whatever else the try produced - the outcome the
-// sender settles with - in its caller's variables. renew prepares the next try of an attempt - it
-// resolves again what the attempt names and renews the claim - and reports whether this sender
-// still holds the attempt; a sender that no longer does makes no further try and settles with the
-// last one, and an error from renew ends the tries with that error, which retry returns. renew is
-// nil for tries that hold no attempt (resolveThroughTakeover).
-func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func() (bool, error)) error {
-	failure := try()
-	for r.again(ctx, failure) {
-		if renew != nil {
-			held, err := renew()
-			if err != nil {
+// another after a take-over's failure, resolves again, renews and tries again.
+//
+// Every wait on the listener in it runs through away, holding no admission unit of the request
+// that makes it: each stretch of them - a try's call, the backoff after a take-over's failure
+// (again, up to the take-over window), and the next try's resolution - in one wait, since nothing
+// of Dispatch's own runs between them. Only ready and record, which read and write Dispatch's
+// tables, run between stretches, under the unit taken back. A loop with neither still makes one
+// wait for each try: the one such loop, a comment's lookups (resolveThroughTakeover), passes
+// givenBackAlready, so its tries make no pair at all. A sender's own deliveries pass
+// awayOnNetworkNeverRefused, since each runs after a commit of its own (the attempt's claim, the
+// message); a loop whose caller already holds no unit for it passes givenBackAlready. away's own
+// error - the request's end while it asked for its unit back, or a refusal - ends the tries with
+// that error.
+func (r *takeoverRetry) retry(ctx context.Context, away networkWait, tries takeoverTries) error {
+	for {
+		if tries.ready != nil && tries.ready() != "" {
+			return nil
+		}
+		again := false
+		if err := away(ctx, func(ctx context.Context) error {
+			if again = r.again(ctx, tries.call(ctx)); again && tries.resolve != nil {
+				tries.resolve(ctx)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		if !again {
+			return nil
+		}
+		if tries.record != nil {
+			held, err := tries.record()
+			if err != nil || !held {
 				return err
 			}
-			if !held {
-				break
-			}
 		}
-		failure = try()
 	}
-	return nil
+}
+
+// givenBackAlready runs wait on ctx as it stands: the wait of a take-over loop whose caller holds
+// no admission unit for it already - a comment's lookups, each run on a goroutine of its own inside
+// the one wait the request makes for all of them (resolveCommentDeliveries) - where a pair of the
+// loop's own would park and resume the request's ticket off the request's goroutine.
+func givenBackAlready(ctx context.Context, wait func(context.Context) error) error {
+	return wait(ctx)
 }
 
 // resolveThroughTakeover resolves one target as resolveMentionTarget does, with nothing held,
@@ -343,7 +383,7 @@ func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func
 // until the listener answers otherwise or the window closes. A comment resolves this way the
 // mentions and the route its transaction decides suppress_route and the payload's mentions from,
 // which the outbox's session routes skip, so those are decided on what the listener answered
-// rather than on its silence.
+// rather than on its silence. Its caller holds no admission unit across it (givenBackAlready).
 //
 // It returns the pacing with the resolution, and the mention's sender after the commit carries on
 // in it (deliverResolvedCommentMention) rather than opening a window of its own: a resolution that
@@ -356,16 +396,17 @@ func (s *server) resolveThroughTakeover(
 ) (ResolvedMention, takeoverRetry) {
 	takeover := s.newTakeoverRetry()
 	var resolved ResolvedMention
-	resolve := func() string {
+	resolve := func(ctx context.Context) string {
 		resolved = s.resolveMentionTarget(ctx, target, delivery, s.commentLookupBound(target))
 		return resolved.ResolveError
 	}
 	if !wait {
-		resolve()
+		resolve(ctx)
 		return resolved, takeover
 	}
-	// A try that holds nothing has nothing to renew, so retry answers no error.
-	_ = takeover.retry(ctx, resolve, nil)
+	// A try that holds nothing has nothing to renew, and the wait runs in place, so retry
+	// answers no error.
+	_ = takeover.retry(ctx, givenBackAlready, takeoverTries{call: resolve})
 	return resolved, takeover
 }
 

@@ -367,18 +367,18 @@ func requireProjectComplete(t *testing.T, database *store.Store, want []string, 
 // requireTheRollTicksObjectPassLockOrder holds the block-index tick's object pass to the store's
 // lock order at the tick's own call site (writeObjectNodesAnotherBuildWrote), as graphcensus's
 // TestEveryBackfillBatchTakesTheStoreLockOrder holds writeObjectBatch under the backfill: the tick
-// runs on a pool of one connection, so every statement of it goes through the backend the test
-// reads, while a process of the release before serves. The pass takes the owner lock of the
-// document the release before uploaded, then the document's node row, then appends its tuples
-// under the document's own artifact.created event, and never the project's row. While it waits
-// behind the owner lock it may hold no lock of the event read that runs before it in the same
+// runs on the service's background pool (ReconcileBlockIndex), which hands its one connection to
+// each statement and transaction in turn, so every statement of it goes through the backend the
+// test reads from that pool, while a process of the release before serves. The pass takes the owner
+// lock of the document the release before uploaded, then the document's node row, then appends its
+// tuples under the document's own artifact.created event, and never the project's row. While it
+// waits behind the owner lock it may hold no lock of the event read that runs before it in the same
 // tick: the pass runs after the event read's transaction commits, so the cursor row and the
 // document_block_versions rows the read's marking locks are let go of first.
 //
 // Its controls are the pass run inside the event read's transaction, which holds the cursor row
-// while it waits behind the owner lock (on one connection the pass then waits for its own
-// connection and the run never answers), and writeObjectBatch without its owner locks, which
-// never queues behind the owner lock.
+// while it waits behind the owner lock, and writeObjectBatch without its owner locks, which never
+// queues behind the owner lock.
 func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 	database, _ := blockIndexService(t)
 	ctx := context.Background()
@@ -413,8 +413,11 @@ func requireTheRollTicksObjectPassLockOrder(t *testing.T) {
 
 	ticker := storetest.SingleConnection(t, database)
 	service := blockIndexProcess(t, ticker, "")
+	// The backend of the background pool's one connection in use: the tick takes it for each of
+	// its statements and transactions in turn, none at the same time as another, and a pool hands
+	// out the connection that came back last.
 	var pid uint32
-	if err := ticker.Pool.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+	if err := testBackgroundPool(t, service).QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
 		t.Fatalf("read the tick's backend: %v", err)
 	}
 	// The horizon is proven before the tick, so its event read starts this build's cursor and

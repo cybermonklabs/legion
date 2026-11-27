@@ -323,12 +323,13 @@ func (rr *replayRun) readBaseTexts(ctx context.Context, a *api) error {
 }
 
 // runReplay sends the plan: at the window start one /proc read of Dispatch and heap-start.pprof,
-// then each action at winStart + (offset - from) on its own goroutine; at the window end
-// heap-end.pprof and a /proc read, then the drain, then the end state of the documents written.
-// done closes once every action has returned and the drain and the end state are read.
+// then each action at winStart + (offset - from) on its own goroutine, paced as a request
+// (pacer: its offset against when it was sent); at the window end heap-end.pprof and a /proc
+// read, then the drain, then the end state of the documents written. done closes once every
+// action has returned and the drain and the end state are read.
 func (st *step) runReplay(ctx context.Context, a *api) (load *requestLoad, done <-chan struct{}) {
 	rr := st.replay
-	load = &requestLoad{recs: newCollector[reqRec](1 << 16)}
+	load = &requestLoad{recs: newCollector[reqRec](1 << 16), pace: newPacer(st.start, st.winStart, st.winEnd)}
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
@@ -381,6 +382,7 @@ func (st *step) runReplay(ctx context.Context, a *api) (load *requestLoad, done 
 			if !sleepUntil(ctx, at) {
 				break
 			}
+			load.pace.record(at, time.Now())
 			wg.Go(func() { rr.do(ctx, a.base, a.token, act, at, load.recs) })
 		}
 		wg.Wait()

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -136,7 +137,7 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 		RunMaintenanceSweep(ctx, rig.database.Pool, 50*time.Millisecond, sweepLeases(t, rig.database), nil)
 	}()
 	testwait.UntilPolling(t, 20*time.Millisecond, "the maintenance loop's first leased pass (the lease lines it logged)", func() (string, bool) {
-		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", maintenanceLease) > 0
+		return logs.Lines("lease="), countLeaseLines(logs, "dispatch duty: leased pass ran", duty.SuggestionOutcomeLease) > 0
 	})
 	stop()
 	<-done
@@ -198,7 +199,8 @@ func TestARecoveredReplayKeepsNothingOfARefusal(t *testing.T) {
 		t.Fatalf("a success's stored body = %s, want it handed to the replay", body)
 	}
 	response := httptest.NewRecorder()
-	(&server{}).writeRefreshed(response, http.StatusCreated, stored, map[string]any{"id": "m1"})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/TEST-1/messages", nil)
+	(&server{}).writeRefreshed(response, request, http.StatusCreated, stored, map[string]any{"id": "m1"})
 	var answer map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)
@@ -227,10 +229,11 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 	}
 }
 
-// Every route the keyed layer's own tables name - those that replay a recovery point, read the
-// post a kept answer holds again, never keep their answer, take an upload's body, or read a body
-// of their own size (handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute) - is a POST or
-// PATCH route the server registers: a pattern spelled wrong would silently turn its rule off.
+// Every route the keyed layer's own tables name - those that read the post a kept answer holds
+// again and those whose answers a key never keeps - is a POST or PATCH route the server
+// registers: a pattern spelled wrong would silently turn its rule off. The layer's other
+// per-route rules are on the route's own row (apiRoute.Replay, apiRoute.BodyLimit), where no
+// pattern is spelled twice.
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	t.Parallel()
 	registered := map[string]bool{}
@@ -240,21 +243,12 @@ func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 		}
 	}
 	tables := map[string][]string{}
-	for route := range (&server{}).keyedReplays() {
-		tables["keyedReplays"] = append(tables["keyedReplays"], route)
-	}
 	for route := range answerHoldsSecret {
 		tables["answerHoldsSecret"] = append(tables["answerHoldsSecret"], route)
 	}
 	for route := range keyedRereads {
 		tables["keyedRereads"] = append(tables["keyedRereads"], route)
 	}
-	for route := range keyedUploads {
-		tables["keyedUploads"] = append(tables["keyedUploads"], route)
-	}
-	tables["handoffWriteRoute"] = []string{handoffWriteRoute}
-	tables["markdownRoundTripRoute"] = []string{markdownRoundTripRoute}
-	tables["fileRoundTripRoute"] = []string{fileRoundTripRoute}
 	for table, routes := range tables {
 		for _, route := range routes {
 			if !registered[route] {

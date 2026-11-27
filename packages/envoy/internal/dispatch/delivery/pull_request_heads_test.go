@@ -292,6 +292,64 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 	}
 }
 
+// A read-through whose second pull request fails stores the first's head and answers the
+// failure, as a read-through that wrote each head as it read it did: the heads it read before the
+// failure are written, in its one transaction, and the failing pull request's is not. The second
+// pull request names no issue in its title, body or branch, so its attribution reads its commit
+// messages, and GitHub answers that read with a rate limit, the one failure of it the attribution
+// hands back rather than writing the row incomplete (attributeHead).
+func TestAReadThroughWhoseSecondPullRequestFailsStoresTheFirstsHead(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 11)
+	const sha = "4646464646464646464646464646464646464646"
+
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
+		pull := func(number int, title, branch string) map[string]any {
+			return map[string]any{
+				"number": number, "title": title, "body": "",
+				"html_url": fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
+				"state":    "open", "merged": false, "updated_at": "2026-02-03T00:00:00Z",
+				"head": map[string]any{
+					"ref": branch, "sha": sha, "repo": map[string]any{"full_name": "acme/widgets"},
+				},
+				"base": map[string]any{"ref": "main"},
+			}
+		}
+		mustEncode(t, w, []any{pull(461, issue+" the work", "legion/"+issue), pull(462, "An unrelated change", "fix")})
+	})
+	fake.handle("GET /repos/acme/widgets/pulls/462/commits", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+	})
+	written, atHead, err := unrenamed().ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), nil, "acme/widgets", sha, time.Now())
+	if _, limited := githubapp.AsRateLimit(err); !limited {
+		t.Fatalf("the read-through answered %v, want the rate limit the second pull request's commit messages met", err)
+	}
+	stored := func(number int) int {
+		t.Helper()
+		var rows int
+		if err := pool.QueryRow(ctx, `
+			select count(*) from pull_request_heads where repo = 'acme/widgets' and number = $1
+		`, number).Scan(&rows); err != nil {
+			t.Fatalf("count the head rows of #%d: %v", number, err)
+		}
+		return rows
+	}
+	if first, failed := stored(461), stored(462); first != 1 || failed != 0 {
+		t.Fatalf("#461 has %d head rows and #462 %d, want one and none: the first was read before the failure, the second failed", first, failed)
+	}
+	if head := readHead(t, ctx, pool, "acme/widgets", 461); head.HeadSHA != sha || head.State != "open" || head.IssueKey == nil || *head.IssueKey != issue {
+		t.Fatalf("#461 = %+v, want its open head at %s attributed to %s", head, sha, issue)
+	}
+	if written != 1 || !atHead {
+		t.Fatalf("the read-through wrote %d rows (at the head: %t), want 1, the first pull request's, at the commit's head", written, atHead)
+	}
+}
+
 // HeadStoredAt compares the repository without case, and the two spellings meet here: a row the
 // intake writes carries GitHub's own spelling of the repository, from the envelope's
 // `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling an issue's
@@ -2089,5 +2147,152 @@ func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
 	}
 	if got := len(branches.compares); got != 0 {
 		t.Fatalf("entries after reading a pair whose answer is older than the span = %d, want none", got)
+	}
+}
+
+// A write of a head that records its attribution locks the stored row before it reads the issue
+// the row credits (headIssueBefore), and waits for a row another transaction holds no longer than
+// a write waits for any lock another writer holds (the store's lockWait): at that bound it is
+// refused store.ErrPoolBusy, as ErrHeadNotStored, and writes nothing. A result's read-through
+// (ReadThroughCommitPulls) makes this write on the request that records or reads the result, and
+// the intake and the reconcile write the same row taking no lock that orders them against it, so
+// without the bound that request waited for as long as the holder held the row. Once the row is
+// free the same write goes through. The bound is the test's (store.WithLockWaitForTest).
+func TestAHeadWriteBehindItsHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
+	const bound = time.Second
+	pool, ctx := deliveryTestPool(t)
+	left := seedHeadIssue(t, ctx, pool, 77)
+	reached := seedHeadIssue(t, ctx, pool, 78)
+	broker := events.NewBroker()
+	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(177, &left, sourceTitleBody)); err != nil {
+		t.Fatalf("store the head attributed to %s: %v", left, err)
+	}
+
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if _, err := holder.Exec(ctx, `select 1 from pull_request_heads where repo = 'acme/widgets' and number = 177 for update`); err != nil {
+		t.Fatalf("hold the head's row: %v", err)
+	}
+	answered := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		answered <- UpsertPullRequestHead(store.WithLockWaitForTest(ctx, bound), pool, broker, attributedHeadRow(177, &reached, sourceBranch))
+	}()
+	select {
+	case err = <-answered:
+	case <-time.After(10 * time.Second):
+		waited := time.Since(started)
+		_ = holder.Rollback(ctx)
+		<-answered
+		t.Fatalf("the head's write was still waiting on its held row %s after it began, past its bound of %s: "+
+			"it waits on a held row until its holder lets go", waited.Round(time.Millisecond), bound)
+	}
+	waited := time.Since(started)
+	if !store.IsPoolBusy(err) || !errors.Is(err, ErrHeadNotStored) {
+		t.Fatalf("the head's write behind its held row: %v, want ErrPoolBusy and ErrHeadNotStored", err)
+	}
+	if waited < bound {
+		t.Fatalf("the head's write was refused %s after it began, inside its bound of %s", waited.Round(time.Millisecond), bound)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("let the row go: %v", err)
+	}
+	if err := UpsertPullRequestHead(ctx, pool, broker, attributedHeadRow(177, &reached, sourceBranch)); err != nil {
+		t.Fatalf("the head's write once the row was free: %v", err)
+	}
+	if got := attributionEvents(t, ctx, pool, reached); len(got) != 1 {
+		t.Fatalf("%s carries %d attribution events after the write landed, want the one move that reached it", reached, len(got))
+	}
+}
+
+// Every other write of a head row waits for a row another transaction holds no longer than that
+// bound either, each in a bounded wait of its own batch: a write that records no attribution,
+// which runs on the pool as one batch, a merged pull request's write that seeds its base branch
+// and records no attribution, in its transaction (upsertHeadRow), and the drop of the row a
+// renamed repository's pull request is stored under by its old name (upsertHeadUnderCanonicalName).
+// At the bound each is refused store.ErrPoolBusy, the first two as ErrHeadNotStored, and writes
+// nothing more. A result's read-through makes each of them on the request that records or reads
+// the result, and the intake and the reconcile write the same rows taking no lock that orders them
+// against it, so without the bound that request waited for as long as the holder held the row.
+// Once the row is free the same write goes through. The bound is the test's
+// (store.WithLockWaitForTest).
+func TestAHeadWriteThatRecordsNoAttributionBehindAHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
+	const bound = time.Second
+	pool, ctx := deliveryTestPool(t)
+	broker := events.NewBroker()
+	unrecorded := func(repo string, number int) PullRequestHead {
+		head := attributedHeadRow(number, nil, sourceBranch)
+		head.Repo, head.AttributionComplete = repo, false
+		return head
+	}
+	merged := unrecorded("acme/widgets", 182)
+	merged.State, merged.MergeCommitSHA = "merged", mergeCommit
+	for _, write := range []struct {
+		name      string
+		stored    PullRequestHead
+		run       func(ctx context.Context) error
+		notStored bool
+	}{
+		{
+			name: "a write that records no attribution, on the pool", stored: unrecorded("acme/widgets", 181),
+			run: func(ctx context.Context) error {
+				return UpsertPullRequestHead(ctx, pool, broker, unrecorded("acme/widgets", 181))
+			},
+			notStored: true,
+		},
+		{
+			name: "a merged write that seeds its base branch", stored: merged,
+			run:       func(ctx context.Context) error { return UpsertPullRequestHead(ctx, pool, broker, merged) },
+			notStored: true,
+		},
+		{
+			name: "the drop of the row under the repository's old name", stored: unrecorded("acme/widgets-old", 183),
+			run: func(ctx context.Context) error {
+				return upsertHeadUnderCanonicalName(ctx, pool, broker, unrecorded("acme/widgets", 183), "acme/widgets-old")
+			},
+		},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			if err := UpsertPullRequestHead(ctx, pool, nil, write.stored); err != nil {
+				t.Fatalf("store the head of %s#%d: %v", write.stored.Repo, write.stored.Number, err)
+			}
+			holder, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder: %v", err)
+			}
+			defer func() { _ = holder.Rollback(ctx) }()
+			if _, err := holder.Exec(ctx, `select 1 from pull_request_heads where repo = $1 and number = $2 for update`,
+				write.stored.Repo, write.stored.Number); err != nil {
+				t.Fatalf("hold the head's row: %v", err)
+			}
+			answered := make(chan error, 1)
+			started := time.Now()
+			go func() { answered <- write.run(store.WithLockWaitForTest(ctx, bound)) }()
+			select {
+			case err = <-answered:
+			case <-time.After(10 * time.Second):
+				waited := time.Since(started)
+				_ = holder.Rollback(ctx)
+				<-answered
+				t.Fatalf("%s was still waiting on its held row %s after it began, past its bound of %s: "+
+					"it waits on a held row until its holder lets go", write.name, waited.Round(time.Millisecond), bound)
+			}
+			waited := time.Since(started)
+			if !store.IsPoolBusy(err) || write.notStored != errors.Is(err, ErrHeadNotStored) {
+				t.Fatalf("%s behind its held row: %v, want ErrPoolBusy (and ErrHeadNotStored: %t)", write.name, err, write.notStored)
+			}
+			if waited < bound {
+				t.Fatalf("%s was refused %s after it began, inside its bound of %s", write.name, waited.Round(time.Millisecond), bound)
+			}
+			if err := holder.Rollback(ctx); err != nil {
+				t.Fatalf("let the row go: %v", err)
+			}
+			if err := write.run(ctx); err != nil {
+				t.Fatalf("%s once the row was free: %v", write.name, err)
+			}
+		})
 	}
 }

@@ -19,8 +19,10 @@ import (
 // connections: those that hold or wait for a single-key advisory lock other than the events
 // commit-order lock ($1, $2: its classid and objid), and those not idle whose statement names
 // doc_updates; then how many of them are not on Dispatch's room pools (dispatch-room-appends,
-// dispatch-rooms) or its compaction pool (dispatch-compaction), the shared pool's share. loadgen's
-// own backends (application_name loadgen-*) are left out.
+// dispatch-rooms) or its compaction pool (dispatch-compaction), the shared pool's share. A pool's
+// name is its connections' application_name after the last slash: a DATABASE_URL that names an
+// application_name of its own puts that name and a slash before it (<name>/dispatch-rooms,
+// store's applicationName). loadgen's own backends (application_name loadgen-*) are left out.
 const roomConnectionsQuery = `
 with held as (
   select l.pid from pg_locks l
@@ -31,7 +33,7 @@ with held as (
   select a.pid from pg_stat_activity a
   where a.datname = current_database() and a.state is distinct from 'idle' and a.query ilike '%doc\_updates%')
 select count(*)::int,
-       (count(*) filter (where coalesce(a.application_name, '') not in ('dispatch-room-appends', 'dispatch-rooms', 'dispatch-compaction')))::int
+       (count(*) filter (where regexp_replace(coalesce(a.application_name, ''), '^.*/', '') not in ('dispatch-room-appends', 'dispatch-rooms', 'dispatch-compaction')))::int
 from held h left join pg_stat_activity a on a.pid = h.pid
 where coalesce(a.application_name, '') not like 'loadgen-%'`
 

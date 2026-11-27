@@ -21,6 +21,12 @@ import (
 // of any other kind is refused, since this write checks no credential: a person or a session posts
 // through the route.
 //
+// The post is background work - the outbox makes it, off any request - so every statement of it
+// runs on the background pool, named here at its entry (withWorkStore) for the whole write below:
+// the read of the message's id, the transaction, the issue's owner lock and the display tree. This
+// server answers the requests too, so its own store stays the request pool's. A post that cannot
+// open the background pool writes nothing and fails, and the outbox posts it again on its back-off.
+//
 // The caller names the id, so a post made again - by a process that died between the post and its
 // own record of it, or by two processes at once - writes no second message: a message already
 // stored under that id by this actor on this issue is answered as posted, whether this call found
@@ -33,6 +39,14 @@ func (s *server) postSystemMessage(ctx context.Context, actor model.Actor, messa
 	if message.ID == "" {
 		return "", errors.New("a system message needs the id it is stored under")
 	}
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return "", errors.New("post a system message: database unavailable")
+	}
+	background, err := s.deps.Store.Pool.Background()
+	if err != nil {
+		return "", fmt.Errorf("post a system message: open the background pool: %w", err)
+	}
+	ctx = withWorkStore(ctx, &store.Store{Pool: background})
 	if posted, err := s.systemMessagePosted(ctx, actor, message); err != nil || posted {
 		return message.ID, err
 	}
@@ -59,7 +73,7 @@ func (s *server) postSystemMessage(ctx context.Context, actor model.Actor, messa
 func (s *server) systemMessagePosted(ctx context.Context, actor model.Actor, message model.SystemMessage) (bool, error) {
 	var issue *string
 	var kind, id string
-	err := s.deps.Store.Pool.QueryRow(ctx, `
+	err := s.workStore(ctx).Pool.QueryRow(ctx, `
 		select issue_key, coalesce(author ->> 'kind', ''), coalesce(author ->> 'id', '') from messages where id = $1::uuid
 	`, message.ID).Scan(&issue, &kind, &id)
 	switch {

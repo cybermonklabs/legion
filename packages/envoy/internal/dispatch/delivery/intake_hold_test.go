@@ -44,7 +44,7 @@ var errCutOff = errors.New("the process is cut off from the database")
 // a process the network cut off from Postgres or the kernel killed sends nothing: the hold it
 // renews on this pool then lapses.
 type cuttableLeases struct {
-	pool *pgxpool.Pool
+	pool *store.RawPool
 	cut  atomic.Bool
 }
 

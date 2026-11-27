@@ -8,10 +8,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	gws "github.com/gorilla/websocket"
+
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 )
 
 // answerUnder is a GET of target as alice, sending encoding as the request's Accept-Encoding, and
@@ -420,3 +426,80 @@ func (w *countingWriter) Write(body []byte) (int, error) {
 }
 
 func (w *countingWriter) WriteHeader(int) {}
+
+// A gzipped read's last bytes - the final block and the trailer that only the compressor's Close
+// writes - go out under the read's bound with the rest of its answer. Compression sits outside
+// the bound, just inside the access log, and ended its stream once the chain had returned to it,
+// after the bound was lifted, so a reader that stopped just before the end held that write until
+// TCP gave up and its line read status=200. The read's bound now ends the gzip stream itself
+// before it flushes what net/http holds (servedAsRead, answerEnder): the flush that fails, as a
+// connection whose reader stopped fails it, carries the whole stream, and the read is cut - the
+// handler aborted and the access line marked aborted=true, the flush's failure reaching the bound
+// through compression and the access log (FlushError). A read whose flush goes through leaves its
+// bound armed as the chain returns, for what net/http writes after it - the chunked answer's
+// terminator - which net/http takes off itself once that is written.
+func TestAGzippedReadsLastBytesGoOutUnderItsBound(t *testing.T) {
+	logged := captureLog(t)
+	served := &server{transfer: transferBounds{idle: time.Minute}}
+	const route = "/api/v1/gzip-trailer-test"
+	answer := strings.Repeat(`{"body":"a comment the list carries"},`, 200)
+	run := func(failure error) (*flushRecorder, []byte, any) {
+		writer := &flushRecorder{ResponseRecorder: httptest.NewRecorder(), failure: failure}
+		var atFlush []byte
+		writer.atFlush = func() { atFlush = slices.Clone(writer.Body.Bytes()) }
+		chain := accesslog.HandlerFuncOn(route, compressAnswers(func(w http.ResponseWriter, r *http.Request) {
+			served.servedAsRead(time.Minute, false, false, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := w.Write([]byte(answer)); err != nil {
+					t.Errorf("write the answer: %v", err)
+				}
+			})(r.Context(), w, r)
+		}), clock.Real())
+		request := httptest.NewRequest(http.MethodGet, route, nil)
+		request.Header.Set("Accept-Encoding", "gzip")
+		var ended any
+		func() {
+			defer func() { ended = recover() }()
+			chain(writer, request)
+		}()
+		return writer, atFlush, ended
+	}
+	whole := func(t *testing.T, what string, compressed []byte) {
+		t.Helper()
+		reader, err := gzip.NewReader(bytes.NewReader(compressed))
+		if err != nil {
+			t.Fatalf("%s is no gzip stream: %v", what, err)
+		}
+		plain, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("%s is not a whole gzip stream, its final block and trailer missing: %v", what, err)
+		}
+		if string(plain) != answer {
+			t.Fatalf("%s decompresses to %d bytes, want the %d-byte answer", what, len(plain), len(answer))
+		}
+	}
+
+	cut, atFlush, ended := run(os.ErrDeadlineExceeded)
+	if ended != http.ErrAbortHandler {
+		t.Fatalf("a gzipped read whose last bytes were not taken ended with %v, want http.ErrAbortHandler", ended)
+	}
+	if cut.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("the answer went out with Content-Encoding %q, want gzip", cut.Header().Get("Content-Encoding"))
+	}
+	whole(t, "what the flush carried", atFlush)
+	if armed := cut.deadlines[cut.armedAtFlush-1]; armed.IsZero() {
+		t.Fatal("the flush that carried the trailer ran with no deadline on the connection")
+	}
+	if line := awaitAccessLineOfRoute(t, logged, route); !strings.Contains(line, "aborted=true") {
+		t.Fatalf("the cut gzipped read's access line is not marked aborted:\n%s", line)
+	}
+
+	sent, _, ended := run(nil)
+	if ended != nil {
+		t.Fatalf("a gzipped read whose flush went through ended with %v, want nothing", ended)
+	}
+	whole(t, "the answer", sent.Body.Bytes())
+	if last := sent.deadlines[len(sent.deadlines)-1]; last.IsZero() {
+		t.Fatal("the read lifted its bound as it returned, so what net/http writes after it - the chunked answer's terminator - goes out with no deadline")
+	}
+}

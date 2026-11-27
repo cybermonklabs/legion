@@ -524,21 +524,27 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			if _, err := r.documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
 				t.Fatalf("run the block-index tick over what the drives before left owed: %v", err)
 			}
-			tx, err := r.database.Pool.Begin(ctx)
+			gated, release, err := r.documents.AcquireDocumentWriter(ctx, r.notes)
+			if err != nil {
+				t.Fatalf("take the notes' writer gate: %v", err)
+			}
+			defer release()
+			tx, err := r.database.Pool.Begin(gated)
 			if err != nil {
 				t.Fatalf("begin the live edit: %v", err)
 			}
 			defer tx.Rollback(ctx)
-			joined, ledger := r.documents.Join(ctx, tx)
+			joined, ledger := r.documents.Join(gated, tx)
 			defer ledger.Discard()
 			if edit, err := r.documents.ApplyOps(joined, r.notes, []model.EditOp{{
 				Op: "insert", After: "end", Markdown: "A paragraph a live edit adds.",
 			}}, model.Actor{Kind: "user", ID: "alice"}, nil); err != nil || !edit.Changed {
 				t.Fatalf("edit the notes live (changed %v): %v", edit.Changed, err)
 			}
-			if err := ledger.Commit(ctx); err != nil {
+			if err := ledger.Commit(gated); err != nil {
 				t.Fatalf("commit the live edit: %v", err)
 			}
+			release()
 			live, _, err := r.documents.TextWithBlocks(ctx, r.notes)
 			if err != nil {
 				t.Fatalf("read the notes' live text: %v", err)

@@ -29,7 +29,7 @@ type createDeliverySessionGroupInput struct {
 func (s *server) createDeliverySessionGroup(w http.ResponseWriter, r *http.Request) {
 	var input createDeliverySessionGroupInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -51,17 +51,17 @@ func (s *server) createDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	group, err := delivery.CreateSessionGroup(r.Context(), tx, name, sessions, actor)
 	if err != nil {
-		s.writeSessionGroupError(w, err)
+		s.writeSessionGroupError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, group)
@@ -80,7 +80,7 @@ type updateDeliverySessionGroupInput struct {
 func (s *server) updateDeliverySessionGroup(w http.ResponseWriter, r *http.Request) {
 	var input updateDeliverySessionGroupInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -108,17 +108,17 @@ func (s *server) updateDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	group, err := delivery.UpdateSessionGroup(r.Context(), tx, id, update, actor)
 	if err != nil {
-		s.writeSessionGroupError(w, err)
+		s.writeSessionGroupError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, group)
@@ -140,16 +140,16 @@ func (s *server) deleteDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	if err := delivery.DeleteSessionGroup(r.Context(), tx, id); err != nil {
-		s.writeSessionGroupError(w, err)
+		s.writeSessionGroupError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -187,7 +187,7 @@ func sessionGroupSessions(w http.ResponseWriter, field string, values []string) 
 }
 
 // writeSessionGroupError answers a group write's refusal with its code, naming what it refers to.
-func (s *server) writeSessionGroupError(w http.ResponseWriter, err error) {
+func (s *server) writeSessionGroupError(w http.ResponseWriter, r *http.Request, err error) {
 	var inGroup *delivery.SessionInGroupError
 	var taken *delivery.SessionGroupNameTakenError
 	var titled *delivery.SessionGroupNameIsTitleError
@@ -203,6 +203,6 @@ func (s *server) writeSessionGroupError(w http.ResponseWriter, err error) {
 	case errors.As(err, &titled):
 		writeError(w, "SESSION_GROUP_NAME_IS_SESSION_TITLE", http.StatusConflict, err.Error())
 	default:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 	}
 }

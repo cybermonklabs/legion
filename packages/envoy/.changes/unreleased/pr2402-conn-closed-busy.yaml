@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A write whose database connection ends before its commit is now refused `503 DATABASE_BUSY` with
+  `Retry-After`, where it was answered `500 INTERNAL` with an `API handler failed` line. Nothing
+  of such a write committed: Postgres ends the transaction with the connection. Two shapes are
+  read this way: the database driver's own `conn closed`, which every later call meets on a
+  connection the driver closed after an earlier call on it failed, and Postgres ending the
+  session, as an administrator's `pg_terminate_backend` or the idle-in-transaction bound does.
+  A connection that ends under a `COMMIT` the server already sent stays `500
+  COMMIT_OUTCOME_UNKNOWN` with no `Retry-After`, since the commit may have been applied, and now
+  answers that way rather than `500 INTERNAL`; so does a statement run outside any transaction
+  whose connection ends after it reached the database. In a ten-times load with the database
+  frozen, a document edit met it: the savepoint rollback of one of the reports the edit reads in
+  its transaction ran out its 5-second bound, the driver closed the connection, the rollback's
+  failure was dropped, and the edit's next statement failed on the closed connection. A report
+  whose savepoint cannot be opened or rolled back now fails its write at once with that failure,
+  and a rollback that ran out its own bound is refused `503 DATABASE_BUSY` too.

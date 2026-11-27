@@ -134,7 +134,17 @@ func fixtureLoopSummary() summary {
 			MostOnOneProposal: 28, Spilled: 140, DriverTopics: 614, DriverSubscribed: true},
 		Loop: &loopRun{Requests: []loopRequests{{Class: loopClassVerdict, Requests: 2000}},
 			Reopens: 240, CapExceeded: 12, NewParts: 3, PageReads: 800},
+		Pacing: fixturePacing(sent, offered),
 	}
+}
+
+// fixturePacing is a generator that kept its schedule: every arrival of the window sent in its
+// second, the furthest second 3% over.
+func fixturePacing(requests, events int) *pacingSummary {
+	over, second := 1.03, 1_802
+	return &pacingSummary{OverScheduleLimit: overScheduleLimit, MinJudgedSchedule: minJudgedSchedule,
+		Requests: pacingKind{Scheduled: requests, Sent: requests, MaxOver: &over, MaxOverSecond: &second},
+		Events:   pacingKind{Scheduled: events, Sent: events, MaxOver: &over, MaxOverSecond: &second}}
 }
 
 // fixtureLoopCgroup is the deployment's cgroup.json: the three application containers, the four
@@ -517,4 +527,36 @@ func TestStepCheckReadsCriterionFFromWhatTheStepHolds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStepCheckSetsAsideAStepWhoseGeneratorBrokeItsSchedule: a step whose generator sent a burst
+// over its schedule reads "set aside" on the set-aside rule's clause, with the second that broke
+// it, and its verdict line says so first: neither a pass nor a failure, so no clause is counted
+// failed for it, yet the command does not pass the step either. A step whose summary records no
+// pacing at all fails the clause, since nothing says its generator kept its schedule.
+func TestStepCheckSetsAsideAStepWhoseGeneratorBrokeItsSchedule(t *testing.T) {
+	const rule = "R8 set-aside rule: every kind the step was to send recorded, and no second of the window over its schedule by more than 10%"
+	f := newStepFixture()
+	_, f.sum.SetAside = judgePacing(arrivalsFile{Window: []arrivalSecond{{Second: 95, RequestsScheduled: 640, RequestsSent: 3540}}}, paceTargets{requests: true})
+	out, failed := f.check(t, "2x-stalled")
+	if failed != 0 {
+		t.Errorf("%d clauses failed on a set-aside step, want none: set aside is no failure:\n%s", failed, out)
+	}
+	wantClause(t, out, rule, setAsideWord, "second 95: 3540 requests sent against 640 scheduled (5.53x)")
+	if !strings.Contains(out, "step-check 2x-stalled: SET ASIDE, neither a pass nor a failure") {
+		t.Errorf("the verdict line does not say the step is set aside:\n%s", out)
+	}
+	if err := runStepCheck([]string{f.write(t, "2x-stalled-again")}); err == nil || !strings.Contains(err.Error(), "set aside") {
+		t.Errorf("the command gave %v on a set-aside step, want an error that says set aside", err)
+	}
+
+	f = newStepFixture()
+	f.sum.Pacing = nil
+	out, failed = f.check(t, "2x-no-pacing")
+	if failed != 1 {
+		t.Errorf("%d clauses failed, want the set-aside rule alone:\n%s", failed, out)
+	}
+	wantClause(t, out, rule, "FAIL", "summary.json records no pacing")
+	out, _ = newStepFixture().check(t, "2x-on-schedule")
+	wantClause(t, out, rule, "ok", "requests most over schedule 1.03x (s 1802)")
 }

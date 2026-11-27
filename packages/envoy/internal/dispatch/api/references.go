@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -87,13 +88,13 @@ const referencesSinceWait = time.Second
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	who := actor.Recorded()
 	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if query.Direction == "in" {
@@ -115,7 +116,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			node, err = s.blockReferenceNode(r.Context(), who, query, ref)
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if node.Pin != nil && node.Pin.State == "removed" {
@@ -131,21 +132,21 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		if query.Direction == "out" && ref.Kind == "artifact" {
 			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1`, query.ID).Scan(&query.ID); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
-					s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", query.ID))
+					s.writeHandlerError(w, r, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", query.ID))
 					return
 				}
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
 		var found bool
 		node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, who, query.Kind, query.ID, query.Direction == "in")
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if !found {
-			s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no %s at %s", query.Kind, query.ID))
+			s.writeHandlerError(w, r, errorf(http.StatusNotFound, "NOT_FOUND", "no %s at %s", query.Kind, query.ID))
 			return
 		}
 	}
@@ -156,20 +157,20 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		if query.Since != nil {
 			safe, err := s.sinceHorizon(r.Context())
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			query.Through = &safe
 		}
 		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, who, query)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if query.Direction == "in" {
 		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -258,19 +259,19 @@ var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
 func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	who := actor.Recorded()
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if !slices.Contains(questionSourceKinds, kind) {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_KIND",
+		s.writeHandlerError(w, r, errorf(http.StatusBadRequest, "INVALID_KIND",
 			"kind %q is not one of %s", kind, strings.Join(questionSourceKinds, ", ")))
 		return
 	}
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	if id == "" {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "id is required"))
+		s.writeHandlerError(w, r, errorf(http.StatusBadRequest, "INVALID_QUERY", "id is required"))
 		return
 	}
 	if text.IsIDPrefix(id) {
@@ -287,17 +288,17 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 	}
 	document, err := refs.ScopeOf(r.Context(), s.deps.Store.Pool, who, kind, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if document == "" {
-		s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND",
+		s.writeHandlerError(w, r, errorf(http.StatusNotFound, "NOT_FOUND",
 			"the text of %s %s belongs to no document", kind, id))
 		return
 	}
 	questions, err := refs.QuestionMap(r.Context(), s.deps.Store.Pool, who, document)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	answer := referenceQuestions{Document: document, Questions: make([]referenceQuestion, 0, len(questions))}
@@ -685,7 +686,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	}
 	versionsValues := r.URL.Query()["versions"]
 	if len(versionsValues) > 1 {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "versions must be given once, as all or latest"))
+		s.writeHandlerError(w, r, errorf(http.StatusBadRequest, "INVALID_QUERY", "versions must be given once, as all or latest"))
 		return
 	}
 	var latestOnly bool
@@ -695,23 +696,18 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		case "latest":
 			latestOnly = true
 		default:
-			s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "versions must be all or latest"))
+			s.writeHandlerError(w, r, errorf(http.StatusBadRequest, "INVALID_QUERY", "versions must be all or latest"))
 			return
 		}
 	}
 	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	closure, err := s.boundedClosure(r.Context(), who, issue.Key)
 	if err != nil {
-		if closureBoundHit(err) {
-			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",
-				"the issue's reference closure ran past its %s bound, so no reference was read; try again later", referencesClosureBound))
-			return
-		}
-		s.writeHandlerError(w, err)
+		s.writeClosureRefusal(w, r, err)
 		return
 	}
 	refKeys := make([]string, len(closure.Members))
@@ -720,14 +716,14 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	}
 	artifacts, err := s.loadArtifactsByRefKey(r.Context(), s.deps.Store.Pool, refKeys, latestOnly)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	members := make([]model.ReferenceMember, 0, len(closure.Members))
 	for _, closureMember := range closure.Members {
 		artifact, ok := artifacts[closureMember.RefKey]
 		if !ok {
-			s.writeHandlerError(w, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey))
+			s.writeHandlerError(w, r, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey))
 			return
 		}
 		members = append(members, model.ReferenceMember{
@@ -749,7 +745,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		Links:      closure.Links,
 		LinkedFrom: closure.LinkedFrom,
 	}, trees)); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("encode the issue's references: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("encode the issue's references: %w", err))
 		return
 	}
 	if answerNotModified(w, r, s.referencesETag(answer.Bytes(), latestOnly, trees)) {
@@ -855,6 +851,19 @@ func setStatementBudget(ctx context.Context, tx pgx.Tx, left time.Duration) erro
 	return err
 }
 
+// writeClosureRefusal answers boundedClosure's error. A read that waited out the request pool's
+// acquire bound is the server's busy refusal (503 DATABASE_BUSY with Retry-After), not the read's
+// own bound: the pool's ErrPoolBusy wraps context.DeadlineExceeded, which closureBoundHit would
+// otherwise read as the read's. Only a read cut at its own bound answers REFERENCES_TIMEOUT.
+func (s *server) writeClosureRefusal(w http.ResponseWriter, r *http.Request, err error) {
+	if !store.IsPoolBusy(err) && closureBoundHit(err) {
+		s.writeHandlerError(w, r, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",
+			"the issue's reference closure ran past its %s bound, so no reference was read; try again later", referencesClosureBound))
+		return
+	}
+	s.writeHandlerError(w, r, err)
+}
+
 // closureBoundHit says whether boundedClosure's read ended at its bound: Postgres cancelled a
 // statement at the statement_timeout its budget set (SQLSTATE 57014), the budget had less than a
 // millisecond left for the next statement (errClosureBudgetSpent), or the context expired first.
@@ -873,17 +882,17 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	outgoing, err := refs.Outgoing(r.Context(), s.deps.Store.Pool, who, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, who, artifact.RefKey, s.deps.ServerURL)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, model.ArtifactReferences{Outgoing: outgoing, ReferencedBy: referencedBy})

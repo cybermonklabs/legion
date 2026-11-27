@@ -367,6 +367,14 @@ func (c *Client) ServesDeviceGrant(ctx context.Context) bool {
 	return answer.(bool)
 }
 
+// DeviceGrantKnown is ServesDeviceGrant's answer from memory, with nothing read of the broker:
+// fresh reports whether the client holds an answer younger than deviceGrantTTL, which served then
+// is; where fresh is false, ServesDeviceGrant would read the broker. A caller that lets go of
+// something while it waits on another server asks this first, and waits only where it is false.
+func (c *Client) DeviceGrantKnown() (served, fresh bool) {
+	return c.deviceGrant.fresh()
+}
+
 // fresh is the remembered answer while it is younger than deviceGrantTTL, and false once it is
 // not or where there is none.
 func (d *deviceGrant) fresh() (served, fresh bool) {

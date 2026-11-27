@@ -42,6 +42,8 @@ const (
 	// the store accepts and serves back.
 	maxArtifactBlobSize      = files.MaxObjectSize
 	maxDocumentMarkdownBytes = pmdoc.MaxDocumentBytes // A Markdown document, and what a write may grow one to (docs' refuseGrowth); maxJSONRequestBytes bounds an issue's spec and every edit the same way (LEGION-465).
+	// maxUploadRequestBytes bounds an upload's whole body: the file and a megabyte of fields.
+	maxUploadRequestBytes int64 = maxArtifactBlobSize + (1 << 20)
 	// maxNewArtifactKeyBytes bounds, in bytes, a new artifact's name and the reference key
 	// `<owner>/<slug>` that name gives it (newArtifactNameRefusal, newArtifactKeyRefusal).
 	// artifacts_ref_key_key is a B-tree index on ref_key, and a Postgres B-tree entry holds at
@@ -64,7 +66,7 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	artifacts, err := s.loadArtifacts(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -147,9 +149,6 @@ func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 	s.uploadArtifactFor(w, r, artifactTarget{IssueKey: &issueKey})
 }
 
-// issueUploadRoute is the upload to an issue, which refuseUploadToAClosedIssue guards.
-const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
-
 // refuseUploadToAClosedIssue answers an upload to an issue that is closed, or missing, with the
 // refusal its handler would make (requireOpenOwnerStatus) before anything spools or parses the
 // upload's body: the keyed layer spools a keyed body whole to disk before its handler runs
@@ -198,7 +197,7 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 				// As the keyed layer answers its own failed lookup: under the key, which nothing has
 				// claimed, so the client asks again under it.
 				w.Header().Set(contracts.IdempotencyKeyHeader, requestKey)
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if answers {
@@ -206,7 +205,7 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 				return
 			}
 		}
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 	}
 }
 
@@ -235,7 +234,7 @@ var errMarkdownDocumentTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_
 // (unstorableJSON), and the inline round trip, whose decode does not, refuses it in the same words
 // before it comes here (postMarkdownRoundTrip).
 //
-// The upload (uploadArtifactFor) and the two round trips (markdownRoundTrip) make these checks
+// The upload (uploadArtifactFor) and the two round trips (roundTripAnswer) make these checks
 // through it, and `dispatch artifact` and its dry run take a round trip's refusal of them as
 // the call's for every upload, a replacement included. So a check of the text alone that every
 // upload of a markdown document makes before its write is made here, and the round trips make it
@@ -271,7 +270,7 @@ func unstorableDocumentText[T string | []byte](field string, content T) *apiErro
 }
 
 func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, target artifactTarget) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactBlobSize+(1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes)
 	requestType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "invalid artifact input type")
@@ -301,7 +300,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		return
 	}
 	if len(input.content) > maxArtifactBlobSize {
-		s.writeHandlerError(w, errUploadTooLarge)
+		s.writeHandlerError(w, r, errUploadTooLarge)
 		return
 	}
 	mediaType, _, err := mime.ParseMediaType(input.contentType)
@@ -316,7 +315,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	}
 	if kind == "doc" {
 		if refusal := documentTextRefusal(input.content, requestType == "multipart/form-data"); refusal != nil {
-			s.writeHandlerError(w, refusal)
+			s.writeHandlerError(w, r, refusal)
 			return
 		}
 	}
@@ -324,7 +323,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	// path stores no part header.
 	if kind != "doc" {
 		if refusal := unstorableText("file Content-Type", input.contentType); refusal != nil {
-			s.writeHandlerError(w, refusal)
+			s.writeHandlerError(w, r, refusal)
 			return
 		}
 	}
@@ -337,7 +336,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	// and a document's is counted (storeArtifact).
 	if input.precondition != nil {
 		if refusal := docs.ValidateUploadPrecondition(*input.precondition); refusal != nil {
-			s.writeHandlerError(w, refusal)
+			s.writeHandlerError(w, r, refusal)
 			return
 		}
 	}
@@ -364,7 +363,7 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 	if err := decoder.Decode(&body); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
-			s.writeHandlerError(w, errUploadTooLarge)
+			s.writeHandlerError(w, r, errUploadTooLarge)
 		} else {
 			writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid JSON body")
 		}
@@ -375,7 +374,7 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		return artifactUploadInput{}, false
 	}
 	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return artifactUploadInput{}, false
 	}
 	logUndeclaredMembers(r, &body, read.Bytes())
@@ -429,7 +428,7 @@ func multipartJSONField[T any](s *server, w http.ResponseWriter, r *http.Request
 		return nil, false
 	}
 	if refusal := unstorableJSON(field, []byte(raw)); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return nil, false
 	}
 	logUndeclaredMembers(r, &read, []byte(raw))
@@ -446,11 +445,11 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		var spool *fs.PathError
 		switch {
 		case errors.As(err, &tooLarge):
-			s.writeHandlerError(w, errUploadTooLarge)
+			s.writeHandlerError(w, r, errUploadTooLarge)
 		case errors.Is(err, multipart.ErrMessageTooLarge):
 			writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, "the upload's form fields are too large to read")
 		case errors.As(err, &spool):
-			s.writeHandlerError(w, fmt.Errorf("spool multipart upload: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("spool multipart upload: %w", err))
 		default:
 			writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "invalid multipart body: "+err.Error())
 		}
@@ -468,7 +467,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		}
 	}()
 	if refusal := unstorableForm(r.MultipartForm.Value); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return artifactUploadInput{}, false
 	}
 	supplied, read := multipartJSONField[model.Actor](s, w, r, "actor")
@@ -501,7 +500,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 	defer file.Close()
 	content, err := io.ReadAll(io.LimitReader(file, maxArtifactBlobSize+1))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return artifactUploadInput{}, false
 	}
 	contentType := header.Header.Get("Content-Type")
@@ -545,22 +544,22 @@ func uploadAdvice(what string) string {
 // A repair - a document whose live tree is outside the Proof schema - has no token for the
 // upload to name, and is refused by writeUploadNoTokenError below, as a first upload naming a
 // token is (storeArtifact).
-func (s *server) writeUploadDocumentError(ctx context.Context, w http.ResponseWriter, tx pgx.Tx, err error, name, artifactID string) {
+func (s *server) writeUploadDocumentError(w http.ResponseWriter, r *http.Request, tx pgx.Tx, err error, name, artifactID string) {
 	var stale *docs.ErrPreconditionFailed
 	if errors.As(err, &stale) {
-		version, readErr := settledVersionNumber(ctx, tx, artifactID)
+		version, readErr := settledVersionNumber(r.Context(), tx, artifactID)
 		if readErr != nil {
-			s.writeHandlerError(w, readErr)
+			s.writeHandlerError(w, r, readErr)
 			return
 		}
 		WriteJSON(w, http.StatusConflict, uploadPreconditionBody(stale, version))
 		return
 	}
 	if errors.Is(err, docs.ErrPreconditionUnavailable) {
-		s.writeUploadNoTokenError(w, name)
+		s.writeUploadNoTokenError(w, r, name)
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
 // uploadPreconditionBody is the 409 PRECONDITION_FAILED body of a document's upload naming the
@@ -607,12 +606,12 @@ func fileUploadPreconditionBody(kind, name, named string, standing model.Version
 // with the artifact. An upload the first passed and the second refuses, because another upload
 // replaced the version between them, leaves an object no row names, as putUploadedFile's other
 // refusals can.
-func (s *server) refuseFileBase(w http.ResponseWriter, kind, name string, base *model.EditPrecondition, standing model.Version) bool {
+func (s *server) refuseFileBase(w http.ResponseWriter, r *http.Request, kind, name string, base *model.EditPrecondition, standing model.Version) bool {
 	if base == nil {
 		return false
 	}
 	if standing.Token == nil {
-		s.writeUploadNoTokenError(w, name)
+		s.writeUploadNoTokenError(w, r, name)
 		return true
 	}
 	if base.Document == *standing.Token {
@@ -636,8 +635,8 @@ func uploadNoTokenRefusal(name string) error {
 }
 
 // writeUploadNoTokenError answers uploadNoTokenRefusal.
-func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
-	s.writeHandlerError(w, uploadNoTokenRefusal(name))
+func (s *server) writeUploadNoTokenError(w http.ResponseWriter, r *http.Request, name string) {
+	s.writeHandlerError(w, r, uploadNoTokenRefusal(name))
 }
 
 // queueNewArtifact queues the insert of the artifact an upload creates and returns the row as the
@@ -816,6 +815,197 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 	return docs.RecordTaskProgressMarkdown(ctx, tx, artifactID, markdown)
 }
 
+// uploadDocuments is the document an upload of name to target writes live: the existing document
+// of that name, whose text the upload replaces. None for a file, or a name no document has yet,
+// which the upload creates and seeds.
+func (s *server) uploadDocuments(ctx context.Context, target artifactTarget, name, kind string) ([]string, error) {
+	q := s.documentQueryer()
+	if q == nil || kind != "doc" {
+		return nil, nil
+	}
+	artifact, err := s.findArtifactByNameOrSlug(ctx, q, target, name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if artifact.Kind != kind {
+		return nil, nil
+	}
+	return []string{artifact.ID}, nil
+}
+
+// artifactStore is an upload's open transaction, joined to the document ledger its writes are
+// queued on, its owner locked, and the artifact it writes, found or created (its insert queued);
+// issueStatus is the issue's lifecycle status for an issue's artifact, and documentNode the node of
+// a document the upload creates, which waits for the upload's event (graphstore.QueueCaused).
+type artifactStore struct {
+	tx           pgx.Tx
+	documentCtx  context.Context
+	ledger       *docs.Ledger
+	issueStatus  *string
+	artifact     model.Artifact
+	created      bool
+	documentNode graphstore.Uncaused
+}
+
+// beginArtifactStore opens an upload's transaction, joins it to the document ledger, locks its
+// owner, and finds the artifact named input.name or creates it (lockArtifactStore), with the
+// writer gates of gated held. An existing document's text is replaced live, so its gate must be
+// among gated: a document another upload created after this one named its documents is refused
+// with errDocumentsMoved, rolled back.
+//
+// The upload runs in two phases (write_queue.go): every lock, read and the document work run in
+// its read phase, holding no transaction id, and each write - the artifact, the document's, the
+// version, the event - is queued on the ledger at the point it is made, for Commit to run back to
+// back.
+func (s *server) beginArtifactStore(
+	ctx context.Context, input artifactUploadInput, writer specWriter, kind string, target artifactTarget, gated []string,
+) (artifactStore, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return artifactStore{}, err
+	}
+	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
+	opened, err := s.lockArtifactStore(ctx, tx, ledger, input, writer, kind, target)
+	if err == nil {
+		var named []string
+		if !opened.created && kind == "doc" {
+			named = []string{opened.artifact.ID}
+		}
+		if !sameDocuments(gated, named) {
+			err = errDocumentsMoved
+		}
+	}
+	if err != nil {
+		ledger.Discard()
+		_ = tx.Rollback(ctx)
+		return artifactStore{}, err
+	}
+	opened.tx, opened.documentCtx, opened.ledger = tx, documentCtx, ledger
+	return opened, nil
+}
+
+// lockArtifactStore locks an upload's owner inside tx and finds the artifact named input.name,
+// or queues its creation on ledger.
+func (s *server) lockArtifactStore(
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, input artifactUploadInput, writer specWriter, kind string, target artifactTarget,
+) (artifactStore, error) {
+	actor := writer.actor
+	var issueStatus *string
+	var project, session *string
+	var err error
+	switch {
+	case target.Session != "":
+		session = &target.Session
+		if err := lockAgentArtifacts(ctx, tx, target.Session); err != nil {
+			return artifactStore{}, err
+		}
+	case target.IssueKey != nil:
+		issueStatus, err = s.requireOpenOwnerStatus(ctx, tx, issueOwner(*target.IssueKey))
+		if err != nil {
+			return artifactStore{}, err
+		}
+		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, *target.IssueKey).Scan(&project); err != nil {
+			return artifactStore{}, err
+		}
+	default:
+		loaded, err := s.loadProject(ctx, tx, target.Project)
+		if err != nil {
+			return artifactStore{}, err
+		}
+		project = &loaded.Key
+		if err := lockProjectArtifacts(ctx, tx, loaded.Key); err != nil {
+			return artifactStore{}, err
+		}
+	}
+	var artifact model.Artifact
+	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (artifactTarget.ownsEvents). A ref_key past the store's address bound is no node
+	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
+	var documentNode graphstore.Uncaused
+	artifact, err = s.findArtifactByNameOrSlug(ctx, tx, target, input.name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		created = true
+		if refusal := newArtifactNameRefusal(input.name); refusal != nil {
+			return artifactStore{}, refusal
+		}
+		slug, err := s.nextArtifactSlug(ctx, tx, target, input.name)
+		if err != nil {
+			return artifactStore{}, err
+		}
+		if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
+			return artifactStore{}, refusal
+		}
+		// The role the insert below writes, which the minted slug decides. A create with no
+		// content takes none of the documents Dispatch makes itself, so every spelling of the
+		// name that gives one of their slugs is refused.
+		role := documentRole(target, kind, slug)
+		if input.blank && role != nil {
+			return artifactStore{}, createRoleNameRefusal(input.name, slug, *role)
+		}
+		artifact, documentNode, err = s.queueNewArtifact(ctx, tx, ledger, target, project, session, slug, input.name, kind, role, actor)
+		if err != nil {
+			return artifactStore{}, err
+		}
+	} else if err != nil {
+		return artifactStore{}, err
+	} else if artifact.Kind != kind {
+		return artifactStore{}, artifactKindMismatch(input.name, artifact, kind)
+	} else if input.blank {
+		return artifactStore{}, blankWriteToADocumentThatExists(input.name, artifact)
+	}
+	// A document the release before this one created during the rolling deploy carries no role:
+	// migration 20261102110000 backfills the rows that existed when it ran, and that release
+	// writes none of its own. Until the role is set the document is invisible to every reader
+	// that looks for an issue's Verification or plan document by it, so the next version written
+	// under the row repairs it from the same slug that would have set it. The slug is unique
+	// within the owner, so at most one row per issue can take either role and the partial unique
+	// index artifacts_issue_role holds. The repair is a write like every other this route makes:
+	// it is queued here and runs in the write phase, and the row in hand carries the role from
+	// here on, so the reads that follow it in this transaction read the role it writes.
+	if !created && artifact.Role == "" {
+		if role := documentRole(target, artifact.Kind, artifact.Slug); role != nil {
+			if err := queueExec(ledger, `
+				update artifacts set role = $2 where id = $1 and role is null
+			`, artifact.ID, *role); err != nil {
+				return artifactStore{}, err
+			}
+			artifact.Role = *role
+		}
+	}
+	// The check of who writes an issue's spec or Verification document, on the row as this upload
+	// leaves it - a new one with the role its slug gave it, an older one with its role repaired -
+	// before the first document call, so an upload that would change nothing is refused too. It
+	// judges a file as well as a document: a file row whose slug is verification-md, which takes no
+	// role, is the issue's Verification document by that slug (specWriterDocumentName). Where a
+	// file store holds files, the same check answered a file first, before its object was written
+	// (refuseUploadBeforeItsObject); this one decides, under the owner's lock.
+	if target.IssueKey != nil {
+		if err := refuseSpecWriterOfDocument(ctx, tx, writer, artifact); err != nil {
+			return artifactStore{}, err
+		}
+	}
+	// A project artifact's owner is the artifact itself, and until here this transaction has not
+	// taken its lock: the issue branch above locks its issue, but this one only read its project.
+	// For a document the document service takes that lock itself, before the room, when the write
+	// below joins the document (docs' joinLiveWrite, lockArtifactOwner), so it is not this line that
+	// keeps the upload from running room -> owner against a settlement's owner -> room. A file is
+	// written by this route alone, with no document service call, and this line is the one lock it
+	// takes before its version's insert; without it the upload would meet the owner's lock only in
+	// its event's append, after that insert, holding a transaction id.
+	if target.IssueKey == nil && target.Session == "" && !created {
+		if err := s.requireOpenOwner(ctx, tx, ownerForArtifact(artifact)); err != nil {
+			return artifactStore{}, err
+		}
+	}
+	return artifactStore{issueStatus: issueStatus, artifact: artifact, created: created, documentNode: documentNode}, nil
+}
+
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -833,142 +1023,27 @@ func (s *server) storeArtifact(
 	if !s.putUploadedFile(w, r, writer, kind, sha, input, target) {
 		return
 	}
-	tx, err := s.begin(r.Context())
+	// An upload to an existing document replaces its live text, so it queues for the document's
+	// writer gate before its transaction opens; a new document is seeded, which no live write
+	// joins, and needs none.
+	opened, gatedCtx, release, err := gatedWrite(r.Context(), s.deps.Docs,
+		func(ctx context.Context) ([]string, error) {
+			return s.uploadDocuments(ctx, target, input.name, kind)
+		},
+		func(ctx context.Context, gated []string) (artifactStore, error) {
+			return s.beginArtifactStore(ctx, input, writer, kind, target, gated)
+		})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	// The gate ends at the commit below; the defer is the error paths' release.
+	defer release()
+	r = r.WithContext(gatedCtx)
+	tx, documentCtx, ledger := opened.tx, opened.documentCtx, opened.ledger
+	issueStatus, artifact, created, documentNode := opened.issueStatus, opened.artifact, opened.created, opened.documentNode
 	defer tx.Rollback(r.Context())
-	// The upload runs in two phases (write_queue.go): every lock, read and the document work run
-	// here, holding no transaction id, and each write - the artifact, the document's, the version,
-	// the event - is queued at the point it is made, for Commit to run back to back.
-	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	var issueStatus *string
-	var project, session *string
-	switch {
-	case target.Session != "":
-		session = &target.Session
-		if err := lockAgentArtifacts(r.Context(), tx, target.Session); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	case target.IssueKey != nil:
-		issueStatus, err = s.requireOpenOwnerStatus(r.Context(), tx, issueOwner(*target.IssueKey))
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, *target.IssueKey).Scan(&project); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	default:
-		loaded, err := s.loadProject(r.Context(), tx, target.Project)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		project = &loaded.Key
-		if err := lockProjectArtifacts(r.Context(), tx, loaded.Key); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	var artifact model.Artifact
-	var created bool
-	// The node of a document this upload creates: written before its row, in the project of the
-	// issue or the project that owns it, or between the parties of the conversation that does,
-	// and stated under the event the upload appends, or at the sentinel where its owner records
-	// none (artifactTarget.ownsEvents). A ref_key past the store's address bound is no node
-	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
-	var documentNode graphstore.Uncaused
-	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
-	if errors.Is(err, pgx.ErrNoRows) {
-		created = true
-		if refusal := newArtifactNameRefusal(input.name); refusal != nil {
-			s.writeHandlerError(w, refusal)
-			return
-		}
-		slug, err := s.nextArtifactSlug(r.Context(), tx, target, input.name)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
-			s.writeHandlerError(w, refusal)
-			return
-		}
-		// The role the insert below writes, which the minted slug decides. A create with no
-		// content takes none of the documents Dispatch makes itself, so every spelling of the
-		// name that gives one of their slugs is refused.
-		role := documentRole(target, kind, slug)
-		if input.blank && role != nil {
-			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
-			return
-		}
-		artifact, documentNode, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, actor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	} else if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	} else if artifact.Kind != kind {
-		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
-		return
-	} else if input.blank {
-		s.writeHandlerError(w, blankWriteToADocumentThatExists(input.name, artifact))
-		return
-	}
-	// A document the release before this one created during the rolling deploy carries no role:
-	// migration 20261102110000 backfills the rows that existed when it ran, and that release
-	// writes none of its own. Until the role is set the document is invisible to every reader
-	// that looks for an issue's Verification or plan document by it, so the next version written
-	// under the row repairs it from the same slug that would have set it. The slug is unique
-	// within the owner, so at most one row per issue can take either role and the partial unique
-	// index artifacts_issue_role holds. The repair is a write like every other this route makes:
-	// it is queued here and runs in the write phase, and the row in hand carries the role from
-	// here on, so the reads that follow it in this transaction read the role it writes.
-	if !created && artifact.Role == "" {
-		if role := documentRole(target, artifact.Kind, artifact.Slug); role != nil {
-			if err := queueExec(ledger, `
-				update artifacts set role = $2 where id = $1 and role is null
-			`, artifact.ID, *role); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			artifact.Role = *role
-		}
-	}
-	// The check of who writes an issue's spec or Verification document, on the row as this upload
-	// leaves it - a new one with the role its slug gave it, an older one with its role repaired -
-	// before the first document call, so an upload that would change nothing is refused too. It
-	// judges a file as well as a document: a file row whose slug is verification-md, which takes no
-	// role, is the issue's Verification document by that slug (specWriterDocumentName). Where a
-	// file store holds files, the same check answered a file first, before its object was written
-	// (refuseUploadBeforeItsObject); this one decides, under the owner's lock.
-	if target.IssueKey != nil {
-		if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
-	// A project artifact's owner is the artifact itself, and until here this transaction has not
-	// taken its lock: the issue branch above locks its issue, but this one only read its project.
-	// For a document the document service takes that lock itself, before the room, when the write
-	// below joins the document (docs' joinLiveWrite, lockArtifactOwner), so it is not this line that
-	// keeps the upload from running room -> owner against a settlement's owner -> room. A file is
-	// written by this route alone, with no document service call, and this line is the one lock it
-	// takes before its version's insert; without it the upload would meet the owner's lock only in
-	// its event's append, after that insert, holding a transaction id.
-	if target.IssueKey == nil && target.Session == "" && !created {
-		if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 
 	var version model.Version
 	var documentSummary *string
@@ -992,7 +1067,7 @@ func (s *server) storeArtifact(
 	// This is the one statement of that rule, a document's and a file's alike; a file's upload is
 	// held to it before its object is written too (refuseUploadBeforeItsObject).
 	if created && input.precondition != nil {
-		s.writeUploadNoTokenError(w, input.name)
+		s.writeUploadNoTokenError(w, r, input.name)
 		return
 	}
 	if kind == "doc" {
@@ -1012,12 +1087,12 @@ func (s *server) storeArtifact(
 			// The document service knows the tree a token missed and nothing of this route's
 			// own; the refusal the client reads is worded where the two meet. Nothing is
 			// written: every write of this upload was queued, and Commit never runs.
-			s.writeUploadDocumentError(r.Context(), w, tx, err, input.name, artifact.ID)
+			s.writeUploadDocumentError(w, r, tx, err, input.name, artifact.ID)
 			return
 		}
 		version, err = ledger.QueueVersion(r.Context(), artifact.ID, documentMarkdown, []model.Actor{actor}, documentSummary)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// The version credits the uploader alone, and holds the upload's write to the document,
@@ -1028,12 +1103,12 @@ func (s *server) storeArtifact(
 		documentReadBack = ledger.ReadBackOf(artifact.ID, documentMarkdown)
 		// The count is queued after the version's insert, so it names that version (LEGION-542).
 		if err := recordDocumentTaskProgress(documentCtx, tx, artifact.ID, documentReadBack, documentMarkdown); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		documentChanges, indexedBlocks, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	} else {
@@ -1047,12 +1122,12 @@ func (s *server) storeArtifact(
 		if count := len(artifact.Versions); count > 0 {
 			standing = artifact.Versions[count-1]
 		}
-		if s.refuseFileBase(w, kind, input.name, input.precondition, standing) {
+		if s.refuseFileBase(w, r, kind, input.name, input.precondition, standing) {
 			return
 		}
 		version, err = s.queueFileVersion(r.Context(), tx, ledger, artifact.ID, input, sha, documentSummary, actor)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1066,7 +1141,7 @@ func (s *server) storeArtifact(
 		if err := docs.MoveApprovalAsk(
 			documentCtx, tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
 		); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// It carries the document's newest approval when its text is the approved text again and
@@ -1078,12 +1153,12 @@ func (s *server) storeArtifact(
 		if err := docs.CarryRestoredApproval(
 			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		diff, err = s.namedVersionDiff(r.Context(), tx, ledger, artifact.ID, version)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1108,7 +1183,7 @@ func (s *server) storeArtifact(
 		}
 		event, err := s.queueStampedEvent(ledger, ownerForArtifact(artifact).event(eventType, actor, payload), stampKind, artifact.ID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		blockCause = graphstore.LatestEvent
@@ -1118,14 +1193,14 @@ func (s *server) storeArtifact(
 		graphstore.QueueCaused(b, indexedBlocks, blockCause)
 		return nil
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, documentNode, blockCause)
 		return nil
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The approval this upload's own version superseded, read in its read phase as the edit route
@@ -1137,30 +1212,41 @@ func (s *server) storeArtifact(
 	if kind == "doc" && !created {
 		// This handler serves the project upload as well (uploadProjectArtifact), and a document
 		// upload is an issue's or a project's, so the route both reads below name is the one the
-		// request came in on: a read that failed is logged where it ran.
+		// request came in on: a read that failed is logged where it ran. A report whose savepoint
+		// could not be opened or rolled back has cost the upload its transaction, and the upload
+		// fails with that (endAdviceSavepoint).
 		route := "POST /api/v1/projects/{key}/artifacts"
 		if target.IssueKey != nil {
 			route = "POST /api/v1/issues/{key}/artifacts"
 		}
-		superseded = s.supersededApprovalAdvice(
+		if superseded, err = s.supersededApprovalAdvice(
 			r.Context(), tx, ledger, route, artifactIssueKey(artifact), artifact.ID, version.Number,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		// The open approval request this upload's own version took back from the person it was
 		// waiting on, read off the ledger the move above and the restore's carry are queued on,
 		// so a carry that answered the request reports nothing. A new document carries no
 		// request either.
-		moved = s.movedApprovalRequestAdvice(
+		if moved, err = s.movedApprovalRequestAdvice(
 			r.Context(), tx, ledger, route, artifactIssueKey(artifact), artifact.ID,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	var advice *writeAdvice
 	if target.IssueKey != nil && issueStatus != nil {
-		advice = s.writeAdvice(
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", *target.IssueKey, actor, adviceAsks{}, *issueStatus, "", false,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !created && input.precondition == nil {
@@ -1177,31 +1263,30 @@ func (s *server) storeArtifact(
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
 	s.publish(r.Context(), appendedEvents(published...)...)
+	release()
 	var blocks *documentBlocks
 	if kind == "doc" {
 		blocks = documentBlocksFor(documentReadBack, documentMarkdown)
 	}
+	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
+	// The block report, the approval this upload superseded and the approval request it took
+	// back are the write's own, read in its transaction; only the issue-scoped advice beside
+	// them is a read that can fail. A nil advice therefore carries them on advice of their own
+	// rather than dropping them, exactly as the edit route does (editArtifact).
 	if advice != nil {
 		advice.documentBlocks = blocks
 		advice.SupersededApproval = superseded
 		advice.MovedApprovalRequest = moved
-	}
-	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
-	// An issue document whose bounded issue-advice read failed leaves advice nil, and the three
-	// document reports with nothing to ride on: they are about the document alone, so they go
-	// out on their own shape here rather than being dropped with the issue state that failed,
-	// which is what withAdvice would do with a nil *writeAdvice. The edit route answers the
-	// same way. A write with nothing at all to report still answers the bare payload, so no
-	// reader is handed an empty advice envelope.
-	if target.IssueKey != nil && advice != nil {
 		WriteJSON(w, http.StatusCreated, withAdvice(responsePayload, advice))
-	} else if blocks != nil || superseded != nil || moved != nil {
+		return
+	}
+	if blocks != nil || superseded != nil || moved != nil {
 		WriteJSON(w, http.StatusCreated, withRawAdvice(responsePayload, documentWriteAdvice{
 			documentBlocks: blocks, SupersededApproval: superseded, MovedApprovalRequest: moved,
 		}))
-	} else {
-		WriteJSON(w, http.StatusCreated, responsePayload)
+		return
 	}
+	WriteJSON(w, http.StatusCreated, responsePayload)
 }
 
 func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
@@ -1210,7 +1295,7 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The artifact detail is the artifact. Its inbound edges are the graph's to read
@@ -1243,7 +1328,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
@@ -1252,7 +1337,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	}
 	markdown, token, blocks, err := s.artifactTextBody(r, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The markdown and the version are two unsynchronised reads, in both directions: the live
@@ -1261,7 +1346,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// primitive; `version` says which version the document has, not which one this markdown is.
 	version, err := latestVersionNumber(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	answer := artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}
@@ -1311,7 +1396,7 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
@@ -1320,11 +1405,11 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.describeBlocks(r.Context(), artifact.ID, blocks); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, blocks)
@@ -1364,7 +1449,7 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
@@ -1373,7 +1458,7 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := s.deps.Docs.BlockPath(r.Context(), artifact.ID, r.PathValue("block_id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, path)
@@ -1495,7 +1580,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	withBlocks := r.URL.Query().Get("blocks") == "true"
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	latest := 0
@@ -1509,7 +1594,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		var markdown string
 		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if download {
@@ -1532,7 +1617,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			// from, so the answer carries that text, its digest and its size.
 			rendered, listed, err := docs.VersionBlocks(markdown)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if listed == nil {
@@ -1567,7 +1652,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		select content, mime, sha256, size from artifact_versions where artifact_id = $1 and number = $2
 	`, artifact.ID, number).Scan(&content, &contentType, &sha, &size); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
@@ -1653,7 +1738,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	var input createVersionInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -1666,25 +1751,25 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := validateArtifactRequestRef(r); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Read before the transaction opens (specWriterOf), for the check below.
 	writer := s.specWriterOf(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	artifact, err := s.loadArtifactForRequest(r.Context(), tx, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	eventOwner := ownerForArtifact(artifact)
 	if err := s.requireOpenOwner(r.Context(), tx, eventOwner); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
@@ -1694,29 +1779,29 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	// The check of who writes an issue's spec or Verification document, under the owner's lock and
 	// before the document call, so a named version that would change nothing is refused too.
 	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	named, err := s.deps.Docs.NamedVersion(documentCtx, artifact.ID, summary, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	version := named.Version
 	diff, err := s.namedVersionDiff(r.Context(), tx, ledger, artifact.ID, version)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.commitArtifactVersionEvent(ledger, eventOwner, actor, artifact.ID, artifact.Name, named, diff)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), *event)
@@ -1834,11 +1919,11 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	var input editArtifactInput
 	body, err := decodeJSONBody(r, &input)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := replaceFieldsRefusal(input.Ops, body); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -1847,55 +1932,78 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	// release ends the conditional edit gate once: right after the commit, which is all a later
-	// conditional edit of this document waits on, so the checks of this edit's new decision blocks
-	// never hold it; on every earlier return, here.
-	release := func() {}
-	if input.Precondition != nil {
-		acquired, err := s.deps.Docs.AcquireConditionalEdit(r.Context(), artifact.ID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		release = sync.OnceFunc(acquired)
-		defer release()
-	}
-	// Read before the transaction opens (specWriterOf), for the check below, and only for a document
-	// the check holds: the check passes every other document without reading the writer.
+	// Read before the writer gate and the transaction (specWriterOf), for the check below, and only
+	// for a document the check holds: the check passes every other document without reading the
+	// writer. Resolving the credential may wait on another server (callerHoldsScope), so it is
+	// read here, holding neither the document's writer gate nor a connection.
 	writer := specWriter{actor: actor}
 	if _, held := specWriterDocumentName(artifact); held {
 		writer = s.specWriterOf(r, actor)
 	}
+	// A conditional edit joins the document's queue across every process serving the database
+	// before anything else (AcquireConditionalEdit): the writer gate below bounds this process's
+	// writers of one document, and that queue bounds the processes' together, so it is taken
+	// outside the gate - an edit waiting for the gate has already been counted, which is what
+	// lets the 33rd conditional edit of a document be refused EDIT_QUEUE_FULL however the 32
+	// before it are spread over the processes. Its admission is a transaction of its own that
+	// commits before this one returns, so the gate below still takes a caller holding no
+	// connection.
+	queued := func() {}
+	if input.Precondition != nil {
+		acquired, err := s.deps.Docs.AcquireConditionalEdit(r.Context(), artifact.ID)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		queued = sync.OnceFunc(acquired)
+		defer queued()
+	}
+	// Conditional or not, an edit writes the live document, so it queues for the document's
+	// writer gate before its transaction opens: a flood of stale conditional retries, or writers
+	// clustered on one document, wait here holding no connection. release ends that gate and the
+	// queue above once - once the edit has committed and published, which is the gate's own
+	// contract (gateDocuments) and all a later writer of this document waits on, so the checks of
+	// this edit's new decision blocks never hold it; on every earlier return, by the defer below.
+	r, gated, err := s.gateDocuments(r, artifact.ID)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	defer gated()
+	release := func() {
+		gated()
+		queued()
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	eventOwner := ownerForArtifact(artifact)
 	status, err := s.requireOpenOwnerStatus(r.Context(), tx, eventOwner)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The check of who writes an issue's spec or Verification document, under the owner's lock and
 	// before ApplyOps, so an edit that would change nothing is refused too.
 	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	edit, err := s.deps.Docs.ApplyOps(documentCtx, artifact.ID, input.Ops, actor, input.Precondition)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var written *docs.VersionResult
@@ -1907,14 +2015,14 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		if summary != "" {
 			namedVersion, err := s.deps.Docs.NamedVersion(documentCtx, artifact.ID, summary, actor)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			written = &namedVersion
 		} else {
 			snapshot, err := s.deps.Docs.SnapshotVersion(documentCtx, artifact.ID, actor)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if snapshot.Wrote {
@@ -1926,13 +2034,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			if written.Version.Named {
 				diff, err = s.namedVersionDiff(r.Context(), tx, ledger, artifact.ID, written.Version)
 				if err != nil {
-					s.writeHandlerError(w, err)
+					s.writeHandlerError(w, r, err)
 					return
 				}
 			}
 			event, err := s.commitArtifactVersionEvent(ledger, eventOwner, actor, artifact.ID, artifact.Name, *written, diff)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			published = append(published, event)
@@ -1940,20 +2048,28 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The approval this edit's own version superseded, read in the edit's read phase, where that
 	// version and any carry it made are queued: a person's approval of a spec is Legion's design
-	// gate, and the writer is the only one who learns in time that this write closed it.
+	// gate, and the writer is the only one who learns in time that this write closed it. A report
+	// whose savepoint could not be opened or rolled back has cost the edit its transaction, and the
+	// edit fails with that rather than meeting it at its next statement (endAdviceSavepoint).
 	var superseded *supersededApproval
 	var moved *movedApprovalRequest
 	if written != nil {
-		superseded = s.supersededApprovalAdvice(
+		if superseded, err = s.supersededApprovalAdvice(
 			r.Context(), tx, ledger, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		// The open approval request this edit's own version took back from the person it was
 		// waiting on, read off the ledger that version's move (docs.MoveApprovalAsk) and any
 		// carry are queued on: an edit that stored no version moved nothing, and one whose carry
 		// answered the request leaves it with the person and reports nothing.
-		moved = s.movedApprovalRequestAdvice(
+		if moved, err = s.movedApprovalRequestAdvice(
 			r.Context(), tx, ledger, routeEditDocument, artifactIssueKey(artifact), artifact.ID,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	// An edit hears about the asks of this issue a person declined to answer only where it added
 	// an ask block, which is the write R6 asks the reminder for: "an edit of one of the issue's
@@ -1961,15 +2077,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// such read.
 	var advice *writeAdvice
 	if artifact.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, routeEditDocument, *artifact.IssueKey, actor, adviceAsks{}, *status, "", len(edit.AddedAskBlocks) > 0,
-		)
+		); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	release()
 	var version *model.Version
 	if written != nil {
 		version = &written.Version
@@ -1978,6 +2096,9 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
 	s.publish(r.Context(), appendedEvents(published...)...)
+	// The gate ends here, not at the commit: a writer let in between the two would publish its
+	// own events ahead of this edit's (storeArtifact releases its gates the same way).
+	release()
 	unchanged := edit.Unchanged
 	if unchanged == nil {
 		unchanged = []int{}
@@ -2079,7 +2200,7 @@ func listedArtifacts(ctx context.Context, q queryer, query string, args ...any) 
 func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, query string, args ...any) {
 	artifacts, err := listedArtifacts(r.Context(), s.deps.Store.Pool, query, args...)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -2721,7 +2842,7 @@ var roleSlugs = map[string]string{
 // verification-md-2 - plays no role rather than colliding with the one that holds it. The role
 // is written once, as is_primary is: a later upload of the same name is that document's next
 // version, under the row this made, and the only write that ever sets it afterwards is the
-// repair of a row the rolling deploy left with none (storeArtifact).
+// repair of a row the rolling deploy left with none (lockArtifactStore).
 func documentRole(target artifactTarget, kind, slug string) *string {
 	if target.IssueKey == nil || kind != "doc" {
 		return nil
@@ -2857,7 +2978,7 @@ func newArtifactKeyRefusal(target artifactTarget, slug string) error {
 // (beginArtifactWrite); each takes it before any row, room or the document's owner lock, which
 // comes after it in every taker, so it joins no lock cycle.
 func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('project-artifacts:' || $1))`, project); err != nil {
+	if err := store.LockWithinBound(ctx, tx, `select pg_advisory_xact_lock(hashtext('project-artifacts:' || $1))`, project); err != nil {
 		return fmt.Errorf("lock the project's documents: %w", err)
 	}
 	return nil
@@ -2889,17 +3010,17 @@ func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx
 	ctx := r.Context()
 	artifact, err := loadArtifactRowByID(ctx, s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return nil, model.Artifact{}, artifactTarget{}, false
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return nil, model.Artifact{}, artifactTarget{}, false
 	}
 	refused := func(err error) (pgx.Tx, model.Artifact, artifactTarget, bool) {
 		_ = tx.Rollback(ctx)
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return nil, model.Artifact{}, artifactTarget{}, false
 	}
 	var target artifactTarget

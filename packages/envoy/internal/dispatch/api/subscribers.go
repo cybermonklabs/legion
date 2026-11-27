@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/routing"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // subscriber is a session whose persisted Envoy interests include an issue's
@@ -107,25 +108,33 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 	}
 	artifact, _, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.writeSubscribers(w, r, documentSubscriberBase(artifact.Project, artifact.Slug))
 }
 
+// writeSubscribers answers the sessions interested in base's events, from two listener reads one
+// after the other: the interests, then the registered sessions. The two are a wait on another
+// server, so the request holds no admission unit and no pinned connection across them
+// (awayOnNetwork); a take-back refused after them is answered as admission refuses a request
+// (writeEnvoyError leaves it to writeHandlerError).
 func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base string) {
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
 		return
 	}
-	interests, err := s.deps.Envoy.ListInterests(r.Context())
-	if err != nil {
-		s.writeEnvoyError(w, err)
-		return
-	}
-	sessions, err := s.deps.Envoy.Sessions(r.Context())
-	if err != nil {
-		s.writeEnvoyError(w, err)
+	var interests []listenerwire.InterestRow
+	var sessions []envoy.Session
+	if err := awayOnNetwork(r.Context(), func(ctx context.Context) error {
+		var err error
+		if interests, err = s.deps.Envoy.ListInterests(ctx); err != nil {
+			return err
+		}
+		sessions, err = s.deps.Envoy.Sessions(ctx)
+		return err
+	}); err != nil {
+		s.writeEnvoyError(w, r, err)
 		return
 	}
 	// Every session the registry holds a record of, whatever its state; the row decides what
@@ -185,7 +194,7 @@ func (s *server) unsubscribeArtifactSession(w http.ResponseWriter, r *http.Reque
 	}
 	artifact, own, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.unsubscribeSession(w, r, actor, own, documentSubscriberBase(artifact.Project, artifact.Slug))
@@ -333,7 +342,7 @@ func (s *server) completeSubscriptionRemoval(
 func (s *server) finishPendingRemoval(w http.ResponseWriter, r *http.Request, own owner, sessionID string, actor model.Actor) {
 	requestID, recordErr := s.pendingSubscriptionRemoval(r.Context(), s.deps.Store.Pool, own, sessionID, nil)
 	if recordErr != nil {
-		s.writeHandlerError(w, recordErr)
+		s.writeHandlerError(w, r, recordErr)
 		return
 	}
 	if requestID == nil {
@@ -342,7 +351,7 @@ func (s *server) finishPendingRemoval(w http.ResponseWriter, r *http.Request, ow
 	}
 	event, completeErr := s.completeSubscriptionRemoval(r.Context(), own, sessionID, *requestID, actor)
 	if completeErr != nil {
-		s.writeHandlerError(w, completeErr)
+		s.writeHandlerError(w, r, completeErr)
 		return
 	}
 	if event != nil {
@@ -363,13 +372,22 @@ func (s *server) unsubscribeSession(
 		return
 	}
 	sessionID := r.PathValue("session_id")
-	interest, err := s.deps.Envoy.Interest(r.Context(), sessionID)
+	// The interest is read before the transaction, holding no unit while the listener answers
+	// (awayOnNetwork); a take-back refused after it is the answer, 429 OVERLOADED, since nothing
+	// of the removal has been written yet.
+	interest, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) (listenerwire.InterestRow, error) {
+		return s.deps.Envoy.Interest(ctx, sessionID)
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
 	if err != nil {
 		if errors.Is(err, envoy.ErrNotFound) {
 			s.finishPendingRemoval(w, r, own, sessionID, actor)
 			return
 		}
-		s.writeEnvoyError(w, err)
+		s.writeEnvoyError(w, r, err)
 		return
 	}
 	matched := matchingTopics(interest.Topics, base)
@@ -392,17 +410,17 @@ func (s *server) unsubscribeSession(
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	if err := s.deps.Events.LockOwners(r.Context(), tx, own.event("", actor, nil)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	requestID, err := s.pendingSubscriptionRemoval(r.Context(), tx, own, sessionID, exact)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if requestID == nil {
@@ -412,22 +430,34 @@ func (s *server) unsubscribeSession(
 			subscriptionRemovedPayload{SessionID: sessionID, By: actor, Topics: exact, Pending: true},
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		requestID = &request.ID
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	if _, err := s.deps.Envoy.Unsubscribe(r.Context(), sessionID, exact); err != nil {
+	// The unsubscribe changes the listener's state, after the removal request committed and with
+	// its completion still to write: the request holds no unit while the listener answers, and
+	// takes it back never refused (awayOnNetworkNeverRefused), so a removal the listener made is
+	// never answered 429. A take-back cut short by the request's end leaves the request pending,
+	// which the next DELETE completes (finishPendingRemoval).
+	if err := awayOnNetworkNeverRefused(r.Context(), func(ctx context.Context) error {
+		_, err := s.deps.Envoy.Unsubscribe(ctx, sessionID, exact)
+		return err
+	}); err != nil {
+		if r.Context().Err() != nil {
+			s.writeHandlerError(w, r, r.Context().Err())
+			return
+		}
 		writeError(w, "ENVOY_UNSUBSCRIBE_FAILED", http.StatusBadGateway, err.Error())
 		return
 	}
 	event, err := s.completeSubscriptionRemoval(r.Context(), own, sessionID, *requestID, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if event != nil {
@@ -438,7 +468,7 @@ func (s *server) unsubscribeSession(
 
 // writeEnvoyError answers a listener failure: the listener's refilling answer as 503
 // ENVOY_REFILLING (writeEnvoyRefilling), any other ErrUnavailable as 503 ENVOY_UNAVAILABLE.
-func (s *server) writeEnvoyError(w http.ResponseWriter, err error) {
+func (s *server) writeEnvoyError(w http.ResponseWriter, r *http.Request, err error) {
 	var refilling *envoy.RefillingError
 	if errors.As(err, &refilling) {
 		writeEnvoyRefilling(w, refilling.RetryAfter)
@@ -448,7 +478,7 @@ func (s *server) writeEnvoyError(w http.ResponseWriter, err error) {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
 // envoyRefillingRetryAfter is the Retry-After a refilling answer gives when the listener sent

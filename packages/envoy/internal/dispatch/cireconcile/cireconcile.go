@@ -108,12 +108,12 @@ const (
 	// Interval is how often the running pass reads GitHub.
 	Interval = 5 * time.Minute
 
-	// Lease names the lease one pass runs under. It is not what makes the pass safe to run twice
-	// -- every write it makes is a compare-and-swap that applies an observation GitHub already
-	// holds, so two passes at once write one record -- it is the GitHub budget: each pass reads
-	// every open pull request of every covered repository, and N processes passing is N times those
-	// reads for one result.
-	Lease = "ci-reconcile"
+	// Lease names the lease one pass runs under (duty.CIReconcileLease). It
+	// is not what makes the pass safe to run twice -- every write it makes is a compare-and-swap
+	// that applies an observation GitHub already holds, so two passes at once write one record --
+	// it is the GitHub budget: each pass reads every open pull request of every covered repository,
+	// and N processes passing is N times those reads for one result.
+	Lease = duty.CIReconcileLease
 
 	// AbsentAppRecheck is how long a pass holds GitHub's answer that the App is not installed
 	// on a repository before it asks again. A pass runs every Interval and the answer changes

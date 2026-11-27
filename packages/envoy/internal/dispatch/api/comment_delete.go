@@ -45,9 +45,19 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The comment's anchor document takes its writer gate before the transaction opens, after
+	// every refusal the request decides on its own, as the comment's other writes take it
+	// (gateComment): the reject, the margin projection and the settle below write that document.
+	r, release, err := s.gateComment(r, r.PathValue("id"))
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	// The gate ends at the commit below; the defer is the error paths' release.
+	defer release()
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -67,7 +77,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	documentCtx = docs.WithCommentMarks(documentCtx)
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A pending suggestion's mark is proof in the document that the suggestion stands, and an
@@ -122,7 +132,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if comment.Suggestion != nil && comment.Anchor != nil && (comment.Suggestion.Accepted == nil || !*comment.Suggestion.Accepted) {
 		storedKind, err := loadStoredSuggestion(r.Context(), tx, comment.ID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		var kind string
@@ -131,11 +141,11 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 			kind, err = s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
 			if err != nil {
 				if !errors.Is(err, docs.ErrAnchorOrphaned) {
-					s.writeHandlerError(w, err)
+					s.writeHandlerError(w, r, err)
 					return
 				}
 				if err := recordOrphanedCommentAnchor(ledger, &comment); err != nil {
-					s.writeHandlerError(w, err)
+					s.writeHandlerError(w, r, err)
 					return
 				}
 				markGone = true
@@ -154,7 +164,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if comment.Suggestion != nil && comment.Suggestion.Accepted != nil && *comment.Suggestion.Accepted && comment.Anchor != nil {
 		renamed, err := renameAcceptedVersion(r.Context(), tx, ledger, comment)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		renamedVersion = renamed
@@ -163,18 +173,18 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// projection, the event and the answer carry it before that update runs.
 	deletedAt, err := ledger.Now(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	deletedAt = deletedAt.UTC()
 	referenceChanges, clear, err := s.clearDeletedPostBody(
 		ledger.ReadContext(r.Context()), tx, refs.ItemComment, comment.ID, comment.Body, quoteIsBody, comment.Author, actor, deletedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Queue(clear); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	comment.Body = ""
@@ -185,7 +195,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	comment.DeletedAt = &deletedAt
 	comment.DeletedBy = &actor
 	if err := s.projectThreadMark(documentCtx, tx, ledger, comment, actor); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A pending insert's words were the post's own and never document text, and every store a
@@ -206,7 +216,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if rejectedInsert && !s.deleteLeavesSettlement {
 		written, err := s.deps.Docs.SettleVersion(documentCtx, comment.Anchor.ArtifactID, actor)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if written.Wrote {
@@ -219,7 +229,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// this read found it (queueDeletedPostSettlement).
 	answer, err := s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var pending []model.CommentDelivery
@@ -237,14 +247,14 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		queueDeletedPostSettlement(b, comment.ID, commentAttemptsRead(pending))
 		return nil
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	events := make([]*model.Event, 0, len(receipts)+1)
 	for _, receipt := range receipts {
 		appended, err := s.queueEvent(ledger, receipt)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		events = append(events, appended)
@@ -262,16 +272,22 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// publishes the copy as recorded, though the row reads published = false. Nor does this reach
 	// the outbox's own copy of the comment.created event, held while a mention of the comment
 	// sends: that copy is the event as Dispatch recorded it, and it goes as recorded.
-	if err := queueExec(ledger, `
-		update comment_fallback_copies set settled_at = now(), published = false
-		where comment_id = $1 and settled_at is null
-	`, comment.ID); err != nil {
-		s.writeHandlerError(w, err)
+	// The rows are taken in the write lock's bounded wait
+	// (store.WriteBatch.QueueWithinBound): a fallback pass claims and settles them holding no
+	// lock this delete holds, so no owner lock orders the two.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		b.QueueWithinBound("settle the deleted comment's fallback copies", `
+			update comment_fallback_copies set settled_at = now(), published = false
+			where comment_id = $1 and settled_at is null
+		`, comment.ID)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload, logins, err := s.commentCorrectionPayload(r.Context(), tx, &comment, artifactName, referenceChanges)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload.RenamedVersion = renamedVersion
@@ -281,7 +297,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		payload,
 	), logins, "comment", comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	events = append(events, event)
@@ -290,16 +306,17 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if settled != nil {
 		versionEvent, err := s.commitArtifactVersionEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID), actor, comment.Anchor.ArtifactID, artifactName, *settled, nil)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		events = append(events, versionEvent)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), appendedEvents(events...)...)
+	release()
 	WriteJSON(w, http.StatusOK, answer)
 }
 

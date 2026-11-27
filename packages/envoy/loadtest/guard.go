@@ -34,9 +34,9 @@ import (
 //	  "root": "<LOADTEST_ROOT>",
 //	  "dispatch_token": "<random>",  Dispatch's DISPATCH_AGENT_TOKEN
 //	  "listener_token": "<random>",  the listener's ENVOY_API_TOKEN
-//	  "ports": {"postgres": 15432, "proxy": 15433, "proxy_stats": 15434, "nats": 14222,
-//	            "nats_monitor": 18222, "listener": 19120, "dispatch": 18777, "pprof": 16061,
-//	            "envoy_proxy": 19121},
+//	  "ports": {"postgres": 10000, "proxy": 10001, "nats": 10002, "nats_monitor": 10003,
+//	            "listener": 10004, "dispatch": 10005, "pprof": 10006, "metrics": 10007,
+//	            "proxy_stats": 10008, "envoy_proxy": 10009},
 //	  "pids": {"postgres": <postmaster>, "proxy": 0, "nats": 0, "listener": 0, "envoy_proxy": 0,
 //	           "dispatch": 0},
 //	  "pg_direct": false,            true when Dispatch reaches Postgres without the latency proxy
@@ -45,6 +45,8 @@ import (
 //	  "dispatch_log": "<path>"       the log the running Dispatch writes
 //	}
 //
+// The ports above are a root whose port block is 0: each default is 10000 + 10k + the key's
+// offset, for the root's block k, and a LOADTEST_*_PORT variable replaces one (common.sh).
 // Every process listens on 127.0.0.1. The loadgen samplers and the lock probe always reach
 // Postgres directly (ports.postgres, database dispatch), never through the proxy, and loadgen
 // reaches the listener directly (ports.listener), never through envoy_proxy. ports.proxy_stats
@@ -70,6 +72,7 @@ type stackPorts struct {
 	Listener    int `json:"listener"`
 	Dispatch    int `json:"dispatch"`
 	Pprof       int `json:"pprof"`
+	Metrics     int `json:"metrics"` // Dispatch's DISPATCH_METRICS_ADDR port
 }
 
 type stackPIDs struct {
@@ -106,7 +109,7 @@ func loadStack(path string) (*stackFile, error) {
 		{"name", st.Name == ""}, {"dispatch_token", st.DispatchToken == ""}, {"listener_token", st.ListenerToken == ""},
 		{"ports.postgres", st.Ports.Postgres == 0}, {"ports.nats", st.Ports.NATS == 0},
 		{"ports.nats_monitor", st.Ports.NATSMonitor == 0}, {"ports.listener", st.Ports.Listener == 0},
-		{"ports.dispatch", st.Ports.Dispatch == 0}, {"ports.pprof", st.Ports.Pprof == 0},
+		{"ports.dispatch", st.Ports.Dispatch == 0}, {"ports.pprof", st.Ports.Pprof == 0}, {"ports.metrics", st.Ports.Metrics == 0},
 	} {
 		if field.empty {
 			missing = append(missing, field.name)
@@ -121,7 +124,10 @@ func loadStack(path string) (*stackFile, error) {
 // endpoints is every address and credential a seed or a step uses.
 type endpoints struct {
 	dispatch, listener, nats, natsMon, pprof, pg string
-	token, listenerToken                         string
+	// metrics is Dispatch's metrics base URL (GET <metrics>/metrics); empty under -allow-foreign
+	// without -metrics, and then the sampler scrapes nothing.
+	metrics              string
+	token, listenerToken string
 	// natsServerName is the /varz server_name the guard expects; empty skips that check.
 	natsServerName string
 	// pids are the processes the sampler reads from /proc, by name ("postgres" is the
@@ -142,11 +148,12 @@ type endpoints struct {
 
 // endpointFlags are the endpoint flags seed and run share. Each defaults empty, so the stack's
 // value applies; one that differs from it is refused unless allowForeign is set, and then every
-// one is required -- the two tokens by their -…-file forms, the only ones they have, and -pg by
-// either of its two (readCredentialFiles).
+// one but -metrics is required -- the two tokens by their -…-file forms, the only ones they have,
+// and -pg by either of its two (readCredentialFiles).
 type endpointFlags struct {
 	stack                                   string
 	url, listener, nats, natsMon, pprof, pg string
+	metrics                                 string
 	// pgGiven is -pg as the command line gave it (argvFlag): pg is its last value, or the content
 	// of pgFile when that gave it.
 	pgGiven argvFlag
@@ -167,6 +174,7 @@ func (f *endpointFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.nats, "nats", "", "NATS URL (default: the stack's)")
 	fs.StringVar(&f.natsMon, "nats-mon", "", "NATS monitoring URL (default: the stack's)")
 	fs.StringVar(&f.pprof, "pprof", "", "Dispatch pprof base URL (default: the stack's)")
+	fs.StringVar(&f.metrics, "metrics", "", "Dispatch metrics base URL, which serves /metrics (default: the stack's; optional with -allow-foreign)")
 	f.pgGiven.register(fs, "pg", &f.pg, pgValueRefusal, "direct Postgres URL of the dispatch database, with no password in it (default: the stack's)")
 	fs.StringVar(&f.pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the Dispatch agent bearer (default: the stack's)")
@@ -467,7 +475,7 @@ func (e *bothCredentialFormsError) Error() string {
 
 // urlFlags are the endpoint flags whose values are URLs. meta.json records the run's flags with
 // each URL without its credentials (recordedArgs, redactEndpoint); no flag holds a token.
-var urlFlags = []string{"-url", "-listener", "-nats", "-nats-mon", "-pprof", "-pg"}
+var urlFlags = []string{"-url", "-listener", "-nats", "-nats-mon", "-pprof", "-metrics", "-pg"}
 
 // redactURL is raw without its userinfo and without a password query parameter, for every place
 // that records or prints an HTTP endpoint (redactEndpoint does each -nats server the same way).
@@ -596,7 +604,7 @@ func (e *foreignFlagError) Error() string {
 
 // missingForeignFlagError refuses a run under -allow-foreign that leaves an endpoint flag empty:
 // it would fall back to the local stack's value, so the run would write to one stack and count,
-// sample or profile another. All lists every endpoint and token flag.
+// sample or profile another. All lists every required endpoint and token flag.
 type missingForeignFlagError struct {
 	Flag string
 	All  []string
@@ -626,9 +634,9 @@ func (f endpointFlags) resolve() (endpoints, error) {
 }
 
 // resolveEndpoints takes every endpoint from st, refusing a flag that differs from it, unless
-// f.allowForeign: then every endpoint flag is required, none falls back to st, and pids stay
-// empty. The credentials are read first (readCredentialFiles): each token from its file, and the
-// Postgres URL from its file or from -pg.
+// f.allowForeign: then every endpoint flag but -metrics is required, none falls back to st (an
+// empty -metrics stays empty), and pids stay empty. The credentials are read first
+// (readCredentialFiles): each token from its file, and the Postgres URL from its file or from -pg.
 func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 	if st == nil && !f.allowForeign {
 		return endpoints{}, fmt.Errorf("no stack.json, and -allow-foreign is not set")
@@ -648,27 +656,33 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 	}
 	local := func(scheme string, port int) string { return fmt.Sprintf("%s://127.0.0.1:%d", scheme, port) }
 	// The endpoint and token flags, in the order the guard checks them: each one's name, the value
-	// given (a credential's, from its file when it was given as one), the stack's value and the
-	// endpoint it sets.
+	// given (a credential's, from its file when it was given as one), the stack's value, the
+	// endpoint it sets, and whether -allow-foreign may leave it empty.
 	fields := []struct {
 		flag, given, stack string
 		dst                *string
+		optional           bool
 	}{
-		{"-url", strings.TrimRight(f.url, "/"), local("http", sv.Ports.Dispatch), &e.dispatch},
-		{"-listener", strings.TrimRight(f.listener, "/"), local("http", sv.Ports.Listener), &e.listener},
-		{"-nats", f.nats, local("nats", sv.Ports.NATS), &e.nats},
-		{"-nats-mon", strings.TrimRight(f.natsMon, "/"), local("http", sv.Ports.NATSMonitor), &e.natsMon},
-		{"-pprof", strings.TrimRight(f.pprof, "/"), local("http", sv.Ports.Pprof), &e.pprof},
-		{"-pg", f.pg, fmt.Sprintf("postgres://postgres@127.0.0.1:%d/dispatch?sslmode=disable", sv.Ports.Postgres), &e.pg},
-		{"-token-file", f.token, sv.DispatchToken, &e.token},
-		{"-listener-token-file", f.listenerToken, sv.ListenerToken, &e.listenerToken},
+		{"-url", strings.TrimRight(f.url, "/"), local("http", sv.Ports.Dispatch), &e.dispatch, false},
+		{"-listener", strings.TrimRight(f.listener, "/"), local("http", sv.Ports.Listener), &e.listener, false},
+		{"-nats", f.nats, local("nats", sv.Ports.NATS), &e.nats, false},
+		{"-nats-mon", strings.TrimRight(f.natsMon, "/"), local("http", sv.Ports.NATSMonitor), &e.natsMon, false},
+		{"-pprof", strings.TrimRight(f.pprof, "/"), local("http", sv.Ports.Pprof), &e.pprof, false},
+		{"-metrics", strings.TrimRight(f.metrics, "/"), local("http", sv.Ports.Metrics), &e.metrics, true},
+		{"-pg", f.pg, fmt.Sprintf("postgres://postgres@127.0.0.1:%d/dispatch?sslmode=disable", sv.Ports.Postgres), &e.pg, false},
+		{"-token-file", f.token, sv.DispatchToken, &e.token, false},
+		{"-listener-token-file", f.listenerToken, sv.ListenerToken, &e.listenerToken, false},
 	}
-	all := make([]string, len(fields))
-	for i, field := range fields {
-		all[i] = field.flag
+	var all []string
+	for _, field := range fields {
+		if !field.optional {
+			all = append(all, field.flag)
+		}
 	}
 	for _, field := range fields {
 		switch {
+		case f.allowForeign && field.given == "" && field.optional:
+			// Left empty, it stays empty: the run goes without it.
 		case f.allowForeign && field.given == "":
 			return endpoints{}, &missingForeignFlagError{Flag: field.flag, All: all}
 		case !f.allowForeign && field.given != "" && field.given != field.stack:

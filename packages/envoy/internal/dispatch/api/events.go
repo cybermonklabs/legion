@@ -91,12 +91,12 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	options, err := parseEventListOptions(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
@@ -110,7 +110,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// One pass over the page: the reader takes each payload's texts as the shaping registers
@@ -120,7 +120,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	reader.resolve()
 	encoded, err := encodeListAnswer(events)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, issueHeld)
@@ -192,22 +192,22 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	after, err := parseNonNegativeInt(query.Get("after"), "after")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	limit, err := parseEventLimit(query.Get("limit"), maxEventReplay)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	through, err := s.sinceHorizon(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	events, err := s.readEventsAfterID(r.Context(), who, after, through, limit)
+	events, err := s.readEventsAfterID(r.Context(), s.deps.Store.Pool, who, after, through, limit)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, events)
@@ -272,35 +272,37 @@ func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, o
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	if len(options.ids) > 0 {
-		return s.readEventRows(ctx, who, eventSelect+`
+		return s.readEventRows(ctx, s.deps.Store.Pool, who, eventSelect+`
 			where `+predicate+` and e.id = any($2)
 			order by e.seq asc
 		`, ownerValue, options.ids)
 	}
 	if options.descending {
 		if options.hasBefore {
-			return s.readEventRows(ctx, who, eventSelect+`
+			return s.readEventRows(ctx, s.deps.Store.Pool, who, eventSelect+`
 				where `+predicate+` and e.seq < $2
 				order by e.seq desc limit $3
 			`, ownerValue, options.before, options.limit)
 		}
-		return s.readEventRows(ctx, who, eventSelect+`
+		return s.readEventRows(ctx, s.deps.Store.Pool, who, eventSelect+`
 			where `+predicate+`
 			order by e.seq desc limit $2
 		`, ownerValue, options.limit)
 	}
-	return s.readEventRows(ctx, who, eventSelect+`
+	return s.readEventRows(ctx, s.deps.Store.Pool, who, eventSelect+`
 		where `+predicate+` and e.seq > $2
 		order by e.seq asc limit $3
 	`, ownerValue, options.after, options.limit)
 }
 
 // readEventsAfterID reads one page of the global event log in id order: at most limit of the
-// events whose ids are in (after, through]. Ids are not commit order, so a reader that moves its
-// cursor to a page's last row passes a through at or below the safe horizon (events.Horizon),
-// where every event is final: no lower id the page skipped can commit later.
-func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, through int64, limit int) ([]model.Event, error) {
-	return s.readEventRows(ctx, who, eventSelect+`
+// events whose ids are in (after, through], read through pool - GET /api/v1/events/log through
+// the request pool it is served on, the relay's feed and an events subscription's replay through
+// the live pool (eventStreamRelay, replayThrough). Ids are not commit order, so a reader that
+// moves its cursor to a page's last row passes a through at or below the safe horizon
+// (events.Horizon), where every event is final: no lower id the page skipped can commit later.
+func (s *server) readEventsAfterID(ctx context.Context, pool queryer, who model.Actor, after, through int64, limit int) ([]model.Event, error) {
+	return s.readEventRows(ctx, pool, who, eventSelect+`
 		where e.id > $1 and e.id <= $2
 		order by e.id asc limit $3
 	`, after, through, limit)
@@ -315,8 +317,9 @@ func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, 
 // page read after a reset is therefore empty, never a page of the new log above the old cursor,
 // which the reader would take for the events after the ones it read (events.EventLogWasReset
 // tells the two cases apart).
-func (s *server) readEventsAfterIDOnLog(ctx context.Context, who model.Actor, after int64, afterAt time.Time, through int64, limit int) ([]model.Event, error) {
-	return s.readEventRows(ctx, who, eventSelect+`
+// It reads through pool, as readEventsAfterID does: the relay passes its generation's live pool.
+func (s *server) readEventsAfterIDOnLog(ctx context.Context, pool queryer, who model.Actor, after int64, afterAt time.Time, through int64, limit int) ([]model.Event, error) {
+	return s.readEventRows(ctx, pool, who, eventSelect+`
 		where e.id > $1 and e.id <= $2
 		  and ($1 = 0 or exists (select 1 from events c where c.id = $1 and c.created_at = $4))
 		order by e.id asc limit $3
@@ -383,8 +386,10 @@ func (s *server) eventFeedHead(ctx context.Context) (int64, error) {
 	return 0, ErrEventHeadUnproven
 }
 
-func (s *server) readEventRows(ctx context.Context, who model.Actor, query string, arguments ...any) ([]model.Event, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, query, arguments...)
+// readEventRows reads the events query selects through pool, with an ask event's read-time fields
+// attached through the same pool.
+func (s *server) readEventRows(ctx context.Context, pool queryer, who model.Actor, query string, arguments ...any) ([]model.Event, error) {
+	rows, err := pool.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -416,10 +421,10 @@ func (s *server) readEventRows(ctx context.Context, who model.Actor, query strin
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if err := s.attachAskEventFields(ctx, who, events); err != nil {
+	if err := s.attachAskEventFields(ctx, pool, who, events); err != nil {
 		return nil, err
 	}
-	if err := s.attachPostMarks(ctx, events); err != nil {
+	if err := s.attachPostMarks(ctx, pool, events); err != nil {
 		return nil, err
 	}
 	return events, nil
@@ -505,7 +510,10 @@ type postKey struct {
 // suggestion, which are no event of the post: the accept's artifact.version, and an
 // artifact.renamed written before the delete, which carries every version, keep the name the
 // accept gave the version.
-func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
+//
+// pool is the read's own, which readEventRows was handed: the request's pinned connection for a
+// route, the live pool for a live view's page (eventStreamRelay.page).
+func (s *server) attachPostMarks(ctx context.Context, pool queryer, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.
 	ids := map[refs.ItemKind][]string{}
@@ -542,7 +550,7 @@ func (s *server) attachPostMarks(ctx context.Context, events []model.Event) erro
 		asked[key] = true
 		ids[kind] = append(ids[kind], header.ID)
 	}
-	marks, err := s.readPostMarks(ctx, ids)
+	marks, err := s.readPostMarks(ctx, pool, ids)
 	if err != nil {
 		return err
 	}
@@ -598,8 +606,9 @@ func (s *server) attachPostMarks(ctx context.Context, events []model.Event) erro
 // reads it, with whether a comment's stored anchor quote is empty (postMarks.quoteCleared). Each
 // id is matched as text, through the comments_id_text and messages_id_text indexes, so a payload
 // id that is not a uuid cannot fail the read, as it would under a cast of the parameter. Each row
-// names the kind it came from, which the id alone does not say.
-func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]string) (map[postKey]postMarks, error) {
+// names the kind it came from, which the id alone does not say. It reads through pool, the
+// caller's (attachPostMarks).
+func (s *server) readPostMarks(ctx context.Context, pool queryer, ids map[refs.ItemKind][]string) (map[postKey]postMarks, error) {
 	marks := map[postKey]postMarks{}
 	// One select per kind that has an id to read, in a fixed order rather than a map's, each
 	// with the parameter its ids are passed as.
@@ -624,7 +633,7 @@ func (s *server) readPostMarks(ctx context.Context, ids map[refs.ItemKind][]stri
 	if len(selects) == 0 {
 		return marks, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, strings.Join(selects, "\n\t\tunion all"), arguments...)
+	rows, err := pool.Query(ctx, strings.Join(selects, "\n\t\tunion all"), arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("read the corrected posts of an event page: %w", err)
 	}
@@ -661,11 +670,12 @@ type decodedAskEventPayload struct {
 
 // attachAskEventFields fills the ask fields an event payload cannot carry from the write that
 // appended it: the id of the event that opened the ask, its inbound backlink count, the part ids
-// of the options and answer it shows with the ask's part revision, and its anchor document. Each
-// is the ask's fact now, not the write's. Ask payloads are decoded because those fields are
-// added, and an ask.answered payload's selected lists are read as model.AskAnswer reads them
-// (normalizeAnsweredSelected); every other payload passes through as the database returned it.
-func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, events []model.Event) error {
+// of the options and answer it shows with the ask's part revision, and its anchor document, each
+// read through pool. Each is the ask's fact now, not the write's. Ask payloads are decoded
+// because those fields are added, and an ask.answered payload's selected lists are read as
+// model.AskAnswer reads them (normalizeAnsweredSelected); every other payload passes through as
+// the database returned it.
+func (s *server) attachAskEventFields(ctx context.Context, pool queryer, who model.Actor, events []model.Event) error {
 	asks := []model.Ask{}
 	payloads := []decodedAskEventPayload{}
 	for index := range events {
@@ -702,7 +712,7 @@ func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, even
 	for index := range asks {
 		askPointers[index] = &asks[index]
 	}
-	if err := loadAskDetails(ctx, s.deps.Store.Pool, who, askPointers); err != nil {
+	if err := loadAskDetails(ctx, pool, who, askPointers); err != nil {
 		return err
 	}
 	for index := range payloads {
@@ -710,7 +720,7 @@ func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, even
 		payloads[index].payload[model.ReferencedByCountKey] = *asks[index].ReferencedByCount
 		attachAskEventPartIDs(payloads[index].payload, asks[index])
 	}
-	if err := s.attachAskDocumentArtifacts(ctx, payloads); err != nil {
+	if err := s.attachAskDocumentArtifacts(ctx, pool, payloads); err != nil {
 		return err
 	}
 	for _, payload := range payloads {
@@ -792,7 +802,7 @@ func normalizeAnsweredSelected(raw json.RawMessage, payload map[string]any) erro
 // payload that names one, the same live lookup ask_rows.go's scanAskRow does for a read: an
 // anchored ask's quoted document, or an approval request's document, both resolved by their
 // current slug and primary flag rather than a value frozen at write time.
-func (s *server) attachAskDocumentArtifacts(ctx context.Context, eventPayloads []decodedAskEventPayload) error {
+func (s *server) attachAskDocumentArtifacts(ctx context.Context, pool queryer, eventPayloads []decodedAskEventPayload) error {
 	payloads := map[string][]decodedAskEventPayload{}
 	for _, eventPayload := range eventPayloads {
 		payload := eventPayload.payload
@@ -817,7 +827,7 @@ func (s *server) attachAskDocumentArtifacts(ctx context.Context, eventPayloads [
 	for askID := range payloads {
 		askIDs = append(askIDs, askID)
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		select a.id::text, aa.project_key, aa.slug, aa.name, aa.is_primary,
 			pa.project_key, pa.slug, pa.name, pa.is_primary
 		from asks a

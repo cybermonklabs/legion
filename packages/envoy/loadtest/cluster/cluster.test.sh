@@ -32,8 +32,9 @@
 # anchors_outside_logged_block not 0), each before any kubectl call; (c) up, seed, step,
 # replay-prepare, replay, db-size, collect, status, down and all run through to the end, and every
 # kubectl call any of them makes, the background heartbeat and sampler included, carries
-# `-n <namespace>`; each step and replay writes pg-stats-before.json and pg-stats-after.json; a
-# step's reset looks up the nats-box pod once; loadgen, envoy-dispatch and seed.json go into the
+# `-n <namespace>`; every render of postgres.yaml that up and db-size apply passes the Postgres
+# container `-c jit=off`; each step and replay writes pg-stats-before.json and pg-stats-after.json;
+# a step's reset looks up the nats-box pod once; loadgen, envoy-dispatch and seed.json go into the
 # runner only when it does not hold them, and a step's directory is removed from the runner once
 # copied back; up builds the stored-order checker from the dispatch commit's own archive with
 # GOWORK=off and CGO_ENABLED=0 and records its fields (dispatch_commit, built_from, overlay_source
@@ -82,9 +83,11 @@
 # refuse a run whose state.json holds no oidc_key before they change anything; (e) every manifest
 # renders with no placeholder left and every
 # image by digest, and a value of the wrong shape is refused (an issuer outside the namespace or
-# of another namespace among them, and a token, redacted); (f) a container restart between the
-# before and after reads writes step-failed.json with kind restart; (g) the sampler writes an
-# error line with no number when its exec fails, and a numeric line when it reads; (h)
+# of another namespace among them, a token, redacted, and a session that is no label value); with
+# a session, the seven pods the manifests make carry it as theorem.dev/omp-session in double
+# quotes and no other object does, and with an empty one none does; (f) a container restart
+# between the before and after reads writes step-failed.json with kind restart; (g) the sampler
+# writes an error line with no number when its exec fails, and a numeric line when it reads; (h)
 # render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
 # sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
 # the unchanged archive on a PATH with no curl and no jq, with no call that bash's search of that
@@ -185,7 +188,13 @@
 # end, once a daemon has ended without writing it, and a shell with job control on starts a
 # daemon that lives; (gg) the suite's waits end at the pool's bound for the suite, which
 # envoy-go-checks' command hands it as LEGION_PROOF_DEADLINE_MS, where it is set, naming their
-# fact, and only on their fact where it is not.
+# fact, and only on their fact where it is not; (hh) up labels each pod it makes (six manifests
+# applied and the runner pod created) with the first of OMP_SESSION_ID, DISPATCH_SESSION_ID and
+# PI_SESSION_ID that is set and not empty, names it in one note and records it in state.json, and
+# the pods db-size and redeploy make later carry that session whatever session runs them; with
+# none set, up says so in one note, records session null and labels no pod; and it refuses a
+# session that is no Kubernetes label value, naming the variable, before it creates or builds
+# anything.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -233,6 +242,14 @@ fail() {
   exit 1
 }
 pass() { printf 'PASS: %s\n' "$*"; }
+# perm_bits PATH: PATH's permission bits in octal, without the setgid, setuid or sticky digit a
+# directory made under a setgid $TMPDIR inherits (every Legion pod's is): 2700 reads 700.
+perm_bits() {
+  local m
+  m=$(stat -c %a "$1")
+  ((${#m} == 4)) && m=${m#?}
+  printf '%s' "$m"
+}
 
 # The suite's one wait, scripts/e2e/lib/proof-wait.sh's wait_for, which ends at once where its fact
 # can no longer come, naming the fact, through fail (above), and keeps its last poll in work; and
@@ -284,8 +301,11 @@ c=${cmd[*]:-}
 # credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
 # (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
 # DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
+# DIR-MODE is the permission bits alone: a setgid, setuid or sticky digit, which a directory made
+# under a setgid $TMPDIR inherits (every Legion pod's is), is dropped, so 2700 reads 700 and 2750
+# still reads 750.
 # shellcheck disable=SC2016 # expanded by the runner's sh
-credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
+credential_reader='d=$(stat -c %a "$2"); case $d in ????) d=${d#?} ;; esac; for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$d" "$(cat "$f")"; done >>"$3"'
 # flags_name_dir DIR ARG...: every -token-file, -listener-token-file and -pg-file of the job's
 # command ARG... names a file in DIR, the directory its start claims, and there is one at least:
 # a job whose flags named another directory would open no file at all.
@@ -368,6 +388,10 @@ case $verb in
         exit 1
       fi
       printf '%s\n' "$input" >"$FAKE_DIR/lock.json"
+    else
+      # Every other create is the runner pod's (apply_manifest runner.yaml create -f -), kept as
+      # an apply's render is kept in applied.yaml.
+      printf '%s\n---\n' "$input" >>"$FAKE_DIR/created.yaml"
     fi
     ;;
   apply)
@@ -1095,6 +1119,9 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_RUNNER_EXEC_FAIL_AT_START \
   FAKE_SLEEP_GATE FAKE_SLEEP_GATE_SECONDS FAKE_SLEEP_HOLD \
   FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS
+# The session that runs up labels every pod of the copy (hh): none, but where a case sets one, so
+# the session that runs this suite labels nothing.
+unset OMP_SESSION_ID DISPATCH_SESSION_ID PI_SESSION_ID
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
 export LOADTEST_REPLAY_ISSUE=INFRA-639
@@ -1201,7 +1228,7 @@ write_pods() {
 }
 
 reset_fake() {
-  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/jq-argv.log" "$fake/seeded" "$fake/runner-starts" "$fake/runner-credentials" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
+  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/created.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/jq-argv.log" "$fake/seeded" "$fake/runner-starts" "$fake/runner-credentials" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
     "$fake/runner-stops" "$fake/runner-kills" "$fake/rc-polls" "$fake/rc-kill-polls" "$fake/df-seq" "$fake/runner-heap-kept" "$fake/lock-get-fails" "$fake/lock-get-oks" \
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
@@ -1242,6 +1269,60 @@ run_cluster_fake_clock() {
 # no_create: no kubectl call so far created or applied anything.
 no_create() {
   ! grep -qE "^-n $ns (create|apply) " "$fake/kubectl.log" 2>/dev/null
+}
+
+# pod_sessions [FILE...]: one line for each pod the manifests in FILE (or the standard input) make
+# -- each Deployment's and StatefulSet's pod template (spec.template.metadata.labels) and each bare
+# Pod (metadata.labels) -- "<kind>/<name> <value>": the theorem.dev/omp-session label's value as
+# the YAML holds it, or "-" where the pod carries none. Documents end at `---` and at a file's end;
+# each key's path comes from its indentation, and a block scalar's lines are skipped.
+pod_sessions() {
+  awk '
+    function flush() {
+      if (kind == "Deployment" || kind == "StatefulSet" || kind == "Pod") print kind "/" name, (value == "" ? "-" : value)
+      kind = name = value = ""
+      n = 0
+      block = -1
+    }
+    BEGIN { block = -1 }
+    FNR == 1 { flush() }
+    /^---$/ { flush(); next }
+    /^[[:space:]]*(#.*)?$/ { next }
+    {
+      indent = match($0, /[^ ]/) - 1
+      if (block >= 0) {
+        if (indent > block) next
+        block = -1
+      }
+      line = substr($0, indent + 1)
+      if (line ~ /^- /) {
+        while (n > 0 && (ind[n] > indent || (ind[n] == indent && key[n] == "-"))) n--
+        n++; ind[n] = indent; key[n] = "-"
+        indent += 2
+        line = substr(line, 3)
+      }
+      if (!match(line, /^[^ :#][^:]*:( |$)/)) next
+      k = substr(line, 1, RLENGTH)
+      sub(/: ?$/, "", k)
+      v = substr(line, RLENGTH + 1)
+      while (n > 0 && ind[n] >= indent) n--
+      n++; ind[n] = indent; key[n] = k
+      path = key[1]
+      for (i = 2; i <= n; i++) path = path "/" key[i]
+      if (path == "kind") kind = v
+      else if (path == "metadata/name") name = v
+      else if (path == (kind == "Pod" ? "" : "spec/template/") "metadata/labels/theorem.dev/omp-session") value = v
+      if (v ~ /^[|>][-+0-9]*$/) block = indent
+    }
+    END { flush() }' "$@"
+}
+
+# pods_with VALUE: pod_sessions' lines, sorted, for the seven pods of the copy, each with VALUE.
+pods_with() {
+  local pod
+  for pod in Deployment/dispatch Deployment/listener Deployment/nats-box Deployment/oidc-issuer Pod/runner StatefulSet/nats StatefulSet/postgres; do
+    printf '%s %s\n' "$pod" "$1"
+  done
 }
 
 # guarded_by_lock_read PATTERN: the last kubectl call that holds PATTERN came right after a read
@@ -1367,6 +1448,9 @@ logged_steps() {
 }
 
 up_args=(--namespace "$ns" --storage-class premium-rwo --pg-major 16 --production-repo example/deploy)
+# Two sessions, of the 36-character shape a session id has: the one that runs up in (e) and (hh),
+# and another one, which no pod of that run may carry.
+readonly session_id=0198c3a2-7d4e-7b61-9f0a-5c2e8d4b1a37 other_session=0198c3a2-0000-7000-8000-000000000000
 
 # ---- (a) every subcommand refuses a missing --namespace --------------------------------------------
 
@@ -1559,6 +1643,49 @@ run_cluster down --namespace "$ns"
 grep -q -- "pass --run $other_run" "$tmp/out" || fail "down's refusal of another run's lock does not name --run"
 [ -f "$fake/lock.json" ] || fail "down deleted another run's lock without --run"
 pass "down refuses another run's lock unless --run names it"
+
+# ---- prebuilt binaries: LOADTEST_CLUSTER_LOADGEN and LOADTEST_CLUSTER_CHECKER -----------------------
+
+prebuilt=$tmp/prebuilt
+mkdir -p "$prebuilt"
+# The prebuilt loadgen is one of a tree with oidc-mint, which up asks for oidc-mint -h before the
+# lock and mints the copy's token issuer with once it holds it (loadgen_mints, mint_identity): the
+# fake go's loadgen, with a line that tells it from the one up would build.
+go build -o "$prebuilt/loadgen" ./loadtest
+printf '# prebuilt elsewhere\n' >>"$prebuilt/loadgen"
+chmod -x "$prebuilt/loadgen"
+printf '#!/usr/bin/env bash\necho "prebuilt checker: $*"\n' >"$prebuilt/envoy-dispatch"
+reset_fake
+export LOADTEST_CLUSTER_LOADGEN=$prebuilt/loadgen LOADTEST_CLUSTER_CHECKER=$prebuilt/envoy-dispatch
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC != 0)) || fail "up accepted a LOADTEST_CLUSTER_LOADGEN that is not executable"
+grep -qF "up: LOADTEST_CLUSTER_LOADGEN='$prebuilt/loadgen' names no executable file" "$tmp/out" ||
+  fail "up's refusal of a prebuilt loadgen that is not executable does not name the variable: $(cat "$tmp/out")"
+checker_refused "a prebuilt loadgen that is not executable"
+pass "up refuses, before it creates anything, a prebuilt binary that is not executable"
+
+chmod +x "$prebuilt/loadgen" "$prebuilt/envoy-dispatch"
+reset_fake
+rm -f -- "$fake/go.log"
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up with both binaries prebuilt exited $RC: $(tail -5 "$tmp/out")"
+! grep -q '^build' "$fake/go.log" 2>/dev/null || fail "up ran go build with both binaries prebuilt: $(cat "$fake/go.log")"
+run_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+cmp -s "$prebuilt/loadgen" "$run_dir/loadgen" || fail "the run's loadgen is not the prebuilt one"
+cmp -s "$prebuilt/envoy-dispatch" "$run_dir/envoy-dispatch" || fail "the run's stored-order checker is not the prebuilt one"
+jq -e --arg c "$commit_ok" --arg s "$(sha256sum <"$prebuilt/envoy-dispatch" | cut -d' ' -f1)" \
+  '.stored_order == {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null, renderer_matches: true, sha256: $s, prebuilt: true}' \
+  "$run_dir/state.json" >/dev/null || fail "state.json does not record the prebuilt checker: $(jq -c .stored_order "$run_dir/state.json")"
+printf '#!/usr/bin/env bash\necho "prebuilt checker of another commit: $*"\n' >"$prebuilt/envoy-dispatch-2"
+chmod +x "$prebuilt/envoy-dispatch-2"
+LOADTEST_CLUSTER_CHECKER=$prebuilt/envoy-dispatch-2
+run_cluster redeploy --namespace "$ns" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "redeploy with a prebuilt checker exited $RC: $(tail -5 "$tmp/out")"
+cmp -s "$prebuilt/envoy-dispatch-2" "$run_dir/envoy-dispatch" || fail "redeploy did not install the prebuilt checker"
+jq -e --arg s "$(sha256sum <"$prebuilt/envoy-dispatch-2" | cut -d' ' -f1)" '.stored_order.sha256 == $s and .stored_order.prebuilt == true and .stored_order.renderer_matches' \
+  "$run_dir/state.json" >/dev/null || fail "state.json does not record redeploy's prebuilt checker: $(jq -c .stored_order "$run_dir/state.json")"
+unset LOADTEST_CLUSTER_LOADGEN LOADTEST_CLUSTER_CHECKER
+pass "up copies prebuilt loadgen and checker binaries in place of their go builds, and state.json records the checker as prebuilt; redeploy installs a prebuilt checker for the commit it deploys"
 
 # ---- (c) the whole path, and -n on every kubectl call ------------------------------------------------
 
@@ -1906,7 +2033,8 @@ grep -qF 'stored-order: open database: failed to connect' "$run_dir/steps/r16/st
 start=$(grep '^replay-r16 ' "$fake/runner-starts") || fail "replay r16 started no loadgen run in the runner"
 for want in "env LOADTEST_ROOT=/work/root LOADTEST_GOMAXPROCS=16 /work/loadgen run -allow-foreign -source replay " \
   "-events 0 -requests 0 -replay-inputs /work/bundle -replay-rate 1 -replay-from 0 -replay-to 39m -rng-seed 1 -warmup 30s " \
-  "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-nats-server-name nats-0"; do
+  "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-metrics http://dispatch-metrics.$ns.svc:6062" \
+  "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
 [[ $start =~ \ -token-file\ (/work/secrets/replay-r16\.[0-9a-f]+)/dispatch-token\  ]] || fail "replay r16's loadgen run has no -token-file of a directory of its own: $start"
@@ -1961,6 +2089,20 @@ echo '1600000 100000' >"$fake/cpu.max"
 run_cluster db-size --namespace "$ns" 4 15Gi
 ((RC != 0)) || fail "db-size accepted a cpu.max that is not the new limit"
 grep -q "cpu.max reads '1600000 100000', not '400000 100000'" "$tmp/out" || fail "db-size's cpu.max refusal does not name both values"
+
+# The copy's Postgres runs with JIT off, as Cloud SQL does (manifests/postgres.yaml cites the page
+# and INFRA-1950's measurement): every render of postgres.yaml applied so far, up's and db-size's,
+# passes the Postgres container -c jit=off among its args.
+pg_renders=$(grep -c '^# postgres\.yaml:' "$fake/applied.yaml" || true)
+jit_renders=$(awk '/^# [a-z.]+\.yaml(\.tmpl)?:/ { pg = ($2 == "postgres.yaml:"); args = 0 }
+  pg && /^ *args:$/ { args = 1; prev = ""; next }
+  args && /^ *#/ { next }
+  args && !/^ *- / { args = 0 }
+  args { sub(/^ *- /, ""); if (prev == "-c" && $0 == "jit=off") n++; prev = $0 }
+  END { print n + 0 }' "$fake/applied.yaml")
+((pg_renders >= 2 && jit_renders == pg_renders)) ||
+  fail "$jit_renders of the $pg_renders renders of postgres.yaml that up and db-size applied pass the Postgres container -c jit=off"
+pass "every render of postgres.yaml that up and db-size apply passes the Postgres container -c jit=off, as Cloud SQL runs without JIT"
 
 run_cluster collect --namespace "$ns" --upload-issue TEST-1
 ((RC == 0)) || fail "collect exited $RC"
@@ -2619,7 +2761,9 @@ pass "db-size and redeploy refuse a run whose state.json a cluster.sh from befor
   values+=(PG_VOLUME=100Gi "PG_PASSWORD=$(random_hex 24)" "DISPATCH_TOKEN=$(random_hex 32)" "LISTENER_TOKEN=$(random_hex 32)" "SIGNING_KEY=$(random_hex 32)"
     "ACCOUNT_JWT=fake-jose-header.fake-claims.fake-signature" "OIDC_KEY_ID=$(printf 'k%.0s' {1..43})"
     "OIDC_KEY_X=$(printf 'x%.0s' {1..43})" "OIDC_KEY_Y=$(printf 'y%.0s' {1..43})")
-  for m in secrets.yaml.tmpl postgres.yaml nats.yaml oidc-issuer.yaml listener.yaml dispatch.yaml runner.yaml; do
+  manifests=(secrets.yaml.tmpl postgres.yaml nats.yaml oidc-issuer.yaml listener.yaml dispatch.yaml runner.yaml)
+  values+=("OMP_SESSION=$session_id")
+  for m in "${manifests[@]}"; do
     out=$(render_manifest "$MANIFESTS/$m" "${values[@]}") || fail "$m did not render"
     ! grep -qE '__[A-Z][A-Z0-9_]*__' <<<"$out" || fail "$m keeps a placeholder once rendered"
     if grep -E '^[[:space:]]*image:' <<<"$out" | grep -vqE '@sha256:[0-9a-f]{64}$'; then
@@ -2628,6 +2772,39 @@ pass "db-size and redeploy refuse a run whose state.json a cluster.sh from befor
   done
   grep -q 'shared_buffers=20480MB' <(render_manifest "$MANIFESTS/postgres.yaml" "${values[@]}") ||
     fail "postgres.yaml does not carry db-custom-16-61440's shared_buffers"
+  # The session label: with a session, each of the seven pods the manifests make carries it, in
+  # double quotes, and no other object does; with an empty one no line holds the label. A label
+  # value YAML would read as a number is written as a string, and one that is no label value (a
+  # character outside them, a dash at an end, 64 characters) is refused, naming it.
+  # render_all VALUES...: every manifest rendered with VALUES, as one stream of documents.
+  render_all() {
+    local m
+    for m in "${manifests[@]}"; do
+      render_manifest "$MANIFESTS/$m" "$@" && printf -- '---\n'
+    done
+  }
+  rendered=$(render_all "${values[@]}") || fail "the manifests did not render with a session"
+  [ "$(pod_sessions <<<"$rendered" | LC_ALL=C sort)" = "$(pods_with "\"$session_id\"")" ] ||
+    fail "the pods the manifests make do not each carry the session in double quotes: $(pod_sessions <<<"$rendered")"
+  [ "$(grep -c 'theorem.dev/omp-session' <<<"$rendered")" = 7 ] ||
+    fail "the session label is on an object that is no pod: $(grep -n 'theorem.dev/omp-session' <<<"$rendered")"
+  nosession=()
+  for kv in "${values[@]}"; do
+    [[ $kv == OMP_SESSION=* ]] || nosession+=("$kv")
+  done
+  rendered=$(render_all "${nosession[@]}" OMP_SESSION=) || fail "the manifests did not render with an empty session"
+  [ "$(pod_sessions <<<"$rendered" | LC_ALL=C sort)" = "$(pods_with -)" ] && ! grep -q 'theorem.dev/omp-session' <<<"$rendered" ||
+    fail "a manifest rendered with an empty session still holds the session label: $(grep -n 'theorem.dev/omp-session' <<<"$rendered")"
+  grep -qxF '    theorem.dev/omp-session: "123"' <(render_manifest "$MANIFESTS/runner.yaml" "${nosession[@]}" OMP_SESSION=123) ||
+    fail "runner.yaml does not write a session of digits in double quotes"
+  (render_manifest "$MANIFESTS/runner.yaml" "${nosession[@]}" "OMP_SESSION=$(printf 'a%.0s' {1..63})") >/dev/null 2>&1 ||
+    fail "render refused a session of 63 characters, the most a label value holds"
+  for bad in not/a-label -leading-dash "$(printf 'a%.0s' {1..64})"; do
+    refusal=$( (render_manifest "$MANIFESTS/runner.yaml" "${values[@]}" "OMP_SESSION=$bad") 2>&1) &&
+      fail "render accepted the session '$bad', which is no label value"
+    [[ $refusal == *"OMP_SESSION value '$bad' is not a valid label_value"* ]] ||
+      fail "render's refusal of the session '$bad' does not name it: $refusal"
+  done
   if (render_manifest "$MANIFESTS/runner.yaml" "${values[@]}" RUNNER_IMAGE=mirror.gcr.io/library/debian:bookworm-slim) 2>/dev/null; then
     fail "render accepted an image given by tag"
   fi
@@ -2655,7 +2832,65 @@ pass "db-size and redeploy refuse a run whose state.json a cluster.sh from befor
   [[ $refusal == *"ACCOUNT_JWT value '<redacted>' is not a valid jwt"* && $refusal != *'a.b.c|x'* ]] ||
     fail "render's refusal of an account token does not name it redacted: $refusal"
 )
-pass "every manifest renders with no placeholder left and every image by digest; a tag, a missing value, an issuer outside the namespace or of another namespace, and a key or token of another shape are refused, the token redacted"
+pass "every manifest renders with no placeholder left and every image by digest; a tag, a missing value, an issuer outside the namespace or of another namespace, a key or token of another shape and a session that is no label value are refused, the token redacted; the seven pods carry the session label in double quotes and no other object does, and with an empty session none does"
+
+# ---- (hh) the session label on the copy's pods ------------------------------------------------------
+
+# up under a session: OMP_SESSION_ID is set but empty (a host whose session has no id yet), so the
+# session is DISPATCH_SESSION_ID's, the next one, and not PI_SESSION_ID's, the last.
+reset_fake
+export LOADTEST_CLUSTER_ROOT=$tmp/root-session
+OMP_SESSION_ID="" DISPATCH_SESSION_ID=$session_id PI_SESSION_ID=$other_session run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up under a session exited $RC: $(tail -5 "$tmp/out")"
+session_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+[ "$(jq -r .session "$session_dir/state.json")" = "$session_id" ] ||
+  fail "state.json does not record the session that ran up: $(jq -c .session "$session_dir/state.json")"
+[ "$(grep -c "theorem.dev/omp-session" "$tmp/out")" = 1 ] &&
+  grep -qF "the copy's pods carry theorem.dev/omp-session=$session_id (DISPATCH_SESSION_ID)" "$tmp/out" ||
+  fail "up did not name the session its pods carry, and its variable, in one note: $(grep 'omp-session' "$tmp/out")"
+[ "$(pod_sessions "$fake/applied.yaml" "$fake/created.yaml" | LC_ALL=C sort)" = "$(pods_with "\"$session_id\"")" ] ||
+  fail "the pods up applied and created do not each carry the session that ran up: $(pod_sessions "$fake/applied.yaml" "$fake/created.yaml")"
+# The pods a later command of the run makes carry the session up recorded, whoever runs it:
+# db-size's Postgres under another session, and redeploy's Dispatch under none.
+: >"$fake/applied.yaml"
+echo '400000 100000' >"$fake/cpu.max"
+OMP_SESSION_ID=$other_session run_cluster db-size --namespace "$ns" 4 15Gi
+((RC == 0)) || fail "db-size under another session exited $RC: $(tail -5 "$tmp/out")"
+run_cluster redeploy --namespace "$ns" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "redeploy exited $RC: $(tail -5 "$tmp/out")"
+[ "$(pod_sessions "$fake/applied.yaml" | LC_ALL=C sort)" = "$(printf '%s "%s"\n' Deployment/dispatch "$session_id" StatefulSet/postgres "$session_id")" ] ||
+  fail "the pods db-size and redeploy applied do not carry the session that ran up: $(pod_sessions "$fake/applied.yaml")"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down of the run under a session exited $RC"
+
+# up under no session: one note says so, state.json records session null, and no pod is labelled.
+reset_fake
+export LOADTEST_CLUSTER_ROOT=$tmp/root-nosession
+run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) || fail "up under no session exited $RC: $(tail -5 "$tmp/out")"
+[ "$(grep -c "theorem.dev/omp-session" "$tmp/out")" = 1 ] &&
+  grep -qF "none of OMP_SESSION_ID, DISPATCH_SESSION_ID and PI_SESSION_ID is set, so the copy's pods carry no theorem.dev/omp-session label" "$tmp/out" ||
+  fail "up under no session did not say so in one note: $(grep 'omp-session' "$tmp/out")"
+jq -e '.session == null' "$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")/state.json" >/dev/null ||
+  fail "state.json of a run under no session does not record session null"
+[ "$(pod_sessions "$fake/applied.yaml" "$fake/created.yaml" | LC_ALL=C sort)" = "$(pods_with -)" ] &&
+  ! grep -q 'theorem.dev/omp-session' "$fake/applied.yaml" "$fake/created.yaml" ||
+  fail "up under no session labelled a pod with a session: $(grep -n 'theorem.dev/omp-session' "$fake/applied.yaml" "$fake/created.yaml")"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down of the run under no session exited $RC"
+
+# up refuses a session that is no Kubernetes label value, the first set one, before it creates or
+# builds anything, although a later variable holds a good one.
+reset_fake
+export LOADTEST_CLUSTER_ROOT=$tmp/root-badsession
+for bad in not/a-label -leading-dash "$(printf 'a%.0s' {1..64})"; do
+  OMP_SESSION_ID=$bad DISPATCH_SESSION_ID=$session_id run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+  ((RC != 0)) || fail "up accepted OMP_SESSION_ID '$bad', which is no Kubernetes label value"
+  grep -qF "up: OMP_SESSION_ID '$bad' is not a Kubernetes label value (at most 63 characters, letters, digits, '-', '_' and '.', beginning and ending with a letter or digit)" "$tmp/out" ||
+    fail "up's refusal of OMP_SESSION_ID '$bad' does not name the variable and the rule: $(cat "$tmp/out")"
+  checker_refused "OMP_SESSION_ID '$bad'"
+done
+pass "up labels each pod it applies and creates with the first session of OMP_SESSION_ID, DISPATCH_SESSION_ID and PI_SESSION_ID set, named in one note and kept in state.json, and db-size's and redeploy's pods carry it under another session or none; under no session one note says so and no pod is labelled; a session that is no label value is refused, naming its variable, before anything is created or built"
 
 # ---- (f) a restart between the two reads ------------------------------------------------------------
 
@@ -2777,8 +3012,8 @@ command -v dash >/dev/null ||
       <<<"$creds" &
     pid=$!
     wait_for "the $wrapper shell to write its job's credentials into $dir" credentials_written "$dir" "$pid"
-    [ "$(stat -c %a "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
-      fail "the $wrapper shell's directory is mode $(stat -c %a "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
+    [ "$(perm_bits "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
+      fail "the $wrapper shell's directory is mode $(perm_bits "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
     kill -"$sig" "$pid"
     printf 'go\n' >&"$gate_fd"
     exec {gate_fd}>&-

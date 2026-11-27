@@ -22,7 +22,7 @@ func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
 		order by repo
 	`)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -31,13 +31,13 @@ func (s *server) listRepoProjects(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		mapping, err := scanRepoProject(rows)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		mappings = append(mappings, mapping)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, mappings)

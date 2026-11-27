@@ -60,6 +60,10 @@ func (s *server) mayQueueForUnknownSession(
 //
 // A publish that fails queues nothing: the attempt then settles failed with failure and the
 // publish's own error, so the person can retry it.
+//
+// The publish changes the message bus's state, and the attempt's outcome is written after it: the
+// request that makes it holds no admission unit while the bus acknowledges and takes its unit back
+// never refused (awayOnNetworkNeverRefused), as a listener send does (sendResolvedDelivery).
 func (s *server) queueForUnknownSession(
 	ctx context.Context, message model.Message, pending pendingMessageDelivery, key string,
 	wanted contracts.ExpectsReply, failure string,
@@ -72,7 +76,11 @@ func (s *server) queueForUnknownSession(
 	if err := envelope.Validate(); err != nil {
 		return sendOutcome{failure: queueFailure(failure, err)}
 	}
-	duplicate, err := s.deps.AgentPublisher.PublishReportingDuplicateWithin(ctx, envelope)
+	var duplicate bool
+	err := awayOnNetworkNeverRefused(ctx, func(ctx context.Context) (err error) {
+		duplicate, err = s.deps.AgentPublisher.PublishReportingDuplicateWithin(ctx, envelope)
+		return err
+	})
 	if err != nil {
 		return sendOutcome{failure: queueFailure(failure, err)}
 	}

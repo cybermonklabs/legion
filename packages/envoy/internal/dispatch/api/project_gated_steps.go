@@ -53,7 +53,7 @@ type projectGatedStepsInput struct {
 func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	var input projectGatedStepsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -87,7 +87,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -101,7 +101,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	// nothing.
 	key := r.PathValue("key")
 	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(key)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The row is read under the owner lock, which every writer of the row takes first, so the
@@ -111,7 +111,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	// anything is written.
 	project, err := s.loadProject(r.Context(), tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	written, err := tx.Exec(r.Context(), `
@@ -119,7 +119,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		where key = $1 and gated_steps is distinct from $2
 	`, key, steps)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if written.RowsAffected() == 0 {
@@ -131,11 +131,11 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	project.GatedSteps = steps
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.updated", actor, project))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

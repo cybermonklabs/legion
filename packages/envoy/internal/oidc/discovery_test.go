@@ -299,3 +299,35 @@ func TestADiscoveredVerifierReadsNothing(t *testing.T) {
 		t.Fatalf("the discovery document was read %d more times, want none", got-before)
 	}
 }
+
+// A read of the discovery document runs under the bound its verifier was built with: the
+// deployment's (discoveryAttemptTimeout) or a test's (WithDiscoveryAttemptForTest). The deadline
+// the read's context carries falls between the moment before the discovery and the moment after
+// it, each moved on by the bound, whatever the machine's speed, so no clock is raced.
+func TestAReadOfTheDiscoveryDocumentRunsUnderItsVerifiersAttemptBound(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options []LazyOption
+		bound   time.Duration
+	}{
+		{"the deployment's", nil, discoveryAttemptTimeout},
+		{"a test's", []LazyOption{WithDiscoveryAttemptForTest(time.Hour)}, time.Hour},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			verifier := NewLazyVerifier("https://issuer.example", testAudience, test.options...)
+			var deadline time.Time
+			verifier.discovery.read = func(ctx context.Context) (*Verifier, error) {
+				deadline, _ = ctx.Deadline()
+				return &Verifier{}, nil
+			}
+			before := time.Now()
+			if err := verifier.Discover(context.Background()); err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			after := time.Now()
+			if deadline.Before(before.Add(test.bound)) || deadline.After(after.Add(test.bound)) {
+				t.Fatalf("the read's deadline is %v, want it %v after a moment between %v and %v", deadline, test.bound, before, after)
+			}
+		})
+	}
+}

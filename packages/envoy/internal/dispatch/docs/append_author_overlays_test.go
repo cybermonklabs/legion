@@ -67,7 +67,7 @@ func TestAnAppendsAskBlockAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 	credit := appendCredit(t, service, artifactID, nil, map[string]model.Actor{"bob-ask": bob})
 
 	var recorded map[string]model.Actor
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		if err := lockDocumentRoom(ctx, tx, artifactID); err != nil {
 			return err
@@ -105,7 +105,7 @@ func TestAnAppendsPendingAuthorIsReadBackInItsOwnTransaction(t *testing.T) {
 	credit := appendCredit(t, service, artifactID, []model.Actor{bob}, nil)
 
 	var owed map[string]model.Actor
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		if err := lockDocumentRoom(ctx, tx, artifactID); err != nil {
 			return err
@@ -190,7 +190,7 @@ func TestAQueuedPendingAuthorIsProvenOnlyWhenEveryRowIs(t *testing.T) {
 				}
 			}
 			var owed map[string]model.Actor
-			if err := joinedWrite(service, func(ctx context.Context) error {
+			if err := joinedWrite(service, artifactID, func(ctx context.Context) error {
 				tx, _ := txFromContext(ctx)
 				for _, authors := range tc.queued {
 					if err := upsertPendingAuthors(ctx, tx, artifactID, authors); err != nil {

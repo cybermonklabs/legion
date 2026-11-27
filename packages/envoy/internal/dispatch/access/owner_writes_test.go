@@ -82,7 +82,15 @@ func TestTheBootsGrantIsRecordedAsTheCommandsIs(t *testing.T) {
 	}
 	broker := events.NewBroker()
 	boot := model.Actor{Kind: "system", ID: "DISPATCH_PROJECT_OWNER_FALLBACK"}
-	committed(t, database, func(tx pgx.Tx) error { return GiveOwnerless(ctx, tx, broker, "STRAY", carol, boot) })
+	var granted model.Event
+	committed(t, database, func(tx pgx.Tx) (err error) {
+		granted, err = GiveOwnerless(ctx, tx, broker, "STRAY", carol, boot)
+		return err
+	})
+	// The grant answers the event it appended, which the boot publishes once the grant commits.
+	if granted.ID == 0 || granted.Type != "project.access_changed" {
+		t.Errorf("the grant answered event %d of type %q; want the project.access_changed it appended", granted.ID, granted.Type)
+	}
 	if appended, records, owner := ownerChanges(t, database, "STRAY"); appended != 1 || records != 1 || owner != carol {
 		t.Fatalf("after the grant: %d event(s), %d record(s), owner %q; want one event, one record and carol", appended, records, owner)
 	}
@@ -99,8 +107,13 @@ func TestTheBootsGrantIsRecordedAsTheCommandsIs(t *testing.T) {
 			change, actor, principal, recordOwner, boot.ID)
 	}
 	// A project that has an owner by the time its lock is held is left as it is.
-	committed(t, database, func(tx pgx.Tx) error { return GiveOwnerless(ctx, tx, broker, "STRAY", dave, boot) })
-	if appended, records, owner := ownerChanges(t, database, "STRAY"); appended != 1 || records != 1 || owner != carol {
-		t.Fatalf("after a second grant: %d event(s), %d record(s), owner %q; want one, one and carol as before", appended, records, owner)
+	var again model.Event
+	committed(t, database, func(tx pgx.Tx) (err error) {
+		again, err = GiveOwnerless(ctx, tx, broker, "STRAY", dave, boot)
+		return err
+	})
+	if appended, records, owner := ownerChanges(t, database, "STRAY"); appended != 1 || records != 1 || owner != carol || again.ID != 0 {
+		t.Fatalf("after a second grant: %d event(s), %d record(s), owner %q, answered event %d; want one, one and carol as before, and no event",
+			appended, records, owner, again.ID)
 	}
 }

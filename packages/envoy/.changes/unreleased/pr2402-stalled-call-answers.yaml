@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A request the database stops answering is now answered for what the call it stopped answering
+  can have left behind, wherever that request is answered from. Three things were wrong. A `HEAD`
+  was answered as a write: net/http's mux serves a `HEAD` with the route's `GET` handler, so a
+  `HEAD` whose statement stalls runs exactly the read its `GET` runs and commits nothing, and it
+  is refused `503 DATABASE_BUSY` with `Retry-After: 1` rather than told its outcome is unknown.
+  Whether a request may have written is now one predicate the whole server reads the method
+  through (`admission.Reads`). A transaction whose `BEGIN` the database never answered was named
+  an unknown outcome too, though a `BEGIN` commits nothing - the transaction it would have opened
+  holds no statement of the request, and rolls back or never existed - so each pool now says of
+  its own calls whether they can have committed: an acquire, a ping and a `BEGIN` cannot, and
+  only a statement run outside any transaction can (`store.ErrPoolBusy`,
+  `store.ErrStatementOutcomeUnknown`). And the two answerers that stood outside the rule now
+  follow it: a stalled identity lookup, which was `500 IDENTITY_ERROR` whatever it was, and a
+  stalled sign-in call, which was a bare 500, are a `503 DATABASE_BUSY` where nothing can have
+  committed and a `500 COMMIT_OUTCOME_UNKNOWN` where the call may have written. The sign-in
+  routes say which of their calls write themselves, because they are mounted on `GET` and write
+  anyway. One function now answers every one of them (`admission.WriteUnserved`), so a refusal
+  reads the same whichever layer met it.

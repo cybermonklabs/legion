@@ -86,7 +86,7 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 	if f.approval != "" {
 		withdrawn = append(withdrawn, f.approval)
 	}
-	if err := joinedWrite(service, func(ctx context.Context) error {
+	if err := joinedIssueWrite(service, "DOC-1", func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
@@ -139,7 +139,7 @@ func (f keptEditorSweep) reopen(t *testing.T) {
 	if f.approval != "" {
 		restored = append(restored, f.approval)
 	}
-	if err := joinedWrite(f.service, func(ctx context.Context) error {
+	if err := joinedIssueWrite(f.service, "DOC-1", func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
 			return fmt.Errorf("clear the issue's closed_at: %w", err)

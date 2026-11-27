@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The load test's local stack runs Dispatch's migrations again. Migration
+  `20261125125703_btree_gin` creates the contrib extension `btree_gin`, and the `pgserver` wheel's
+  Postgres 16.2 holds pgvector and no contrib extension, so every seed stopped at that migration
+  with `extension "btree_gin" is not available`. `stack.sh setup` now builds `btree_gin` from
+  PostgreSQL 16.2's own source (tag `REL_16_2`, each file checked against a pinned sha256) with
+  the compiler, flags and server headers of the wheel's `pg_config`, and installs it beside
+  `vector`. It refuses a Postgres of another version, and it builds nothing where the extension
+  is already installed. The stack now needs `gcc`.

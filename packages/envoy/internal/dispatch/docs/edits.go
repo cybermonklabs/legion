@@ -296,8 +296,11 @@ func (e *ErrInvalidPrecondition) Error() string {
 	return "invalid document edit precondition: " + e.Reason
 }
 
-// ErrPreconditionBusy reports that a room's bounded conditional-edit queue is full.
-var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
+// ErrPreconditionBusy reports a document too busy to take this write before its transaction
+// opened: its writer gate already holds as many writers as it queues (maxQueuedDocumentWriters),
+// or this write waited at that gate for what was left of its admission wait and the gate never
+// reached it (AcquireDocumentWriter). Nothing of the write ran either way.
+var ErrPreconditionBusy = errors.New("the document is busy with other writes")
 
 // ErrPreconditionUnavailable reports a whole-document upload repairing a document whose live
 // tree is outside the Proof schema and naming a token for the version it replaces. Such a tree

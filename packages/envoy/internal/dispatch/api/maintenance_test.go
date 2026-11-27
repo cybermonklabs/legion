@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -61,7 +62,7 @@ func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
 	resume := func(ctx context.Context) error {
 		var boundary time.Time
 		err := database.Pool.QueryRow(ctx, `select boundary from duty_passes where lease = $1 and period_ns = $2`,
-			maintenanceLease, maintenanceTestInterval.Nanoseconds()).Scan(&boundary)
+			duty.SuggestionOutcomeLease, maintenanceTestInterval.Nanoseconds()).Scan(&boundary)
 		switch {
 		case err == nil:
 			servedMu.Lock()

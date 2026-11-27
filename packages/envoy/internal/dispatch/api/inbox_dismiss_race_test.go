@@ -289,10 +289,10 @@ func dismissChangedNothingAndLeftTheThread(
 // reply each row then writes lands somewhere the gate does not reach - another issue's thread, or
 // an Agent thread, which has no owner row at all - so it commits while the dismiss waits.
 //
-// Postgres bounds the queued dismiss by its statement_timeout from the moment it queues, while the
-// row takes its steps, so every row that holds a dismiss builds its server with a bound past any
-// run (seedHeldInboxRead): on the real ten seconds a loaded machine slow over those steps answered
-// a correct run 500.
+// Postgres bounds the queued dismiss by its statement_timeout from the moment it queues, and the
+// server bounds its wait for each lock (store.LockRowsWithinBound), while the row takes its steps,
+// so every row that holds a dismiss builds its server with both past any run (seedHeldInboxRead):
+// on the real bounds a loaded machine slow over those steps answered a correct run 500, or 503.
 //
 // The Agent row dismisses a Reply thread beside its root for that gate alone: an agent-only
 // request locks no owner, and the one row it would queue on, its own dismissal, is the row it is

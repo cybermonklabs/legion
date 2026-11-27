@@ -116,7 +116,7 @@ type stepExperimentInput struct {
 func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 	var input stepRecordInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
@@ -137,7 +137,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	var input stepRatingInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
@@ -167,7 +167,7 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) {
 	var input stepExperimentInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
@@ -197,7 +197,7 @@ func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) 
 func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -215,7 +215,7 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 		writeError(w, codeStepOtherIssue, http.StatusConflict, err.Error())
 		return
 	case err != nil:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The attempt is the run's place among the issue's runs, which no write stores, so the
@@ -223,17 +223,17 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	// read lists the run: the write made it part of the issue, or found it part of the issue.
 	steps, err := workflowstore.IssueSteps(r.Context(), tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	index := slices.IndexFunc(steps, func(step workflowstore.StepRead) bool { return step.ID == written.ID })
 	if index < 0 {
-		s.writeHandlerError(w, fmt.Errorf("the read of %s does not list step %s, which this write holds", key, written.ID))
+		s.writeHandlerError(w, r, fmt.Errorf("the read of %s does not list step %s, which this write holds", key, written.ID))
 		return
 	}
 	record := stepRecord(steps[index])
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, record)
@@ -270,7 +270,7 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 // NOT_FOUND.
 func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, bool) {
 	if err := store.LockOwnersShared(r.Context(), tx, store.IssueOwner(key)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return "", false
 	}
 	var project string
@@ -281,7 +281,7 @@ func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pg
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
 			return "", false
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return "", false
 	}
 	return project, true
@@ -303,24 +303,24 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	steps, err := workflowstore.IssueSteps(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(steps) == 0 {
 		var held bool
 		if err := s.deps.Store.Pool.QueryRow(r.Context(),
 			`select exists(select 1 from issues where key = $1)`, key).Scan(&held); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if !held {
-			s.writeHandlerError(w, pgx.ErrNoRows)
+			s.writeHandlerError(w, r, pgx.ErrNoRows)
 			return
 		}
 	}
 	plan, err := workflowstore.NewestPlan(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}

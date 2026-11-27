@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  Shutdown runs every stage within one deadline, 27 seconds after the signal (`stopGrace` less 3
+  seconds kept for closing the pools, the last log lines and the exit): the document service
+  starts settling at most 6 seconds after the signal with requests still in flight, where it
+  waited 11, and a process with a write still running at the deadline exits without it,
+  `dispatch: exit at the shutdown deadline with requests or database connections still in use`.
+  A stop of the GitHub intakes still running at the deadline, an intake client's close waiting on
+  a NATS write until its one-minute write deadline, is given up the same way: the process logs
+  `dispatch: exit with the GitHub intakes still stopping at the shutdown deadline`, writes its log
+  and exits on its own, leaving the intake's hold to lapse, where it waited for that stop until the
+  runtime's kill.

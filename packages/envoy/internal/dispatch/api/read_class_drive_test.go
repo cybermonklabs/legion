@@ -551,11 +551,22 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 //
 // In each world, before its first row, a calibration window, GET /api/v1/limits under the
 // deployment's shared token, joins known workers and observes two more seconds for an unknown
-// background writer. It must hold no write. Then the pre-check must see, in its own windows, an insert
-// into text_trees (the first read of a version no other test or world has shown), one upsert of
-// route_roster on the server's own context (a read of a stale roster), and the term statistics
-// refresh a related read starts on the server's own context, so a tracer that sees nothing, or
-// sees the request's own context alone, fails before any row.
+// background writer. It must hold no write. Then the pre-check must see, in its own windows, an
+// insert into text_trees (the first read of a version no other test or world has shown), no write
+// of route_roster in a read of a stale roster and then one upsert of it on the server's own context
+// (the refresh loop's fetch, woken by served.rosters.ask()), and the term statistics refresh a
+// related read starts on the server's own context, so a tracer that sees nothing, or sees the
+// request's own context alone, fails before any row.
+//
+// The roster is the one place this row differs from main's. On main a read of a stale roster
+// fetches it and writes the upsert in its own window. On this branch no read fetches one: a read
+// of a stale copy answers 503 ENVOY_UNAVAILABLE on the agents list, or every route unknown on an
+// issue, and writes nothing of the roster, while the refresh loop (issue_route_status.go) writes
+// the row apart from every read. The pre-check therefore holds both halves: the stale read
+// writes no roster row, and the loop's own window writes exactly one. Each world's roster serves
+// for an hour and is fetched once before anything is seeded (newDriveRig), so a read-only
+// request and its writer read the same fresh copy, as main's rows read the one a read had
+// fetched for them.
 //
 // DISPATCH_READ_DRIVE_ROWS narrows the run to the rows it names, separated by commas (each
 // "GET <pattern>"); unset, every read row runs. The calibration and the pre-check run either way.
@@ -659,11 +670,32 @@ func (w *driveWorld) precheck(t *testing.T) {
 	}
 
 	w.staleRoster(t)
-	roster := send("the pre-check's read of a stale roster", "/api/v1/agents")
-	upserts, unmarked := count(roster, statementOf(`^\s*insert\s+into\s+route_roster\b.*\bon\s+conflict\b`))
+	const stale = "the pre-check's read of a stale roster"
+	w.tracer.settle(t, "before "+stale)
+	var answered *httptest.ResponseRecorder
+	staleReads := w.tracer.window(t, stale, 0, func() {
+		answered = w.rig.serve(readOnly.request(t, w.fill(t, "/api/v1/agents")))
+	})
+	if answered.Code != http.StatusServiceUnavailable || !strings.Contains(answered.Body.String(), `"code":"ENVOY_UNAVAILABLE"`) {
+		t.Fatalf("%s: GET /api/v1/agents answered %d %s, want 503 ENVOY_UNAVAILABLE: the stored copy is past its bound and no read fetches another", stale, answered.Code, answered.Body.String())
+	}
+	requireReadsWrites(t, stale, staleReads)
+	if writes, _ := count(staleReads, statementOf(`^\s*(insert\s+into|update)\s+route_roster\b`)); writes != 0 {
+		t.Fatalf("%s wrote route_roster %d times, want none: a read never refreshes the copy: %v", stale, writes, writesIn(staleReads))
+	}
+
+	const refresh = "the pre-check's refresh of a stale roster"
+	w.tracer.settle(t, "before "+refresh)
+	refreshed := w.tracer.window(t, refresh, 0, func() {
+		served := w.rig.served
+		served.startRouteRosterRefresh()
+		<-served.rosters.ask().done
+	})
+	requireReadsWrites(t, refresh, refreshed)
+	upserts, unmarked := count(refreshed, statementOf(`^\s*insert\s+into\s+route_roster\b.*\bon\s+conflict\b`))
 	if upserts != 1 || unmarked != 1 {
-		t.Fatalf("the pre-check's read of a stale roster made %d upserts of route_roster, %d of them on the server's own context, want one there: %v",
-			upserts, unmarked, writesIn(roster))
+		t.Fatalf("%s made %d upserts of route_roster, %d of them on the server's own context, want one there: %v",
+			refresh, upserts, unmarked, writesIn(refreshed))
 	}
 
 	related := send("the pre-check's related read of a project with no term statistics",
@@ -673,8 +705,7 @@ func (w *driveWorld) precheck(t *testing.T) {
 		t.Fatalf("the pre-check's related read made %d writes of search_term_totals, %d of them on the server's own context, want the refresh's, all there: %v",
 			totals, unmarked, writesIn(related))
 	}
-	t.Logf("the pre-check saw one insert into text_trees, one upsert of route_roster on the server's own context, and %d writes of search_term_totals there", totals)
-	w.staleRoster(t)
+	t.Logf("the pre-check saw one insert into text_trees, no write of route_roster in a read of a stale roster, one upsert of it on the server's own context in the refresh, and %d writes of search_term_totals there", totals)
 }
 
 // driveRead sends one read row with each pair (pairs), the read-only credential first, each in a

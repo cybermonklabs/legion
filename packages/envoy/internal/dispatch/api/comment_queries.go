@@ -75,13 +75,13 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		var err error
 		page, err = parseThreadPage(r.URL.Query(), "in")
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	basis, err := s.readCommentListBasis(r.Context(), owner)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
@@ -109,12 +109,12 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 		reads, err = s.readCommentThreadPage(r.Context(), *owner.IssueKey, artifactFilter, *page, trees)
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	encoded, err := encodeListAnswer(reads)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, basis.ownerHeld)
@@ -243,22 +243,22 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	}
 	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	comments, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, []model.Comment{comment})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -495,10 +495,10 @@ func (s *server) rereadComment(w http.ResponseWriter, r *http.Request, id string
 	}
 	comment, err := s.freshComment(r.Context(), who, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.writeRefreshed(w, status, stored, newShapedComment(comment, wantsDisplayTrees(r)))
+	s.writeRefreshed(w, r, status, stored, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
 // rereadCommentReply is the keyedReread of POST /api/v1/comments/{id}/reply, whose answer is the
@@ -516,10 +516,10 @@ func (s *server) rereadCommentReply(w http.ResponseWriter, r *http.Request, id s
 	}
 	reply, err := s.freshComment(r.Context(), who, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.writeRefreshed(w, status, stored, reply)
+	s.writeRefreshed(w, r, status, stored, reply)
 }
 
 func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.Mention, error) {

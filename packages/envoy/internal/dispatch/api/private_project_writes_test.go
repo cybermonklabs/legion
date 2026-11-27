@@ -511,7 +511,7 @@ func TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne(t *testing.
 				t.Fatalf("%s took the private project's check k1, want the answer of a target that does not exist", site.name)
 			}
 			refused := httptest.NewRecorder()
-			rig.served.writeHandlerError(refused, err)
+			rig.served.writeHandlerError(refused, httptest.NewRequest(http.MethodPost, "/", nil), err)
 			if code, _ := refusalOf(t, refused); refused.Code != site.status || code != site.code {
 				t.Fatalf("%s of the private project's check k1: status=%d body=%s, want %d %s",
 					site.name, refused.Code, refused.Body.String(), site.status, site.code)

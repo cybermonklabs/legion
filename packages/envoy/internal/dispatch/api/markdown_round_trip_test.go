@@ -284,7 +284,7 @@ const (
 )
 
 // roundTripReplaced is the answer to a body without new_document for a text whose scope is
-// new-document, the most permissive replacement's (markdownRoundTrip), where it is not
+// new-document, the most permissive replacement's (roundTripAnswer), where it is not
 // storedMarkdown's, main's answer: a refusal that replacement makes of the text (status, code and
 // words), or, for a text main's parse refused, the rendering that replacement stores, each id its
 // parse minted written "minted" (mintedBlockIDs). The zero value is storedMarkdown's answer, the
@@ -582,7 +582,7 @@ func roundTripOf(t *testing.T, handler http.Handler, kind, text string, newDocum
 //
 // Each text is asked without new_document too, as a client asks that does not ask for a new
 // document's refusals: `dispatch artifact --force`, and a client that does not know the member.
-// That body is answered as the most permissive replacement takes the text (markdownRoundTrip),
+// That body is answered as the most permissive replacement takes the text (roundTripAnswer),
 // since a replacement, judged against the document it replaces, need not make a new document's
 // refusals (requireReplacementAnswer). A client that refuses its upload on any failure of the
 // round trip but the route's absence is then refused no replacement the store takes.
@@ -643,7 +643,7 @@ func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
 	}
 
 	// Text of whitespace alone that the seed takes is answered "", whether the seed stores it empty
-	// or keeps it (markdownRoundTrip).
+	// or keeps it (roundTripAnswer).
 	for _, space := range []string{"   \n", "\u00a0\n"} {
 		for _, newDocument := range []bool{false, true} {
 			answered := roundTripOf(t, handler, "inline", space, newDocument)
@@ -679,7 +679,7 @@ func TestMarkdownRoundTripRefusesWhatAnUploadRefusesForItsText(t *testing.T) {
 }
 
 // requireReplacementAnswer fails t unless unasked, the round trip of test's text sent as kind
-// without new_document, is the most permissive replacement's answer (markdownRoundTrip), where
+// without new_document, is the most permissive replacement's answer (roundTripAnswer), where
 // asked is the round trip with new_document. A text whose scope is upload, which every upload
 // refuses alike, a replacement included - its encoding, its bytes, the parse's refusals of a text
 // that is not blank - is refused alike with the member and without it, with the same status,

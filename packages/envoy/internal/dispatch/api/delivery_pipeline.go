@@ -60,9 +60,9 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readPipelinePopulation(r.Context(), settings, at)
+	population, err := s.readPipelinePopulation(r.Context(), s.deps.Store.Pool, settings, at)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, deliveryPipelineCompute(settings, population, at, time.Now().UTC()))
@@ -77,23 +77,25 @@ type pipelinePopulation struct {
 }
 
 // readPipelinePopulation reads the Pipeline page's runs and pull requests for the shown days
-// ending on at's UTC day. Runs are read by start over the whole of the shown days, today included
-// past at, by delivery.ReadCIRows: the PR-checks runs with every job, which their job timings and
-// failing jobs tally whatever their names (measures.PRChecks), and the deploy runs with the jobs
-// the deploy cards follow and no other (measures.DeployJobs reads none else). The two reads depend
-// on neither of each other, and are read side by side.
-func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
+// ending on at's UTC day, through pool (readDeliveryPopulation names who passes which). Runs are
+// read by start over the whole of the shown days, today included past at, by delivery.ReadCIRows: the
+// PR-checks runs with every job, which their job timings and failing jobs tally whatever their names
+// (measures.PRChecks), and the deploy runs with the jobs the deploy cards follow and no other
+// (measures.DeployJobs reads none else). The two reads depend on neither of each other, and are read
+// side by side.
+func (s *server) readPipelinePopulation(ctx context.Context, pool *store.Pool, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
 	from := measures.WindowStart(at)
 	to := from.AddDate(0, 0, measures.ShownDayCount)
 	var pop pipelinePopulation
+	ctx = store.WithReadLimit(ctx, concurrentReadWeight)
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) error {
-			ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(settings)))
+			ci, err := delivery.ReadCIRows(ctx, pool, settings.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(settings)))
 			pop.checks, pop.deploys = ci.Checks, ci.Deploys
 			return err
 		},
 		func(ctx context.Context) (err error) {
-			pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false)
+			pop.leadTimes, err = s.readDeliveryRows(ctx, pool, settings, from, to, url.Values{}, false, false)
 			return err
 		},
 	); err != nil {

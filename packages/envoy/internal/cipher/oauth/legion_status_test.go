@@ -233,11 +233,11 @@ func liveCaller(t *testing.T, verifier *ciphertoken.Verifier, token string) ciph
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
 	request.Header.Set("Authorization", "DPoP "+token)
-	caller, err := verifier.Live(t.Context(), request)
+	live, err := verifier.Live(t.Context(), request)
 	if err != nil {
 		t.Fatalf("Verifier.Live: %v", err)
 	}
-	return caller
+	return live.Caller()
 }
 
 // unusedProofs is a DPoP replay store that Verifier.Live never reaches. It records no proof and

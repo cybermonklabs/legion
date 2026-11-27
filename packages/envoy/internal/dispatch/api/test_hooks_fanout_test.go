@@ -231,3 +231,36 @@ func TestAHookNotificationNamingMorePartsThanAnyCallIsDropped(t *testing.T) {
 		t.Fatalf("a notification naming %d parts, one past the cap, was kept for %d parts", testHookMaxParts+1, len(partial.pieces))
 	}
 }
+
+// quiesceRefusedDocuments is a document service whose quiesce fails with its context's error, as
+// a flush on a cancelled context does.
+type quiesceRefusedDocuments struct {
+	docs.API
+}
+
+func (quiesceRefusedDocuments) Quiesce(ctx context.Context) error { return ctx.Err() }
+
+// A hook whose local action fails once its client has gone away is answered nothing. The error
+// writer answers a client gone with nothing (admission.WriteUnserved), so the buffer runTestHook
+// reads the failure from holds no status and no body; writing that zero status panicked the
+// writer (net/http's "invalid WriteHeader code 0"). A server with no database runs the hook on the
+// request's own context, which is the context its client left.
+func TestATestHookWhoseClientLeftIsAnsweredNothing(t *testing.T) {
+	t.Parallel()
+	ctx, leave := context.WithCancel(context.Background())
+	leave()
+	served := &server{deps: Deps{Docs: quiesceRefusedDocuments{}}}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	func() {
+		defer func() {
+			if panicked := recover(); panicked != nil {
+				t.Fatalf("the quiesce whose client left panicked: %v", panicked)
+			}
+		}()
+		served.runTestHookEverywhere(response, request, testHookCall{Hook: hookQuiesceDocuments})
+	}()
+	if response.Body.Len() != 0 {
+		t.Fatalf("the quiesce whose client left was answered %d %s, want nothing written", response.Code, response.Body.String())
+	}
+}

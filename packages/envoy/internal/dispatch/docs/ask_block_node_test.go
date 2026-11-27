@@ -34,7 +34,7 @@ func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 	ctx := context.Background()
 	seedServiceText(t, service, document, ":::ask{#decision urgency=\"med\" multiple=\"false\" state=\"open\"}\n"+
 		"Ship on Monday?\n\n- Yes: Monday.\n- No: Later.\n:::\n\nContext after.\n")
-	service.settleRoom(document, 0)
+	service.settleRoom(ctx, document, 0)
 	answerBlockAsk(t, service, document)
 	settleCurrentGeneration(t, service, document)
 	drainBlockIndex(t, service, "the answered ask")

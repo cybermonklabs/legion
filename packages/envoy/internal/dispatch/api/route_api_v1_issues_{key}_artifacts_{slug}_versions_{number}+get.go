@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. {number} is a version from 1 to 2147483647 (the largest the store holds), and any other is 400 INVALID_VERSION.",
 	Handler:     (*server).getArtifactVersion,
+	Download:    true,
 	Read:        readEntry{Writes: readWritesNothing},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionQuery{},

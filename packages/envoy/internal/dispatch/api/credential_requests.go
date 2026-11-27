@@ -18,6 +18,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -95,6 +96,35 @@ func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error)
 	_, _ = w.Write(body)
 }
 
+// relayBrokerRead relays the broker's answer to read (relayBrokerResponse), a GET of the broker
+// for a read route. The read is a wait on another server, so the request holds no admission unit
+// and no pinned connection across it (awayOnNetwork), and a take-back refused after it is answered
+// as admission refuses a request rather than as a broker that could not be reached.
+func (s *server) relayBrokerRead(w http.ResponseWriter, r *http.Request, read func(context.Context) (json.RawMessage, error)) {
+	body, err := awayOnNetworkFor(r.Context(), read)
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
+	relayBrokerResponse(w, body, err)
+}
+
+// relayBrokerDecision relays the broker's answer to call (relayBrokerResponse), a POST of the
+// broker that changes its state - a machine login's approve or deny, a lookup, a dismissal, a
+// revoke - and the request's last work: Dispatch writes no event for it (the broker records the
+// decision) and reads and writes nothing of its own after it. So the request gives its admission
+// unit back for good before the call (awayOnNetworkForGood): it holds none while the broker
+// answers, takes none back, and so has nothing left to refuse, and a decision the broker made is
+// never answered 429 OVERLOADED, which would ask its caller to make it again.
+func (s *server) relayBrokerDecision(w http.ResponseWriter, r *http.Request, call func(context.Context) (json.RawMessage, error)) {
+	var body json.RawMessage
+	err := awayOnNetworkForGood(r.Context(), func(ctx context.Context) (err error) {
+		body, err = call(ctx)
+		return err
+	})
+	relayBrokerResponse(w, body, err)
+}
+
 // resolveApproverMe reads ?approver=, which the UI only ever sends as the literal string "me" —
 // it asks for the viewer's own list, never a login it names itself — and resolves it to the
 // caller's canonical login. Anything else is refused before it ever reaches the broker.
@@ -118,7 +148,7 @@ func (s *server) readRelayBody(w http.ResponseWriter, r *http.Request) (json.Raw
 		return nil, false
 	}
 	if refusal := unstorableJSON("", body); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return nil, false
 	}
 	return json.RawMessage(body), true
@@ -170,8 +200,9 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, nil)
 		return
 	}
-	body, err := s.deps.AgentSecrets.Pending(r.Context(), login)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerRead(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return s.deps.AgentSecrets.Pending(ctx, login)
+	})
 }
 
 // --- POST .../{id}/approve, .../{id}/deny, .../machine-lookup ---
@@ -194,8 +225,9 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	body, err := client.Approve(r.Context(), r.PathValue("id"), decision)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.Approve(ctx, r.PathValue("id"), decision)
+	})
 }
 
 func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
@@ -212,8 +244,9 @@ func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.Deny(r.Context(), r.PathValue("id"), decision)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.Deny(ctx, r.PathValue("id"), decision)
+	})
 }
 
 func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request) {
@@ -230,8 +263,9 @@ func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	body, err := client.MachineLookup(r.Context(), relayBody)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.MachineLookup(ctx, relayBody)
+	})
 }
 
 // --- POST .../{id}/dismiss ---
@@ -252,8 +286,9 @@ func (s *server) dismissCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	body, err := client.Dismiss(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.Dismiss(ctx, r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	})
 }
 
 // --- GET /api/v1/credential-grants, POST .../{id}/revoke ---
@@ -271,8 +306,9 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.Grants(r.Context(), login)
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerRead(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.Grants(ctx, login)
+	})
 }
 
 // revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
@@ -290,8 +326,9 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeByApprover(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.RevokeByApprover(ctx, r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	})
 }
 
 // --- GET /api/v1/machine-logins, POST .../{id}/revoke ---
@@ -310,8 +347,9 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.MachineLogins(r.Context(), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerRead(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.MachineLogins(ctx, model.CanonicalLogin(actor.ID))
+	})
 }
 
 // revokeMachineLogin ends a machine login, expired or not, and with it every session that login
@@ -330,8 +368,9 @@ func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeMachineLogin(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.RevokeMachineLogin(ctx, r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	})
 }
 
 // --- GET /api/v1/signins, POST .../{id}/revoke ---
@@ -349,8 +388,9 @@ func (s *server) listSignIns(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.SignIns(r.Context(), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerRead(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.SignIns(ctx, model.CanonicalLogin(actor.ID))
+	})
 }
 
 // revokeSignIn ends one of the caller's own sign-ins: that machine trades no token for them
@@ -368,8 +408,9 @@ func (s *server) revokeSignIn(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeSignIn(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	s.relayBrokerDecision(w, r, func(ctx context.Context) (json.RawMessage, error) {
+		return client.RevokeSignIn(ctx, r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	})
 }
 
 // --- GET /api/v1/credentials/capabilities ---
@@ -389,14 +430,28 @@ type credentialCapabilities struct {
 // getCredentialCapabilities answers that one fact. Unlike every other route here it answers for
 // a Dispatch with no broker rather than 404 FEATURE_OFF, because the question it answers is
 // exactly "what can this deployment do": a 404 would leave the page unable to tell a Dispatch
-// with no broker from a route it failed to reach.
+// with no broker from a route it failed to reach. The fact comes from memory while the client's
+// last read of the broker's metadata is fresh (cipher.Client.DeviceGrantKnown), holding the unit
+// as any read from memory does; otherwise its read is a wait on another server, so the request
+// holds no admission unit and no pinned connection across it (awayOnNetwork), and a take-back
+// refused after it is the answer.
 func (s *server) getCredentialCapabilities(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
 	capabilities := credentialCapabilities{}
-	if s.deps.AgentSecrets != nil {
-		capabilities.MachineCodePage = s.deps.AgentSecrets.ServesDeviceGrant(r.Context())
+	if secrets := s.deps.AgentSecrets; secrets != nil {
+		served, fresh := secrets.DeviceGrantKnown()
+		if !fresh {
+			if err := awayOnNetwork(r.Context(), func(ctx context.Context) error {
+				served = secrets.ServesDeviceGrant(ctx)
+				return nil
+			}); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
+		}
+		capabilities.MachineCodePage = served
 	}
 	WriteJSON(w, http.StatusOK, capabilities)
 }

@@ -36,6 +36,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -174,23 +175,23 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 	none := []statusChangeEntry{}
 	var input statusChangeInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeStatusChangeRefusal(w, err, none)
+		s.writeStatusChangeRefusal(w, r, err, none)
 		return
 	}
 	writer, err := s.requestWriter(r, input.Actor)
 	if err != nil {
-		s.writeStatusChangeRefusal(w, err, none)
+		s.writeStatusChangeRefusal(w, r, err, none)
 		return
 	}
 	change, err := parseStatusChange(input)
 	if err != nil {
-		s.writeStatusChangeRefusal(w, err, none)
+		s.writeStatusChangeRefusal(w, r, err, none)
 		return
 	}
 	ctx, key := r.Context(), r.PathValue("key")
 	resumed, err := s.resumedStatusChange(ctx)
 	if err != nil {
-		s.writeStatusChangeRefusal(w, err, none)
+		s.writeStatusChangeRefusal(w, r, err, none)
 		return
 	}
 	run := &statusChangeRun{
@@ -210,7 +211,7 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		ran, err = run.steps(ctx, plan.steps)
 	}
-	run.answer(w, ran, err)
+	run.answer(w, r, ran, err)
 }
 
 // statusChangeStep is one step of a status change's plan: the write of one issue, the option that
@@ -636,7 +637,7 @@ func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep)
 // answer, and answers changed: the entries of the point it resumed, as their steps answered them,
 // followed by ran. An attempt whose key another attempt took over sweeps nothing: the attempt that
 // holds the key sweeps instead.
-func (run *statusChangeRun) answer(w http.ResponseWriter, ran []statusChangeEntry, err error) {
+func (run *statusChangeRun) answer(w http.ResponseWriter, r *http.Request, ran []statusChangeEntry, err error) {
 	s := run.server
 	var issue model.Issue
 	if err == nil {
@@ -654,7 +655,7 @@ func (run *statusChangeRun) answer(w http.ResponseWriter, ran []statusChangeEntr
 	}
 	changed = append(changed, ran...)
 	if err != nil {
-		s.writeStatusChangeRefusal(w, err, changed)
+		s.writeStatusChangeRefusal(w, r, err, changed)
 		return
 	}
 	WriteJSON(w, http.StatusOK, statusChangeAnswer{Issue: issue, Changed: changed})
@@ -679,21 +680,24 @@ func (run *statusChangeRun) namedIssue() (model.Issue, error) {
 	return model.Issue{}, fmt.Errorf("the status change of %s ran no step of it, and its recovery point holds no entry of that step with its issue", run.key)
 }
 
-// sweep runs the ask sweep of the named issue's close (sweepClosedIssueAsks), with no transaction
-// open: of the close this attempt's own step made, with the asks it withdrew, or of the close the
-// point it resumed holds, with the ids of the asks that close withdrew, which are all the sweep
-// reads of them (sweepClosedIssueAsksTx).
+// sweep runs the ask sweep of the named issue's close, with no transaction open: of the close this
+// attempt's own step made, with the asks it withdrew, or of the close the point it resumed holds,
+// with the ids of the asks that close withdrew, which are all the sweep reads of them
+// (sweepIssueAskBlocksTx). The close's step released the writer gates of the issue's documents
+// when it returned, and the point's close was another attempt's, so the sweep takes those gates
+// itself, as the PATCH does, before its transaction opens (gateAndSweepClosedIssueAsks), on
+// run.outliving, which the client's going away does not end.
 func (run *statusChangeRun) sweep() {
 	s := run.server
 	switch {
 	case run.named.closed:
-		s.sweepClosedIssueAsks(run.outliving, run.key, run.named.withdrawn, run.writer.actor)
+		s.gateAndSweepClosedIssueAsks(run.outliving, run.key, run.named.withdrawn, run.writer.actor)
 	case run.resumed.closes(run.key):
 		withdrawn := make([]model.Ask, 0, len(run.resumed.Withdrawn))
 		for _, id := range run.resumed.Withdrawn {
 			withdrawn = append(withdrawn, model.Ask{ID: id})
 		}
-		s.sweepClosedIssueAsks(run.outliving, run.key, withdrawn, run.writer.actor)
+		s.gateAndSweepClosedIssueAsks(run.outliving, run.key, withdrawn, run.writer.actor)
 	}
 }
 
@@ -940,7 +944,15 @@ func claimedSessionName(id string) string {
 // beside the refusal: the entries of the steps that committed before it, [] when changed is nil.
 // It shapes the handler's refusals and the keyed layer's (refuseStatusChangeKey); every other
 // layer's gets changed [] (addChangedToRefusals).
-func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, changed []statusChangeEntry) {
+//
+// The error writer answers into a buffer (errorAnswer), whose {code, error} this reads back. A
+// buffer left with no body is a request the writer answered with nothing: its client went away,
+// and admission.WriteUnserved marked its access line 499 (accesslog.ClientGone), which sets no
+// status and no header on the buffer either, so nothing is written here. A body that does not
+// read back is a fault of the server's own, logged and answered 500 {code, error} as
+// writeHandlerError answers one, with changed beside it, written here and never through the error
+// writer again, so no answer of the writer's sends this round again.
+func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, r *http.Request, err error, changed []statusChangeEntry) {
 	if changed == nil {
 		changed = []statusChangeEntry{}
 	}
@@ -951,11 +963,14 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 		return
 	}
 	refused := &errorAnswer{header: http.Header{}, status: http.StatusOK}
-	s.writeAuthenticationError(refused, err)
+	s.writeAuthenticationError(refused, r, err)
+	if refused.body.Len() == 0 {
+		return
+	}
 	var body errorBody
 	if decodeErr := json.Unmarshal(refused.body.Bytes(), &body); decodeErr != nil {
-		// A server fault: writeHandlerError answers it 500 {code, error}, so it recurses once.
-		s.writeStatusChangeRefusal(w, fmt.Errorf("read the refusal of a status change: %w", decodeErr), changed)
+		slog.Error("dispatch: API handler failed", "code", codeInternal, "error", fmt.Errorf("read the refusal of a status change: %w", decodeErr))
+		WriteJSON(w, http.StatusInternalServerError, statusChangeRefusal{Code: codeInternal, Error: "internal server error", Changed: changed})
 		return
 	}
 	maps.Copy(w.Header(), refused.header)
@@ -969,13 +984,13 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 // point whatever the repeat's body; elsewhere a point is passed only once the digest matched.
 // recovery is nil where the layer read none, where the row is another request's (KEY_REUSED), and
 // where it is past its window.
-func (s *server) refuseStatusChangeKey(w http.ResponseWriter, err error, recovery json.RawMessage) {
+func (s *server) refuseStatusChangeKey(w http.ResponseWriter, r *http.Request, err error, recovery json.RawMessage) {
 	var point statusChangeRecovery
 	if recovery != nil {
 		if decodeErr := json.Unmarshal(recovery, &point); decodeErr != nil {
-			s.writeStatusChangeRefusal(w, fmt.Errorf("read the recovery point of a status change: %w", decodeErr), nil)
+			s.writeStatusChangeRefusal(w, r, fmt.Errorf("read the recovery point of a status change: %w", decodeErr), nil)
 			return
 		}
 	}
-	s.writeStatusChangeRefusal(w, err, point.Changed)
+	s.writeStatusChangeRefusal(w, r, err, point.Changed)
 }

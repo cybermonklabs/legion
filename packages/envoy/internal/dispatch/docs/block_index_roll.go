@@ -197,7 +197,12 @@ var markVersionedDocuments = `
 // document's row would hold what the settlement waits for, while the settlement held what the
 // tick waits for. A tick that fails moves nothing and the next reads the same events again; a
 // document already marked keeps its mark and its time. A document marked here is listed by the
-// owed documents this same tick reads next, and drained by it when its batch has room.
+// owed documents this same tick reads next, and drained by it when its batch has room. Its first
+// read, the event log's safe horizon (blockIndexHorizon().Safe), observes on the horizon pool, or
+// on the request pool where the horizon pool cannot open. Every statement after it runs on pool,
+// the tick's background pool (ReconcileBlockIndex), as every other statement of a tick does: no
+// request waits on them, and that pool's idle-in-transaction bound covers the transaction, which
+// waits on nothing outside the database between its statements.
 //
 // It answers what this build owes of the object pass (objectPassDebt,
 // writeObjectNodesAnotherBuildWrote), nothing where it owes none. The tick owes the pass while a
@@ -218,19 +223,19 @@ var markVersionedDocuments = `
 // first tick with a proven horizon owes the pass however recently such a pass ran: the other build
 // may have removed or made a document after it and stopped before that tick, and no event that
 // tick reads names it.
-func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTick) (full bool, debt objectPassDebt, err error) {
+func (s *Service) readEventsAfterCursor(ctx context.Context, pool *store.Pool, tick *BlockIndexTick) (full bool, debt objectPassDebt, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
 		return false, objectPassDebt{}, fmt.Errorf("read the event log's safe horizon: %w", err)
 	}
-	live, err := processes.Live(ctx, s.store.Pool)
+	live, err := processes.Live(ctx, pool)
 	if err != nil {
 		return false, objectPassDebt{}, err
 	}
 	tick.AnotherBuild = slices.ContainsFunc(live, func(process processes.Process) bool {
 		return process.Commit != s.buildCommit
 	})
-	tx, err := s.store.Pool.Begin(ctx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, objectPassDebt{}, err
 	}
@@ -406,16 +411,21 @@ type objectPassDebt struct {
 // It runs after the event read has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),
 // and each gone statement in its own, owner lock first too, so it holds no lock of the event
-// read's while it takes them. It writes at most objectPassBatches batches and states at most
+// read's while it takes them. Every statement of it, the reads of the four tables whole, each
+// batch's transaction and the sweep's, runs on pool, the tick's background pool
+// (ReconcileBlockIndex), as every other statement of a tick does: the pass is the background
+// loop's, so no request waits on its connections, and none of its transactions waits on another
+// server. It writes at most objectPassBatches batches and states at most
 // orphanedNodesSwept nodes gone a tick, and a kind that fails holds back neither the other kinds
 // nor the sweep. A pass that fails, or stops with work left, leaves the debt, which only a pass
 // that finishes clears, so no row is left without its node and no node without its row. A node
 // the sweep leaves is logged with the reason.
-func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *BlockIndexTick, debt objectPassDebt) (more bool, err error) {
+func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, pool *store.Pool, tick *BlockIndexTick, debt objectPassDebt) (more bool, err error) {
 	if !debt.owed {
 		return false, nil
 	}
-	pass, passErr := graphcensus.WriteOwedObjectNodes(ctx, s.store, objectPassBatches)
+	database := &store.Store{Pool: pool}
+	pass, passErr := graphcensus.WriteOwedObjectNodes(ctx, database, objectPassBatches)
 	tick.ObjectNodes = int(pass.Rows)
 	more = pass.More
 	if pass.Moved != nil {
@@ -424,11 +434,11 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 		slog.Error("dispatch: block index left rows whose node the store holds in another project", "error", pass.Moved)
 	}
 	failed := []error{passErr}
-	orphaned, err := graphcensus.OrphanedDocumentNodes(ctx, s.store.Pool, orphanedNodesSwept+1)
+	orphaned, err := graphcensus.OrphanedDocumentNodes(ctx, pool, orphanedNodesSwept+1)
 	failed = append(failed, err)
 	more = more || len(orphaned) > orphanedNodesSwept
 	for _, ref := range orphaned[:min(len(orphaned), orphanedNodesSwept)] {
-		switch err := graphcensus.StateOrphanedGone(ctx, s.store, ref); {
+		switch err := graphcensus.StateOrphanedGone(ctx, database, ref); {
 		case errors.Is(err, graphcensus.ErrNotOrphaned):
 			slog.Info("dispatch: block index left a document node it read as orphaned", "node", ref, "reason", err)
 		case err != nil:
@@ -449,7 +459,7 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 		return false, nil
 	}
 	s.objectPassFinished.Store(s.now().UnixNano())
-	if _, err := s.store.Pool.Exec(ctx, `
+	if _, err := pool.Exec(ctx, `
 		update block_index_event_cursors set object_nodes_owed_at = null
 		where build_commit = $1 and object_nodes_owed_at = $2
 	`, s.buildCommit, *debt.recorded); err != nil {

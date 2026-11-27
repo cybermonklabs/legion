@@ -14,22 +14,34 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // An answer holds at most contracts.DispatchEventBodyMax UTF-16 units (INFRA-370), so what
 // settlement's weighing of a returning answer turns on is the document it returns to rather
-// than the answer: boundedAnswer is an answer at that bound, and roomForOneAnswer a spec long
+// than the answer: answerAtBound is an answer at that bound, and roomForOneAnswer a spec long
 // enough that the document has room for one such answer and not for two. The headroom covers
 // the ask blocks the spec carries beside the prose and the attributes an answered block gains,
 // a few hundred bytes against the 32,000 an answer spends.
 const answerRoomHeadroom = 2000
 
-func boundedAnswer() string {
+func answerAtBound() string {
 	return strings.Repeat("word ", contracts.DispatchEventBodyMax/len("word "))
 }
 
 func roomForOneAnswer() string {
 	return strings.Repeat("word ", (pmdoc.MaxDocumentBytes-contracts.DispatchEventBodyMax-2*answerRoomHeadroom)/len("word "))
+}
+
+// statementBoundsPastTheRun serves handler with each request's commit bound and lock wait past any
+// run (store.WithCommitBoundForTest, store.WithLockWaitForTest), for a row of large documents
+// whose verdict those bounds are not: beside the other growth tests, an insert's ledger appending
+// its document's update to a document of 64,000 elements ran out production's ten seconds, and the
+// insert was answered 503 DATABASE_BUSY rather than the 200 or 413 the row reads.
+func statementBoundsPastTheRun(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(store.WithLockWaitForTest(store.WithCommitBoundForTest(r.Context(), pastTheRun), pastTheRun)))
+	})
 }
 
 // Writes add up, so a write may not leave a document's markdown past what one upload may hold, by
@@ -46,6 +58,10 @@ func roomForOneAnswer() string {
 // test makes only the two that show writes adding up: the first still fits beside the text before
 // it, and the second, no bigger, passes the bound only with the first. Each insert costs time in the
 // size of the whole document, and making the earlier ones one at a time took most of a minute.
+//
+// What the row reads is each write's answer, 200 or 413, so the bounds a loaded machine could run
+// out on a document this size first are past any run: each request's commit bound and lock wait
+// (statementBoundsPastTheRun) and a read's deadline.
 func TestRepeatedInsertsCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	t.Parallel()
 	tableSpec := "| a | b |\n| - | - |\n| A10 | b |\n"
@@ -71,7 +87,8 @@ func TestRepeatedInsertsCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T
 		{"a thousand table rows", tableSpec + strings.Repeat("| x | y |\n", 4_000), "A10", strings.Repeat("| x | y |\n", 1_000)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			handler := newTestHandler(t)
+			served, _, _ := newTestServer(t, testServerOptions{readDeadline: pastTheRun})
+			handler := statementBoundsPastTheRun(served)
 			issue := createInteractionIssue(t, handler, "TEST", "Repeated growth", test.spec)
 			const inserts = 2
 			refused := 0
@@ -282,7 +299,7 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 func TestAnAnswerTheDocumentHasNoRoomForIsKeptOnItsAskAndLeftOutOfItsBlock(t *testing.T) {
 	t.Parallel()
 	t.Run("words", func(t *testing.T) {
-		prose := boundedAnswer()
+		prose := answerAtBound()
 		handler, _ := blockAskHandler(t)
 		const asks = 3
 		issue := createInteractionIssue(t, handler, "TEST", "Answer growth", openAsksSpecWithRoomForOne(asks))
@@ -535,7 +552,7 @@ func refusedTooLarge(t *testing.T, response *httptest.ResponseRecorder) bool {
 func TestSettlementCannotGrowADocumentPastWhatOneUploadMayHoldByRestoringAnswers(t *testing.T) {
 	t.Parallel()
 	handler, _ := blockAskHandler(t)
-	prose := boundedAnswer()
+	prose := answerAtBound()
 	block := func(index int) string {
 		return fmt.Sprintf(":::ask{#ask-%d urgency=\"med\" multiple=\"false\"}\nQuestion %d?\n:::\n", index, index)
 	}
@@ -615,7 +632,7 @@ func TestSettlementGivesBackEachReturnedAnswerTheDocumentHasRoomFor(t *testing.T
 	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	prose := roomForOneAnswer()
-	answerText := boundedAnswer()
+	answerText := answerAtBound()
 	block := func(index int) string {
 		return fmt.Sprintf(":::ask{#ask-%d urgency=\"med\" multiple=\"false\"}\nQuestion %d?\n:::\n", index, index)
 	}
@@ -695,5 +712,64 @@ func TestAnchorMarksCannotGrowALiveDocumentPastWhatItsMarksMayCarry(t *testing.T
 	}
 	if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("the document's text after the refused anchors: status=%d body=%.300s", response.Code, response.Body.String())
+	}
+}
+
+// A settlement that withholds returned answers from their blocks still completes: the document
+// stops owing a settlement. Forty asks answered at the answer bound (contracts.DispatchEventBodyMax,
+// about 32 KB of prose each, 1.25 MB together) have their blocks deleted, then all return in one
+// edit; the document has no room for every answer, so settlement writes back who answered each and
+// withholds the text of those that do not fit. Its own write must not read as the document moving
+// under it: a settlement that re-reads for its own write until its re-read bound leaves the
+// document owed for good, and every later trigger does the same. (The test once answered 24 asks
+// with 900 KB each; the answer bound main has carried since #2679 refuses that, and 40 at the bound
+// are still more than the 1 MiB document can take back.)
+func TestASettlementThatWithholdsReturnedAnswersCompletes(t *testing.T) {
+	t.Parallel()
+	handler, database := blockAskHandler(t)
+	const asks = 40
+	prose := answerAtBound()
+	var spec, blocks strings.Builder
+	spec.WriteString("Before sentinel.\n")
+	for index := range asks {
+		block := fmt.Sprintf("\n:::ask{#ask-%d urgency=\"med\" multiple=\"false\"}\nQuestion %d?\n:::\n", index, index)
+		spec.WriteString(block)
+		blocks.WriteString(block)
+	}
+	issue := createInteractionIssue(t, handler, "TEST", "Returned answers", spec.String())
+	edit := func(op map[string]string) {
+		t.Helper()
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{"ops": []map[string]string{op}}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("edit %v: status=%d body=%.300s", op, response.Code, response.Body.String())
+		}
+	}
+	owed := func() bool {
+		t.Helper()
+		var owes bool
+		if err := database.Pool.QueryRow(t.Context(),
+			`select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, issue.PrimaryArtifactID,
+		).Scan(&owes); err != nil {
+			t.Fatalf("read the document's pending settlement: %v", err)
+		}
+		return owes
+	}
+	awaitSettled := func(what string) {
+		t.Helper()
+		waitUntil(t, "the document to owe no settlement after "+what, func() bool { return !owed() })
+	}
+	for index := range asks {
+		blockID := fmt.Sprintf("ask-%d", index)
+		awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, blockID, fmt.Sprintf("Question %d?", index))
+		id := blockAskID(t, handler, issue.Key, blockID)
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+id+"/answer", map[string]any{"text": prose}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("answer %s: status=%d body=%.300s", blockID, response.Code, response.Body.String())
+		}
+		edit(map[string]string{"op": "delete", "block": blockID})
+	}
+	awaitSettled("the blocks were deleted")
+	edit(map[string]string{"op": "insert", "after": "end", "markdown": blocks.String()})
+	awaitSettled("the answered blocks returned in one edit")
+	if text := documentMarkdown(t, handler, issue.PrimaryArtifactID); len(text) > 1<<20 {
+		t.Fatalf("returning the blocks left a %d-byte document, past the 1 MiB one upload may hold", len(text))
 	}
 }

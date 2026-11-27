@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 type rankInput struct {
@@ -16,8 +17,10 @@ type rankInput struct {
 	After  *string `json:"after"`
 }
 
+// lockProjectRankAllocation serialises the rank allocation of project's issues for the rest of tx.
+// Its wait is bounded as an owner lock's is (store.LockWithinBound).
 func lockProjectRankAllocation(ctx context.Context, tx pgx.Tx, project string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('issue-rank:' || $1))`, project); err != nil {
+	if err := store.LockWithinBound(ctx, tx, `select pg_advisory_xact_lock(hashtext('issue-rank:' || $1))`, project); err != nil {
 		return fmt.Errorf("lock project rank allocation: %w", err)
 	}
 	return nil

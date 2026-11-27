@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // replyForbiddenSession is the 403 REPLY_FORBIDDEN both reply routes give a session that may not
@@ -90,9 +91,12 @@ func (s *server) callerPrincipal(r *http.Request) string {
 //     no session yet has no session replaced, and asks nothing.
 //
 // It is the resolve half of the reply's listener read (envoy_resolve.go): it runs before the
-// reply's transaction opens, with nothing held, and its answer is compared with the route the
-// locked row names. An attempt pins its session once and never changes it, so a row that named
-// actor when it was read here names actor under the lock too, and no lookup is made for it.
+// reply's transaction opens, with nothing held - no connection, and no admission unit, which the
+// request gives back while the listener answers and takes back after (awayOnNetwork), so a
+// take-back refused is the reply's answer, 429 OVERLOADED, before anything was written - and its
+// answer is compared with the route the locked row names. An attempt pins its session once and
+// never changes it, so a row that named actor when it was read here names actor under the lock
+// too, and no lookup is made for it.
 //
 // Any other route, an attempt that names actor, and a listener that answers that another session
 // holds the role, or none does, or that names actor among no successors, or names it for another
@@ -109,7 +113,12 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 	}
 	switch parsed.Kind {
 	case "role":
-		holder, err := s.deps.Envoy.Role(ctx, parsed.ID)
+		holder, err := awayOnNetworkFor(ctx, func(ctx context.Context) (dispatchenvoy.Session, error) {
+			return s.deps.Envoy.Role(ctx, parsed.ID)
+		})
+		if refused := refusedTakeBack(ctx); refused != nil {
+			return verdict, refused
+		}
 		if errors.Is(err, dispatchenvoy.ErrUnavailable) {
 			return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
 				"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
@@ -119,7 +128,12 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 		if attemptSession == nil {
 			return verdict, nil
 		}
-		successors, err := s.deps.Envoy.Successors(ctx, *attemptSession)
+		successors, err := awayOnNetworkFor(ctx, func(ctx context.Context) (listenerwire.SessionSuccessors, error) {
+			return s.deps.Envoy.Successors(ctx, *attemptSession)
+		})
+		if refused := refusedTakeBack(ctx); refused != nil {
+			return verdict, refused
+		}
 		if errors.Is(err, dispatchenvoy.ErrUnavailable) {
 			return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
 				"the Envoy listener did not say which sessions replaced %s, so Dispatch cannot tell whether %s may answer this delivery: %s", *attemptSession, actor.ID, err.Error())

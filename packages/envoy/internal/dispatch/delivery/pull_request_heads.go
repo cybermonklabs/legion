@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -193,10 +194,10 @@ func markHeadNotStored(err error) error {
 // again writes the same pair and costs nothing.
 //
 // A write with nothing to pair and no event to append — an open pull request an incomplete read
-// wrote, a merge whose base branch or merge commit nobody read — runs its one statement on the
-// pool as it always did. A transaction around a single statement buys nothing and costs a round
-// trip at each end, and every caller of this function makes far more writes of that shape than
-// of the other.
+// wrote, a merge whose base branch or merge commit nobody read — runs on the pool as one batch, as
+// it always ran one statement there (upsertHeadRow). A transaction around it would buy nothing
+// and cost a round trip at each end, and every caller of this function makes far more writes of
+// that shape than of the other.
 //
 // broker is what the attribution's own events are appended through, and it may be nil: a nil
 // broker writes the row and appends nothing, so a caller that holds none hands over nothing
@@ -214,9 +215,7 @@ func markHeadNotStored(err error) error {
 // Every error this function answers is ErrHeadNotStored: nothing of the row, the seed and the
 // events was written, and the caller may write all three again.
 func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
-	seedsBranch := head.seedsBranch()
-	records := broker != nil && head.AttributionComplete
-	if !seedsBranch && !records {
+	if !head.seedsBranch() && !(broker != nil && head.AttributionComplete) {
 		_, err := upsertHeadRow(ctx, pool, head)
 		return err
 	}
@@ -224,34 +223,18 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 	if err != nil {
 		return fmt.Errorf("%w: open the write of the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
 	}
-	// The rollback runs on a context of its own, not the caller's: the caller's is cancelled
-	// exactly when the rollback matters — a webhook consumer shutting down mid-write, a results
-	// read whose browser went away — and pgx answers a rollback on a cancelled context by
-	// destroying the connection instead of returning it to the pool, which leaves a backend on
-	// the database for as long as the process lives (api/duplicates.go makes the same argument
-	// for its own read). A commit that already ran absorbs this one (store.Pool's trackedTx).
-	defer func() {
-		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
-		defer cancel()
-		_ = tx.Rollback(rollback)
-	}()
-	var left *string
-	if records {
-		if left, err = headIssueBefore(ctx, tx, head.Repo, head.Number); err != nil {
-			return err
-		}
-	}
-	applied, err := upsertHeadRow(ctx, tx, head)
+	defer rollbackHeadWrite(ctx, tx)
+	move, err := upsertHeadMoving(ctx, tx, broker, head)
 	if err != nil {
 		return err
 	}
 	var moved []model.Event
-	if records && applied && !sameText(left, head.IssueKey) {
-		if moved, err = appendAttributionChange(ctx, tx, broker, head, left); err != nil {
+	if move != nil {
+		if moved, err = appendAttributionChange(ctx, tx, broker, move.head, move.left); err != nil {
 			return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 		}
 	}
-	if seedsBranch {
+	if head.seedsBranch() {
 		if err := writeBranchCommit(ctx, tx, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
 			return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 		}
@@ -263,6 +246,41 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 		broker.Publish(event)
 	}
 	return nil
+}
+
+// rollbackHeadWrite rolls tx, a head write's transaction, back on a context of its own, not the
+// caller's: the caller's is cancelled exactly when the rollback matters - a webhook consumer
+// shutting down mid-write, a results read whose browser went away - and pgx answers a rollback on
+// a cancelled context by destroying the connection instead of returning it to the pool, which
+// leaves a backend on the database for as long as the process lives (api/duplicates.go makes the
+// same argument for its own read). A commit that already ran absorbs this one (store.Pool's
+// trackedTx).
+func rollbackHeadWrite(ctx context.Context, tx pgx.Tx) {
+	rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
+	defer cancel()
+	_ = tx.Rollback(rollback)
+}
+
+// upsertHeadMoving writes head's row in tx (upsertHeadRow), reading the row's issue under its own
+// lock first where broker records the write's attribution moves (headIssueBefore), and answers the
+// move the write made, nil for none: a write that applied and replaced the row's issue.
+func upsertHeadMoving(ctx context.Context, tx pgx.Tx, broker *events.Broker, head PullRequestHead) (*attributionMove, error) {
+	records := broker != nil && head.AttributionComplete
+	var left *string
+	if records {
+		var err error
+		if left, err = headIssueBefore(ctx, tx, head.Repo, head.Number); err != nil {
+			return nil, err
+		}
+	}
+	applied, err := upsertHeadRow(ctx, tx, head)
+	if err != nil {
+		return nil, err
+	}
+	if records && applied && !sameText(left, head.IssueKey) {
+		return &attributionMove{head: head, left: left}, nil
+	}
+	return nil, nil
 }
 
 // seedsBranch is whether writing head records its merge commit as on its base branch, for good:
@@ -316,42 +334,76 @@ type IssuePullRequestAttributionEventPayload struct {
 func appendAttributionChange(
 	ctx context.Context, tx pgx.Tx, broker *events.Broker, head PullRequestHead, left *string,
 ) ([]model.Event, error) {
-	payload := IssuePullRequestAttributionEventPayload{
-		Repo: head.Repo, Number: head.Number, URL: head.URL,
-		From: left, To: head.IssueKey, Source: head.AttributionSource,
+	return appendAttributionChanges(ctx, tx, broker, []attributionMove{{head: head, left: left}})
+}
+
+// attributionMove is one head a write moved: the head as written, and the issue its row credited
+// before, nil for nobody.
+type attributionMove struct {
+	head PullRequestHead
+	left *string
+}
+
+// appendAttributionChanges is appendAttributionChange for every move of one transaction - a
+// read-through writes several heads in one (writeReadThroughHeads) - with the owners of all of
+// them locked in one call before the first append, for the reason that function's comment gives.
+func appendAttributionChanges(ctx context.Context, tx pgx.Tx, broker *events.Broker, moves []attributionMove) ([]model.Event, error) {
+	if len(moves) == 0 {
+		return nil, nil
 	}
-	var moved []model.Event
-	for _, issue := range []*string{left, head.IssueKey} {
-		if issue == nil {
-			continue
+	var pending []model.Event
+	for _, move := range moves {
+		payload := IssuePullRequestAttributionEventPayload{
+			Repo: move.head.Repo, Number: move.head.Number, URL: move.head.URL,
+			From: move.left, To: move.head.IssueKey, Source: move.head.AttributionSource,
 		}
-		key := *issue
-		moved = append(moved, model.Event{
-			IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: payload,
-		})
+		for _, issue := range []*string{move.left, move.head.IssueKey} {
+			if issue == nil {
+				continue
+			}
+			key := *issue
+			pending = append(pending, model.Event{
+				IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: payload,
+			})
+		}
 	}
-	if err := broker.LockOwners(ctx, tx, moved...); err != nil {
-		return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
+	if err := broker.LockOwners(ctx, tx, pending...); err != nil {
+		return nil, fmt.Errorf("record the attribution of %s: %w", movedHeads(moves), err)
 	}
-	appended := make([]model.Event, 0, len(moved))
-	for _, event := range moved {
+	appended := make([]model.Event, 0, len(pending))
+	for _, event := range pending {
 		written, err := broker.Append(ctx, tx, event)
 		if err != nil {
-			return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
+			return nil, fmt.Errorf("record the attribution of %s: %w", movedHeads(moves), err)
 		}
 		appended = append(appended, written)
 	}
 	return appended, nil
 }
 
+// movedHeads names the pull requests of moves, as "owner/repo#1, owner/repo#2", for an error.
+func movedHeads(moves []attributionMove) string {
+	names := make([]string, 0, len(moves))
+	for _, move := range moves {
+		names = append(names, fmt.Sprintf("%s#%d", move.head.Repo, move.head.Number))
+	}
+	return strings.Join(names, ", ")
+}
+
 // headIssueBefore is the issue the stored row credits the pull request to, read for no key
 // update so that no other writer moves it between this read and the write that follows: the
-// "from" of the move, and nil where no row is stored yet or the row credits nobody.
+// "from" of the move, and nil where no row is stored yet or the row credits nobody. The row is
+// taken in a bounded wait first and read behind it in the same batch
+// (store.LockRowsWithinBoundAndRead): a result's read-through writes it on a request's own
+// transaction, and its other writers - the intake and the reconcile - take no lock that orders
+// them against that one.
 func headIssueBefore(ctx context.Context, tx pgx.Tx, repoFull string, number int) (*string, error) {
 	var issue *string
-	err := tx.QueryRow(ctx, `
+	err := store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from pull_request_heads where repo = $1 and number = $2 for no key update
+	`, []any{repoFull, number}, `
 		select issue_key from pull_request_heads where repo = $1 and number = $2 for no key update
-	`, repoFull, number).Scan(&issue)
+	`, []any{repoFull, number}, func(row pgx.Row) error { return row.Scan(&issue) })
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -414,10 +466,17 @@ var upsertHeadQuery = `
 	where ` + headWriteApplies
 
 // upsertHeadRow is the head row's own statement (upsertHeadQuery), which UpsertPullRequestHead's
-// doc comment explains in full: it is here, on a refs.Execer — the pool, or a transaction already
-// open on it — so that one statement runs on the pool where it is the whole write and inside the
-// transaction where the merge's branch answer, the attribution's own events, or both go with
-// it.
+// doc comment explains in full: it is here, on the pool or a transaction already open on it, so
+// that one write runs on the pool where it is the whole write and inside the transaction where
+// the merge's branch answer, the attribution's own events, or both go with it.
+//
+// The statement runs in a bounded wait (store.WriteBatch, QueueWithinBound; sent on the pool the
+// batch is a transaction of its own): the intake, the reconcile and a results read's read-through
+// each write the row taking no lock that orders them against the others, and a write has no
+// deadline, so a write behind a row another held, or behind another's uncommitted insert of the
+// same pull request, waited for as long as that holder stood. At the bound it is refused
+// store.ErrPoolBusy, as ErrHeadNotStored. A row the transaction already holds (headIssueBefore)
+// is written at once.
 //
 // It answers whether the write applied: false where the event-time guard (headWriteApplies) left
 // the row exactly as it was, which is the one way this statement writes nothing and reports no
@@ -430,20 +489,25 @@ var upsertHeadQuery = `
 // none says nothing about the merge, which never changes once made. An open row stores neither:
 // GitHub answers a merge_commit_sha for an open pull request too, its test merge (mergeCommitOf),
 // which is no merge.
-func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
+func upsertHeadRow(ctx context.Context, db store.BatchSender, head PullRequestHead) (bool, error) {
 	mergeCommit, mergedAt := "", (*time.Time)(nil)
 	if head.State == "merged" {
 		mergeCommit, mergedAt = head.MergeCommitSHA, head.MergedAt
 	}
-	tag, err := db.Exec(ctx, upsertHeadQuery,
+	var write store.WriteBatch
+	var applied bool
+	write.QueueWithinBound("", upsertHeadQuery,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
 		head.AttributionComplete, AttributionRuleVersion, mergeCommit, mergedAt,
-	)
-	if err != nil {
+	).Exec(func(tag pgconn.CommandTag) error {
+		applied = tag.RowsAffected() > 0
+		return nil
+	})
+	if err := write.Send(ctx, db); err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
 	}
-	return tag.RowsAffected() > 0, nil
+	return applied, nil
 }
 
 // upsertHeadUnderCanonicalName writes head, which every caller has already keyed by the
@@ -461,7 +525,8 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 //
 // The write comes before the delete, so a failure between them leaves two rows rather than
 // none: the next pass is handed the old row's key again and re-keys it again, while losing the
-// row would leave the pull request unknown until another event arrived.
+// row would leave the pull request unknown until another event arrived. The delete waits for the
+// old row in a bounded wait, in a batch of its own on the pool, as the write does (upsertHeadRow).
 func upsertHeadUnderCanonicalName(
 	ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead, storedUnder string,
 ) error {
@@ -471,9 +536,17 @@ func upsertHeadUnderCanonicalName(
 	if strings.EqualFold(storedUnder, head.Repo) {
 		return nil
 	}
-	if _, err := pool.Exec(ctx, `
+	return dropHeadStoredUnder(ctx, pool, storedUnder, head)
+}
+
+// dropHeadStoredUnder deletes the row head's pull request is stored under as storedUnder, another
+// name of its repository, in a bounded wait, through db: the pool or a transaction.
+func dropHeadStoredUnder(ctx context.Context, db store.BatchSender, storedUnder string, head PullRequestHead) error {
+	var drop store.WriteBatch
+	drop.QueueWithinBound("", `
 		delete from pull_request_heads where repo = $1 and number = $2
-	`, storedUnder, head.Number); err != nil {
+	`, storedUnder, head.Number)
+	if err := drop.Send(ctx, db); err != nil {
 		return fmt.Errorf("drop the head of %s#%d, now %s#%d: %w", storedUnder, head.Number, head.Repo, head.Number, err)
 	}
 	return nil
@@ -1262,12 +1335,18 @@ func listStaleHeads(ctx context.Context, pool *store.Pool, query string, args ..
 // not from a parameter, since the row the caller could not read is one the current rule has now
 // been offered: that is the same bound the refresh carries, and without it a merged row credited
 // to nobody whose pull request is gone would come back to the merged arm every pass for ever.
+//
+// The stamp runs in a bounded wait (store.WriteBatch, QueueWithinBound), as every write of a head
+// row does (upsertHeadRow): a results read's refresh of a merged row stamps it on a request, and
+// no lock orders that write against the intake's or the reconcile's write of the same row. At the
+// bound it is refused store.ErrPoolBusy and the row is left as it was, for the next read or pass.
 func MarkPullRequestHeadChecked(ctx context.Context, pool *store.Pool, repoFull string, number int, now time.Time) error {
-	_, err := pool.Exec(ctx, `
+	var stamp store.WriteBatch
+	stamp.QueueWithinBound("", `
 		update pull_request_heads set checked_at = $3, attribution_rule = $4
 		where repo = $1 and number = $2
 	`, repoFull, number, now, AttributionRuleVersion)
-	if err != nil {
+	if err := stamp.Send(ctx, pool); err != nil {
 		return fmt.Errorf("stamp the head of %s#%d: %w", repoFull, number, err)
 	}
 	return nil
@@ -1376,7 +1455,9 @@ func (a *Attributor) headAttribution(ctx context.Context, logger *slog.Logger, p
 // returned rather than swallowed, so no caller persists a weaker attribution and then stamps
 // the row read. The read given up is noted on the attempt ctx carries (githubreads), which only
 // the reconcile's leased pass carries: the intakes and the results routes call this too, and
-// their contexts carry none, so the note changes nothing there.
+// their contexts carry none, so the note changes nothing there. The read is a stretch of GitHub
+// calls the caller's request waits on (onGitHub); one whose wait failed is the error, and the
+// caller writes nothing for it.
 //
 // Its lines go to logger, the caller's: the intake passes its own (intakeTuning.log), so they
 // reach whoever reads that intake's lines; the readers below, which the reconcile and the results
@@ -1390,7 +1471,13 @@ func (a *Attributor) attributeHead(ctx context.Context, logger *slog.Logger, poo
 	if err != nil {
 		return headAttributionResult{source: string(sourceNone)}, err
 	}
-	read, _, readErr := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	var read []string
+	var readErr error
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		read, _, readErr = fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	}); refused != nil {
+		return headAttributionResult{source: string(sourceNone)}, refused
+	}
 	if readErr != nil {
 		if limited, ok := githubapp.AsRateLimit(readErr); ok {
 			return headAttributionResult{source: string(sourceNone)}, limited
@@ -1506,19 +1593,31 @@ func (a *Attributor) readPullRequestHead(
 	if err != nil {
 		return CommitPulls{}, true, err
 	}
-	token, err := client.RepositoryToken(ctx, owner, repo)
-	if err != nil {
-		if RepositoryUnreadable(err) {
-			return CommitPulls{}, true, nil
+	// The token and the pull request are one stretch of GitHub calls, which a results read's
+	// request waits on holding no admission unit (onGitHub); the reconcile, whose context carries
+	// no wait, runs it in place. A stretch whose wait failed read nothing: it stamps no row and
+	// answers that failure.
+	var token string
+	var payload pullRequestPayload
+	var mintErr, readErr error
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		if token, mintErr = client.RepositoryToken(ctx, owner, repo); mintErr == nil {
+			payload, readErr = fetchPullRequestPayload(ctx, client, token, owner, repo, number)
 		}
-		return CommitPulls{}, false, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
+	}); refused != nil {
+		return CommitPulls{}, false, refused
 	}
-	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
-	if err != nil {
-		if errors.Is(err, ErrPullRequestNotFound) || RepositoryUnreadable(err) {
+	if mintErr != nil {
+		if RepositoryUnreadable(mintErr) {
 			return CommitPulls{}, true, nil
 		}
-		return CommitPulls{}, false, err
+		return CommitPulls{}, false, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, mintErr)
+	}
+	if readErr != nil {
+		if errors.Is(readErr, ErrPullRequestNotFound) || RepositoryUnreadable(readErr) {
+			return CommitPulls{}, true, nil
+		}
+		return CommitPulls{}, false, readErr
 	}
 	attributed, err := a.attributePayload(ctx, pool, client, token, canonical, payload)
 	if err != nil {
@@ -1586,10 +1685,9 @@ func RepositoryUnreadable(err error) bool {
 // written at the head it has now, not at the commit that was asked about.
 //
 // An attribution that fails part-way leaves the rows attributed before it written, as it always
-// has, and answers its error. A write that fails stops the store and answers its error; by then
-// every pull request GitHub named has been attributed, since the read comes first, so that
-// failure can cost the commit-message reads of the pull requests after the failed row, which
-// change nothing stored.
+// has, and answers its error. The rows are written together, in one transaction
+// (StoreCommitPulls): a write that fails writes none of them, answers ErrHeadNotStored, and is
+// answered beside the failure of the read, where it had one.
 //
 // broker is the caller's own event broker, which a row this read re-attributes records its move
 // through (UpsertPullRequestHead); a caller that holds none hands over nil and the move is
@@ -1602,6 +1700,8 @@ func (a *Attributor) ReadThroughCommitPulls(
 	written, err = StoreCommitPulls(ctx, pool, broker, pulls)
 	if err == nil {
 		err = readErr
+	} else if readErr != nil {
+		err = errors.Join(readErr, err)
 	}
 	return written, pulls.AtHead, err
 }
@@ -1648,17 +1748,32 @@ type CommitPulls struct {
 // step, so this read changes nothing for either. It is here because this function's key is its
 // argument's, not its caller's, and a caller that hands over a name it has not canonicalised
 // must still have no row keyed under a name a repository was renamed away from.
+//
+// It reads GitHub first: the token and the commit's pull requests are one stretch of GitHub
+// calls, and each commit message read the attribution makes another (attributeHead), each run
+// through the caller's GitHubWait (onGitHub), with the attribution's reads of Dispatch's tables
+// between them on pooled connections each read gives back. So no transaction and no connection is
+// held while GitHub answers, and a request that gives its admission unit back for a stretch holds
+// nothing the count does not see. A first stretch that failed, its wait or its reads, answers no
+// rows. An attribution that failed, or whose stretch's wait did, answers the rows of the pull
+// requests before it with that failure, which a writer's read stores (StoreCommitPulls).
 func (a *Attributor) ReadCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, repoFull, sha string, now time.Time,
 ) (CommitPulls, error) {
 	canonical := a.canonical(repoFull)
-	owner, repo, token, err := repositoryRead(ctx, client, canonical)
-	if err != nil {
-		return CommitPulls{}, err
+	var token string
+	var payloads []pullRequestPayload
+	var read error
+	if refused := onGitHub(ctx, func(ctx context.Context) {
+		var owner, repo string
+		if owner, repo, token, read = repositoryRead(ctx, client, canonical); read == nil {
+			payloads, read = fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
+		}
+	}); refused != nil {
+		return CommitPulls{}, refused
 	}
-	payloads, err := fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
-	if err != nil {
-		return CommitPulls{}, err
+	if read != nil {
+		return CommitPulls{}, read
 	}
 	pulls := CommitPulls{storedUnder: repoFull}
 	for _, payload := range payloads {
@@ -1679,20 +1794,16 @@ func (a *Attributor) ReadCommitPulls(
 }
 
 // StoreCommitPulls is the store half of ReadThroughCommitPulls: it writes each head row pulls
-// holds, in order, under the canonical name its read keyed it by, dropping the row the same pull
-// request is kept under by the name the read was asked under where that is another
-// (upsertHeadUnderCanonicalName). Each write records its attribution move through broker and a
-// merge's branch answer with it (UpsertPullRequestHead). It answers how many rows it wrote, and
-// stops at the first write that fails.
+// holds under the canonical name its read keyed it by, dropping the row the same pull request is
+// kept under by the name the read was asked under where that is another
+// (writeReadThroughHeads). Each write records its attribution move through broker and a merge's
+// branch answer with it, as UpsertPullRequestHead writes one. It answers how many rows it wrote:
+// all of them, or none where the write failed.
 func StoreCommitPulls(ctx context.Context, pool *store.Pool, broker *events.Broker, pulls CommitPulls) (int, error) {
-	written := 0
-	for _, head := range pulls.Heads {
-		if err := upsertHeadUnderCanonicalName(ctx, pool, broker, head, pulls.storedUnder); err != nil {
-			return written, err
-		}
-		written++
+	if err := writeReadThroughHeads(ctx, pool, broker, pulls.Heads, pulls.storedUnder); err != nil {
+		return 0, err
 	}
-	return written, nil
+	return len(pulls.Heads), nil
 }
 
 // mergeLearnedOnBranch is whether StoreCommitPulls, storing the answers of the caller's request,
@@ -1707,6 +1818,58 @@ func mergeLearnedOnBranch(answers HeadAnswers, repoFull, branch, sha string) boo
 		}
 	}
 	return false
+}
+
+// writeReadThroughHeads writes a read-through's heads, each keyed by the canonical name of its
+// repository, in one transaction, as UpsertPullRequestHead writes one, dropping the row the same
+// pull request is stored under as storedUnder where that is another name
+// (upsertHeadUnderCanonicalName): first every row - under its own lock where the write may move its
+// attribution (headIssueBefore), with a merge's branch seed beside it (writeBranchCommit) and the
+// old name's row dropped after it - and then the events of every head the write moved
+// (appendAttributionChanges), their owners locked in one call before the first append, so the
+// transaction takes the rows before any owner and the owners in one order. The events are
+// published once it commits. No heads writes nothing. Every error is ErrHeadNotStored: nothing of
+// any head was written, and the caller may write them all again.
+func writeReadThroughHeads(ctx context.Context, pool *store.Pool, broker *events.Broker, heads []PullRequestHead, storedUnder string) error {
+	if len(heads) == 0 {
+		return nil
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: open the write of the heads of %s: %w", ErrHeadNotStored, heads[0].Repo, err)
+	}
+	defer rollbackHeadWrite(ctx, tx)
+	var moves []attributionMove
+	for _, head := range heads {
+		move, err := upsertHeadMoving(ctx, tx, broker, head)
+		if err != nil {
+			return err
+		}
+		if move != nil {
+			moves = append(moves, *move)
+		}
+		if head.seedsBranch() {
+			if err := writeBranchCommit(ctx, tx, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
+				return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+			}
+		}
+		if !strings.EqualFold(storedUnder, head.Repo) {
+			if err := dropHeadStoredUnder(ctx, tx, storedUnder, head); err != nil {
+				return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+			}
+		}
+	}
+	moved, err := appendAttributionChanges(ctx, tx, broker, moves)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("%w: store the heads of %s: %w", ErrHeadNotStored, heads[0].Repo, err)
+	}
+	for _, event := range moved {
+		broker.Publish(event)
+	}
+	return nil
 }
 
 // recordPullRequestHead writes the head row one `pull_request` envelope reports, whatever its

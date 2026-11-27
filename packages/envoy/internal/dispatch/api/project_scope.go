@@ -97,6 +97,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -386,7 +387,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					handler(w, r)
 					return
 				}
-				s.writeHandlerError(w, outsideProjectScopeError(covers))
+				s.writeHandlerError(w, r, outsideProjectScopeError(covers))
 			}
 		}
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -397,7 +398,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			}
 			belongsTo, private, err := resolve(r.Context(), s.deps.Store.Pool, r)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			// An object that belongs to no project, a row that is not there, or an id Postgres
@@ -406,17 +407,17 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			// caller cannot tell it from an id nobody holds. The check does not hide which ids
 			// exist, and it does not claim to (the file comment).
 			if belongsTo == "" || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, belongsTo, private) {
-				s.writeHandlerError(w, outsideProjectScopeError(covers))
+				s.writeHandlerError(w, r, outsideProjectScopeError(covers))
 				return
 			}
 			if second != nil {
 				checkProject, checkPrivate, err := second(r.Context(), s.deps.Store.Pool, r)
 				if err != nil {
-					s.writeHandlerError(w, err)
+					s.writeHandlerError(w, r, err)
 					return
 				}
 				if checkProject == "" || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, checkProject, checkPrivate) {
-					s.writeHandlerError(w, outsideProjectScopeError(covers))
+					s.writeHandlerError(w, r, outsideProjectScopeError(covers))
 					return
 				}
 			}
@@ -605,7 +606,7 @@ func writesAsItsService(credential *model.Credential) bool {
 func (s *server) undecidableWrites(routes []apiRoute) []string {
 	var undecidable []string
 	for _, route := range routes {
-		if route.Method == http.MethodGet {
+		if admission.Reads(route.Method) {
 			continue
 		}
 		name := route.Method + " " + route.Pattern

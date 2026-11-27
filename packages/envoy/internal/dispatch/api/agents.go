@@ -96,13 +96,17 @@ func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (ma
 // listAgents is readable by any authenticated caller: a session picks a target by the
 // capabilities it advertises. Sending to a session without an issue needs the person scope
 // (its route's OAuthScopes), since it writes to someone else's conversation. The list is
-// the stored copy of the listener's sessions every process shares (readRouteRoster, the
-// route_roster row), at most routeRosterTTL (5 s) old, so one listener call serves agents lists
-// and issue reads alike; a listener that did not answer answers 503 for as long as that copy is a
-// silence, a request that ends while it waits on the shared fetch answers 503 saying so, and a
-// failed read of the stored copy answers as the database's error. Once the process is shutting
-// down, a list the drain still serves asks the listener on its own request instead, since the
-// shared fetch runs on the process's lifetime and can no longer answer.
+// the stored copy of the listener's sessions every process shares (readAgentsRoster, the
+// route_roster row), at most routeRosterTTL (5 s) old and refreshed ahead of that bound apart from
+// any read, so one listener call serves agents lists and issue reads alike and no list waits on
+// it. A listener that did not answer answers 503 for as long as that copy is a silence, and a copy
+// past its bound answers 503 ENVOY_UNAVAILABLE at once, save on a process that has built no copy
+// yet: its list waits for the first fetch, within the fetch bound and holding no admission unit
+// while it waits, and answers 503 saying why when that fetch has not answered within the bound
+// or the request ends first. A failed read of the stored copy answers as the database's error.
+// Once the process is shutting down, a list the drain still serves asks the listener on its own
+// request instead, since the refresh runs on the process's lifetime and has ended, giving its unit
+// back for that call too (listRouteRosterAway).
 //
 // The copy carries the unresponsive sessions as well as the live ones, each row with its own
 // `state`, so the Agents page shows a session that missed its heartbeats as stalled rather than
@@ -117,17 +121,20 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roster, err := s.readRouteRoster(r.Context())
+	roster, err := s.readAgentsRoster(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !roster.answered && s.lifetime.Err() != nil {
-		// The process is shutting down: the shared fetch runs on its lifetime, so it has ended or
-		// failed at once, and its silence says nothing about the listener. A request the drain
+		// The process is shutting down: the refresh runs on its lifetime, so it has ended, and its
+		// silence or the copy past its bound says nothing about the listener. A request the drain
 		// still serves asks the listener on its own context instead, as every agents list did
-		// before the copy existed.
-		roster = s.listRouteRoster(r.Context())
+		// before the copy existed, holding no admission unit across that call.
+		if roster, err = s.listRouteRosterAway(r.Context()); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 	}
 	if !roster.answered {
 		// The roster's reason is the one every process reads, stored on the row beside the
@@ -138,7 +145,7 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 			writeEnvoyRefilling(w, roster.retryAfter)
 			return
 		}
-		s.writeEnvoyError(w, roster.err)
+		s.writeEnvoyError(w, r, roster.err)
 		return
 	}
 	if len(roster.sessions) == 0 {
@@ -160,12 +167,12 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	openAsks, err := s.agentOpenAskCounts(r.Context(), sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	activity, err := s.agentLastActivity(r.Context(), sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 

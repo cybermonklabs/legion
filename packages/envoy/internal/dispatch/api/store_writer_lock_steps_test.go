@@ -180,6 +180,10 @@ type storeWriter struct {
 	// projectOwner says the path's owner is its project, whose row it writes: the issue's create,
 	// which numbers the issue on it.
 	projectOwner bool
+	// backend answers, before each run, the backend the run's write runs on: nil for a write on the
+	// rig's one connection (callBackend), and the settlements pool's one free connection for a
+	// document settlement (askBlockSettle, settlementBackend).
+	backend func(t *testing.T, ctx context.Context) uint32
 }
 
 // storeWriterRun is one run of a write path.
@@ -191,7 +195,8 @@ type storeWriterRun struct {
 	made graphstore.Node
 	// answered is the comment a reply answers, and empty for every other path.
 	answered string
-	// write runs the path on the rig's one connection, to its commit, and answers how it ended.
+	// write runs the path on its writer's backend (storeWriter.backend), to its commit, and
+	// answers how it ended.
 	write func() error
 }
 
@@ -920,7 +925,11 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 		run := writer.ready(t, ctx)
 		holder, release := rig.beginHolder(t, ctx)
 		step.hold(t, ctx, holder, run)
-		backend := rig.callBackend(t, ctx)
+		backendOf := rig.callBackend
+		if writer.backend != nil {
+			backendOf = writer.backend
+		}
+		backend := backendOf(t, ctx)
 		done := make(chan error, 1)
 		go func() { done <- run.write() }()
 		rig.waitQueued(t, ctx, holder, backend, done, writer.name+" held at "+step.name)

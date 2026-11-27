@@ -55,7 +55,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/testpool"
 )
@@ -415,7 +414,7 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 	for {
 		var held bool
 		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
+			costLeaseNamespace, duty.BlockIndexLease).Scan(&held); err != nil {
 			conn.Release()
 			t.Fatalf("%s: take the block-index lease: %v", arm.name, err)
 		}
@@ -425,13 +424,13 @@ func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
 		if time.Now().After(deadline) {
 			conn.Release()
 			t.Fatalf("%s: the block-index pass held the %q lease for more than %s:\n%s",
-				arm.name, docs.BlockIndexLease, costLeaseWait, arm.server.Output.String())
+				arm.name, duty.BlockIndexLease, costLeaseWait, arm.server.Output.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return func() {
 		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
-			costLeaseNamespace, docs.BlockIndexLease); err != nil {
+			costLeaseNamespace, duty.BlockIndexLease); err != nil {
 			t.Errorf("%s: give the block-index lease back: %v", arm.name, err)
 		}
 	}

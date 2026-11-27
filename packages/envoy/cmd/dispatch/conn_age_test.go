@@ -43,7 +43,7 @@ func startConnAgeServer(t *testing.T, clock *fakeClock) *httptest.Server {
 		_, _ = io.WriteString(w, "ok")
 	})
 	server := httptest.NewUnstartedServer(nil)
-	server.Config = newHTTPServer(ok, clock.Now)
+	server.Config = newHTTPServer(ok, clock.Now, newConns())
 	server.Start()
 	t.Cleanup(server.Close)
 	return server
@@ -175,7 +175,7 @@ func TestMaxConnAgeDoesNotDisturbAnAgedHijackedWebsocket(t *testing.T) {
 		_ = socket.Close()
 	})
 	server := httptest.NewUnstartedServer(nil)
-	server.Config = newHTTPServer(handler, clock.Now)
+	server.Config = newHTTPServer(handler, clock.Now, newConns())
 	server.Start()
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { close(release) })
@@ -257,7 +257,7 @@ func TestServerClosesConnectionsAfterShutdownBegins(t *testing.T) {
 	})
 	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	server := httptest.NewUnstartedServer(nil)
-	server.Config = newHTTPServer(handler, clock.Now)
+	server.Config = newHTTPServer(handler, clock.Now, newConns())
 	server.Config.RegisterOnShutdown(func() { close(shutdownBegun) })
 	server.Start()
 	t.Cleanup(server.Close)

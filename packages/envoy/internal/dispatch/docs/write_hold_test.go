@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -34,7 +33,7 @@ func TestSnapshotReusesTheTransactionsRenderedDocument(t *testing.T) {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
-	joinedCtx, ledger := service.Join(ctx, tx)
+	joinedCtx, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	testcleanup.Add(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -80,7 +79,7 @@ func TestContentTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testing.
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
-	joinedCtx, ledger := service.Join(ctx, tx)
+	joinedCtx, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	testcleanup.Add(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -127,16 +126,16 @@ func countedService(t *testing.T) (*Service, string, *anchorQueryCounter) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	config := database.Pool.Config().Copy()
 	counter := &anchorQueryCounter{}
-	config.ConnConfig.Tracer = counter
-	counted, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatalf("open counted pool: %v", err)
-	}
-	testcleanup.Add(t, counted.Close)
+	// storetest opens the counted pool and closes it whole after the test - every pool the
+	// service opened through it included (store.Pool.Settlements, which every settlement reads
+	// and writes through). A pool left open keeps the context of the last query run on each of
+	// its connections - a settlement's, which carries the service through the ledger it joined -
+	// so the service, its rooms and their documents would stay in memory for the rest of the
+	// test binary's run.
+	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	service := New(Deps{
-		Store:  &store.Store{Pool: store.NewPool(counted)},
+		Store:  counted,
 		Events: events.NewBroker(),
 		Settle: time.Hour,
 	})
@@ -211,7 +210,7 @@ func TestAnEditRefreshesItsAnchorsOncePerTransaction(t *testing.T) {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
-	joinedCtx, ledger := service.Join(ctx, tx)
+	joinedCtx, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	testcleanup.Add(t, ledger.Discard)
 
 	counter.count.Store(0)
@@ -259,7 +258,7 @@ func TestAnEditAnnouncesEachChangedAnchorOnce(t *testing.T) {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
-	joinedCtx, ledger := service.Join(ctx, tx)
+	joinedCtx, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	testcleanup.Add(t, ledger.Discard)
 
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -372,7 +371,7 @@ func TestFormattingTheRoomGainsAfterAWritesReadIsVersionedAfterTheWrite(t *testi
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
-	joinedCtx, ledger := service.Join(ctx, tx)
+	joinedCtx, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	testcleanup.Add(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}

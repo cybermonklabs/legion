@@ -5,8 +5,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -18,7 +16,7 @@ var testLeaseCallers atomic.Uint64
 // server reserves one per caller that can be inside a lease or a hold statement at the same
 // moment (store.Pool.Leases), and a test that takes a lease or a hold is such a caller; the
 // count the server checks is the server's own wiring, so a test reserves whatever it needs.
-func Leases(t testing.TB, pool *store.Pool) *pgxpool.Pool {
+func Leases(t testing.TB, pool *store.Pool) *store.RawPool {
 	t.Helper()
 	callers, err := pool.Leases()
 	if err != nil {

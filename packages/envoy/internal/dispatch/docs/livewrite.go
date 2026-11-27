@@ -27,24 +27,32 @@ import (
 // none is armed while the write is open, and one already running writes no version
 // (settleRoom).
 //
-// Locks. A transaction takes a live document's locks in one order and holds each until it
-// commits, the slot until it publishes: the document owner's advisory lock (lockArtifactOwner,
-// store.LockOwner: its issue's, or a project document's own artifact's; several owners sorted by
-// lock key), the transaction's first lock; then the writer slot; then the copy lock
-// (lockProjectCopies) where a settlement or an answer takes one; then the document's advisory lock
-// (lockDocumentRoom, which the transaction's one read of the document takes with the head,
-// readFork). None of these is a row lock, so none gives the transaction a transaction id. The
-// owner row itself is locked only by a write - the events' lockEventOwner, `for no key update`,
-// when the transaction appends, or an update of the row - always under the owner's advisory lock,
-// so no other Dispatch writer holds it then. A joined read, which waits for the slot but writes
-// nothing, takes the owner lock alone. Postgres cannot see a wait for the slot, which is in
-// memory. Every transaction that waits for or holds it holds the owner lock first, so a
-// transaction waiting for the slot waits only for a committed write's publish, which takes no
-// database lock; and it holds no document lock while it waits, so a failed room's eviction, whose
-// compaction takes that lock, is never held up by a waiter. Durable writers outside a transaction
-// (ygo's persistence worker, compaction) take the document lock and then only the foreign-key
-// share lock on the owner row, which neither the owner's advisory lock nor the append's `for no
-// key update` blocks.
+// Locks. A live write takes its document's locks in one order and holds each until it commits,
+// the slot until it publishes. Outermost is the document's writer gate (AcquireDocumentWriter),
+// taken before the transaction opens and held until the write has published: one writer at a
+// time per document, in memory, so the writers queued for a busy document hold no connection.
+// Nothing that holds a database connection or lock waits for the gate (a caller holding a
+// connection is refused it), so no database wait can close a cycle through it. Inside the
+// transaction, the document owner's advisory lock (lockArtifactOwner, store.LockOwner: its
+// issue's, or a project document's own artifact's; several owners sorted by lock key), the
+// transaction's first lock; then the writer slot; then the copy lock (lockProjectCopies) where a
+// settlement or an answer takes one; then the document's advisory lock (lockDocumentRoom, which
+// the transaction's one read of the document takes with the head, readFork). None of these is a
+// row lock, so none gives the transaction a transaction id. The owner row itself is locked only
+// by a write - the events' lockEventOwner, `for no key update`, when the transaction appends, or
+// an update of the row - always under the owner's advisory lock, so no other Dispatch writer
+// holds it then. With the gate held, a writer's wait for the slot is only for the previous
+// writer's publish. The order agreed with INFRA-556, whose cross-process flush runs on a
+// connection of its own, is the gate, then that flush, then the transaction. A joined read,
+// which waits for the slot but writes nothing, takes the owner lock alone. Postgres cannot see a
+// wait for the gate or the slot, which are in memory. Every transaction that waits for or holds
+// the slot holds the owner lock first, so a transaction waiting for the slot waits only for a
+// committed write's publish, which takes no database lock; and it holds no document lock while
+// it waits, so a failed room's eviction, whose compaction takes that lock, is never held up by a
+// waiter. Durable writers outside a transaction (ygo's persistence worker, compaction) take the
+// document lock and then only the foreign-key share lock on the owner row, which neither the
+// owner's advisory lock nor the append's `for no key update` blocks. The gate is per process:
+// writers on two processes still meet only at the owner lock.
 //
 // A failed room. Its eviction flushes and compacts the document under the advisory lock, so a
 // transaction never waits for it (awaitRoomRecovery): an operation that meets a failed room
@@ -261,13 +269,19 @@ func joinedLiveWrite(ctx context.Context, artifactID string) *liveWrite {
 	return ledgerFrom(ctx).liveWriteFor(artifactID)
 }
 
-// joinLiveWrite returns the transaction's write to artifactID. When the transaction has no write
-// to it yet, it first has every other process holding a room of the document make that room's
-// updates durable (flushOtherRooms), then takes the document owner's lock, refuses a failed room,
-// and then takes the writer slot (see liveWrite). The read beside that lock says whether the
-// document's issue is closed, which the write keeps (liveWrite.ownerClosed) for its fork read: a
-// comment's anchor on a closed issue forks cold (closedIssueCommentMark, readFork).
+// joinLiveWrite returns the transaction's write to artifactID. It refuses a caller whose context
+// does not carry artifactID's writer gate (ErrWriterGateNotHeld), so no live write reaches the
+// writer slot without having queued for its document ahead of its transaction. When the
+// transaction has no write to it yet, it first has every other process holding a room of the
+// document make that room's updates durable (flushOtherRooms), then takes the document owner's
+// lock, refuses a failed room, and then takes the writer slot (see liveWrite). The read beside
+// that lock says whether the document's issue is closed, which the write keeps
+// (liveWrite.ownerClosed) for its fork read: a comment's anchor on a closed issue forks cold
+// (closedIssueCommentMark, readFork).
 func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, artifactID string) (*liveWrite, error) {
+	if !holdsDocumentWriter(ctx, artifactID) {
+		return nil, fmt.Errorf("%w: document %s", ErrWriterGateNotHeld, artifactID)
+	}
 	if write := ledger.liveWriteFor(artifactID); write != nil {
 		return write, nil
 	}

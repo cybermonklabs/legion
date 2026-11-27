@@ -19,17 +19,23 @@ import (
 // lookup with github.
 func appInstallationServer(t *testing.T, github http.HandlerFunc) http.Handler {
 	t.Helper()
+	handler, _, _ := newTestServer(t, appInstallationOptions(t, githubtest.Server(t, githubtest.Spec{Handle: github})))
+	return handler
+}
+
+// appInstallationOptions are the options of a Dispatch holding an App key, its GitHub at
+// githubAPIBase.
+func appInstallationOptions(t *testing.T, githubAPIBase string) testServerOptions {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	upstream := githubtest.Server(t, githubtest.Spec{Handle: github})
-	handler, _, _ := newTestServer(t, testServerOptions{
+	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream,
-	})
-	return handler
+		githubAPIBase: githubAPIBase,
+	}
 }
 
 // An agent asks whether Dispatch's App is installed on a repository: GitHub's installation is

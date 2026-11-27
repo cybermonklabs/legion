@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1288,7 +1289,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		keywordsOnly: keywordsOnly, trees: wantsDisplayTrees(r), reading: &reading, who: who}
 	response, err := s.runSearch(r.Context(), parameters)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// What search made of the words, and which filters it narrowed every leg by, for a caller
@@ -1303,11 +1304,11 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := attachItemAuthors(r.Context(), s.deps.Store.Pool, response.Results); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader.resolve()
@@ -1364,7 +1365,15 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	if parameters.keywordsOnly {
 		run = s.runFusedSearchQuery
 	} else if s.deps.Embedder != nil {
-		vector, err := s.embedQuery(ctx, parameters.text)
+		// The embedding is a wait on the model service, so the request holds no admission unit and
+		// no pinned connection across it (awayOnNetwork). A failed embedding answers by keywords
+		// alone; a take-back refused after it is the search's answer.
+		vector, err := awayOnNetworkFor(ctx, func(ctx context.Context) ([]float32, error) {
+			return s.embedQuery(ctx, parameters.text)
+		})
+		if refused := refusedTakeBack(ctx); refused != nil {
+			return model.SearchResponse{}, refused
+		}
 		if err != nil {
 			slog.Warn("dispatch search: query embedding unavailable, answering keyword-only", "error", err)
 		} else {
@@ -1775,10 +1784,11 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 }
 
 // embedQuery embeds q for meaning search (embed.InputQuery - Cohere's embed-v4 asymmetric mode
-// embeds a query differently from a stored document), bounded by searchEmbedTimeout so one
-// degraded request never holds the whole search handler open on a slow or wedged model service.
+// embeds a query differently from a stored document), bounded by searchEmbedTimeout
+// (server.searchEmbedBound in a test) so one degraded request never holds the whole search
+// handler open on a slow or wedged model service.
 func (s *server) embedQuery(ctx context.Context, q string) ([]float32, error) {
-	ctx, cancel := context.WithTimeout(ctx, searchEmbedTimeout)
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(s.searchEmbedBound, searchEmbedTimeout))
 	defer cancel()
 	vectors, err := s.deps.Embedder.Embed(ctx, []string{q}, embed.InputQuery)
 	if err != nil {

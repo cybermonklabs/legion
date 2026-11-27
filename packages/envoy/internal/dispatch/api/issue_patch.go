@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -62,12 +64,12 @@ type updateIssueInput struct {
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var input updateIssueInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	writer, err := s.requestWriter(r, input.Actor)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	written, err := s.writeIssue(r.Context(), issueWriteCall{
@@ -78,7 +80,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		adviceRoute: "PATCH /api/v1/issues/{key}",
 	})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, withAdvice(written.issue, written.advice))
@@ -94,8 +96,10 @@ type issueWriteCall struct {
 	// parses and checks them as the PATCH does.
 	fields updateIssueInput
 	// outliving is a context that does not end when the client goes away (outlivingTheClient):
-	// the close's settlement before the transaction, and its ask sweep after the commit, run on
-	// it.
+	// the close's settlement before the transaction runs on it. The close's ask sweep after the
+	// commit runs on the context that carries the write's writer gates instead, which outlives the
+	// client too (outlivingTheContext); a step whose caller sweeps later leaves it to that caller
+	// (issueWriteCallStep.sweepsLater).
 	outliving context.Context
 	// adviceRoute is the route that the write's advice names (writeAdviceBefore).
 	adviceRoute string
@@ -305,6 +309,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
 		}
 	}
+	// A link's URL syntax is the request's own; refusing it here keeps a write that can never land
+	// out of the documents' writer gates below.
+	if input.ExternalLinks != nil {
+		for _, link := range *input.ExternalLinks {
+			if err := validateExternalURL(link.URL); err != nil {
+				return issueWriteResult{}, err
+			}
+		}
+	}
 
 	key := call.key
 	parentKey := ""
@@ -352,11 +365,291 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		// lock.
 		s.settleIssueBeforeClose(call.outliving, key)
 	}
-	tx, err := s.begin(ctx)
+	step := call.step
+	// issueWriteOpened is the write's open transaction, holding the owner lock of every issue it
+	// names, the issue as that transaction read it and what the write reads beside it under those
+	// locks: whether this write closes or reopens the issue, where its parent stands after it, the
+	// labels it leaves (labelsAfter, nil for a write of no labels or a merge past the cap), the
+	// priority ids the issue advanced as that read found them (heldAdvances, set only when the
+	// write carries advances), and, for a step of a status change, the sequence of the issue the
+	// call names, the words of the call's comment and what a step of an option moves. left is that
+	// a step found the issue as it stands: the write writes nothing and its transaction rolls back.
+	type issueWriteOpened struct {
+		tx                           pgx.Tx
+		before                       model.Issue
+		left                         bool
+		closing, reopening           bool
+		afterParent                  *string
+		statusChanged, parentChanged bool
+		labelsAfter                  *[]string
+		heldAdvances                 []string
+		namedLastSeq                 int
+		holdsNamed                   bool
+		commentBody                  string
+		moved                        *statusChangeMove
+	}
+	// labels_add merges into the labels the issue holds under its owner lock. The merge is made
+	// in openWrite, so the rule's plan holds the labels the write leaves, and a merge past the cap
+	// is refused where the row's columns are set, below, so the refusals keep their order.
+	var labelsMerged error
+	// openWrite locks the rows the write names, reads the issue under them, and refuses what only
+	// those rows can decide: a stale expected_sequence or fence, an invalid parent, a closed
+	// issue, a write R26's status guard or the parent status rule refuses (refuseIssueWritePlan,
+	// which judges every write), an acceptance write over an open child of another project
+	// (refuseOpenForeignChildren), a write of an issue Legion runs that the check of who writes it
+	// refuses (refuseSpecWriterOfIssueWrite), an advances write the revision rule refuses, and
+	// documents other than the ones gated. The caller rolls tx back on every refusal.
+	openWrite := func(ctx context.Context, tx pgx.Tx, gated []string) (issueWriteOpened, error) {
+		// A write that asks for the open-child check of an acceptance is a dependency write too:
+		// the check and the status it guards run under the deployment dependency lock that every
+		// create with a parent and every reparent takes, so no child is filed between the two.
+		dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
+		// The lock step below reads each target's and the parent's project again, and asks
+		// access.CredentialCovers about each of another project before any lock is taken
+		// (lockIssueDependencyWrite).
+		if dependencyWrite || input.Rank != nil {
+			var project string
+			if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
+				return issueWriteOpened{}, err
+			}
+			if dependencyWrite {
+				if err := lockIssueDependencyWrite(ctx, tx, project, callerProject, blockers, parentKey); err != nil {
+					return issueWriteOpened{}, err
+				}
+			}
+			if input.Rank != nil {
+				if err := lockProjectRankAllocation(ctx, tx, project); err != nil {
+					return issueWriteOpened{}, err
+				}
+			}
+		}
+
+		// A PATCH takes the owner lock of every issue it names in one lock order before it reads
+		// any of them: the issue, its current parent when a status change or a reparent appends to
+		// it, the proposed parent and the rank neighbours (lockPatchOwners,
+		// lockPatchOwnersAndParent). It never holds one of those locks while waiting for another
+		// that a second write holds. Validation, the dependency walk and the rank reads below are
+		// plain reads of issues whose locks it holds.
+		named := make([]string, 0, 3)
+		if parent != nil {
+			named = append(named, *parent)
+		}
+		if input.Rank != nil {
+			// Each neighbour is trimmed once, here, so the key the lock below takes is the key
+			// rankForInput reads.
+			if input.Rank.After != nil {
+				*input.Rank.After = strings.TrimSpace(*input.Rank.After)
+				named = append(named, *input.Rank.After)
+			}
+			if input.Rank.Before != nil {
+				*input.Rank.Before = strings.TrimSpace(*input.Rank.Before)
+				named = append(named, *input.Rank.Before)
+			}
+		}
+		// A fenced step of a status change locks the issue the call names beside its own, in the
+		// same one lock order, and decides the fence first, before every other answer of the step.
+		if step != nil && step.fence != nil {
+			named = append(named, step.named)
+		}
+		lock := lockPatchOwners
+		if input.Status != nil || parentProvided {
+			lock = lockPatchOwnersAndParent
+		}
+		if err := lock(ctx, tx, key, named...); err != nil {
+			return issueWriteOpened{}, err
+		}
+		if step != nil && step.fence != nil {
+			if err := step.fence.refuseForeignEvents(ctx, tx, step.named); err != nil {
+				return issueWriteOpened{}, err
+			}
+		}
+		before, err := s.loadIssue(ctx, tx, key)
+		if err != nil {
+			return issueWriteOpened{}, err
+		}
+		// The p0 check (p0_scope.go) is the first refusal that reads the issue: a write that makes
+		// its own priority 0 without the scope is refused before the sequence, the parent and the
+		// closed issue are, so a credential without p0 meets this refusal and no other. before.Priority
+		// is the issue's own column, never a priority its parent has.
+		if err := refuseP0WithoutScope(call.writer.credential, priority, before.Priority); err != nil {
+			return issueWriteOpened{}, err
+		}
+		if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
+			return issueWriteOpened{}, errIssueChanged()
+		}
+		// A step of a status change decides here, from the issue as it reads it under its own
+		// lock, whether it writes at all. A step that leaves the issue as it stands rolls back.
+		if step != nil && step.leaves != nil && step.leaves(before) {
+			return issueWriteOpened{tx: tx, before: before, left: true}, nil
+		}
+		// A fenced step, or a step of a keyed call, that holds the owner lock of the issue the
+		// call names reads back, in its write phase, every event it appends there after the
+		// last_seq it reads here: the named issue's own step, a fenced step, and the step of a
+		// direct child, whose parent lockPatchOwnersAndParent locked. The read is a plain one,
+		// before the first write. A step of an unfenced call with no request key reads none,
+		// since nothing reads those events.
+		namedLastSeq, holdsNamed := 0, false
+		if step != nil {
+			switch {
+			case step.fence == nil && step.claim == nil:
+			case step.named == key:
+				namedLastSeq, holdsNamed = before.LastSeq, true
+			case step.fence != nil || (before.Parent != nil && *before.Parent == step.named):
+				if err := tx.QueryRow(ctx, `select last_seq from issues where key = $1`, step.named).Scan(&namedLastSeq); err != nil {
+					return issueWriteOpened{}, err
+				}
+				holdsNamed = true
+			}
+		}
+		// The call's comment is worded from the issue as the write reads it under its owner lock,
+		// and so is what a step of an option changes.
+		var commentBody string
+		if call.comment != nil {
+			commentBody = call.comment.words(before)
+		}
+		var moved *statusChangeMove
+		if step != nil && step.moved != nil {
+			move := step.moved(before)
+			moved = &move
+		}
+		if parentProvided && parent != nil {
+			if err := validateIssueParent(ctx, tx, key, callerProject, *parent); err != nil {
+				return issueWriteOpened{}, err
+			}
+		}
+		closing := closes && before.ClosedAt == nil
+		reopening := input.Status != nil && !closes && before.ClosedAt != nil
+		if before.ClosedAt != nil {
+			// A closed issue takes only its rank (board order), its component attachment
+			// (classified without reopening), and an external_links write that adds no URL the
+			// issue does not already have (so a link can move to the issue that replaced it; a
+			// same-set resend or a kept URL's retyped kind rewrites the rows and emits
+			// issue.updated the same as any other accepted write here, it just adds nothing new)
+			// — alone or beside a reopening status; every other field, its repository included,
+			// and closing it again, waits for a reopen.
+			addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
+			others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
+			if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
+				return issueWriteOpened{}, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+			}
+		}
+		if input.LabelsAdd != nil {
+			labels, labelsMerged = mergeIssueLabels(before.Labels, labelsAdd)
+		}
+		afterParent := before.Parent
+		if parentProvided {
+			afterParent = parent
+		}
+		statusChanged := input.Status != nil && before.Status != status
+		parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
+		var labelsAfter *[]string
+		if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
+			labelsAfter = &labels
+		}
+		var statusAfter *string
+		if input.Status != nil {
+			statusAfter = &status
+		}
+		// The status guard judges every write, including a same-status write or a label edit.
+		// It runs before the parent-status rule, even when that rule is off.
+		plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
+		plan.unjudged = !s.deps.ParentStatusRule.On()
+		if step != nil {
+			plan.options = step.options
+		}
+		conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
+		if err != nil {
+			return issueWriteOpened{}, err
+		}
+		if conflict != nil {
+			return issueWriteOpened{}, conflict
+		}
+		if input.RefuseOpenForeignChildren {
+			// An open child of another project refuses the acceptance with 409
+			// FOREIGN_CHILD_OPEN, which writeHandlerError answers with the children it names that
+			// the caller sees.
+			if err := refuseOpenForeignChildren(ctx, tx, key, before.Project, callerProject); err != nil {
+				return issueWriteOpened{}, err
+			}
+		}
+		// The check of who writes an issue Legion runs (spec_writer.go): a move under a parent, a
+		// close, a reopen, and a write of the labels or the parent that takes the issue out of
+		// Legion. It runs here, under the owner locks and after the write's other refusals, and
+		// before the close's and the reopen's document work and the row update, so a refused write
+		// writes none of its fields.
+		if err := refuseSpecWriterOfIssueWrite(ctx, tx, call.writer.specWriter(), plan.steps[0]); err != nil {
+			return issueWriteOpened{}, err
+		}
+		// The `advances` revision rule is decided here, beside the other refusals of this handler
+		// and before the first row is written: a refused write leaves the issue exactly as it was.
+		// The held set and the revision are the issue as this write read it under its owner lock,
+		// which every writer of the issue's own relations takes (an issue create and an issue
+		// patch: writeIssueAdvances), so two writes of one issue decide the rule one after the
+		// other rather than together. Its read is a plain one, so the rule holds no transaction id.
+		var heldAdvances []string
+		if input.Advances != nil {
+			heldAdvances = ownAdvances(before.Advances)
+			if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
+				return issueWriteOpened{}, err
+			}
+		}
+		if closing || reopening {
+			// The documents the close or reopen writes, named under the issue's owner lock, where
+			// they cannot move: ones other than those gated - a document added, or the status
+			// moved, since the gates were taken - leave this attempt to be gated again
+			// (gatedWrite).
+			documents, err := issueDocuments(ctx, tx, key)
+			if err != nil {
+				return issueWriteOpened{}, err
+			}
+			if !sameDocuments(gated, documents) {
+				return issueWriteOpened{}, errDocumentsMoved
+			}
+		}
+		return issueWriteOpened{
+			tx: tx, before: before, closing: closing, reopening: reopening, afterParent: afterParent,
+			statusChanged: statusChanged, parentChanged: parentChanged, labelsAfter: labelsAfter,
+			heldAdvances: heldAdvances, namedLastSeq: namedLastSeq, holdsNamed: holdsNamed,
+			commentBody: commentBody, moved: moved,
+		}, nil
+	}
+	// A close withdraws the issue's open asks and a reopen restores them, writing their blocks into
+	// the issue's documents, so a status move that would close or reopen the issue queues for every
+	// one's writer gate before its transaction opens; under the issue's owner lock it names them
+	// again, and documents that moved in between are gated once more (gatedWrite).
+	opened, gatedCtx, release, err := gatedWrite(ctx, s.deps.Docs,
+		func(ctx context.Context) ([]string, error) {
+			if input.Status == nil {
+				return nil, nil
+			}
+			return s.issueStatusDocuments(ctx, key, closes)
+		},
+		func(ctx context.Context, gated []string) (issueWriteOpened, error) {
+			tx, err := s.begin(ctx)
+			if err != nil {
+				return issueWriteOpened{}, err
+			}
+			write, err := openWrite(ctx, tx, gated)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return issueWriteOpened{}, err
+			}
+			return write, nil
+		})
 	if err != nil {
 		return issueWriteResult{}, err
 	}
+	// The gates end once this write has committed, published and swept (sweepClosedIssueAsks
+	// writes the same documents, so it runs under them); the defer is the release of every path.
+	defer release()
+	ctx = gatedCtx
+	tx, before, closing, reopening := opened.tx, opened.before, opened.closing, opened.reopening
 	defer tx.Rollback(ctx)
+	if opened.left {
+		return issueWriteResult{issue: before, previousLastSeq: before.LastSeq}, nil
+	}
+	afterParent, statusChanged, parentChanged, heldAdvances := opened.afterParent, opened.statusChanged, opened.parentChanged, opened.heldAdvances
+	labelsAfter, namedLastSeq, holdsNamed, commentBody, moved := opened.labelsAfter, opened.namedLastSeq, opened.holdsNamed, opened.commentBody, opened.moved
 	// A close withdraws the issue's open asks and a reopen restores them, writing their blocks
 	// into the issue's documents, which reach their rooms through the ledger's commit. That
 	// document work runs before the patch's first write, holding no transaction id (INFRA-636); its
@@ -365,202 +658,6 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// it (a component or blocker refusal, a taken external link).
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
-
-	// A write that asks for the open-child check of an acceptance is a dependency write too: the
-	// check and the status it guards run under the deployment dependency lock that every create
-	// with a parent and every reparent takes, so no child is filed between the two.
-	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
-	// The lock step below reads each target's and the parent's project again, and asks
-	// access.CredentialCovers about each of another project before any lock is taken
-	// (lockIssueDependencyWrite).
-	if dependencyWrite || input.Rank != nil {
-		var project string
-		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
-			return issueWriteResult{}, err
-		}
-		if dependencyWrite {
-			if err := lockIssueDependencyWrite(ctx, tx, project, callerProject, blockers, parentKey); err != nil {
-				return issueWriteResult{}, err
-			}
-		}
-		if input.Rank != nil {
-			if err := lockProjectRankAllocation(ctx, tx, project); err != nil {
-				return issueWriteResult{}, err
-			}
-		}
-	}
-
-	// A PATCH takes the owner lock of every issue it names in one lock order before it reads any
-	// of them: the issue, its current parent when a status change or a reparent appends to it, the
-	// proposed parent and the rank neighbours (lockPatchOwners, lockPatchOwnersAndParent). It never
-	// holds one of those locks while waiting for another that a second write holds. Validation, the
-	// dependency walk and the rank reads below are plain reads of issues whose locks it holds.
-	named := make([]string, 0, 3)
-	if parent != nil {
-		named = append(named, *parent)
-	}
-	if input.Rank != nil {
-		// Each neighbour is trimmed once, here, so the key the lock below takes is the key
-		// rankForInput reads.
-		if input.Rank.After != nil {
-			*input.Rank.After = strings.TrimSpace(*input.Rank.After)
-			named = append(named, *input.Rank.After)
-		}
-		if input.Rank.Before != nil {
-			*input.Rank.Before = strings.TrimSpace(*input.Rank.Before)
-			named = append(named, *input.Rank.Before)
-		}
-	}
-	// A fenced step of a status change locks the issue the call names beside its own, in the same
-	// one lock order, and decides the fence first, before every other answer of the step.
-	step := call.step
-	if step != nil && step.fence != nil {
-		named = append(named, step.named)
-	}
-	lock := lockPatchOwners
-	if input.Status != nil || parentProvided {
-		lock = lockPatchOwnersAndParent
-	}
-	if err := lock(ctx, tx, key, named...); err != nil {
-		return issueWriteResult{}, err
-	}
-	if step != nil && step.fence != nil {
-		if err := step.fence.refuseForeignEvents(ctx, tx, step.named); err != nil {
-			return issueWriteResult{}, err
-		}
-	}
-	before, err := s.loadIssue(ctx, tx, key)
-	if err != nil {
-		return issueWriteResult{}, err
-	}
-	// The p0 check (p0_scope.go) is the first refusal that reads the issue: a write that makes
-	// its own priority 0 without the scope is refused before the sequence, the parent and the
-	// closed issue are, so a credential without p0 meets this refusal and no other. before.Priority
-	// is the issue's own column, never a priority its parent has.
-	if err := refuseP0WithoutScope(call.writer.credential, priority, before.Priority); err != nil {
-		return issueWriteResult{}, err
-	}
-	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
-		return issueWriteResult{}, errIssueChanged()
-	}
-	// A step of a status change decides here, from the issue as it reads it under its own lock,
-	// whether it writes at all. A step that leaves the issue as it stands rolls back.
-	if step != nil && step.leaves != nil && step.leaves(before) {
-		return issueWriteResult{issue: before, previousLastSeq: before.LastSeq}, nil
-	}
-	// A fenced step, or a step of a keyed call, that holds the owner lock of the issue the call
-	// names reads back, in its write phase, every event it appends there after the last_seq it
-	// reads here: the named issue's own step, a fenced step, and the step of a direct child, whose
-	// parent lockPatchOwnersAndParent locked. The read is a plain one, before the first write. A
-	// step of an unfenced call with no request key reads none, since nothing reads those events.
-	namedLastSeq, holdsNamed := 0, false
-	if step != nil {
-		switch {
-		case step.fence == nil && step.claim == nil:
-		case step.named == key:
-			namedLastSeq, holdsNamed = before.LastSeq, true
-		case step.fence != nil || (before.Parent != nil && *before.Parent == step.named):
-			if err := tx.QueryRow(ctx, `select last_seq from issues where key = $1`, step.named).Scan(&namedLastSeq); err != nil {
-				return issueWriteResult{}, err
-			}
-			holdsNamed = true
-		}
-	}
-	// The call's comment is worded from the issue as the write reads it under its owner lock, and
-	// so is what a step of an option changes.
-	var commentBody string
-	if call.comment != nil {
-		commentBody = call.comment.words(before)
-	}
-	var moved *statusChangeMove
-	if step != nil && step.moved != nil {
-		move := step.moved(before)
-		moved = &move
-	}
-	if parentProvided && parent != nil {
-		if err := validateIssueParent(ctx, tx, key, callerProject, *parent); err != nil {
-			return issueWriteResult{}, err
-		}
-	}
-	closing := closes && before.ClosedAt == nil
-	reopening := input.Status != nil && !closes && before.ClosedAt != nil
-	if before.ClosedAt != nil {
-		// A closed issue takes only its rank (board order), its component attachment
-		// (classified without reopening), and an external_links write that adds no URL the issue
-		// does not already have (so a link can move to the issue that replaced it; a same-set
-		// resend or a kept URL's retyped kind rewrites the rows and emits issue.updated the same
-		// as any other accepted write here, it just adds nothing new) — alone or beside a
-		// reopening status; every other field, its repository included, and closing it again,
-		// waits for a reopen.
-		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
-		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
-		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
-			return issueWriteResult{}, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
-		}
-	}
-	// labels_add merges into the labels the issue holds under its owner lock. The merge is made
-	// here, so the rule's plan below holds the labels the write leaves, and a merge past the cap
-	// is refused where the row's columns are set, below, so the refusals keep their order.
-	var labelsMerged error
-	if input.LabelsAdd != nil {
-		labels, labelsMerged = mergeIssueLabels(before.Labels, labelsAdd)
-	}
-	afterParent := before.Parent
-	if parentProvided {
-		afterParent = parent
-	}
-	statusChanged := input.Status != nil && before.Status != status
-	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
-	var labelsAfter *[]string
-	if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
-		labelsAfter = &labels
-	}
-	var statusAfter *string
-	if input.Status != nil {
-		statusAfter = &status
-	}
-	// The status guard judges every write, including a same-status write or a label edit.
-	// It runs before the parent-status rule, even when that rule is off.
-	plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
-	plan.unjudged = !s.deps.ParentStatusRule.On()
-	if step != nil {
-		plan.options = step.options
-	}
-	conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
-	if err != nil {
-		return issueWriteResult{}, err
-	}
-	if conflict != nil {
-		return issueWriteResult{}, conflict
-	}
-	if input.RefuseOpenForeignChildren {
-		// An open child of another project refuses the acceptance with 409 FOREIGN_CHILD_OPEN,
-		// which writeHandlerError answers with the children it names that the caller sees.
-		if err := refuseOpenForeignChildren(ctx, tx, key, before.Project, callerProject); err != nil {
-			return issueWriteResult{}, err
-		}
-	}
-	// The check of who writes an issue Legion runs (spec_writer.go): a move under a parent, a
-	// close, a reopen, and a write of the labels or the parent that takes the issue out of
-	// Legion. It runs here, under the owner locks and after the write's other refusals, and
-	// before the close's and the reopen's document work and the row update, so a refused write
-	// writes none of its fields.
-	if err := refuseSpecWriterOfIssueWrite(ctx, tx, call.writer.specWriter(), plan.steps[0]); err != nil {
-		return issueWriteResult{}, err
-	}
-	// The `advances` revision rule is decided here, beside the other refusals of this handler
-	// and before the first row is written: a refused write leaves the issue exactly as it was.
-	// The held set and the revision are the issue as this write read it under its owner lock,
-	// which every writer of the issue's own relations takes (an issue create and an issue patch:
-	// writeIssueAdvances), so two writes of one issue decide the rule one after the other rather
-	// than together. Its read is a plain one, so the rule holds no transaction id.
-	var heldAdvances []string
-	if input.Advances != nil {
-		heldAdvances = ownAdvances(before.Advances)
-		if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
-			return issueWriteResult{}, err
-		}
-	}
 	// The default assignee of the issue's project, for an assignee move that leaves one side
 	// holding nobody: a question on an issue nobody holds reaches its project's default, the
 	// chain's last step (askedOfPersonExpression), so that side of the move names the default
@@ -679,10 +776,23 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if labelsAfter != nil {
 		afterRow.labels = *labelsAfter
 	}
-	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
+	advice, err := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),
 		opened:   askIDs(reopenedAsks),
 	})
+	if err != nil {
+		return issueWriteResult{}, err
+	}
+	// The external links' owners are read here, before the first write, in one statement: a URL
+	// another issue holds, or one the request names twice, is refused before the transaction takes
+	// its id, and the write phase rewrites the links in one round trip (writeExternalLinks) rather
+	// than a read and an insert per link after its first write gave it the id, which held that id
+	// about 900 ms for twenty links on production's database (dispatch://INFRA-49, 2026-11-26).
+	if input.ExternalLinks != nil {
+		if err := refuseTakenExternalLinks(ctx, tx, key, *input.ExternalLinks); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	// The write phase: the statements from here on run back to back.
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
@@ -730,34 +840,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 
 	if input.ExternalLinks != nil {
-		if _, err := tx.Exec(ctx, `delete from issue_external_links where issue_key = $1`, key); err != nil {
+		if err := writeExternalLinks(ctx, tx, key, *input.ExternalLinks); err != nil {
 			return issueWriteResult{}, err
-		}
-		for _, link := range *input.ExternalLinks {
-			if err := validateExternalURL(link.URL); err != nil {
-				return issueWriteResult{}, err
-			}
-			kind := link.Kind
-			if kind == "" {
-				kind = "url"
-			}
-			// A URL links exactly one issue (issue_external_links_url). This issue's own
-			// links are already deleted above, so an owner found here is another issue
-			// (or the same URL repeated earlier in this request).
-			var owner string
-			err := tx.QueryRow(ctx, `select issue_key from issue_external_links where url = $1`, link.URL).Scan(&owner)
-			if err == nil {
-				return issueWriteResult{}, errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from %s", link.URL, owner)
-			}
-			if !errors.Is(err, pgx.ErrNoRows) {
-				return issueWriteResult{}, err
-			}
-			if _, err := tx.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, $3)`, key, link.URL, kind); err != nil {
-				if isUniqueViolation(err) {
-					return issueWriteResult{}, errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from another issue", link.URL)
-				}
-				return issueWriteResult{}, err
-			}
 		}
 		changed = true
 	}
@@ -988,10 +1072,12 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if closing && (step == nil || !step.sweepsLater) {
 		// The commit's notification closes the issue's rooms on every process; the sweep catches
 		// the ask blocks written since the close forked each document (sweepClosedIssueAsks).
-		// It runs after the publish so every event reaches subscribers in commit order. A step of
-		// a status change that sweeps later leaves it to its caller, which runs it after the
-		// call's last step with the asks this answers.
-		s.sweepClosedIssueAsks(call.outliving, key, withdrawn, actor)
+		// It runs after the publish so every event reaches subscribers in commit order, and under
+		// the writer gates this write holds, which only the gated context carries
+		// (outlivingTheContext of it, as the client's going away must not end it). A step of a
+		// status change that sweeps later leaves it to its caller, which runs it after the call's
+		// last step with the asks this answers.
+		s.sweepClosedIssueAsks(outlivingTheContext(ctx), key, withdrawn, actor)
 	}
 	return issueWriteResult{
 		issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
@@ -1044,4 +1130,83 @@ func isExternalLinksSubset(requested, existing []model.ExternalLink) bool {
 		}
 	}
 	return true
+}
+
+// refuseTakenExternalLinks refuses links where a URL of them is held by another issue or named
+// twice, 409 EXTERNAL_LINK_TAKEN naming the URL and the issue that holds it, the first such link
+// in the request's order: a URL links exactly one issue (issue_external_links_url), and a URL the
+// request names a second time is one this issue would already hold. key's own links are left out
+// of the read, since the patch replaces them. It is one statement of the patch's read phase, so
+// the write phase holds no read per link (writeExternalLinks).
+func refuseTakenExternalLinks(ctx context.Context, tx pgx.Tx, key string, links []model.ExternalLink) error {
+	urls := make([]string, len(links))
+	for index, link := range links {
+		urls[index] = link.URL
+	}
+	rows, err := tx.Query(ctx, `select url, issue_key from issue_external_links where url = any($1) and issue_key <> $2`, urls, key)
+	if err != nil {
+		return err
+	}
+	owners := make(map[string]string, len(links))
+	var url, owner string
+	if _, err := pgx.ForEachRow(rows, []any{&url, &owner}, func() error {
+		owners[url] = owner
+		return nil
+	}); err != nil {
+		return err
+	}
+	named := make(map[string]bool, len(links))
+	for _, link := range links {
+		if owner, taken := owners[link.URL]; taken {
+			return errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from %s", link.URL, owner)
+		}
+		if named[link.URL] {
+			return errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from %s", link.URL, key)
+		}
+		named[link.URL] = true
+	}
+	return nil
+}
+
+// writeExternalLinks replaces key's external links with links in one round trip: the delete of
+// the links it holds and one insert of every link it names, on a batch of their own
+// (store.WriteBatch), so nothing of this process comes between the statements while the
+// transaction holds its id. refuseTakenExternalLinks refused a URL another issue held before the
+// first write; one another issue took since is the unique index's refusal
+// (issue_external_links_url), answered 409 EXTERNAL_LINK_TAKEN naming the URL.
+func writeExternalLinks(ctx context.Context, tx pgx.Tx, key string, links []model.ExternalLink) error {
+	urls := make([]string, len(links))
+	kinds := make([]string, len(links))
+	for index, link := range links {
+		urls[index] = link.URL
+		kinds[index] = cmp.Or(link.Kind, "url")
+	}
+	var write store.WriteBatch
+	write.Queue("", `delete from issue_external_links where issue_key = $1`, key)
+	if len(links) > 0 {
+		write.Queue("", `
+			insert into issue_external_links (issue_key, url, kind)
+			select $1, link.url, link.kind from unnest($2::text[], $3::text[]) as link(url, kind)
+		`, key, urls, kinds)
+	}
+	err := write.Send(ctx, tx)
+	if isUniqueViolation(err) {
+		return errorf(http.StatusConflict, "EXTERNAL_LINK_TAKEN", "%s is already linked from another issue", takenExternalLink(err, urls))
+	}
+	return err
+}
+
+// takenExternalLink is the URL whose insert err, a unique violation of issue_external_links_url,
+// refused: the one its detail names ("Key (url)=(<url>) already exists."), else the request's
+// URLs joined, where Postgres names none.
+func takenExternalLink(err error, urls []string) string {
+	var pgError *pgconn.PgError
+	if errors.As(err, &pgError) {
+		if url, found := strings.CutPrefix(pgError.Detail, "Key (url)=("); found {
+			if url, found = strings.CutSuffix(url, ") already exists."); found {
+				return url
+			}
+		}
+	}
+	return strings.Join(urls, ", ")
 }

@@ -57,7 +57,9 @@ func rowWait(t *testing.T) time.Duration {
 // fleetProcess writes the server_processes row of another server process straight into the
 // registry: one that reads schema version, creates up to creatable and registers owner lock
 // protocol ownerLockProtocol, whose last heartbeat is age before the database's now(). A version
-// of 0 is the row of a build that predates the fleet columns.
+// of 0 is the row of a build that predates the fleet columns. The service forgets the read of the
+// fleet its sockets share (fleetCache.forget), so the next socket's admission reads the fleet this
+// row changed, as it would once that answer's second had passed.
 //
 // The owner lock protocol is the row's build's, as it registers it: store.OwnerLockProtocol for
 // this build and every build after it (processes.admit), and 0, the column's default, for a build
@@ -68,12 +70,17 @@ func rowWait(t *testing.T) time.Duration {
 // wait in a test where no such build waits.
 func fleetProcess(t *testing.T, service *Service, version, creatable, ownerLockProtocol int, age time.Duration) {
 	t.Helper()
-	if _, err := service.store.Pool.Exec(context.Background(), `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, owner_lock_protocol, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, $3, now() - make_interval(secs => $4))`,
-		version, creatable, ownerLockProtocol, age.Seconds()); err != nil {
-		t.Fatalf("add a server process reading schema version %d: %v", version, err)
-	}
+	registerFleetProcess(t, service, version, creatable, ownerLockProtocol, age)
+	service.fleets.forget()
+}
+
+// forget drops the read of the live server processes the cache keeps, as a test that changes the
+// fleet under a running service needs: without it a socket admitted within the second of an
+// earlier one would take that one's fleet.
+func (c *fleetCache) forget() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = false
 }
 
 // The row of the build after this one goes in while a transaction of this build holds an owner
@@ -236,10 +243,10 @@ func tokenWritable(t *testing.T, connection *gws.Conn, artifactID, token string)
 	return scope == "read-write"
 }
 
-// admission is what a page presenting query, and token once its socket opens, is admitted as: by
+// admittedAs is what a page presenting query, and token once its socket opens, is admitted as: by
 // the socket's acceptance, which the room's answer to an update sent before the token shows, and
 // by the token's answer.
-func admission(t *testing.T, serverURL, artifactID string, query url.Values, token string) (socket, authenticated bool) {
+func admittedAs(t *testing.T, serverURL, artifactID string, query url.Values, token string) (socket, authenticated bool) {
 	t.Helper()
 	connection := mustDialPage(t, serverURL, artifactID, query)
 	socket = probeWritable(t, connection, artifactID)
@@ -366,7 +373,7 @@ func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
 				fleetProcess(t, service, p.version, p.creatable, p.ownerLockProtocol, p.age)
 			}
 			token := c.query.Get("schema_version")
-			socket, authenticated := admission(t, server.URL, artifactID, c.query, token)
+			socket, authenticated := admittedAs(t, server.URL, artifactID, c.query, token)
 			if socket != c.writable || authenticated != c.writable {
 				t.Errorf("a page presenting %v and token %q is admitted writable=%t by its socket and writable=%t by its token, want %t for both",
 					c.query, token, socket, authenticated, c.writable)
@@ -383,7 +390,7 @@ func TestSchemaAdmissionOfAClosedIssueIsReadOnly(t *testing.T) {
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close the document's issue: %v", err)
 	}
-	if socket, authenticated := admission(t, server.URL, artifactID, page(pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()), strconv.Itoa(pmdoc.SchemaVersion())); socket || authenticated {
+	if socket, authenticated := admittedAs(t, server.URL, artifactID, page(pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()), strconv.Itoa(pmdoc.SchemaVersion())); socket || authenticated {
 		t.Errorf("a current page on a closed issue is admitted writable=%t by its socket and %t by its token, want read-only", socket, authenticated)
 	}
 }
@@ -443,7 +450,7 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 	}
 
 	requireRevokedClose(t, older, "the older page's socket")
-	if socket, authenticated := admission(t, server.URL, artifactID, olderPage, olderPage.Get("schema_version")); socket || authenticated {
+	if socket, authenticated := admittedAs(t, server.URL, artifactID, olderPage, olderPage.Get("schema_version")); socket || authenticated {
 		t.Errorf("the older page's reconnect was admitted writable=%t by its socket and %t by its token, want read-only", socket, authenticated)
 	}
 	if !probeWritable(t, current, artifactID) {
@@ -472,20 +479,44 @@ func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t
 		t.Fatal("a current page was authenticated read-only")
 	}
 
-	// The rollback stops the newer build's process.
+	// The rollback stops the newer build's process, and the service forgets the fleet its sockets
+	// share, as the reconnect below would find it once that read's second had passed.
 	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes`); err != nil {
 		t.Fatalf("stop the newer build's process: %v", err)
 	}
+	service.fleets.forget()
 	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}
 
 	requireRevokedClose(t, newer, "the newer page's socket")
-	if socket, authenticated := admission(t, server.URL, artifactID, newerPage, newerPage.Get("schema_version")); socket || authenticated {
+	if socket, authenticated := admittedAs(t, server.URL, artifactID, newerPage, newerPage.Get("schema_version")); socket || authenticated {
 		t.Errorf("the newer page's reconnect was admitted writable=%t by its socket and %t by its token, want read-only", socket, authenticated)
 	}
 	if !probeWritable(t, current, artifactID) {
 		t.Error("the current page's socket no longer applies its updates after the re-check")
+	}
+}
+
+// A re-check is background work: no request waits on it, so it reads the live processes on the
+// background pool and takes no connection of the request pool, which admission counts for
+// requests. Pointed back at the request pool, its read moves that pool's acquires and this fails.
+func TestASchemaAdmissionRecheckTakesNoRequestPoolConnection(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	background, err := service.store.Pool.Background()
+	if err != nil {
+		t.Fatalf("open the background pool: %v", err)
+	}
+	requests, backgroundRead := service.store.Pool.Stat().AcquireCount(), background.Stat().AcquireCount()
+	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
+		t.Fatalf("re-check the sockets' admission: %v", err)
+	}
+	if took := service.store.Pool.Stat().AcquireCount() - requests; took != 0 {
+		t.Errorf("the re-check took %d request-pool connection(s), want none: it reads the live processes on the background pool", took)
+	}
+	if background.Stat().AcquireCount() == backgroundRead {
+		t.Error("the re-check took no background-pool connection, so it read the live processes somewhere else")
 	}
 }
 

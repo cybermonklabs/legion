@@ -1,0 +1,5 @@
+kind: Changed
+body: Every request-pool connection and transaction now carries a 10-second `lock_timeout`, and a request whose wait for a lock runs past it is answered `503 DATABASE_BUSY` with `Retry-After`. A deployment behind a pooler that drops startup parameters must set `lock_timeout` on the database role (`ALTER ROLE <role> SET lock_timeout = '10s'`, or less), or the server refuses each connection at connect with an error that names the setting.
+time: 2026-11-21T03:14:28.44181792Z
+custom:
+    Issue: pr2402

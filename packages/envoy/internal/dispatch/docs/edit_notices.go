@@ -127,10 +127,9 @@ func (s *Service) recordEditNotice(ctx context.Context, tx pgx.Tx, artifactID st
 // 0157): the channel whose pglisten.Hub wake the server passes to RunEditNotices.
 const EditNoticesChannel = "dispatch_edit_notices"
 
-// editNoticeLease names the lease one sweep runs under, editNoticeBatch the most due notices one
-// sweep sends, and editNoticeDiffBytes the most a notice's diff holds.
+// editNoticeBatch is the most due notices one sweep sends, and editNoticeDiffBytes the most a
+// notice's diff holds. The lease one sweep runs under is duty.EditNoticeLease.
 const (
-	editNoticeLease     = "edit-notices"
 	editNoticeBatch     = 20
 	editNoticeDiffBytes = 4096
 )
@@ -171,10 +170,10 @@ const claimEditNotice = `
 	returning from_version, to_version`
 
 // dropEditNotice deletes a document's edit notice, due or held. A closed issue's settlement queues
-// it in the transaction that writes its version, after the owner lock (settlement.commitVersion),
-// for its write phase, so neither a reopen inside the notice's quiet time nor the first notice
-// after the reopen, which would start from the row's from_version (openEditNotice), carries the
-// edits that version saves.
+// it in the transaction that writes its version, after the owner lock
+// (settlementPass.commitVersion), for its write phase, so neither a reopen inside the notice's
+// quiet time nor the first notice after the reopen, which would start from the row's from_version
+// (openEditNotice), carries the edits that version saves.
 const dropEditNotice = `
 	delete from document_edit_notices where artifact_id = $1`
 
@@ -191,18 +190,19 @@ const nextEditNoticeDue = `
 
 // RunEditNotices sends each document's edit notice once its quiet window ends: one
 // artifact.human_edited event, which reaches the sessions the document credits and its issue's
-// route (outbox.addAuthorRoutes). It is a woken loop (duty.RunWoken) under the edit-notices
-// lease: one sweep at start, then a sweep when wake is signalled - in the server, the
-// pglisten.Hub wake on EditNoticesChannel, which a trigger on document_edit_notices notifies each
-// time a writer gives a notice a due time, and which the hub also signals after each successful
-// LISTEN - and at the earliest due time of any notice, which each sweep reads after it sends
-// (nextEditNoticeDue). Sweeps start at least five seconds apart, so a notice goes within five
-// seconds of its due time, and a notice still due after a sweep - past a full batch, or one whose
-// send failed - is swept again five seconds later. With no notice due or pending it holds no
+// route (outbox.addAuthorRoutes). It is a woken loop (duty.RunWoken) under
+// duty.EditNoticeLease: one sweep at start, then a sweep when wake is signalled - in the server,
+// the pglisten.Hub wake on EditNoticesChannel, which a trigger on document_edit_notices notifies
+// each time a writer gives a notice a due time, and which the hub also signals after each
+// successful LISTEN - and at the earliest due time of any notice, which each sweep reads after it
+// sends (nextEditNoticeDue). Sweeps start at least five seconds apart, so a notice goes within
+// five seconds of its due time, and a notice still due after a sweep - past a full batch, or one
+// whose send failed - is swept again five seconds later. With no notice due or pending it holds no
 // timer and makes no statement. A nil wake leaves the loop with its start and its due times.
 //
 // The window is a row, not a timer, so a notice still pending when a process stops is sent by
-// the next sweep of any process: each process's boot sweep reads the earliest due time.
+// the next sweep of any process: each process's boot sweep reads the earliest due time. Its
+// statements run on the background pool (store.Pool.Background), which no request waits on.
 func (s *Service) RunEditNotices(ctx context.Context, leases duty.Leases, wake <-chan struct{}) {
 	s.runEditNotices(ctx, leases, wake, editNoticeSweepSchedule)
 }
@@ -210,7 +210,7 @@ func (s *Service) RunEditNotices(ctx context.Context, leases duty.Leases, wake <
 func (s *Service) runEditNotices(ctx context.Context, leases duty.Leases, wake <-chan struct{}, schedule editNoticeSchedule) {
 	ctx = store.WithTransactionTracking(ctx)
 	duty.RunWoken(ctx, duty.WokenLoop{
-		Lease:  editNoticeLease,
+		Lease:  duty.EditNoticeLease,
 		Leases: leases,
 		Wake:   wake,
 		MinGap: schedule.minGap,
@@ -234,8 +234,13 @@ func (s *Service) editNoticePass(ctx context.Context) time.Time {
 		slog.Error("dispatch: send edit notices", "error", err)
 		return time.Now()
 	}
+	background, err := s.backgroundPool()
+	if err != nil {
+		slog.Error("dispatch: read the next edit notice's due time", "error", err)
+		return time.Now()
+	}
 	var wait *int64
-	if err := s.store.Pool.QueryRow(ctx, nextEditNoticeDue).Scan(&wait); err != nil {
+	if err := background.QueryRow(ctx, nextEditNoticeDue).Scan(&wait); err != nil {
 		if ctx.Err() != nil {
 			return time.Time{}
 		}
@@ -253,7 +258,11 @@ func (s *Service) editNoticePass(ctx context.Context) time.Time {
 // one document never holds back the others; err is the read of the due ids alone.
 func (s *Service) sendDueEditNotices(ctx context.Context) (int, error) {
 	ctx = store.WithTransactionTracking(ctx)
-	rows, err := s.store.Pool.Query(ctx, dueEditNotices, editNoticeBatch)
+	background, err := s.backgroundPool()
+	if err != nil {
+		return 0, err
+	}
+	rows, err := background.Query(ctx, dueEditNotices, editNoticeBatch)
 	if err != nil {
 		return 0, fmt.Errorf("list due edit notices: %w", err)
 	}
@@ -269,7 +278,7 @@ func (s *Service) sendDueEditNotices(ctx context.Context) (int, error) {
 		if ctx.Err() != nil {
 			return sent, nil
 		}
-		ok, err := s.sendEditNotice(ctx, id)
+		ok, err := s.sendEditNotice(ctx, background, id)
 		if err != nil {
 			slog.Error("dispatch: send an edit notice", "artifact", id, "error", err)
 			continue
@@ -294,10 +303,10 @@ func ignoreUnclaimed(err error) error {
 }
 
 // sendEditNotice claims artifactID's due notice and appends its artifact.human_edited event in one
-// transaction, then publishes the event once it commits, and reports whether it sent one. It takes
-// the document owner's lock (lockArtifactOwner), under which it reads the notice, both versions it
-// names, tells a server-state-only change from a person's edit and cuts the diff, all before its
-// first write; then it claims the notice (claimEditNotice) and appends the event
+// transaction on pool, then publishes the event once it commits, and reports whether it sent one.
+// It takes the document owner's lock (lockArtifactOwner), under which it reads the notice, both
+// versions it names, tells a server-state-only change from a person's edit and cuts the diff, all
+// before its first write; then it claims the notice (claimEditNotice) and appends the event
 // (events.Broker.QueueAppend, which takes the owner's lock again and the owner's row) in one
 // batch, so the transaction holds a transaction id only for those and the commit. The claim still
 // decides: a notice it does not delete as read is not sent, which the claim's callback reports
@@ -307,8 +316,8 @@ func ignoreUnclaimed(err error) error {
 // A document deleted since the unlocked read has taken its notice with it (on delete cascade), and
 // one whose issue has closed takes no more edits: either way nothing is sent, and a closed issue's
 // notice is dropped.
-func (s *Service) sendEditNotice(ctx context.Context, artifactID string) (bool, error) {
-	tx, err := s.store.Pool.Begin(ctx)
+func (s *Service) sendEditNotice(ctx context.Context, pool *store.Pool, artifactID string) (bool, error) {
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin edit notice transaction: %w", err)
 	}

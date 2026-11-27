@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -49,8 +50,11 @@ type discovery[T any] struct {
 	issuer string
 	read   func(ctx context.Context) (T, error)
 	// now is the clock the spacing between failed attempts and the log's rate are measured by.
-	now    func() time.Time
-	flight singleflight.Group
+	now func() time.Time
+	// attemptTimeout replaces discoveryAttemptTimeout for each read; zero, which every verifier
+	// the deployment builds leaves it, keeps it. Only a test sets it (WithDiscoveryAttemptForTest).
+	attemptTimeout time.Duration
+	flight         singleflight.Group
 
 	mu         sync.Mutex
 	value      T
@@ -75,18 +79,22 @@ func (d *discovery[T]) done() bool {
 // flight, or fails at once with the last attempt's error when that attempt failed less than
 // discoveryRetrySpacing ago. The attempt runs on a context of its own, detached from ctx's
 // cancellation, since its result belongs to every caller; ctx ending stops only this caller's
-// wait. Every error matches ErrIssuerUnavailable.
+// wait. Every error matches ErrIssuerUnavailable. A caller that waits for an attempt, its own or
+// one in flight, runs the before-wait hook ctx carries first (WithBeforeWait), at the point the
+// settled answer is found missing, so a verification that waits on discovery gives up what it
+// holds before it waits and one answered from the settled value gives up nothing.
 func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 	var zero T
 	if value, err, settled := d.settled(); settled {
 		return value, err
 	}
+	beforeWait(ctx)
 	attempt := d.flight.DoChan("discover", func() (any, error) {
 		// An attempt that ended just before this flight began has settled it already.
 		if value, err, settled := d.settled(); settled {
 			return value, err
 		}
-		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discoveryAttemptTimeout)
+		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(d.attemptTimeout, discoveryAttemptTimeout))
 		defer cancel()
 		value, err := d.read(attemptCtx)
 		d.mu.Lock()
@@ -167,16 +175,33 @@ type LazyVerifier struct {
 	discovery *discovery[*Verifier]
 }
 
+// LazyOption configures a LazyVerifier NewLazyVerifier builds.
+type LazyOption func(*LazyVerifier)
+
+// WithDiscoveryAttemptForTest replaces the bound on one read of the issuer's discovery document
+// (discoveryAttemptTimeout, ten seconds). It is for tests, which hold a read of it past the
+// production bound, or make one run it out in milliseconds; nothing in production passes it, and
+// a verifier built without it reads under discoveryAttemptTimeout.
+func WithDiscoveryAttemptForTest(bound time.Duration) LazyOption {
+	return func(v *LazyVerifier) { v.discovery.attemptTimeout = bound }
+}
+
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
 // discovery document is read by Discover, by Run, or by the first Verify.
-func NewLazyVerifier(issuer, audience string) *LazyVerifier {
-	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
+func NewLazyVerifier(issuer, audience string, options ...LazyOption) *LazyVerifier {
+	v := &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		return New(ctx, issuer, audience)
 	})}
+	for _, option := range options {
+		option(v)
+	}
+	return v
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
-// and an attempt is due; before that every error matches ErrIssuerUnavailable.
+// and an attempt is due; before that every error matches ErrIssuerUnavailable. A verification that
+// waits on the discovery or on the key set runs the before-wait hook ctx carries first, once
+// (WithBeforeWait).
 func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	verifier, err := v.discovery.discover(ctx)
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -40,9 +41,16 @@ type documentSocketTokenRig struct {
 	// Its own server is never sent a request.
 	tokens   *brokerTokenRig
 	sessions *store.PgSessionStore
-	// logins is the API's Identity: the cookie identity the document service shares, counting
-	// the lookups made through it (countedLogins).
-	logins *countedLogins
+	// limiter is what the server admits by, whose share outside admission the heartbeat's
+	// checks take their places of (admission.Outside).
+	limiter *admission.Limiter
+	// logins is the cookie identity the document service shares, counting the lookups made
+	// through it (heartbeatLogins).
+	logins *heartbeatLogins
+	// checks is the API's identity, over logins, counting the resolutions the API asks of it
+	// (busyCallerIdentity, never set busy here): after the setup's requests, the sockets'
+	// heartbeat checks (signInStillResolves).
+	checks *busyCallerIdentity
 	// heartbeats records the calls a socket's heartbeat makes into the product, once a test
 	// starts it (heartbeatCalls): the API's lookups of the cookie, and the verifier's clock
 	// reads and introspections (timeBrokerCalls).
@@ -70,19 +78,20 @@ const documentSocketPerson = "alice@d.example"
 func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, beats clock.Clock) *documentSocketTokenRig {
 	t.Helper()
 	ctx := context.Background()
-	rig := &documentSocketTokenRig{heartbeats: &heartbeatCalls{}}
+	rig := &documentSocketTokenRig{heartbeats: &heartbeatCalls{}, limiter: admission.New(admission.DefaultLimits())}
 	rig.tokens = newBrokerTokenRig(t, timeBrokerCalls(t, rig.heartbeats))
 	database := rig.tokens.database
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
-	rig.logins = &countedLogins{Identity: person, calls: rig.heartbeats}
+	rig.logins = &heartbeatLogins{Identity: person, calls: rig.heartbeats}
+	rig.checks = &busyCallerIdentity{Identity: rig.logins}
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
-		Store: database, Identity: rig.logins, AgentTokens: sharedAgentTokens(t, "agent-token"),
+		Store: database, Identity: rig.checks, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: testServerURL, Docs: documents, Events: broker,
-		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat, Clock: beats,
+		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat, Admission: rig.limiter, Clock: beats,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -149,20 +158,20 @@ func (rig *documentSocketTokenRig) closedAt() (time.Time, bool) {
 	return conn.closed, !conn.closed.IsZero()
 }
 
-// countedLogins is an Identity that records the lookups made through it as heartbeat calls
+// heartbeatLogins is an Identity that records the lookups made through it as heartbeat calls
 // (heartbeatCalls.begin) and counts those that start once the test has said the cookie's session
 // ended (end): on a documentSocketTokenRig, the API's, whose only caller once the setup's requests
 // have answered is the document socket's heartbeat (signInStillResolves). A lookup counts when it
 // starts after end, so one already under way when the session ended, which may find the session
 // either way, is not counted.
-type countedLogins struct {
+type heartbeatLogins struct {
 	identity.Identity
 	calls    *heartbeatCalls
 	ended    atomic.Bool
 	afterEnd atomic.Int64
 }
 
-func (c *countedLogins) Login(r *http.Request) (string, error) {
+func (c *heartbeatLogins) Login(r *http.Request) (string, error) {
 	done := c.calls.begin()
 	if c.ended.Load() {
 		c.afterEnd.Add(1)
@@ -173,7 +182,7 @@ func (c *countedLogins) Login(r *http.Request) (string, error) {
 }
 
 // end marks the cookie's session ended: every lookup that starts from now on is counted.
-func (c *countedLogins) end() { c.ended.Store(true) }
+func (c *heartbeatLogins) end() { c.ended.Store(true) }
 
 // heartbeatSlack is what scheduling may add to a heartbeat beside the longest single stall a stall
 // meter saw: how much later than a heartbeat after the last call returned the next call of a
@@ -183,7 +192,7 @@ const heartbeatSlack = time.Second
 // heartbeatCalls records, once the test starts it (record), each call a socket's heartbeat makes
 // into the product: when it started, when it returned, and whether its answer refused the caller.
 // The calls are the product's own - the API Identity's lookups on a document socket
-// (countedLogins), the broker-token verifier's clock reads and introspections on a live socket
+// (heartbeatLogins), the broker-token verifier's clock reads and introspections on a live socket
 // (timeBrokerCalls) - and so are the gaps between them: from the return of the calls before one
 // to that call's start. whileCallerResolves arms its ticker before its first call, and a tick that
 // falls during a slow call waits for it, so the next call starts at most a heartbeat after the
@@ -464,7 +473,7 @@ func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int,
 // at the first heartbeat after the session's end, while the broker still holds the token live and
 // has not once been asked about it. The heartbeats are on the server's clock, a fake the row moves
 // one heartbeat at a time, and the close is awaited with the clock standing at the heartbeat after
-// the sign-out. The heartbeat's lookups of the cookie are counted too (countedLogins,
+// the sign-out. The heartbeat's lookups of the cookie are counted too (heartbeatLogins,
 // heartbeatCalls): every heartbeat the row moves through looks the cookie up, so a heartbeat that
 // asks every second tick or keeps an answer it stored fails, and no lookup that started once the
 // session had ended may find it still resolving, as one served from a cache of the session's
@@ -638,4 +647,81 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 		gap.from, gap.to, ciphertoken.AffirmativeCacheTTL+heartbeat+heartbeatSlack)
 	rig.heartbeats.requireEveryHeartbeat(t, meter, heartbeat)
 	rig.requireClosedAfterRefusal(t, meter, "the live socket", heartbeat, 3)
+}
+
+// A logout closes the document socket at the first heartbeat whose check finds the sign-in gone,
+// while the request pool is free: a refusal is no transient failure, so that check closes the
+// socket there and then rather than checking twice more (heartbeatTransientCeiling). A check in
+// flight as the session ends may still find it, so the close comes within two checks of the
+// logout.
+func TestALogoutClosesTheDocumentSocketAtItsNextHeartbeat(t *testing.T) {
+	t.Parallel()
+	const heartbeat = 250 * time.Millisecond
+	rig := newDocumentSocketTokenRig(t, heartbeat, nil)
+	peer := rig.openDocument(t, nil)
+	time.Sleep(2 * heartbeat)
+	peer.barrier(t)
+
+	checked := rig.checks.asked.Load()
+	if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
+		t.Fatalf("sign out: %v", err)
+	}
+	select {
+	case <-peer.connection().Ended:
+	case <-time.After(3*heartbeat + 2*time.Second):
+		t.Fatalf("the document socket stayed open after its sign-in ended, %d checks since", rig.checks.asked.Load()-checked)
+	}
+	if checks := rig.checks.asked.Load() - checked; checks > 2 {
+		t.Fatalf("the document socket closed after %d checks of its caller since the logout, want it closed by the first check that found the sign-in gone", checks)
+	}
+}
+
+// A document socket's heartbeat check reads the request pool, for the caller's session, so it
+// takes a place of the pool's share outside admission first (signInStillResolves), and while every
+// place is held the check waits for one, reading nothing: a sign-in that ended meanwhile is not
+// found out yet, and the socket stays open. A place given back while the check waits is that
+// check's, which then finds the sign-in gone and closes the socket at once. A check no place comes
+// free for is skipped, and counts toward the heartbeat's ceiling
+// (TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird).
+func TestADocumentSocketsHeartbeatWaitsForAPlaceOfTheShareOutsideAdmission(t *testing.T) {
+	t.Parallel()
+	const heartbeat = 250 * time.Millisecond
+	rig := newDocumentSocketTokenRig(t, heartbeat, nil)
+	peer := rig.openDocument(t, nil)
+	time.Sleep(2 * heartbeat)
+	peer.barrier(t)
+
+	outside := rig.limiter.Outside()
+	release := holdTheShareOutsideAdmission(t, outside)
+	defer release()
+	checked := rig.checks.asked.Load()
+	if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
+		t.Fatalf("sign out: %v", err)
+	}
+	waitUntil(t, "a heartbeat check waiting for a place", func() bool {
+		return outside.Stats().Queued == 1
+	})
+	select {
+	case <-peer.connection().Ended:
+		t.Fatal("the document socket closed while every place of the share outside admission was held: its heartbeat read the request pool beside them")
+	default:
+	}
+	if checks := rig.checks.asked.Load() - checked; checks != 0 {
+		t.Fatalf("the heartbeat checked the caller %d times while every place was held, want none", checks)
+	}
+
+	release()
+	select {
+	case <-peer.connection().Ended:
+	case <-time.After(2*heartbeat + 2*time.Second):
+		t.Fatal("the document socket stayed open once a place was given to its waiting check and its sign-in had ended")
+	}
+	// The waiting check's, unless the heartbeat's bound ended it as it took the place, when the
+	// next heartbeat's check closes the socket instead.
+	if checks := rig.checks.asked.Load() - checked; checks < 1 || checks > 2 {
+		t.Fatalf("the document socket closed after %d checks of its caller once a place was given back, want the waiting check's", checks)
+	}
+	if refused := outside.Stats().Refused[admission.HeartbeatCheck]; refused != (admission.OutsideRefusals{}) {
+		t.Fatalf("heartbeat checks refused a place %+v, want none: the waiting one was given the place given back", refused)
+	}
 }

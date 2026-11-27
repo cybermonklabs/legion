@@ -1157,3 +1157,38 @@ func TestCurvesVoidAStepThatRecordedNoGenerator(t *testing.T) {
 		t.Errorf("the cluster series reads a step with no generator role as %q, want true", got)
 	}
 }
+
+// TestCurvesSetAsideAStepWhoseGeneratorBrokeItsSchedule: a step whose summary.json carries
+// set_aside reads "set aside" in the Pass table and in curves.csv under the cluster series, which
+// has no void rule, as under the loop's; it is neither a pass nor a failure, so it ends no bracket
+// (the knee after it brackets back to the last step that passed) and KNEES.md and CURVES.md name
+// it with why.
+func TestCurvesSetAsideAStepWhoseGeneratorBrokeItsSchedule(t *testing.T) {
+	root := t.TempDir()
+	stalled := goodSummary(2)
+	_, stalled.SetAside = judgePacing(arrivalsFile{Window: []arrivalSecond{{Second: 95, RequestsScheduled: 120, RequestsSent: 1800}}}, paceTargets{requests: true})
+	out := curves(t,
+		curveFixture(t, root, "1x", goodSummary(1), fixtureCgroup(2)),
+		curveFixture(t, root, "2x", stalled, fixtureCgroup(2)),
+		curveFixture(t, root, "3x", collapsed(3), fixtureCgroup(2)))
+	_, rows := curvesCSV(t, out)
+	if rows["2x"]["passes"] != setAsideWord || rows["1x"]["passes"] != "true" || rows["3x"]["passes"] != "false" {
+		t.Errorf("curves.csv passes: 1x %q, 2x %q, 3x %q; want true, set aside, false", rows["1x"]["passes"], rows["2x"]["passes"], rows["3x"]["passes"])
+	}
+	md := readText(t, filepath.Join(out, "CURVES.md"))
+	if row := "| 2x (set aside) | 2 | ok | ok | ok | ok | ok | ok | set aside |"; !strings.Contains(md, row) {
+		t.Errorf("CURVES.md lacks the Pass table's row %q:\n%s", row, md)
+	}
+	// What CURVES.md and KNEES.md say of the set-aside step and the knee is checked by the data they
+	// carry - the step's own why, and the bracket's two factors - not the sentences around it.
+	if !strings.Contains(md, stalled.SetAside.Why) {
+		t.Errorf("CURVES.md does not carry why 2x was set aside, %q:\n%s", stalled.SetAside.Why, md)
+	}
+	knees := readText(t, filepath.Join(out, "KNEES.md"))
+	if !strings.Contains(knees, stalled.SetAside.Why) {
+		t.Errorf("KNEES.md does not carry why 2x was set aside, %q:\n%s", stalled.SetAside.Why, knees)
+	}
+	if knee := section(knees, "Knee at 3x (step 3x)"); !strings.Contains(knee, "(1, 3)") {
+		t.Errorf("KNEES.md's knee at 3x is not bracketed back to 1x, the last step that passed, as (1, 3):\n%s", knees)
+	}
+}

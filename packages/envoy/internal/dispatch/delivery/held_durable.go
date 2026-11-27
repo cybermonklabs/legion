@@ -95,9 +95,9 @@ func parseIntakeHoldToken(token string) intakeHoldToken {
 }
 
 // DurableLeases is the pool a held durable takes its hold and consumer lease on and renews the hold
-// through: the reservation ReserveDurableLeases makes of store.Pool.Leases, which StartIntakes hands
-// each intake and a held durable outside this package (NewHeldDurable) takes from its own. A
-// *pgxpool.Pool is both.
+// through: its reservation of the lease pool (store.LeaseCallers.For, ReserveDurableLeases), which
+// StartIntakes hands each intake and a held durable outside this package (NewHeldDurable) takes
+// from its own. A *store.RawPool is both.
 type DurableLeases interface {
 	duty.Leases
 	duty.Holds

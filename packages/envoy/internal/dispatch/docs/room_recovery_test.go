@@ -165,7 +165,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 		t.Fatalf("begin write transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("joined write after the failed load recovered: %v", err)
@@ -210,7 +210,8 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		t.Fatalf("begin write transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	writeCtx, releaseWrite := gatedContext(t, service, ctx, artifactID)
+	joined, ledger := service.Join(writeCtx, tx)
 	defer ledger.Discard()
 	if _, err := service.ReplaceText(joined, artifactID, "after", alice, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("joined write: %v", err)
@@ -268,6 +269,9 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	// The publish has let go of its write's room, as it had by this point when it ran on this
 	// goroutine, so the retry below opens its own write on that room.
 	<-published
+	// The write's gate goes back with it, so the retry below takes the document's writer gate
+	// rather than parking on this write's.
+	releaseWrite()
 
 	if service.roomFailed(artifactID) {
 		t.Fatal("the refused publish failed the room that replaced the one it was refused by")
@@ -277,7 +281,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		t.Fatalf("begin retry transaction: %v", err)
 	}
 	defer retry.Rollback(ctx)
-	retryJoined, retryLedger := service.Join(ctx, retry)
+	retryJoined, retryLedger := service.Join(gated(t, service, ctx, artifactID), retry)
 	defer retryLedger.Discard()
 	if _, err := service.ReplaceText(retryJoined, artifactID, "later", alice, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("joined write after the refused publish: %v", err)
@@ -374,7 +378,7 @@ func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 				t.Fatalf("begin transaction: %v", err)
 			}
 			defer tx.Rollback(ctx)
-			joined, ledger := service.Join(ctx, tx)
+			joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 			defer ledger.Discard()
 			if err := lockDocumentRoom(ctx, tx, artifactID); err != nil {
 				t.Fatalf("take the document's advisory lock: %v", err)
@@ -427,7 +431,8 @@ func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	duringCtx, releaseDuring := gatedContext(t, service, ctx, artifactID)
+	joined, ledger := service.Join(duringCtx, tx)
 	defer ledger.Discard()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	failsFast(t, "a joined write", func() error {
@@ -442,6 +447,7 @@ func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
 		t.Fatalf("roll back: %v", err)
 	}
 	ledger.Discard()
+	releaseDuring()
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release document lock: %v", err)
 	}
@@ -452,7 +458,7 @@ func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
 		t.Fatalf("begin retry transaction: %v", err)
 	}
 	defer retry.Rollback(ctx)
-	retryJoined, retryLedger := service.Join(ctx, retry)
+	retryJoined, retryLedger := service.Join(gated(t, service, ctx, artifactID), retry)
 	defer retryLedger.Discard()
 	if _, err := service.ReplaceText(retryJoined, artifactID, "after", alice, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("joined write on the recovered room: %v", err)
@@ -527,7 +533,7 @@ func TestARoomFailingBetweenTwoJoinedOperationsFailsTheSecondFast(t *testing.T) 
 		t.Fatalf("begin transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ReplaceText(joined, artifactID, "during", alice, liveDocumentToken(t, service, artifactID)); err != nil {
@@ -565,7 +571,7 @@ func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
 		t.Fatalf("begin transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
+	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 
 	failsFast(t, "a joined write whose room fails under it", func() error {
@@ -595,7 +601,9 @@ func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
 // A committed write that has not been published yet holds the writer slot while a second write
 // waits for it. The room fails: the first write's publish waits for the recovery, which needs
 // no lock either transaction holds, and the second write then either runs on the reloaded room
-// or, had it reached the failed room first, fails fast. It never waits for good.
+// or, had it reached the failed room first, fails fast. It never waits for good. The second write
+// is beneath the writer gate (beneathTheGate), which would otherwise hold it ahead of its
+// transaction: this pins the slot's own wait.
 func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
@@ -607,7 +615,7 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 		t.Fatalf("begin first transaction: %v", err)
 	}
 	defer first.Rollback(ctx)
-	firstJoined, firstLedger := service.Join(ctx, first)
+	firstJoined, firstLedger := service.Join(gated(t, service, ctx, artifactID), first)
 	defer firstLedger.Discard()
 	if _, err := service.ReplaceText(firstJoined, artifactID, "first", model.Actor{Kind: "user", ID: "alice"}, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("first joined write: %v", err)
@@ -618,7 +626,7 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 		t.Fatalf("begin second transaction: %v", err)
 	}
 	defer second.Rollback(ctx)
-	secondJoined, secondLedger := service.Join(ctx, second)
+	secondJoined, secondLedger := service.Join(beneathTheGate(ctx, artifactID), second)
 	defer secondLedger.Discard()
 	returned := make(chan error, 1)
 	secondBase := liveDocumentToken(t, service, artifactID)
@@ -707,7 +715,7 @@ func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 	}
 	settled := make(chan struct{})
 	go func() {
-		service.settleRoom(artifactID, 0)
+		service.settleRoom(context.Background(), artifactID, 0)
 		close(settled)
 	}()
 	select {
@@ -815,7 +823,7 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	joinedCtx, ledger := service.Join(ctx, tx)
+	joinedCtx, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
 
 	store.failing.Store(true)
@@ -845,5 +853,75 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 	}
 	if latest != 1 {
 		t.Fatalf("latest version = %d, want the seeded version only", latest)
+	}
+}
+
+// A pinned read of a failed room gives its request-pool connection back while it waits for the
+// room's eviction, and answers the document once the eviction has run. The API pins each ordinary
+// read (store.PinConnection), the artifact, issue and project /text routes among them, so such a
+// read holds one request-pool connection from its first statement on; the eviction it waits for
+// flushes and compacts the document under its advisory lock on a request-pool connection of its
+// own (PgVersioned.withRoomLock). A reader that kept its connection for the wait would wait on the
+// pool its own connection is out of, and a pool full of such readers would leave the eviction's
+// acquire nothing to take. The eviction is held here until the read waits for it
+// (beforeRecoveryWait): the read then holds no connection, and the request pool has none out;
+// once the eviction is let go, the read answers the document's text.
+func TestAPinnedReadOfAFailedRoomGivesItsConnectionBackWhileItWaitsForTheEviction(t *testing.T) {
+	t.Parallel()
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	want, _, err := service.TextWithToken(context.Background(), artifactID)
+	if err != nil {
+		t.Fatalf("read the document before its room fails: %v", err)
+	}
+	hold := make(chan struct{})
+	release := sync.OnceFunc(func() { close(hold) })
+	testcleanup.Add(t, release)
+	service.beforeFailedEviction = func(room string) {
+		if room == artifactID {
+			<-hold
+		}
+	}
+	// steps carries the read's wait for the eviction (beforeRecoveryWait), then its answer.
+	type step struct {
+		waiting bool
+		text    string
+		err     error
+	}
+	steps := make(chan step, 2)
+	service.beforeRecoveryWait = func(room string) {
+		if room == artifactID {
+			steps <- step{waiting: true}
+		}
+	}
+	service.failRoom(artifactID, errors.New("test: the room failed"))
+
+	ctx, end := store.PinConnection(context.Background())
+	defer end()
+	var pinned int
+	if err := service.store.Pool.QueryRow(ctx, `select 1`).Scan(&pinned); err != nil {
+		t.Fatalf("take the read's pinned connection: %v", err)
+	}
+	if !store.ConnectionHeld(ctx) {
+		t.Fatal("the read holds no connection, so nothing here is tested")
+	}
+
+	go func() {
+		text, _, err := service.TextWithToken(ctx, artifactID)
+		steps <- step{text: text, err: err}
+	}()
+	if got := testwait.Receive(t, "the pinned read to wait for its failed room's eviction", steps); !got.waiting {
+		t.Fatalf("a pinned read of a failed room whose eviction is held = %q (%v), want it waiting for the eviction", got.text, got.err)
+	}
+	if store.ConnectionHeld(ctx) {
+		t.Fatal("a pinned read waiting for its failed room's eviction still holds its connection")
+	}
+	requests := service.store.Pool
+	if !testwait.Holds(recoveryBound, time.Millisecond, func() bool { return requests.Stat().AcquiredConns() == 0 }) {
+		t.Fatalf("the request pool has %d connections out while its only read waits for the eviction, want none", requests.Stat().AcquiredConns())
+	}
+	release()
+	if got := testwait.Receive(t, "the pinned read to answer once the eviction was let go", steps); got.waiting || got.err != nil || got.text != want {
+		t.Fatalf("a pinned read of a failed room once its eviction ran = %q (%v), want %q", got.text, got.err, want)
 	}
 }

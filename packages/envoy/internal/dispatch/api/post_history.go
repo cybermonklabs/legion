@@ -289,9 +289,12 @@ func messageAttemptsRead(pending []model.MessageDelivery) pendingAttemptsRead {
 // whether the read found it as it stands: were it to settle another count, or a row the read
 // found otherwise, its callback refuses with errDeleteContended, Commit returns that refusal, which
 // the route answers as it is (409 DELETE_CONTENDED, Retry-After: 1), and the receipts never land
-// beside rows they do not describe.
+// beside rows they do not describe. The statement takes those rows in the write lock's bounded
+// wait (store.WriteBatch.QueueWithinBound): the sender that moves one holds no lock the delete
+// holds, so no owner lock orders the two, and a row held past the bound is refused 503
+// DATABASE_BUSY with nothing written.
 func queueDeletedPostSettlement(b *store.WriteBatch, itemID string, read pendingAttemptsRead) {
-	b.Queue("", `
+	b.QueueWithinBound("", `
 		update `+read.table+` d set state = 'failed', error = $2, claimed_at = now()
 		where d.`+read.owner+` = $1 and d.state = 'pending'
 		returning `+read.matches,
@@ -346,7 +349,7 @@ func (s *server) writePostHistory(w http.ResponseWriter, r *http.Request, kind r
 	}
 	read, err := s.postHistory(r.Context(), kind, r.PathValue("id"), before)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, read)

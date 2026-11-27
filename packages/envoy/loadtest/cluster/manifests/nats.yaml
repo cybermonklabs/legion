@@ -169,6 +169,7 @@ spec:
         dispatch-loadtest/role: nats-box
         dispatch-loadtest/run: __RUN_ID__
         helm.sh/chart: nats-2.15.1
+        theorem.dev/omp-session: __OMP_SESSION__
     spec:
       automountServiceAccountToken: false
       containers:
@@ -253,6 +254,7 @@ spec:
         dispatch-loadtest/role: nats
         dispatch-loadtest/run: __RUN_ID__
         helm.sh/chart: nats-2.15.1
+        theorem.dev/omp-session: __OMP_SESSION__
     spec:
       automountServiceAccountToken: false
       containers:

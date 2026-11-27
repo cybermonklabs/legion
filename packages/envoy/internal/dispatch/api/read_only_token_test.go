@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -253,7 +254,8 @@ func (tally *readOnlyTally) count(want string) {
 }
 
 // TestEveryRowAnswersEachReadOnlyTokenByItsClass builds every row's own chain as register does
-// (routeHandler), test hooks in, with the row's handler replaced by a counter, and sends each a
+// (routeHandler, under the admission and the read deadline register gives a server whose Deps set
+// neither), test hooks in, with the row's handler replaced by a counter, and sends each a
 // body and a valid Idempotency-Key under every kind of read-only token (readOnlyWalkTokens). A
 // row that is not a read answers 403 READ_ONLY_TOKEN with no challenge and never runs its
 // handler. A read runs its handler once for a token with no cut, unless the row's own scopes
@@ -270,7 +272,7 @@ func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 	caller := newBrokerCaller(t)
 	tokens := readOnlyWalkTokens(t, rig, caller)
 	table := readOnlyTable()
-	replays := rig.served.keyedReplays()
+	limiter := admission.New(admission.DefaultLimits())
 	mounted := len(rig.served.routeIndex)
 
 	for _, token := range tokens {
@@ -283,7 +285,7 @@ func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			}
 			response := httptest.NewRecorder()
-			rig.served.routeHandler(route, replays[name]).ServeHTTP(response, token.probe(t, caller, route))
+			rig.served.routeHandler(route, limiter, defaultReadDeadline).ServeHTTP(response, token.probe(t, caller, route))
 			want := readOnlyAnswer(route, token)
 			switch want {
 			case "":

@@ -15,9 +15,11 @@
 #   step-10x          40     1,000         600            20
 #
 # Events are 4/s and requests 60/s at 1x, live sockets max(1, round(2·f)); sessions come from
-# `loadgen series-sessions <f>`. Any other run-step.sh flag (--duration, --warmup, --grace,
-# --event-mix, --route-mix, --human, --rng-seed, --xact-interval, --editors, --editor-rate,
-# --editor-docs) is passed to every step, unscaled.
+# `loadgen series-sessions <f>`. Every other flag is passed to every step as given, unscaled, and
+# run-step.sh refuses one it does not know: --duration, --warmup, --grace, --event-mix,
+# --route-mix, --human, --rng-seed, --xact-interval, --schedule, --recovery-ref-p99, --editors,
+# --editor-rate and --editor-docs. With --schedule each step's factors multiply that step's events
+# and requests; its live sockets stay the series' max(1, round(2·f)).
 #
 # The series holds LOADTEST_ROOT for its whole run (common.sh); its own run-step.sh calls pass, and
 # keep the lock if the series is killed. It sets up (builds this checkout), starts and seeds the
@@ -25,7 +27,12 @@
 # and dirty flag to every step in LOADTEST_SERIES_BUILD; its steps skip setup, so every step of a
 # series runs one build, even when the checkout changes during the series. A failed step stops the
 # series: the series TABLES.md covers the steps that ran, the failed one included when it wrote
-# summary.json, and the script exits 1 naming the step.
+# summary.json, and the script exits 1 naming the step. A set-aside step (README.md, "The
+# set-aside rule") does not stop it: it is neither a pass nor a failure, and the series TABLES.md
+# names it before its first table.
+#
+# LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS (common.sh, CPU pinning) are checked before the
+# stack is prepared, and again by each step.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -41,6 +48,7 @@ for arg in "$@"; do
   esac
 done
 
+check_cpu_pinning
 lock_root "$ROOT"
 
 # Setup and seed once, before the series directory exists, so a failed setup leaves no empty series.

@@ -157,7 +157,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	var input createBroadcastInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.IdempotencyKey != nil {
@@ -167,7 +167,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	requested, err := validateBroadcastInput(input.Body, input.Delivery, input.SessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if s.deps.Envoy == nil {
@@ -182,7 +182,17 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	// A per-session read asks the store the question the exclusion claims to answer, and the
 	// selection is the sender's, not a set the list has to be scanned for, so there is nothing
 	// a single list read buys that is worth that.
-	sessions, err := s.resolveBroadcastSessions(r.Context(), requested)
+	//
+	// The reads hold no admission unit: the request gives its unit back before their workers
+	// start and takes it back once every one has answered, on its own goroutine (awayOnNetwork),
+	// and a take-back refused is the answer, 429 OVERLOADED, before anything was written.
+	sessions, err := awayOnNetworkFor(r.Context(), func(ctx context.Context) (map[string]dispatchenvoy.Session, error) {
+		return s.resolveBroadcastSessions(ctx, requested)
+	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
 	if err != nil {
 		// Nothing is written when a read did not answer, or the budget ended before every
 		// selected session was read, not even the recipients whose reads answered:
@@ -195,7 +205,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, err.Error())
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	targets := resolveBroadcastTargets(requested, input.Delivery, sessions)
@@ -218,7 +228,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 
 	created, events, err := s.writeBroadcast(r.Context(), actor, input.Body, input.Delivery, recipients, excluded)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)
@@ -235,14 +245,16 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	// http.Server.Shutdown drains, so a delivery bound to the lifetime was cut off by a deploy
 	// with recipients it had not reached. A deploy that kills the process before they all settle
 	// leaves owed recipients the delivery sweep resumes (resumeOwedDeliveries), and a repeat under
-	// the key resumes them too (replayBroadcast).
+	// the key resumes them too (replayBroadcast). The context carries no admission ticket
+	// (detachedFromRequest): the workers start before this request has answered, and each send's
+	// pairs would otherwise give this request's unit back from a worker's goroutine.
 	sends := make([]broadcastSend, 0, len(created.Recipients))
 	for _, recipient := range created.Recipients {
 		// The write opened each recipient's first attempt, unclaimed, so every worker is bound
 		// to that attempt rather than opening one of its own.
 		sends = append(sends, broadcastSend{message: recipient.Message.Message, attempt: 1})
 	}
-	sending := context.WithoutCancel(r.Context())
+	sending := detachedFromRequest(r.Context())
 	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, input.Delivery, actor) })
 	// The send's own answer carries the body it has just stored the tree of, so it is read where
 	// it stands rather than from the table.
@@ -308,11 +320,11 @@ func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point b
 	ctx := r.Context()
 	read, err := s.readBroadcast(ctx, who, point.BroadcastID, wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.sendOwedBroadcastRecipients(ctx, read); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	excluded := point.Excluded
@@ -643,8 +655,9 @@ func (s *server) sendOwedBroadcastRecipients(ctx context.Context, read broadcast
 		}
 	}
 	// Detached from the request and counted in the server's background wait, as the original
-	// send's delivery is; the listener client's receipt timeout bounds each recipient's send.
-	sending := context.WithoutCancel(ctx)
+	// send's delivery is, carrying no admission ticket (detachedFromRequest); the listener client's
+	// receipt timeout bounds each recipient's send.
+	sending := detachedFromRequest(ctx)
 	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, read.Delivery, read.Author) })
 	return nil
 }
@@ -668,7 +681,7 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 		limit 50
 	`)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -681,17 +694,17 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 			&summary.ID, &author, &summary.Body, &summary.Delivery, &summary.CreatedAt,
 			&summary.Recipients, &summary.Replies,
 		); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := json.Unmarshal(author, &summary.Author); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		summaries = append(summaries, summary)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The bodies are registered once the list is whole: a row of a slice still being appended to
@@ -725,7 +738,7 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, read)

@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -118,18 +119,20 @@ func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	answer, err := s.readLegionIssue(r.Context(), r.PathValue("key"))
+	answer, err := s.readLegionIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)
 }
 
 // readLegionIssue is GET /api/v1/issues/{key}/legion's body for key, computed from the key alone,
-// so the route and the live view of one issue answer one body through one function. Every read it
-// makes is one read-only, repeatable-read transaction, as the board's readSampled is, so
-// `configured`, the state and the read answer one moment:
+// so the route and the live view of one issue answer one body through one function. It reads
+// through pool: the request pool for the route, whose pinned read runs the transaction below on
+// the one connection the read pinned (store.PinConnection), and the live pool for the live hub's
+// view (readLegionIssueView). Every read it makes is one read-only, repeatable-read transaction,
+// as the board's readSampled is, so `configured`, the state and the read answer one moment:
 //
 //   - the issue's row, for its project. A key Dispatch holds no issue of is 404 NOT_FOUND in the
 //     code and the words writeHandlerError answers pgx.ErrNoRows with, which is GET
@@ -142,8 +145,8 @@ func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 //     the board's header reads) and the issue's state (legion.ReadIssue, which reads the issue's
 //     rows and the project's admission row and no other issue's);
 //   - in every case, the runs' revision (workflowstore.IssueRunsRevision).
-func (s *server) readLegionIssue(ctx context.Context, key string) (legionIssueResponse, error) {
-	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+func (s *server) readLegionIssue(ctx context.Context, pool *store.Pool, key string) (legionIssueResponse, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return legionIssueResponse{}, err
 	}

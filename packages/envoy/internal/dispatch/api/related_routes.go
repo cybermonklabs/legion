@@ -82,7 +82,7 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 	}
 	var request relatedRequest
 	if err := decodeJSON(r, &request); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if length := itemblocks.Units16(request.Title); length > contracts.IssueTitleMax {
@@ -97,7 +97,10 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 // answerRelated runs the check both forms share against the path's project, recording nothing:
 // it has no source to record, and a reader trying words out must not count as a write's check.
 // question says the form asks a person a question, which the two forms do not do alike
-// (postRelated and getRelated say why).
+// (postRelated and getRelated say why). Both forms' checks wait on the embedder holding no
+// admission unit once their keyword stage has answered (relatedInput.embedAway), and a take-back
+// refused after that wait is the answer, 429 OVERLOADED, in place of the check's: neither form
+// writes anything, the POST form being in the write class for its body alone.
 func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest, question bool) {
 	project := r.PathValue("key")
 	if !projectKeyPattern.MatchString(project) {
@@ -105,13 +108,13 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		return
 	}
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	request.ExcludeIssue = strings.TrimSpace(request.ExcludeIssue)
 	if request.ExcludeIssue != "" {
 		if err := s.requireProjectIssue(r, project, request.ExcludeIssue); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -122,7 +125,7 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		}
 	}
 	if err := s.requireProjectIssues(r, project, excluded); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The answered asks this check offers carry the display tree of their answer for a caller
@@ -138,8 +141,13 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		excludeIssues: excluded,
 		keywordsOnly:  request.KeywordsOnly,
 		question:      question,
+		embedAway:     awayOnNetwork,
 		trees:         reader,
 	})
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, suggestions)
 }
@@ -291,13 +299,13 @@ func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 		&keyword.Count, &keyword.P50, &keyword.P95, &keyword.Max, &keyword.Over300MS,
 		&total.Count, &total.P50, &total.P95, &total.Max, &total.Over300MS,
 	); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksOffersQuery,
 		report.Project, report.From, report.To, report.SourceKind,
 	).Scan(&report.OtherProjectOffers); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, report)

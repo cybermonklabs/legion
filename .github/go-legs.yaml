@@ -315,6 +315,8 @@ packages/envoy:
       - internal/dispatch/testlimits
       - internal/dispatch/model
       - internal/dispatch/accesslog
+      - internal/dispatch/admission
+      - internal/dispatch/logging
       - internal/dispatch/horizontest
       - internal/dispatch/pmdoc/heavybodies
       - internal/dispatch/benchtime

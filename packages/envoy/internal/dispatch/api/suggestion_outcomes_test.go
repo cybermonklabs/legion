@@ -708,7 +708,7 @@ func TestTheSuggestionSweepTrailsTheSafeHorizon(t *testing.T) {
 	awaitDatabaseClockPast(t, database, recorded)
 
 	schedule := suggestionSchedule{minGap: time.Second, page: suggestionOutcomePage}
-	low, _, commitLow := appendOutOfOrder(t, database, deps.Events, target, other)
+	low, _, commitLow, _ := appendOutOfOrder(t, database, deps.Events, target, other)
 	started := time.Now()
 	next, err := suggestionOutcomePass(ctx, database.Pool, srv.horizon(), schedule)
 	if err != nil {

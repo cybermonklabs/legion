@@ -306,14 +306,19 @@ func (w *typedWriter) ReadFrom(body io.Reader) (int64, error) {
 	return io.Copy(w.ResponseWriter, body)
 }
 
-func (w *typedWriter) Flush() {
+func (w *typedWriter) Flush() { _ = w.FlushError() }
+
+// FlushError is Flush answering what the flush met, so a read whose last bytes its reader did not
+// take is cut rather than read as answered whole (boundedAnswer.sent): http.ResponseController
+// stops at the first writer that only flushes and answers nil.
+func (w *typedWriter) FlushError() error {
 	if !w.wrote {
 		w.wrote = true
 		if answerNamesNoType(w.Header(), http.StatusOK) {
 			w.Header().Set("Content-Type", "application/octet-stream")
 		}
 	}
-	_ = http.NewResponseController(w.ResponseWriter).Flush()
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *typedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -389,7 +394,11 @@ type writeOnly struct{ io.Writer }
 
 // Flush sends what the answer has so far, which makes the choice if it is still open: a handler
 // that flushes has bytes it wants on the wire now, and below the threshold they go as they are.
-func (w *compressingWriter) Flush() {
+func (w *compressingWriter) Flush() { _ = w.FlushError() }
+
+// FlushError is Flush answering what the flush met - the compressor's failure, or the
+// connection's - for the reason typedWriter.FlushError gives.
+func (w *compressingWriter) FlushError() error {
 	if !w.settled {
 		_, _ = w.pass(nil, compressibleAnswer(w.Header()) && len(w.held) >= compressibleMinimum)
 	}
@@ -398,7 +407,10 @@ func (w *compressingWriter) Flush() {
 			w.err = err
 		}
 	}
-	_ = http.NewResponseController(w.ResponseWriter).Flush()
+	if w.err != nil {
+		return w.err
+	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Hijack hands over the connection for a handler that writes its own answer on it, the websocket
@@ -421,8 +433,16 @@ func (w *compressingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // connection's deadlines reaches it through this wrapper (accesslog.recorder.Unwrap).
 func (w *compressingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// answerEnder is the writer of a layer outside a read's bound that holds the last of its answer
+// until it is told the answer is over: the compression layer's, whose gzip stream ends in a final
+// block and a trailer only Close writes. servedAsRead ends the answer before it flushes it, so
+// those bytes go out under the answer's bound as the rest of it did, and a reader that stopped
+// just before them cuts the answer as one that stopped anywhere else does.
+type answerEnder interface{ finish() }
+
 // finish ends the answer: a compressed one is closed, so its trailer goes out and its compressor
-// returns to the pool, and one still held is written as it stands.
+// returns to the pool, and one still held is written as it stands. A read's answer is ended under
+// its bound (servedAsRead, answerEnder) and compressAnswers' call then finds nothing left to end.
 func (w *compressingWriter) finish() {
 	if w.gzip != nil {
 		if err := w.gzip.Close(); err != nil && w.err == nil {

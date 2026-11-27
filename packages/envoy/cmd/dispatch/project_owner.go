@@ -22,11 +22,33 @@ var projectOwnerActor = model.Actor{Kind: "system", ID: "envoy-dispatch project-
 // gives a project with no owner to DISPATCH_PROJECT_OWNER_FALLBACK's full member.
 var projectOwnerFallbackActor = model.Actor{Kind: "system", ID: "DISPATCH_PROJECT_OWNER_FALLBACK"}
 
-// giveOwnerlessProject is the boot's giver (store.EnsureProjectOwners): project key goes to owner when
-// it still has no owner, with the project.access_changed event and project_access_changes record
-// `envoy-dispatch project-owner` writes, under projectOwnerFallbackActor (access.GiveOwnerless).
-func giveOwnerlessProject(ctx context.Context, tx pgx.Tx, key, owner string) error {
-	return access.GiveOwnerless(ctx, tx, events.NewBroker(), key, owner, projectOwnerFallbackActor)
+// ownerGrants is the boot's giver (store.EnsureProjectOwners, through give): project key goes to
+// owner when it still has no owner, with the project.access_changed event and project_access_changes
+// record `envoy-dispatch project-owner` writes, under projectOwnerFallbackActor (access.GiveOwnerless).
+// Each event is appended through the process's own broker and kept, and publish hands them to it
+// once EnsureProjectOwners has answered nil, every grant then committed, as every other path that
+// appends an event publishes it after its commit (events.Broker.Publish), so the process's count of
+// committed events (Broker.Committed) holds the boot's grants too. A boot that fails exits, so a
+// grant it committed before the failure is counted by no process, as it is published by none.
+type ownerGrants struct {
+	broker   *events.Broker
+	appended []model.Event
+}
+
+func (g *ownerGrants) give(ctx context.Context, tx pgx.Tx, key, owner string) error {
+	event, err := access.GiveOwnerless(ctx, tx, g.broker, key, owner, projectOwnerFallbackActor)
+	if err == nil && event.ID != 0 {
+		g.appended = append(g.appended, event)
+	}
+	return err
+}
+
+// publish hands every grant's event to the broker, once their transactions have committed.
+func (g *ownerGrants) publish() {
+	for _, event := range g.appended {
+		g.broker.Publish(event)
+	}
+	g.appended = nil
 }
 
 // projectOwnerUsage is what `envoy-dispatch project-owner` prints for arguments it cannot take.

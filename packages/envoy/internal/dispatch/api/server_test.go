@@ -23,13 +23,17 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/githubrate"
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -203,6 +207,25 @@ type testServerOptions struct {
 	clock clock.Clock
 	// streamHeartbeat replaces the sockets' fifteen-second heartbeat.
 	streamHeartbeat time.Duration
+	// admission replaces the server's admission limiter; nil is the deployment's limits.
+	admission *admission.Limiter
+	// readDeadline replaces the server's read deadline; zero is the deployment's.
+	readDeadline time.Duration
+	// downloadDeadline replaces the deadline a file version download's work before its answer
+	// runs under (downloadDeadline, five minutes); zero is the deployment's.
+	downloadDeadline time.Duration
+	// requestPoolSize and acquireBound replace the request pool's size and its acquire bound
+	// (store.BoundAcquires), each when non-zero, so a test can fill the pool and see a request
+	// refused within a fraction of a second.
+	requestPoolSize int32
+	acquireBound    time.Duration
+	// dialRequestPool replaces how the request pool dials Postgres, so a test can put a fault on
+	// the socket pgx reads and writes; nil dials as the deployment does. It rebuilds the pool as
+	// requestPoolSize and acquireBound do.
+	dialRequestPool pgconn.DialFunc
+	// browserPeers lets the document service admit a browser peer by the X-Dispatch-User header,
+	// as connectBrowserPeer connects one; without it the document websocket refuses every peer.
+	browserPeers bool
 	// takeoverWindow replaces the listener take-over window (Deps.ListenerTakeoverWindow); zero is
 	// testTakeoverWindow. A test proving the window itself passes its own, listenerTakeoverWindow
 	// for the production twelve seconds.
@@ -228,6 +251,10 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// adviceQueryHook is the server's advice seam (server.adviceQueryHook): it runs before each
+	// advice query, on the savepoint inside the write's transaction that query runs on, with the
+	// query's name. Nil is production, which runs nothing.
+	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -235,6 +262,24 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// searchEmbedBound is the bound on a query's embedding (server.searchEmbedBound); zero keeps
+	// production's searchEmbedTimeout. A case that holds the embedding at its embedder until it
+	// lets it go passes pastTheRun, so the release and nothing else ends that embedding.
+	searchEmbedBound time.Duration
+	// githubRequestTimeout is the window of each call of the server's GitHub clients
+	// (DepsInput.GitHubRequestTimeout); zero keeps production's twenty seconds. A case that holds
+	// GitHub until it lets it go passes pastTheRun, so the release and nothing else ends the call.
+	githubRequestTimeout time.Duration
+	// githubRate is the process's count of its GitHub calls (DepsInput.GitHubRate); nil counts
+	// none, as before the rate reading.
+	githubRate *githubrate.Counter
+	// agentSecretsTimeout is the window of each call of the server's secrets broker client
+	// (cipher.WithTimeout), set on the client the server's Deps hold; zero keeps production's five
+	// seconds. A case that holds the broker until it lets it go passes pastTheRun.
+	agentSecretsTimeout time.Duration
+	// priorityPatchChecked is the server's hook in a priority patch whose expected has passed
+	// (server.priorityPatchChecked); nil is production, which runs nothing.
+	priorityPatchChecked func(id string)
 	// inboxStatementBound is the mark-all's and the dismissal's statement_timeout
 	// (server.inboxStatementBound); zero keeps production's inboxReadStatementTimeout. A case that
 	// holds a dismissal behind a lock of its own passes pastTheRun (seedHeldInboxRead).
@@ -361,8 +406,35 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if database == nil {
 		database = storetest.Open(t)
 	}
+	// The tracer's pool first: Traced replaces the configuration's tracer, so a request pool
+	// reopened below from its configuration keeps the tracer beside its acquire bound
+	// (store.BoundAcquires composes the two), where the other order would drop the bound.
 	if options.tracer != nil {
 		database = &store.Store{Pool: storetest.Traced(t, database.Pool, options.tracer, nil)}
+	}
+	if options.requestPoolSize != 0 || options.acquireBound != 0 || options.dialRequestPool != nil {
+		config := database.Pool.Config()
+		if options.requestPoolSize != 0 {
+			config.MaxConns = options.requestPoolSize
+			config.MinConns, config.MinIdleConns = 0, 0
+		}
+		if options.acquireBound != 0 {
+			store.BoundAcquires(config, options.acquireBound)
+		}
+		if options.dialRequestPool != nil {
+			config.ConnConfig.DialFunc = options.dialRequestPool
+		}
+		pool, err := pgxpool.NewWithConfig(context.Background(), config)
+		if err != nil {
+			t.Fatalf("open the request pool: %v", err)
+		}
+		requests := store.NewPool(pool)
+		// Close the store's whole pool set, not only the pgx pool it wraps: the pools this one
+		// opens on demand (the background loops', the live readers', the rooms') hold connections
+		// to the test's database of their own, and one left open fails storetest's drop of that
+		// database on any login without pg_signal_backend.
+		t.Cleanup(requests.Close)
+		database.Pool = requests
 	}
 	broker := events.NewBroker()
 	var documentPersistence docs.VersionedStore
@@ -373,7 +445,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	documentDeps := docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle}
+	if options.browserPeers {
+		documentDeps.Identity = headerIdentity(database)
+	}
+	documentService := docs.New(documentDeps)
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -396,21 +472,26 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
 	}
 	deps, err := NewDeps(DepsInput{
-		Store:            database,
-		Identity:         people,
-		AgentTokens:      sharedAgentTokens(t, "agent-token"),
-		NewIssueLabel:    options.newIssueLabel,
-		NewIssueSession:  options.newIssueSession,
-		ServerURL:        testServerURL,
-		Docs:             documentService,
-		Events:           broker,
-		Renames:          options.renames,
-		App:              options.app,
-		GitHubAPIBase:    options.githubAPIBase,
-		TestHooksEnabled: options.testHooks,
-		StreamHeartbeat:  options.streamHeartbeat,
-		EnvoyURL:         options.envoyURL,
-		EnvoyTimeout:     options.envoyTimeout,
+		Store:                database,
+		Identity:             people,
+		AgentTokens:          sharedAgentTokens(t, "agent-token"),
+		NewIssueLabel:        options.newIssueLabel,
+		NewIssueSession:      options.newIssueSession,
+		ServerURL:            testServerURL,
+		Docs:                 documentService,
+		Events:               broker,
+		Renames:              options.renames,
+		App:                  options.app,
+		GitHubAPIBase:        options.githubAPIBase,
+		GitHubRequestTimeout: options.githubRequestTimeout,
+		GitHubRate:           options.githubRate,
+		TestHooksEnabled:     options.testHooks,
+		StreamHeartbeat:      options.streamHeartbeat,
+		Admission:            options.admission,
+		ReadDeadline:         options.readDeadline,
+		DownloadDeadline:     options.downloadDeadline,
+		EnvoyURL:             options.envoyURL,
+		EnvoyTimeout:         options.envoyTimeout,
 		// Dispatch presents an identity of its own to the listener, as a deployment does: without
 		// one it refuses every send for a role (envoy.ErrNoListenerIdentity). The tests' stand-in listeners
 		// check no bearer.
@@ -444,6 +525,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
+	if options.agentSecretsTimeout != 0 && deps.AgentSecrets != nil {
+		deps.AgentSecrets.HTTP.Timeout = options.agentSecretsTimeout
+	}
 	deps.LiveSocketAge = options.liveSocketAge
 	deps.LiveSocketClock = options.liveSocketClock
 	mux := http.NewServeMux()
@@ -452,7 +536,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.agentWatchInterval != 0 {
 		served.agentWatchInterval = options.agentWatchInterval
 	}
+	served.adviceQueryHook = options.adviceQueryHook
 	served.duplicateBound = options.duplicateBound
+	served.searchEmbedBound = options.searchEmbedBound
+	served.priorityPatchChecked = options.priorityPatchChecked
 	served.inboxStatementBound = options.inboxStatementBound
 	served.mentionLookupBound = options.mentionLookupBound
 	served.withRelatedBound(options.relatedBound)

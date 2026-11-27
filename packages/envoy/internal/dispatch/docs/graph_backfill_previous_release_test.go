@@ -602,7 +602,7 @@ func tickWrites(t *testing.T, service *Service) (BlockIndexTick, map[string]bool
 // listed is whether service's owed listing, from the start, lists document.
 func listed(t *testing.T, service *Service, document string) bool {
 	t.Helper()
-	owed, err := service.owedDocuments(context.Background(), "")
+	owed, err := service.owedDocuments(context.Background(), testBackgroundPool(t, service), "")
 	if err != nil {
 		t.Fatal(err)
 	}

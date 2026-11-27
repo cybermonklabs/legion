@@ -46,7 +46,7 @@ type projectDefaultRepositoryInput struct {
 func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Request) {
 	var input projectDefaultRepositoryInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -55,7 +55,7 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 	}
 	repo, provided, err := parseIssueRepo(input.Repo, "INVALID_PROJECT")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !provided {
@@ -67,7 +67,7 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -77,7 +77,7 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 	// read phase and waits for the row to number the issue. The lock assigns no transaction id;
 	// the update is the first statement that writes.
 	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(r.PathValue("key"))); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	written, err := tx.Exec(r.Context(), `
@@ -85,14 +85,14 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 		where key = $1 and default_repo is distinct from $2
 	`, r.PathValue("key"), repo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An unknown project is 404 PROJECT_NOT_FOUND here. The update wrote no row for it, so
 	// nothing is left to roll back.
 	project, err := s.loadProject(r.Context(), tx, r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	stored := projectDefaultRepository{Project: project.Key, Repo: project.DefaultRepo}
@@ -104,11 +104,11 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.updated", actor, project))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

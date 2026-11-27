@@ -113,7 +113,7 @@ func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testin
 
 	rows := []struct {
 		route string
-		// recovered is a route that commits a recovery point (keyedReplays), and carries one whose
+		// recovered is a route that commits a recovery point (its row's replays), and carries one whose
 		// first answer holds a member a replay keeps (replayKeptMembers): an issue's post carries
 		// the write's advice, and a project document's comment carries none (createCommentFor).
 		// afresh is a recovered row whose first answer holds the deleted text only in what the
@@ -762,11 +762,16 @@ func TestAKeptAnswerHoldsTheObjectsItsOwnIDsName(t *testing.T) {
 // answerEndedByDelete leaves out the block text a reply carries of the post it answers
 // (reply_block), as every repeat that could give it reads the post again: each keyed route whose
 // answer can hold a reply block, as its declaration's Shape names the answer's Go type, answers a repeat
-// with the post read again (keyedRereads) or from its recovery point (keyedReplays), and no
-// refusal, which every route replays as kept, holds one.
+// with the post read again (keyedRereads) or from its recovery point (the replay its declaration names,
+// apiRoute.Replay), and no refusal, which every route replays as kept, holds one.
 func TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh(t *testing.T) {
 	t.Parallel()
-	replays := (&server{}).keyedReplays()
+	replays := map[string]keyedReplay{}
+	for _, route := range (&server{}).routes() {
+		if route.Replay != nil {
+			replays[route.Method+" "+route.Pattern] = route.Replay
+		}
+	}
 	found := 0
 	for _, declared := range routeRegistry {
 		route, shape, method := declared.Method+" "+declared.Pattern, declared.Shape, declared.Method

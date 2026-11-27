@@ -20,6 +20,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -165,7 +166,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	written, err := s.recordResultWithFreshWords(
 		r.Context(), request.issueKey, request.check, request.input, request.linkedCommitRepo, request.actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The read-through runs before the event: the Verification tab refetches on
@@ -213,7 +214,7 @@ func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
 // answers false.
 func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resultRequest, bool) {
 	refused := func(err error) (resultRequest, bool) {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return resultRequest{}, false
 	}
 	var input checkResultInput
@@ -572,12 +573,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	issueKey := r.PathValue("key")
 	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
@@ -588,17 +589,17 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for index := range checks {
@@ -614,12 +615,23 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		checks[index].Results = results
 	}
 	// Learn heads before deriving CI, so both reads use the same stored or request-local heads.
-	// The reader shares one merge-time fill across the comparison and every CI head.
+	// The reader shares one merge-time fill across the comparison and every CI head. Each stretch
+	// of GitHub calls the reader makes - a commit's pull requests, a repository's default branch,
+	// a commit's branch, a pull request's refresh - is a wait on another server, so the request
+	// holds no admission unit and no pinned connection across it (delivery.WithGitHubWait,
+	// awayOnNetwork). The reader reads a stretch that failed as no answer, so a take-back refused
+	// is read here, after learn and before each check is answered, and is the answer at once:
+	// every statement and stretch after it would fail on the refusal.
+	reading := delivery.WithGitHubWait(r.Context(), awayOnNetwork)
 	reader := newComparisonReader(r.Context(), s, at)
-	reader.learn(r.Context(), checks)
-	headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
+	reader.learn(reading, checks)
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
+	headCI, err := s.deriveCIResults(reading, reader, issueKey, checks)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader.headCI = headCI
@@ -631,7 +643,14 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for index := range checks {
-		reader.answer(r.Context(), &checks[index])
+		if refusedTakeBack(r.Context()) != nil {
+			break
+		}
+		reader.answer(reading, &checks[index])
+	}
+	if refused := refusedTakeBack(r.Context()); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
 	}
 	answerCompatibilityCurrency(checks, at)
 	body.Checks = checks
@@ -1479,6 +1498,12 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 //
 // It never fails the record: the row is written, and a head Dispatch could not learn leaves
 // the result read exactly as it would have been without the call.
+//
+// It runs after the result committed, so its GitHub stretches hold no admission unit and take it
+// back never refused (delivery.WithGitHubWait, awayOnNetworkNeverRefused): a result recorded is
+// never answered 429. The read-through reads GitHub first and writes its heads after, in one
+// transaction (delivery.Attributor.ReadThroughCommitPulls), so no connection is held across a
+// stretch.
 func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha string, repo *string) {
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
@@ -1491,8 +1516,9 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if known {
 		return
 	}
+	reading := delivery.WithGitHubWait(ctx, awayOnNetworkNeverRefused)
 	if _, _, err := s.deps.Attributor.ReadThroughCommitPulls(
-		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
+		reading, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)
 	}

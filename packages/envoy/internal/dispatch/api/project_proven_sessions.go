@@ -58,12 +58,12 @@ func (s *server) deleteProjectProvenSessions(w http.ResponseWriter, r *http.Requ
 func (s *server) setProjectProvenSessions(w http.ResponseWriter, r *http.Request, actor model.Actor, on bool) {
 	key := r.PathValue("key")
 	if err := s.storeProjectProvenSessions(r.Context(), key, actor, on); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	project, err := scanListedProject(s.deps.Store.Pool.QueryRow(r.Context(), projectRowQuery, key))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, project)

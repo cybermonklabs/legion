@@ -91,11 +91,11 @@ func isLifecycleWrite(ctx context.Context) bool {
 // into its own block: the answer route writes that block itself (SetBlockAttributes), and a write
 // from the row could put back an answer it left out for size. Each copy gets the ask's state,
 // answerer and time with the answer left out, as settlement writes a block whose document has no
-// room for its answer (withholdAnswers): no write here is weighed for size, so none adds an
+// room for its answer (weighAnswers): no write here is weighed for size, so none adds an
 // answer's bytes to a document. A copy that already holds the answer in full is left as it is
 // (answeredCopyAttributes), and the document's next settlement, which this write leaves owed and
 // which runs whether or not the issue is closed, writes the answer into the rest as it writes any
-// copy (withholdAnswers).
+// copy (weighAnswers).
 //
 // With markUnindexed it also writes state="resolved" into every readable ask block that neither
 // has an ask of its own on its document nor is a copy of another document's ask: a block no
@@ -767,7 +767,8 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 // the debt to the pending-settlement row - that the row still stands. Its caller decides whether to
 // run it again (SettleIssueDocuments). It waits for the room's durable appends to land first, but
 // not past deadline, so no attempt hangs past its caller's budget waiting for them; the settlement
-// itself runs under ctx alone. It takes the settleWG count of the timer it runs in place of, or one
+// itself runs under ctx and its own deadline, settleTimeout, as every settlement does
+// (settleRoomWithin). It takes the settleWG count of the timer it runs in place of, or one
 // of its own, so Shutdown joins it as it would the timer's settlement, and holds the room's state
 // across it, so the state the settlement looks up is the one whose generation it runs at.
 func (s *Service) settleOwedNow(ctx context.Context, room string, deadline time.Time) error {

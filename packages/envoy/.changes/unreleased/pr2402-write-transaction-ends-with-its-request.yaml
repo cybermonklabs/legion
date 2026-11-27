@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+  No write holds a database transaction past its own request. A write's issue-state advice - the
+  issue status, the calling session's writes since the last human event, its open asks and
+  `legion_managed_status` - now runs after the write has committed, on the request pool, bounded
+  by the request and 500 ms. It used to run inside the write's transaction, between its last lock
+  and its `COMMIT`: five to nine round trips during which the transaction held the event id it had
+  drawn, and so the safe event horizon every live event reader and every
+  `GET /api/v1/references?since=` read waits on, the issue or artifact owner row, the document's
+  advisory lock and the document's writer gate. Under load those round trips are scheduling
+  latency rather than database time, and in six load-test runs 23 of the 36 transactions found
+  holding the horizon back were sitting between two statements of that block, the longest for
+  27.7 seconds. The advice answers exactly what it answered: every one of its queries reads rows
+  the write has already committed, and the issue status it reports is still the one read under the
+  write's own lock. The approval a document write superseded (`superseded_approval`) is the one
+  part that stays inside the transaction, since it reads the version and the approval carry that
+  write has not committed yet. A write whose client goes away now ends its transaction there and
+  then: no commit is started for a request already gone - where the commit, detached from the
+  client by design, used to run on and land a write nobody would read, holding those same locks
+  for up to ten more seconds - and the `ROLLBACK` is sent on a context the cancellation does not
+  reach, so the transaction ends at once and the pooled connection goes back idle. Before, that
+  rollback was never sent at all: pgconn refuses a statement on a context that is already done, so
+  pgx killed the connection instead, and the server dialled a new one exactly when it was busiest.

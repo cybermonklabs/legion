@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The load test's cluster copy (`packages/envoy/loadtest/cluster/cluster.sh`) now names the session
+  that runs it on every pod it makes, so the compute spend accounting charges the copy's cost to
+  that session. `cluster.sh up` takes the session from the first of `OMP_SESSION_ID`,
+  `DISPATCH_SESSION_ID` and `PI_SESSION_ID` that is set and not empty, the order the builds Jobs
+  take theirs in, and puts `theorem.dev/omp-session=<session>` beside `dispatch-loadtest/run` on
+  each Deployment's and StatefulSet's pod template (Dispatch, the listener, the token issuer,
+  Postgres, NATS and nats-box) and on the bare runner pod. `state.json` records it as `session`,
+  so the pods a later command of the run makes (`db-size`'s Postgres, `redeploy`'s Dispatch)
+  carry the same session, whoever runs that command. `up` refuses, before it creates anything, a
+  value that is not a Kubernetes label value, naming the variable. With none of the three set (a
+  person running the script by hand), `up` says so in one note and labels no pod.

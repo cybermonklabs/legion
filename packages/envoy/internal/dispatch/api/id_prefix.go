@@ -161,7 +161,7 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 			// route answers for that {id} rather than for its block.
 			document, err := s.documentRefKey(r.Context(), r.PathValue("id"))
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if document != "" {
@@ -240,7 +240,7 @@ func (s *server) writeIDPrefixError(w http.ResponseWriter, r *http.Request, err 
 		writeAmbiguousID(w, ambiguous, wantsDisplayTrees(r))
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
 // itemNotFound is the 404 an item prefix that names nothing gets on a route whose own is

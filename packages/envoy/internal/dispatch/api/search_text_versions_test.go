@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
@@ -379,19 +379,50 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 // its pause while the reads were fast has waited there through the read's turn to slow, and then
 // releases the lock (keywordArmSlowRead): that batch writes, and the fill's next line is its
 // pause, with most of the backlog still to write. For the 20 s the lock on message_deliveries
-// then holds, while events are written, the cursor does not move. Once the lock is released,
-// reads go on, and for the 10 s after the slow read ended the cursor still stands; then the fill
+// then holds, while events are written, the cursor does not move. No one answers read stays slow
+// for those 20 s, because the request pool's lock_timeout refuses its wait for the lock at that
+// bound, so the test starts a new answers read at an interval shorter than that bound and than
+// the window the fill judges the reads slow over, while the lock holds, as an agent whose read
+// was refused tries it again. Each read that ends before the release is that refusal, and each
+// still in flight at the release answers once the lock is released. Once the lock is released,
+// reads go on, and for the 10 s after the slow reads ended the cursor still stands; then the fill
 // says it continues and the cursor moves, and every event, those written under the lock included,
 // gets its rows.
 func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	t.Parallel()
 	server := newKeywordServer(t)
+	// The request pool's lock bound, as its connections carry it: an answers read waits for the
+	// lock this long and is refused. A new read starts every readEvery, half the shorter of that
+	// bound and the window the fill judges the reads slow over (sessionanswers.SlowWithin).
+	var lockMillis int64
+	if err := server.database.Pool.QueryRow(t.Context(),
+		`select setting::bigint from pg_settings where name = 'lock_timeout'`).Scan(&lockMillis); err != nil {
+		t.Fatalf("read the request pool's lock_timeout: %v", err)
+	}
+	lockBound := time.Duration(lockMillis) * time.Millisecond
+	readEvery := min(lockBound, sessionanswers.SlowWithin) / 2
+	// A read refused at the bound is a slow end, which keeps the fill paused for SlowWithin
+	// (sessionanswers.Latency.Slow), and the read after it began at most readEvery after it began
+	// and so has run past SlowRead by readEvery + SlowRead: that must come inside SlowWithin, or a
+	// batch could slip into the gap between a refusal and the next slow read.
+	if readEvery+sessionanswers.SlowRead >= sessionanswers.SlowWithin {
+		t.Fatalf("a read every %v has run past %v only %v after the one before it began, not inside the %v a refused read keeps the fill paused",
+			readEvery, sessionanswers.SlowRead, readEvery+sessionanswers.SlowRead, sessionanswers.SlowWithin)
+	}
+	// The reads are refused half an interval either side of the release and never at it, so the
+	// bound is a whole number of intervals, and a read in flight at the release, begun at least
+	// half an interval before it, has run past SlowRead by then.
+	if lockBound%readEvery != 0 || readEvery/2 <= sessionanswers.SlowRead {
+		t.Fatalf("the request pool's lock_timeout %v is not a whole number of %v intervals, or half an interval is not past %v",
+			lockBound, readEvery, sessionanswers.SlowRead)
+	}
 	backlog := seedKeywordBacklog(t, server.database, server.deps.Events, 4000)
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
 	keywordRecordCursorWrites(t, server.database)
 	const answers = "/api/v1/agents/" + answersSession + "/answers"
-	fill, holder, held, wrote := keywordArmSlowRead(t, server, answers)
+	fill, holder, held, wrote := keywordArmSlowRead(t, server, answers, lockBound)
+	reads := []chan keywordAnswersRead{held}
 	defer func() { _ = holder.Rollback(context.Background()) }()
 	pausedAt := wrote + 1
 	batchesBeforePause := keywordCountLines(fill.Lines(t, "")[:pausedAt], keywordBatchLine)
@@ -409,13 +440,29 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	// The lock holds 20 s while events are written, and the cursor stands. The loop reads the
 	// cursor for the whole 20 s and writes on a tick, rather than waiting for something to hold,
 	// so it keeps its own clock.
+	//
+	// It starts an answers read every readEvery, at times counted back from the release by half
+	// of readEvery, so each read's lock wait runs out half an interval or more away from the
+	// release and none at it: those started within one bound of the release are in flight at the
+	// release, and the answers reads stay slow for the whole 20 s.
 	writes := 0
 	releaseAt := time.Now().Add(20 * time.Second)
+	var starts []time.Time
+	for start := releaseAt.Add(-readEvery / 2); start.After(time.Now()); start = start.Add(-readEvery) {
+		starts = append([]time.Time{start}, starts...)
+	}
 	for time.Now().Before(releaseAt) {
 		writes++
 		keywordWriteUnderLock(t, server, issue.Key, writes)
 		fill.Wake()
 		for sampled := time.Now(); time.Since(sampled) < 2*time.Second && time.Now().Before(releaseAt); {
+			for len(starts) > 0 && !time.Now().Before(starts[0]) {
+				reads = append(reads, keywordStartRead(t, server, answers))
+				starts = starts[1:]
+			}
+			if now := time.Now(); !server.latency.Slow(now) {
+				t.Fatalf("the answers reads were not slow %v before the lock's release", releaseAt.Sub(now))
+			}
 			if cursor := textversionstest.Cursor(t, server.database); cursor != paused {
 				t.Fatalf("the cursor moved from %d to %d while the answers read was held by the lock", paused, cursor)
 			}
@@ -425,7 +472,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	if batches := len(fill.Lines(t, keywordBatchLine)); batches != batchesBeforePause {
 		t.Fatalf("the fill logged %d batches while paused, want none", batches-batchesBeforePause)
 	}
-	// The held read ends after the lock is released, so after releasing: the fill may write
+	// The reads in flight at the release end after it, so after releasing: the fill may write
 	// nothing before releasing + 10 s. The database's clock is read too, through the holder before
 	// its rollback, for the check of the transaction starts it records (keywordRecordCursorWrites).
 	var releasingAtDatabase time.Time
@@ -436,9 +483,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	if err := holder.Rollback(t.Context()); err != nil {
 		t.Fatalf("release message_deliveries: %v", err)
 	}
-	if response := testwait.Receive(t, "the held answers read to answer once the lock is released", held); response.Code != http.StatusOK {
-		t.Fatalf("the held answers read answered %d: %s", response.Code, response.Body.String())
-	}
+	keywordAwaitHeldReads(t, reads, releasing, lockBound)
 
 	// For the 10 s after the held read ended the cursor stands, while reads go on, as agents'
 	// reads do. Each answers within 800 ms on an idle machine; one that takes longer, as on a
@@ -578,7 +623,7 @@ func startKeywordFill(t *testing.T, server keywordServer) *textversionstest.Fill
 // server reserves them (textversions.ReserveLeases), and answers the pool. A pool reserves each
 // caller's name once, so a test that stops the fill and runs it again runs the second on the same
 // reservation (runKeywordFill), as the one fill of a process would.
-func reserveKeywordFillLeases(t *testing.T, server keywordServer) *pgxpool.Pool {
+func reserveKeywordFillLeases(t *testing.T, server keywordServer) *store.RawPool {
 	t.Helper()
 	callers, err := server.database.Pool.Leases()
 	if err != nil {
@@ -593,7 +638,7 @@ func reserveKeywordFillLeases(t *testing.T, server keywordServer) *pgxpool.Pool 
 
 // runKeywordFill runs the fill beside server as startKeywordFill does, on leases, the pool
 // reserveKeywordFillLeases reserved.
-func runKeywordFill(t *testing.T, server keywordServer, leases *pgxpool.Pool) *textversionstest.Fill {
+func runKeywordFill(t *testing.T, server keywordServer, leases *store.RawPool) *textversionstest.Fill {
 	t.Helper()
 	serving := make(chan struct{})
 	close(serving)
@@ -624,8 +669,10 @@ const (
 // a batch of that fill, one that asked its pause while the reads were fast, waits on that lock,
 // and releases the lock. It answers once that batch has written and the fill has paused before
 // its next batch, with the fill, the transaction holding message_deliveries, on which the read is
-// held, the channel the held read answers on, and the index of the batch's line among the fill's
-// lines: the first line the fill logged after the read turned slow, the paused line the next.
+// held, the channel the held read answers on (keywordStartRead), and the index of the batch's line
+// among the fill's lines: the first line the fill logged after the read turned slow, the paused
+// line the next. lockBound is the request pool's lock bound, at which the held read's wait for the
+// lock is refused (keywordAwaitHeldReads).
 //
 // A batch waits on a lock for at most its lock_timeout, 5 s (textversions' batchBoundsQuery). A
 // batch begun again after one gave up its wait may have asked its pause with the read slow
@@ -644,12 +691,12 @@ const (
 // keywordMaxArmRounds rounds, and fails by its own name with what each round saw when none was
 // taken: a fill that logs another line before its pause, a pause that stops the batch in flight,
 // or a lock wait shorter than the read's turn to slow rejects every round.
-func keywordArmSlowRead(t *testing.T, server keywordServer, answers string) (*textversionstest.Fill, pgx.Tx, chan *httptest.ResponseRecorder, int) {
+func keywordArmSlowRead(t *testing.T, server keywordServer, answers string, lockBound time.Duration) (*textversionstest.Fill, pgx.Tx, chan keywordAnswersRead, int) {
 	t.Helper()
 	leases := reserveKeywordFillLeases(t, server)
 	var rejected []string
 	for round := 1; round <= keywordMaxArmRounds; round++ {
-		fill, holder, held, wrote, reason, ok := keywordSlowRound(t, server, leases, answers, round)
+		fill, holder, held, wrote, reason, ok := keywordSlowRound(t, server, leases, answers, lockBound, round)
 		if ok {
 			return fill, holder, held, wrote
 		}
@@ -671,9 +718,10 @@ const keywordMaxArmRounds = 10
 // message_deliveries until it is slow, and releases the cursor when the fill has logged only its
 // hold's take and that same batch alone still waits. It answers ok when the fill's next line is
 // that batch's and the one after it the paused line, and fails the test when the one after it is
-// a second batch's. Otherwise it lets the held read go, waits for its answer, stops the fill,
-// empties the keyword table and its cursor of what the round wrote, and answers why.
-func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, answers string, round int) (fill *textversionstest.Fill, holder pgx.Tx, held chan *httptest.ResponseRecorder, wrote int, reason string, ok bool) {
+// a second batch's. Otherwise it lets the held read go, waits for its answer
+// (keywordAwaitHeldReads, at lockBound), stops the fill, empties the keyword table and its cursor
+// of what the round wrote, and answers why.
+func keywordSlowRound(t *testing.T, server keywordServer, leases *store.RawPool, answers string, lockBound time.Duration, round int) (fill *textversionstest.Fill, holder pgx.Tx, held chan keywordAnswersRead, wrote int, reason string, ok bool) {
 	t.Helper()
 	// Each batch locks the cursor's row before it reads an event, which an exclusive lock of the
 	// cursor's table holds back; reads of the cursor go on.
@@ -693,8 +741,7 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, 
 	if _, err := holder.Exec(t.Context(), `lock table message_deliveries in access exclusive mode`); err != nil {
 		t.Fatalf("lock message_deliveries: %v", err)
 	}
-	held = make(chan *httptest.ResponseRecorder, 1)
-	go func() { held <- dispatchRequest(t, server.handler, http.MethodGet, answers, nil, "alice") }()
+	held = keywordStartRead(t, server, answers)
 	testwait.Until(t, "the answers read to wait on message_deliveries", func() (int, bool) {
 		queued, err := storetest.LockWaiters(t.Context(), holder)
 		if err != nil {
@@ -730,12 +777,11 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, 
 		reason = fmt.Sprintf("round %d: after the answers read turned slow the keyword fill logged %q, then %q, not the batch in flight and its pause", round, first, next)
 	}
 	t.Logf("%s; running the fill again", reason)
+	releasing := time.Now()
 	if err := holder.Rollback(t.Context()); err != nil {
 		t.Fatalf("release message_deliveries: %v", err)
 	}
-	if response := testwait.Receive(t, "the held answers read to answer once the lock is released", held); response.Code != http.StatusOK {
-		t.Fatalf("the held answers read answered %d: %s", response.Code, response.Body.String())
-	}
+	keywordAwaitHeldReads(t, []chan keywordAnswersRead{held}, releasing, lockBound)
 	fill.Stop(t)
 	if err := cursorLock.Rollback(t.Context()); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 		t.Fatalf("release the keyword fill's cursor: %v", err)
@@ -755,6 +801,49 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, 
 		}
 	})
 	return fill, holder, held, wrote, reason, false
+}
+
+// keywordAnswersRead is one answers read keywordStartRead started: when it began and ended, and
+// its answer.
+type keywordAnswersRead struct {
+	began, ended time.Time
+	response     *httptest.ResponseRecorder
+}
+
+// keywordStartRead starts an answers read of path answers through server's handler, and answers
+// the channel its keywordAnswersRead arrives on once it ends.
+func keywordStartRead(t *testing.T, server keywordServer, answers string) chan keywordAnswersRead {
+	done := make(chan keywordAnswersRead, 1)
+	began := time.Now()
+	go func() {
+		response := dispatchRequest(t, server.handler, http.MethodGet, answers, nil, "alice")
+		done <- keywordAnswersRead{began: began, ended: time.Now(), response: response}
+	}()
+	return done
+}
+
+// keywordAwaitHeldReads waits for each of reads (keywordStartRead), answers reads started while a
+// transaction held message_deliveries, which it released at releasing. The request pool refuses a
+// read's wait for a lock at its lock bound, lockBound, so each read that ended before the release
+// ran that wait out, began lockBound or more before it, and was refused 503 DATABASE_BUSY; each
+// still in flight at the release answers 200 once the lock is released. Its one bound is the test
+// binary's deadline (testwait.Receive).
+func keywordAwaitHeldReads(t *testing.T, reads []chan keywordAnswersRead, releasing time.Time, lockBound time.Duration) {
+	t.Helper()
+	for index, done := range reads {
+		read := testwait.Receive(t, "the held answers read to answer once the lock is released", done)
+		if read.ended.Before(releasing) {
+			if read.began.After(releasing.Add(-lockBound)) {
+				t.Fatalf("answers read %d began %v before the release and ended %v before it: a read started within the lock bound %v of the release must still be in flight at the release",
+					index+1, releasing.Sub(read.began), releasing.Sub(read.ended), lockBound)
+			}
+			assertRetryable(t, read.response.Result(), http.StatusServiceUnavailable, admission.CodeDatabaseBusy)
+			continue
+		}
+		if response := read.response; response.Code != http.StatusOK {
+			t.Fatalf("the held answers read answered %d: %s", response.Code, response.Body.String())
+		}
+	}
 }
 
 // keywordLineAt waits for fill to have logged its line index, and answers that line's message.

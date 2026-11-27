@@ -132,9 +132,11 @@ type ciRun struct {
 // jobs is nil and every head reads jobAtHeadNone. A head whose read did not end within the one
 // ciReadDeadline of the whole read is unread there alone (readCIHeads). An issue holding no check
 // CI proves asks nothing of the database or of GitHub. issueKey is the route's issue, whose
-// Verification document holds the checks and whose pull request heads they are read at. Only a
-// failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
-// answer.
+// Verification document holds the checks and whose pull request heads they are read at. The read
+// of every head is one wait on GitHub, so the request holds no admission unit and no pinned
+// connection across it (awayOnNetwork, on the request's own goroutine, around readCIHeads). Only
+// a failed read of Dispatch's own database, and a take-back refused after that wait, is an error;
+// whatever GitHub answers is a case of the answer.
 func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) (map[string]map[ciHeadKey]*model.CheckCI, error) {
 	var proved []provedCI
 	names := map[string]struct{}{}
@@ -172,7 +174,13 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 		}
 		return nil, nil
 	}
-	reads := s.readCIHeads(ctx, heads, names)
+	var reads []ciHeadRead
+	if refused := awayOnNetwork(ctx, func(ctx context.Context) error {
+		reads = s.readCIHeads(ctx, heads, names)
+		return nil
+	}); refused != nil {
+		return nil, refused
+	}
 	var jobs map[string]map[ciHeadKey]jobAtHead
 	answers := make(map[string]map[ciHeadKey]*model.CheckCI, len(proved))
 	for _, p := range proved {
@@ -343,7 +351,10 @@ type provedCI struct {
 // held names to that rule can make `acme/..` the canonical name of a row, and its halves would go
 // into the paths as they are. A deployment holding no App key, a token GitHub would not mint, an
 // HTTP error, a rate limit and the deadline are each the error, worded as GitHub answered it. The
-// token never reaches it: it is sent in a header, and no answer names it.
+// token never reaches it: it is sent in a header, and no answer names it. The read is a wait on
+// GitHub, which the request makes holding no admission unit and no pinned connection:
+// deriveCIResults gives them back around the reads of every head (readCIHeads), on the request's
+// own goroutine, since the heads are read on goroutines of their own.
 func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names map[string]struct{}) (map[string]*ciRun, error) {
 	owner, repo, err := refs.SplitGitHubRepo(head.Repo)
 	if err != nil {

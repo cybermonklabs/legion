@@ -137,7 +137,7 @@ func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.deps.Store.Pool.Query(r.Context(), knownSessionsStatement, ids)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -145,13 +145,13 @@ func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var session knownSession
 		if err := rows.Scan(&session.SessionID, &session.Title); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		answer.Sessions = append(answer.Sessions, session)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)

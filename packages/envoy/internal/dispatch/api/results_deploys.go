@@ -60,7 +60,7 @@ func (s *server) createDeploy(w http.ResponseWriter, r *http.Request) {
 	// whatever it sends.
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	var input deployInput
@@ -70,7 +70,7 @@ func (s *server) createDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	repo, err := s.deployRepository(input.Repo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !deployProgram.MatchString(input.Program) || !resultCommitSHA.MatchString(input.Commit) {
@@ -86,7 +86,17 @@ func (s *server) createDeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "DEPLOY_INPUT", http.StatusBadRequest, "deployed_at must not be more than five minutes in the future")
 		return
 	}
-	held, readErr := delivery.RepositoryHoldsCommit(r.Context(), s.deps.GitHub, repo, input.Commit)
+	// The read of GitHub is a wait on another server, so the write holds no admission unit across
+	// it (awayOnNetwork); a take-back refused is the write's answer, before anything is written.
+	var held bool
+	var readErr error
+	if refused := awayOnNetwork(r.Context(), func(ctx context.Context) error {
+		held, readErr = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, repo, input.Commit)
+		return nil
+	}); refused != nil {
+		s.writeHandlerError(w, r, refused)
+		return
+	}
 	if readErr == nil && !held {
 		writeError(w, "DEPLOY_COMMIT_UNKNOWN", http.StatusBadRequest, "the repository holds no such commit")
 		return
@@ -108,7 +118,7 @@ func (s *server) createDeploy(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &late) {
 			writeError(w, "DEPLOY_NOT_NEWEST", http.StatusConflict, late.Error())
 		} else {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 		}
 		return
 	}
@@ -125,7 +135,7 @@ func (s *server) listDeploys(w http.ResponseWriter, r *http.Request) {
 	}
 	repo, err := s.deployRepository(r.URL.Query().Get("repo"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
@@ -134,7 +144,7 @@ func (s *server) listDeploys(w http.ResponseWriter, r *http.Request) {
 	}
 	deploys, err := delivery.CurrentDeploys(r.Context(), s.deps.Store.Pool, repo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, deploysResponse{Repo: repo, Deploys: deploys})

@@ -387,7 +387,7 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 	subscribeEvents(t, client, "events", nil)
 
 	// Appended through a broker of process A's own: B learns of them only from the rows.
-	low, high, commitLow := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
+	low, high, commitLow, _ := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
 	expectNoEventAbove(t, client, "events", low-1, time.Second, "on process B while process A's lower id is open")
 	commitLow()
 	expectEventsInOrder(t, client, "events", low, high)
@@ -395,10 +395,10 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 
 // A gap held open above the safe horizon (an id still open below one that committed) has the relay
 // re-read the event log every 10-250 ms until the gap closes, for as long as the transaction
-// holding it stays open. That re-read asks only the horizon, on the horizon's own connections, and
-// reads the shared pool once the horizon has moved past the generation's cursor, so a gap a long
-// transaction holds open takes no connection a request needs. The reset check, a shared-pool
-// query, runs on the reads a notification wakes.
+// holding it stays open. That re-read asks only the horizon, on the horizon's own pool, and reads
+// the live pool once the horizon has moved past the generation's cursor, so a gap a long
+// transaction holds open takes no connection a request or an open page needs. The reset check, a
+// live-pool query, runs on the reads a notification wakes.
 func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -412,23 +412,24 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
 	quietRelayReads(t, reads)
 
-	low, high, commitLow := appendOutOfOrder(t, database, deps.Events, issue.Key, other.Key)
+	low, high, commitLow, _ := appendOutOfOrder(t, database, deps.Events, issue.Key, other.Key)
 	// The higher id's commit notifies: that read checks for a reset, takes the horizon and leaves
 	// the gap open, publishing nothing, and the re-read it asks for at once finds the lower id's
 	// write still running and holds the gap. The shared pool's connections are counted only once
 	// the gap is held, so that read's reset check is not among them.
 	waitUntil(t, "the relay's reads of the higher id to hold the gap below it", func() bool {
-		return relay.server.horizon().Gap() == events.GapHeld
+		h := relay.server.horizon()
+		return h.Gap(h.Proven()) == events.GapHeld
 	})
 	select {
 	case event := <-subscription:
 		t.Fatalf("the relay published event %d while the lower id %d was still open", event.Event.ID, low)
 	case <-time.After(time.Second):
 	}
-	before := acquires(deps.Store)
+	before := readAcquires(deps.Store)
 	time.Sleep(time.Second)
-	if got := acquires(deps.Store); got != before {
-		t.Fatalf("the relay's gap re-reads took %d shared-pool connections while %d stayed open, want none", got-before, low)
+	if got := readAcquires(deps.Store); got != before {
+		t.Fatalf("the relay's gap re-reads took %d request- or live-pool connections while %d stayed open, want none", got-before, low)
 	}
 	if len(reads) != 0 {
 		t.Fatalf("the relay read the event log %d times while the gap below %d stood open, want none", len(reads), high)
@@ -436,6 +437,107 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 
 	commitLow()
 	receiveRelayedThrough(t, database, subscription, opened, high)
+}
+
+// A gap re-read is scheduled on the horizon the read read the log through, not on the one the
+// Horizon holds by the time that read decides. Another reader of the process observes in
+// between - the delivery hub's intake, a `GET /api/v1/references?since=` read - and its
+// observation can prove the ids this read could not publish final: H then stands at the newest
+// id observed, with nothing above it, though this relay has published nothing past its own
+// cursor. Here the id open below the committed one rolls back, which notifies nothing, and the
+// other reader's Await moves H past both while the read is between its own Safe and its
+// decision. Nothing commits afterwards, so a decision taken on the Horizon's H alone would
+// leave the committed event unpublished until some unrelated write woke the relay, and every
+// open page would miss it.
+//
+// This is the branch merge 02f52aea lost with this branch's
+// TestAHubRereadsTheGapAnotherReaderProvedWhileItRead: the hub no longer reads the log, so the
+// relay's read holds it (eventStreamRelay.read, events.Horizon.Gap).
+func TestARelayRereadsTheGapAnotherReaderProvedWhileItRead(t *testing.T) {
+	t.Parallel()
+	// Settlement is held off, so nothing of the seeded specs commits an event behind the
+	// relay's back: only this test's own appends wake it, and after the rollback nothing
+	// notifies at all.
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
+	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "A spec")
+	relay, reads := newCountedRelay(t, deps)
+	dials := recordRelayDials(relay, deps)
+	var armed atomic.Bool
+	caught, released := make(chan struct{}), make(chan struct{})
+	var letGo atomic.Bool
+	release := func() {
+		if letGo.CompareAndSwap(false, true) {
+			close(released)
+		}
+	}
+	// A test that fails before it lets the relay on lets it go as it ends, so the read held at
+	// its decision does not outlast the relay's stop.
+	t.Cleanup(release)
+	// The read makes this call between its own Safe and the gap it decides on.
+	relay.deciding = func(int64) {
+		if armed.CompareAndSwap(true, false) {
+			close(caught)
+			<-released
+		}
+	}
+	subscription, _, opened := subscribeRelay(t, relay)
+	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
+	quietRelayReads(t, reads)
+
+	low, high, _, rollbackLow := appendOutOfOrder(t, database, deps.Events, issue.Key, other.Key)
+	armed.Store(true)
+	// The higher id's commit notifies, and the gap it leaves open has the relay read again
+	// every 10-250 ms: one of those reads is held at its decision, having published nothing.
+	testwait.Receive(t, "a read of the log to decide a gap while the lower id stood open below the committed one", caught)
+
+	rollbackLow()
+	proven, err := relay.server.horizon().Await(t.Context())
+	if err != nil || proven < high {
+		t.Fatalf("the other reader's Await once id %d had rolled back = %d, %v; want at least the committed %d", low, proven, err, high)
+	}
+	release()
+
+	receiveRelayedThrough(t, database, subscription, opened, high)
+	if published := relayPublished(relay); published < high {
+		t.Fatalf("the relay published through %d, want the committed %d another reader proved final", published, high)
+	}
+}
+
+// The gap re-read's own backoff, which that race decides the horizon of: the first held gap
+// (events.GapHeld) waits eventRelayGapMin, a held gap the horizon has not moved under doubles the
+// wait to eventRelayGapMax, and a held gap over a horizon that moved waits from eventRelayGapMin
+// again, since a horizon that moves is the gap closing from below and the next re-read is the one
+// worth making soon. A read that left no gap open schedules nothing at all.
+func TestTheGapRereadWaitsFromTheStartAgainWhenTheHorizonMoves(t *testing.T) {
+	t.Parallel()
+	var gaps eventGapReread
+	defer gaps.stop()
+
+	gaps.schedule(10, events.GapHeld)
+	if gaps.wait != eventRelayGapMin {
+		t.Fatalf("the first gap waits %s, want %s", gaps.wait, eventRelayGapMin)
+	}
+	gaps.schedule(10, events.GapHeld)
+	if gaps.wait != 2*eventRelayGapMin {
+		t.Fatalf("a gap over the same horizon waits %s, want the first wait doubled (%s)", gaps.wait, 2*eventRelayGapMin)
+	}
+	for range 10 {
+		gaps.schedule(10, events.GapHeld)
+	}
+	if gaps.wait != eventRelayGapMax {
+		t.Fatalf("a gap the horizon stands still under waits %s, want at most %s", gaps.wait, eventRelayGapMax)
+	}
+
+	gaps.schedule(11, events.GapHeld)
+	if gaps.wait != eventRelayGapMin {
+		t.Fatalf("a gap over a horizon that moved waits %s, want %s", gaps.wait, eventRelayGapMin)
+	}
+
+	gaps.schedule(11, events.GapNone)
+	if gaps.wait != 0 || gaps.due() != nil {
+		t.Fatalf("a read that left no gap scheduled a re-read after %s", gaps.wait)
+	}
 }
 
 // TestEventStreamRelayCatchesUpWhenItsListenerReconnects covers the window a redial leaves: a
@@ -657,7 +759,7 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	if _, err := database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {
 		t.Fatalf("reset the event log: %v", err)
 	}
-	low, high, commitLow := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
+	low, high, commitLow, _ := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
 	if high >= head {
 		t.Fatalf("event %d committed after the reset is not below the pre-reset head %d: the reset reused no id, so this test proves nothing", high, head)
 	}

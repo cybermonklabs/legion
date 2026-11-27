@@ -40,7 +40,7 @@ func (s *server) writeItemBlocks(w http.ResponseWriter, r *http.Request, kind re
 	}
 	answer, err := s.itemBlocks(r.Context(), who, kind, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)
