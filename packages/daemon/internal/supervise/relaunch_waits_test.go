@@ -696,6 +696,64 @@ func TestADroppedDeathRelaunchGivesBackItsOneLaunchFailure(t *testing.T) {
 	})
 }
 
+// A running verdict, a read at a caller's request (ReadProcess) or the sweep's report, that comes
+// after a restart and before the boot's replay of a decided death gives nothing back, as main
+// gives nothing back there (dispatch://INFRA-1117/comment/3859c597-2267-417b-a57d-be9738fdfebc).
+// The verdict ends the death (reportedProcess), so the replay finds no death decided and raises no
+// relaunch (relaunchRecordedDeath); no wake holds the relaunch the restart lost, so no drop gives
+// its launch failure back (dropOutlivedRelaunch). The launch failure a task's write stored while
+// that relaunch waited stays counted, with died pending, in the claim and in the store, until the
+// next ready clears both, and nothing starts: what main counts and starts in the same order.
+//
+// It pins main's behaviour, which no line of this change touches, so it has no negative control
+// of this change. A regression would have to change relaunchRecordedDeath's first case, which
+// returns over a claim whose running verdict cleared Claim.DeathCharged, or give a launch failure
+// back where no wake carries it: a budget write in reportedProcess, ReadProcess or
+// relaunchRecordedDeath, which TestOutcomeSourceHoldsThePolicyAtItsSites refuses unless
+// budgetGiveBacks lists it.
+func TestARunningVerdictBeforeTheBootsReplayGivesNothingBackAsMainDoes(t *testing.T) {
+	// counts fails unless the claim and the store each count one launch failure and no death,
+	// with died pending and no death decided.
+	counts := func(t *testing.T, h *harness, when string) {
+		t.Helper()
+		for whose, c := range map[string]Claim{"the claim": h.claim(), "the store": h.store.load(h.token)} {
+			if c.Budgets != (Budgets{LaunchFailures: 1}) || c.PendingCause != CauseDied || c.DeathCharged {
+				t.Fatalf("%s counts %+v with %q pending and deathCharged=%v %s, want main's one launch failure, no death, %q pending and the death over",
+					whose, c.Budgets, c.PendingCause, c.DeathCharged, when, CauseDied)
+			}
+		}
+	}
+	for _, verdict := range []struct {
+		name string
+		run  func(t *testing.T, h *harness)
+	}{
+		{"a read at a caller's request", readRunning},
+		{"the sweep's report", func(_ *testing.T, h *harness) { h.observe(runtime.Alive) }},
+	} {
+		t.Run(verdict.name+" finding the process running before the boot's replay", func(t *testing.T) {
+			h := pacedHarness(t, wakeRate)
+			h.reach(StateIdle)
+			queueAhead(h, 1)
+			h.observe(runtime.Gone)
+			h.must(RequestDeliver{Claim: h.token, Task: "the phase's task", ID: "outbox:7", Row: 7})
+			if s := h.store.load(h.token); s.Budgets != (Budgets{LaunchFailures: 1}) || s.PendingCause != CauseDied || !s.DeathCharged {
+				t.Fatalf("the store holds %+v with %q pending and deathCharged=%v before the restart, want the death decided and its relaunch's launch failure stored",
+					s.Budgets, s.PendingCause, s.DeathCharged)
+			}
+			restartBehindAWave(t, h)
+			verdict.run(t, h)
+			counts(t, h, "after the running verdict")
+			starts := h.starts(h.token)
+			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+			if held := h.m.View().WakeWaiting; held != nil {
+				t.Fatalf("the boot's replay left wake %+v, want none: the running verdict ended the death", held)
+			}
+			h.wantStarts(h.token, starts)
+			counts(t, h, "after the boot's replay")
+		})
+	}
+}
+
 // The boot's replay of a recorded end from outside the pod raises that end's launch as the end
 // itself raised it, through launch itself (relaunchRecordedDeath, launchAfter), and never as a
 // death's relaunch (relaunchDeath): the wake it parks behind the restart's wave is not marked as
