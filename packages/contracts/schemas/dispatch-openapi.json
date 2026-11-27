@@ -10781,7 +10781,12 @@
             }
           }
         },
-        "x-auth": "any"
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "project"
       }
     },
     "/api/v1/projects/{key}/access/people/{email}": {
@@ -10836,7 +10841,12 @@
             }
           }
         },
-        "x-auth": "any"
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person",
+          "approve"
+        ],
+        "x-write-scope": "project"
       }
     },
     "/api/v1/projects/{key}/architecture": {
@@ -13711,6 +13721,41 @@
         "x-auth": "any",
         "x-test-hook": true,
         "x-write-scope": "deployment"
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "The process's Prometheus metrics, for an open viewer; a restricted member's credential, or one acting for one, is 403 DEPLOYMENT_READ_REFUSED.",
+        "operationId": "getMetrics",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "the Prometheus text exposition format the process's metrics registry writes (metrics.Registry.Handler), not JSON",
+            "content": {
+              "text/plain": {}
+            }
+          }
+        },
+        "x-auth": "any"
       }
     }
   },

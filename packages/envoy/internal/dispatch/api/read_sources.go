@@ -83,6 +83,7 @@ var readSources = map[string]readSource{
 	// What the server answers of itself: no row any caller's access decides.
 	"GET /api/v1":                          reads("the route index, read from this table and naming no row", nil, readclass.None),
 	"GET /api/v1/schema/blocks":            reads("the block schema this build serves, alike for every caller", nil, readclass.None),
+	"GET /metrics":                         reads("the process's counters of the whole deployment's work, which name no project, issue, person or session (readclass's TestMetricsNameNoProject)", nil, readclass.Deployment),
 	"GET /api/v1/limits":                   reads("the bounds a write is held to, constants of the build", nil, readclass.None),
 	"GET " + goingCataloguePath:            reads("the catalogue of operations, built from this table at start", nil, readclass.None),
 	"GET /api/v1/going/capability":         reads("whether the deployment configured a text model, which names no row", nil, readclass.None),

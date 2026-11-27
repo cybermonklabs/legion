@@ -591,6 +591,11 @@ var routeShapes = map[string]routeShape{
 		Opaque:             "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
 		OpaqueContentTypes: []string{"application/json"},
 	},
+	"GET /metrics": {
+		Status:             http.StatusOK,
+		Opaque:             "the Prometheus text exposition format the process's metrics registry writes (metrics.Registry.Handler), not JSON",
+		OpaqueContentTypes: []string{"text/plain"},
+	},
 	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
 	"POST /api/v1/markdown/round-trip": {
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},

@@ -113,6 +113,9 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	if identityMode == "iap" {
 		return checkIAPSignInSettings(boot)
 	}
+	if len(boot.SignInWorkspaceDomains) > 0 && boot.SignInDomain == "" {
+		return errors.New("DISPATCH_SIGNIN_WORKSPACE_DOMAINS needs DISPATCH_SIGNIN_DOMAIN: it lists the other domains of the Workspace whose people sign in with Google, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
+	}
 	if boot.SignInGroup != "" && boot.SignInDomain != "" {
 		return errors.New("DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set; set one: a Cognito pool's group, or a Google Workspace domain")
 	}
@@ -174,6 +177,12 @@ func checkIAPSignInSettings(boot bootConfig) error {
 		if setting.value != "" {
 			refused = append(refused, setting.name)
 		}
+	}
+	if boot.OutsideOrigin != "" {
+		refused = append(refused, "DISPATCH_OUTSIDE_ORIGIN")
+	}
+	if len(boot.SignInWorkspaceDomains) > 0 {
+		refused = append(refused, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
 	}
 	if len(refused) > 0 {
 		return fmt.Errorf("%s must be unset under DISPATCH_IDENTITY=iap: Identity-Aware Proxy signs people in, so Dispatch runs no sign-in of its own and admits the people of DISPATCH_SIGNIN_DOMAIN", strings.Join(refused, ", "))
