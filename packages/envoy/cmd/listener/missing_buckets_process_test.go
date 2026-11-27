@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +38,59 @@ func healthzMissing(t *testing.T, port int) (int, string, []string) {
 	}
 	_ = json.Unmarshal([]byte(body), &answer)
 	return code, answer.Status, answer.Missing
+}
+
+// restartAnswer is one request's answer from a listener that is starting: its status code, the
+// "status" and "missing_buckets" of a /healthz body, and the body; or the request's failure, a
+// transport error or no answer by its deadline.
+type restartAnswer struct {
+	code    int
+	status  string
+	missing []string
+	body    string
+	err     error
+}
+
+func (a restartAnswer) String() string {
+	if a.err != nil {
+		return "no answer: " + a.err.Error()
+	}
+	return fmt.Sprintf("%d %q %v %s", a.code, a.status, a.missing, a.body)
+}
+
+// probeRestart sends method path with body to the listener on port, as callListener does, and
+// answers what came back by deadline, or the failure, which it does not end the test over: a
+// start that has not served yet is a probe that read nothing, which the caller judges.
+func probeRestart(t *testing.T, port int, deadline time.Time, method, path, body string) restartAnswer {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, method, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return restartAnswer{err: err}
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		return restartAnswer{err: err}
+	}
+	answer := restartAnswer{code: response.StatusCode, body: string(raw)}
+	var health struct {
+		Status  string   `json:"status"`
+		Missing []string `json:"missing_buckets"`
+	}
+	if json.Unmarshal(raw, &health) == nil {
+		answer.status, answer.missing = health.Status, health.Missing
+	}
+	return answer
 }
 
 // requireBucketMissing fails the test unless the server js reaches holds no bucket named bucket.
@@ -123,31 +180,48 @@ func TestACopiedBucketDeletedUnderARunningListenerStaysMissing(t *testing.T) {
 	// finds the deleted bucket still missing. The start is judged by the bucket's state and its
 	// answers from its first moment, not after a wait for its log line: a start that created the
 	// bucket logs no such line, and a wait for it would end the test before any of the checks
-	// below ran. Each pass reads the bucket first, so such a start fails here, naming the bucket
-	// it created; and the start must answer 503 "waiting" for 10 s on end, inside 30 s.
+	// below ran. Each pass reads the bucket first, so such a start fails there, naming the bucket
+	// it created. Each request is bounded by what is left of the 30 s the start has to answer 503
+	// "waiting" (probeRestart), so a start that never answers fails at that bound rather than at
+	// the test binary's timeout; a request the start does not answer before it first waits - no
+	// answer yet, or a transport error - is a probe that read nothing, and the pass is tried
+	// again; and a start that exits fails the test, naming its exit. Once it has answered
+	// "waiting", it must go on answering it, and refusing a registration 503, for 10 s.
 	restarted := startListenerProcess(t, binary, uri, "bucket-deleted-under")
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("the restarted listener's output:\n%s", restarted.Output.String())
 		}
 	})
-	started := time.Now()
+	bound := time.Now().Add(30 * time.Second)
+	if deadline, ok := t.Deadline(); ok && deadline.Before(bound) {
+		bound = deadline
+	}
 	var waited time.Time
 	for waited.IsZero() || time.Since(waited) < 10*time.Second {
 		requireBucketMissing(t, js, bus.SessionBucket, "while a start waits on it")
-		code, status, missing := healthzMissing(t, restarted.port)
-		waiting := code == http.StatusServiceUnavailable && status == "waiting" && slices.Equal(missing, []string{bus.SessionBucket})
+		select {
+		case <-restarted.Exited:
+			t.Fatalf("the start on the missing bucket exited, want it waiting at its gate:\n%s", restarted.Output.String())
+		default:
+		}
+		limit := bound
+		if !waited.IsZero() {
+			limit = time.Now().Add(5 * time.Second)
+		}
+		answer := probeRestart(t, restarted.port, limit, http.MethodGet, "/healthz", "")
+		waiting := answer.err == nil && answer.code == http.StatusServiceUnavailable && answer.status == "waiting" && slices.Equal(answer.missing, []string{bus.SessionBucket})
 		switch {
 		case waiting && waited.IsZero():
 			waited = time.Now()
 		case !waiting && !waited.IsZero():
-			t.Fatalf("/healthz of a start waiting on the bucket = %d %q %v, want 503 waiting naming %s", code, status, missing, bus.SessionBucket)
-		case !waiting && time.Since(started) > 30*time.Second:
-			t.Fatalf("/healthz of the start 30 s after it began = %d %q %v, want 503 waiting naming %s", code, status, missing, bus.SessionBucket)
+			t.Fatalf("/healthz of a start waiting on the bucket = %s, want 503 waiting naming %s", answer, bus.SessionBucket)
+		case !waiting && !time.Now().Before(bound):
+			t.Fatalf("/healthz of the start at its 30 s bound = %s, want 503 waiting naming %s", answer, bus.SessionBucket)
 		}
 		if waiting {
-			if code, answer := callListener(t, restarted.port, http.MethodPost, "/v1/interests/subscribe", registration); code != http.StatusServiceUnavailable {
-				t.Fatalf("a registration while the start waits on the bucket answered %d %s, want 503", code, answer)
+			if refused := probeRestart(t, restarted.port, time.Now().Add(5*time.Second), http.MethodPost, "/v1/interests/subscribe", registration); refused.err != nil || refused.code != http.StatusServiceUnavailable {
+				t.Fatalf("a registration while the start waits on the bucket = %s, want 503", refused)
 			}
 		}
 		time.Sleep(time.Second)
