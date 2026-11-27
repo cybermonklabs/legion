@@ -1,0 +1,21 @@
+---
+type: requirement
+id: a-claim-survives-a-restart
+kind: behavior
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.
+---
+type: check
+id: each-claim-is-in-the-graph
+serves: a-claim-survives-a-restart
+subject: graph
+procedure: query
+test:
+  runner: go
+  selector: example.com/acme/daemon TestEachClaimIsInTheGraph
+  job: go-checks
+claim: The graph holds each claim that the daemon made before a restart.
+procedure_text:
+  - The query returns each claim that the daemon made and that the graph does not hold.
+failing_example:
+  - A copy of the graph with one claim removed.

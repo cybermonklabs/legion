@@ -45,6 +45,10 @@
       "types": "./src/mise-environment.ts",
       "bun": "./src/mise-environment.ts"
     },
+    "./names-whole": {
+      "types": "./src/names-whole.ts",
+      "bun": "./src/names-whole.ts"
+    },
     "./package-build": {
       "types": "./src/package-build.ts",
       "bun": "./src/package-build.ts"
