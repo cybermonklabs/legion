@@ -1,4 +1,4 @@
--- 20261125125715_pull_request_heads_lifecycle.up.sql
+-- 20261126005345_pull_request_heads_lifecycle.up.sql
 --
 -- Every write that opens or closes a row of pull_request_heads, on the database's own clock, kept
 -- until the former heads install has read it (pull_request_heads_lifecycle): one row for each
@@ -16,8 +16,8 @@
 -- on GitHub's clock, which each later edit of the closed pull request moves, and a write that
 -- names none keeps an earlier one.
 --
--- The former heads install (migration 20261125125718) is the record's one reader, and the
--- migration after it (20261125125719) drops the table, its triggers and its function, so no write
+-- The former heads install (migration 20261126005348) is the record's one reader, and the
+-- migration after it (20261126005349) drops the table, its triggers and its function, so no write
 -- appends to it once the install has read it. The install commits in a transaction of its own
 -- after this one, and a writer of the release before it can close a pull request and reopen it
 -- between the two, which leaves its row open. So the install reads this record, not the rows'
@@ -70,7 +70,7 @@ create index pull_request_heads_lifecycle_number on pull_request_heads_lifecycle
 -- pair's new name, and any other name is itself as it is given. So the row a writer keys under the
 -- canonical name (delivery's Attributor) is the row this name finds. A database without
 -- repo_projects holds no pairs, as ReadRepoRenames reads none there, so the table is read only
--- once it is there. The install (20261125125718) and the settler read it too.
+-- once it is there. The install (20261126005348) and the settler read it too.
 create function pull_request_canonical_repo(text) returns text language plpgsql stable as $$
 declare
   renamed text;

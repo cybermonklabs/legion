@@ -1,6 +1,6 @@
--- 20261125125709_check_states_owe_document_blocks.up.sql
+-- 20261126005339_check_states_owe_document_blocks.up.sql
 -- A check block of a Verification document that the block index inserts, changes or deletes marks
--- the check states of the document's issue owed (check_states_owe_check_block, 20261125125704):
+-- the check states of the document's issue owed (check_states_owe_check_block, 20261126005334):
 -- the results read takes each check's words, version and digest from document_blocks, so a
 -- change of a check's words is a write here, whichever build or reconciliation indexed it. The
 -- update trigger fires only where the type, the digest or the changed version moved: the index
