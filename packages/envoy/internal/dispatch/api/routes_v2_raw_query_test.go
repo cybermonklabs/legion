@@ -91,8 +91,8 @@ func declaringFunction(fn *lockFunction) string {
 // read of the raw query (rawQueryRead), and follows each row's handler through everything it
 // calls and every function it hands on, as the keyed-write guard does. A handler is a /api/v2
 // handler when the row it is declared on is mounted at a /api/v2 route the rules bind
-// (apiRoute.v2Bound): the table decides, not the file's name, so a handler a v2_<group>.go row
-// names and one a v1Row names are told apart however the files are laid out, and a handler one
+// (apiRoute.v2Bound): the table decides, not the file's name, so a handler a /api/v2 row file
+// names and one a /api/v1 route file names are told apart however the files are laid out, and a handler one
 // row serves in both versions is a /api/v2 handler. The walk from a /api/v2 handler stops at the
 // methods of a writer only a /api/v1 chain builds (v1OnlyWriters). A read is allowed in a function
 // rawQueryReaders lists with its reason, and in a function no /api/v2 handler reaches that another

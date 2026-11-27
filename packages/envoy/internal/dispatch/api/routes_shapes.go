@@ -147,7 +147,7 @@ type projectPlansQuery struct {
 }
 
 // deliveryWindowQuery is the query GET /delivery/timeline and GET /delivery/measures share, at
-// /api/v1 and /api/v2 alike (v2Infra979Rows): the window, the search and the repeatable facets.
+// /api/v1 and /api/v2 alike (OfINFRA979): the window, the search and the repeatable facets.
 // The `session` facet is read by the same code (deliveryFacets) and named here by no field, since
 // `session` is the whole API's parameter.
 type deliveryWindowQuery struct {

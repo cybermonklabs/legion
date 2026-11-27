@@ -253,75 +253,119 @@ func TestEachRouteIsDeclaredInTheFileItsNameNames(t *testing.T) {
 			declaredIn[name] = append(declaredIn[name], route)
 		}
 	}
-	if len(declaredIn) != len(routeRegistry) {
-		t.Fatalf("%d route files declare routes and the registry holds %d", len(declaredIn), len(routeRegistry))
+	wantFiles := len(routeRegistry) + len(rowRegistry)
+	if len(declaredIn) != wantFiles {
+		t.Fatalf("%d route files declare routes and the registries hold %d", len(declaredIn), wantFiles)
 	}
-	for _, route := range routeRegistry {
-		want, err := routefile.Name(route.Method, route.Pattern)
+	check := func(method, pattern string) {
+		want, err := routefile.Name(method, pattern)
 		if err != nil {
-			t.Errorf("%s %s: %v", route.Method, route.Pattern, err)
-			continue
+			t.Errorf("%s %s: %v", method, pattern, err)
+			return
 		}
 		declared := declaredIn[want]
-		if len(declared) != 1 || declared[0] != route.Method+" "+route.Pattern {
-			t.Errorf("%s %s is declared in %v, want %s alone", route.Method, route.Pattern, declared, want)
+		if len(declared) != 1 || declared[0] != method+" "+pattern {
+			t.Errorf("%s %s is declared in %v, want %s alone", method, pattern, declared, want)
 		}
+	}
+	for _, route := range routeRegistry {
+		check(route.Method, route.Pattern)
+	}
+	probe := &server{}
+	for _, build := range rowRegistry {
+		row := build(probe)
+		check(row.Method, "/api/v2"+row.Pattern)
 	}
 }
 
 // routesDeclaredIn is every "<method> <pattern>" a file of this package declares, read from its
-// source: the Method and Pattern of each declareRoute(routeDecl{...}) it holds.
+// source: the Method and Pattern of each declareRoute(routeDecl{...}) it holds, and the Method
+// and "/api/v2"+Pattern of each routeRow literal inside a declareRow(...) call it holds.
 func routesDeclaredIn(t *testing.T, file string) []string {
 	t.Helper()
 	var routes []string
 	ast.Inspect(parseAPIFile(t, file), func(node ast.Node) bool {
 		call, isCall := node.(*ast.CallExpr)
-		if !isCall {
+		if !isCall || len(call.Args) != 1 {
 			return true
 		}
-		if fun, named := call.Fun.(*ast.Ident); !named || fun.Name != "declareRoute" || len(call.Args) != 1 {
+		fun, named := call.Fun.(*ast.Ident)
+		if !named {
 			return true
 		}
-		literal, isLiteral := call.Args[0].(*ast.CompositeLit)
-		if !isLiteral {
-			return true
-		}
-		var method, pattern string
-		for _, element := range literal.Elts {
-			pair, keyed := element.(*ast.KeyValueExpr)
-			key, named := pair.Key.(*ast.Ident)
-			if !keyed || !named {
-				continue
+		switch fun.Name {
+		case "declareRoute":
+			literal, isLiteral := call.Args[0].(*ast.CompositeLit)
+			if !isLiteral {
+				return true
 			}
-			switch key.Name {
-			case "Method":
-				selector, isSelector := pair.Value.(*ast.SelectorExpr)
-				if !isSelector {
-					t.Fatalf("%s: its Method is no http.Method constant", file)
-				}
-				method = strings.ToUpper(strings.TrimPrefix(selector.Sel.Name, "Method"))
-			case "Pattern":
-				switch value := pair.Value.(type) {
-				case *ast.BasicLit:
-					unquoted, err := strconv.Unquote(value.Value)
-					if err != nil {
-						t.Fatalf("%s: %v", file, err)
-					}
-					pattern = unquoted
-				case *ast.Ident:
-					// A pattern another file declares a constant for, such as goingCataloguePath.
-					pattern = patternOfConstant(t, value.Name)
-				default:
-					t.Fatalf("%s: its Pattern is neither a string nor a constant", file)
-				}
+			method, pattern, hasPattern := routeLiteralMethodPattern(t, file, literal)
+			if method != "" && hasPattern && pattern != "" {
+				routes = append(routes, method+" "+pattern)
 			}
+			return false
+		case "declareRow":
+			ast.Inspect(call.Args[0], func(inner ast.Node) bool {
+				literal, isLiteral := inner.(*ast.CompositeLit)
+				if !isLiteral {
+					return true
+				}
+				kind, ok := literal.Type.(*ast.Ident)
+				if !ok || kind.Name != "routeRow" {
+					return true
+				}
+				method, pattern, hasPattern := routeLiteralMethodPattern(t, file, literal)
+				if method != "" && hasPattern {
+					routes = append(routes, method+" /api/v2"+pattern)
+				}
+				return false
+			})
+			return false
 		}
-		if method != "" && pattern != "" {
-			routes = append(routes, method+" "+pattern)
-		}
-		return false
+		return true
 	})
 	return routes
+}
+
+// routeLiteralMethodPattern reads the Method and Pattern fields of a routeDecl or routeRow
+// composite literal in file.
+func routeLiteralMethodPattern(t *testing.T, file string, literal *ast.CompositeLit) (method, pattern string, hasPattern bool) {
+	t.Helper()
+	for _, element := range literal.Elts {
+		pair, keyed := element.(*ast.KeyValueExpr)
+		if !keyed {
+			continue
+		}
+		key, named := pair.Key.(*ast.Ident)
+		if !named {
+			continue
+		}
+		switch key.Name {
+		case "Method":
+			selector, isSelector := pair.Value.(*ast.SelectorExpr)
+			if !isSelector {
+				t.Fatalf("%s: its Method is no http.Method constant", file)
+			}
+			method = strings.ToUpper(strings.TrimPrefix(selector.Sel.Name, "Method"))
+		case "Pattern":
+			switch value := pair.Value.(type) {
+			case *ast.BasicLit:
+				unquoted, err := strconv.Unquote(value.Value)
+				if err != nil {
+					t.Fatalf("%s: %v", file, err)
+				}
+				pattern = unquoted
+				hasPattern = true
+			case *ast.Ident:
+				// A pattern another file declares a constant for, such as goingCataloguePath.
+				pattern = patternOfConstant(t, value.Name)
+				hasPattern = true
+			default:
+				t.Fatalf("%s: its Pattern is neither a string nor a constant", file)
+			}
+		}
+	}
+	return method, pattern, hasPattern
 }
 
 // patternOfConstant is the value of a package-level string constant a route's Pattern names.

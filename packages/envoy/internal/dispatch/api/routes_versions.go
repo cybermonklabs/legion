@@ -15,10 +15,11 @@ package api
 //     routes of the other three constants; issueUploadRoute is also the route that refuses a
 //     closed owner (RefusesClosedOwner). /api/v1 alone serves it, and
 //     testdata/v1-only-routes.txt holds every one of them: those routes go when /api/v1 ends.
-//   - A routeRow (the v2<Group>Rows functions of the v2_<group>.go files) is a route written once,
-//     with a version-free pattern, and every fact a wrapper of register or a reader of the route
-//     reads is one of its named columns. It is served at /api/v2 and, unless its Versions says
-//     otherwise, at /api/v1 too: a row a later change adds is served in both versions by one
+//   - A routeRow (each in a row file route_api_v2_<path>+<method>.go holding one declareRow) is a
+//     route written once, with a version-free pattern, and every fact a wrapper of register or a
+//     reader of the route reads is one of its named columns. It is served at /api/v2 and, unless
+//     its Versions says otherwise, at /api/v1 too: a row a later change adds is served in both
+//     versions by one
 //     declaration (R2), and the decoder and the authority gate read and hold its Query, its Body
 //     and its Authorities at both paths (apiRoute.decoded). A row that answers for /api/v1 routes
 //     which keep their own answer is served at /api/v2 alone (Versions: onlyV2).
@@ -77,8 +78,8 @@ func versionPrefix(version apiVersion) string {
 // 92, 161, 164, 165 and 178 of the map need one (TestEveryV1RowNamesItsV2Route).
 type successor struct {
 	// Method and Pattern name the /api/v2 route, its pattern version-free as a routeRow writes
-	// it: the route the v2<Group>Rows mount (`GET /issues/{key}`, and `GET ` with an empty
-	// pattern for the index at /api/v2 itself).
+	// it: the route a row file mounts (`GET /issues/{key}`, and `GET ` with an empty pattern for
+	// the index at /api/v2 itself).
 	Method  string
 	Pattern string
 	// Query is the query the v2 route answers this row under, for a row that became a filter
@@ -362,7 +363,7 @@ const (
 	documentOwnerProject
 )
 
-// routeRow is one route as a v2<Group>Rows function declares it, every fact a named column. The
+// routeRow is one route as a /api/v2 row file declares it (declareRow), every fact a named column. The
 // columns a row leaves at its zero value say "none": no write class on a read, no scope a caller
 // needs, no id the prefix layer resolves. routes() mounts the row once per version it serves
 // (mountRow), at versionPrefix(version)+Pattern, and the apiRoute it mounts carries the row whole.
@@ -390,11 +391,16 @@ type routeRow struct {
 	// which keep their own answer at /api/v1 names onlyV2; a row a later change adds, which has no older
 	// /api/v1 answer to keep, takes the zero value and is served at both by its one declaration.
 	Versions routeVersions
-	// OfINFRA979 marks a row of the INFRA-979 tree, which v2Infra979Rows declares and marks each
-	// of, and which that tree's own spec decides. The parent's shape rules bind none of them
-	// (dispatch://INFRA-2946/spec, R1): the shape test, the decoder, the v2 document's contract,
-	// the code list and the keyed writes of /api/v2 leave out every route mounted from a row it
-	// marks, at either version (v2Bound, decoded).
+	// OfINFRA979 marks a row of the INFRA-979 tree, whose row file states OfINFRA979: true and
+	// whose own spec decides it. Each such row is served in both versions by one declaration, at
+	// /api/v1 where that tree wrote it and at the same path under /api/v2: rows 65, 66, 71, 179 and
+	// 180 of c8a44f97's routes.txt, and the four #2731 added on main after it, a project's Legion
+	// daemon and board (dispatch://INFRA-1077, a child of INFRA-979). Each keeps its v1 handler,
+	// description, answers, codes and shape, and its facts that side maps held are its columns.
+	// The parent's shape rules bind none of them (dispatch://INFRA-2946/spec, R1): the shape test,
+	// the decoder, the v2 document's contract, the code list and the keyed writes of /api/v2 leave
+	// out every route mounted from a row it marks, at either version (v2Bound, decoded). The
+	// INFRA-979 tree adds its own rows as row files marked OfINFRA979 when it merges forward.
 	OfINFRA979 bool
 
 	// Resource is the noun the route's path names what it serves by (R1.1): a plural for a

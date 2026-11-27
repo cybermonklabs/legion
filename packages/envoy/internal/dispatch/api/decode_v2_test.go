@@ -592,8 +592,14 @@ func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 			infra979 = append(infra979, route.Method+" "+route.Pattern)
 		}
 	}
-	if rows := len(served.v2Infra979Rows()); len(infra979) != rows {
-		t.Errorf("left out the /api/v1 mounts %q, want each of the %d rows v2Infra979Rows declares", infra979, rows)
+	rows := 0
+	for _, build := range rowRegistry {
+		if build(served).OfINFRA979 {
+			rows++
+		}
+	}
+	if len(infra979) != rows {
+		t.Errorf("left out the /api/v1 mounts %q, want each of the %d OfINFRA979 rows in rowRegistry", infra979, rows)
 	}
 }
 

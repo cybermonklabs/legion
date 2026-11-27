@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // routeAuth names who may call a route. It describes the check the handler performs; the
@@ -186,14 +187,23 @@ func undecidedIDRoutes(routes []apiRoute) []string {
 // caller may reach.
 type routeScopeSet []string
 
+// v2PersonScope and v2SettlesScope are the OAuth scope sets /api/v2 row files share: person for
+// routes acting as the caller's person, and person plus approve for routes that settle what a
+// person settles.
+var (
+	v2PersonScope  = routeScopeSet{model.ScopePerson}
+	v2SettlesScope = routeScopeSet{model.ScopePerson, model.ScopeApprove}
+)
+
 // routeDecl is one route as the file that declares it states it. Every route of this package is a
 // file of its own, route_<path>+<method>.go (internal/dispatch/routefile says how a pattern is
 // written into the name, and TestEachRouteIsDeclaredInTheFileItsNameNames holds each file to it),
-// and that file holds one declaration, `var _ = declareRoute(routeDecl{...})`, whose fields are
-// every fact Dispatch knows of the route: two changes that add different routes touch no file in
-// common. The route files are the /api/v1 routes as /api/v2 began, each
-// naming the /api/v2 route that answers it (Successor): add a route as a routeRow of its
-// group's v2_<group>.go, never as a route file and never as a mux.HandleFunc line (routes()).
+// and that file holds one declaration, `var _ = declareRoute(routeDecl{...})` for /api/v1 or
+// `var _ = declareRow(func(s *server) routeRow { ... })` for /api/v2, whose fields are every fact
+// Dispatch knows of the route: two changes that add different routes touch no file in common.
+// routeDecl is a /api/v1 route as /api/v2 began, each naming the /api/v2 route that answers it
+// (Successor): add a route as a routeRow in a row file route_api_v2_<path>+<method>.go holding
+// one declareRow, never as a routeDecl file and never as a mux.HandleFunc line (routes()).
 type routeDecl struct {
 	Method      string
 	Pattern     string
@@ -208,7 +218,8 @@ type routeDecl struct {
 	// names it (linkSuccessor), and the map tests hold every /api/v1 route to one. Every route
 	// file but a test hook's states one; a test hook's successor is its own /api/v2/_test path
 	// (testHookRoutes). A route added here is served at /api/v1 alone: a route added for both
-	// versions is a routeRow of its group's v2_<group>.go (routes()).
+	// versions is a routeRow in a row file route_api_v2_<path>+<method>.go holding one declareRow
+	// (routes()).
 	Successor successor
 
 	// TestHook is a route mounted only with Deps.TestHooksEnabled: a hook a test arms or reads,
@@ -330,6 +341,19 @@ func declareRoute(route routeDecl) routeDecl {
 	return route
 }
 
+// rowRegistry is every routeRow a /api/v2 row file declares, in the order the files were
+// initialized. Nothing appends to it once the package is initialized: routes() reads it.
+var rowRegistry []func(*server) routeRow
+
+// declareRow adds one /api/v2 routeRow constructor to rowRegistry and returns true. Each /api/v2
+// row file calls it once, from a package-level declaration, so the registry is whole before any
+// function of the package runs, in the order Go's package initialization decides; routes() builds
+// each row with s and sorts them by pattern and then method.
+func declareRow(row func(*server) routeRow) bool {
+	rowRegistry = append(rowRegistry, row)
+	return true
+}
+
 // declaredRoute is the declaration of one route, by "<method> <pattern>", test hooks included,
 // and false where no route file declares it: a routeRow that shares a core with a /api/v1 route
 // copies a fact of that route's declaration through it (declaredRead).
@@ -448,12 +472,13 @@ func threadPageDescription(entries, filters string) string {
 }
 
 // routes is every route the server serves, one apiRoute per (version, route): each route file's
-// declaration at its /api/v1 pattern (v1Route), each routeRow of the v2<Group>Rows at /api/v2 and,
-// unless it says otherwise, at /api/v1 (mountRow), and with Deps.TestHooksEnabled each test hook's
-// declaration at its two paths (testHookRoutes). The declarations are walked by pattern and then
-// method (byPatternThenMethod), so every reader walks one table in one order, whichever order the
-// route files were initialized in. Add a route as a routeRow of its group's v2_<group>.go, never as
-// a route file and never as a mux.HandleFunc line: /api/v1 alone serves a route file, and
+// declaration at its /api/v1 pattern (v1Route), each routeRow of rowRegistry at /api/v2 and, unless
+// it says otherwise, at /api/v1 (mountRow), and with Deps.TestHooksEnabled each test hook's
+// declaration at its two paths (testHookRoutes). Both declarations and rows are walked by pattern
+// and then method (byPatternThenMethod, byRowPatternThenMethod), so every reader walks one table in
+// one order, whichever order the route files were initialized in. Add a route as a routeRow in a
+// row file route_api_v2_<path>+<method>.go holding one declareRow, never as a routeDecl file and
+// never as a mux.HandleFunc line: /api/v1 alone serves a routeDecl file, and
 // TestAV1OnlyRowOutsideTheFrozenListFails refuses one testdata/v1-only-routes.txt does not hold. A
 // routeRow served in both versions is decoded and gated at both paths, its Query, its Body and its
 // Authorities included (apiRoute.decoded); one that answers for /api/v1 routes which keep their own
@@ -474,7 +499,12 @@ func (s *server) routes() []apiRoute {
 			routes = append(routes, testHookRoutes(s, declaration)...)
 		}
 	}
-	for _, row := range slices.Concat(s.v2IndexRows(), s.v2Infra979Rows(), s.v2LogRows(), s.v2AskRows(), s.v2DocumentRows(), s.v2ThreadRows(), s.v2IssueRows(), s.v2RoleHolderRows(), s.v2ProjectRows(), s.v2MeRows(), s.v2CredentialRows(), s.v2MiscRows()) {
+	rows := make([]routeRow, 0, len(rowRegistry))
+	for _, build := range rowRegistry {
+		rows = append(rows, build(s))
+	}
+	slices.SortFunc(rows, byRowPatternThenMethod)
+	for _, row := range rows {
 		routes = append(routes, mountRow(row)...)
 	}
 	stampV2ReadClasses(routes)
@@ -491,6 +521,12 @@ func (s *server) routes() []apiRoute {
 // does the approve-only refusal, whose message promises the order routes() mounts them in
 // (approveOnlyRefusal).
 func byPatternThenMethod(left, right routeDecl) int {
+	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
+}
+
+// byRowPatternThenMethod is the same order for routeRow values, so routes() mounts them in one
+// order whichever order the row files were initialized in.
+func byRowPatternThenMethod(left, right routeRow) int {
 	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
 }
 

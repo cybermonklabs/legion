@@ -97,8 +97,8 @@ var decisionBlockGuardSees = []string{
 // once, and a writer added later gets it — to the server's own route inventory rather than to a
 // list of the paths that have it today.
 //
-// The inventory is the table (routes_table.go, the v2_<group>.go files) with its test hooks in,
-// read from the source so that each row's handler is read with it, joined to the Go types each
+// The inventory is the table (routes_table.go, the route files) with its test hooks in, read from
+// the source so that each row's handler is read with it, joined to the Go types each
 // route takes (mountedRequests): its shape's request, or each arm of a state or kind union, whose
 // shape leaves the request out. Every route has a shape, since register refuses a table holding
 // one with none (shapelessRoutes). A route is in scope when register keys it (keyedMethod: a POST

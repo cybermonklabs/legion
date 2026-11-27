@@ -1,5 +1,5 @@
 // legion_board.go serves GET /api/v1/projects/{key}/legion/board, served at the same path under
-// /api/v2 too as a row of the INFRA-979 tree (v2Infra979Rows), one project's Legion board from
+// /api/v2 too as a row of the INFRA-979 tree (OfINFRA979), one project's Legion board from
 // what Dispatch recorded of its daemon (dispatch://INFRA-1077, dispatch://INFRA-3931), and the
 // body the `legion` live view kind sends (live_frames.go's legionBoardView). No dashboard page
 // draws it: the routes and the live view kind are all there is of it.
@@ -71,7 +71,7 @@ func legionNotConfigured(version apiVersion) string {
 }
 
 // legionBoardResponse is GET /api/v1/projects/{key}/legion/board and GET
-// /api/v2/projects/{key}/legion/board, one row served in both versions (v2Infra979Rows): the
+// /api/v2/projects/{key}/legion/board, one row served in both versions (OfINFRA979): the
 // project the board shows, its header, its columns, the settings its daemon reports, and when it
 // was computed. Mirrors packages/contracts/src/dispatch-api.ts's LegionBoardResponse exactly.
 type legionBoardResponse struct {

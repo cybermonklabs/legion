@@ -7,23 +7,6 @@ import (
 	"strings"
 )
 
-// v2IndexRows is the route index of /api/v2, row 1's successor: every route /api/v2 serves, each
-// with what a client reads of it. It is a fixed catalogue, so a request that names no limit reads
-// it whole (R1.4).
-func (s *server) v2IndexRows() []routeRow {
-	return []routeRow{{
-		Method: http.MethodGet, Pattern: "", Auth: authPublic, Versions: onlyV2,
-		Description: "This index: every /api/v2 route with its method, path, auth, scopes and purpose, and what a client reads of it: the resource it serves and that resource's kind and key, the time fields a read windows on, the field a log is read in order by, the bounds of a list's limit, and whether it reads across projects. {docs, items, total, limit, offset}, sorted by path then method; every route is on one page unless the request names a limit (any of 1 or more) or an offset.",
-		Handler:     s.getRouteIndexV2,
-		Resource:    "routes",
-		Kind:        kindCollection,
-		List:        listBounds{Whole: true},
-		Query:       routeIndexV2Query{},
-		Shape:       routeShape{Status: http.StatusOK, Response: routeIndexV2{}},
-		Refusals:    listRefusals(),
-	}}
-}
-
 // routeIndexV2Query is the query GET /api/v2 reads: the page of the index it answers.
 type routeIndexV2Query struct {
 	pageQuery

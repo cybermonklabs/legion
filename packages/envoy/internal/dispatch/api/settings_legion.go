@@ -1,7 +1,7 @@
 // settings_legion.go serves a project's Legion daemon (dispatch://INFRA-1077), a named
 // sub-resource of the project it serves: GET, PUT and DELETE /api/v1/projects/{key}/legion/daemon,
 // served at the same path under /api/v2 too, since they are rows of the INFRA-979 tree
-// (v2Infra979Rows, OfINFRA979).
+// (OfINFRA979).
 // No route lists every project's daemon: R26 of dispatch://INFRA-979's spec permits one
 // cross-project read, and this is not it, so a page that shows every daemon reads each project's.
 //
@@ -9,8 +9,8 @@
 // (internal/dispatch/legion). The path names the project, but writing one belongs to the
 // deployment rather than to that project — it points Dispatch at a host, which a credential that
 // names one project has no business doing — so the PUT and the DELETE are classed
-// scopeDeployment beside the project's default-repository row, not scopeProject (v2Infra979Rows,
-// the rows' Scope).
+// scopeDeployment beside the project's default-repository row, not scopeProject (the route files'
+// Scope).
 //
 // Like putDeliverySettings, these write no event. The write belongs to
 // the deployment, so there is no project whose event it would be, and events/broker.go's

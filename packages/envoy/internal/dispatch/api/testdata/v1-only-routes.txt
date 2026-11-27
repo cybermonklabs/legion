@@ -1,11 +1,12 @@
-# The frozen list of the routes /api/v1 alone serves: every row of v1Rows (routes_table.go), one
-# `METHOD path` a line, sorted by path then method as testdata/routes.txt is. Each names its
+# The frozen list of the routes /api/v1 alone serves: every route file's declaration that is no
+# test hook (route_api_v1_<path>+<method>.go, declareRoute), one `METHOD path` a line, sorted by
+# path then method as `envoy-dispatch routes` lists them. Each names its
 # /api/v2 route in its Successor; every route added after /api/v2 began is served in both
 # versions by one declaration (a routeRow), so TestAV1OnlyRowOutsideTheFrozenListFails refuses a
-# row /api/v1 alone serves that this list does not hold, and a line no row of v1Rows is.
+# route /api/v1 alone serves that this list does not hold, and a line no route file declares.
 #
 # It holds the 184 rows of c8a44f97's testdata/routes.txt that are no rows of the INFRA-979 tree
-# (v2Infra979Rows: those five are served in both versions), less the two a pull request merged
+# (those five are rows marked OfINFRA979, served in both versions), less the two a pull request merged
 # into main took out of /api/v1 (#4457 removed PUT and DELETE
 # /api/v1/settings/repo-projects/{owner}/{repo}, so 182), and each row another pull request
 # merged into main before /api/v2's change merged. Such a row is added here at the forward merge

@@ -159,7 +159,7 @@ func deliveryNotConfigured(version apiVersion) string {
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline and GET /api/v2/delivery/timeline, one
-// row served in both versions (v2Infra979Rows): merges, deploys, pipeline failures and
+// row served in both versions (OfINFRA979): merges, deploys, pipeline failures and
 // waiting-to-deploy PRs within [from, to) and the given facets and search, computed from
 // stored facts at request time (deployed_status, root_failing_job, the Parent agent and session
 // labels, the issue facts and every count are never stored -- "the server computes every

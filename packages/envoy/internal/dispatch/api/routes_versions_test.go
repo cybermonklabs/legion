@@ -26,8 +26,8 @@ const v2RouteBound = 137
 const c8a44f97Rows = 184
 
 // v1RowsMainRemoved names each of those rows a pull request merged into main took out of /api/v1
-// after c8a44f97, by "<METHOD> <path>": v1Rows holds none of them, the frozen list holds none of
-// them, and the rows of c8a44f97 v1Rows holds are c8a44f97Rows less these. A row main removes is
+// after c8a44f97, by "<METHOD> <path>": no route file declares any of them, the frozen list holds
+// none of them, and the rows of c8a44f97 the route files declare are c8a44f97Rows less these. A row main removes is
 // named here at the forward merge that brings the removal, so a removal no line names fails the
 // count.
 var v1RowsMainRemoved = map[string]string{
@@ -69,7 +69,7 @@ func v1OnlyRowsOutside(rows []routeDecl, frozen map[string]bool) []string {
 		name := row.Method + " " + row.Pattern
 		held[name] = true
 		if _, listed := frozen[name]; !listed {
-			outside = append(outside, name+": /api/v1 alone serves it, and "+v1OnlyRoutesList+" does not hold it; write it as a routeRow of its group's v2_<group>.go, which both versions serve")
+			outside = append(outside, name+": /api/v1 alone serves it, and "+v1OnlyRoutesList+" does not hold it; write it as a routeRow in a row file route_api_v2_<path>+<method>.go holding one declareRow, which both versions serve")
 		}
 	}
 	for name := range frozen {
@@ -156,10 +156,13 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 	for _, route := range routes {
 		mounted[route.Method+" "+route.Pattern] = route
 	}
-	infra979 := served.v2Infra979Rows()
+	var infra979 []routeRow
 	ofINFRA979 := map[string]bool{}
-	for _, row := range infra979 {
-		ofINFRA979[row.Method+" "+versionPrefix(apiV1)+row.Pattern] = true
+	for _, build := range rowRegistry {
+		if row := build(served); row.OfINFRA979 {
+			infra979 = append(infra979, row)
+			ofINFRA979[row.Method+" "+versionPrefix(apiV1)+row.Pattern] = true
+		}
 	}
 
 	t.Run("every-row-names-its-successor", func(t *testing.T) {
@@ -167,7 +170,7 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 			name, next := row.Method+" "+row.Pattern, row.Successor
 			switch {
 			case ofINFRA979[name]:
-				t.Errorf("%s is a row of the INFRA-979 tree, served in both versions by its routeRow, and no v1Row", name)
+				t.Errorf("%s is a row of the INFRA-979 tree, served in both versions by its routeRow, and no route file", name)
 			case next.Method == "":
 				t.Errorf("%s names no /api/v2 route", name)
 			case strings.HasPrefix(next.Pattern, "/api/"):
@@ -236,11 +239,11 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 		t.Logf("distinct /api/v2 routes the %d rows of c8a44f97 name: %d (R2's bound: %d); the routes every v1 row names: %d",
 			ofC8a44f97, len(successorsOfC8a44f97(rows, frozen)), v2RouteBound, len(every))
 		// The parent maps c8a44f97Rows rows of c8a44f97, and main took the ones v1RowsMainRemoved
-		// names out of /api/v1: v1Rows and the frozen list hold none of them, and every other row
-		// of c8a44f97 is still a v1Row.
+		// names out of /api/v1: no route file and no line of the frozen list holds them, and every
+		// other row of c8a44f97 is still a route file.
 		for _, row := range rows {
 			if why, removed := v1RowsMainRemoved[row.Method+" "+row.Pattern]; removed {
-				t.Errorf("v1Rows holds %s %s, which main removed from /api/v1 (%s)", row.Method, row.Pattern, why)
+				t.Errorf("a route file declares %s %s, which main removed from /api/v1 (%s)", row.Method, row.Pattern, why)
 			}
 		}
 		for name, why := range v1RowsMainRemoved {
@@ -249,7 +252,7 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 			}
 		}
 		if want := c8a44f97Rows - len(v1RowsMainRemoved); ofC8a44f97 != want {
-			t.Errorf("v1Rows holds %d rows of c8a44f97, and the parent maps %d, less the %d main removed (v1RowsMainRemoved): %d",
+			t.Errorf("the route files declare %d rows of c8a44f97, and the parent maps %d, less the %d main removed (v1RowsMainRemoved): %d",
 				ofC8a44f97, c8a44f97Rows, len(v1RowsMainRemoved), want)
 		}
 		if err := successorBoundFault(rows, frozen); err != nil {
@@ -303,7 +306,7 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 
 // TestAV1OnlyRowOutsideTheFrozenListFails: a row /api/v1 alone serves is one of c8a44f97's, or one
 // other work added before /api/v2's change merged, which the frozen list holds (R2, c-map). A row
-// added after it is a routeRow, which both versions serve; a made-up v1Row the list does not hold
+// added after it is a routeRow, which both versions serve; a made-up route file the list does not hold
 // fails the check whatever successor it names, and so does a line of the list that is no row.
 func TestAV1OnlyRowOutsideTheFrozenListFails(t *testing.T) {
 	frozen := readV1OnlyRoutes(t)
@@ -345,7 +348,7 @@ func madeUpRow() routeRow {
 // A row a later change adds says nothing about versions and is served in both, at /api/v1 and at
 // /api/v2 (R2: "a row added after this change is served in both versions by one declaration"),
 // each path decoded and gated alike (TestABothVersionRowIsDecodedAndGatedAtBothPaths); one that
-// names onlyV2, as a row that answers for v1Rows which keep their own answer does, is served at
+// names onlyV2, as a row that answers for /api/v1 routes which keep their own answer does, is served at
 // /api/v2 alone. Each mount carries the row's columns.
 func TestARowWithNoVersionsIsServedInBothVersions(t *testing.T) {
 	mounts := func(row routeRow) []string {

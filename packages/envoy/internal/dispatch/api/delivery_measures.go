@@ -20,7 +20,7 @@ type deliveryFlagsSource string
 const deliveryFlagsSourceNone deliveryFlagsSource = "none"
 
 // deliveryMeasuresResponse is GET /api/v1/delivery/measures and GET /api/v2/delivery/measures,
-// one row served in both versions (v2Infra979Rows), and the timeline's `measures`: the measures
+// one row served in both versions (OfINFRA979), and the timeline's `measures`: the measures
 // for the window over the pull requests the timeline's search and facets select, Sami's targets,
 // whether each is met, the open P0 issues with no owner, and the timeline's freshness. Mirrors
 // packages/contracts/src/dispatch-api.ts's DeliveryMeasuresResponse exactly. It lives here rather

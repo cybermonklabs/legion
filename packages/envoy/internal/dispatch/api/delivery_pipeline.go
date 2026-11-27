@@ -13,7 +13,7 @@ import (
 )
 
 // deliveryPipelineResponse is GET /api/v1/delivery/pipeline and GET /api/v2/delivery/pipeline,
-// one row served in both versions (v2Infra979Rows): the Pipeline page's seven UTC days ending on
+// one row served in both versions (OfINFRA979): the Pipeline page's seven UTC days ending on
 // `at`, the PR-checks workflow's run timing with its slowest and recently failing jobs, the deploy
 // workflow's staging end-to-end, staging deploy and production deploy jobs (the first two null
 // when the settings name none), the merge-to-production and open-to-merge lead times per merge

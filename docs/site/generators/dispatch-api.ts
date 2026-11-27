@@ -265,7 +265,7 @@ function groupedRoutes<R extends Route>(routes: R[], extra: (route: R) => string
 }
 
 /** The paths of the routes that declare no kind: the rows another tree owns, which keep their
- *  /api/v1 shape at the same path under /api/v2 (`v2Infra979Rows` in the source). */
+ *  /api/v1 shape at the same path under /api/v2 (the rows marked `OfINFRA979` in the source). */
 function unboundPaths(routes: RouteV2[]): string {
   const paths = new Set(routes.filter((route) => route.kind === "").map((route) => route.path));
   return paths.size === 0 ? "" : codeList([...paths]);

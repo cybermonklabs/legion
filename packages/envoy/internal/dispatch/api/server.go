@@ -747,10 +747,10 @@ type RouteMux interface {
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }
 
-// Register mounts every native-workspace route on mux, at /api/v1 and at /api/v2. Each /api/v1
-// route is declared in a file of its own (routeDecl, routes_table.go) and each /api/v2 route in a
-// v2_<group>.go file (routes_versions.go); the same table answers GET /api/v1 and GET /api/v2,
-// each with the routes of its own version.
+// Register mounts every native-workspace route on mux, at /api/v1 and at /api/v2. Each route is
+// declared in a file of its own, route_<path>+<method>.go (routeDecl in routes_table.go for
+// /api/v1, and routeRow via declareRow for /api/v2, routes_versions.go); the same table answers
+// GET /api/v1 and GET /api/v2, each with the routes of its own version.
 //
 // Every route is marked so the shared pool can refuse a second connection to a handler that
 // already holds one of its transactions (store.ErrNestedAcquire): one caller, one connection is
