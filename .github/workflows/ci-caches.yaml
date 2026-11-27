@@ -21,7 +21,7 @@ on:
         options: [all, dispatch-builds]
         default: all
 
-# One fill at a time per ref, never cancelled: a cancelled run saves nothing.
+# One running fill per ref and `only` value, never cut short: a cancelled run saves nothing.
 # why: .github/ci-notes/ci-caches.md#one-fill-at-a-time-per-ref-and-no-cancellation
 concurrency:
   group: ci-caches-${{ github.ref }}-${{ inputs.only || 'all' }}
@@ -69,6 +69,7 @@ jobs:
           cache: false
 
       # The newest entry of the family, which the builds below compile on.
+      # why: .github/ci-notes/ci-caches.md#the-go-families-their-readers-and-their-runners
       # why: .github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-daemon
@@ -432,8 +433,8 @@ jobs:
           GOCACHE: ${{ runner.temp }}/go-build-darwin
         run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-envoy-darwin-vet-working-set"
 
-      # envoy-go-build's vet, its env and its script as that step has them: check-ci-filters.sh
-      # holds that step to ci_job_reads.py's darwin_vet_script.
+      # envoy-go-build's vet, env and script as that step has them, so the entry holds each tag set
+      # it vets; check-ci-filters.sh holds that step to ci_job_reads.py's darwin_vet_script.
       - name: Vet the envoy module for darwin, as envoy-go-build does
         env:
           GOCACHE: ${{ runner.temp }}/go-build-darwin
