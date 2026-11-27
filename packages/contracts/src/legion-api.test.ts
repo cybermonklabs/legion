@@ -26,6 +26,10 @@ import {
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
   LegionControllerSecretResponse,
+  LegionDefectReportRequest,
+  LegionDefectReportResponse,
+  LegionDefectWithdrawRequest,
+  LegionDefectWithdrawResponse,
   LegionEmptyResponse,
   LegionErrorResponse,
   LegionEscalateRequest,
@@ -239,6 +243,10 @@ const schemas: Record<string, z.ZodType> = {
   // a replay with one record of each outcome and one left, and the ids a discard closed.
   "intake-replay.json": LegionIntakeReplayResponse,
   "intake-discard.json": LegionIntakeDiscardResponse,
+  // The defect routes (the defect-calls entry), each written by internal/api's golden of what the
+  // route answers: a report the daemon recorded, and the withdrawal of one.
+  "defect-report.json": LegionDefectReportResponse,
+  "defect-withdraw.json": LegionDefectWithdrawResponse,
   // Nor this one: the numbers of the numbered entries of `internal/api/version.go`, from the
   // serving floor to L, its greatest, ascending. No later change adds to it: a contract change is
   // an entry with one fixture under `contracts/`, so the number a build speaks is L plus its count
@@ -516,6 +524,8 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "intake-discard": [LegionIntakeDiscardResponse],
   "p0-bound": [LegionP0BoundResponse],
   "pod-update": [LegionPodUpdateResponse],
+  "defect-report": [LegionDefectReportResponse],
+  "defect-withdraw": [LegionDefectWithdrawResponse],
 };
 
 /** The reason the refusal's `reasons` is named by no schema of this module. */
@@ -1092,8 +1102,10 @@ test("a backward move rejects future read-only phases", () => {
 // Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
 // before the merge, in `accepting`, which the list holds between `reviewing` and `retro`; the merger merges in
-// `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
-// check after the close is no phase, so no phase follows `integrating` but the close itself.
+// `merging`. Since the defect-calls entry an issue whose work merged waits in `verifying` for what
+// its close waits on (`closeWait`), which no backward move reaches either; the daemon closes it
+// (`done`) when nothing is left, and the production check after the close is no phase, so no
+// phase follows `integrating` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
   expect(LEGION_WORKFLOW_PHASES).toEqual([
     "admitted",
@@ -1106,6 +1118,7 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
     "accepting",
     "retro",
     "merging",
+    "verifying",
     "integrating",
     "done",
     "held",
@@ -2241,6 +2254,23 @@ test("every request the plugin sends parses and names its required fields", () =
       },
     ],
     ["stop task", LegionTaskStopRequest, { grantId: "grant-208", issue: "LEGION-209", task: "a" }],
+    // The defect routes (the defect-calls entry): a report of a defect of the merged change, at
+    // the head it was seen at, and the owning architect's withdrawal of one by its id.
+    [
+      "defect report",
+      LegionDefectReportRequest,
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        defect: "The merged widget drops its last row.",
+        head: "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b",
+      },
+    ],
+    [
+      "defect withdrawal",
+      LegionDefectWithdrawRequest,
+      { grantId: "grant-208", issue: "LEGION-208", defect: "41", reason: "the fixture's own row" },
+    ],
     // The claim wire's own bodies (contracts 21 and 46), read from the goldens the Go side
     // writes rather than invented here.
     ["ready", LegionReadyRequest, ready],
@@ -2277,6 +2307,163 @@ test("an escalation rejects empty required fields", () => {
   for (const field of ["grantId", "issue", "reason"] as const) {
     expect(LegionEscalateRequest.safeParse({ ...request, [field]: "" }).success).toBeFalse();
   }
+});
+
+// The defect routes (the defect-calls entry): a report names the issue, the defect's text and
+// the head it was seen at, and may name the check it is about; a withdrawal names the issue, the
+// defect's id and why. Each refuses a body that leaves out a field it requires, or sends it
+// empty, and a report that leaves out its check is the report it was.
+test("a defect report and a withdrawal refuse each field they require, and a report may leave out its check", () => {
+  const report = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    defect: "The merged widget drops its last row.",
+    head: "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b",
+  };
+  const withdrawal = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    defect: "41",
+    reason: "the fixture's own row",
+  };
+  expect(LegionDefectReportRequest.parse(report)).toEqual(report);
+  expect(LegionDefectReportRequest.parse({ ...report, check: "c-after" })).toEqual({
+    ...report,
+    check: "c-after",
+  });
+  expect(LegionDefectReportRequest.safeParse({ ...report, check: "" }).success).toBeFalse();
+  expect(LegionDefectWithdrawRequest.parse(withdrawal)).toEqual(withdrawal);
+  expect(
+    LegionDefectWithdrawRequest.safeParse({ ...withdrawal, check: "c-after" }).success
+  ).toBeFalse();
+  const cases: ReadonlyArray<readonly [z.ZodType, Record<string, string>, readonly string[]]> = [
+    [LegionDefectReportRequest, report, ["grantId", "issue", "defect", "head"]],
+    [LegionDefectWithdrawRequest, withdrawal, ["grantId", "issue", "defect", "reason"]],
+  ];
+  for (const [schema, request, required] of cases) {
+    for (const field of required) {
+      const missing = Object.fromEntries(Object.entries(request).filter(([key]) => key !== field));
+      expect(schema.safeParse(missing).success, `${field} left out`).toBeFalse();
+      expect(schema.safeParse({ ...request, [field]: "" }).success, `${field} empty`).toBeFalse();
+    }
+  }
+});
+
+// No plugin code reads a defect answer: the `legion` tool hands it to its agent whole, so every
+// field is optional (`LEGION_ANSWER_READS`) and `state` is a word, not an enumeration, which the
+// daemon's table therefore declares none of: a word a later daemon adds is read rather than
+// refused. A field that is present is still held to its type.
+test("a defect answer is read with every field optional and its state as a word", () => {
+  const recorded = { defect: "41", state: "recorded", nextChange: 4 };
+  for (const state of ["recorded", "same", "joined", "a_later_word"]) {
+    expect(LegionDefectReportResponse.parse({ ...recorded, state })).toEqual({
+      ...recorded,
+      state,
+    });
+  }
+  expect(LegionDefectReportResponse.parse({})).toEqual({});
+  for (const wrong of [
+    { defect: 41 },
+    { defect: "" },
+    { state: "" },
+    { state: 7 },
+    { nextChange: 0 },
+    { nextChange: 1.5 },
+    { nextChange: "4" },
+  ]) {
+    expect(
+      LegionDefectReportResponse.safeParse({ ...recorded, ...wrong }).success,
+      JSON.stringify(wrong)
+    ).toBeFalse();
+  }
+  const withdrawn = { defect: "41", state: "withdrawn" };
+  expect(LegionDefectWithdrawResponse.parse(withdrawn)).toEqual(withdrawn);
+  expect(LegionDefectWithdrawResponse.parse({})).toEqual({});
+  expect(LegionDefectWithdrawResponse.safeParse({ ...withdrawn, state: "" }).success).toBeFalse();
+  expect(LegionDefectWithdrawResponse.safeParse({ ...withdrawn, defect: 41 }).success).toBeFalse();
+});
+
+/** An issue's `closeWait` with every member the daemon serves (the defect-calls entry). */
+const CLOSE_WAIT = {
+  since: "2026-11-27T06:00:00Z",
+  beneath: [{ key: "LEGION-209", status: "in_progress", since: "2026-11-27T06:00:00Z" }],
+  openChildren: [{ key: "LEGION-210", status: "backlog", since: "2026-11-27T06:01:00Z" }],
+  checks: [
+    {
+      id: "c-after",
+      when: "after_merge",
+      answer: "no",
+      reason: "no_result",
+      since: "2026-11-27T06:00:00Z",
+    },
+  ],
+  production: {
+    state: "open",
+    generation: 3,
+    merge: "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b",
+    outcome: "pending",
+    nextLookAt: "2026-11-27T09:00:00Z",
+    since: "2026-11-27T06:00:00Z",
+  },
+  defects: [
+    {
+      id: "41",
+      kind: "defect",
+      role: "merger",
+      text: "The merged widget drops its last row.",
+      head: "3f2a9c41d0b7e6a85c1f4d2e9b0a7c6d5e4f3a2b",
+      check: "c-after",
+      since: "2026-11-27T06:02:00Z",
+    },
+  ],
+  nextChanges: 1,
+  unapproved: { checks: ["c-removed"], since: "2026-11-27T06:00:00Z" },
+  unread: { cause: "no_read", since: "2026-11-27T06:00:00Z" },
+};
+
+// An issue whose work merged waits in `verifying` for what its close waits on, which the state
+// serves as `closeWait` (the defect-calls entry). No plugin code reads it (`LEGION_ANSWER_READS`),
+// so every member is optional, and none of its words is an enumeration: a state, an answer, a
+// cause or a kind a later daemon adds is read rather than refused. A member that is present is
+// still held to its type, so a time that is no time, a count that is no whole number and a key
+// that is no issue key are refused.
+test("an issue in verifying carries what its close waits on, every member optional and no word enumerated", () => {
+  const state = fixture("state.json") as { issues: Record<string, Record<string, unknown>> };
+  const waiting = state.issues["LEGION-208"];
+  if (waiting === undefined) {
+    throw new Error("state fixture lacks LEGION-208");
+  }
+  waiting.phase = "verifying";
+  waiting.closeWait = structuredClone(CLOSE_WAIT);
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues["LEGION-208"]?.phase).toBe("verifying");
+  expect(parsed.issues["LEGION-208"]?.closeWait).toEqual(CLOSE_WAIT);
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  waiting.closeWait = {};
+  expect(parses()).toBeTrue();
+  waiting.closeWait = {
+    ...CLOSE_WAIT,
+    checks: [{ ...CLOSE_WAIT.checks[0], when: "a_later_when", answer: "a_later_answer" }],
+    production: { ...CLOSE_WAIT.production, state: "a_later_state", outcome: "a_later_outcome" },
+    defects: [{ ...CLOSE_WAIT.defects[0], kind: "a_later_kind" }],
+    unread: { ...CLOSE_WAIT.unread, cause: "a_later_cause" },
+  };
+  expect(parses()).toBeTrue();
+  for (const wrong of [
+    { since: "the evening" },
+    { nextChanges: -1 },
+    { nextChanges: 1.5 },
+    { production: { ...CLOSE_WAIT.production, generation: "3" } },
+    { beneath: [{ ...CLOSE_WAIT.beneath[0], key: "not an issue key" }] },
+    { defects: [{ ...CLOSE_WAIT.defects[0], text: 7 }] },
+    { unapproved: { ...CLOSE_WAIT.unapproved, checks: "c-removed" } },
+  ]) {
+    waiting.closeWait = { ...CLOSE_WAIT, ...wrong };
+    expect(parses(), JSON.stringify(wrong)).toBeFalse();
+  }
+  delete waiting.closeWait;
+  expect(parses()).toBeTrue();
 });
 
 test("a workflow refusal preserves its stable code and message", () => {
