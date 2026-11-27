@@ -5,378 +5,395 @@
 # a leg's group as -run=^(<name>|...)$. A test no group names runs in the group that file's rule
 # gives it, the same in every leg, and this file is written again to put it where its time belongs:
 # .github/scripts/go_legs_groups.py, from a run of the package on the runner the legs run on.
-# Times: throwaway run 45945290671 (2026-11-27, ubuntu-24.04-arm, job 140328476568: `go test -json -race` of cmd/listener alone, 514 s).
-# Modelled leg time, serial tests' sum plus parallel tests' sum over 8: group 1 254 s, group 2 254 s.
+# Times: throwaway run 45969465165 (2026-11-27, ubuntu-24.04-arm, job 140406046414: `go test -json -race` of cmd/listener alone, 650 s).
+# Modelled leg time, serial tests' sum plus parallel tests' sum over 8: group 1 303 s, group 2 303 s.
 1:
   - TestABatchFailureAnswersItsOwnStatusWithWhatItWrote  # 0.0 s
-  - TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce  # 1.8 s
+  - TestABoundDurableNeverFailsItsProbe  # 1.1 s
+  - TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce  # 1.9 s
+  - TestAClaimGrantedAgainToTheProcessThatHandedTheRoleBackClearsTheMark  # 0.4 s
+  - TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed  # 3.3 s
+  - TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget  # 3.8 s
+  - TestAClaimWithoutSoftFromASecondProcessOfOneSessionIdTakesTheRole  # 0.3 s
   - TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes  # 20.3 s
   - TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone  # 0.3 s
-  - TestACleanStopKeepsTheConsumerOfARegistrationThatLandedUnderIt  # 0.3 s
-  - TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent  # 0.3 s
-  - TestACompleteEmptyCopyListsNothingAndCountsZero  # 0.4 s
+  - TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen  # 0.4 s
+  - TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent  # 0.4 s
+  - TestAConditionalRoleClaimNamingAnotherRevisionIsRefusedAndWritesNothing  # 0.3 s
   - TestAConditionalRoleClaimNamingTheCurrentRevisionTakesTheRole  # 0.3 s
-  - TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestNamesThisListener  # 9.2 s
+  - TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord  # 0.4 s
+  - TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone  # 8.7 s
+  - TestACopiedRoleMessageCarriesEveryFieldAmongManyKeys  # 0.1 s
   - TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind  # 0.7 s
-  - TestACorrectivePassThatFindsTheRecordAskingForNoConsumerReportsNothingLeftBehind  # 0.3 s
-  - TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat  # 0.4 s
+  - TestACorrectivePassThatFindsTheRecordAskingForNoConsumerReportsNothingLeftBehind  # 0.4 s
   - TestADeadLetterClaimIsTakenOverForTheReasonItWasMade  # 0.0 s
   - TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt  # 0.0 s
   - TestADeleteRestoresTheConsumerWithTheTopicItsCacheHasNotHeardOf  # 0.7 s
+  - TestADeleteThatRacesARegistrationLeavesTheConsumerWithTheTopicItAnswered  # 0.4 s
   - TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry  # 1.4 s
-  - TestADeliveredSendAndADeafHoldersSendBothKeepNothing  # 0.3 s
-  - TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish  # 1.2 s
+  - TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce  # 0.9 s
   - TestADeniedPublishIsRefusedPermanentlyAndNotRecordedAsBusUnavailable  # 0.0 s
-  - TestADeregistrationAnswersWhileItsConsumerDeleteWaits  # 0.3 s
+  - TestADeregistrationAnswersWhileItsConsumerDeleteWaits  # 0.5 s
   - TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotAReadPerClaim  # 0.7 s
-  - TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages  # 5.5 s
+  - TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages  # 5.7 s
   - TestADirectMessageSentAfterTheClaimsHourIsHandedOver  # 0.9 s
   - TestADirectMessagesKeysAreTheOnesDispatchWrites  # 0.0 s
-  - TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole  # 38.2 s
-  - TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder  # 0.4 s
-  - TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies  # 0.5 s
+  - TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder  # 0.3 s
   - TestADrainStopsWhenTheRoleChangesHolderUnderIt  # 0.3 s
-  - TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain  # 1.3 s
+  - TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain  # 1.4 s
   - TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate  # 0.8 s
-  - TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce  # 4.7 s
-  - TestADurableMessageOnAPrivateSubjectAStoredRowNamesReachesNoOtherSession  # 0.4 s
-  - TestAFanOutThatMatchesAnEarlierBuildsRowThroughALeftOutTopicLogsIt  # 0.4 s
-  - TestAFenceWhoseBucketAnswersNoRowLeavesTheFilterItWroteOnALiveConsumer  # 0.3 s
-  - TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow  # 0.7 s
+  - TestAFenceWhoseBucketAnswersNoRowLeavesTheFilterItWroteOnALiveConsumer  # 0.4 s
+  - TestAFifthKindPairANewerBuildsSubjectsCaptureIsLeftOutOfTheRegistration  # 0.3 s
   - TestAFilterWhoseTopicsReduceToAnotherSessionsSubjectsLeavesThemOut  # 0.0 s
-  - TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson  # 0.4 s
-  - TestAFreeFormRoleUnderAProjectIsClaimedReadAndReachedUnderThatProject  # 0.4 s
+  - TestAFirstRegistrationWhoseRecordTheBucketRefusesIsAnsweredTheStoresRefusal  # 0.4 s
+  - TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderOnce  # 0.6 s
+  - TestAFreeFormRoleUnderAProjectIsClaimedReadAndReachedUnderThatProject  # 0.5 s
   - TestAFullStreamIsAnsweredAsFullNotAsABusThatDidNotAnswer  # 0.0 s
   - TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait  # 8.1 s
   - TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished  # 12.1 s
   - TestAGiveBackWhoseNakFailsIsLoggedEveryTime  # 0.0 s
-  - TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal  # 6.2 s
+  - TestAGivenBackEventIsLoggedOnceUntilItsSessionsEntryTakesAMark  # 7.4 s
   - TestAGoodRegistrationReadEndsARunOfFailedRefreshes  # 0.0 s
-  - TestAHalfClosedRequestGetsNoAnswerFromAnOldKeySet  # 1.3 s
   - TestAHandedOverMessageKeepsOneIdentityAcrossHops  # 0.0 s
-  - TestAHandoverEndsAtAForwardTheGrantRefuses  # 0.3 s
-  - TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns  # 1.0 s
-  - TestAHandoverPassReadsAStoreThatCannotAnswerAsAnError  # 0.0 s
+  - TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal  # 1.0 s
+  - TestAHandoverOfAnEmptyKeptLaneResolvesNoHolder  # 0.3 s
   - TestAHandoverPassTellsAMessageToTheReplacedSessionByEitherFormOfItsTopic  # 0.0 s
+  - TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt  # 1.3 s
   - TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole  # 3.6 s
-  - TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow  # 15.3 s
-  - TestAHandoverWaitsForAReplacedSessionThatStaysLivePastTheRecordsLife  # 0.9 s
-  - TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow  # 3.8 s
-  - TestAHandoverWhoseFloorIsUnknownStartsAtTheFirstMessageTheStreamHolds  # 0.9 s
+  - TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow  # 15.4 s
+  - TestAHundredPublishesSendNoJetStreamAPIRequest  # 0.5 s
   - TestAHungRepositoryReadStillRenewsTheEdgeSession  # 2.9 s
   - TestAJoinedStoreErrorIsTheStoresAnswerOnlyWhenEveryPartIs  # 0.0 s
-  - TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess  # 1.3 s
+  - TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess  # 1.4 s
+  - TestAKeptAnswerOfAnotherSendersCopyIsDuplicateOutsideARepeat  # 0.3 s
   - TestAKeptCopyItsDrainNeverForwardedStillReachesTheRolesHolder  # 2.3 s
+  - TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey  # 2.5 s
   - TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep  # 0.3 s
-  - TestAKeptCopyWithAnExpectsReplyWordThisBuildDoesNotKnowIsReadAlikeByTheWalkTheKeepAndTheWakeScan  # 0.3 s
-  - TestAKeptRoleCopyIsForwardedOrReturned  # 51.8 s
-  - TestAKeptRoleMessageCarriesTheSenderThePublishStamped  # 0.8 s
-  - TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt  # 0.3 s
+  - TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey  # 16.7 s
+  - TestAKeptLaneGuardStopsWaitingWhenTheHandoversContextEnds  # 0.1 s
+  - TestAKeptRoleCopyIsForwardedOrReturned  # 51.4 s
   - TestAKeyWithEscapesNamesAFieldAsEncodingJSONReadsIt  # 0.0 s
-  - TestALaneCountReadsTheClaimFromTheLeaderWhileTheRoleCopyIsBehind  # 0.4 s
-  - TestALapsedHolderIsKeptFor  # 14.3 s
   - TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries  # 10.0 s
-  - TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential  # 0.1 s
   - TestALeftOutSetIsReducedOncePerSessionAndRow  # 0.0 s
   - TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt  # 0.2 s
-  - TestAListenerThatCannotOpenItsSessionConsumersEndsItsStart  # 10.4 s
+  - TestAListedGoogleIdentityIsAdmitted  # 0.3 s
+  - TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsTheStream  # 1.6 s
+  - TestAListenerStartedWithTheDeletedVariablesWarnsOncePerVariableAndServes  # 0.4 s
+  - TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount  # 2.3 s
   - TestAListenerWithAGitHubRouteSettlesTheCIBucket  # 1.4 s
-  - TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone  # 5.4 s
-  - TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503  # 1.6 s
+  - TestAListenerWithNoKnownSessionStoreCarriesNeitherCount  # 0.4 s
   - TestAListenerWithoutTheSessionConsumerGrantRunsNoTakeoverPass  # 0.7 s
   - TestALookupOfALapsedHolderReportsItsStandingClaimRevisionWhichThenClaims  # 0.3 s
-  - TestALostConditionalWriteOnAReplicatedBucketIsTheStoresAnswer  # 0.4 s
-  - TestANoSessionResolutionNeverJudgesTheCachedHolder  # 0.3 s
+  - TestANakGapReMarkRunsOffTheReceiptCallback  # 0.1 s
+  - TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice  # 0.3 s
+  - TestANameThatIsNoRoleIsNotCountedAsAnOldForm  # 0.6 s
+  - TestANewKeyIDDuringASlowReadIsAnswered503  # 9.2 s
   - TestANonEdgeListenerServesNoRelaySocket  # 0.3 s
+  - TestAPIAuth  # 0.1 s
   - TestAPIAuthAnswers503WhenTheBrokerCannotBeReached  # 0.0 s
   - TestAPIAuthAnswers503WhenTheSpentProofStoreCannotAnswer  # 0.0 s
-  - TestAPIAuthBrokerToken  # 0.0 s
-  - TestAPIAuthCarriesTheVerifiedPrincipalOfAnIdentityTokenAndOfNoOtherCredential  # 0.2 s
   - TestAPIAuthDoesNotRetryADPoPPresentationAsABearer  # 0.0 s
   - TestAPIAuthLeavesARequestWithNoTokenToTheRuleItAlwaysHad  # 0.0 s
   - TestAPIAuthReadsOnlyTheDPoPSchemeAsABrokerToken  # 0.0 s
   - TestAPIAuthRefusesAHeldBrokerToken  # 0.0 s
   - TestAPIAuthRefusesANarrowedTokenOfEveryKindOnEveryV1Route  # 0.5 s
-  - TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route  # 0.4 s
   - TestAPIAuthRefusesAReplayedProof  # 0.0 s
   - TestAPIAuthRefusesAnAuthItCannotServe  # 0.0 s
+  - TestAPIAuthRefusesAnExpiredStanding  # 0.0 s
   - TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe  # 0.0 s
   - TestAPIAuthValidatesV1BodyContentType  # 0.0 s
   - TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas  # 0.0 s
-  - TestAPersonsClosedSocketsGiveTheirPlacesBack  # 0.3 s
+  - TestAPassCannotWriteOverARecordAnotherPassMoved  # 0.4 s
+  - TestAPersonsClosedSocketsGiveTheirPlacesBack  # 0.4 s
   - TestAPingAfterASubIsAnsweredAfterTheSubscribe  # 1.9 s
-  - TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration  # 1.8 s
-  - TestAProjectedTokenOfASilentKeySetIsAnswered503  # 4.0 s
-  - TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender  # 0.4 s
+  - TestAProbeOfASocketIsNeitherForwardedNorAnswered  # 2.4 s
+  - TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline  # 10.2 s
+  - TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender  # 0.5 s
+  - TestAPublishCountsOnlyFromCopiesThatCanBeServed  # 1.0 s
   - TestAPublishToALapsedClaimIsKeptAndTheClaimStands  # 1.0 s
-  - TestAPublishToARoleTopicCarriesNeitherCount  # 0.3 s
-  - TestAPublishToTheListenersKeptLaneIsRefused  # 0.3 s
+  - TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason  # 0.3 s
   - TestAPublishWhileTheDeployedStreamLacksATeamTopicAnswers503AndStoresNothing  # 1.0 s
   - TestAPublishWhoseKeepFailedIsAnsweredAsAtMain  # 0.6 s
-  - TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing  # 0.3 s
-  - TestAPublishWithKeepFalseToAnUnclaimedRoleIsRefusedAndKeepsNothing  # 0.3 s
-  - TestAPublishWithNoSourceSessionReadsTheHolderFromTheLeaderWhileACopyIsBehind  # 1.1 s
+  - TestAPublishWithASourceSessionToARoleWithNoLiveHolderIsStillKept  # 0.3 s
+  - TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing  # 0.3 s
   - TestAPublishWithNoSourceSessionToAHeldRoleIsDelivered  # 0.6 s
   - TestAReaperPassDeletesTheReapedSessionsConsumerAndKeepsTheOthers  # 0.4 s
-  - TestARedeliveryGivesItsDeferralSlotBack  # 10.3 s
-  - TestARefollowKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite  # 0.6 s
+  - TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole  # 2.1 s
+  - TestARedeliveryGivesItsDeferralSlotBack  # 4.7 s
+  - TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead  # 0.6 s
+  - TestARefollowKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite  # 0.7 s
+  - TestARefollowWritesTheKnownSessionRecord  # 0.4 s
   - TestARefusalBeforeAnythingWasSentSaysTheMessageWasNotSent  # 0.0 s
-  - TestARefusalExceptionCarriesThePayloadOnlyWhileItFitsItsBound  # 0.0 s
+  - TestARefusalExceptionDoesNotWaitForTheBus  # 0.1 s
+  - TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason  # 0.3 s
   - TestARefusalExceptionThatCannotBePublishedIsOnlyLogged  # 0.0 s
-  - TestARefusalThatCannotNameTheLastRegistrationSaysSo  # 0.3 s
-  - TestARefusedDurableStopsTheListenerAtOnce  # 0.1 s
+  - TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid  # 7.2 s
+  - TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond  # 3.4 s
   - TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention  # 0.0 s
+  - TestARefusedRoleLaneDoesNotTurnFaultsTheRebuildRepairsIntoARestart  # 0.2 s
   - TestARefusedTakeoverClaimIsLoggedOnceAMinuteForEachRole  # 0.0 s
+  - TestARegistrationAfterAHandBackThatFreedNoClaimRenewsTheRoleNoFurther  # 0.4 s
   - TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStoredRow  # 0.4 s
-  - TestARegistrationInTheOldFormIsToldTheNewFormAndReceivesEither  # 0.3 s
-  - TestARegistrationRacedByAnotherListenersDeleteKeepsItsConsumer  # 0.6 s
-  - TestARegistrationRenewsTheClaimsItsOwnProcessHolds  # 0.3 s
-  - TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503  # 1.1 s
+  - TestARegistrationFromAnotherProcessRenewsNothing  # 0.3 s
+  - TestARegistrationInTheNewFormIsNamedInNoWarning  # 0.3 s
+  - TestARegistrationKeepsAGapMarkAnotherListenerSetSinceItsRead  # 0.4 s
+  - TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim  # 1.8 s
+  - TestARegistrationRacedByAnotherListenersDeleteKeepsItsConsumer  # 0.8 s
+  - TestARegistrationRenewsTheRoleItHoldsWhateverTopicsItCarries  # 1.0 s
   - TestARegistrationThatRacesTheReapOfItsRecordKeepsItsConsumer  # 0.3 s
-  - TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite  # 0.3 s
+  - TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite  # 0.4 s
+  - TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning  # 0.5 s
+  - TestARegistrationThroughANATSReconnectFailsByName  # 0.5 s
   - TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge  # 1.2 s
-  - TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheFirstSequenceAndLogged  # 0.3 s
-  - TestARegistrationWhoseRoleClaimViewCannotAnswerRenewsTheClaimItsRowNames  # 0.3 s
-  - TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics  # 0.3 s
-  - TestARegistrationsOwnRepairGivesBackTheTopicAnotherListenersRestoreLeftOut  # 0.6 s
+  - TestARegistrationWhoseEntryWriteFailsStillLogsTheTopicsItLeftOut  # 0.3 s
+  - TestARegistrationWhoseKnownSessionChunkIsNotWrittenIsRefusedAndLeavesNoRecord  # 1.0 s
+  - TestARegistrationWhoseRenewalLosesItsCompareAndSwapStillRegisters  # 0.3 s
+  - TestARegistrationWithNoPortIsAcceptedAndListedAtPortZero  # 0.3 s
+  - TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics  # 0.4 s
+  - TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain  # 2.8 s
+  - TestARegistrationsOwnRepairGivesBackTheTopicAnotherListenersRestoreLeftOut  # 0.7 s
   - TestARelaunchedRoleHolderReclaimsItsRoleAndItsOwnStopFreesIt  # 0.4 s
-  - TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead  # 0.6 s
-  - TestARelayRunCarriesAMarkOnceWhileItsCopyTrailsTheClear  # 0.4 s
+  - TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands  # 0.5 s
+  - TestARelayReplyTokenCannotBeGuessed  # 0.8 s
+  - TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead  # 0.7 s
+  - TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite  # 0.7 s
   - TestARelaySocketCarriesEveryValueOfAHeaderInOrder  # 0.3 s
-  - TestARelaySocketClosesOnABinaryFrame  # 0.3 s
-  - TestARelaySocketClosesOnAFrameOverItsReadLimit  # 0.4 s
-  - TestARelaySocketClosesWhenItsSubscriptionIsLost  # 0.4 s
   - TestARelaySocketForwardsAFrameAndPublishesItsReceipt  # 0.4 s
-  - TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame  # 1.3 s
-  - TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame  # 1.9 s
-  - TestARelaySocketLogsARunOfAnswerUnknownNaksOnceAndItsEnd  # 0.0 s
+  - TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits  # 1.8 s
+  - TestARelaySocketPastTheListenersCapIsRefused503  # 0.4 s
+  - TestARelaySocketPublishesOnlyAReceiptsWord  # 0.9 s
+  - TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue  # 1.4 s
   - TestARelaySocketUpgradeIsRefusedAsTheWireSays  # 0.3 s
-  - TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace  # 3.0 s
+  - TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace  # 3.1 s
+  - TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer  # 0.6 s
+  - TestARelaySocketWhoseWriteFailsIsDroppedAtOnce  # 10.7 s
   - TestARelaySocketsCloseGoesBetweenTheFragmentsOfAFrame  # 0.4 s
   - TestARelaysGapMarkWritesEndWhileTheSessionBucketDoesNotAnswer  # 8.8 s
-  - TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved  # 0.3 s
+  - TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved  # 0.4 s
   - TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy  # 3.4 s
-  - TestARepeatWhoseCopyReadDoesNotAnswerAnswers503  # 0.2 s
+  - TestARepeatAnswersTheStoredCopysExpectsReply  # 0.3 s
+  - TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText  # 0.8 s
   - TestARepeatWhoseStoredCopyCannotBeReadAnswers503  # 0.4 s
-  - TestARepeatedKeepIsOneCopyUntilItEnds  # 7.0 s
   - TestAReplyNamingAnotherSessionMovesNoFrame  # 0.0 s
   - TestAReplyWithATokenPastItsSessionIDMovesNoFrameAndLogsNothing  # 0.0 s
-  - TestARepositoryGapOutlivesAMoveToAnotherListener  # 0.5 s
   - TestARepositoryGapOutlivesARelayRestart  # 0.5 s
-  - TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsStored  # 0.9 s
+  - TestARepositoryThatLeavesTheProjectStopsReachingTheEdge  # 0.4 s
+  - TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsStored  # 5.8 s
   - TestARestoredConsumerDoesNotOfferTheAckedFramesAgain  # 1.5 s
+  - TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery  # 1.1 s
   - TestARoleClaimRecordThatNamesNoProcessIsWeighedByTheMomentItWasClaimed  # 0.3 s
-  - TestARoleClaimStatingItsOwnRevisionIsRefusedWhenItsRecordMovesAndIsNeverDecidedAgain  # 0.6 s
-  - TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused  # 0.3 s
-  - TestARoleClaimUnderOneSessionIdIsGrantedToTheProcessTheClaimNames  # 0.3 s
+  - TestARoleClaimThatStatesNoProcessIsWeighedByTheStandingClaimsRenewal  # 0.3 s
+  - TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused  # 0.4 s
   - TestARoleClaimWhoseRecordIsReplacedUnderItIsDecidedAgainOnTheRecordThatStands  # 0.6 s
-  - TestARoleClaimWithNoIfClaimRevisionIsUnchanged  # 0.3 s
   - TestARoleClaimWritesTheServingPortOutOfTheClaimantsEntry  # 0.3 s
-  - TestARoleClaimedInEitherFormClaimsItsName  # 0.3 s
+  - TestARoleCopyLostClaimIsBackInTheSessionsRowsAndTheRegistryWithinTheBound  # 0.5 s
   - TestARoleCopySurplusClaimGetsNoRoleDelivery  # 1.6 s
-  - TestARoleForwardIsStoredOncePerMessageAndTwoUnderOneChosenKeyTwice  # 0.9 s
-  - TestARoleHolderInsideTheLiveWindowReadsLiveOnEveryRoleRoute  # 0.4 s
+  - TestARoleHolderInsideTheLiveWindowReadsLiveOnEveryRoleRoute  # 0.5 s
+  - TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim  # 4.9 s
+  - TestARoleIsFoundByEitherFormOfItsName  # 0.3 s
+  - TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics  # 0.4 s
+  - TestARoleLaneDropOfALegionRoleOfAnotherProjectReportsNoHolder  # 0.3 s
   - TestARoleLaneFailureIsNeverOneTheMonitorRebuilds  # 0.0 s
-  - TestARoleLaneOfAnotherProjectReachesNoHolderOfItsLegionRole  # 0.4 s
-  - TestARoleLookupReadsAClaimRecordThatNamesNoProcessAndNoRenewal  # 0.3 s
-  - TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering  # 3.8 s
+  - TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError  # 0.9 s
   - TestARoleMarkIsReadAsTheClaimKeyOfTheRoleItNames  # 0.0 s
+  - TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken  # 11.2 s
+  - TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine  # 4.7 s
   - TestARoleNamedInTheOldFormIsCountedWhereverItIsRead  # 0.6 s
-  - TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError  # 1.7 s
-  - TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward  # 1.2 s
-  - TestARoleSendWhileTheDeployedStreamLacksItsHoldersAgentSubjectAnswers504AndCostsOne  # 4.5 s
+  - TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward  # 0.6 s
+  - TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward  # 1.1 s
+  - TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget  # 3.8 s
   - TestARoleViewWhoseFirstScanTimedOutIsTheBusNotAnsweringOnTheSessionRoutes  # 0.3 s
   - TestARunOfGiveBacksEndsWhenAFreshAnswerRelaysTheEvent  # 4.4 s
-  - TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown  # 0.5 s
-  - TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheHoldersClaimIsRenewed  # 0.3 s
-  - TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheClaimsRenewalIsOlderThanTheWindow  # 0.4 s
-  - TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheRoleClaimViewAnswersAgain  # 0.4 s
+  - TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown  # 0.4 s
+  - TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheRoleClaimViewCannotAnswer  # 0.3 s
   - TestASecondRegistrationWithoutATmuxPlaceClearsTheStoredTmuxPlace  # 0.3 s
-  - TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget  # 7.6 s
-  - TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry  # 0.9 s
-  - TestASendToASessionNeitherStoreKnowsIsTheNotFound  # 0.3 s
-  - TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities  # 0.4 s
+  - TestASendAnswersConnectedWhenTheListenerMayNotProbe  # 0.7 s
+  - TestASendReadsASessionWhoseConnectionClosedAsStopped  # 0.7 s
   - TestASendToAnEntryWithoutConsumerDeliveryIsNotProbed  # 0.7 s
   - TestASendWhileTheDeployedStreamLacksTheAgentSubjectAnswers503AndStoresNothing  # 1.0 s
-  - TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored  # 8.0 s
+  - TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored  # 7.9 s
+  - TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer  # 0.4 s
   - TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed  # 2.3 s
-  - TestASessionOnItsOwnGrantAnswersItsFramesAndTheConnectionProbe  # 0.7 s
+  - TestASessionOnItsOwnGrantAnswersItsFramesAndTheConnectionProbe  # 0.8 s
+  - TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSequence  # 1.6 s
   - TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked  # 7.9 s
+  - TestASessionThatReplacesAnotherReceivesItsUnreadMessages  # 1.1 s
   - TestASessionThatUnsubscribesStopsBeingCounted  # 0.4 s
+  - TestASettingNATSCannotChangeOnTheListenerDurableIsRefused  # 0.0 s
   - TestAShutdownWaitReadsWorkThatEndedAsEndedWhenItsContextHasEndedToo  # 0.0 s
-  - TestASilentRelaySubscriberReadsConnected  # 1.6 s
-  - TestASlackBodyStillHasTheServersReadTimeout  # 10.8 s
+  - TestASilentCutRewatchesTheCachesWithNoErrorLine  # 4.4 s
+  - TestASilentRelaySubscriberReadsConnected  # 1.7 s
   - TestASoftClaimLeavesALiveHolderItsRoleWhileTheSessionsCopyIsBehind  # 2.4 s
   - TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes  # 0.3 s
-  - TestAStoppedFormerHolderIsNoRecipientOfItsLostLane  # 0.7 s
-  - TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted  # 1.5 s
-  - TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter  # 0.6 s
+  - TestAStandInClosedWhileItAnswersAFrameReportsNothing  # 0.0 s
+  - TestAStoppedFormerHolderIsNoRecipientOfItsLostLane  # 0.8 s
+  - TestAStoppedSessionUnderTheMaxPayloadIsSentToAndCounted  # 0.4 s
+  - TestASweepPassReadsNoPreviousHolderOfARecordPastItsLife  # 7.2 s
   - TestASweepsPassesFallAtItsPhaseOfTheClock  # 0.0 s
   - TestATakeoverClaimWhoseRecordDidNotStoreWritesNoClaim  # 0.4 s
   - TestATakeoverCopyIsJudgedAnOutboxCopyByItsOwnKeyAfterEveryMove  # 0.0 s
+  - TestATakeoverCopyThatStopsOrRunsAgainLosesNothing  # 49.5 s
   - TestATakeoverNarrowsTheFormerHolderWhileTheRoleCopyIsBehind  # 0.4 s
   - TestATakeoverNarrowsTheFormerHoldersFilterAtOnce  # 0.8 s
+  - TestATakeoverRecordThatNothingMovesIsWrittenOncePerRefresh  # 0.8 s
+  - TestATakeoverRecordThatWaitedWhileItsHolderKeptTheRoleCopiesNoOlderHour  # 1.1 s
+  - TestATakeoverRecordWriteTheBusDidNotAnswerIsAnsweredAsTheBusUnanswered  # 1.4 s
+  - TestAV1BodyIsJudgedByItsDecodeAndTheReadOfItsRest  # 0.1 s
   - TestAWakeReportIsRetriedUntilTheBusTakesIt  # 3.3 s
   - TestAWakeReportWithNoBusIsDropped  # 0.0 s
-  - TestAWithheldEventIsAcknowledgedOnlyOnceItsGapMarkIsStored  # 3.4 s
   - TestAWithheldEventIsGivenBackWhileTheSessionHasNoEntry  # 3.4 s
-  - TestAWithheldFrameIsLoggedWithItsSubjectAndReasonAndCounted  # 0.0 s
-  - TestAWriteThatLandedWhoseReadOfTheBucketFailsNamesTheSessionTheRevisionAndTheError  # 0.6 s
-  - TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession  # 0.3 s
+  - TestAWriteThatLandedWhoseReadOfTheBucketFailsNamesTheSessionTheRevisionAndTheError  # 0.8 s
+  - TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay  # 2.7 s
+  - TestAdminInterestsHandler_DeleteBySession  # 0.8 s
+  - TestAdminInterestsHandler_DeleteIdempotent  # 0.3 s
+  - TestAdminInterestsHandler_GetBySession  # 0.3 s
   - TestAdminInterestsHandler_ListAll  # 0.3 s
-  - TestAdminInterestsHandler_MethodNotAllowed  # 0.3 s
   - TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat  # 0.3 s
-  - TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat  # 2.5 s
   - TestAdmissionWarningsCountConcurrentAdmissions  # 0.0 s
   - TestAnAccountListSeparatedByCommasHoldsNoEntryWithAComma  # 0.0 s
+  - TestAnAgentDeliveryLogsAtWarnASessionReadThatDidNotAnswer  # 0.3 s
+  - TestAnAgentMessageIsTheSessionConsumersAlone  # 46.5 s
   - TestAnAgentSubjectNamesItsSessionInEitherForm  # 0.0 s
   - TestAnAnswersExpectsReplyIsTheAnsweredEnvelopesInTheRequestsSpelling  # 0.0 s
-  - TestAnEdgeFollowsOnlyTheSessionsOwnAgentSubject  # 0.3 s
+  - TestAnEdgeComparesRepositoriesIgnoringCase  # 0.4 s
+  - TestAnEdgeEchoJudgesAnUnreadStoredForwardByTheEarlierHolderItWentTo  # 0.3 s
   - TestAnEdgeForgetsTheAdmissionOfASessionWhoseRecordIsGone  # 0.3 s
-  - TestAnEdgeGrantsNoScopeToARecordNamingNoKey  # 0.7 s
-  - TestAnEdgeHoldsThePlanItMakesAgainAfterAConflict  # 0.7 s
+  - TestAnEdgeHoldsATokenOfTwoServedProjectsToBoth  # 0.4 s
   - TestAnEdgeListenerGrantRefusesAListThatIsNoListOfProjectKeys  # 0.0 s
+  - TestAnEdgeListenerLeavesTheAgentWakeToTheSharedListeners  # 2.3 s
   - TestAnEdgeListenerStartWaitsOutACredentialRefusal  # 0.1 s
-  - TestAnEdgePruneLogsARunOfFailedRemovalsOnce  # 0.4 s
-  - TestAnEdgePruneLogsTheEndOfARunWhenTheRepositoryComesBack  # 0.4 s
-  - TestAnEdgePruneLogsTheEndOfARunWhenTheSessionsRecordIsGone  # 0.4 s
-  - TestAnEdgePublishNamesItsOwnSession  # 0.4 s
+  - TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConnectionsLastError  # 4.2 s
+  - TestAnEdgeNamesOnlyTheSuccessorsOfTheTokensProjects  # 0.4 s
+  - TestAnEdgePruneLogsTheEndOfARunTheSessionEndsByUnsubscribing  # 0.4 s
   - TestAnEdgePublishToAnUnheldRoleIsRefusedAndKeptNowhere  # 0.3 s
+  - TestAnEdgeReadShowsOnlyTheTopicsOfTheTokensProjects  # 0.4 s
   - TestAnEdgeRefreshLogsARunOfFailedReadsOnceAndItsEnd  # 0.0 s
   - TestAnEdgeRefreshReadsEachProjectOnItsOwn  # 0.0 s
   - TestAnEdgeRefusalNamesOnlyTheRefusedTopics  # 0.4 s
   - TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder  # 0.3 s
-  - TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub  # 0.3 s
   - TestAnEdgeRefusesToStartBesideDispatchsPrincipal  # 0.0 s
   - TestAnEdgeRegistrationViewShowsOnlySessionsOfItsProjects  # 0.4 s
   - TestAnEdgeRegistryReadNamesNothingOfAGoneOrStoppedSessionOfAnotherProject  # 0.4 s
+  - TestAnEdgeRelaysTheGitHubEventsOfItsProjectsRepositories  # 0.4 s
   - TestAnEdgeReleasesAClaimNoRowNamesWhileTheClaimViewRefills  # 0.4 s
+  - TestAnEdgeReleasesAnotherProjectsClaimWhileTheClaimViewRefills  # 0.4 s
   - TestAnEdgeReleasesTheRoleClaimsOfOtherProjects  # 0.4 s
   - TestAnEdgeRepositoriesRefusalCopiesNoBrokerText  # 0.3 s
-  - TestAnEdgeRepositoriesRefusalRecordsTheUnrenewedClaims  # 0.3 s
-  - TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder  # 8.3 s
-  - TestAnEdgeSendNamesItsOwnSession  # 0.4 s
-  - TestAnEdgeSessionStaysRegisteredThroughARepositoryOutage  # 0.4 s
+  - TestAnEdgeRepositoriesRefusalRecordsTheUnrenewedClaims  # 0.4 s
+  - TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo  # 4.4 s
+  - TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder  # 8.4 s
+  - TestAnEdgeSessionStaysRegisteredThroughARepositoryOutage  # 0.5 s
+  - TestAnEdgeShowsALegionAgentOnlyOfASessionOfItsIssuesProject  # 0.4 s
   - TestAnExceptionAboutATakeoverCopyNamesTheMessagesOwnKey  # 0.0 s
   - TestAnExpiryNoticeReachesDispatchWhenAListenerStopsBetweenItsWrites  # 4.4 s
   - TestAnIdentityTokenOfASilentIssuerIsAnswered503  # 4.0 s
-  - TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering  # 0.3 s
-  - TestAnOpenSocketClosesByTheBrokersAnswer  # 10.7 s
+  - TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal  # 9.1 s
+  - TestAnInProcessResendThatWaitsOutAReconnectNamesIt  # 0.1 s
   - TestAnOrphanedDeferralSlotIsReclaimedAtItsExpiry  # 0.0 s
   - TestAnOutboxCopyWhoseHourEndsIsToldToDispatch  # 5.1 s
-  - TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering  # 0.3 s
-  - TestAnUnreadableRoleFrameIsNamedInAFewDozenBytes  # 0.4 s
+  - TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames  # 0.4 s
+  - TestAnUnreadableInterestRecordIsAnsweredAsUnreadable  # 0.3 s
   - TestAnUnsignedWebhookBodyIsRefusedBeforeItIsParsed  # 0.0 s
   - TestAnUnsubscribeNamesEveryFormItRemoved  # 0.3 s
-  - TestBindListenerDurableBindsWithinOneIntervalOfRelease  # 0.3 s
-  - TestBindListenerDurableEndsAtTheGrantsRefusal  # 0.0 s
+  - TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt  # 0.7 s
+  - TestAwaitDurableBoundEndsAtTheGrantsRefusal  # 0.0 s
   - TestBindListenerDurableGivesUpAtTheDeadline  # 0.2 s
-  - TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFiveThousandOtherSessionsClaims  # 1.1 s
-  - TestBoundDurableConsumerIsNotStolen  # 0.0 s
+  - TestBrokerTokensRefuseABusWithNoJetStream  # 0.0 s
   - TestCIVerifySettingIsOnOrOffAndRefusesAnythingElse  # 0.0 s
   - TestCheckSelfHealth_ClosedConnReturnsError  # 0.3 s
   - TestCheckSelfHealth_DurableProbeFailurePropagates  # 0.0 s
+  - TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay  # 0.1 s
   - TestConcurrentSoftClaimsOfOneUnheldRoleAreGrantedToExactlyOneProcess  # 0.7 s
-  - TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing  # 0.4 s
-  - TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating  # 3.6 s
   - TestDeadSessionACK  # 0.0 s
   - TestDeleteSessionHandler_DeletesTheSameClientInstancesRegistration  # 0.3 s
-  - TestDeleteSessionHandler_IsIdempotent  # 0.3 s
+  - TestDeleteSessionHandler_IsIdempotent  # 0.4 s
+  - TestDeleteSessionHandler_KeepsARegistrationWrittenAfterTheStopsMoment  # 0.3 s
   - TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration  # 0.3 s
   - TestDeleteSessionHandler_RejectsOtherMethods  # 0.3 s
   - TestDependencyHealthStatus  # 0.0 s
-  - TestDeregistrationWithNoConditionDeletesTheSessionsConsumer  # 0.3 s
   - TestDescribeListenerAPIAuth  # 0.0 s
   - TestDescribeListenerAPIHostsCountsEveryBearer  # 0.0 s
-  - TestDispatchBroadcastResolvesSessionsTheCacheHasNotRefilled  # 0.8 s
-  - TestDispatchClientReadsTheLegionAgentRegistry  # 0.1 s
-  - TestDispatchMentionResolvesASessionTheCacheHasNotRefilled  # 0.8 s
-  - TestDispatchQueuesATargetedMessageForASessionNoStoreHolds  # 18.5 s
-  - TestDispatchRefusesAClaimTakeoverWhileTheCacheRefills  # 0.9 s
-  - TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing  # 0.3 s
+  - TestDispatchClientSendUsesListenerWireContract  # 0.3 s
+  - TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer  # 13.9 s
+  - TestDurableConsumerRestart  # 0.1 s
+  - TestEachActReadsTheRecordInBothDirections  # 7.8 s
   - TestEdgeAdmitsOnlyTokensOfItsProjects  # 0.0 s
-  - TestEdgeForwardedAddressFromAnyOtherPeerChoosesNothing  # 0.0 s
-  - TestEdgeForwardedAddressKeysEachCallersOwnBucket  # 0.0 s
+  - TestEdgeAloneGivesAProofBackOnA503  # 0.0 s
+  - TestEdgeForwardedAddressIsReadByTheEdgeAlone  # 0.0 s
   - TestEdgeForwardedAddressRefusesWhatGoogleDidNotForward  # 0.0 s
   - TestEdgeFrameVerdict  # 0.0 s
   - TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject  # 0.0 s
-  - TestEdgeFrameVerdictOnGeneratedDispatchFrames  # 15.9 s
+  - TestEdgeFrameVerdictOnGeneratedDispatchFrames  # 16.3 s
   - TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject  # 0.0 s
-  - TestEdgeFrameVerdictPassesAPersonsMessageInTheSessionsOwnConversation  # 0.0 s
   - TestEdgeFrameVerdictTellsARoleAsTheRelayDoes  # 0.0 s
-  - TestEdgeGivesBackOnlyItsOwnRequestsProof  # 0.0 s
   - TestEdgeHoldsRolesToTheTokensProjects  # 0.4 s
-  - TestEdgeListenerLinksNoDispatchStore  # 0.1 s
-  - TestEdgeRetryOfAProofAfterAPreAuth503IsServed  # 0.0 s
-  - TestEdgeSendsOnlyToSessionsOfTheTokensProjects  # 0.5 s
+  - TestEdgeReadsListOnlyTheTokensProjects  # 0.4 s
+  - TestEdgeReleaseDeletesOnlyTheRecordItsRequestWrote  # 0.0 s
+  - TestEdgeRetryOfAProofAfterAPostAuth503  # 0.1 s
+  - TestEdgeSessionEntryRecordsTheRegisteringTokensProjects  # 0.4 s
   - TestEdgeSpentProofsReadALostCreateAfterAReleaseAsSpent  # 0.0 s
-  - TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget  # 6.0 s
+  - TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo  # 0.2 s
   - TestFixtureBeforeRowForASessionWithNoInterestRecordDiffersOnlyInTopics  # 0.0 s
+  - TestFragmentsHandsItsWriterPiecesOfAtMostOneFragment  # 0.0 s
   - TestFullMux_StartingState  # 0.0 s
-  - TestGoogleIssuerOnAProjectedOnlyListener  # 0.1 s
   - TestHealthzAnswersAHookStallPastTheRepairGrace  # 0.4 s
   - TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget  # 3.3 s
-  - TestHealthzConsumerLag  # 0.0 s
-  - TestHealthzReportsARecreatedDurableThroughAHookStall  # 0.4 s
-  - TestHealthzReportsARecreatedDurableUnhealthy  # 0.3 s
+  - TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead  # 10.4 s
+  - TestHealthzReadyzAnswers503UntilTheV1GateOpens  # 0.0 s
+  - TestHealthzReadyzAnswers503WhileTheBusIsDownAndServingOnceItIsBack  # 2.5 s
+  - TestHealthzReportsARecreatedDurableUnhealthy  # 0.4 s
   - TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded  # 0.4 s
-  - TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound  # 0.8 s
-  - TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass  # 0.3 s
+  - TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound  # 0.7 s
+  - TestHealthzStillReportsALostDurableWhileTheRoleClaimViewIsIncomplete  # 0.3 s
   - TestHealthz_Starting_Returns200WithJSON  # 0.0 s
-  - TestHeartbeatKVWritesPerHeartbeat  # 1.3 s
   - TestIdempotencyKey_BackwardsCompat  # 0.0 s
-  - TestIdempotencyKey_Send  # 0.3 s
-  - TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest  # 0.3 s
+  - TestIdempotencyKey_Send  # 0.4 s
   - TestInterestSubscribeLeavesAControllerEveryPrivateSubjectButItsOwnLane  # 0.3 s
   - TestInterestSubscribeStoresOnlyTheAgentSubjectWhenEveryTopicIsUncaptured  # 0.3 s
-  - TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds  # 0.4 s
+  - TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox  # 0.3 s
+  - TestInterestSubscribeStoresTheControllerLaneOfTheRoleTheSessionHolds  # 0.3 s
   - TestIsControlTopic  # 0.0 s
   - TestIsValidRole  # 0.0 s
   - TestLegionAgentBatchRouteRecordsEveryEntry  # 0.1 s
-  - TestLegionAgentRoutesAnswerAnAbsence  # 0.1 s
-  - TestLegionAgentRoutesRoundTripAnEntry  # 0.1 s
-  - TestLegionAgentsSurviveAListenerRestart  # 0.1 s
+  - TestLegionAgentRoutesIgnoreAProjectKey  # 0.1 s
+  - TestLegionAgentRoutesRefuseMovingASession  # 0.1 s
   - TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAndItsMessageIsKept  # 0.6 s
-  - TestListenerDeliveryHandler_FailedDeliveryOnExceptionTopic_NoException  # 0.8 s
   - TestListenerDeliveryHandler_FailedDeliveryOnNonControlTopic_NoException  # 0.8 s
-  - TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery  # 0.6 s
-  - TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode  # 0.3 s
+  - TestListenerDeliveryHandler_FanoutRefusalOfATeamTopicIsStoredOnItsExceptionLane  # 0.3 s
+  - TestListenerDeliveryHandler_PortlessSelfSubscribedEntryIsSkippedOnlyOnItsAgentSubject  # 0.9 s
   - TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed  # 1.9 s
+  - TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed  # 0.4 s
   - TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode  # 0.3 s
   - TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotSeen  # 0.6 s
-  - TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder  # 0.6 s
-  - TestListenerFollowsTheInterestRegistryAcrossNATSRestarts  # 4.8 s
-  - TestListenerLogsFromOtherPackagesKeepTheirHandlers  # 0.9 s
+  - TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder  # 0.7 s
+  - TestListenerOnPortZeroLogsThePortTheKernelChose  # 0.4 s
   - TestListenerPodGracesCoverTheStopBudget  # 0.0 s
-  - TestListenerRecordsEverySendAndPublishRequest  # 0.3 s
-  - TestListenerRefusesAListenFDThatIsNotASocketAndBindsNothing  # 0.0 s
+  - TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort  # 0.0 s
   - TestListenerRefusesAnInheritedSocketOnEveryInterfaceWithoutCredentials  # 0.0 s
-  - TestListenerSIGTERMIsAnOrderedShutdown  # 5.2 s
-  - TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet  # 0.5 s
-  - TestListsRefuseAfterTheBoundWhileNATSIsDown  # 2.8 s
-  - TestListsRefuseAfterTheBoundWithAStaleCopy  # 0.7 s
-  - TestListsRefuseUntilTheirCopiesCompleteAFirstRead  # 0.4 s
+  - TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas  # 0.3 s
+  - TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413  # 0.7 s
   - TestMessageHandlersRejectPresentEmptyOptionalFields  # 0.3 s
+  - TestMessageHandlersUseFirstNonEmptyLine  # 0.3 s
   - TestMetrics  # 0.0 s
   - TestMetrics_NotGatedByReadiness  # 0.0 s
-  - TestOIDCAccountsLimitTheProjectedTokenBranch  # 0.2 s
-  - TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt  # 0.4 s
+  - TestOIDCAccountsLimitTheProjectedTokenBranch  # 0.1 s
   - TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget  # 0.5 s
+  - TestPublishHandlerRefusesATopicOutsideNotifications  # 0.6 s
   - TestPublishHandlerReturnsWithinDeadline  # 0.0 s
-  - TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor  # 0.3 s
-  - TestPublishHandler_ExplicitDedupeKeyIsNotForwardedAgainOnceStored  # 1.1 s
   - TestPublishHandler_MethodNotAllowed  # 0.0 s
-  - TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope  # 0.3 s
   - TestPublishHandler_RejectsAgentTopics  # 0.0 s
+  - TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey  # 0.3 s
   - TestPublishHandler_RejectsInvalidSource  # 0.0 s
+  - TestPublishHandler_RejectsReservedDedupeKeyPrefix  # 0.8 s
   - TestPublishHandler_RoleFreshDeafHolderIsAnsweredStored  # 0.6 s
   - TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane  # 1.1 s
   - TestPublishHandler_SourceFieldWithNATS  # 0.0 s
+  - TestPublishHandler_SuppliedPayloadWins  # 0.0 s
   - TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls  # 3.8 s
+  - TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept  # 0.9 s
   - TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed  # 0.7 s
-  - TestPublishRouteRefusesADeliveryModeTheHolderDoesNotAdvertise  # 0.6 s
-  - TestPublishRouteSendsNothingToASenderHoldingTheRole  # 0.7 s
   - TestPublishRouteStoresOneCopyOfARoleForwardSentTwice  # 0.9 s
+  - TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected  # 0.6 s
   - TestRegisterV1Routes_UnknownRouteReturnsJSONError  # 0.0 s
   - TestRelayRunExitTakesOrRefusesEveryWake  # 0.0 s
   - TestRelayRunRetryWaitEndsOnAWake  # 0.0 s
@@ -386,60 +403,57 @@
   - TestResolveListenerOIDCAccounts  # 0.0 s
   - TestResolveListenerOIDCConfig  # 0.0 s
   - TestRetriedRefusalTakesTheBusAndConsumerRefusalsAlone  # 0.0 s
-  - TestRoleAnswersNameALiveHoldersState  # 0.3 s
-  - TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL  # 0.6 s
-  - TestRoleHolderLapsedResponseDoesNotInventLastSeen  # 0.3 s
-  - TestRoleHolderStateIsNamedByEachRoutesAnswer  # 0.6 s
+  - TestRoleGetHandlerReturnsLiveHolder  # 0.3 s
+  - TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed  # 2.4 s
+  - TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOutcomes  # 0.4 s
   - TestRoleLaneForwardsOneRoleWithoutDelayingAnother  # 11.5 s
-  - TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy  # 3.1 s
-  - TestRoleSetConcurrentClaimsOfOneRoleAnswerOnlyWhatTheRouteDocuments  # 1.1 s
-  - TestRoleSetHandlerSoftClaimPredecessorInstance  # 6.8 s
-  - TestRoleSetHandler_SetsRole  # 0.3 s
+  - TestRoleSetHandlerSoftClaim  # 0.4 s
   - TestRoleSetHandler_Validation  # 0.3 s
-  - TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoveries  # 0.1 s
   - TestRunSelfHealthMonitor_DoesNotTerminateOnSustainedConnectedTransientFailure  # 0.0 s
-  - TestRunSelfHealthMonitor_ExitsAfterThreeRebuildsThatLeaveAFault  # 0.0 s
-  - TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs  # 0.6 s
+  - TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection  # 0.6 s
+  - TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket  # 0.3 s
   - TestRunSelfHealthMonitor_RetriesPastTransientFailures  # 0.0 s
   - TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError  # 0.0 s
   - TestRunSelfHealthMonitor_TerminatesAfterSustainedDisconnection  # 0.0 s
-  - TestSendHandlerRefusesAModeThatIsNotADeliveryMode  # 0.3 s
-  - TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload  # 0.3 s
-  - TestSendHandler_AcceptsHumanSource  # 0.3 s
+  - TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish  # 1.0 s
+  - TestSendHandlerAllowsAdvertisedFrameModeAndUntaggedSends  # 0.3 s
+  - TestSendHandlerRefusesTargetThatDoesNotAdvertiseFrameMode  # 0.3 s
+  - TestSendHandlerRefusesUnreadableOrAmbiguousDeliveryFrames  # 0.3 s
   - TestSendHandler_KeysASendByAgentSendDedupeKey  # 0.3 s
   - TestSendHandler_RejectsEmptyTargetSession  # 0.0 s
   - TestSendHandler_RejectsInvalidSource  # 0.0 s
   - TestSendHandler_ReportsAJetStreamDuplicate  # 0.3 s
-  - TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer  # 1.6 s
-  - TestSenderLimitSenders  # 1.1 s
-  - TestSenderLimitSettings  # 0.7 s
+  - TestSendHandler_StampsSenderAndReturnsRecipient  # 0.3 s
+  - TestSendReadsTheSessionStoreWhileTheCacheIsCold  # 0.6 s
+  - TestSenderLimitCost  # 20.7 s
   - TestSenderStampNamesTheCurrentRegistration  # 1.3 s
-  - TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored  # 0.3 s
-  - TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn  # 1.7 s
-  - TestSessionConsumerBurstOfRestartsDeliversEveryBacklog  # 3.5 s
+  - TestSessionConsumerAcksAFrameOnlyOnDone  # 0.7 s
   - TestSessionConsumerCarriesTheGapAndTheUnsubscribeAcrossARefusedWrite  # 0.3 s
   - TestSessionConsumerEventPublishedJustAfterAFollowIsRelayed  # 0.5 s
-  - TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures  # 0.3 s
-  - TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds  # 0.4 s
+  - TestSessionConsumerFiltersAgainWhenItsWriteLosesTheCompareAndSwap  # 0.4 s
+  - TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures  # 0.4 s
+  - TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart  # 1.8 s
   - TestSessionConsumerHeldFrameDoesNotDelayLaterReceiptsAndSurvivesARestart  # 1.5 s
   - TestSessionConsumerInvalidSessionIDIsRefused  # 0.3 s
-  - TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits  # 0.3 s
-  - TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath  # 0.6 s
-  - TestSessionConsumerNewEpochHeardAfterTheRunRestartedRestartsNothing  # 2.4 s
-  - TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer  # 2.4 s
-  - TestSessionConsumerRefusalSaysWhatTheClientMustDo  # 2.7 s
-  - TestSessionConsumerRegistrationAnswersConsumerModeAndFiltersOnStoredFollowedTopics  # 0.3 s
-  - TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow  # 0.3 s
-  - TestSessionConsumerRegistrationTellsTheRelayWhenTheEpochChanges  # 0.3 s
-  - TestSessionConsumerRegistrationWritesTheTopicsStoredWhenItHoldsTheLock  # 0.3 s
-  - TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds  # 0.3 s
+  - TestSessionConsumerOverlappingFollowsAreAccepted  # 0.3 s
+  - TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer  # 2.5 s
+  - TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone  # 1.7 s
+  - TestSessionConsumerRefusesARegistrationEveryPlanOfWhichIsOutrun  # 0.3 s
+  - TestSessionConsumerRegistrationTellsTheRelayWhenTheEpochChanges  # 0.4 s
+  - TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFloor  # 1.5 s
+  - TestSessionConsumerRegistrationWithoutAUsableResumePointStartsAtWhatIsStoredForTheSession  # 0.5 s
+  - TestSessionConsumerRegistrationWithoutDeliveryIsRefused  # 0.3 s
+  - TestSessionConsumerRegistrationWritesTheTopicsStoredWhenItHoldsTheLock  # 0.4 s
+  - TestSessionConsumerRelaySubjectIsNotStored  # 0.4 s
+  - TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor  # 4.5 s
   - TestSessionConsumerRestartWritesTheTopicsStoredWhenItHoldsTheLock  # 0.4 s
   - TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStoredWhileItWasAway  # 1.6 s
   - TestSessionConsumerResumePointAtZeroOfTheCurrentStreamDeliversFromTheFirstSequence  # 1.4 s
+  - TestSessionConsumerResumePointBelowTheStreamsFirstSequenceIsAnsweredAGap  # 0.3 s
   - TestSessionConsumerResumePointOfTheCurrentStreamSeedsTheNewConsumer  # 0.3 s
-  - TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters  # 3.9 s
-  - TestSessionConsumerUnsubscribeShrinksTheFilter  # 0.4 s
-  - TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes  # 0.7 s
+  - TestSessionConsumerRoleClaimKeepsConsumerDelivery  # 0.3 s
+  - TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff  # 3.9 s
+  - TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes  # 0.8 s
   - TestSessionEntryFromSubscribe_CarriesHost  # 0.0 s
   - TestSessionEntryFromSubscribe_CarriesSelfSubscribedFlag  # 0.0 s
   - TestSessionEntryFromSubscribe_CarriesTheClientInstanceID  # 0.0 s
@@ -450,536 +464,548 @@
   - TestSessionEntryFromSubscribe_DefaultsThePluginAndItsVersionEmpty  # 0.0 s
   - TestSessionEntryFromSubscribe_DefaultsTmuxPlaceNil  # 0.0 s
   - TestSessionEntryFromSubscribe_TrimsTheClientInstanceID  # 0.0 s
-  - TestSessionEntryRouteAnswers404OnlyForAGoneRecord  # 0.3 s
+  - TestSessionEntryRouteAnswersASessionTheCacheHasNotRefilled  # 0.6 s
+  - TestSessionEntryRouteAnswersTheRegistrationViewWhileTheClaimsViewCannotAnswer  # 0.3 s
   - TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow  # 0.3 s
-  - TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture  # 0.3 s
+  - TestSessionEntryRouteNamesTheClientInstanceThatRegistered  # 0.3 s
   - TestSessionEntryRouteRefusesANonGETMethod  # 0.0 s
   - TestSessionEntryRouteRefusesAViewValueItDoesNotKnow  # 0.0 s
-  - TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHolds  # 0.3 s
-  - TestSessionEntryRouteUnderTheRegistrationViewAnswersTheBucketsInstanceNotTheCachedOne  # 0.6 s
-  - TestSessionHealthFields_PopulatedAfterReady  # 0.0 s
   - TestSessionInfoKeysForASessionWithNoInterestRecordAreTheFixtureRowsKeys  # 0.0 s
-  - TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux  # 0.3 s
-  - TestSessionsHandlerFiltersAndReportsRoles  # 0.3 s
-  - TestSessionsHandler_EmptyList  # 0.3 s
+  - TestSessionRoutesReportEachSessionsDeliveryMode  # 0.3 s
+  - TestSessionsHandlerReportsHostWithFallbackToMachineID  # 0.3 s
   - TestSessionsHandler_IncludesTitle  # 0.3 s
-  - TestSessionsHandler_JoinsRegistries  # 0.3 s
   - TestSessionsHandler_MethodNotAllowed  # 0.0 s
-  - TestSessionsHandler_OnlyLiveSessions  # 0.3 s
+  - TestSessionsHandler_NoInterestsData  # 0.3 s
   - TestSessionsListRowForASessionWithNoInterestRecordMatchesTheFixture  # 0.3 s
+  - TestSetupTestNATSClosesItsClientWhenItsTestEnds  # 0.0 s
   - TestSlackURLVerificationIsAnsweredOnlyOnceItsSignatureChecks  # 0.0 s
-  - TestSpentProofsRefuseAProofTheBucketAlreadyHolds  # 0.0 s
   - TestStartListenerSubscriptionMigratesLegacyDurableConsumer  # 0.1 s
   - TestStartingGateLogsEachRefusedRequest  # 0.0 s
   - TestStartingGate_Closed_Returns503  # 0.0 s
   - TestStartingGate_Open_PassesThrough  # 0.0 s
-  - TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck  # 1.1 s
-  - TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName  # 0.4 s
+  - TestSubjectIndexAcksADurableMessageNoSessionNeedsBeforeDecodingIt  # 0.3 s
   - TestSubscribeHandlerFailsWhenSessionRegistryPutFails  # 0.3 s
-  - TestSubscribeHandlerStoresAndListsThePluginAndItsVersion  # 0.3 s
-  - TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot  # 0.5 s
+  - TestSubscribeHandlerStoresAndListsCapabilities  # 0.3 s
   - TestSubscribeHandlerWarnsWhenGitHubWiringLookupFails  # 0.3 s
+  - TestSubscribeHandlerWritesAnUnchangedInterestOnce  # 0.4 s
+  - TestSubscribeHandler_StoresSelfSubscribedSessionWithoutPort  # 0.3 s
+  - TestTheActHoldsOnAFailedRead  # 5.7 s
+  - TestTheAdministratorsDeleteFreesTheRoleClaimWhoeverHoldsIt  # 0.7 s
+  - TestTheAgentPathReadsTheSessionOfEitherForm  # 0.7 s
+  - TestTheConsumerDeleteReadsTheSessionBucketsLeader  # 0.4 s
   - TestTheConsumerDeleteWaitSaysNothingWhenNoDeleteRan  # 0.0 s
-  - TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucketsShippingAge  # 0.0 s
+  - TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndTwoPassesFitInsideTheGoneHorizon  # 0.0 s
   - TestTheDefaultSessionReapIntervalMeetsTheTwoMinuteAdoption  # 0.0 s
   - TestTheDispatchPrincipalIsReadAtStartAndOneNoCredentialCouldProveRefusesIt  # 0.0 s
+  - TestTheDriftCorrectionWritesADurableOnlyWhenThePolicyChangesIt  # 1.1 s
   - TestTheEdgeAndTheRelayReadAFramesFieldsAlike  # 0.0 s
+  - TestTheEdgeRefusesToStartWithoutTheStream  # 0.9 s
   - TestTheEnvelopeReadTakesAWholeNumberAndNoStringHoldingOne  # 0.0 s
   - TestTheFanoutRecordsARecipientItCannotReachBeforeItsException  # 0.6 s
-  - TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo  # 1.5 s
-  - TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublishedIt  # 3.4 s
+  - TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublishedIt  # 3.5 s
   - TestTheGrantGuardRefusesARelaunchedProcessOnlyUntilItsPredecessorsLastFailureAges  # 0.6 s
-  - TestTheHandoverGateRefusesWhatNoRegistrationAttests  # 0.1 s
-  - TestTheHandoverHoldsForEachRoleAndForTheMessagesAPersonSent  # 2.2 s
+  - TestTheGrantGuardRefusesWhileThisListenersRenewalsFailOrItsCopyIsStale  # 2.4 s
+  - TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal  # 4.8 s
   - TestTheHealthzIssuerFieldsNeverDecideTheAnswer  # 0.0 s
   - TestTheInfraCopyOfTheStopBudgetIsTheStopBudget  # 0.0 s
-  - TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget  # 4.8 s
   - TestTheInterestReaperKeepsTheInterestOfASessionACopyBehindAnswersAbsent  # 1.2 s
   - TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInterest  # 0.6 s
   - TestTheInterestWriteRoutesAnswerOverAnUnreadableInterestRecord  # 0.3 s
   - TestTheKnownSessionHookLogsNothingForARunThatIsOver  # 0.1 s
   - TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount  # 0.4 s
-  - TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows  # 0.3 s
-  - TestTheListenerLogsItsOldFormCounterAndStart  # 0.3 s
-  - TestTheListenerNamesEveryInboxByItsConnection  # 1.0 s
-  - TestTheListenerServesWhileItsIssuersCannotBeDiscovered  # 5.3 s
-  - TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain  # 20.6 s
-  - TestTheListenerStartConnectsOnceTheServersHaveReloaded  # 0.9 s
-  - TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects  # 0.1 s
+  - TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows  # 0.4 s
+  - TestTheListenerOpensV1AndPicksUpTheBucketItMayNotOpenYet  # 4.0 s
+  - TestTheListenerServesWhileItsIssuersCannotBeDiscovered  # 5.2 s
+  - TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain  # 20.7 s
+  - TestTheListenerStartConnectsOnceTheServersHaveReloaded  # 5.0 s
+  - TestTheListenerStartWaitsOutACredentialRefusal  # 0.1 s
   - TestTheListenerStartsOverKeysAnEarlierListenerStored  # 0.4 s
-  - TestTheListsMakeNoNATSReadWhileNATSStalls  # 0.3 s
+  - TestTheListenerStatesItsWebhookBodyBudgetAtItsStart  # 0.1 s
   - TestTheNakDelayClimbsWithTheMessagesDeliveryCount  # 0.0 s
-  - TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote  # 0.5 s
+  - TestThePublishRouteRefusesDispatchAndGitHubLanes  # 1.1 s
   - TestThePublishRouteRefusesTheLegionWakeTopic  # 0.0 s
-  - TestTheRecipientCountsShortcutLeavesOutNothingTheFullFilterWould  # 0.3 s
+  - TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked  # 0.3 s
+  - TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked  # 0.4 s
   - TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor  # 0.0 s
   - TestTheRelayHoldsANotAdmittedFrameRatherThanAcknowledgingIt  # 0.0 s
-  - TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads  # 1.4 s
   - TestTheRelaysFirstReadOfAFrameMakesNoAllocationForEachKey  # 2.1 s
   - TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn  # 3.1 s
+  - TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained  # 0.8 s
   - TestTheRoleLookupAnswersTheProcessTheHoldersClaimNames  # 0.3 s
   - TestTheRoleLookupOfALapsedClaimThatNamesNoProcessLeavesTheFieldOut  # 0.9 s
-  - TestTheRoleLookupReportsTheHandBackMark  # 0.3 s
-  - TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim  # 0.6 s
+  - TestTheRoleReadRefusesWhatJSONParseRefusesAtTheTopLevel  # 0.0 s
   - TestTheRouteLabelIsAPatternNeverAPath  # 0.0 s
   - TestTheRouteLabelStaysBoundedForUnusualRequests  # 0.0 s
-  - TestTheSelfHealthMonitorRebindsARecreatedDurable  # 0.9 s
+  - TestTheRoutesServeAListenerWithNoKnownSessionStore  # 0.3 s
   - TestTheSelfHealthProbeReportsALostDurableBeforeARefusedRoleLaneAndStillSendsTheLane  # 0.4 s
-  - TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket  # 0.6 s
-  - TestTheSessionConsumerDrainSaysWhenTheShutdownLeftItNoTime  # 0.1 s
-  - TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses  # 0.3 s
-  - TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer  # 2.6 s
+  - TestTheSelfHealthProbeSendsARefusedRoleLaneAgainOncePerPeriod  # 0.4 s
+  - TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket  # 0.7 s
+  - TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket  # 1.2 s
+  - TestTheSenderStampReadsTheInterestRecordBeforeTheSessionEntry  # 1.6 s
+  - TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath  # 0.6 s
   - TestTheShutdownTestReadsTheMainConnectionAtTheDrain  # 0.0 s
   - TestTheStartsLastLineNamesTheCredentialOnlyAfterARefusal  # 0.0 s
-  - TestTheSuccessorsRouteNamesNoneWhileTheKnownSessionBucketIsNotOpen  # 0.1 s
-  - TestTheSweepDeletesNothingWhileAnotherTaskHoldsTheDurableBinding  # 0.3 s
+  - TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed  # 0.0 s
+  - TestTheSuccessorsRouteAnswersAnUnansweredReadWith503  # 3.5 s
+  - TestTheSuccessorsRouteFollowsAChainOfOnePrincipal  # 0.1 s
+  - TestTheSuccessorsRouteNamesNoneWhileTheKnownSessionBucketIsNotOpen  # 0.0 s
+  - TestTheSuccessorsRouteNamesThePrincipalToDispatchAlone  # 0.1 s
+  - TestTheSweepDeletesNothingWhileTheSessionCacheIsNotReady  # 0.3 s
   - TestTheSweepHandsOverALaneNoHandoverIsDraining  # 0.3 s
-  - TestTheSweepKeepsTheConsumerOfALiveSession  # 0.3 s
   - TestTheSweepKeepsTheConsumerOfASessionOnAnotherMachine  # 0.3 s
   - TestTheTakeoverCopysBoundsHoldTogether  # 0.0 s
-  - TestTheTakeoverGrantIsAskedOncePerEpisode  # 0.6 s
   - TestTheTakeoverWarningForgetsRolesItHasNotWarnedOfLately  # 0.0 s
+  - TestTheTooLargeSetKeepsOnlyWhatIsAboveTheFloor  # 0.0 s
   - TestTheWakeReportsWireShape  # 0.0 s
-  - TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait  # 4.5 s
-  - TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget  # 3.8 s
+  - TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget  # 3.9 s
   - TestThermoOpsListenerConfigAllowsExplicitWidening  # 0.0 s
   - TestThermoOpsListenerConfigDefaultsToLoopback  # 0.0 s
-  - TestThermoOpsRoleSetRejectsUnregisteredSession  # 0.3 s
   - TestTopicPrefix  # 0.0 s
-  - TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder  # 3.3 s
   - TestTwoReMarksOfOneSessionDoNotRunAtOnce  # 0.0 s
-  - TestUnplaceableDeferralsStopAtTheirCap  # 0.7 s
+  - TestUnplaceableDeferralsStopAtTheirCap  # 1.3 s
   - TestUnplaceableRetryWindowFitsTheBoundsItDependsOn  # 0.0 s
+  - TestUnsubscribeAnswersTheTopicsItRemoved  # 1.3 s
+  - TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics  # 0.3 s
   - TestUnwiredRepositoryWarningSkipsWildcardRepositorySegment  # 0.0 s
   - TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx  # 0.3 s
-  - TestValidateListenerAPIAuth  # 0.3 s
   - TestVersionAtLeastComparesEachPartAsANumber  # 0.0 s
-  - TestWakeReportsEndWithTheListenerAndAreCappedInFlight  # 0.1 s
 2:
-  - TestABoundDurableNeverFailsItsProbe  # 1.1 s
-  - TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut  # 1.8 s
-  - TestAClaimGrantedAgainToTheProcessThatHandedTheRoleBackClearsTheMark  # 0.3 s
+  - TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut  # 2.0 s
   - TestAClaimNamingAnIDNoConsumerCanBeNamedForIsRefused400  # 0.4 s
-  - TestAClaimNamingTheSessionItReplacesWritesOneHandoverRecord  # 1.0 s
-  - TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed  # 3.3 s
-  - TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget  # 3.8 s
-  - TestAClaimWithoutSoftFromASecondProcessOfOneSessionIdTakesTheRole  # 0.3 s
-  - TestACleanStopDeletesTheStoppedSessionsConsumer  # 0.3 s
-  - TestACleanStopKeepsTheKnownSessionRecordAndMovesLastSeen  # 0.3 s
+  - TestAClaimNamingTheSessionItReplacesWritesOneHandoverRecord  # 1.1 s
+  - TestACleanStopDeletesTheStoppedSessionsConsumer  # 0.4 s
+  - TestACleanStopKeepsTheConsumerOfARegistrationThatLandedUnderIt  # 0.4 s
   - TestACleanStopReportsNoFilterLeftOnTheSessionItTookAway  # 0.3 s
   - TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery  # 0.4 s
+  - TestACompleteEmptyCopyListsNothingAndCountsZero  # 0.4 s
   - TestAConditionalRoleClaimAtRevisionZeroTakesOnlyARoleWithNoClaimRecord  # 0.3 s
-  - TestAConditionalRoleClaimNamingAnotherRevisionIsRefusedAndWritesNothing  # 0.3 s
-  - TestAConditionalStopDeletesTheConsumerOnlyWhenItDeletesTheRecord  # 0.4 s
-  - TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone  # 8.7 s
   - TestAConfirmKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead  # 0.7 s
-  - TestACopiedRoleMessageCarriesEveryFieldAmongManyKeys  # 0.1 s
-  - TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind  # 0.3 s
-  - TestACorrectivePassThatPlansNothingNamesTheWindowTheWriteBeforeItLeft  # 0.3 s
-  - TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing  # 0.9 s
-  - TestADeleteRestoresTheConsumerOfASessionItsCacheHasNoRecordOf  # 0.7 s
-  - TestADeleteThatRacesARegistrationLeavesTheConsumerWithTheTopicItAnswered  # 0.3 s
-  - TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce  # 0.0 s
+  - TestACopyForASessionWithNoRecordWaitsOnceAndWakesEvenWhenItsInterestNamesThisListener  # 9.0 s
+  - TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind  # 0.4 s
+  - TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat  # 0.4 s
+  - TestACorrectivePassThatPlansNothingNamesTheWindowTheWriteBeforeItLeft  # 0.4 s
+  - TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing  # 1.0 s
+  - TestADeleteRestoresTheConsumerOfASessionItsCacheHasNoRecordOf  # 0.6 s
+  - TestADeliveredSendAndADeafHoldersSendBothKeepNothing  # 0.3 s
+  - TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole  # 38.9 s
+  - TestADottedEdgeMachineIDStartsUnderItsSpelledPrefix  # 0.0 s
+  - TestADottedMachineIDStartsAndDelivers  # 2.4 s
+  - TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies  # 0.5 s
   - TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCopy  # 0.3 s
   - TestADropNoAnswerDecidedLeavesARunOfGiveBacksOpen  # 3.4 s
+  - TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce  # 4.6 s
+  - TestADurableMessageOnAPrivateSubjectAStoredRowNamesReachesNoOtherSession  # 0.4 s
+  - TestAFanOutThatMatchesAnEarlierBuildsRowThroughALeftOutTopicLogsIt  # 0.4 s
   - TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat  # 0.7 s
-  - TestAFifthKindPairANewerBuildsSubjectsCaptureIsLeftOutOfTheRegistration  # 0.3 s
-  - TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderOnce  # 0.5 s
+  - TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow  # 0.8 s
+  - TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson  # 0.3 s
   - TestAGitHubBodyReadFailureIsLogged  # 0.0 s
-  - TestAGivenBackEventIsLoggedOnceUntilItsSessionsEntryTakesAMark  # 7.4 s
+  - TestAHalfClosedRequestGetsNoAnswerFromAnOldKeySet  # 1.4 s
+  - TestAHandoverEndsAtAForwardTheGrantRefuses  # 0.3 s
   - TestAHandoverEndsAtAWalkTheGrantRefusesWhileItsHolderReadFailed  # 5.3 s
-  - TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal  # 0.9 s
   - TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed  # 1.3 s
-  - TestAHandoverOfAnEmptyKeptLaneResolvesNoHolder  # 0.3 s
+  - TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns  # 1.1 s
   - TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns  # 0.9 s
+  - TestAHandoverPassReadsAStoreThatCannotAnswerAsAnError  # 0.0 s
   - TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled  # 7.0 s
-  - TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt  # 1.4 s
+  - TestAHandoverWaitsForAReplacedSessionThatStaysLivePastTheRecordsLife  # 0.9 s
+  - TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow  # 4.5 s
+  - TestAHandoverWhoseFloorIsUnknownStartsAtTheFirstMessageTheStreamHolds  # 1.0 s
   - TestAHandoverWhoseHolderLookupFailedSaysSoWhereItsWalkDrainedTheLane  # 0.3 s
   - TestAHubRoleClaimSendsNoRelayResume  # 0.4 s
-  - TestAHundredPublishesSendNoJetStreamAPIRequest  # 0.5 s
-  - TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest  # 0.6 s
+  - TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest  # 0.7 s
   - TestAHundredUnchangedHeartbeatsWriteTheRecordAtMostTwice  # 1.4 s
   - TestAKeepWhoseOwnSendWentUnansweredSaysMaybeStoredHoweverItEnds  # 0.7 s
-  - TestAKeptAnswerOfAnotherSendersCopyIsDuplicateOutsideARepeat  # 0.3 s
-  - TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey  # 2.6 s
-  - TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey  # 15.9 s
-  - TestAKeptCopyWakesItsRoleUntilTaken  # 9.8 s
+  - TestAKeptCopyWakesItsRoleUntilTaken  # 9.9 s
   - TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim  # 1.3 s
-  - TestAKeptLaneGuardStopsWaitingWhenTheHandoversContextEnds  # 0.1 s
-  - TestALateForwardWhoseHolderStillHoldsTheRoleIsNotWithdrawn  # 3.4 s
+  - TestAKeptCopyWithAnExpectsReplyWordThisBuildDoesNotKnowIsReadAlikeByTheWalkTheKeepAndTheWakeScan  # 0.3 s
+  - TestAKeptRoleMessageCarriesTheSenderThePublishStamped  # 0.8 s
+  - TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt  # 0.3 s
+  - TestALaneCountReadsTheClaimFromTheLeaderWhileTheRoleCopyIsBehind  # 0.4 s
+  - TestALapsedHolderIsKeptFor  # 14.6 s
+  - TestALateForwardWhoseHolderStillHoldsTheRoleIsNotWithdrawn  # 3.5 s
+  - TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential  # 0.1 s
   - TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest  # 0.1 s
-  - TestAListedGoogleIdentityIsAdmitted  # 0.1 s
-  - TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsTheStream  # 1.3 s
-  - TestAListenerStartedWithTheDeletedVariablesWarnsOncePerVariableAndServes  # 0.4 s
-  - TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount  # 2.3 s
-  - TestAListenerWithNoKnownSessionStoreCarriesNeitherCount  # 0.4 s
+  - TestAListenerThatCannotOpenItsSessionConsumersEndsItsStart  # 10.4 s
+  - TestAListenerWarnsWhenTheBucketAgeIsShort  # 0.7 s
+  - TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone  # 5.4 s
+  - TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503  # 1.6 s
+  - TestALostConditionalWriteOnAReplicatedBucketIsTheStoresAnswer  # 0.5 s
   - TestALostRoleClaimIsNotPutBackByARecordTheWatcherStillHeld  # 0.5 s
-  - TestAMarkAnotherRelayWritesDuringARunReachesTheRunsNextFrame  # 0.3 s
-  - TestANakGapReMarkRunsOffTheReceiptCallback  # 0.1 s
-  - TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice  # 0.3 s
-  - TestANakReMarkWhoseWriteFailsStillOwesAFreshMark  # 0.0 s
-  - TestANameThatIsNoRoleIsNotCountedAsAnOldForm  # 0.6 s
-  - TestANarrowingFilterNamesTheMessagesItPassesOver  # 0.6 s
-  - TestANewKeyIDDuringASlowReadIsAnswered503  # 9.2 s
-  - TestAPIAuth  # 0.1 s
-  - TestAPIAuthRefusesAnExpiredStanding  # 0.0 s
-  - TestAPassCannotWriteOverARecordAnotherPassMoved  # 0.4 s
-  - TestAProbeOfASocketIsNeitherForwardedNorAnswered  # 2.4 s
-  - TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline  # 10.2 s
-  - TestAPublishCountsOnlyFromCopiesThatCanBeServed  # 0.9 s
-  - TestAPublishForwardStoredPastItsFenceIsAnsweredByWhatItsWithdrawalFinds  # 16.7 s
-  - TestAPublishOnALaneNoConsumerFiltersOnCountsNoRecipient  # 1.4 s
-  - TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy  # 0.3 s
+  - TestAMarkAnotherRelayWritesDuringARunReachesTheRunsNextFrame  # 0.4 s
+  - TestANakReMarkWhoseWriteFailsStillOwesAFreshMark  # 0.1 s
+  - TestANarrowingFilterNamesTheMessagesItPassesOver  # 0.7 s
+  - TestANewListenerDurableDoesNotReplayTheStream  # 15.0 s
+  - TestANewOldPluginSessionRegistersAfterAFailedFirstPass  # 5.4 s
+  - TestANoSessionResolutionNeverJudgesTheCachedHolder  # 0.3 s
+  - TestAPIAuthBrokerToken  # 0.0 s
+  - TestAPIAuthCarriesTheVerifiedPrincipalOfAnIdentityTokenAndOfNoOtherCredential  # 0.2 s
+  - TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route  # 0.4 s
+  - TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration  # 1.9 s
+  - TestAProjectedTokenOfASilentKeySetIsAnswered503  # 4.0 s
+  - TestAPublishForwardStoredPastItsFenceIsAnsweredByWhatItsWithdrawalFinds  # 16.8 s
+  - TestAPublishOnALaneNoConsumerFiltersOnCountsNoRecipient  # 1.3 s
+  - TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy  # 0.4 s
   - TestAPublishToALaneTheListenerOwnsIsRefused  # 0.3 s
   - TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing  # 0.3 s
-  - TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason  # 0.3 s
-  - TestAPublishWithASourceSessionToARoleWithNoLiveHolderIsStillKept  # 0.3 s
-  - TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing  # 0.3 s
+  - TestAPublishToARoleTopicCarriesNeitherCount  # 0.3 s
+  - TestAPublishToTheListenersKeptLaneIsRefused  # 0.3 s
+  - TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing  # 0.3 s
+  - TestAPublishWithKeepFalseToAnUnclaimedRoleIsRefusedAndKeepsNothing  # 0.3 s
+  - TestAPublishWithNoSourceSessionReadsTheHolderFromTheLeaderWhileACopyIsBehind  # 1.1 s
   - TestAPublishWithNoSourceSessionToARoleWithNoLiveHolderIsRefused  # 0.9 s
-  - TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole  # 1.7 s
-  - TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack  # 0.7 s
-  - TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead  # 0.6 s
+  - TestAReceiptARelaySocketPublishesWhileNATSReconnectsFailsByName  # 0.4 s
+  - TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack  # 0.8 s
   - TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther  # 0.7 s
-  - TestARefollowWritesTheKnownSessionRecord  # 0.4 s
-  - TestARefusalExceptionDoesNotWaitForTheBus  # 0.0 s
-  - TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason  # 0.3 s
+  - TestARefusalExceptionCarriesThePayloadOnlyWhileItFitsItsBound  # 0.0 s
   - TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus  # 0.0 s
-  - TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid  # 7.2 s
-  - TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond  # 3.3 s
-  - TestARefusedRoleLaneDoesNotTurnFaultsTheRebuildRepairsIntoARestart  # 0.2 s
-  - TestARegistrationAfterAHandBackThatFreedNoClaimRenewsTheRoleNoFurther  # 0.4 s
-  - TestARegistrationFromAnotherProcessRenewsNothing  # 0.3 s
-  - TestARegistrationInTheNewFormIsNamedInNoWarning  # 0.3 s
-  - TestARegistrationKeepsAGapMarkAnotherListenerSetSinceItsRead  # 0.4 s
+  - TestARefusalThatCannotNameTheLastRegistrationSaysSo  # 0.3 s
+  - TestARefusedDurableStopsTheListenerAtOnce  # 0.1 s
+  - TestARegistrationEarnsAPausedRelayOneProbe  # 6.4 s
+  - TestARegistrationInTheOldFormIsToldTheNewFormAndReceivesEither  # 0.3 s
   - TestARegistrationLogsALeftOutTopicOncePerSessionAndTopicAnHour  # 0.4 s
-  - TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim  # 1.9 s
-  - TestARegistrationPastTheMaxPayloadIsStoredWholeAndRenewsItsClaim  # 2.6 s
-  - TestARegistrationRenewsTheRoleItHoldsWhateverTopicsItCarries  # 1.1 s
-  - TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge  # 0.3 s
-  - TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenceReadsNoFurther  # 0.6 s
-  - TestARegistrationThroughAListenerWhoseKnownSessionBucketIsNotOpenIsAdmittedWithAWarning  # 0.4 s
-  - TestARegistrationUnderTheMaxPayloadIsStoredWholeAndRenewsItsClaim  # 0.4 s
-  - TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRow  # 0.3 s
-  - TestARegistrationWhoseRenewalLosesItsCompareAndSwapStillRegisters  # 0.3 s
+  - TestARegistrationPastTheMaxPayloadIsStoredWholeAndRenewsItsClaim  # 2.7 s
+  - TestARegistrationRenewsTheClaimsItsOwnProcessHolds  # 0.3 s
+  - TestARegistrationResumesARelayPausedWhileTheSessionCouldNotAnswer  # 4.4 s
+  - TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503  # 1.1 s
+  - TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge  # 0.4 s
+  - TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenceReadsNoFurther  # 0.7 s
+  - TestARegistrationUnderTheMaxPayloadIsStoredWholeAndRenewsItsClaim  # 0.5 s
+  - TestARegistrationWhoseBudgetTheStepsBeforeItsRecordSpentStillWritesTheRecordBeforeIts200  # 0.4 s
+  - TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRow  # 0.4 s
+  - TestARegistrationWhoseKnownSessionRecordIsNotWrittenIsRefusedForItsClientToRetry  # 0.3 s
+  - TestARegistrationWhoseResumePointIsPastTheStreamsEndIsCreatedAtTheFirstSequenceAndLogged  # 0.4 s
+  - TestARegistrationWhoseRoleClaimViewCannotAnswerRenewsTheClaimItsRowNames  # 0.4 s
   - TestARegistrationWithAPortIsAnswered400NamingThePortField  # 0.3 s
-  - TestARegistrationWithNoPortIsAcceptedAndListedAtPortZero  # 0.3 s
-  - TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain  # 2.8 s
-  - TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands  # 0.4 s
   - TestARelayRestartFiltersOnNoOtherSessionsInboxItsStoredRowNames  # 0.4 s
-  - TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite  # 0.6 s
-  - TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther  # 0.6 s
+  - TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther  # 0.7 s
+  - TestARelayRunCarriesAMarkOnceWhileItsCopyTrailsTheClear  # 0.4 s
+  - TestARelaySocketClosesOnABinaryFrame  # 0.3 s
   - TestARelaySocketClosesOnAFrameItCannotRead  # 0.4 s
+  - TestARelaySocketClosesOnAFrameOverItsReadLimit  # 0.4 s
+  - TestARelaySocketClosesWhenItsSubscriptionIsLost  # 0.4 s
   - TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose  # 0.7 s
   - TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession  # 0.8 s
-  - TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits  # 1.8 s
-  - TestARelaySocketPastTheListenersCapIsRefused503  # 0.3 s
-  - TestARelaySocketPublishesOnlyAReceiptsWord  # 0.9 s
+  - TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame  # 1.4 s
+  - TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame  # 1.9 s
+  - TestARelaySocketLogsARunOfAnswerUnknownNaksOnceAndItsEnd  # 0.1 s
   - TestARelaySocketRefusesASessionThatIsNotOneSubjectToken  # 0.3 s
   - TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted  # 1.8 s
   - TestARelaySocketRefusesASubscriptionPastItsLimit  # 2.3 s
-  - TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue  # 1.4 s
-  - TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer  # 0.5 s
-  - TestARelaySocketWhoseWriteFailsIsDroppedAtOnce  # 10.7 s
   - TestARelaySocketsPingGoesBetweenTheFragmentsOfAFrame  # 0.4 s
   - TestARelaySocketsReplicaHoldsNoMoreThanItsBudget  # 0.7 s
   - TestARenewOnSubscribeRenewsAClaimTheCopyLost  # 0.3 s
-  - TestARepeatAnswersTheStoredCopysExpectsReply  # 0.3 s
-  - TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText  # 0.6 s
-  - TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap  # 0.3 s
+  - TestARepeatWhoseCopyReadDoesNotAnswerAnswers503  # 0.2 s
+  - TestARepeatedKeepIsOneCopyUntilItEnds  # 7.0 s
+  - TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap  # 0.4 s
+  - TestARepositoryGapOutlivesAMoveToAnotherListener  # 0.5 s
   - TestARepositoryGapSentForgetsOnlyTheMarkTheFrameCarried  # 0.1 s
-  - TestARepositoryThatLeavesTheProjectStopsReachingTheEdge  # 0.4 s
-  - TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMaybeStored  # 8.3 s
+  - TestARequestBodyOverTheLimitIsRefused  # 11.2 s
+  - TestAResendWhoseEarlierAttemptIsStillInProcessWhenItsBudgetEndsIsAnsweredMaybeStored  # 8.1 s
   - TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead  # 0.7 s
   - TestARoleClaimFromTheProcessTheClaimNamesIsGrantedWhileTheRoleClaimViewCannotAnswer  # 0.3 s
-  - TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery  # 0.9 s
-  - TestARoleClaimThatStatesNoProcessIsWeighedByTheStandingClaimsRenewal  # 0.3 s
-  - TestARoleCopyLostClaimIsBackInTheSessionsRowsAndTheRegistryWithinTheBound  # 0.4 s
-  - TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim  # 4.9 s
-  - TestARoleIsFoundByEitherFormOfItsName  # 0.3 s
-  - TestARoleIsHeldByTheSessionItsClaimNamesWhateverTheRecordsTopics  # 0.3 s
-  - TestARoleLaneDropOfALegionRoleOfAnotherProjectReportsNoHolder  # 0.3 s
-  - TestARoleLookupAnswersAnUnreadableClaimRecordAsAServerError  # 0.9 s
+  - TestARoleClaimStatingItsOwnRevisionIsRefusedWhenItsRecordMovesAndIsNeverDecidedAgain  # 0.6 s
+  - TestARoleClaimUnderOneSessionIdIsGrantedToTheProcessTheClaimNames  # 0.3 s
+  - TestARoleClaimWithNoIfClaimRevisionIsUnchanged  # 0.3 s
+  - TestARoleClaimedInEitherFormClaimsItsName  # 0.4 s
+  - TestARoleForwardIsStoredOncePerMessageAndTwoUnderOneChosenKeyTwice  # 1.0 s
+  - TestARoleLaneOfAnotherProjectReachesNoHolderOfItsLegionRole  # 0.4 s
+  - TestARoleLookupReadsAClaimRecordThatNamesNoProcessAndNoRenewal  # 0.3 s
   - TestARoleLookupWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim  # 0.6 s
+  - TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering  # 3.8 s
   - TestARoleMarkedSendKeptForTheRoleAnswersTheKeptCopy  # 0.4 s
   - TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIsBehind  # 0.8 s
-  - TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken  # 10.8 s
-  - TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine  # 4.7 s
-  - TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy  # 0.9 s
-  - TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward  # 0.5 s
-  - TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget  # 3.8 s
-  - TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheRoleClaimViewCannotAnswer  # 0.3 s
-  - TestASendAnswersConnectedWhenTheListenerMayNotProbe  # 0.7 s
+  - TestARolePublishAnswersAnUnreadableClaimRecordAsAServerError  # 1.8 s
+  - TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy  # 1.0 s
+  - TestARoleSendWhileTheDeployedStreamLacksItsHoldersAgentSubjectAnswers504AndCostsOne  # 4.5 s
+  - TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheHoldersClaimIsRenewed  # 0.3 s
+  - TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheClaimsRenewalIsOlderThanTheWindow  # 0.3 s
+  - TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheRoleClaimViewAnswersAgain  # 0.4 s
+  - TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget  # 7.6 s
   - TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne  # 0.3 s
-  - TestASendReadsASessionWhoseConnectionClosedAsStopped  # 0.7 s
+  - TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry  # 0.9 s
   - TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy  # 0.3 s
+  - TestASendToASessionNeitherStoreKnowsIsTheNotFound  # 0.4 s
+  - TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities  # 0.4 s
   - TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing  # 1.0 s
   - TestASenderChosenKeyCannotForgeAWithdrawalMark  # 0.4 s
-  - TestASenderStampLogsAtWarnTheReadThroughThatDidNotAnswer  # 0.3 s
-  - TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing  # 1.5 s
+  - TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing  # 1.6 s
   - TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThroughThatRegistration  # 3.0 s
-  - TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSequence  # 1.6 s
-  - TestASessionThatReplacesAnotherReceivesItsUnreadMessages  # 1.1 s
-  - TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce  # 2.5 s
+  - TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce  # 2.6 s
   - TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete  # 1.6 s
-  - TestASettingNATSCannotChangeOnTheListenerDurableIsRefused  # 0.0 s
-  - TestASilentCutRewatchesTheCachesWithNoErrorLine  # 19.2 s
+  - TestASlackBodyStillHasTheServersReadTimeout  # 10.8 s
   - TestASoftClaimOfAnUnreadableClaimRecordIsAServerErrorAndNotClaimedAgain  # 0.9 s
   - TestASoftClaimWhoseSessionCacheTrailsTheBucketLeavesALiveHolderItsRole  # 0.6 s
-  - TestAStandInClosedWhileItAnswersAFrameReportsNothing  # 0.0 s
-  - TestAStoppedSessionUnderTheMaxPayloadIsSentToAndCounted  # 0.4 s
-  - TestASweepPassReadsNoPreviousHolderOfARecordPastItsLife  # 6.3 s
+  - TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted  # 1.6 s
+  - TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter  # 0.6 s
   - TestATakeoverCopyCompletesOnTheListenerThatHoldsTheGrant  # 0.8 s
   - TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess  # 0.4 s
-  - TestATakeoverCopyThatStopsOrRunsAgainLosesNothing  # 48.3 s
-  - TestATakeoverRecordEndsWithinItsLifeWhilePassesKeepRunning  # 1.0 s
-  - TestATakeoverRecordThatNothingMovesIsWrittenOncePerRefresh  # 0.8 s
-  - TestATakeoverRecordThatWaitedWhileItsHolderKeptTheRoleCopiesNoOlderHour  # 1.2 s
-  - TestATakeoverRecordWhoseHolderTookTheRoleBackCopiesOnlyWhatItDidNotRead  # 5.6 s
+  - TestATakeoverRecordEndsWithinItsLifeWhilePassesKeepRunning  # 1.1 s
+  - TestATakeoverRecordWhoseHolderTookTheRoleBackCopiesOnlyWhatItDidNotRead  # 5.7 s
   - TestATakeoverThatLeavesTheFormerHoldersFilterSaysSo  # 4.3 s
   - TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow  # 0.4 s
   - TestAWakeReportTheGrantRefusesIsGivenUpAtOnce  # 2.0 s
-  - TestAWindowPastTheDurablesMaxDeliverStillGivesUpBeforeIt  # 0.7 s
-  - TestAdminInterestsHandler_DeleteBySession  # 0.8 s
-  - TestAdminInterestsHandler_DeleteIdempotent  # 0.3 s
-  - TestAdminInterestsHandler_GetBySession  # 0.3 s
-  - TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold  # 0.3 s
+  - TestAWithheldEventIsAcknowledgedOnlyOnceItsGapMarkIsStored  # 3.4 s
+  - TestAWithheldFrameIsLoggedWithItsSubjectAndReasonAndCounted  # 0.0 s
+  - TestAWriteThroughANATSReconnectWaitsOrFailsByName  # 10.1 s
+  - TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession  # 0.3 s
+  - TestAdminInterestsHandler_MethodNotAllowed  # 0.3 s
+  - TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat  # 2.5 s
+  - TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold  # 1.3 s
   - TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone  # 0.3 s
-  - TestAnAgentDeliveryLogsAtWarnASessionReadThatDidNotAnswer  # 0.3 s
   - TestAnEdgeClaimsPublishesAndReadsAFreeFormRoleOfItsProject  # 0.4 s
-  - TestAnEdgeComparesRepositoriesIgnoringCase  # 0.3 s
-  - TestAnEdgeDropsTheStoredTopicsOfOtherProjects  # 0.4 s
-  - TestAnEdgeEchoJudgesAnUnreadStoredForwardByTheEarlierHolderItWentTo  # 0.3 s
-  - TestAnEdgeHoldsATokenOfTwoServedProjectsToBoth  # 0.4 s
+  - TestAnEdgeDropsTheStoredTopicsOfOtherProjects  # 0.5 s
+  - TestAnEdgeFollowsOnlyTheSessionsOwnAgentSubject  # 0.4 s
+  - TestAnEdgeGrantsNoScopeToARecordNamingNoKey  # 0.8 s
+  - TestAnEdgeHoldsThePlanItMakesAgainAfterAConflict  # 0.7 s
   - TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver  # 0.3 s
-  - TestAnEdgeListenerPublishesNoDeliveryExceptionItsGrantDoesNotHold  # 0.4 s
+  - TestAnEdgeListenerPublishesNoDeliveryExceptionItsGrantDoesNotHold  # 0.3 s
   - TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream  # 5.1 s
-  - TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConnectionsLastError  # 4.2 s
-  - TestAnEdgeNamesOnlyTheSuccessorsOfTheTokensProjects  # 0.4 s
-  - TestAnEdgePruneLogsARunOfFailedListsOnceAndItsEnd  # 0.4 s
-  - TestAnEdgePruneLogsTheEndOfARunTheSessionEndsByUnsubscribing  # 0.4 s
+  - TestAnEdgePruneLogsARunOfFailedListsOnceAndItsEnd  # 0.3 s
+  - TestAnEdgePruneLogsARunOfFailedRemovalsOnce  # 0.4 s
+  - TestAnEdgePruneLogsTheEndOfARunWhenTheRepositoryComesBack  # 0.4 s
   - TestAnEdgePruneLogsTheEndOfARunWhenTheSessionMovesToAnotherListener  # 0.4 s
-  - TestAnEdgeReadShowsOnlyTheTopicsOfTheTokensProjects  # 0.4 s
-  - TestAnEdgeRefusesAnotherProjectsTopicAndEveryWildcardAcrossProjects  # 0.3 s
+  - TestAnEdgePruneLogsTheEndOfARunWhenTheSessionsRecordIsGone  # 0.4 s
+  - TestAnEdgePublishNamesItsOwnSession  # 0.4 s
+  - TestAnEdgeRefusesAnotherProjectsTopicAndEveryWildcardAcrossProjects  # 0.4 s
   - TestAnEdgeRefusesAnotherRepositorysEvents  # 0.4 s
+  - TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub  # 0.3 s
   - TestAnEdgeRegistrationWhoseRoleReleaseFailsIsRefused  # 0.3 s
-  - TestAnEdgeRelaysOnlyTheEventsOfTheRepositoryItsAnswerNames  # 0.3 s
-  - TestAnEdgeRelaysTheGitHubEventsOfItsProjectsRepositories  # 0.4 s
-  - TestAnEdgeReleasesAnotherProjectsClaimWhileTheClaimViewRefills  # 0.4 s
-  - TestAnEdgeRoleAnswerNamesNoForeignHolder  # 8.4 s
+  - TestAnEdgeRelaysOnlyTheEventsOfTheRepositoryItsAnswerNames  # 0.4 s
+  - TestAnEdgeRoleAnswerNamesNoForeignHolder  # 8.5 s
   - TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission  # 0.4 s
-  - TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo  # 4.3 s
-  - TestAnEdgeShowsALegionAgentOnlyOfASessionOfItsIssuesProject  # 0.4 s
+  - TestAnEdgeSendNamesItsOwnSession  # 0.4 s
   - TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration  # 0.4 s
   - TestAnEdgeWritesNoLegionAgentEntry  # 0.4 s
-  - TestAnEventDispatchRoutedToAnUnheldRoleReachesTheRolesNextHolder  # 0.4 s
-  - TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal  # 8.9 s
-  - TestAnOpenSocketClosesAtItsTokensExpiry  # 2.1 s
-  - TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames  # 0.4 s
-  - TestAnUnlistedGoogleIdentityIsRefused  # 0.3 s
-  - TestAnUnreadableInterestRecordIsAnsweredAsUnreadable  # 0.3 s
+  - TestAnEventDispatchRoutedToAnUnheldRoleReachesTheRolesNextHolder  # 0.5 s
+  - TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering  # 0.3 s
+  - TestAnOpenSocketClosesAtItsTokensExpiry  # 1.6 s
+  - TestAnOpenSocketClosesByTheBrokersAnswer  # 10.5 s
+  - TestAnUnlistedGoogleIdentityIsRefused  # 0.2 s
+  - TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering  # 0.3 s
+  - TestAnUnreadableRoleFrameIsNamedInAFewDozenBytes  # 0.4 s
   - TestAnUnsubscribeNamingTheClaimsProcessFreesTheRoleAndRemovesItsTopics  # 0.3 s
   - TestAnUnsubscribeThatDoesNotNameTheClaimsProcessFreesNoRole  # 1.9 s
-  - TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt  # 0.6 s
-  - TestAwaitDurableBoundEndsAtTheGrantsRefusal  # 0.0 s
+  - TestAnUnsubscribeThroughANATSReconnectFailsByName  # 4.0 s
+  - TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName  # 3.9 s
+  - TestAnUnsubscribeWhoseSessionLockIsHeldPastTheBudgetAnswers200AndLeavesTheFilter  # 3.8 s
+  - TestBindListenerDurableBindsWithinOneIntervalOfRelease  # 0.3 s
+  - TestBindListenerDurableEndsAtTheGrantsRefusal  # 0.1 s
   - TestBindListenerDurablePassesARefusalThrough  # 0.0 s
   - TestBindListenerDurableStopsWhenTheContextEnds  # 0.1 s
+  - TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFiveThousandOtherSessionsClaims  # 1.1 s
+  - TestBoundDurableConsumerIsNotStolen  # 0.0 s
   - TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames  # 0.5 s
-  - TestBrokerTokensRefuseABusWithNoJetStream  # 0.0 s
   - TestCheckSelfHealth_HealthyReturnsNil  # 0.3 s
-  - TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay  # 0.0 s
+  - TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing  # 0.4 s
+  - TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating  # 3.6 s
   - TestDeleteSessionHandler_DeletesTheRegistrationTheStopsMomentCovers  # 0.3 s
-  - TestDeleteSessionHandler_KeepsARegistrationWrittenAfterTheStopsMoment  # 0.3 s
   - TestDeleteSessionHandler_RefusesAMomentThatIsNotMilliseconds  # 0.3 s
-  - TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer  # 0.5 s
-  - TestDeregistrationOfTheSessionsOwnInstanceDeletesItsConsumer  # 0.3 s
+  - TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer  # 0.3 s
+  - TestDeregistrationOfTheSessionsOwnInstanceDeletesItsConsumer  # 0.4 s
+  - TestDeregistrationWithNoConditionDeletesTheSessionsConsumer  # 0.3 s
+  - TestDispatchBroadcastResolvesSessionsTheCacheHasNotRefilled  # 0.8 s
+  - TestDispatchClientReadsTheLegionAgentRegistry  # 0.1 s
   - TestDispatchClientSendFrameModeIsGuardedEndToEnd  # 0.3 s
-  - TestDispatchClientSendUsesListenerWireContract  # 0.3 s
-  - TestDispatchIssueCollaboratorsReadTheListenersLegionAgentRegistry  # 0.2 s
-  - TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer  # 13.8 s
-  - TestDocumentedGraceMarginIsTheListenerGraceMargin  # 0.5 s
-  - TestDurableConsumerRestart  # 0.1 s
+  - TestDispatchIssueCollaboratorsReadTheListenersLegionAgentRegistry  # 0.3 s
+  - TestDispatchMentionResolvesASessionTheCacheHasNotRefilled  # 0.9 s
+  - TestDispatchQueuesATargetedMessageForASessionNoStoreHolds  # 30.5 s
+  - TestDispatchRefusesAClaimTakeoverWhileTheCacheRefills  # 1.0 s
+  - TestDocumentedGraceMarginIsTheListenerGraceMargin  # 0.6 s
+  - TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing  # 0.3 s
   - TestDurableConsumerSurvivesUnsubscribe  # 0.0 s
-  - TestEachActReadsTheRecordInBothDirections  # 7.7 s
-  - TestEdgeAloneGivesAProofBackOnA503  # 0.0 s
-  - TestEdgeForwardedAddressIsReadByTheEdgeAlone  # 0.0 s
-  - TestEdgeFrameVerdictReadsEachFieldByItsExactKey  # 0.0 s
-  - TestEdgePublishesOnlyRoleSubjectsOfItsProjects  # 0.5 s
-  - TestEdgeReadsListOnlyTheTokensProjects  # 0.4 s
+  - TestEdgeForwardedAddressFromAnyOtherPeerChoosesNothing  # 0.0 s
+  - TestEdgeForwardedAddressKeysEachCallersOwnBucket  # 0.0 s
+  - TestEdgeFrameVerdictPassesAPersonsMessageInTheSessionsOwnConversation  # 0.0 s
+  - TestEdgeFrameVerdictReadsEachFieldByItsExactKey  # 0.1 s
+  - TestEdgeGivesBackOnlyItsOwnRequestsProof  # 0.0 s
+  - TestEdgeListenerLinksNoDispatchStore  # 0.9 s
+  - TestEdgePublishesOnlyRoleSubjectsOfItsProjects  # 0.4 s
   - TestEdgeRefusesToStartBesideSharedCredentials  # 0.0 s
-  - TestEdgeReleaseDeletesOnlyTheRecordItsRequestWrote  # 0.0 s
-  - TestEdgeRetryOfAProofAfterAPostAuth503  # 0.1 s
-  - TestEdgeSessionEntryRecordsTheRegisteringTokensProjects  # 0.4 s
-  - TestEveryAdmittedRequestCountsItsCredential  # 0.5 s
-  - TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo  # 0.2 s
-  - TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause  # 5.3 s
-  - TestEveryWakeReportCrossesTheBusAsAValidEnvelope  # 0.1 s
+  - TestEdgeRetryOfAProofAfterAPreAuth503IsServed  # 0.0 s
+  - TestEdgeSendsOnlyToSessionsOfTheTokensProjects  # 0.4 s
+  - TestEveryAdmittedRequestCountsItsCredential  # 0.1 s
+  - TestEveryWakeReportCrossesTheBusAsAValidEnvelope  # 0.0 s
+  - TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget  # 6.0 s
   - TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer  # 0.6 s
-  - TestFragmentsHandsItsWriterPiecesOfAtMostOneFragment  # 0.0 s
-  - TestGoogleIssuerAliasesReachTheGoogleBranch  # 0.2 s
-  - TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead  # 10.4 s
-  - TestHealthzReadyzAnswers503UntilTheV1GateOpens  # 0.0 s
-  - TestHealthzReadyzAnswers503WhileTheBusIsDownAndServingOnceItIsBack  # 3.5 s
-  - TestHealthzReadyzOfTheListenerBinaryAnswers200OnlyOnceV1Serves  # 0.3 s
-  - TestHealthzStillReportsALostDurableWhileTheRoleClaimViewIsIncomplete  # 0.3 s
+  - TestGoogleIssuerAliasesReachTheGoogleBranch  # 0.3 s
+  - TestGoogleIssuerOnAProjectedOnlyListener  # 0.1 s
+  - TestHealthzConsumerLag  # 0.0 s
+  - TestHealthzReadyzOfTheListenerBinaryAnswers200OnlyOnceV1Serves  # 0.5 s
+  - TestHealthzReportsARecreatedDurableThroughAHookStall  # 0.4 s
+  - TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass  # 0.3 s
+  - TestHeartbeatKVWritesPerHeartbeat  # 1.8 s
   - TestHubListenerStartupProbePassesOnlyOnceV1Serves  # 0.4 s
   - TestIdempotencyKey_Publish  # 0.0 s
   - TestInterestSubscribeCleansAStoredRowOfTopicsReachingPrivateStreamSubjects  # 0.3 s
+  - TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest  # 0.4 s
   - TestInterestSubscribeLeavesOutEveryPrivateStreamSubject  # 0.3 s
-  - TestInterestSubscribeStoresOnlyTopicsThatCannotReachAnotherSessionsInbox  # 0.3 s
   - TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether  # 0.3 s
-  - TestLegionAgentRoutesIgnoreAProjectKey  # 0.1 s
-  - TestLegionAgentRoutesRefuseMovingASession  # 0.0 s
+  - TestLegionAgentRoutesAnswerAnAbsence  # 0.1 s
   - TestLegionAgentRoutesRefuseWhatTheRegistryDoesNotTake  # 0.1 s
+  - TestLegionAgentRoutesRoundTripAnEntry  # 0.1 s
+  - TestLegionAgentsSurviveAListenerRestart  # 2.1 s
+  - TestListenerDeliveryHandler_FailedDeliveryOnExceptionTopic_NoException  # 0.8 s
   - TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload  # 0.6 s
-  - TestListenerDeliveryHandler_FanoutRefusalOfATeamTopicIsStoredOnItsExceptionLane  # 0.3 s
-  - TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode  # 0.7 s
-  - TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent  # 0.9 s
-  - TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed  # 0.6 s
+  - TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery  # 0.6 s
+  - TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode  # 0.3 s
+  - TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode  # 0.6 s
+  - TestListenerDeliveryHandler_NoHolderKeepsARoleAndWakesAnAgent  # 1.1 s
   - TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedelivery  # 0.8 s
-  - TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed  # 0.3 s
-  - TestListenerOnPortZeroLogsThePortTheKernelChose  # 0.4 s
-  - TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles  # 12.4 s
-  - TestListenerRefusesAPortThatIsNotItsInheritedSocketsPort  # 0.0 s
-  - TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas  # 0.3 s
-  - TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413  # 0.7 s
+  - TestListenerFollowsTheInterestRegistryAcrossNATSRestarts  # 5.2 s
+  - TestListenerLogsFromOtherPackagesKeepTheirHandlers  # 0.9 s
+  - TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles  # 12.5 s
+  - TestListenerRecordsEverySendAndPublishRequest  # 0.4 s
+  - TestListenerRefusesAListenFDThatIsNotASocketAndBindsNothing  # 0.0 s
+  - TestListenerSIGTERMIsAnOrderedShutdown  # 5.3 s
+  - TestListenerServesOnTheListenSocketItInheritsWithNoAddressSet  # 0.4 s
+  - TestListsRefuseAfterTheBoundWhileNATSIsDown  # 2.9 s
+  - TestListsRefuseAfterTheBoundWithAStaleCopy  # 0.7 s
+  - TestListsRefuseUntilTheirCopiesCompleteAFirstRead  # 0.4 s
   - TestMessageHandlersRejectBlankMessage  # 0.3 s
   - TestMessageHandlersRejectInvalidEnums  # 0.3 s
-  - TestMessageHandlersUseFirstNonEmptyLine  # 0.3 s
   - TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey  # 0.3 s
-  - TestOneExceptionIsStoredForAMessageToAnAbsentSessionWhicheverListenersRaiseIt  # 0.7 s
+  - TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt  # 0.5 s
+  - TestPlainSendDistinguishesUnavailableConversationReceiver  # 0.4 s
   - TestPublishHandlerPreservesAllOptionalMessageFields  # 0.0 s
-  - TestPublishHandlerRefusesATopicOutsideNotifications  # 0.6 s
   - TestPublishHandlerRefusesAnUncapturedNotificationTopicByName  # 1.1 s
+  - TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor  # 0.3 s
   - TestPublishHandler_DedupeKeySelection  # 0.0 s
-  - TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey  # 0.3 s
-  - TestPublishHandler_RejectsReservedDedupeKeyPrefix  # 0.8 s
+  - TestPublishHandler_ExplicitDedupeKeyIsNotForwardedAgainOnceStored  # 1.1 s
+  - TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope  # 0.3 s
   - TestPublishHandler_ReportsRoleHolderOnlyWhenLive  # 0.5 s
-  - TestPublishHandler_SuppliedPayloadWins  # 0.0 s
-  - TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept  # 0.9 s
-  - TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected  # 0.6 s
-  - TestRaisingTheStreamMovesTheListenersDurableToThreeCopies  # 2.3 s
-  - TestRebuildingALostDurableConsumerReplacesItsSubscription  # 0.1 s
-  - TestRedTeamUnlistedGoogleIdentityAsJWSJSON  # 0.4 s
+  - TestPublishRouteRefusesADeliveryModeTheHolderDoesNotAdvertise  # 0.6 s
+  - TestPublishRouteSendsNothingToASenderHoldingTheRole  # 0.7 s
+  - TestRaisingTheStreamMovesTheListenersDurableToThreeCopies  # 2.5 s
+  - TestRebuildingALostDurableConsumerReplacesItsSubscription  # 0.6 s
+  - TestRedTeamUnlistedGoogleIdentityAsJWSJSON  # 0.2 s
   - TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair  # 1.4 s
+  - TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame  # 2.0 s
   - TestRenameFansOutUnderTheFormerName  # 1.5 s
-  - TestRenameUnsetPublishesTheCurrentNameAlone  # 4.4 s
-  - TestRoleGetHandlerReturnsLiveHolder  # 0.3 s
-  - TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed  # 2.4 s
-  - TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOutcomes  # 0.4 s
-  - TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners  # 2.5 s
-  - TestRoleSetHandlerSoftClaim  # 0.4 s
+  - TestRenameUnsetPublishesTheCurrentNameAlone  # 4.5 s
+  - TestRoleAnswersNameALiveHoldersState  # 0.3 s
+  - TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL  # 0.6 s
+  - TestRoleHolderLapsedResponseDoesNotInventLastSeen  # 0.3 s
+  - TestRoleHolderStateIsNamedByEachRoutesAnswer  # 0.6 s
+  - TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners  # 2.6 s
+  - TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy  # 3.3 s
+  - TestRoleSetConcurrentClaimsOfOneRoleAnswerOnlyWhatTheRouteDocuments  # 0.9 s
+  - TestRoleSetHandlerSoftClaimPredecessorInstance  # 6.9 s
+  - TestRoleSetHandler_SetsRole  # 0.3 s
   - TestRunSelfHealthMonitor_CountsADisconnectedProbeAfterARebuild  # 0.0 s
-  - TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection  # 0.6 s
+  - TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoveries  # 0.1 s
+  - TestRunSelfHealthMonitor_ExitsAfterThreeRebuildsThatLeaveAFault  # 0.0 s
+  - TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs  # 0.6 s
   - TestRunSelfHealthMonitor_RebuildsTerminalWatcher  # 0.1 s
-  - TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket  # 0.3 s
-  - TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected  # 10.6 s
-  - TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish  # 1.0 s
+  - TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected  # 10.7 s
   - TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable  # 3.8 s
-  - TestSendHandlerAllowsAdvertisedFrameModeAndUntaggedSends  # 0.3 s
-  - TestSendHandlerRefusesTargetThatDoesNotAdvertiseFrameMode  # 0.3 s
-  - TestSendHandlerRefusesUnreadableOrAmbiguousDeliveryFrames  # 0.3 s
+  - TestSendHandlerRefusesAModeThatIsNotADeliveryMode  # 0.3 s
+  - TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload  # 0.3 s
+  - TestSendHandler_AcceptsHumanSource  # 0.3 s
   - TestSendHandler_IgnoresDedupeKeyBesideIdempotencyKey  # 0.3 s
   - TestSendHandler_RejectsUnknownTarget  # 0.3 s
   - TestSendHandler_StampsInterestSenderWithoutSessionEntry  # 0.3 s
-  - TestSendHandler_StampsSenderAndReturnsRecipient  # 0.3 s
-  - TestSendReadsTheSessionStoreWhileTheCacheIsCold  # 0.6 s
-  - TestSenderLimitCost  # 20.9 s
-  - TestSenderLimitRoutes  # 1.5 s
+  - TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer  # 1.6 s
+  - TestSenderLimitRoutes  # 1.4 s
+  - TestSenderLimitSenders  # 1.1 s
+  - TestSenderLimitSettings  # 0.8 s
+  - TestSendsToAnUnresponsiveRecipientAreCountedOnlyWhenStored  # 0.3 s
   - TestSessionConsumerABrandNewSessionReceivesAMessageStoredForItBeforeItRegistered  # 1.4 s
-  - TestSessionConsumerAcksAFrameOnlyOnDone  # 0.6 s
   - TestSessionConsumerAtTheStreamsConsumerLimitIsRefusedAndWritesNothing  # 0.4 s
-  - TestSessionConsumerFiltersAgainWhenItsWriteLosesTheCompareAndSwap  # 0.3 s
-  - TestSessionConsumerFollowAddedBySecondRegistrationIsInTheFilterWhenItAnswers  # 0.3 s
-  - TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart  # 1.9 s
-  - TestSessionConsumerOverlappingFollowsAreAccepted  # 0.3 s
-  - TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone  # 1.6 s
-  - TestSessionConsumerRefusesARegistrationEveryPlanOfWhichIsOutrun  # 0.3 s
-  - TestSessionConsumerRegistrationAskingForNoConsumerIsRefused  # 0.3 s
-  - TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFloor  # 1.5 s
+  - TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn  # 1.7 s
+  - TestSessionConsumerBurstOfRestartsDeliversEveryBacklog  # 4.1 s
+  - TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds  # 0.3 s
+  - TestSessionConsumerFollowAddedBySecondRegistrationIsInTheFilterWhenItAnswers  # 0.4 s
+  - TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits  # 0.3 s
+  - TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath  # 0.6 s
+  - TestSessionConsumerNewEpochHeardAfterTheRunRestartedRestartsNothing  # 2.4 s
+  - TestSessionConsumerRefusalSaysWhatTheClientMustDo  # 2.1 s
+  - TestSessionConsumerRegistrationAnswersConsumerModeAndFiltersOnStoredFollowedTopics  # 0.3 s
+  - TestSessionConsumerRegistrationAskingForNoConsumerIsRefused  # 0.4 s
+  - TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow  # 0.3 s
   - TestSessionConsumerRegistrationWithNothingStoredForTheSessionStartsAtTheStreamsEnd  # 0.3 s
-  - TestSessionConsumerRegistrationWithoutAUsableResumePointStartsAtWhatIsStoredForTheSession  # 0.4 s
-  - TestSessionConsumerRegistrationWithoutDeliveryIsRefused  # 0.3 s
-  - TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo  # 0.3 s
-  - TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder  # 0.4 s
-  - TestSessionConsumerRelaySubjectIsNotStored  # 0.3 s
-  - TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor  # 4.6 s
-  - TestSessionConsumerResumePointBelowTheStreamsFirstSequenceIsAnsweredAGap  # 0.4 s
-  - TestSessionConsumerRoleClaimKeepsConsumerDelivery  # 0.3 s
+  - TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo  # 0.4 s
+  - TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder  # 0.5 s
+  - TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds  # 0.4 s
   - TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingComesBack  # 0.6 s
-  - TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff  # 3.8 s
-  - TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock  # 0.3 s
+  - TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters  # 3.9 s
+  - TestSessionConsumerUnsubscribeShrinksTheFilter  # 0.3 s
+  - TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock  # 0.4 s
   - TestSessionConsumerWithoutTheGrantIsRefusedAndWritesNothing  # 0.3 s
-  - TestSessionEntryRouteAnswersASessionTheCacheHasNotRefilled  # 0.6 s
+  - TestSessionEntryRouteAnswers404OnlyForAGoneRecord  # 0.3 s
   - TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer  # 2.6 s
-  - TestSessionEntryRouteAnswersTheRegistrationViewWhileTheClaimsViewCannotAnswer  # 0.3 s
   - TestSessionEntryRouteAnswersTheRegistrationViewWhileTheInterestRecordCannotBeRead  # 0.3 s
-  - TestSessionEntryRouteNamesTheClientInstanceThatRegistered  # 0.3 s
-  - TestSessionRoutesReportEachSessionsDeliveryMode  # 0.3 s
-  - TestSessionsHandlerReportsHostWithFallbackToMachineID  # 0.3 s
-  - TestSessionsHandler_NoInterestsData  # 0.3 s
+  - TestSessionEntryRouteForASessionWithNoInterestRecordMatchesTheFixture  # 0.3 s
+  - TestSessionEntryRouteUnderTheRegistrationViewAnswersEveryRecordTheBucketHolds  # 0.3 s
+  - TestSessionEntryRouteUnderTheRegistrationViewAnswersTheBucketsInstanceNotTheCachedOne  # 0.6 s
+  - TestSessionHealthFields_PopulatedAfterReady  # 0.0 s
+  - TestSessionsHandlerAnswersTheTmuxPlaceAndOmitsItForASessionOutsideTmux  # 0.3 s
+  - TestSessionsHandlerFiltersAndReportsRoles  # 0.3 s
+  - TestSessionsHandler_EmptyList  # 0.3 s
+  - TestSessionsHandler_JoinsRegistries  # 0.3 s
+  - TestSessionsHandler_OnlyLiveSessions  # 0.3 s
   - TestSessionsHandler_ReportsSelfSubscribedSession  # 0.3 s
-  - TestSetupTestNATSClosesItsClientWhenItsTestEnds  # 0.0 s
-  - TestSubjectIndexAcksADurableMessageNoSessionNeedsBeforeDecodingIt  # 0.3 s
-  - TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne  # 0.4 s
-  - TestSubscribeHandlerStoresAndListsCapabilities  # 0.3 s
+  - TestSpentProofsRefuseAProofTheBucketAlreadyHolds  # 0.0 s
+  - TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck  # 1.1 s
+  - TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName  # 0.4 s
+  - TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne  # 0.5 s
+  - TestSubscribeHandlerStoresAndListsThePluginAndItsVersion  # 0.3 s
+  - TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot  # 0.6 s
   - TestSubscribeHandlerWarnsWhenAPullRequestSubscriptionCarriesOnlyItsLifecycle  # 0.4 s
   - TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired  # 0.3 s
-  - TestSubscribeHandlerWritesAnUnchangedInterestOnce  # 0.3 s
   - TestSubscribeHandler_RejectsEmptySessionID  # 0.3 s
-  - TestSubscribeHandler_StoresSelfSubscribedSessionWithoutPort  # 0.3 s
-  - TestTheActHoldsOnAFailedRead  # 5.6 s
-  - TestTheAdministratorsDeleteFreesTheRoleClaimWhoeverHoldsIt  # 0.6 s
-  - TestTheConsumerDeleteReadsTheSessionBucketsLeader  # 0.5 s
-  - TestTheCountAndTheFilterJudgeAStoredTopicByOneRule  # 8.0 s
+  - TestTheCountAndTheFilterJudgeAStoredTopicByOneRule  # 8.1 s
   - TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies  # 0.7 s
-  - TestTheDriftCorrectionWritesADurableOnlyWhenThePolicyChangesIt  # 1.0 s
-  - TestTheEdgeRefusesToStartWithoutTheStream  # 0.7 s
-  - TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery  # 4.7 s
+  - TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery  # 4.8 s
+  - TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo  # 1.5 s
   - TestTheGrantGuardAnswersARelaunchedProcessAsItsOwnSessionsStandingClaim  # 0.4 s
-  - TestTheGrantGuardRefusesWhileThisListenersRenewalsFailOrItsCopyIsStale  # 2.4 s
-  - TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal  # 4.5 s
+  - TestTheHandoverGateRefusesWhatNoRegistrationAttests  # 0.1 s
+  - TestTheHandoverHoldsForEachRoleAndForTheMessagesAPersonSent  # 2.4 s
   - TestTheHoldSeamIsOnThePathARolePublishTakes  # 0.4 s
-  - TestTheListenerBinaryHoldsProjectedTokensToItsListAndCountsThem  # 1.1 s
-  - TestTheListenerOpensV1AndPicksUpTheBucketItMayNotOpenYet  # 3.9 s
+  - TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget  # 4.8 s
+  - TestTheListenerBinaryHoldsProjectedTokensToItsListAndCountsThem  # 1.2 s
+  - TestTheListenerLogsItsOldFormCounterAndStart  # 0.4 s
+  - TestTheListenerNamesEveryInboxByItsConnection  # 0.9 s
   - TestTheListenerStartEndsAtTheCredentialBound  # 10.0 s
-  - TestTheListenerStartWaitsOutACredentialRefusal  # 0.1 s
-  - TestTheListenerStatesItsWebhookBodyBudgetAtItsStart  # 0.1 s
+  - TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects  # 0.1 s
   - TestTheListenersNATSClientReportsASilentCutWithinSeconds  # 3.1 s
+  - TestTheListsMakeNoNATSReadWhileNATSStalls  # 0.4 s
   - TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect  # 0.3 s
-  - TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked  # 0.3 s
-  - TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked  # 0.4 s
-  - TestTheRelayLoopHoldsAFrameWhoseAdmissionWasForgotten  # 0.3 s
-  - TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained  # 0.9 s
-  - TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException  # 3.2 s
+  - TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote  # 0.5 s
+  - TestTheRecipientCountsShortcutLeavesOutNothingTheFullFilterWould  # 0.3 s
+  - TestTheRelayLoopHoldsAFrameWhoseAdmissionWasForgotten  # 0.4 s
+  - TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads  # 1.5 s
+  - TestTheRetryOfAnUnsubscribeThatEmptiedTheRecordAnswers200  # 4.5 s
+  - TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException  # 3.1 s
   - TestTheRoleLaneKeepsARawRolePublishForTheRolesNextHolder  # 0.6 s
   - TestTheRoleLookupAnswersALapsedHoldersProcess  # 0.3 s
-  - TestTheRoleReadRefusesWhatJSONParseRefusesAtTheTopLevel  # 0.0 s
+  - TestTheRoleLookupReportsTheHandBackMark  # 0.3 s
   - TestTheRoleReaperKeepsTheClaimOfAHolderACopyBehindAnswersAbsent  # 1.2 s
+  - TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim  # 0.6 s
   - TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend  # 0.8 s
-  - TestTheRoutesServeAListenerWithNoKnownSessionStore  # 0.3 s
-  - TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack  # 2.6 s
+  - TestTheSelfHealthMonitorRebindsARecreatedDurable  # 0.9 s
+  - TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack  # 2.7 s
   - TestTheSelfHealthProbeLogsNothingForAHealthyRoleLane  # 0.5 s
-  - TestTheSelfHealthProbeSendsARefusedRoleLaneAgainOncePerPeriod  # 0.4 s
-  - TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket  # 1.1 s
-  - TestTheSenderStampReadsTheInterestRecordBeforeTheSessionEntry  # 1.6 s
   - TestTheSenderStampSpendsOneReadWindowOnAFrozenBus  # 2.3 s
-  - TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath  # 0.6 s
-  - TestTheSharedTokenAndTheOpenPathWarnOnceAMinute  # 0.2 s
+  - TestTheSessionConsumerDrainSaysWhenTheShutdownLeftItNoTime  # 0.1 s
+  - TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses  # 0.3 s
+  - TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer  # 2.6 s
+  - TestTheSharedTokenAndTheOpenPathWarnOnceAMinute  # 0.1 s
   - TestTheStartTimeGaugeIsTheProcessStart  # 0.0 s
-  - TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed  # 0.0 s
-  - TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld  # 0.3 s
-  - TestTheSuccessorsRouteAnswersAnUnansweredReadWith503  # 3.5 s
+  - TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld  # 0.4 s
   - TestTheSuccessorsRouteFollowsAChainOfAnyLength  # 0.1 s
-  - TestTheSuccessorsRouteFollowsAChainOfOnePrincipal  # 0.1 s
-  - TestTheSuccessorsRouteNamesThePrincipalToDispatchAlone  # 0.1 s
-  - TestTheSuccessorsRouteNamesTheSessionsThatReplacedASession  # 0.0 s
-  - TestTheSweepDeletesNothingWhileTheSessionCacheIsNotReady  # 0.3 s
+  - TestTheSuccessorsRouteNamesTheSessionsThatReplacedASession  # 0.1 s
+  - TestTheSweepDeletesNothingWhileAnotherTaskHoldsTheDurableBinding  # 0.3 s
   - TestTheSweepDeletesTheConsumerOfASessionThatEndedWithoutDeregistering  # 0.3 s
+  - TestTheSweepKeepsTheConsumerOfALiveSession  # 0.3 s
   - TestTheSweepKeepsTheConsumerOfALiveSessionAnEarlierBuildRegistered  # 0.7 s
   - TestTheSweepKeepsTheConsumerOfASessionTheBucketStillHolds  # 0.3 s
+  - TestTheTakeoverGrantIsAskedOncePerEpisode  # 0.7 s
   - TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable  # 2.4 s
-  - TestTwoListenersStartedTogetherSweepOutOfPhase  # 6.7 s
-  - TestUnplaceableAgentDeliveryRetriesThenGivesUp  # 15.5 s
+  - TestTheWebhookPublishesAnswerAFrozenBusInsideTheirCallersWait  # 4.5 s
+  - TestThermoOpsRoleSetRejectsUnregisteredSession  # 0.3 s
+  - TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder  # 3.4 s
+  - TestTwoListenersStartedTogetherSweepOutOfPhase  # 7.9 s
   - TestUnsubscribeAllReleasesTheRoleClaimsOfTheProcessThatAsked  # 0.3 s
-  - TestUnsubscribeAnswersTheTopicsItRemoved  # 1.2 s
-  - TestUnsubscribeRequiresSessionIDAndReturnsRemovedTopics  # 0.3 s
+  - TestValidateListenerAPIAuth  # 0.2 s
+  - TestWakeReportsEndWithTheListenerAndAreCappedInFlight  # 0.0 s
