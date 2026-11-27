@@ -48,6 +48,8 @@ import {
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   MAX_TOKEN_PROJECTS,
+  POST_HISTORY_PAGE_LIMIT,
+  PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   REFERENCE_TARGETS_MAX,
@@ -405,6 +407,11 @@ const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
 // MAX_TOKEN_PROJECTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxTokenProjects = ${MAX_TOKEN_PROJECTS}
+
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = ${KNOWN_SESSIONS_MAX}
 
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's

@@ -1,11 +1,17 @@
-import { DISPATCH_SCOPES, MAX_TOKEN_PROJECTS } from "@legion/contracts";
+import { DISPATCH_SCOPES, DISPATCH_TOKEN_SCOPES, MAX_TOKEN_PROJECTS } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { AgentToken, CreatedAgentToken, DispatchScope, Project } from "../../api/types";
+import type {
+  AgentToken,
+  CreatedAgentToken,
+  DispatchScope,
+  DispatchTokenScope,
+  Project,
+} from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
@@ -76,37 +82,53 @@ interface TokenScope<Id extends DispatchTokenScope> {
   readonly allows: string;
 }
 
-/** Both scopes a personal token can hold, in the order a row shows them. The ids are the
- *  contract's own (`DISPATCH_SCOPES`), so a row cannot offer a scope the server does not mint. */
-const TOKEN_SCOPES: readonly TokenScope[] = [
-  {
-    allows: "Reads and writes as you: issues, comments, asks, documents and messages.",
-    id: "person",
-    label: "Act as you",
-  },
-  {
-    allows:
-      "Reviews documents, answers approvals and keeps decisions for you, approves the credentials agents ask you for, and changes who may see your projects and the Slack channels they post to.",
-    id: "approve",
-    label: "Approve and control credentials",
-  },
+const ACT_AS_YOU: TokenScope<"person"> = {
+  allows: "Reads and writes as you: issues, comments, asks, documents and messages.",
+  id: "person",
+  label: "Act as you",
+};
+
+const APPROVE: TokenScope<"approve"> = {
+  allows:
+    "Reviews documents, answers approvals and keeps decisions for you, approves the credentials agents ask you for, and changes who may see your projects and the Slack channels they post to.",
+  id: "approve",
+  label: "Approve and control credentials",
+};
+
+const READ_ONLY: TokenScope<"read"> = {
+  allows: "Only reads: Dispatch refuses it every write, whatever else it holds.",
+  id: "read",
+  label: "Read only",
+};
+
+const SET_P0: TokenScope<"p0"> = {
+  allows: "Set an issue's priority to P0.",
+  id: "p0",
+  label: "Set P0",
+};
+
+/** The scopes a token that writes can hold, in the order a row shows them. The ids are the
+ *  contract's own (`DISPATCH_SCOPES`), so a row cannot offer a scope the server does not mint, and
+ *  a row offers no Read only: no token that writes becomes read only (the server refuses it, 400
+ *  TOKEN_SCOPES_INPUT), since a person makes a new token for that. */
+const WRITING_SCOPES: readonly TokenScope<DispatchScope>[] = [ACT_AS_YOU, APPROVE, SET_P0];
+
+/** Every word the mint form offers, in the order it shows them (`DISPATCH_TOKEN_SCOPES`). */
+const MINT_SCOPES: readonly TokenScope<DispatchTokenScope>[] = [
+  ACT_AS_YOU,
+  APPROVE,
+  SET_P0,
+  READ_ONLY,
 ];
 
-/** Both scopes: what a new token holds unless the reader clears one. */
-const BOTH_SCOPES: readonly DispatchScope[] = DISPATCH_SCOPES;
-
-/** What a restricted member's token may do, which its row and the mint form say in place of the
- *  scope boxes: Dispatch gives such a token no scope (403 RESTRICTED_MEMBER for a mint or an edit
- *  asking for one), since it is their agent's, held to the one project it names. */
-const RESTRICTED_TOKEN_NOTE =
-  "Works as you in the one project it names, and approves nothing: no login, no token, no credential request.";
-
-/** The scopes a token holds, as the boxes read them. The route table carries them as plain
- *  strings; `DISPATCH_SCOPES` is the closed list each is one of, so a scope this build has no
- *  box for is left out rather than drawn as a box nobody can clear, and a token whose list came
- *  back absent holds none. */
-function heldScopes(scopes: readonly string[] | null): DispatchScope[] {
-  return DISPATCH_SCOPES.filter((known) => scopes?.includes(known) ?? false);
+/** `offered` without Set P0: what a row and the mint form offer until Dispatch says the person at
+ *  the browser holds `p0` (`offersP0` in `AgentTokensSection`). A build before p0 knows no such
+ *  word, and a credential gives no scope it does not hold itself, so a box drawn before then would
+ *  be a refusal waiting to happen. */
+function withoutSetP0<Id extends DispatchTokenScope>(
+  offered: readonly TokenScope<Id>[]
+): readonly TokenScope<Id>[] {
+  return offered.filter(({ id }) => id !== "p0");
 }
 
 const WRITING_SCOPES_WITHOUT_P0 = withoutSetP0(WRITING_SCOPES);
@@ -118,6 +140,13 @@ const MINT_SCOPES_WITHOUT_P0 = withoutSetP0(MINT_SCOPES);
 const NEW_TOKEN_SCOPES: readonly DispatchTokenScope[] = DISPATCH_SCOPES.filter(
   (scope) => scope !== "p0"
 );
+
+/** What a restricted member's token may do, which its row and the mint form say in place of the
+ *  boxes: Dispatch gives such a token no scope, and makes them no read-only token (403
+ *  RESTRICTED_MEMBER for a mint or an edit naming any word, `p0` and `read` among them), since it
+ *  is their agent's, held to the one project it names. */
+const RESTRICTED_TOKEN_NOTE =
+  "Works as you in the one project it names, and approves nothing: no login, no token, no credential request.";
 
 /** The words a token holds, `p0` and `read` among them. The route table carries them as plain
  *  strings; `DISPATCH_TOKEN_SCOPES` is the closed list each is one of, so a word this build does
@@ -331,16 +360,42 @@ function TokenProjectsChoice({
   );
 }
 
+/** A read-only token's scopes, shown as words with no box: no token changes to or from read
+ *  only, and a read-only token's scopes never change, so a person makes a new token instead. */
+function ReadOnlyScopes({
+  held,
+  subject,
+}: {
+  held: readonly DispatchTokenScope[];
+  subject: string;
+}): ReactNode {
+  return (
+    <ul aria-label={`What ${subject} may do`} className="space-y-1">
+      {MINT_SCOPES.filter((scope) => held.includes(scope.id)).map((scope) => (
+        <li className={`text-sm font-medium ${textSecondaryOnSurface}`} key={scope.id}>
+          {scope.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function AgentTokensSection(): ReactNode {
   const queryClient = useQueryClient();
   /** A restricted member's token is their agent's: it holds no scope and names exactly one
    *  project they see, and Dispatch refuses any other (403 RESTRICTED_MEMBER). */
   const restricted = useRestrictedMember();
   const [name, setName] = useState("");
-  /** What the mint form's boxes hold: both scopes until the reader clears one. */
-  const [newScopes, setNewScopes] = useState<readonly DispatchScope[]>(BOTH_SCOPES);
+  /** What the mint form's boxes hold: Act as you and Approve until the reader changes them. */
+  const [newScopes, setNewScopes] = useState<readonly DispatchTokenScope[]>(NEW_TOKEN_SCOPES);
   /** The projects the mint form names: none, the public projects only, until the reader picks. */
   const [newProjects, setNewProjects] = useState<readonly string[]>([]);
+  /** Whether the mint form makes a read-only token, which lists no project: Dispatch refuses a
+   *  mint naming projects beside read (400 TOKEN_PROJECTS_INPUT). While Read only is ticked, the
+   *  projects picker is disabled and shows none, and the mint names none; the projects picked
+   *  before it was ticked are named again once it is cleared. A restricted member's form draws no
+   *  Read only. */
+  const mintsReadOnly = !restricted && newScopes.includes("read");
   const [shownToken, setShownToken] = useState<CreatedAgentToken>();
   /** When the token list was last read again after a mint whose answer was lost. */
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
@@ -348,6 +403,17 @@ export function AgentTokensSection(): ReactNode {
   const tokens = useQuery({ queryKey: agentTokensQueryKey, queryFn: () => api.listAgentTokens() });
   /** The projects a token may name: those the reader sees. */
   const projects = useQuery(projectsQuery()).data ?? [];
+  // The scopes Dispatch says the person at this browser holds (`GET /api/v1/whoami`). Set P0 is
+  // drawn, on the mint form and on each row of a token that writes, only once they name `p0`:
+  // while the read has not answered, where it failed, and where a build before p0 answered it, no
+  // box is drawn and the form mints as it did before p0. A failed read says nothing on the page,
+  // since the rest of the section does not need it.
+  const callerScopes = useQuery({
+    queryKey: whoAmIScopesQueryKey,
+    queryFn: () => api.whoAmIScopes(),
+  });
+  const offersP0 = callerScopes.data?.includes("p0") === true;
+  const mintScopes = offersP0 ? MINT_SCOPES : MINT_SCOPES_WITHOUT_P0;
   // The form shows a refused mint beside the name it was refused over. A mint that names no
   // project sends no `projects`, so Dispatch gives the token the caller's own list.
   const createToken = useKeyedWrite({
@@ -356,9 +422,10 @@ export function AgentTokensSection(): ReactNode {
       name: string;
       before: readonly string[];
       projects: readonly string[];
-      scopes: readonly DispatchScope[];
+      scopes: readonly DispatchTokenScope[];
     }) => `New agent token ${input.name}`,
     method: "POST",
+    // The whole set the boxes hold, `read` among them for a read-only token.
     write: ({ name: label, projects: named, scopes }, bounds) =>
       api.createAgentToken(
         named.length === 0
@@ -368,7 +435,7 @@ export function AgentTokensSection(): ReactNode {
       ),
     onSuccess: (created) => {
       setName("");
-      setNewScopes(BOTH_SCOPES);
+      setNewScopes(NEW_TOKEN_SCOPES);
       setNewProjects([]);
       if (created === null) {
         // Minted, and its value - shown once only - is gone with the answer
@@ -403,10 +470,12 @@ export function AgentTokensSection(): ReactNode {
       );
     },
   });
-  /** One row's two boxes or its projects, written as the whole set the token is to hold. The
-   *  edit always names the scopes, and names the projects only when they are what changed, which
-   *  leaves them as they are otherwise. The row reads both back from the list, so it follows the
-   *  write rather than the press. */
+  /** One writing token's boxes or its projects, written as the whole set the token is to hold,
+   *  which never holds `read`: what its boxes hold, and each word it holds that its row does not
+   *  draw (`scopesAfterChoice`), or none for a restricted member's token. The edit always names
+   *  the scopes, and names the projects only when they are what changed, which leaves them as
+   *  they are otherwise. The row reads both back from the list, so it follows the write rather
+   *  than the press. */
   const updateToken = useKeyedWrite({
     label: (input: { id: string; name: string; projects?: string[]; scopes: DispatchScope[] }) =>
       input.projects === undefined
@@ -444,11 +513,15 @@ export function AgentTokensSection(): ReactNode {
     event.preventDefault();
     // An emptied form - a mint that landed - sends nothing, whatever submits it.
     if (name.trim() === "") return;
+    // The boxes the form draws now, and no word it does not: a Set P0 ticked before a later read
+    // of whoami named no p0 is no longer drawn, so the reader no longer sees it, and it is not sent.
+    const drawn = newScopes.filter((scope) => mintScopes.some(({ id }) => id === scope));
     createToken.mutate({
       before: listedIds(),
       name,
-      projects: newProjects,
-      scopes: restricted ? [] : newScopes,
+      projects: mintsReadOnly ? [] : newProjects,
+      // A restricted member's form draws no box, and their mint names no scope.
+      scopes: restricted ? [] : drawn,
     });
   };
   /** A mint whose value was lost with its answer, until the next mint or the reader writes
@@ -560,75 +633,93 @@ export function AgentTokensSection(): ReactNode {
                   </td>
                 </tr>
               ) : (
-                tokens.data.map((token) => (
-                  <tr className={settingsTableRow} key={token.id}>
-                    <td className={`px-4 py-3 font-medium ${textPrimaryOnSurface}`}>
-                      {token.name}
-                    </td>
-                    <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
-                      {`dsp_${token.prefix}…`}
-                    </td>
-                    <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                      <Timestamp at={token.created_at} />
-                    </td>
-                    <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
-                      {token.last_used_at === null ? (
-                        "Never used"
-                      ) : (
-                        <Timestamp at={token.last_used_at} />
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      {restricted ? (
-                        <p className={`max-w-xs text-xs ${textMutedOnSurface}`}>
-                          {RESTRICTED_TOKEN_NOTE}
-                        </p>
-                      ) : (
-                        <TokenScopeChoices
-                          chosen={heldScopes(token.scopes)}
-                          disabled={token.revoked_at !== null || updateToken.isPending}
-                          onChoose={(scopes) =>
-                            updateToken.mutate({ id: token.id, name: token.name, scopes })
-                          }
-                          subject={token.name}
-                        />
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <TokenProjectsChoice
-                        chosen={token.projects ?? []}
-                        hidden={token.projects_hidden === true}
-                        disabled={token.revoked_at !== null || updateToken.isPending}
-                        onChoose={(named) =>
-                          updateToken.mutate({
-                            id: token.id,
-                            name: token.name,
-                            projects: named,
-                            scopes: restricted ? [] : heldScopes(token.scopes),
-                          })
-                        }
-                        projects={projects}
-                        single={restricted}
-                        subject={token.name}
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {token.revoked_at === null ? (
-                        <button
-                          aria-label={`Revoke ${token.name}`}
-                          className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                          disabled={revokeToken.isPending}
-                          onClick={() => revoke(token)}
-                          type="button"
-                        >
-                          Revoke
-                        </button>
-                      ) : (
-                        <span className={textMutedOnSurface}>Revoked</span>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                tokens.data.map((token) => {
+                  const held = heldScopes(token.scopes);
+                  // A read-only token's scopes never change and it lists no project (400
+                  // TOKEN_SCOPES_INPUT for any edit of it), so its row draws both as words, with no
+                  // box and no picker: such a token reads the public projects its person sees.
+                  const readOnly = held.includes("read");
+                  // What an edit of a writing token names as its scopes: the set it holds.
+                  const writing = DISPATCH_SCOPES.filter((scope) => held.includes(scope));
+                  return (
+                    <tr className={settingsTableRow} key={token.id}>
+                      <td className={`px-4 py-3 font-medium ${textPrimaryOnSurface}`}>
+                        {token.name}
+                      </td>
+                      <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
+                        {`dsp_${token.prefix}…`}
+                      </td>
+                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
+                        <Timestamp at={token.created_at} />
+                      </td>
+                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
+                        {token.last_used_at === null ? (
+                          "Never used"
+                        ) : (
+                          <Timestamp at={token.last_used_at} />
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {restricted ? (
+                          <p className={`max-w-xs text-xs ${textMutedOnSurface}`}>
+                            {RESTRICTED_TOKEN_NOTE}
+                          </p>
+                        ) : readOnly ? (
+                          <ReadOnlyScopes held={held} subject={token.name} />
+                        ) : (
+                          <TokenScopeChoices
+                            chosen={writing}
+                            disabled={token.revoked_at !== null || updateToken.isPending}
+                            offered={offersP0 ? WRITING_SCOPES : WRITING_SCOPES_WITHOUT_P0}
+                            onChoose={(scopes) =>
+                              updateToken.mutate({ id: token.id, name: token.name, scopes })
+                            }
+                            subject={token.name}
+                          />
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {readOnly ? (
+                          <p className={`text-sm font-medium ${textSecondaryOnSurface}`}>
+                            Public projects only
+                          </p>
+                        ) : (
+                          <TokenProjectsChoice
+                            chosen={token.projects ?? []}
+                            hidden={token.projects_hidden === true}
+                            disabled={token.revoked_at !== null || updateToken.isPending}
+                            onChoose={(named) =>
+                              updateToken.mutate({
+                                id: token.id,
+                                name: token.name,
+                                projects: named,
+                                scopes: restricted ? [] : writing,
+                              })
+                            }
+                            projects={projects}
+                            single={restricted}
+                            subject={token.name}
+                          />
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {token.revoked_at === null ? (
+                          <button
+                            aria-label={`Revoke ${token.name}`}
+                            className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
+                            disabled={revokeToken.isPending}
+                            onClick={() => revoke(token)}
+                            type="button"
+                          >
+                            Revoke
+                          </button>
+                        ) : (
+                          <span className={textMutedOnSurface}>Revoked</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -667,6 +758,7 @@ export function AgentTokensSection(): ReactNode {
           <TokenScopeChoices
             chosen={newScopes}
             disabled={createToken.isPending}
+            offered={mintScopes}
             onChoose={setNewScopes}
             subject="new token"
           />
@@ -676,8 +768,8 @@ export function AgentTokensSection(): ReactNode {
         >
           Projects
           <TokenProjectsChoice
-            chosen={newProjects}
-            disabled={createToken.isPending}
+            chosen={mintsReadOnly ? [] : newProjects}
+            disabled={createToken.isPending || mintsReadOnly}
             onChoose={setNewProjects}
             projects={projects}
             single={restricted}
