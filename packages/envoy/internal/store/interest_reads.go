@@ -170,7 +170,7 @@ func (r *Registry) readRow(ctx context.Context, sessionID string, read interestR
 		}
 		value, revision = leader.Value, leader.Revision
 	} else {
-		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) {
+		entry, answered, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) {
 			return kv.ReadStored(ctx, sessionID, rowOf(sessionID))
 		})
 		if !answered {

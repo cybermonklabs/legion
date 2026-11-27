@@ -198,21 +198,18 @@ const STATE_NOTE: Record<AgentState, string> = {
 };
 
 /** What a session's state mark says: the name of each state (`labels`), what stands between it
- *  and how long ago a running or unresponsive session was seen (`seen`), and what an unresponsive
- *  one's state means, after both (`unresponsive`). A host that words the mark gives its own
- *  (`AgentName`'s `stateWords`). */
+ *  and how long ago a running or unresponsive session was seen (`seen`), and what each state's
+ *  mark says beyond both (`notes`), which is what an unresponsive one's state means and nothing
+ *  for the others in the mark's own words (`STATE_NOTE`). A host that words the mark gives its
+ *  own (`AgentName`'s `stateWords`). */
 export interface AgentStateWords {
   readonly labels: Readonly<Record<AgentState, string>>;
+  readonly notes: Readonly<Record<AgentState, string>>;
   readonly seen: string;
-  readonly unresponsive: string;
 }
 
 /** The state mark's own words, on every surface whose host gives none. */
-const STATE_WORDS: AgentStateWords = {
-  labels: STATE_LABEL,
-  seen: " · seen ",
-  unresponsive: STATE_NOTE.unresponsive,
-};
+const STATE_WORDS: AgentStateWords = { labels: STATE_LABEL, notes: STATE_NOTE, seen: " · seen " };
 
 function AgentStateMark({
   lastSeen,
@@ -228,7 +225,7 @@ function AgentStateMark({
     (state === "running" || state === "unresponsive") && lastSeen !== undefined
       ? relativeTimeLabel(new Date(lastSeen), Date.now())
       : undefined;
-  const reading = `${words.labels[state]}${seen === undefined ? "" : `${words.seen}${seen}`}${state === "unresponsive" ? words.unresponsive : ""}`;
+  const reading = `${words.labels[state]}${seen === undefined ? "" : `${words.seen}${seen}`}${words.notes[state]}`;
   // Inside `NoTooltips` (`components/tooltips.tsx`) the whole reading - the state, how long ago
   // a running or unresponsive session was seen, and what an unresponsive one's state means - is
   // the mark's accessible name instead, so nothing is kept for a pointer alone; the shape says

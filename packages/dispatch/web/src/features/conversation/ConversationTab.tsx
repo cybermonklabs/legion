@@ -4,7 +4,7 @@ import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useStat
 import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
-import { handoffsQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   Agent,
@@ -1046,7 +1046,10 @@ export function ConversationTab({
     queryFn: () => api.listIssueMessages(issueKey),
   });
   // Each version of each phase handoff, without its body; a card reads its body when expanded.
-  const handoffs = useQuery(handoffsQuery(issueKey));
+  const handoffs = useQuery({
+    queryKey: ["handoffs", issueKey],
+    queryFn: () => api.listHandoffs(issueKey),
+  });
   const issueState = stateForIssue(state, issueKey);
   const lastReadSeq = issueState.last_read_seq;
   // The watermark as a moment: the first event the reader has not read. One row - the list is

@@ -205,7 +205,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		rig.deps.consumers.afterStoredRowRead = func() { reads++ }
 		defer func() { rig.deps.consumers.afterStoredRowRead = nil }()
 
-		if _, outcome := rig.deps.consumers.storedFilterStep(ctx, registry, sesA, "narrowed test"); outcome != filterWriteLanded || reads != 1 {
+		if _, outcome, _ := rig.deps.consumers.storedFilterStep(ctx, registry, sesA, "narrowed test"); outcome != filterWriteLanded || reads != 1 {
 			t.Errorf("storedFilterStep read the row %d times and answered %v, want one read and a write that landed", reads, outcome)
 		}
 		filterHolds(t, "storedFilterStep", sesA, teamT, newerX)
@@ -320,7 +320,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if _, outcome := rig.deps.consumers.storedFilterStep(ctx, registry, sesD, "narrowed test"); outcome != filterWriteLanded {
+		if _, outcome, _ := rig.deps.consumers.storedFilterStep(ctx, registry, sesD, "narrowed test"); outcome != filterWriteLanded {
 			t.Errorf("storedFilterStep for %s answered %v, want a write that landed", sesD, outcome)
 		}
 		filters := rig.filters(t, sesD)

@@ -55,8 +55,8 @@ type Handoff struct {
 	At      time.Time
 }
 
-// RunPlan is the plan one run of the issue ran from, as Dispatch holds it (workflowstore's plan
-// node): when its node was made, which is when the run's work started, and the roles of its one
+// RunPlan is one version of the plan a run of the issue ran from, as Dispatch holds it
+// (workflowstore's plan node): when that version was written, and the roles of its one
 // task's steps, in the task's order (`acceptance` for `acceptance:owner`). Steps is empty for a
 // plan whose tasks are not exactly one, which the fallback timeline reads as the default steps.
 type RunPlan struct {
@@ -93,7 +93,7 @@ type Issue struct {
 	// StatusMarks is every status the issue's own events snapshotted, oldest first.
 	StatusMarks []Mark
 
-	// Plans is the plan of each run of the issue, oldest first: what the fallback timeline reads
+	// Plans is each version of the plan of each run of the issue, oldest first: what the fallback timeline reads
 	// the order of the task's steps from (phaseLine). An issue Legion ran before it recorded
 	// plans has none.
 	Plans []RunPlan
@@ -586,6 +586,10 @@ func (p *Population) readRoleEvents(ctx context.Context, pool *store.Pool, keys 
 		if err := rows.Scan(&one.issue, &one.session, &one.at); err != nil {
 			return fmt.Errorf("scan a session event: %w", err)
 		}
+		// The daemon's own session has no title and cannot be a Legion role (DaemonSession).
+		if legion.DaemonSession(one.session) {
+			continue
+		}
 		found = append(found, one)
 		sessions[one.session] = true
 	}
@@ -786,7 +790,7 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 	return nil
 }
 
-// readPlans reads the plan of each run of the issues (workflowstore.IssuesPlans), oldest first:
+// readPlans reads each version of the plan of each run of the issues (workflowstore.IssuesPlans), oldest first:
 // what the fallback timeline reads the order of a task's steps from (Issue.phaseLine). A plan
 // whose tasks are not exactly one keeps no steps, which reads as the default steps.
 func (p *Population) readPlans(ctx context.Context, pool *store.Pool, keys []string) error {

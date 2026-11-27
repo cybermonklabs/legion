@@ -105,7 +105,7 @@ const ANSWERS: OutlineAnswers = {
  *  one before the agent a row of the box's picker names (`PICKER`), in the page's words: a
  *  running session's state, how long ago it was seen and what an unresponsive one's state means
  *  (`agent_running`, `agent_seen`, `agent_unresponsive_note`), and the other states in the words
- *  the claim says them in, which the registry judges alike. */
+ *  the claim says them in, which the registry judges alike, with no note after them (`notes`). */
 const TARGET_STATE_WORDS: AgentStateWords = {
   labels: {
     "not-running": CONTROL_LABELS.not_running,
@@ -113,14 +113,21 @@ const TARGET_STATE_WORDS: AgentStateWords = {
     unknown: CONTROL_LABELS.unchecked,
     unresponsive: CONTROL_LABELS.unresponsive,
   },
+  notes: {
+    "not-running": "",
+    running: "",
+    unknown: "",
+    unresponsive: CONTROL_LABELS.agent_unresponsive_note,
+  },
   seen: CONTROL_LABELS.agent_seen,
-  unresponsive: CONTROL_LABELS.agent_unresponsive_note,
 };
 
 /** The words the reference picker in the box draws, in the page's kind words: its names
  *  (`BOX_PICKER_NAMES`), its lines (`BOX_PICKER_LINES`), the page's own words of a list of
- *  references still loading and one that could not be read, and the state mark before the agent
- *  a party's row names, as the target line names it (`TARGET_STATE_WORDS`). */
+ *  references still loading and one that could not be read, the state mark before the agent a
+ *  party's row names, as the target line names it (`TARGET_STATE_WORDS`), and that agent named by
+ *  the words the row draws for it, the page's word for a session nobody titled among them, never
+ *  its short form (`sessionNames`, decision 548). */
 const PICKER: RefPickerWords = {
   headings: BOX_PICKER_NAMES.headings,
   instruction: BOX_PICKER_LINES.instruction,
@@ -134,6 +141,7 @@ const PICKER: RefPickerWords = {
       none: BOX_PICKER_LINES.parts_none.documents,
     },
   },
+  sessionNames: "shown",
   states: {
     empty: BOX_PICKER_LINES.empty,
     loading: ANSWER_LINES.references_loading,
@@ -160,8 +168,8 @@ const EDIT_NAMES: OutlineNames = { ...WRITE_NAMES, description: CONTROL_LABELS.c
 export interface BoxPlace {
   /** A document is open in place of the outline (`IssueAddress.document`). */
   readonly documentOpen: boolean;
-  /** A view is on (`IssueAddress.preset` is not `conversation`, `isFilter`): the stage draws a
-   *  view, any control of the row but Conversation, and no outline. */
+  /** A view is on (`IssueAddress.preset` is not `conversation`, Dashboard included): the stage
+   *  draws a view, any control of the row but Conversation, and no outline. */
   readonly viewOn: boolean;
 }
 
@@ -464,6 +472,7 @@ function WriteLine({
     answers: ANSWERS,
     cancelReply: CONTROL_LABELS.write_on_issue,
     discardDraft: CONTROL_LABELS.discard_draft,
+    editing: writer.editing,
     end,
     endMark: CONTROL_LABELS.target_end_mark,
     kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },

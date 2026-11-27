@@ -93,12 +93,12 @@ func Derive(in Input) (State, error) {
 //     deploy, and no name of no letter and no digit (subjectFault); with no now no time limit would
 //     end, and with neither, no check of production would be judged;
 //   - the approved spec, as ReadApproved refuses it (approvedFault), and each node under its own
-//     id, as WriteApproved refuses it: a node with no version, a block that is not its one block, a
-//     relation that names no node of the approved spec of its kind, a check whose block leaves out
-//     serves, or a key that is not its id would leave the node or the relation out, a loop of
-//     parent and support relations would leave each statement of the loop out of the tree of the
-//     statement above it (R5), and a version with no time would make no result suspect (R7: "A
-//     change to the text of a statement makes every result under it suspect");
+//     id, as WriteApproved refuses it: a node with no version, a document that is not its one
+//     document, a relation that names no node of the approved spec of its kind, a check whose
+//     document leaves out serves, or a key that is not its id would leave the node or the relation
+//     out, a loop of parent and support relations would leave each statement of the loop out of the
+//     tree of the statement above it (R5), and a version with no time would make no result suspect
+//     (R7: "A change to the text of a statement makes every result under it suspect");
 //   - each result (Result.fault), with the current text of its check when it carries that text's
 //     digest, so it is judged by what the judge reads of it, and no two results of one check at one
 //     At and one Seq (sameRecordFault);

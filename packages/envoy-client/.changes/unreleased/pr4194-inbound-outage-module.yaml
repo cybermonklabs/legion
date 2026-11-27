@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The inbound outage report has a module of its own, `@legion/envoy-client/inbound-outage`.
+  `inboundUnavailable`, `InboundUnavailable`, `inboundUnavailableNoticeText` and
+  `inboundRestoredNoticeText` move there from `@legion/envoy-client/consumer-delivery`, which no
+  longer exports them. The report's names that are new in this release
+  (`InboundUnavailableOptions`, `InboundOutage`, `InboundOutageKind` and
+  `INBOUND_FIRST_OPEN_BOUND_MS`) are exported there too.
+time: 2026-11-24T02:17:43Z
+custom:
+    Issue: pr4194

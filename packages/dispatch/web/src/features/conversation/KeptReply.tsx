@@ -94,16 +94,22 @@ export function GoneReply({
   readonly waits?: boolean;
   readonly words?: GoneReplyWords;
 }): ReactNode {
+  if (words !== undefined && agentNames === "cache") {
+    const after = words.after[deleted ? "deleted" : "gone"];
+    return (
+      <>
+        {words.before[parentKind]}
+        <CachedAuthor actor={actor} />
+        {waits ? after.waits : after.now}
+      </>
+    );
+  }
   if (words !== undefined) {
     const after = words.after[deleted ? "deleted" : "gone"];
     return (
       <>
         {words.before[parentKind]}
-        {agentNames === "cache" ? (
-          <CachedAuthor actor={actor} />
-        ) : (
-          <AgentName actor={actor} inline />
-        )}
+        <AgentName actor={actor} inline />
         {waits ? after.waits : after.now}
       </>
     );

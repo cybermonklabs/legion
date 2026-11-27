@@ -1,0 +1,4 @@
+# owner-walk, form D (ctl-D, the approved control of v-guidance-judge): the head with the owner's
+# prompt part as it was before #4902. The patch is #4902's own change of go/architect-common.md;
+# controls/patches/README.md names the commits it was made from.
+unpatch controls/patches/owner-walk-D.patch

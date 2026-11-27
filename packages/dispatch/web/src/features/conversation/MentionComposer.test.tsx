@@ -42,6 +42,7 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
+import { prefillMentions, replyPrefill } from "./composer-draft";
 import type {
   ComposerOwner,
   DraftIntake,
@@ -882,6 +883,61 @@ test("reopening the same reply restores its canonical prefills after cancel", as
     await user.paste("Draft after cancellation");
     await user.click(screen.getByRole("button", { name: "Open reply" }));
     await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://role/planner) "));
+  } finally {
+    view.unmount();
+  }
+});
+
+// The issue page's box remembers the links a reply opens with (`prefillMentions`), and today's
+// composer writes that reply's prefill (`replyPrefill`): the two read the parent's mentions each
+// on its own, so they must name the same parties, each once, in the same order. A party the
+// parent was delivered to twice is one link, and an address no party route reaches is none.
+test("a reply's prefill on today's composer names each party its parent was delivered to once, in order, as the issue page's box seeds it", async () => {
+  const target: ReplyTarget = {
+    actor: plannerAuthor,
+    excerpt: "Question",
+    id: "comment-1",
+    mentions: [
+      { target: "role:reviewer", title: "reviewer" },
+      { target: "session:A", title: "Planner" },
+      { target: "role:reviewer", title: "reviewer" },
+      { target: "agent:s1", title: "Stranger" },
+    ],
+    parentKind: "comment",
+  };
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider
+        client={
+          new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+          })
+        }
+      >
+        <MentionComposer
+          box="conversation-composer"
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={{ issueKey: "CORE-1", kind: "issue" }}
+          replyTo={target}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await waitFor(() =>
+      expect(field.value).toBe(
+        "[@reviewer](dispatch://role/reviewer) [@Planner](dispatch://agent/A) "
+      )
+    );
+    const seeds = prefillMentions(target).map((seed) => seed.text);
+    expect(seeds.map((text) => `${text} `).join("")).toBe(replyPrefill(target).body);
+    expect(seeds).toEqual([
+      "[@reviewer](dispatch://role/reviewer)",
+      "[@Planner](dispatch://agent/A)",
+    ]);
   } finally {
     view.unmount();
   }
