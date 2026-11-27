@@ -599,7 +599,16 @@ func shorten(t *testing.T, bound *time.Duration, d time.Duration) {
 // within the caller's bound, and gets what is left of it as its --max-time. The guard's bound is
 // ghReadBound inside a caller's 15 s (the bound `legion gh` gives the shared check's own read),
 // here shortened to 1 s; or the caller's deadline less curlReserve where that is sooner, here a
-// deadline of 6 s and a reserve of 3 s.
+// deadline of 12 s and a reserve of 9 s, so gh is stopped 3 s in.
+//
+// What each case bounds is the product's: the call answers inside the caller's deadline. The time
+// between the stop and the answer is a stop of the hanging shell and a run of the curl stub, and
+// what that takes is the runner's to decide: with the second case's deadline 3 s after its stop,
+// it took 6.185 s of a 6 s deadline in daemon-go leg 1 of run 45910891035 (job 140226477458),
+// beside cmd/legion's tests on the same runner. So its deadline is 9 s after the stop, about
+// three times the longest post-stop time seen, and the stop stays at 3 s, which is what the case
+// is about: the --max-time check below reads the stop, and a guard that answered late would still
+// fail the deadline.
 func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -608,7 +617,7 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 		caller, ghBound, reserve, stoppedAt time.Duration
 	}{
 		{name: "the read's own cap", caller: 15 * time.Second, ghBound: time.Second, reserve: curlReserve, stoppedAt: time.Second},
-		{name: "the caller's deadline less the reserve", caller: 6 * time.Second, ghBound: ghReadBound, reserve: 3 * time.Second, stoppedAt: 3 * time.Second},
+		{name: "the caller's deadline less the reserve", caller: 12 * time.Second, ghBound: ghReadBound, reserve: 9 * time.Second, stoppedAt: 3 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			shorten(t, &ghReadBound, tc.ghBound)
