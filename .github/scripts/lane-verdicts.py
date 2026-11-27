@@ -8,24 +8,32 @@ each output of `.github/workflows/ci.yaml#changes` that reads the pull request's
 (ci_router_outputs.label_readers). Whether the line says the suite runs is the output's own
 expression, evaluated by ci_router_outputs.Evaluator over what this step is handed; the reason
 beside it is a fact the step is handed too: that the run selects every job, that the filter dorny
-read was widened to every path (the filters file's first line, which ci-filters-generate.sh writes
-`# FAIL-OPEN:` or `# FORCED:` when it falls open, or when the change may alter the computation),
-that the suite's paths matched, or the label the pull request carries. A line that would
-contradict the output (paths matched and the label carried, and the output false) is written as an
-`::error::` naming both, as is an output the evaluator cannot read. Apart from those it writes no
-annotation: ci-ok's notice names the suites a run held back
+read was widened to every path, that the suite's paths matched, or the label the pull request
+carries. A line that would contradict the output (paths matched and the label carried, and the
+output false) is written as an `::error::` naming both, as is an output the evaluator cannot read.
+Apart from those it writes no annotation: ci-ok's notice names the suites a run held back
 (.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite).
-ci-router-outputs.test.sh hands the script the env ci.yaml's step evaluates to and holds each line
-to the output it is about.
+
+Whether a filter was widened is read from the first line of the file the paths-filter step read,
+in one of the four forms ci-filters-generate.sh writes (COMPUTED_HEADER, FAIL_OPEN, FORCED_ALL,
+FORCED_NAMES): the computed filters' own header (nothing widened), `# FAIL-OPEN:` and
+`# FORCED: every filter matches every path:` (every filter), or
+`# FORCED: <names> differ from the base tree's filters` (those). A file that cannot be
+read, or a first line in no such form, is an `::error::`, and every line then says that whether
+its filter was widened is UNKNOWN: it never falls back to "its paths matched".
+ci-router-outputs.test.sh hands the script the env ci.yaml's step evaluates to, checks that its
+FILTERS_FILE is the file the paths-filter step reads, feeds it files ci-filters-generate.sh itself
+wrote, and holds each line to the output it is about.
 
 Its inputs, from the step's env: GITHUB_EVENT_NAME, as Actions sets it; EVERY_JOB, the scope step's
-every_job; FILTERS_FILE, the filters file the paths-filter step read; LABELS, `toJSON(github.event.pull_request.labels.*.name)`; FILTER, `toJSON(steps.filter.outputs)`.
-The job each output selects is read from ci.yaml's own CI_OK_SELECTED_BY. With --decided it prints
-`<output>=<true|false>` for each such output instead, which the harness compares with the outputs.
+every_job; FILTERS_FILE, the filters file the paths-filter step read; LABELS,
+`toJSON(github.event.pull_request.labels.*.name)`; FILTER, `toJSON(steps.filter.outputs)`. The job
+each output selects is read from ci.yaml's own CI_OK_SELECTED_BY.
 
-Run from anywhere: .github/scripts/lane-verdicts.py [--decided]"""
+Run from anywhere: .github/scripts/lane-verdicts.py"""
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -43,26 +51,50 @@ def read_json(name, default):
     return default if value is None else value
 
 
+# The first lines ci-filters-generate.sh writes into the file the paths-filter step reads, and the
+# filters each widens to `'**'`: the computed filters copied as they are (check-ci-filters.sh
+# generate's header), the fail-open file, the base it cannot read or compute, and the filters whose
+# patterns differ from the base tree's.
+COMPUTED_HEADER = "# Every filter of .github/workflows/ci.yaml's changes job, computed by "
+FAIL_OPEN = re.compile(r"# FAIL-OPEN: the filters could not be computed \(.*\), so every filter matches every path "
+                       r"and every job runs\.")
+FORCED_ALL = re.compile(r"# FORCED: every filter matches every path: .+\.")
+FORCED_NAMES = re.compile(r"# FORCED: ([\w-]+(?:, [\w-]+)*) differ from the base tree's filters, so each matches "
+                          r"every path\.")
+
+
 def widened(path):
-    """The filters the paths-filter step read as `'**'`, from its file's first line: every one
-    (`# FAIL-OPEN:`, or `# FORCED: every filter matches every path`), those a `# FORCED:` line names
-    as differing from the base tree's, or none."""
+    """(the filters the paths-filter step read as `'**'`, '*' for every one; or None, and why it is
+    unknown), from the first line of the file at `path`."""
+    if not path:
+        return None, "FILTERS_FILE is not set, so which filters were widened to every path is unknown"
     try:
-        first = open(path).readline().strip()
-    except OSError:
-        return set()
-    if first.startswith("# FAIL-OPEN:") or first.startswith("# FORCED: every filter matches every path"):
-        return {"*"}
-    if first.startswith("# FORCED: ") and " differ from the base tree" in first:
-        return {name.strip() for name in first[len("# FORCED: "):].split(" differ from")[0].split(",")}
-    return set()
+        with open(path) as fh:
+            first = fh.readline().rstrip("\n")
+    except OSError as error:
+        return None, f"FILTERS_FILE {path} cannot be read ({error.strerror or error}), so which filters were widened to every path is unknown"
+    if first.startswith(COMPUTED_HEADER):
+        return set(), None
+    if FAIL_OPEN.fullmatch(first) or FORCED_ALL.fullmatch(first):
+        return {"*"}, None
+    forced = FORCED_NAMES.fullmatch(first)
+    if forced:
+        return set(forced.group(1).split(", ")), None
+    return None, (f"the first line of FILTERS_FILE {path} is in none of the forms ci-filters-generate.sh writes "
+                  f"({first[:160]!r}), so which filters were widened to every path is unknown")
+
+
+MATCHED = {
+    True: "its filter was widened to every path, since the filters could not be computed or the change may alter them",
+    False: "its paths matched",
+    None: "dorny matched its filter, and whether that filter was widened to every path is UNKNOWN (the error above says why)",
+}
 
 
 def line(job, name, runs, event, every_job, wide, paths, carried):
     """The line for one suite, and whether it is an error: what the output decided, with the fact
     that decided it."""
-    matched = ("its filter was widened to every path, since the filters could not be computed or the change may "
-               "alter them" if wide else "its paths matched")
+    matched = MATCHED[wide]
     if runs:
         if every_job:
             return f"{job}: runs, since this run selects every job", False
@@ -90,7 +122,9 @@ def main(argv):
     labels = [str(label) for label in read_json("LABELS", [])]
     filter_outputs = read_json("FILTER", {})
     every_job = os.environ.get("EVERY_JOB", "") == "true"
-    wide = widened(os.environ.get("FILTERS_FILE", ""))
+    wide, unknown = widened(os.environ.get("FILTERS_FILE", ""))
+    if unknown:
+        print(f"::error::lane-verdicts.py: {unknown}")
     document = yaml.safe_load(WORKFLOW.read_text())
     jobs_of = {}
     for job, output in json.loads(document["env"]["CI_OK_SELECTED_BY"]).items():
@@ -109,18 +143,15 @@ def main(argv):
         except Refused as refusal:
             print(f"::error::lane-verdicts.py cannot read the output {name}: {refusal}")
             return 1
-    if "--decided" in argv:
-        for name in sorted(decided):
-            print(f"{name}={'true' if decided[name] else 'false'}")
-        return 0
     lowered = {label.lower() for label in labels}
     print("What decided each slow suite on this run (the paths filter's log above says only whether its paths "
           "matched):")
-    errors = 0
+    errors = 1 if unknown else 0
     for name, runs in decided.items():
         carried = [x for x in ("full-ci", f"lane:{name}") if x in lowered]
         text, error = line(", ".join(jobs_of.get(name, [name])), name, runs, event, every_job,
-                           "*" in wide or name in wide, filter_outputs.get(name) == "true", carried)
+                           None if wide is None else ("*" in wide or name in wide),
+                           filter_outputs.get(name) == "true", carried)
         print(text)
         errors += error
     return 1 if errors else 0

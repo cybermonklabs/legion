@@ -1571,8 +1571,8 @@ tests, and
 the list of those jobs whose `if:` also admits only pull_request (ci-ok.sh and ci-ok.jq say how
 they decide a job's selection). The ci-ok job's step takes both from this env; ci-ok-report.sh,
 which runs from a composite action this file hands its job's own inputs alone, reads both out
-of this file at the commit the run checked out, and so does lane-verdicts.py, which names each
-gated output's job by this map
+of this file at the commit the run checked out; and lane-verdicts.py reads the map alone, to name
+each gated output's job
 (.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite). check-ci-filters.sh
 holds both to the jobs' `if:`s.
 
@@ -1923,13 +1923,21 @@ queue runs the suites its own generator selects against its own base, which may 
 this head's selection. Whether a line says its suite runs is the output's own expression,
 evaluated by ci_router_outputs.py's evaluator over what the step is handed, and the reason beside
 it is a fact the step is handed too: that the run selects every job, that the filters file dorny
-read was widened to every path (its first line, `# FAIL-OPEN:` or `# FORCED:`), that the paths
-matched, or the label carried. ci-router-outputs.test.sh hands the script the env ci.yaml's step
-evaluates to on pull requests with and without a label, a merge group, dispatches of main and of a
-branch, and a widened filters file, and holds each suite's line to its output. It writes no
-notice, since ci-ok's notice names the suites a run held back; it writes one `::error::` for an
-output it cannot evaluate or a line that would contradict the output. A failure of the step is
-its own red mark and fails no job (`continue-on-error`): it only reads.
+read was widened to every path, that the paths matched, or the label carried. Whether a filter was
+widened is read from that file's first line, in one of the four forms ci-filters-generate.sh
+writes: the computed filters' own header (nothing widened), `# FAIL-OPEN:`, `# FORCED: every
+filter matches every path:`, or `# FORCED: <names> differ from the base tree's filters`. A file
+that cannot be read, or a first line in no such form, is an `::error::`, and every line then says
+that whether its filter was widened is UNKNOWN, never that its paths matched.
+ci-router-outputs.test.sh hands the script the env ci.yaml's step evaluates to on pull requests
+with and without a label, a merge group, and dispatches of main and of a branch. It checks that
+the step's FILTERS_FILE is the file the paths-filter step reads, feeds the script files the real
+ci-filters-generate.sh wrote (this run's computed filters, its fail-open file, and what it writes
+for a base it cannot read and for a base whose filters differ), and holds each suite's line to
+its output. The step writes no notice, since ci-ok's notice names the suites a run held back; it
+writes one `::error::` for an output it cannot evaluate, for a line that would contradict the
+output, and for a filters file whose widening it cannot read. A failure of the step is its own red
+mark and fails no job (`continue-on-error`): it only reads.
 
 ## A citation names a symbol, never a line
 

@@ -64,7 +64,7 @@ than the first parent when main has moved since the branch's base (98 of 149 pul
 the changes job's step <id> as that step wrote them, a GITHUB_OUTPUT file of `<name>=<value>`
 lines, in place of running or modelling it (the generate step's, for one: ci-filters-generate.sh
 writes every_filter=true there when it falls open). --filter-step prints whether the filter step
-runs and the `base` and `ref` it is handed when it starts; --generate-step prints the
+runs and the `base`, `ref` and `filters` it is handed when it starts; --generate-step prints the
 CI_FILTERS_BASE the filter generation step is handed when it starts, its whole `env:` evaluated
 there; --step-env prints, as one JSON object, the whole `env:` of the changes job's step of that
 name, evaluated when it starts, and refuses a step that is skipped; --concurrency prints the workflow's concurrency `group` and
@@ -533,7 +533,7 @@ def main():
             step, at_start, ran = started_step(started, lambda s: s.get("id") == "filter", "step of id filter")
             with_ = step.get("with") or {}
             print(f"runs={text_of(ran)}")
-            for key in ("base", "ref"):
+            for key in ("base", "ref", "filters"):
                 print(f"{key}={text_of(interpolate(with_.get(key, ''), Evaluator(at_start)))}")
             return 0
         if args.generate_step:
