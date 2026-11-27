@@ -2,7 +2,7 @@
 """The psql calls the search-measure scripts share.
 
 Rows come back as JSON, one object per line: a document's markdown holds every character a text
-format would have to escape, and `row_to_json` escapes them all.
+format would have to escape, and `row_to_json` escapes each one below U+0020, a newline among them.
 
 psql is given the DSN without its password and the password in `PGPASSWORD`, set in that one
 call's environment: a process's arguments are in the process list for any user of the machine to
@@ -131,8 +131,10 @@ def rows(dsn, sql):
 
     `select row_to_json(...)` under `-At`, not `copy ... to stdout`: COPY's text format escapes a
     backslash, which would double every escape the JSON already holds, and row_to_json escapes
-    every control character itself, so each row is one line.
+    every character below U+0020 itself, so each row is one line. The output is split at "\\n"
+    alone, not by `splitlines()`, which also breaks at U+2028, U+2029 and U+0085, and row_to_json
+    writes those raw.
     """
     statement = f"select row_to_json(t)::text from ({sql}) t"
     out = run(dsn, "-q", "-At", "-c", statement)
-    return [json.loads(line) for line in out.splitlines() if line]
+    return [json.loads(line) for line in out.split("\n") if line]

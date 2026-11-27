@@ -1,8 +1,10 @@
-"""Tests of `pg.run`: the password a DSN carries reaches psql in `PGPASSWORD` alone, in no argument.
+"""Tests of `pg.run`: the password a DSN carries reaches psql in `PGPASSWORD` alone, in no argument;
+and of `pg.rows`: a row whose text holds U+2028, U+2029 or U+0085 is read as one row.
 
 Run from this directory with `python3 -m unittest pg_test`. A stand-in psql first on PATH records
 each call's arguments and the `PGPASSWORD` it was given, one JSON object per call, so the rows read
-what psql was handed rather than what a server answered.
+what psql was handed rather than what a server answered. When `PG_TEST_STDOUT` names a file, the
+stand-in prints that file's bytes as its output, as psql prints the rows a server answered.
 """
 
 import sys
@@ -24,6 +26,9 @@ STAND_IN = """#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["PG_TEST_CALLS"], "a") as calls:
     calls.write(json.dumps({"argv": sys.argv[1:], "PGPASSWORD": os.environ.get("PGPASSWORD")}) + "\\n")
+if "PG_TEST_STDOUT" in os.environ:
+    with open(os.environ["PG_TEST_STDOUT"], "rb") as stdout:
+        sys.stdout.buffer.write(stdout.read())
 """
 
 
@@ -78,6 +83,23 @@ class RunTest(unittest.TestCase):
         self.assertEqual(str(refused.exception), "pg: refused a Postgres URL: its password holds a % "
                          "that starts no %XX escape, or %00 (the URL is not printed)")
         self.assertFalse(self.calls.exists())
+
+
+class RowsTest(unittest.TestCase):
+    """`pg.rows` reads each line psql prints under `-At` as one row, a line ending at a newline alone."""
+
+    setUp = RunTest.setUp
+
+    def test_a_row_holding_U2028_U2029_or_U0085_raw_is_read_as_one_row(self):
+        # What psql prints for three rows: row_to_json escapes each character below U+0020 and writes
+        # these three raw, so each stands in its line as the character itself, not as a \uXXXX escape.
+        # str.splitlines() would end a line at each of them.
+        printed = ['{"v":"a\u2028b"}', '{"v":"c\u2029d"}', '{"v":"e\u0085f"}']
+        stdout = self.calls.parent / "stdout"
+        stdout.write_bytes("".join(line + "\n" for line in printed).encode())
+        with mock.patch.dict(os.environ, {"PG_TEST_STDOUT": str(stdout)}):
+            read = pg.rows("postgres://tester@127.0.0.1:5999/postgres", "select 1")
+        self.assertEqual(read, [{"v": "a\u2028b"}, {"v": "c\u2029d"}, {"v": "e\u0085f"}])
 
 
 # The corpus the three splits share: packages/dispatch/e2e/__tests__/psql-password.test.ts and
