@@ -109,6 +109,32 @@ func TestTheBrokerBinaryAnswersAGoogleEdgeListener(t *testing.T) {
 	}
 }
 
+// TestTheBrokerBinaryAnswersEdgeListenersBesideAPodAudienceList: the broker of
+// TestTheBrokerBinaryAnswersAGoogleEdgeListener, with a Kubernetes edge listener's entry beside
+// the Google one and BROKER_K8S_OIDC_AUDIENCE listing two audiences. The Kubernetes edge listener's
+// token of the second listed audience is answered PRIV's list, and so is the Google edge
+// listener's identity token: the list's verifier finds that token of another issuer
+// (oidc.ErrIssuer), which is the one answer on which the broker hands a token on to its Google
+// verifier, as it does beside one audience.
+func TestTheBrokerBinaryAnswersEdgeListenersBesideAPodAudienceList(t *testing.T) {
+	const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
+	google := oidctest.New(t)
+	googleKey := google.PublishKey(t, "google-key")
+	rig := newEdgeRig(t)
+	live := newPlainBroker(startBroker(t, brokerOptions{Env: rig.env(rig.access, []string{
+		// After the rig's own, one audience: os/exec keeps the last copy of a variable.
+		"BROKER_K8S_OIDC_AUDIENCE=" + podAudienceList,
+		"BROKER_NATS_SERVICES=edge-listener/edge-g/PRIV=google:" + edgeGoogleAccount + " edge-listener/edge-a/PRIV=" + edgeListenerAccount,
+		"BROKER_GOOGLE_OIDC_ISSUER=" + google.URL(), "BROKER_GOOGLE_OIDC_AUDIENCE=" + machineAudience,
+	})}).Addr)
+	status, answer := live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV",
+		clusterToken(t, rig.cluster, rig.key, edgeListenerAccount, podAudienceOld, "", false), "", "")
+	requirePRIVsRepositories(t, "the Kubernetes edge listener of PRIV, with its token of the second listed audience", status, answer)
+	status, answer = live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV",
+		mintMachineToken(t, google, googleKey, edgeGoogleAccount, machineAudience, true, "", ""), "", "")
+	requirePRIVsRepositories(t, "the Google edge listener of PRIV", status, answer)
+}
+
 // requirePRIVsRepositories fails unless the answer is 200 about PRIV with its list, acme/pub and
 // acme/two in that order; who says whose call it answered.
 func requirePRIVsRepositories(t *testing.T, who string, status int, answer map[string]any) {
