@@ -33,6 +33,7 @@ import {
   type RowKey,
 } from "./api";
 import { actionBar, placeCaretAtEnd } from "./editor";
+import { nextFrames } from "./frames";
 import { issueDetailsRow, openIssueDetails } from "./issue-details";
 import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
@@ -4043,9 +4044,7 @@ async function checkClean(cell: TableCell, suffix: string): Promise<void> {
       timeout: 15_000,
     })
     .toBe(true);
-  await cell.page.evaluate(
-    () => new Promise((drawn) => requestAnimationFrame(() => requestAnimationFrame(drawn)))
-  );
+  await nextFrames(cell.page);
   await soft(tableNotice(cell), "no notice of another person's text").toHaveCount(0);
   checkWrites(cell);
 }
@@ -4066,9 +4065,7 @@ async function checkLetGo(cell: TableCell, newer: string): Promise<void> {
       timeout: 15_000,
     })
     .toBe(true);
-  await cell.page.evaluate(
-    () => new Promise((drawn) => requestAnimationFrame(() => requestAnimationFrame(drawn)))
-  );
+  await nextFrames(cell.page);
   soft(await tableStored(cell), "the server holds her newer text").toContain(newer);
   await soft(field, "the field shows her newer text").toContainText(newer.trim());
   await soft(tableNotice(cell), "no notice of another person's text").toHaveCount(0);
@@ -4750,12 +4747,8 @@ const tableCells: {
       late.resolve();
       await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" five-g");
       await tookIn;
-      // Two frames, as `checkClean` waits, so the field has taken that answer in.
-      await cell.page.evaluate(() => {
-        const frames = Promise.withResolvers<void>();
-        requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
-        return frames.promise;
-      });
+      // Two frames, so the field has taken that answer in.
+      await nextFrames(cell.page);
       await cell.page.unroute(`**/api/v1/priorities/${cell.id}`);
       await typeAndLeave(cell, " five-h");
       await checkClean(cell, " five-g five-h");
