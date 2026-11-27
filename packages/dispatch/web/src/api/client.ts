@@ -1,6 +1,9 @@
 import {
+  type AskThreadPage,
+  type AskThreadRow,
   AUTH_NO_IDENTITY,
   answerNotKept,
+  type CommentThreadPage,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
   ID_AMBIGUOUS,
@@ -11,6 +14,7 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   type InboxThreadKind,
+  type MessageThreadPage,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   REFERENCE_TARGETS_MAX,
@@ -39,13 +43,16 @@ import type {
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
+  CommentWithTrees,
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
   DuplicateCandidate,
   IDCandidate,
+  IssueAskRow,
   IssueAskThreadRow,
   IssueReferencesAnswer,
+  MessageRead,
   NewIssueSettings,
   ParentStatusConflictIssue,
   StatusChangeEntry,
@@ -483,6 +490,25 @@ export function isNoRoute(error: unknown): boolean {
     error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
   );
 }
+
+/** What a page read of an issue's comments, messages or asks rejects with where the build that
+ *  answered serves no page: a build from before the pages answers `order=activity` with the
+ *  route's bare list, as one does while a release rolls out, so the read says what a route no
+ *  build answering it serves says once its attempts are spent (`answered`): the read is not
+ *  offered yet. */
+function threadPageNotOffered(): ApiError {
+  return new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE });
+}
+
+/** The query a page read of one of an issue's three thread lists takes: the route's own, from
+ *  the document, but `order`, which the read sends itself as `activity`. */
+type ThreadPageQuery<P extends PathsOf<"get">> = Omit<Query<P, "get">, "order">;
+
+/** The ask page as `thread=1` answers it: each row carries its ask's thread, which the document
+ *  leaves optional since asking for it is what makes it present (`IssueAskThreadRow`). */
+type AskThreadPageWithThreads = Omit<AskThreadPage, "threads"> & {
+  threads: (AskThreadRow & IssueAskThreadRow)[] | null;
+};
 
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
  *  message, shown wherever a view would otherwise say an agent is absent. */
@@ -1410,8 +1436,13 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/issues/{key}/asks`: the issue's asks with their newest reply and no thread,
    *  for a reader that renders the ask itself. */
-  listIssueAsks(key: string, state: "all" | "open" | "answered" = "all") {
-    return this.read("/api/v1/issues/{key}/asks", { key }, { state });
+  async listIssueAsks(
+    key: string,
+    state: "all" | "open" | "answered" = "all"
+  ): Promise<IssueAskRow[]> {
+    const answer = await this.read("/api/v1/issues/{key}/asks", { key }, { state });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer) ? answer : (answer.threads ?? []);
   }
 
   /** `GET /api/v1/issues/{key}/asks?thread=1`: the same rows carrying each ask's thread. The
@@ -1425,6 +1456,33 @@ export class DispatchApiClient {
     return this.json<IssueAskThreadRow[]>(
       routeUrl("/api/v1/issues/{key}/asks", { key }, { state, thread: "1" })
     );
+  }
+
+  /** `GET /api/v1/issues/{key}/asks?order=activity`: one page of the issue's ask threads, the
+   *  newest last activity first, from `query.before` when it names the last page's position;
+   *  `state`, `thread`, `limit`, `before` and `author` as the route takes them. Under
+   *  `thread: "1"` each row carries its thread, typed as `listIssueAskThreads` types its rows. A
+   *  build from before the page answers the bare list, and the read rejects
+   *  (`threadPageNotOffered`). */
+  listAskThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/asks"> & { thread: "1" }
+  ): Promise<AskThreadPageWithThreads>;
+  listAskThreads(
+    key: string,
+    query?: ThreadPageQuery<"/api/v1/issues/{key}/asks">
+  ): Promise<AskThreadPage>;
+  async listAskThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/asks"> = {}
+  ): Promise<AskThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/asks",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
@@ -1490,8 +1548,30 @@ export class DispatchApiClient {
     );
   }
 
-  listComments(key: string, artifact?: string) {
-    return this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+  async listComments(key: string, artifact?: string): Promise<CommentWithTrees[]> {
+    const answer = await this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer)
+      ? answer
+      : (answer.threads ?? []).flatMap(({ comment, replies }) => [comment, ...(replies ?? [])]);
+  }
+
+  /** `GET /api/v1/issues/{key}/comments?order=activity`: one page of the issue's comment threads,
+   *  the newest last activity first, from `query.before` when it names the last page's position;
+   *  `artifact`, `limit`, `before`, `author` and `person` (`in` alone) as the route takes them.
+   *  A build from before the page answers the bare list, and the read rejects
+   *  (`threadPageNotOffered`). */
+  async listCommentThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/comments"> = {}
+  ): Promise<CommentThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/comments",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   createComment(
@@ -1592,8 +1672,27 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each
    *  with its deliveries and its replies. */
-  listIssueMessages(key: string) {
-    return this.read("/api/v1/issues/{key}/messages", { key });
+  async listIssueMessages(key: string): Promise<MessageRead[]> {
+    const answer = await this.read("/api/v1/issues/{key}/messages", { key });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer) ? answer : (answer.threads ?? []);
+  }
+
+  /** `GET /api/v1/issues/{key}/messages?order=activity`: one page of the issue's message threads,
+   *  the newest last activity first, from `query.before` when it names the last page's position;
+   *  `limit`, `before`, `author` and `person` (`in` or `none`) as the route takes them. A build
+   *  from before the page answers the bare list, and the read rejects (`threadPageNotOffered`). */
+  async listMessageThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/messages"> = {}
+  ): Promise<MessageThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/messages",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   /** `GET /api/v1/issues/{key}/handoffs`: every phase handoff of the issue, newest first, without

@@ -1075,8 +1075,9 @@ func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {
 // A role's line longer than maxLogLine reaches the container's log in two lines behind the prefix,
 // cut just after its last byte before the mark that ends a URL for the URL rule, so the rule of the
 // log (redact.Writer, as newManagers wraps it) reads each URL whole: a URL whose user name the
-// 64 KiB mark falls inside, and which carries a planted query, reaches the log with neither, and
-// the line's text is all there otherwise. A cut at the mark itself wrote the start of the user
+// 64 KiB mark falls inside, and which carries a planted query, reaches the log as the rule writes
+// it (redact.URLCredentials, read from the rule, never written out here), with neither, and the
+// line's text is all there otherwise. A cut at the mark itself wrote the start of the user
 // name in the first line, where the rule read it as the URL's host, and the rest of the URL in the
 // second, which held no "://" for the rule to find its query by. A run of maxLogLine bytes with no
 // such byte is cut at the mark still. The line arrives in writes of 4 KiB, as a pipe's reads give
@@ -1086,12 +1087,13 @@ func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {
 func TestALongRoleLineIsCutWhereTheURLRuleReadsEachURLWhole(t *testing.T) {
 	t.Parallel()
 	filler := strings.Repeat("x", maxLogLine-len(" https://planted-user"))
+	const across = "https://planted-user-1@example.com/path?token=planted-query-token-1 done\n"
 	for _, tc := range []struct {
 		name, line, want string
 	}{{
 		name: "a URL across the mark",
-		line: filler + " https://planted-user-1@example.com/path?token=planted-query-token-1 done\n",
-		want: "tester: " + filler + " \n" + "tester: https://[a URL with credentials]/path done\n",
+		line: filler + " " + across,
+		want: "tester: " + filler + " \n" + "tester: " + redact.URLCredentials(across),
 	}, {
 		name: "a run with no byte that ends a URL",
 		line: strings.Repeat("y", maxLogLine+5) + "\n",
