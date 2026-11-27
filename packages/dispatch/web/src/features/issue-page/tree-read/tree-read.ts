@@ -210,10 +210,10 @@ const treePagesOf = new WeakMap<
  * next pages until it holds as many nodes of the walk as those pages held (`treePagesOf`), so no
  * row they had loaded leaves; it looks at that mark again after each page, so a page the reader's
  * press merged while this read was out is read too. An outline or decisions view read then reads
- * again the older comment pages it had loaded (`withLoadedComments`). A page that names a cursor
- * the read has asked for already fails the read with an error that names it (`nextCursorOf`): the
- * server named one page twice, so the pages past it are missing. A page that fails fails the read
- * too. A failure of the tree read with no answer held draws the outline's failed-read line and its
+ * again the comment pages it had loaded (`withLoadedComments`). A page that names a cursor the read
+ * has asked for already fails the read with an error that names it (`nextCursorOf`): the server
+ * named one page twice, so the pages past it are missing. A page that fails fails the read too. A
+ * failure of the tree read with no answer held draws the outline's failed-read line and its
  * Retry, and a view's leaves its filter drawn off the tree (`presets.ts`' `presetView`); over a
  * held answer the page keeps that answer, as TanStack keeps a query's data through a failed
  * refetch. A read TanStack gives up (`signal`: a reset, the last observer gone) ends its page in
