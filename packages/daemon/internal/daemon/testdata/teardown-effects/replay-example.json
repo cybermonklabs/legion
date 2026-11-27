@@ -1,0 +1,44 @@
+[
+  {
+    "id": "1b815eb3-4c9a-4174-b231-5c3d864f1622",
+    "verdict": "ok",
+    "seed": [],
+    "calls": [],
+    "after": [],
+    "notReplayed": []
+  },
+  {
+    "id": "1b815eb3-4c9a-4174-b231-5c3d864f1622",
+    "verdict": "HARNESS",
+    "reason": "dispatch-readback.json event 6 (issue.updated) precedes legion call 2 (toolu_05published_accepted): the replay writes no issue.updated",
+    "fault": {
+      "kind": "role-write",
+      "source": "dispatch-readback.json event 6",
+      "event": "issue.updated",
+      "at": "2030-01-07T15:00:40.260834969Z",
+      "outcomeSeq": 4,
+      "author": {
+        "kind": "session",
+        "id": "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
+      },
+      "session": "7d1e5a12-0c05-4a12-9b12-a5120c05a512",
+      "call": "toolu_05published_accepted"
+    },
+    "seed": [],
+    "calls": [],
+    "after": [],
+    "notReplayed": []
+  },
+  {
+    "id": "1b815eb3-4c9a-4174-b231-5c3d864f1622",
+    "verdict": "HARNESS",
+    "reason": "boot changed ACME-12 from implementing to planning",
+    "fault": {
+      "kind": "harness-record"
+    },
+    "seed": [],
+    "calls": [],
+    "after": [],
+    "notReplayed": []
+  }
+]

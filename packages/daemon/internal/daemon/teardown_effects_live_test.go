@@ -877,16 +877,18 @@ func (r *teardownEffectsRun) call(seq int, at time.Time, args map[string]any) ([
 	t.Helper()
 	r.clock.advance(at)
 	from := r.proxy.mark()
+	// A pane that does not take or answer the call is the harness's fault: a replay writes its
+	// HARNESS receipt (r.fail) rather than none.
 	select {
 	case r.model.next <- args:
 	case <-time.After(paneReady):
-		t.Fatalf("pane did not ask for call %d", seq)
+		r.fail(fmt.Errorf("pane did not ask for call %d", seq))
 	}
 	var result toolResult
 	select {
 	case result = <-r.model.result:
 	case <-time.After(paneReady):
-		t.Fatalf("no result of call %d", seq)
+		r.fail(fmt.Errorf("no result of call %d", seq))
 	}
 	records := r.proxy.since(from)
 	op, _ := args["op"].(string)
@@ -1138,7 +1140,11 @@ func teardownEffectsNoWake(t *testing.T, got teardownEffectsRecord) {
 // effects.json for a run whose every call it judged: `ok`, or `DIVERGED` where the real daemon
 // answered a request otherwise than the stand-in, after which no later call is replayed. A run
 // whose records cannot place a change, pair a request or join a difference is `HARNESS`, and has
-// no effects.json. A replay never overwrites another's record, nor any answers file.
+// no effects.json; its replay.json types the cause (teardownEffectsFaultOf): the role's own
+// Dispatch write that the replay does not make, or the harness's own records. A replay that fails
+// before it writes its receipt still writes one, HARNESS of the harness's own records, whose reason
+// sends the reader to the test log. A replay never overwrites another's record, nor any answers
+// file.
 func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 	dirs, err := os.ReadDir(root)
 	if err != nil {
@@ -1170,6 +1176,22 @@ func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 					t.Fatalf("%s already holds %s: a replay never overwrites another's record", out, name)
 				}
 			}
+			record := teardownEffectsNewReplayRecord(outcome.ID)
+			// A replay that stops before it writes its own receipt still leaves one: HARNESS, of the
+			// harness's own records (teardownEffectsStoppedReceipt), from here on, so an unreadable
+			// world, launch or clock file leaves one too. out held no receipt before this run (checked
+			// above), and a receipt that harness() or the end of the run wrote is never written again.
+			written := false
+			defer func() {
+				// A panic is no t.Failed() until the test framework recovers it, after this defer.
+				p := recover()
+				if err := teardownEffectsStoppedReceipt(filepath.Join(out, "replay.json"), record, p != nil || t.Failed(), written); err != nil {
+					t.Errorf("write the HARNESS receipt of %s: %v", outcome.ID, err)
+				}
+				if p != nil {
+					panic(p)
+				}
+			}()
 			var world teardownEffectsWorld
 			teardownEffectsReadJSON(t, filepath.Join(dir, "world.json"), &world)
 			var launch struct {
@@ -1182,11 +1204,11 @@ func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 			}
 			world.Clock = teardownEffectsReadTime(t, filepath.Join(dir, "clock.txt"))
 			launched := teardownEffectsReadTime(t, filepath.Join(dir, "clock-real.txt"))
-			record := teardownEffectsReplayRecord{ID: outcome.ID, Seed: []teardownEffectsChange{}, Calls: []teardownEffectsReplayCall{}, After: []teardownEffectsChange{}, NotReplayed: []string{}}
 			harness := func(err error) {
 				t.Helper()
-				record.Verdict, record.Reason = "HARNESS", err.Error()
+				record.Verdict, record.Reason, record.Fault = "HARNESS", err.Error(), teardownEffectsFaultOf(err)
 				teardownEffectsWriteNew(t, filepath.Join(out, "replay.json"), record)
+				written = true
 				t.Fatalf("HARNESS %s: %v", outcome.ID, err)
 			}
 			calls, err := teardownEffectsReadCalls(filepath.Join(dir, "sessions"))
@@ -1262,6 +1284,7 @@ func (h teardownEffectsHarness) replay(t *testing.T, root string) {
 			}
 			teardownEffectsWriteNew(t, filepath.Join(out, "effects.json"), got)
 			teardownEffectsWriteNew(t, filepath.Join(out, "replay.json"), record)
+			written = true
 			if len(differences) > 0 {
 				first := differences[0]
 				t.Errorf("DIVERGED %s: %d answers differ; the first, legion call %s (outcome action %d) %s: the stand-in answered %s and the real daemon %s",
@@ -1284,23 +1307,11 @@ func teardownEffectsStatusText(s teardownEffectsStatus) string {
 }
 
 // teardownEffectsWriteNew writes value to path, which must not exist: a replay's record is never
-// written over another's.
+// written over another's (teardownEffectsCreateNew).
 func teardownEffectsWriteNew(t *testing.T, path string, value any) {
 	t.Helper()
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
+	if err := teardownEffectsCreateNew(path, value); err != nil {
 		t.Fatalf("write %s: %v", path, err)
-	}
-	defer file.Close()
-	if _, err := file.Write(append(data, '\n')); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -1543,7 +1554,7 @@ func (r *teardownEffectsRun) applyDispatch(e teardownEffectsEvent, own string, b
 	}
 	prefix := "/api/v1/issues/" + r.key
 	text := func(key string) string { s, _ := e.Payload[key].(string); return s }
-	if fault := teardownEffectsDispatchFault(b, e); fault != "" {
+	if fault, _ := teardownEffectsDispatchFault(b, e); fault != "" {
 		return fmt.Errorf("%s: %s", e.Type, fault)
 	}
 	switch e.Type {

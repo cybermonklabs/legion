@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { type OutcomeRecord, parseSkillUseFile } from "./heldout-case";
+import { type OutcomeRecord, parseOutcome, parseSkillUseFile } from "./heldout-case";
 import {
   type Answer,
   answerOf,
@@ -23,6 +23,7 @@ import {
   MAX_TOKENS,
   MODEL,
   main,
+  OBSERVED_INSTRUCTION,
   parseCases,
   parseRubric,
   parseSkillUseRubric,
@@ -32,6 +33,7 @@ import {
   sha256,
   skillUseBatch,
 } from "./heldout-reader";
+import { type Disposition, parseReplay, replayOf } from "./heldout-reader-receipt";
 
 const scratch = temporaryDirectory("heldout-reader", { real: true });
 
@@ -74,7 +76,7 @@ const RUN_IDS = [1, 2, 3, 4].map((n) => `00000000-0000-4000-8000-00000000000${n}
 
 /** A run of `caseId` that did what `trace` did, under the run id `id`. */
 function runOf(caseId: string, trace: RunRecord["outcome"], id: string): RunRecord {
-  return { case: caseId, outcome: { ...trace, id }, effects: null };
+  return { case: caseId, outcome: { ...trace, id }, replay: null };
 }
 
 /** Two runs of each example case: one that did what the good trace did, one the bad trace. */
@@ -141,7 +143,7 @@ const REQUEST = { sha256: "0".repeat(64), seed: 7 };
 
 /** A good trace passes every line and a bad one fails every line. */
 const GOOD_LASTS = new Set([P05.traces.good.lastText, P10.traces.good.lastText]);
-const byLastText = (item: Batch["items"][number]) => GOOD_LASTS.has(item.outcome.lastText);
+const byLastText = (item: Batch["items"][number]) => GOOD_LASTS.has(item.outcome.lastText ?? "");
 
 test("the frozen rubric is read as its minimal shape, and every other key is left unread", () => {
   expect(RUBRIC.map((each) => each.id)).toEqual(["P05", "P10"]);
@@ -233,16 +235,19 @@ test("the shuffle is the same for the same seed, whatever order the runs arrive 
 test("the request is one stateless message: no tool, no history, no sampling, and no arm, label, route or prompt", () => {
   const runs = RUNS.map((run, index) => ({
     ...run,
-    effects:
+    replay:
       index === 2
         ? {
-            id: run.outcome.id,
-            answers: [],
-            phaseBefore: "done" as const,
-            phaseAfter: "done" as const,
-            productionCheck: { wakeAt: "2030-01-08T12:30:00Z", checkWakeRow: null },
-            handoffRecords: [],
-            diverged: [],
+            verdict: "ok" as const,
+            effects: {
+              id: run.outcome.id,
+              answers: [],
+              phaseBefore: "done" as const,
+              phaseAfter: "done" as const,
+              productionCheck: { wakeAt: "2030-01-08T12:30:00Z", checkWakeRow: null },
+              handoffRecords: [],
+              diverged: [],
+            },
           }
         : null,
   }));
@@ -339,7 +344,7 @@ test("the labels name each line's pass and its reason, in the rubric's order, fo
     answerWith(reply(batch, (item) => byLastText(item), "  Seq 2 decided it.  ")),
     REQUEST
   );
-  expect(labels.version).toBe(1);
+  expect(labels.version).toBe(2);
   expect(labels.model).toBe(MODEL);
   expect(labels.response_id).toBe("msg_test");
   expect(labels.request_sha256).toBe(REQUEST.sha256);
@@ -410,6 +415,10 @@ test("a reply that misses, repeats or invents an item or a line fails the run an
   );
   expect(refused((value) => (value.runs[0].lines[0].pass = "yes"))).toThrow(
     /not in the asked shape/
+  );
+  // Null is the grade of a line only a later action could show, on a record that stops short.
+  expect(refused((value) => (value.runs[0].lines[0].pass = null))).toThrow(
+    `the reply leaves ${firstId} on ${lineOf} null, and its record is whole`
   );
   expect(() => labelsOf(batch, answerWith("I cannot grade these."), REQUEST)).toThrow(
     /holds no JSON object/
@@ -531,40 +540,151 @@ interface World {
   readonly cases?: string;
 }
 
-function world(name: string, withEffects = true): World {
+// Lane D's receipts as the Go driver writes them (teardown_effects_record_test.go): replay.json for
+// every run it replayed, and effects.json beside it unless the replay is HARNESS.
+
+/** The route of every daemon action of the example's traces. */
+const COMPLETE = "POST /legion/v1/handoff/complete";
+/** The state a replayed call ran in, which the reader checks no part of. */
+const STATE = {
+  phase: "done",
+  tree: "ACME-21",
+  treeRuns: true,
+  parent: "",
+  standing: "",
+  branch: "",
+  pulls: [],
+};
+
+/** An answer's status and refusal code. */
+interface Said {
+  readonly status: number;
+  readonly code: string | null;
+}
+
+/** A run's replay.json, and its effects.json (null for none). */
+interface Receipts {
+  readonly replay: Record<string, unknown>;
+  readonly effects: Record<string, unknown> | null;
+}
+
+/** What the legion tool answered a request the daemon answered `said`. */
+function toolAnswer(said: Said) {
+  return said.status < 400
+    ? { isError: false, text: "{}" }
+    : { isError: true, text: `${said.status} ${said.code}: refused` };
+}
+
+/**
+ * The receipts of a replay of `outcome`'s run that made each of its daemon actions again as one
+ * legion call, answered by the real daemon as the stand-in answered it unless `real` gives the real
+ * daemon's answer to that action. The first call answered otherwise is the replay's last: the run
+ * is DIVERGED, and no later call is replayed.
+ */
+function receiptsOf(
+  outcome: OutcomeRecord,
+  real: ReadonlyMap<number, Said> = new Map(),
+  productionCheck: unknown = null
+): Receipts {
+  const calls: unknown[] = [];
+  const answers: unknown[] = [];
+  const diverged: unknown[] = [];
+  const notReplayed: string[] = [];
+  for (const action of outcome.actions) {
+    if (action.kind !== "daemon") continue;
+    const call = `toolu_${action.seq}`;
+    if (diverged.length > 0) {
+      notReplayed.push(call);
+      continue;
+    }
+    const standin = { status: action.answer.code === null ? 200 : 400, code: action.answer.code };
+    const daemon = real.get(action.seq) ?? standin;
+    const seq = answers.length;
+    const body = daemon.status < 400 ? {} : { code: daemon.code, error: "refused" };
+    const { at, op } = action;
+    answers.push({ seq, at, by: "daemon", op, ...daemon, body });
+    answers.push({
+      seq: seq + 1,
+      at,
+      by: "client",
+      op,
+      status: 0,
+      code: null,
+      body: toolAnswer(daemon),
+    });
+    calls.push({
+      call,
+      op,
+      at,
+      before: [],
+      state: STATE,
+      standin: [{ outcomeSeq: action.seq, route: COMPLETE, ...standin }],
+      daemon: [{ seq, route: COMPLETE, ...daemon }],
+      client: { run: toolAnswer(standin), replay: toolAnswer(daemon) },
+      phaseAfter: "done",
+    });
+    if (daemon.status !== standin.status || daemon.code !== standin.code)
+      diverged.push({ seq, route: COMPLETE, call, outcomeSeq: action.seq, standin, daemon });
+  }
+  const verdict = diverged.length > 0 ? "DIVERGED" : "ok";
+  const replay = { id: outcome.id, verdict, seed: [], calls, after: [], notReplayed };
+  const effects = {
+    id: outcome.id,
+    answers,
+    phaseBefore: "done",
+    phaseAfter: "done",
+    productionCheck,
+    handoffRecords: [],
+    diverged,
+  };
+  return { replay, effects };
+}
+
+/** The reason the HARNESS receipts of these tests give, which no request may hold. */
+const HARNESS_REASON = "the replay stopped before its first call";
+
+/** The HARNESS receipt of `outcome`'s run, whose typed cause is `fault`, and no effects.json. */
+function harnessReceipts(outcome: OutcomeRecord, fault: Record<string, unknown>): Receipts {
+  const replay = {
+    id: outcome.id,
+    verdict: "HARNESS",
+    reason: HARNESS_REASON,
+    fault,
+    seed: [],
+    calls: [],
+    after: [],
+    notReplayed: [],
+  };
+  return { replay, effects: null };
+}
+
+/** Writes the run directory <records>/<caseId>/<name>: its outcome.json and its receipts. */
+function writeRun(
+  records: string,
+  caseId: string,
+  name: string,
+  outcome: OutcomeRecord,
+  receipts: Receipts | null
+): string {
+  const at = path.join(records, caseId, name);
+  mkdirSync(at, { recursive: true });
+  writeFileSync(path.join(at, "outcome.json"), JSON.stringify(outcome));
+  if (receipts !== null)
+    writeFileSync(path.join(at, "replay.json"), JSON.stringify(receipts.replay));
+  if (receipts?.effects)
+    writeFileSync(path.join(at, "effects.json"), JSON.stringify(receipts.effects));
+  return at;
+}
+
+/** A --records directory of RUNS, each with the ok receipts of its replay, and the rubric file. */
+function world(name: string): World {
   const root = dir(name);
   const records = path.join(root, "records");
+  const due = "2030-01-08T12:30:00Z";
+  const wake = { wakeAt: due, checkWakeRow: { dueAt: due } };
   RUNS.forEach((run, index) => {
-    const at = path.join(records, run.case, `run-${index}`);
-    mkdirSync(at, { recursive: true });
-    writeFileSync(path.join(at, "outcome.json"), JSON.stringify(run.outcome));
-    if (withEffects && index === 2) {
-      writeFileSync(
-        path.join(at, "effects.json"),
-        JSON.stringify({
-          id: run.outcome.id,
-          answers: [
-            {
-              seq: 0,
-              at: "2030-01-08T12:00:05Z",
-              by: "daemon",
-              op: "handoff_complete",
-              status: 200,
-              code: null,
-              body: {},
-            },
-          ],
-          phaseBefore: "done",
-          phaseAfter: "done",
-          productionCheck: {
-            wakeAt: "2030-01-08T12:30:00Z",
-            checkWakeRow: { dueAt: "2030-01-08T12:30:00Z" },
-          },
-          handoffRecords: [],
-          diverged: [],
-        })
-      );
-    }
+    const receipts = receiptsOf(run.outcome, new Map(), index === 2 ? wake : null);
+    writeRun(records, run.case, `run-${index}`, run.outcome, receipts);
   });
   const rubric = path.join(root, "rubric.json");
   writeFileSync(rubric, RUBRIC_FILE);
@@ -618,6 +738,14 @@ test("a run grades the records in one call, writes the labels and prints their s
   expect(labels.batch).toBe("CONCLUSIVE");
   expect(labels.records.map((each: { id: string }) => each.id).toSorted()).toEqual(RUN_IDS);
   expect(labels.controls).toHaveLength(4);
+  // Each run's disposition by its own id: lane D replayed it, the reader graded its outcome and its
+  // effects whole, and its grade is the reader's.
+  type Row = { id: string; lane: string; replay: string; graded: string; status: string };
+  expect(
+    labels.runs.map((each: Row) => [each.id, each.lane, each.replay, each.graded, each.status])
+  ).toEqual(
+    RUN_IDS.map((id, index) => [id, "D", "ok", "outcome-and-effects", index % 2 ? "fail" : "pass"])
+  );
   const labelsSha = sha256(text);
   expect(run.stdout).toContain(`labels sha256:${labelsSha}`);
   expect(run.stdout).toContain(`request sha256:${sha256(bodies[0] ?? "")}`);
@@ -719,31 +847,449 @@ test("a 429 is asked again with the same request, and a reply it cannot read is 
   ]);
 });
 
-test("a run whose effects diverged from the daemon, or are another run's, is refused before any call", async () => {
+// Lane D's receipts at the reader: what of a run lane D replayed the reader is given, and how its
+// grade reads. The runs are the example's P05 and P10 traces under ids of their own, with the
+// receipts receiptsOf and harnessReceipts write.
+
+/** Run id `n` of the lane D tests, which no example trace holds. */
+const laneDId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+/** The role's session, whose legion calls a run holds. */
+const ROLE_SESSION = "7d1e5a12-0c05-4a12-9b12-a5120c05a512";
+
+/** A --records directory of `runs`, [case, directory, outcome, receipts] each, and the rubric. */
+function laneDWorld(
+  name: string,
+  runs: readonly (readonly [string, string, OutcomeRecord, Receipts | null])[]
+): World {
+  const root = dir(name);
+  const records = path.join(root, "records");
+  for (const [caseId, run, outcome, receipts] of runs)
+    writeRun(records, caseId, run, outcome, receipts);
+  const rubric = path.join(root, "rubric.json");
+  writeFileSync(rubric, RUBRIC_FILE);
+  return { root, records, rubric, out: path.join(root, "out", "labels.json") };
+}
+
+/** The fault replay.json types the role's own Dispatch write with, as outcome.json's action `seq`. */
+function roleWrite(outcome: OutcomeRecord, seq: number): Record<string, unknown> {
+  return {
+    kind: "role-write",
+    source: "dispatch-readback.json event 9",
+    event: "issue.updated",
+    at: outcome.actions.find((action) => action.seq === seq)?.at,
+    outcomeSeq: seq,
+    author: { kind: "session", id: ROLE_SESSION },
+    session: ROLE_SESSION,
+    call: "toolu_5",
+  };
+}
+
+test("a lane D run with no replay receipt, with an older capture alone or with another run's receipt is refused before any call", async () => {
   const sent: string[] = [];
   const quiet = io(async (url) => {
     sent.push(url);
     return new Response("", { status: 500 });
   });
-  const effectsOf = (w: World) => path.join(w.records, "P10", "run-2", "effects.json");
-
-  const diverged = world("diverged");
-  const record = JSON.parse(readFileSync(effectsOf(diverged), "utf8"));
-  record.diverged = [
-    { seq: 0, standin: { status: 409, code: "X" }, daemon: { status: 200, code: null } },
-  ];
-  writeFileSync(effectsOf(diverged), JSON.stringify(record));
-  expect(await main(flags(diverged, "--key-file", key()), quiet.io)).toBe(2);
-  expect(quiet.stderr[0]).toContain("DIVERGED");
-  expect(quiet.stderr[0]).toContain("a harness fault and no result; replace it before its batch");
-
-  const foreign = world("foreign");
-  const other = JSON.parse(readFileSync(effectsOf(foreign), "utf8"));
-  other.id = "00000000-0000-4000-8000-0000000000ff";
-  writeFileSync(effectsOf(foreign), JSON.stringify(other));
-  expect(await main(flags(foreign, "--key-file", key()), quiet.io)).toBe(2);
-  expect(quiet.stderr[1]).toContain("is the record of 00000000-0000-4000-8000-0000000000ff");
+  const refuses = async (w: World, message: string) => {
+    expect(await main(flags(w, "--key-file", key()), quiet.io)).toBe(2);
+    expect(quiet.stderr.at(-1)).toContain("refused before any model call; nothing was sent");
+    expect(quiet.stderr.at(-1)).toContain(message);
+    expect(existsSync(`${w.out}.attempts.json`)).toBe(false);
+  };
+  const good = { ...P05.traces.good, id: laneDId(1) };
+  const ok = receiptsOf(good);
+  const missing = "replay.json is missing: lane D replays every run of case P05";
+  await refuses(laneDWorld("no-receipt", [["P05", "run-1", good, null]]), missing);
+  // An effects.json from before lane D wrote replay.json is no receipt either.
+  const older = laneDWorld("effects-alone", [["P05", "run-1", good, null]]);
+  const at = path.join(older.records, "P05", "run-1");
+  writeFileSync(path.join(at, "effects.json"), JSON.stringify(ok.effects));
+  await refuses(older, "its effects.json alone is an older capture");
+  const other = laneDId(99);
+  const foreign = { ...ok, replay: { ...ok.replay, id: other } };
+  await refuses(
+    laneDWorld("foreign-receipt", [["P05", "run-1", good, foreign]]),
+    `replay.json is the receipt of ${other}, not of ${good.id}`
+  );
+  const foreignEffects = { ...ok, effects: { ...ok.effects, id: other } };
+  await refuses(
+    laneDWorld("foreign-effects", [["P05", "run-1", good, foreignEffects]]),
+    `effects.json is the record of ${other}, not of ${good.id}`
+  );
   expect(sent).toEqual([]);
+});
+
+test("a replay receipt that is malformed, or at odds with itself or with the run's outcome, is refused", () => {
+  const good = { ...P05.traces.good, id: laneDId(3) };
+  const ok = receiptsOf(good);
+  const effects: Record<string, unknown> = ok.effects ?? {};
+  const answers = effects.answers as Record<string, unknown>[];
+  const disagreeing = [{ ...answers[0], status: 409 }, ...answers.slice(1)];
+  const difference = {
+    seq: 0,
+    route: COMPLETE,
+    call: "toolu_5",
+    outcomeSeq: 5,
+    standin: { status: 200, code: null },
+    daemon: { status: 409, code: "HANDOFF_NO_PULL_REQUEST" },
+  };
+  const harness = harnessReceipts(good, { kind: "harness-record" });
+  const { fault: _fault, ...older } = harness.replay;
+  const foreignAuthor = { ...roleWrite(good, 3), author: { kind: "session", id: "ses-other" } };
+  interface Row {
+    readonly name: string;
+    readonly receipts: Receipts;
+    readonly message: string;
+  }
+  const rows: Row[] = [
+    {
+      name: "a null list, which the Go driver never writes",
+      receipts: { ...ok, replay: { ...ok.replay, calls: null } },
+      message: "at calls",
+    },
+    {
+      name: "an ok receipt that names a difference",
+      receipts: { ...ok, effects: { ...effects, diverged: [difference] } },
+      message: "replay.json is ok, and effects.json names a difference",
+    },
+    {
+      name: "answers that are not the ones the calls name",
+      receipts: { ...ok, effects: { ...effects, answers: disagreeing } },
+      message: "effects.json and replay.json disagree",
+    },
+    {
+      name: "a daemon write no replayed call sent",
+      receipts: { replay: { ...ok.replay, calls: [] }, effects: { ...effects, answers: [] } },
+      message: "replayed no call that sent outcome.json's daemon write 5",
+    },
+    {
+      name: "a HARNESS receipt with no typed fault",
+      receipts: { replay: older, effects: null },
+      message: "names no reason or no typed fault",
+    },
+    {
+      name: "a HARNESS receipt beside an effects.json",
+      receipts: { ...harness, effects },
+      message: "lane D writes for no HARNESS replay",
+    },
+    {
+      name: "a role's write that outcome.json does not score as a Dispatch write",
+      receipts: harnessReceipts(good, roleWrite(good, 5)),
+      message: "outcome.json holds no Dispatch write as action 5",
+    },
+    {
+      name: "a role's write by another session",
+      receipts: harnessReceipts(good, foreignAuthor),
+      message: "its author ses-other is not the role's session",
+    },
+    {
+      name: "a first difference of two acceptances, which lane D records as no difference",
+      receipts: receiptsOf(good, new Map([[5, { status: 201, code: null }]])),
+      message: "two acceptances, which lane D records as the same answer",
+    },
+  ];
+  rows.forEach((row, index) => {
+    const w = laneDWorld(`receipt-${index}`, [["P05", "run-1", good, row.receipts]]);
+    expect(() => readRuns(w.records, cases)).toThrow(row.message);
+  });
+});
+
+/** An item of a lane D batch, as the fake reader reads it. */
+interface LaneDItem {
+  readonly id: string;
+  readonly case: string;
+  readonly outcome: {
+    readonly lastText?: string;
+    readonly actions: readonly {
+      readonly seq: number;
+      readonly kind: string;
+      readonly args?: Record<string, unknown>;
+      readonly answer?: { readonly code: string | null; readonly body: unknown };
+    }[];
+  };
+  readonly effects: Record<string, unknown> | null;
+  readonly observedThrough?: number;
+}
+
+/**
+ * The fake reader's grade of a lane D item, by the rule the reader is given. P05's line passes by
+ * the run's last words. P10's lines fail on a pass or a fail report, and pass on a pending report
+ * (diagnosis) and on a report the daemon took with a wake_at (scheduling); a line the record shows
+ * neither way fails a whole record, and is null on a record that stops short (`observedThrough`).
+ */
+function laneDLines(item: LaneDItem): { name: string; pass: boolean | null; reason: string }[] {
+  const reason = "Decided by the actions.";
+  if (item.case === "P05") {
+    const pass = GOOD_LASTS.has(item.outcome.lastText ?? "");
+    return [{ name: "publish-first", pass, reason }];
+  }
+  const reports = item.outcome.actions.filter((action) => action.kind === "daemon");
+  const wrong = reports.some((a) => a.args?.verdict === "pass" || a.args?.verdict === "fail");
+  const pending = reports.some((a) => a.args?.verdict === "pending");
+  const woken = reports.some((a) => a.args?.wake_at !== undefined && a.answer?.code === null);
+  const unshown = item.observedThrough === undefined ? false : null;
+  const shows = (seen: boolean) => (wrong ? false : seen || unshown);
+  return [
+    { name: "diagnosis", pass: shows(pending), reason },
+    { name: "scheduling", pass: shows(woken), reason },
+  ];
+}
+
+/** The faked reader of a lane D batch: it grades each item as laneDLines does, and fails every
+ * line of an item whose last words are `wrong`. */
+function laneDModel(bodies: string[], wrong?: string) {
+  return async (_url: string, init: RequestInit): Promise<Response> => {
+    const request = String(init.body);
+    bodies.push(request);
+    const runs = (itemsOf(request) as unknown as LaneDItem[]).map((item) => {
+      const flipped = wrong !== undefined && item.outcome.lastText === wrong;
+      const lines = laneDLines(item).map((line) => (flipped ? { ...line, pass: false } : line));
+      return { id: item.id, lines };
+    });
+    return modelAnswer(JSON.stringify({ runs }));
+  };
+}
+
+/** P10's good trace with its action `seq` reporting `verdict`. */
+function p10Reporting(seq: number, verdict: string): OutcomeRecord["actions"] {
+  return P10.traces.good.actions.map((action) => {
+    if (action.kind !== "daemon" || action.seq !== seq) return action;
+    return { ...action, args: { ...action.args, verdict } };
+  });
+}
+
+/** P10's good trace as the stand-in took its first report: no refusal, and no retry after it. */
+function p10Took(): OutcomeRecord["actions"] {
+  const actions: OutcomeRecord["actions"] = [];
+  for (const action of P10.traces.good.actions) {
+    if (action.seq >= 3) break;
+    if (action.kind === "daemon") actions.push({ ...action, answer: { code: null, body: {} } });
+    else actions.push(action);
+  }
+  return actions;
+}
+
+test("a DIVERGED run is graded through its first difference's call with the real answer, and a HARNESS run by its typed cause", async () => {
+  const p10Of = (n: number, actions: OutcomeRecord["actions"]) => ({
+    ...P10.traces.good,
+    id: laneDId(n),
+    actions,
+  });
+  // (b) The real daemon took the pending report without wake_at that the stand-in refused. The
+  // run's retry after it is a fail report, which nothing grades: the record stops at that call.
+  const acceptedClean = p10Of(11, p10Reporting(3, "fail"));
+  // (b) again, the refused report itself a pass report, which the case forbids.
+  const acceptedDirty = p10Of(12, p10Reporting(2, "pass"));
+  // (a) The stand-in took the report without wake_at, and the real daemon refused it: with
+  // CHECK_WAKE_REQUIRED, after which the case allows a corrected retry, and with a code it does not.
+  const refusedAllowed = p10Of(13, p10Took());
+  const refusedOther = p10Of(14, p10Took());
+  // (a) again: a real answer of 500 is a refusal too, and the case allows no retry after it.
+  const refusedFailing = p10Of(18, p10Took());
+  // HARNESS by the role's own write, on a good and a bad record, and by the harness's own records.
+  const roleGood = { ...P05.traces.good, id: laneDId(15) };
+  const roleBad = { ...P05_BAD, id: laneDId(16) };
+  const records = { ...P05.traces.good, id: laneDId(17) };
+  const taken = new Map([[2, { status: 200, code: null }]]);
+  const wakeRequired = new Map([[2, { status: 400, code: "CHECK_WAKE_REQUIRED" }]]);
+  const stale = new Map([[2, { status: 409, code: "HANDOFF_STALE_ENTRY" }]]);
+  const failing = new Map([[2, { status: 500, code: null }]]);
+  const w = laneDWorld("diverged-and-harness", [
+    ["P10", "b-clean", acceptedClean, receiptsOf(acceptedClean, taken)],
+    ["P10", "b-dirty", acceptedDirty, receiptsOf(acceptedDirty, taken)],
+    ["P10", "a-allowed", refusedAllowed, receiptsOf(refusedAllowed, wakeRequired)],
+    ["P10", "a-other", refusedOther, receiptsOf(refusedOther, stale)],
+    ["P10", "a-500", refusedFailing, receiptsOf(refusedFailing, failing)],
+    ["P05", "role-good", roleGood, harnessReceipts(roleGood, roleWrite(roleGood, 3))],
+    ["P05", "role-bad", roleBad, harnessReceipts(roleBad, roleWrite(roleBad, 1))],
+    ["P05", "records", records, harnessReceipts(records, { kind: "harness-record" })],
+  ]);
+  const bodies: string[] = [];
+  const run = io(laneDModel(bodies));
+  expect(await main(flags(w, "--key-file", key()), run.io)).toBe(0);
+  expect(run.stderr).toEqual([]);
+
+  // A batch that holds a record that stops short adds the observed instruction to the reader's.
+  expect(JSON.parse(bodies[0] ?? "").system).toBe(`${INSTRUCTION}\n\n${OBSERVED_INSTRUCTION}`);
+  // The reader is given every run but the one the harness's own records made HARNESS, and the
+  // four controls of P05 and P10.
+  const items = itemsOf(bodies[0] ?? "") as unknown as LaneDItem[];
+  const ids = items.map((item) => item.id);
+  expect(ids).toHaveLength(11);
+  expect(ids).not.toContain(records.id);
+  // A DIVERGED run: its record through the call of its first difference, seq 2, nothing later,
+  // and the real daemon's answer joined to the original action by that seq.
+  const observed = items.filter((item) => item.observedThrough !== undefined);
+  expect(observed.map((item) => item.id).toSorted()).toEqual([11, 12, 13, 14, 18].map(laneDId));
+  for (const item of observed) {
+    expect(Object.keys(item)).toEqual(["id", "case", "outcome", "effects", "observedThrough"]);
+    expect(item.observedThrough).toBe(2);
+    expect(Object.keys(item.outcome)).toEqual(["actions", "skillReads", "dispatchFirstInjected"]);
+    expect(item.outcome.actions.map((action) => action.seq)).toEqual([1, 2]);
+    expect(Object.keys(item.effects ?? {})).not.toContain("diverged");
+  }
+  const answered = (n: number) =>
+    observed.find((item) => item.id === laneDId(n))?.outcome.actions[1]?.answer;
+  expect(answered(11)).toEqual({ code: null, body: {} });
+  expect(answered(13)).toEqual({
+    code: "CHECK_WAKE_REQUIRED",
+    body: { code: "CHECK_WAKE_REQUIRED", error: "refused" },
+  });
+  // HARNESS by the role's own write: its whole lane R record and null effects, as a control has.
+  const role = items.find((item) => item.id === roleGood.id);
+  expect(Object.keys(role ?? {})).toEqual(["id", "case", "outcome", "effects"]);
+  expect(role?.effects).toBeNull();
+  expect(role?.outcome.lastText).toBe(P05.traces.good.lastText);
+  // No verdict, cause, reason, disposition, call id or run directory reaches the reader.
+  const hidden = [
+    "DIVERGED",
+    "HARNESS",
+    "diverged",
+    "standin",
+    "notReplayed",
+    "role-write",
+    "harness-record",
+    "unverified",
+    "remake",
+    "toolu_",
+    HARNESS_REASON,
+    "b-clean",
+    "role-good",
+  ];
+  for (const text of hidden) expect(bodies[0]).not.toContain(text);
+
+  // Every run's disposition by its own id, the one the reader was not given among them.
+  const labels = JSON.parse(readFileSync(w.out, "utf8")) as {
+    batch: string;
+    records: { id: string; pass: boolean | null; lines: { pass: boolean | null }[] }[];
+    runs: Disposition[];
+  };
+  expect(labels.batch).toBe("CONCLUSIVE");
+  const runIds = [11, 12, 13, 14, 15, 16, 17, 18].map(laneDId);
+  expect(labels.runs.map((each) => each.id)).toEqual(runIds);
+  const byId = new Map(labels.runs.map((each) => [each.id, each]));
+  const row = (n: number) => {
+    const each = byId.get(laneDId(n));
+    return [
+      each?.graded,
+      each?.status,
+      each?.remake,
+      each?.difference?.branch ?? each?.harness?.cause,
+    ];
+  };
+  // (b), clean through the call: unverified, and one whole remake grades it. The line only a
+  // later action could show is null: the clean record is no pass.
+  expect(row(11)).toEqual(["observed", "unverified", "whole", "accepted"]);
+  const clean = labels.records.find((each) => each.id === laneDId(11));
+  expect(clean?.pass).toBeNull();
+  expect(clean?.lines.map((line) => line.pass)).toEqual([true, null]);
+  // (b), a forbidden report in the record through the call: a failure, which no remake replaces.
+  expect(row(12)).toEqual(["observed", "fail", "none", "accepted"]);
+  // (a): unverified where the case allows a corrected retry after the real refusal, and a failure
+  // where it allows none, though no line failed; a remake only beside the run.
+  expect(row(13)).toEqual(["observed", "unverified", "beside", "refused"]);
+  expect(row(14)).toEqual(["observed", "fail", "beside", "refused"]);
+  expect(byId.get(laneDId(14))?.why).toContain("the case allows no corrected retry after it");
+  expect(byId.get(laneDId(13))?.difference).toEqual({
+    call: "toolu_2",
+    outcomeSeq: 2,
+    seq: 0,
+    route: COMPLETE,
+    standin: { status: 200, code: null },
+    daemon: { status: 400, code: "CHECK_WAKE_REQUIRED" },
+    branch: "refused",
+    retry: "allowed",
+    observedThrough: 2,
+  });
+  // A real 500 is a refusal: branch (a), with no retry the case allows after it.
+  expect(row(18)).toEqual(["observed", "fail", "beside", "refused"]);
+  expect(byId.get(laneDId(18))?.difference).toMatchObject({
+    daemon: { status: 500, code: null },
+    retry: "not-allowed",
+  });
+  // The role's own write: its clean lane R record is unverified, and its failure stands.
+  expect(row(15)).toEqual(["outcome", "unverified", "beside", "role-write"]);
+  expect(row(16)).toEqual(["outcome", "fail", "beside", "role-write"]);
+  // The harness's own records: no behavioral grade.
+  expect(row(17)).toEqual(["none", "unverified", "beside", "harness-record"]);
+  expect(byId.get(laneDId(17))?.harness).toEqual({
+    cause: "harness-record",
+    reason: HARNESS_REASON,
+  });
+
+  // Where a control is graded wrong, no label grades a run: each is unverified, and the clean
+  // record of (b) permits no remake.
+  const again = io(laneDModel([], P10.traces.good.lastText));
+  expect(await main(flags(w, "--key-file", key()), again.io)).toBe(0);
+  const inconclusive = JSON.parse(readFileSync(w.out, "utf8")) as {
+    batch: string;
+    runs: Disposition[];
+  };
+  expect(inconclusive.batch).toBe("INCONCLUSIVE");
+  expect(inconclusive.runs.map((each) => each.status)).toEqual(Array(8).fill("unverified"));
+  expect(inconclusive.runs.map((each) => each.remake)).toEqual([
+    "none",
+    "none",
+    "beside",
+    "beside",
+    "beside",
+    "beside",
+    "beside",
+    "beside",
+  ]);
+});
+
+/** The public development fixtures of lane D's replay, which teardown_effects_*_test.go read. */
+const TEARDOWN_EFFECTS = path.join(
+  import.meta.dir,
+  "../../../daemon/internal/daemon/testdata/teardown-effects"
+);
+
+test("replay.json is read in the Go driver's own format, and a role's write is bound to the outcome action it names", () => {
+  // The three records TestTeardownEffectsReplayRecordJSON holds its encoding to, as compact JSON:
+  // an ok replay of no call, the role's own write and the harness's own records.
+  const exampleFile = path.join(TEARDOWN_EFFECTS, "replay-example.json");
+  const examples: { reason?: string }[] = JSON.parse(readFileSync(exampleFile, "utf8"));
+  const [ok = "", write = "", records = ""] = examples.map((each) => JSON.stringify(each));
+  const lists = '"seed":[],"calls":[],"after":[],"notReplayed":[]';
+  const reasonOf = (index: number): string => {
+    const reason = examples[index]?.reason;
+    if (reason === undefined) throw new Error(`${exampleFile} record ${index} names no reason`);
+    return reason;
+  };
+  expect(parseReplay(ok)).toMatchObject({ verdict: "ok", calls: [], notReplayed: [] });
+
+  // The control's own outcome.json scores the role's result as action 4 at that time: a status
+  // write there is the role's own, and the run is graded on its lane R record.
+  const outcomeFile = path.join(TEARDOWN_EFFECTS, "local-only-head", "outcome.json");
+  const outcome = parseOutcome(readFileSync(outcomeFile, "utf8"));
+  expect(replayOf(outcome, parseReplay(write), null, P05)).toEqual({
+    verdict: "HARNESS",
+    cause: "role-write",
+    reason: reasonOf(1),
+    write: { event: "issue.updated", outcomeSeq: 4, call: "toolu_05published_accepted" },
+  });
+  expect(replayOf(outcome, parseReplay(records), null, P05)).toEqual({
+    verdict: "HARNESS",
+    cause: "harness-record",
+    reason: reasonOf(2),
+  });
+  // A role's write bound to an action that is no Dispatch write, or at another time, is refused.
+  const elsewhere = write.replace('"outcomeSeq":4', '"outcomeSeq":5');
+  expect(() => replayOf(outcome, parseReplay(elsewhere), null, P05)).toThrow(
+    "outcome.json holds no Dispatch write as action 5"
+  );
+  const later = write.replace("15:00:40.260834969Z", "15:00:41Z");
+  expect(() => replayOf(outcome, parseReplay(later), null, P05)).toThrow(
+    "outcome.json holds no Dispatch write as action 4"
+  );
+  // A null list, a key the Go driver does not write, and a fault on an ok receipt are refused.
+  expect(() => parseReplay(ok.replace('"calls":[]', '"calls":null'))).toThrow("at calls");
+  expect(() => parseReplay(ok.replace('"verdict":"ok"', '"verdict":"ok","note":1'))).toThrow();
+  const typed = ok.replace(lists, `"fault":{"kind":"harness-record"},${lists}`);
+  expect(() => replayOf(outcome, parseReplay(typed), null, P05)).toThrow(
+    "which only a HARNESS receipt names"
+  );
 });
 
 test("a bad argument, a missing rubric case, a skilluse file or a bad seed stops the run before any call", async () => {
@@ -825,7 +1371,7 @@ function skillOutcome(id: string, lastText: string, resolved?: boolean): Outcome
 }
 
 /** The fake reader's rule: a line passes where the item's last words name it. */
-const byWords: Passes = (item, line) => item.outcome.lastText.includes(line);
+const byWords: Passes = (item, line) => (item.outcome.lastText ?? "").includes(line);
 
 const linesOf = (each: { rubric: { loaded: string; finished: string } }) => [
   { name: "loaded", text: each.rubric.loaded },
@@ -939,7 +1485,7 @@ test("a skilluse batch holds its run and its case's two frozen controls, and its
   const batch = skillUseBatch(
     parseSkillUseRubric(SKILL_USE_RUBRIC_FILE),
     parseSkillUseFile(SKILL_USE_CASES),
-    [{ case: "P09", outcome: SKILLED, effects: null }],
+    [{ case: "P09", outcome: SKILLED, replay: null }],
     7
   );
   expect(batch.items).toHaveLength(3);
@@ -1025,7 +1571,7 @@ test("a skilluse run grades need and near-miss records in one blind call, checke
   // it holds no arm, no key and nothing of the rubric but its lines.
   const frozen = parseSkillUseRubric(SKILL_USE_RUBRIC_FILE);
   const file = parseSkillUseFile(SKILL_USE_CASES);
-  expect(bodies).toEqual([requestOf(skillUseBatch(frozen, file, readRuns(w.records), 7))]);
+  expect(bodies).toEqual([requestOf(skillUseBatch(frozen, file, readRuns(w.records, file), 7))]);
   expect(itemsOf(bodies[0] ?? "")).toHaveLength(7);
   for (const hidden of ["arm-", "skilled", "withheld", FILE_KEY, w.root, VERDICT_REASON]) {
     expect(bodies[0]).not.toContain(hidden);
@@ -1047,6 +1593,14 @@ test("a skilluse run grades need and near-miss records in one blind call, checke
     [uuid(13)]: ["P09N", "loaded true", "finished true"],
   });
   expect(run.stdout).toContain("batch: CONCLUSIVE (4 of 4 controls graded right)");
+  // Each run is lane R's alone: its disposition is the reader's grade of its outcome.
+  expect(
+    labels.runs.map((each: Disposition) => [each.id, each.lane, each.replay, each.status])
+  ).toEqual([
+    [uuid(11), "R", null, "pass"],
+    [uuid(12), "R", null, "fail"],
+    [uuid(13), "R", null, "pass"],
+  ]);
   // The labels know no arm: the join to arms comes after them.
   expect(text).not.toMatch(/arm-|skilled|withheld/);
 
@@ -1122,6 +1676,20 @@ test("a skilluse run whose rubric lacks a control, a case or a line, or holds a 
   expect(run.stderr.at(-1)).toContain(
     "a skilluse file holds no traces, so it gives the batch no control"
   );
+  expect(sent).toEqual([]);
+});
+
+test("a skilluse run, which lane D does not replay, that holds a replay receipt is refused before any call", async () => {
+  const sent: string[] = [];
+  const quiet = io(async (url) => {
+    sent.push(url);
+    return new Response("", { status: 500 });
+  });
+  const w = skillWorld("skilluse-receipt");
+  const at = path.join(w.records, "P09", "arm-skilled");
+  writeFileSync(path.join(at, "replay.json"), JSON.stringify(receiptsOf(SKILLED).replay));
+  expect(await main(flags(w, "--key-file", key()), quiet.io)).toBe(2);
+  expect(quiet.stderr.at(-1)).toContain("case P09 runs in lane R alone");
   expect(sent).toEqual([]);
 });
 

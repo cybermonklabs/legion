@@ -5225,8 +5225,22 @@ A capture made before `outcome.ts` recorded the workspace has no `workspace-ops.
 Then the real pane and daemon answer the call and make its effects.
 The run is a harness failure, `HARNESS`, where its records cannot place a change a call needs or pair a request with its call: a change whose time touches a call's window, a push and a GitHub change that overlap, a GitHub change with no recorded end before a later call, a legion write the stand-in answered outside every call (or inside more than one), a record no `outcome.json` action holds or an `outcome.json` action no record holds, no `workspace-ops.jsonl`, a workspace that stood at the launch elsewhere than the world stands it or a move that began before the launch and ended after it, and a change the replay does not make (a workspace standing on several commits, any Dispatch write but a handoff, an issue comment, a result, a question, or a document not changed after it was made).
 It is `HARNESS` too where the replayed call shows the replay's state is not the run's: a request one side sent alone, a request naming another commit or handoff record, or a tool refusal in other words.
-A request the real daemon answered otherwise than the stand-in marks the run `DIVERGED`, and no later call is replayed.
+A request is a difference only when at least one side refused it: the real daemon refused a request that the stand-in accepted, the real daemon accepted a request that the stand-in refused, or the two refusals have a different status or code.
+A status of 400 or more is a refusal, and a `5xx` status is a refusal too.
+Two acceptances are the same answer, also when their statuses are different, for example `200` and `201`.
+A difference marks the run `DIVERGED`, and the replay does not replay a later call.
 Each run writes `<outcome id>/replay.json`: its verdict, the seeded records, each call with the changes applied before it and their provenance (the `outcome.json` action, or the workspace record's line and jj operation), the state it ran in (phase, the daemon's tree for the issue and whether it runs, the issue's Dispatch parent, the commit the workspace stands on, the issue branch's head on the remote, the pull requests), the stand-in's and the daemon's answers and the tool's in the run and in the replay, the changes after the last call and the calls not replayed.
+Every list in `replay.json` and `effects.json` is an array, and no list is `null`.
+A `HARNESS` record has two more fields: `reason`, the text of the failure, and `fault`, its typed cause.
+A record that is not `HARNESS` has neither field.
+A reader sorts a `HARNESS` run by `fault` and never by the text of `reason`.
+`fault.kind` is `role-write` when the role's own session made a Dispatch write that the replay does not make, and a later `legion` call of that session follows the write.
+A `role-write` fault also has these fields: `source`, the record of the write; `event`, its event type; `outcomeSeq`, the `outcome.json` action that scores the write; `at`, the case time of that action; `author`, the actor of the write; `session`, the role's session; and `call`, the tool call id of the next `legion` call.
+`fault.kind` is `harness-record` for every other cause, for example a record that the replay cannot place, a write of a different author, a record that the readback does not have, a seeded record that the replay cannot make, or a setup failure.
+A `harness-record` fault has no other field.
+When the replay of a run fails or panics before it writes `replay.json`, the driver writes a fallback `HARNESS` receipt with a `harness-record` fault, from the moment it reads the run's outcome id.
+The `reason` of the fallback receipt says that the replay stopped before its verdict and that the test log holds the failure.
+The driver writes the fallback receipt only when it wrote no receipt for the run, so each run gets one receipt at most.
 A run that is not `HARNESS` writes `<outcome id>/effects.json` too, whose `diverged` entries name each difference in call order: the daemon answer's place among `answers` (`seq`), its `route`, the original call's tool call id (`call`) and the `outcome.json` action of the stand-in's answer (`outcomeSeq`), and the stand-in's and the daemon's status and refusal code.
 Neither file is ever written over, and the replay writes no answers file.
 `internal/daemon/testdata/teardown-effects/local-only-head` is the public development control, on a child issue: the implementer commits with jj, and its first completion is refused by the tool with the phase unmoved while that commit is local only; its push, pull request and result follow, and its second completion is accepted.

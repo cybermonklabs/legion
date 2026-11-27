@@ -26,36 +26,51 @@
  * control traces in the frozen rubric, which is then a skilluse rubric. A run with the skill
  * withheld is a run of --records like any other, its arm known only to the join after the labels.
  * --records holds one directory per case, named by the case id, and in it one directory per run:
- * <records>/<case id>/<run>/outcome.json (heldout-case.ts's OutcomeRecord) and, where lane D
- * replayed the run, effects.json beside it (the effect record of t4-contracts.md, under the
- * outcome's own id). Nothing else of a run's directory is read, and no directory name reaches the
- * reader. A run whose effect record lists a divergence is DIVERGED, a harness fault and never a
- * result: it is refused, and is replaced before its batch is graded.
+ * <records>/<case id>/<run>/outcome.json (heldout-case.ts's OutcomeRecord). A run of a case lane D
+ * replays (a heldout or devcase case that is not an A case) holds lane D's replay receipt beside
+ * it, under the outcome's own id: replay.json and, unless its verdict is HARNESS, effects.json, each
+ * in the Go driver's own format (heldout-reader-receipt.ts). A run of a plain session (an A case)
+ * or of a skilluse case is lane R's alone and holds neither. A receipt that is missing, malformed,
+ * another run's, or at odds with itself or with the outcome refuses the batch, and so does an
+ * effects.json with no replay.json beside it, an older capture. Nothing else of a run's directory
+ * is read, and no directory name reaches the reader.
  * --seed is a whole number below 2^32. It draws the controls' fresh ids (UUIDs, as a run's id is)
  * and then the order of the batch (a Fisher-Yates walk of one mulberry32 stream).
  *
  * The batch is each run under its outcome's id and each control under its fresh id, in one
  * shuffled list. Each item is `{id, case, outcome, effects}`: the outcome record and the effect
  * record, each with its own `id` taken out, and `effects` null where the run has none (a control
- * has none). The call is the reader's instruction as its system prompt and one user message: the
+ * and a lane R run have none). A DIVERGED run is given only through the call of its first
+ * difference (heldout-reader-receipt.ts): its outcome with no later action, no last words and no
+ * report, its effects with no list of differences, and `observedThrough` last, the seq of the last
+ * action it holds; a batch that holds one adds OBSERVED_INSTRUCTION to the instruction, under which
+ * the reader grades a line of such a run null where only a later action could decide it. A run
+ * that is HARNESS by the role's own write is given its whole outcome and null effects; one that is
+ * HARNESS by the harness's own records is not given, though its case's controls are. No item says
+ * why. The call is the reader's instruction as its system prompt and one user message: the
  * rubric lines of the batch's cases, then the items. It holds no tool, no history, no prompt text,
  * no arm, no label, no route, no token count and no transcript; it sets no sampling or thinking
  * setting, and max_tokens is 8000. The route, and its tries after a 429 or 5xx answer, are
  * model-call.ts's. A reply cut at max_tokens is refused: grade fewer runs in one batch.
  *
  * The reply is one JSON object: for each item, each line of its case's rubric with its pass and a
- * one-sentence reason. A reply that misses an item or a line, or grades one twice or one the batch
- * does not hold, fails the run. A control is graded right when its good trace passes every line,
- * or its bad trace fails at least one; one control graded wrong makes the batch INCONCLUSIVE, and
- * every control graded right makes it CONCLUSIVE. A batch with no control is refused before the
- * call.
+ * one-sentence reason; a pass is null only for a line of an item with `observedThrough`. A reply
+ * that misses an item or a line, or grades one twice or one the batch does not hold, or grades a
+ * whole record's line null, fails the run. A control is graded right when its good trace passes
+ * every line, or its bad trace fails at least one; one control graded wrong makes the batch
+ * INCONCLUSIVE, and every control graded right makes it CONCLUSIVE. A batch with no control is
+ * refused before the call.
  *
  * Before the call, a grading run appends {at, seed, request_sha256} to <out>.attempts.json, a JSON
  * array: the attempt, on record whether or not the call gives labels. It is no grade and holds no
  * byte of the request. After a reply it can read, it appends {at, labels_sha256, request_sha256,
  * model, usage} to <out>.run.json, a JSON array, under the attempt's own `at`, then writes --out
- * (the labels: for each run, each line's pass and reason; for each control the same, its trace and
- * whether it was graded right; and the batch's verdict), and prints the labels' sha256.
+ * (the labels: for each run given, each line's pass and reason; for each control the same, its
+ * trace and whether it was graded right; the batch's verdict; and `runs`, the disposition of every
+ * run of --records by its own id, given or not, before any join to arms: its lane, lane D's
+ * verdict, what was graded, `pass`, `fail` (a behavioral failure) or `unverified`, why, the remake
+ * its branch permits, and a HARNESS run's typed cause and reason or a DIVERGED run's first
+ * difference), and prints the labels' sha256.
  * request_sha256 is the sha256 of the request body as sent; model and usage are the answer's own. A
  * reply it cannot read, or one that misses a grade, is kept beside --out as <out>.reply.txt and
  * never in the labels, and exit is 1.
@@ -81,7 +96,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { LEGION_WORKFLOW_PHASES } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import {
@@ -92,8 +106,20 @@ import {
   parseSkillUseFile,
   type SkillUseFile,
 } from "./heldout-case";
+import {
+  type CaseRules,
+  type Disposition,
+  dispositionOf,
+  gradedOf,
+  type ItemEffects,
+  type ItemOutcome,
+  parseEffects,
+  parseReplay,
+  type Replay,
+  replayOf,
+} from "./heldout-reader-receipt";
 import { askModel, modelRoute } from "./model-call";
-import { type CliIo, parseInstant, processIo } from "./production-dispatch";
+import { type CliIo, processIo } from "./production-dispatch";
 
 /** The reader's model. */
 export const MODEL = "claude-opus-5-5";
@@ -129,9 +155,16 @@ export const INSTRUCTION = [
   "Give each run once, and for each run each line of its case once, in the rubric's order.",
 ].join("\n");
 
+/** What a batch's instruction adds where the batch holds an item with `observedThrough`, a record
+ * that stops short of the run's end: where it stops, and how a line is graded on it. It names no
+ * cause; a batch with no such item is sent INSTRUCTION alone. */
+export const OBSERVED_INSTRUCTION = [
+  "A run whose item holds `observedThrough` has a record that stops after its action of that `seq`. Nothing the run did after that action is given: no later action, no last words (`lastText`) and no report, and only the skills it read before its first action. Its `effects` are what its requests did through that action.",
+  "Grade such a run on its record through that action alone. A line passes where that record shows what the line's text asks for. A line fails where an action in that record shows that the line cannot pass, such as a wrong, forbidden or out-of-order action. Where only an action after that point could show whether the line passes, set the line's `pass` to null: an action missing after the record stops is no failure. Set `pass` to null for no other run.",
+].join("\n");
+
 const Name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "a name");
 const Text = z.string().regex(/\S/, "a text that is not blank");
-const Instant = z.string().refine((text) => parseInstant(text) !== undefined, "an RFC 3339 time");
 const Line = z.strictObject({ name: Name, text: Text });
 
 /** The frozen rubric file: its cases' ids and rubric lines, every other key left unread. */
@@ -191,39 +224,6 @@ const SkillUseRubricFile = z
     });
   });
 
-const Answered = z.strictObject({ status: z.number().int(), code: z.string().nullable() });
-
-/** One run's effect record, written by lane D's driver (t4-contracts.md, "The effect record"). */
-export const EffectRecord = z.strictObject({
-  id: z.uuid(),
-  answers: z.array(
-    z.strictObject({
-      seq: z.number().int().nonnegative(),
-      at: Instant,
-      by: z.enum(["daemon", "client"]),
-      op: Name,
-      status: z.number().int(),
-      code: z.string().nullable(),
-      body: z.json(),
-    })
-  ),
-  phaseBefore: z.enum(LEGION_WORKFLOW_PHASES),
-  phaseAfter: z.enum(LEGION_WORKFLOW_PHASES),
-  productionCheck: z
-    .strictObject({
-      wakeAt: Instant.nullable(),
-      checkWakeRow: z.strictObject({ dueAt: Instant }).nullable(),
-    })
-    .nullable(),
-  handoffRecords: z.array(
-    z.strictObject({ phase: Name, version: z.number().int().positive(), id: Text })
-  ),
-  diverged: z.array(
-    z.strictObject({ seq: z.number().int().nonnegative(), standin: Answered, daemon: Answered })
-  ),
-});
-export type EffectRecord = z.infer<typeof EffectRecord>;
-
 /** One case's frozen rubric lines. */
 export interface CaseRubric {
   readonly id: string;
@@ -242,30 +242,34 @@ export interface SkillUseRubric extends CaseRubric {
   readonly traces: { readonly good: OutcomeRecord; readonly bad: OutcomeRecord };
 }
 
-/** One run of --records: the case it is graded on, what it did, and what that did on the daemon. */
+/** One run of --records: the case it is graded on, what it did, and what lane D's replay receipt
+ * says of it (null for a run of lane R, which lane D does not replay). */
 export interface RunRecord {
   readonly case: string;
   readonly outcome: OutcomeRecord;
-  readonly effects: EffectRecord | null;
+  readonly replay: Replay | null;
 }
 
-/** One item as the reader is given it. */
+/** One item as the reader is given it: `observedThrough`, the seq of its last action, where its
+ * record stops short of the run's end (heldout-reader-receipt.ts gradedOf). */
 export interface Item {
   readonly id: string;
   readonly case: string;
-  readonly outcome: Omit<OutcomeRecord, "id">;
-  readonly effects: Omit<EffectRecord, "id"> | null;
+  readonly outcome: ItemOutcome;
+  readonly effects: ItemEffects | null;
+  readonly observedThrough?: number;
 }
 
 /** A known trace of a case, which the batch holds as a control. */
 export type Trace = "good" | "bad";
 
-/** One batch: the rubric of its cases, its items in the order sent, and which items are controls
- * (never sent). */
+/** One batch: the rubric of its cases, its items in the order sent, which items are controls
+ * (never sent), and every run of --records, given or not, whose disposition its labels give. */
 export interface Batch {
   readonly rubric: readonly CaseRubric[];
   readonly items: readonly Item[];
   readonly controls: ReadonlyMap<string, Trace>;
+  readonly runs: readonly RunRecord[];
 }
 
 /** mulberry32, as scripts/approval-eval/corpus-io.ts's randomStream draws it. */
@@ -295,15 +299,12 @@ function freshId(random: () => number): string {
   ].join("-");
 }
 
-function withoutId<T extends { id: string }>(record: T): Omit<T, "id"> {
-  const { id: _id, ...rest } = record;
-  return rest;
-}
-
 /**
  * The batch of `runs`, with the controls of each case they name (with no run, of every case of
- * `cases`): each trace of the case, under a fresh id, all of it in the order `seed` draws. Throws
- * naming a case with no frozen rubric or no traces, and a batch with no control.
+ * `cases`): each trace of the case, under a fresh id, all of it in the order `seed` draws. Each run
+ * is given as gradedOf gives it, and a run it gives nothing of (HARNESS by the harness's own
+ * records) is not sent, though its case's controls are. Throws naming a case with no frozen rubric
+ * or no traces, and a batch with no control.
  */
 export function buildBatch(
   rubric: readonly CaseRubric[],
@@ -333,19 +334,21 @@ export function buildBatch(
         throw new Error(`seed ${seed} drew the id ${id} twice; choose another seed`);
       taken.add(id);
       controls.set(id, trace);
-      controlItems.push({ id, case: each.id, outcome: withoutId(record), effects: null });
+      const { id: _id, ...outcome } = record;
+      controlItems.push({ id, case: each.id, outcome, effects: null });
     }
   }
   if (controls.size === 0) throw new Error("the batch holds no control: its cases have no trace");
 
   const runItems = runs
     .toSorted((a, b) => (a.outcome.id < b.outcome.id ? -1 : a.outcome.id > b.outcome.id ? 1 : 0))
-    .map((run) => ({
-      id: run.outcome.id,
-      case: run.case,
-      outcome: withoutId(run.outcome),
-      effects: run.effects === null ? null : withoutId(run.effects),
-    }));
+    .flatMap((run): Item[] => {
+      const graded = gradedOf(run.outcome, run.replay);
+      if (graded === undefined) return [];
+      const { observedThrough, ...given } = graded;
+      const item = { id: run.outcome.id, case: run.case, ...given };
+      return [observedThrough === undefined ? item : { ...item, observedThrough }];
+    });
   const items = [...runItems, ...controlItems];
   for (let index = items.length - 1; index > 0; index -= 1) {
     const swap = Math.floor(random() * (index + 1));
@@ -359,6 +362,7 @@ export function buildBatch(
     rubric: chosen.map((each) => lines.get(each.id) as CaseRubric),
     items,
     controls,
+    runs,
   };
 }
 
@@ -396,12 +400,14 @@ function batchMessage(batch: Batch): string {
   ].join("\n");
 }
 
-/** The body of the batch's one call, as sent. */
+/** The body of the batch's one call, as sent: INSTRUCTION as its system prompt, with
+ * OBSERVED_INSTRUCTION after it where an item's record stops short. */
 export function requestOf(batch: Batch): string {
+  const observed = batch.items.some((item) => item.observedThrough !== undefined);
   return JSON.stringify({
     model: MODEL,
     max_tokens: MAX_TOKENS,
-    system: INSTRUCTION,
+    system: observed ? `${INSTRUCTION}\n\n${OBSERVED_INSTRUCTION}` : INSTRUCTION,
     messages: [{ role: "user", content: batchMessage(batch) }],
   });
 }
@@ -450,7 +456,9 @@ const Reply = z.looseObject({
   runs: z.array(
     z.looseObject({
       id: z.string(),
-      lines: z.array(z.looseObject({ name: z.string(), pass: z.boolean(), reason: Text })),
+      lines: z.array(
+        z.looseObject({ name: z.string(), pass: z.boolean().nullable(), reason: Text })
+      ),
     })
   ),
 });
@@ -467,18 +475,19 @@ function replyObject(text: string): unknown {
   }
 }
 
-/** One rubric line's grade. */
+/** One rubric line's grade: null where the item's record stops before anything shows it. */
 export interface LineLabel {
   readonly name: string;
-  readonly pass: boolean;
+  readonly pass: boolean | null;
   readonly reason: string;
 }
 
-/** One item's grades, in its rubric's order; `pass` where every line passed. */
+/** One item's grades, in its rubric's order; `pass` where every line passed, and for a record that
+ * stops short (`observedThrough`) false where a line failed and otherwise null, never true. */
 export interface RunLabel {
   readonly id: string;
   readonly case: string;
-  readonly pass: boolean;
+  readonly pass: boolean | null;
   readonly lines: readonly LineLabel[];
 }
 
@@ -488,9 +497,10 @@ export interface ControlLabel extends RunLabel {
   readonly graded: "right" | "wrong";
 }
 
-/** The labels file. */
+/** The labels file: the reader's grades, and `runs`, the disposition of every run of --records by
+ * its own id (heldout-reader-receipt.ts dispositionOf), each before any join to arms. */
 export interface Labels {
-  readonly version: 1;
+  readonly version: 2;
   readonly batch: "CONCLUSIVE" | "INCONCLUSIVE";
   readonly model: string;
   readonly response_id: string;
@@ -498,11 +508,13 @@ export interface Labels {
   readonly seed: number;
   readonly records: readonly RunLabel[];
   readonly controls: readonly ControlLabel[];
+  readonly runs: readonly Disposition[];
 }
 
 /**
  * The labels that `answer` gives `batch`. Throws naming every item the reply misses, grades twice
- * or does not hold, and every line it misses or does not know.
+ * or does not hold, every line it misses or does not know, and every line of a whole record it
+ * leaves null.
  */
 export function labelsOf(
   batch: Batch,
@@ -532,6 +544,8 @@ export function labelsOf(
         problems.push(`the reply grades ${run.id} on ${line.name}, no line of case ${item.case}`);
       else if (given.has(line.name))
         problems.push(`the reply grades ${run.id} on ${line.name} twice`);
+      else if (line.pass === null && item.observedThrough === undefined)
+        problems.push(`the reply leaves ${run.id} on ${line.name} null, and its record is whole`);
       else given.set(line.name, { name: line.name, pass: line.pass, reason: line.reason.trim() });
     }
     const ordered: LineLabel[] = [];
@@ -551,7 +565,9 @@ export function labelsOf(
   const controls: ControlLabel[] = [];
   for (const item of batch.items) {
     const lines = graded.get(item.id) ?? [];
-    const label = { id: item.id, case: item.case, pass: lines.every((line) => line.pass), lines };
+    const failed = lines.some((line) => line.pass === false);
+    const shown = item.observedThrough === undefined || failed;
+    const label = { id: item.id, case: item.case, pass: shown ? !failed : null, lines };
     const trace = batch.controls.get(item.id);
     if (trace === undefined) records.push(label);
     else
@@ -561,15 +577,22 @@ export function labelsOf(
         graded: label.pass === (trace === "good") ? "right" : "wrong",
       });
   }
+  const right = controls.every((control) => control.graded === "right");
+  const verdict = right ? "CONCLUSIVE" : "INCONCLUSIVE";
+  const byId = new Map(records.map((label) => [label.id, label]));
+  const runs = batch.runs
+    .map((run) => dispositionOf(run, byId.get(run.outcome.id), verdict))
+    .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return {
-    version: 1,
-    batch: controls.every((control) => control.graded === "right") ? "CONCLUSIVE" : "INCONCLUSIVE",
+    version: 2,
+    batch: verdict,
     model: answer.model,
     response_id: answer.id,
     request_sha256: request.sha256,
     seed: request.seed,
     records,
     controls,
+    runs,
   };
 }
 
@@ -631,30 +654,81 @@ function parseCaseFile(text: string): HeldoutFile | SkillUseFile {
   return set === "skilluse" ? parseSkillUseFile(text) : parseCases(text);
 }
 
-/** Every run of a --records directory, each named by its case's directory. */
-export function readRuns(dir: string): RunRecord[] {
+/** Lane D's rules for each case of `cases` it replays (a heldout or devcase case that is not an A
+ * case), and null for each it does not: a plain session (an A case) and a skilluse case. */
+function laneRules(cases: HeldoutFile | SkillUseFile): Map<string, CaseRules | null> {
+  if (cases.set === "skilluse")
+    return new Map<string, CaseRules | null>(cases.cases.map(({ id }) => [id, null]));
+  return new Map<string, CaseRules | null>(
+    cases.cases.map((each) => [each.id, each.kind === "A" ? null : each])
+  );
+}
+
+/**
+ * What lane D's receipt in run directory `at` says of the run whose outcome is `outcome`, and null
+ * for a run of a case lane D does not replay (`rules` null), which holds no receipt. Throws where a
+ * run lane D replays holds no replay.json, and where its receipt cannot be read or is at odds with
+ * itself or with the outcome (replayOf).
+ */
+function replayAt(
+  at: string,
+  caseId: string,
+  outcome: OutcomeRecord,
+  rules: CaseRules | null
+): Replay | null {
+  const replayFile = path.join(at, "replay.json");
+  const effectsFile = path.join(at, "effects.json");
+  if (rules === null) {
+    const receipt = [replayFile, effectsFile].find((file) => existsSync(file));
+    if (receipt !== undefined)
+      throw new Error(
+        `${receipt}: case ${caseId} runs in lane R alone (a plain session or a skilluse run), which lane D does not replay`
+      );
+    return null;
+  }
+  if (!existsSync(replayFile)) {
+    const older = existsSync(effectsFile)
+      ? "; its effects.json alone is an older capture, which is no receipt"
+      : "";
+    throw new Error(
+      `${replayFile} is missing: lane D replays every run of case ${caseId}, and no run of it is graded without its replay receipt${older}`
+    );
+  }
+  const receipt = read(replayFile, parseReplay);
+  const effects = existsSync(effectsFile) ? read(effectsFile, parseEffects) : null;
+  try {
+    return replayOf(outcome, receipt, effects, rules);
+  } catch (error) {
+    throw new Error(`${at}: ${messageFor(error)}`);
+  }
+}
+
+/**
+ * Every run of a --records directory, each named by its case's directory, with what lane D's
+ * replay receipt says of it (replayAt). Throws naming a run whose receipt is missing or refused,
+ * and each case of a run that `cases` does not hold.
+ */
+export function readRuns(dir: string, cases: HeldoutFile | SkillUseFile): RunRecord[] {
+  const rules = laneRules(cases);
   const runs: RunRecord[] = [];
+  const missing: string[] = [];
   const subdirectories = (parent: string) =>
     readdirSync(parent)
       .sort()
       .filter((name) => statSync(path.join(parent, name)).isDirectory());
   for (const caseId of subdirectories(dir)) {
+    const lane = rules.get(caseId);
     for (const run of subdirectories(path.join(dir, caseId))) {
+      if (lane === undefined) {
+        missing.push(caseId);
+        break;
+      }
       const at = path.join(dir, caseId, run);
       const outcome = read(path.join(at, "outcome.json"), parseOutcome);
-      const effectsFile = path.join(at, "effects.json");
-      const effects = existsSync(effectsFile)
-        ? read(effectsFile, (text) => EffectRecord.parse(JSON.parse(text)))
-        : null;
-      if (effects !== null && effects.id !== outcome.id)
-        throw new Error(`${effectsFile} is the record of ${effects.id}, not of ${outcome.id}`);
-      if (effects !== null && effects.diverged.length > 0)
-        throw new Error(
-          `${effectsFile}: the run DIVERGED from the daemon, a harness fault and no result; replace it before its batch is graded`
-        );
-      runs.push({ case: caseId, outcome, effects });
+      runs.push({ case: caseId, outcome, replay: replayAt(at, caseId, outcome, lane) });
     }
   }
+  if (missing.length > 0) throw new Error(`no case of --cases is ${missing.join(", ")}`);
   if (runs.length === 0) throw new Error(`--records ${dir} holds no <case id>/<run>/outcome.json`);
   const seen = new Set<string>();
   for (const run of runs) {
@@ -793,12 +867,13 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       out = path.resolve(args.out ?? "");
       const cases = read(casesFile, parseCaseFile);
       const rubricFile = path.resolve(args.rubric ?? "");
+      const records = path.resolve(args.records ?? "");
       if (cases.set === "skilluse") {
         const frozen = read(rubricFile, parseSkillUseRubric);
-        batch = skillUseBatch(frozen, cases, readRuns(path.resolve(args.records ?? "")), seed);
+        batch = skillUseBatch(frozen, cases, readRuns(records, cases), seed);
       } else {
         const rubric = read(rubricFile, parseRubric);
-        batch = buildBatch(rubric, cases, readRuns(path.resolve(args.records ?? "")), seed);
+        batch = buildBatch(rubric, cases, readRuns(records, cases), seed);
       }
       // Read and made before the call, so a log or a directory that is not fit stops the run first.
       log = runLog(`${out}.run.json`);
