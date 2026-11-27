@@ -230,8 +230,8 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 // just expired, and a write made on it would land nowhere, leaving a row that reads as a pass
 // that vanished -- the one state that must mean a process died.
 func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
-	// Not parallel: it holds the pass's real bound of 2 s on the wall clock (context.WithTimeout,
-	// the one test of the bound that does), and the pass must read the first page inside it.
+	// Not parallel: outside the pacing tests, this is the real-timer deadline control. Its 2 s
+	// bound uses context.WithTimeout, and the pass must read the first page inside it.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)

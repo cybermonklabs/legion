@@ -777,8 +777,9 @@ resolver tests that replace the default logger.
 Each harness has its own database, GitHub stand-in and NATS account on the package's shared
 server. Tests of a pass ending on its bound move a `clocktest.Fake` through the reconciler's
 unexported bound hook, which checks the configured `PassTimeout` and preserves
-`context.DeadlineExceeded`. One test keeps the real timer. Tests of pacing and settlement quiet
-windows stay serial, with a comment naming the wall-clock span.
+`context.DeadlineExceeded`. Outside the pacing tests, one deadline control keeps the real timer.
+Pacing tests also retain real pass bounds. They and the settlement quiet-window tests stay
+serial, with a comment naming the wall-clock span.
 
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
