@@ -449,8 +449,8 @@ export const VERIFICATION_WORDS = joinWords("VERIFICATION_WORDS", {
 export type StatementState = keyof typeof VERIFICATION_WORDS.states;
 
 /**
- * The words the Plan filter's body draws of its own (dispatch://INFRA-1196 R26, build decision 5 of
- * build-rulings-md, `plan-filter/`): the two ways it draws the plan, which its one control
+ * The words the Plan filter's body draws of its own (dispatch://INFRA-1196 R26 and its build
+ * decision 5, `plan-filter/`): the two ways it draws the plan, which its one control
  * switches between, the chart's two headings, the line for tasks that need each other, and the
  * mark of a bar whose task holds no size.
  */

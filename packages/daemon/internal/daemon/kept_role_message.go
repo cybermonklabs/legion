@@ -88,7 +88,7 @@ func (pastItsHour) Is(target error) bool { return target == errKeptRoleMessagePa
 //   - A message whose hour has passed: keptRoleMessageHoldBound from the later of the row's making
 //     and the role's last ready (supervise.Claim.LastReady). So the hour a woken session has is its
 //     own, as the kept copy's was counted from its publish. While a wake of the role is coming
-//     (wakeComing), the row waits for the woken session, as the architect's ruling has it: the row
+//     (wakeComing), the row waits for the woken session, as the architect decided: the row
 //     waits while the role is being woken, and the hour does not end it then.
 //
 // So a session that held the role all along is not handed a message past its hour, and a failed
