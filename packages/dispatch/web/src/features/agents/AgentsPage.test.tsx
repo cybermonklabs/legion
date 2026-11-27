@@ -72,6 +72,7 @@ import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
+import { writesOf } from "../writes/write-store";
 // The page itself is a lazy route of the app too, loaded here for the same reason.
 import "./AgentsPage";
 import type { AgentGroup } from "./agent-groups";
@@ -1474,6 +1475,97 @@ test("a send that lands leaves a focus the reader took off the composer while it
     await act(async () => out.resolve(message("Check the deployment")));
     await waitFor(() => expect(comment).toHaveValue(""));
     expect(document.activeElement).toBe(document.body);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The same rule where the reader moves on before the page has drawn the send: the row counts the
+// send from its press's own task (`useSending`), and React draws that count a task or more later.
+// A reader who puts the focus on another row's checkbox in that gap keeps it once the send lands,
+// as one who moves later does. The browser row "a send in flight does not steal back focus the
+// reader has moved" failed this way: the box took the focus back from the Reviewer's checkbox.
+test("a send that lands leaves the focus on another row's checkbox the reader moved to in the task of the press, before the page drew the send", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+  const out = Promise.withResolvers<Message>();
+  page.createAgentMessage.mockImplementation(() => out.promise);
+  /** The reader's move, made in the task of the press that sends, after the composer's own
+   *  handler, before any timer runs. */
+  let moveOn = () => {};
+  const afterPress = (event: KeyboardEvent) => {
+    if (event.key === "Enter" && event.ctrlKey) moveOn();
+  };
+  window.addEventListener("keydown", afterPress);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const comment = within(planner).getByRole("textbox", { name: "Comment" });
+    await type(user, comment, "Check the deployment");
+    const reviewer = within(region).getByRole("checkbox", {
+      name: "Select Reviewer for broadcast",
+    });
+    moveOn = () => reviewer.focus();
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(1));
+    expect(reviewer).toHaveFocus();
+
+    await act(async () => out.resolve(message("Check the deployment")));
+    // The send has landed once its draft is cleared.
+    await waitFor(() => expect(comment).toHaveValue(""));
+    expect(reviewer).toHaveFocus();
+    expect(comment).not.toHaveFocus();
+  } finally {
+    window.removeEventListener("keydown", afterPress);
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A lapse of the session while the send is out ends its try and puts it back in its line
+// (`write-store.ts`'s `#rejoin`), which holds its name again while the hold of the try it ended
+// still counts, and the same person's sign-in sends it then. That is still the send the reader made
+// from the box, so a reader who moved on while it was out keeps where they went once it lands.
+test("a send a lapse held and the sign-in sent again leaves a focus the reader moved while it was out", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+  const first = Promise.withResolvers<Message>();
+  const again = Promise.withResolvers<Message>();
+  page.createAgentMessage
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => again.promise);
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const comment = within(planner).getByRole("textbox", { name: "Comment" });
+    await type(user, comment, "Check the deployment");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(1));
+    const reviewer = within(region).getByRole("checkbox", {
+      name: "Select Reviewer for broadcast",
+    });
+    act(() => reviewer.focus());
+
+    // The session lapses: the try out ends with no answer, and the send waits in its line.
+    act(() => writesOf(page.queryClient).signedIn(undefined));
+    await act(async () =>
+      first.reject(
+        new NetworkError("/api/v1/agents/planner-session/messages", new TypeError("Failed"))
+      )
+    );
+    // The same person signs in again, and the send goes again under its name.
+    act(() => writesOf(page.queryClient).signedIn("alice"));
+    await waitFor(() => expect(page.createAgentMessage).toHaveBeenCalledTimes(2));
+    expect(reviewer).toHaveFocus();
+
+    await act(async () => again.resolve(message("Check the deployment")));
+    await waitFor(() => expect(comment).toHaveValue(""));
+    expect(reviewer).toHaveFocus();
   } finally {
     page.view.unmount();
     page.restore();
