@@ -62,7 +62,9 @@ func (w window) live() map[string]string {
 // the timeline's first paint at this head (timelineCases) and the base's (baseCases), whose body
 // no budget judges. storedFigures marks a read of an offered range of the eval list, which the
 // stored figures answer (checkStoredFiguresReads). codeStated marks a read whose window holds days
-// the code evals measured, whose answer states a value of each of them (checkCodeEvals).
+// the code evals measured, whose answer states a value of each of them (checkCodeEvals). bodyUnjudged
+// marks a read whose body is measured and judged by no budget, as the registry base's list reads
+// are (registryBaseCases).
 type paintCase struct {
 	name           string
 	path           string
@@ -75,6 +77,7 @@ type paintCase struct {
 	delivery       bool
 	storedFigures  bool
 	codeStated     bool
+	bodyUnjudged   bool
 }
 
 // measuredCase is one read as the instrument saw it: cataloguedOwn is how many statements of the
@@ -640,6 +643,9 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 			r.result("paint-body case=%s gzip_bytes=%d budget=none: a read of the Delivery page, whose body is measured and judged by no "+
 				"budget, since the %d-byte budget of R8 bounds the evals' first paint, which the root's R3 keeps the row-level merge timeline out of",
 				one.name, gz, budgetGzip)
+		case one.bodyUnjudged:
+			r.result("paint-body case=%s gzip_bytes=%d budget=none: a read of a base that holds the eval registry, which k17 judges "+
+				"by its answer alone (neither code eval is in it)", one.name, gz)
 		case gz > budgetGzip:
 			r.fail("paint case=%s gzip_bytes=%d is over its budget of %d", one.name, gz, budgetGzip)
 		}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net/http"
 	"strings"
@@ -240,8 +241,39 @@ func TestABaseThatHoldsTheRegistryIsPaintedByTheEvalsListAlone(t *testing.T) {
 		t.Fatalf("%d reads, want the four reads of the evals list", len(cases))
 	}
 	for _, one := range cases {
-		if !strings.HasPrefix(one.path, "/api/v1/projects/INFRA/evals?") || one.view != nil || one.delivery || one.budgetMs != 0 || one.serverBudgetMs != 0 || one.storedFigures {
+		if !strings.HasPrefix(one.path, "/api/v1/projects/INFRA/evals?") || one.view != nil || one.delivery || one.budgetMs != 0 || one.serverBudgetMs != 0 || one.storedFigures || !one.bodyUnjudged {
 			t.Errorf("the read %+v is no budget-free read of the evals list", one)
+		}
+	}
+}
+
+// A read of the registry base whose body passes the first paint's body budget is measured and not
+// failed, while a read of this head's evals list with the same body is.
+func TestTheRegistryBasesBodyIsJudgedByNoBudget(t *testing.T) {
+	t.Parallel()
+	body := make([]byte, 2*budgetGzip)
+	if _, err := rand.Read(body); err != nil {
+		t.Fatal(err)
+	}
+	own := []statement{{queryID: 1, query: "select 1", calls: 1}}
+	for _, row := range []struct {
+		name  string
+		read  paintCase
+		fails int
+	}{
+		{"the registry base's read", paintCase{name: "base-list-84d-compare", bodyUnjudged: true}, 0},
+		{"this head's read", paintCase{name: "list-84d-compare"}, 1},
+	} {
+		judged := &report{prefix: "RESULT"}
+		judgePaint(judged, options{}, []measuredCase{{paintCase: row.read, status: http.StatusOK, body: body, own: own}})
+		var bodies []string
+		for _, line := range judged.fails {
+			if strings.Contains(line, "gzip_bytes=") {
+				bodies = append(bodies, line)
+			}
+		}
+		if len(bodies) != row.fails {
+			t.Errorf("%s: %d FAIL lines of the body %q, want %d", row.name, len(bodies), bodies, row.fails)
 		}
 	}
 }

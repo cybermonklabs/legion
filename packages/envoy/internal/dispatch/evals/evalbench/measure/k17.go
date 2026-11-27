@@ -38,7 +38,7 @@ func registryBaseCases(project string, today time.Time) []paintCase {
 	var cases []paintCase
 	for _, one := range headCases(project, today, 1) {
 		if one.view == nil && !one.delivery {
-			cases = append(cases, paintCase{name: "base-" + one.name, path: one.path})
+			cases = append(cases, paintCase{name: "base-" + one.name, path: one.path, bodyUnjudged: true})
 		}
 	}
 	return cases
