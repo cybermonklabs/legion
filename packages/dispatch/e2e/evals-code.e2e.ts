@@ -442,6 +442,43 @@ test.describe("the code cards", () => {
     }
   });
 
+  test("a project whose default repository is cleared counts no change of it", async ({ page }) => {
+    await seed();
+    // Before the move: CODEB's bots group holds c2 and its rest group c1, c4 and c5; c1, c2 and
+    // c5 have no issue and count for CODEB only through its default repository (R11).
+    const before = await codeSurvival("CODEB");
+    expect([
+      statistic(before, "survival:bots", "share"),
+      statistic(before, "survival:rest", "changes"),
+      statistic(before, "survival:rest", "via_repository"),
+    ]).toEqual([0.6, 3, 2]);
+
+    await putProjectDefaultRepository("CODEB", null);
+    // With no default repository CODEB counts the changes of its own issues alone (R11): c4
+    // (CODEB-1) in rest, and no change in bots, whose window reads no data and never 0 (R7).
+    // The number and the items rows behind it agree (R13).
+    await expect
+      .poll(
+        async () => {
+          const after = await codeSurvival("CODEB");
+          const response = await page.request.get(
+            `/api/v1/projects/CODEB/evals/${SURVIVAL}/items?${WINDOW_QUERY}&row_kind=change&limit=200`
+          );
+          expect(response.status()).toBe(200);
+          const items = ((await response.json()) as EvalItemsResponse).items ?? [];
+          return [
+            statistic(after, "survival:bots", "share"),
+            statistic(after, "survival:rest", "changes"),
+            statistic(after, "survival:rest", "via_repository"),
+            items.filter((row) => row.cols?.via_repository === true).length,
+            items.filter((row) => row.cols?.issue === "CODEB-1").length,
+          ];
+        },
+        { message: "CODEB's code evals follow its cleared default repository", timeout: REGROUP_MS }
+      )
+      .toEqual([null, 1, 0, 0, 1]);
+  });
+
   test("each card names its waiting days", async ({ page }) => {
     await seed();
     await openTab(page, "CODEA");
