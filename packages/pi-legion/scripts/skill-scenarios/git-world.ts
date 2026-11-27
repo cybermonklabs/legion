@@ -139,13 +139,16 @@ export function goCheckModule(world: World): Map<string, string> {
   return files;
 }
 
-/** Case ids can be fictitious and the schema holds no trees. Preserve the topology and the
- * descriptions, and give each commit a tree: CHANGES.md, one line for the commit and each commit
- * under it, and, at every commit that is off the default branch's first-parent line or above one
- * that is, goCheckModule's module, so a `go test` check runs green at the role's head as a real
- * tree's would. Use a stable author and date so paired arms start with identical commit ids and
- * trees. No bookmark names a local-only commit: the workspace stands on it. A local
- * `legion/<issue>` bookmark tracks the remote's branch only where the remote holds it. */
+/** Case ids can be fictitious. Preserve the topology and the descriptions, and give each commit a
+ * tree. A commit that names files (`git.commits[].files`), or stands above one that does through
+ * any parent, holds the world's files alone, each of mode 100644: its first parent's (none where
+ * that parent holds CHANGES.md instead), with its own written over them. Any other commit holds
+ * CHANGES.md, one line for the commit and each commit under it, and, at every commit that is off
+ * the default branch's first-parent line or above one that is, goCheckModule's module, so a
+ * `go test` check runs green at the role's head as a real tree's would. Use a stable author and
+ * date so paired arms start with identical commit ids and trees. No bookmark names a local-only
+ * commit: the workspace stands on it. A local `legion/<issue>` bookmark tracks the remote's branch
+ * only where the remote holds it. */
 export function buildGitWorld(dir: string, world: World, stage = false): CommitMap {
   const fixture = world.git;
   const remote = path.join(dir, "remote.git");
@@ -189,11 +192,12 @@ export function buildGitWorld(dir: string, world: World, stage = false): CommitM
   const writeTree = (files: Map<string, string>) => {
     const indexEnv = { ...env, GIT_INDEX_FILE: index };
     rmSync(index, { force: true });
+    // NUL-terminated entries: a path is taken as it is, never unquoted.
     run(
       workspace,
       indexEnv,
-      ["git", "update-index", "--add", "--index-info"],
-      [...files].map(([file, sha]) => `100644 ${sha}\t${file}\n`).join("")
+      ["git", "update-index", "--add", "-z", "--index-info"],
+      [...files].map(([file, sha]) => `100644 ${sha}\t${file}\0`).join("")
     );
     return run(workspace, indexEnv, ["git", "write-tree"]);
   };
@@ -201,6 +205,9 @@ export function buildGitWorld(dir: string, world: World, stage = false): CommitM
     sha: string;
     changes: string[];
     module: boolean;
+    /** The world's files its tree holds, paths to blob ids, where it names files or stands above
+     * a commit that does. */
+    files?: Map<string, string>;
   }
   const building = new Set<string>();
   const built = new Map<string, Built>();
@@ -218,16 +225,22 @@ export function buildGitWorld(dir: string, world: World, stage = false): CommitM
     // Off the default branch's first-parent line (any commit but a root, where the remote names
     // no default branch), or above a commit that is.
     const offBase = base.size > 0 ? !base.has(id) : parents.length > 0;
-    const carries = offBase || parents.some((parent) => parent.module);
-    const files = new Map([["CHANGES.md", blob(`# Changes\n\n${changes.join("\n")}\n`)]]);
-    if (carries) for (const [file, sha] of moduleBlobs) files.set(file, sha);
+    // A commit that names files, or stands above one that does, holds the world's files alone:
+    // its first parent's, with its own written over them.
+    const named =
+      commit.files !== undefined || parents.some((parent) => parent.files !== undefined);
+    const files = named ? new Map(parents[0]?.files) : undefined;
+    for (const { path: file, text } of commit.files ?? []) files?.set(file, blob(text));
+    const carries = !named && (offBase || parents.some((parent) => parent.module));
+    const tree = files ?? new Map([["CHANGES.md", blob(`# Changes\n\n${changes.join("\n")}\n`)]]);
+    if (carries) for (const [file, sha] of moduleBlobs) tree.set(file, sha);
     const sha = plumbing(
       `${commit.description}\n`,
       "commit-tree",
-      writeTree(files),
+      writeTree(tree),
       ...parents.flatMap((parent) => ["-p", parent.sha])
     );
-    const result = { sha, changes, module: carries };
+    const result = { sha, changes, module: carries, files };
     built.set(id, result);
     building.delete(id);
     return result;

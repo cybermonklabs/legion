@@ -14,7 +14,12 @@
 // the project's other issues and the issue's step runs as `dispatch steps` lists them, and whether
 // each run holds the records of its time (`runsHoldRecords`). A comment may be on words of one of
 // the world's documents (`anchor`), or be a reply in the thread of an earlier comment of the world
-// (`replyTo`), not both.
+// (`replyTo`), not both. Its Git part holds the commits, the remote's branches and what the
+// workspace stands on and, where the world states them, a commit's own files
+// (`git.commits[].files`): each a path, of `/`-separated names none of which is empty, `.` or `..`,
+// once in its commit, and the file's text, which may be empty. A commit that names files, or
+// stands above one that does, holds the world's files alone: its first parent's, with its own
+// written over them (git-world.ts buildGitWorld).
 //
 //   heldout-case.ts gaps <heldout or devcase file> [<skilluse file>]
 //       each file's gaps (caseFileGaps): its number of gaps alone on stdout (`<file>: <n> gaps`),
@@ -360,12 +365,41 @@ const DispatchWorld = z
     }
   });
 
-/** The git remote and the role's jj workspace. `commits` holds every commit either names;
- * `localOnly` is each commit only the workspace holds, never a remote branch's head. */
+/** A file of a world commit's tree: its path, of `/`-separated names none of which is empty, `.`
+ * or `..`; and its text, which may be empty, as a real file's may. */
+const WorldFile = z.strictObject({
+  path: z
+    .string()
+    .refine(
+      (file) => file.split("/").every((name) => name !== "" && name !== "." && name !== ".."),
+      "a relative path of '/'-separated names, none of them empty, '.' or '..'"
+    ),
+  text: z.string(),
+});
+
+/** The git remote and the role's jj workspace. `commits` holds every commit either names, and
+ * `files` a commit's own files, each path once; `localOnly` is each commit only the workspace
+ * holds, never a remote branch's head. */
 const GitWorld = z
   .strictObject({
     commits: z
-      .array(z.strictObject({ id: Commit, parents: z.array(Commit), description: Text }))
+      .array(
+        z.strictObject({
+          id: Commit,
+          parents: z.array(Commit),
+          description: Text,
+          files: z
+            .array(WorldFile)
+            .superRefine((files, context) =>
+              refuseRepeats(
+                context,
+                files.map((file) => file.path),
+                (index) => [index, "path"]
+              )
+            )
+            .optional(),
+        })
+      )
       .min(1),
     /** Each branch the remote holds and the head pushed to it. */
     remote: z.strictObject({

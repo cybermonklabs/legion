@@ -859,6 +859,54 @@ describe("the typed world parts", () => {
       expect(() => parsedWorld(edit)).toThrow(message);
     });
 
+  /** P05's world with `files` on its head commit, the commit the workspace stands on. */
+  const withFiles = (files: unknown) =>
+    parsedWorld((w) => {
+      w.git.commits[1].files = files;
+    });
+
+  // Catches: a path the builder would write outside the commit's tree, or a name git cannot hold.
+  test("a path that is absolute or holds `..`, `.` or an empty name is refused", () => {
+    const files = [
+      { path: "cmd/acme/main.go", text: "package main\n" },
+      { path: "CHANGES.md", text: "" },
+    ];
+    const world = withFiles(files);
+    expect(world?.git?.commits[1]?.files).toEqual(files);
+    expect(world?.git?.commits[0]).not.toHaveProperty("files");
+    const at = "case P05: world.git.commits[1].files[0].path: ";
+    const names = "a relative path of '/'-separated names, none of them empty, '.' or '..'";
+    for (const file of [
+      "/etc/passwd",
+      "../go.mod",
+      "cmd/../go.mod",
+      "./go.mod",
+      "cmd//main.go",
+      "cmd/",
+      "",
+    ])
+      expect(() => withFiles([{ path: file, text: "x\n" }])).toThrow(`${at}${names}`);
+  });
+
+  test("two entries of one commit with one path are refused", () => {
+    expect(() =>
+      withFiles([
+        { path: "go.mod", text: "module a\n" },
+        { path: "cmd/acme/main.go", text: "package main\n" },
+        { path: "go.mod", text: "module b\n" },
+      ])
+    ).toThrow("case P05: world.git.commits[1].files[2].path: go.mod is named twice");
+    // One path in two commits is a commit's file written over its parent's.
+    const world = parsedWorld((w) => {
+      w.git.commits[0].files = [{ path: "go.mod", text: "module a\n" }];
+      w.git.commits[1].files = [{ path: "go.mod", text: "module b\n" }];
+    });
+    expect(world?.git?.commits.map((commit) => commit.files?.[0]?.text)).toEqual([
+      "module a\n",
+      "module b\n",
+    ]);
+  });
+
   test("each part is one a refused call can be held to leave unchanged", () => {
     const file = heldoutJson();
     file.cases[0].allowedRefusals = [

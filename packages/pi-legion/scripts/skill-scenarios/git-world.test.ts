@@ -5,6 +5,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { loadCase } from "./case-world";
 import { buildGitWorld, namedSource, recordWorkspace } from "./git-world";
+import type { World } from "./heldout-case";
 
 const work = temporaryDirectory("git-world");
 const example = path.join(import.meta.dir, "testdata", "heldout-case-example.json");
@@ -37,6 +38,207 @@ function inRun(run: string, cwd: string, ...argv: string[]): string {
   if (result.exitCode !== 0) throw new Error(`${argv.join(" ")}: ${result.stderr.toString()}`);
   return result.stdout.toString().trim();
 }
+
+/** Each tree and file of `commit`'s tree in `run`'s workspace, at any depth, by its path: a tree's
+ * mode, and a file's mode and text. */
+function treeOf(run: string, commit: string): Record<string, string> {
+  const git = (...argv: string[]) => {
+    const result = Bun.spawnSync(["git", ...argv], {
+      cwd: path.join(run, "workspace"),
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: work,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0)
+      throw new Error(`git ${argv.join(" ")}: ${result.stderr.toString()}`);
+    return result.stdout.toString();
+  };
+  const entries = git("ls-tree", "-r", "-t", "--format=%(objectmode) %(objecttype) %(path)", commit)
+    .split("\n")
+    .filter((entry) => entry !== "");
+  return Object.fromEntries(
+    entries.map((entry) => {
+      const [mode = "", type, ...words] = entry.split(" ");
+      const file = words.join(" ");
+      return [
+        file,
+        type === "blob" ? `${mode} ${git("cat-file", "blob", `${commit}:${file}`)}` : mode,
+      ];
+    })
+  );
+}
+
+type WorldCommit = NonNullable<World["git"]>["commits"][number];
+
+/** P05's world with `commits` for its Git: the remote's main at the first, and the workspace on the
+ * last, which no remote branch holds. */
+function worldOf(...commits: WorldCommit[]): World {
+  const { world } = loadCase(example, "heldout", "P05");
+  return {
+    ...world,
+    git: {
+      commits,
+      remote: { name: "origin", branches: [{ name: "main", head: commits[0]?.id ?? "" }] },
+      workspace: { standingOn: commits.at(-1)?.id ?? "", localOnly: [] },
+    },
+  };
+}
+
+/** The commit ids the builder gave the example's P05 and P10 worlds before a commit could name
+ * files. */
+const BUILT_BEFORE_FILES: Record<string, Record<string, string>> = {
+  P05: {
+    "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a": "3d669591dcafe9170992a26efe256208e7d658bf",
+    "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c": "92e496e0dbed653a0675d987ce34492368592cbc",
+  },
+  P10: {
+    "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c": "7c0a24192e73d9b20f40351da1a32f98eb9ae32b",
+    "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d": "335610bafab88255c68273ac9d3e2155714f8bd0",
+    "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f": "fcb0836afd8c35f6d161e2747d281b1d823da3e1",
+  },
+};
+
+/** P05's head commit's files, as a world names them. */
+const HEAD_FILES = [
+  { path: "go.mod", text: "module example.invalid/acme\n\ngo 1.22\n" },
+  { path: "cmd/acme/main.go", text: "package main\n\nfunc main() {}\n" },
+  { path: "internal/deliver/deliver.go", text: "package deliver\n" },
+  { path: "internal/deliver/testdata/empty", text: "" },
+];
+
+/** HEAD_FILES as treeOf reads them in a commit's tree. */
+const HEAD_TREE = {
+  "go.mod": "100644 module example.invalid/acme\n\ngo 1.22\n",
+  cmd: "040000",
+  "cmd/acme": "040000",
+  "cmd/acme/main.go": "100644 package main\n\nfunc main() {}\n",
+  internal: "040000",
+  "internal/deliver": "040000",
+  "internal/deliver/deliver.go": "100644 package deliver\n",
+  "internal/deliver/testdata": "040000",
+  "internal/deliver/testdata/empty": "100644 ",
+};
+
+// P05's head is off main, so with no files it holds CHANGES.md and the module P05's checks run in.
+// Once it names files it holds those alone, in nested trees, with no CHANGES.md and no module, and
+// its base, which names none, is the commit it was.
+test.skipIf(withoutTools)(
+  "a commit that names files holds those files alone",
+  () => {
+    const { world } = loadCase(example, "heldout", "P05");
+    const [base, head] = world.git?.commits ?? [];
+    if (!base || !head) throw new Error("P05 lost a commit");
+    const named = worldOf(base, { ...head, files: HEAD_FILES });
+    const run = path.join(work, "files-named");
+    mkdirSync(run);
+    const map = buildGitWorld(run, named);
+    expect(treeOf(run, map[head.id] ?? "")).toEqual(HEAD_TREE);
+    expect(treeOf(run, map[base.id] ?? "")).toEqual({
+      "CHANGES.md": "100644 # Changes\n\n- main: the base the issue branch starts from\n",
+    });
+    expect(map[base.id]).toBe(BUILT_BEFORE_FILES.P05?.[base.id] ?? "");
+  },
+  60_000
+);
+
+// A commit's own file replaces its parent's at one path, the parent's other files stay, and a
+// commit above that names none of its own holds its parent's tree.
+test.skipIf(withoutTools)(
+  "a commit above it holds its parent's files with its own written over them",
+  () => {
+    const { world } = loadCase(example, "heldout", "P05");
+    const [base, head] = world.git?.commits ?? [];
+    if (!base || !head) throw new Error("P05 lost a commit");
+    const fix = {
+      id: "3".repeat(40),
+      parents: [head.id],
+      description: "fix(deliver): retry",
+      files: [
+        { path: "cmd/acme/main.go", text: "package main\n\nfunc main() { run() }\n" },
+        { path: "internal/deliver/deliver_test.go", text: "package deliver\n" },
+      ],
+    };
+    const above = { id: "4".repeat(40), parents: [fix.id], description: "docs: nothing" };
+    const run = path.join(work, "files-above");
+    mkdirSync(run);
+    const map = buildGitWorld(run, worldOf(base, { ...head, files: HEAD_FILES }, fix, above));
+    const fixed = {
+      ...HEAD_TREE,
+      "cmd/acme/main.go": "100644 package main\n\nfunc main() { run() }\n",
+      "internal/deliver/deliver_test.go": "100644 package deliver\n",
+    };
+    expect(treeOf(run, map[fix.id] ?? "")).toEqual(fixed);
+    expect(treeOf(run, map[above.id] ?? "")).toEqual(fixed);
+  },
+  60_000
+);
+
+// A merge stands above both its parents and takes its first parent's files: a file only its second
+// parent holds is not in it, and where both hold a path the first parent's text is. A merge whose
+// second parent alone names files holds its own alone, and not the module its first parent holds.
+test.skipIf(withoutTools)(
+  "a merge commit has its first parent's files, and its second parent's are not taken",
+  () => {
+    const commit = (n: number, parents: number[], files?: Record<string, string>) => ({
+      id: String(n).repeat(40),
+      parents: parents.map((parent) => String(parent).repeat(40)),
+      description: `commit ${n}`,
+      ...(files && {
+        files: Object.entries(files).map(([file, text]) => ({ path: file, text })),
+      }),
+    });
+    const both = path.join(work, "files-merged");
+    mkdirSync(both);
+    const map = buildGitWorld(
+      both,
+      worldOf(
+        commit(1, [], { "go.mod": "module a\n", "x.go": "a\n" }),
+        commit(2, [1], { "x.go": "b\n", "b.go": "b\n" }),
+        commit(3, [1], { "x.go": "c\n", "c.go": "c\n" }),
+        commit(4, [2, 3])
+      )
+    );
+    expect(treeOf(both, map["4".repeat(40)] ?? "")).toEqual({
+      "b.go": "100644 b\n",
+      "go.mod": "100644 module a\n",
+      "x.go": "100644 b\n",
+    });
+
+    const second = path.join(work, "files-merged-second");
+    mkdirSync(second);
+    const secondMap = buildGitWorld(
+      second,
+      worldOf(
+        commit(1, []),
+        commit(2, [1]),
+        commit(3, [1], { "c.go": "c\n" }),
+        commit(4, [2, 3], { "m.go": "m\n" })
+      )
+    );
+    expect(Object.keys(treeOf(second, secondMap["2".repeat(40)] ?? ""))).toContain("go.mod");
+    expect(treeOf(second, secondMap["4".repeat(40)] ?? "")).toEqual({ "m.go": "100644 m\n" });
+  },
+  60_000
+);
+
+test.skipIf(withoutTools)(
+  "a world that names no files builds the trees it builds today",
+  () => {
+    for (const id of ["P05", "P10"]) {
+      const run = path.join(work, `no-files-${id}`);
+      mkdirSync(run);
+      expect(buildGitWorld(run, loadCase(example, "heldout", id).world)).toEqual(
+        BUILT_BEFORE_FILES[id] ?? {}
+      );
+    }
+  },
+  60_000
+);
 
 // Lane D's replay starts a run from the Git the command builds from the run's world.json: the
 // commits a run's start builds from that world (buildGitWorld), by the same ids, with the

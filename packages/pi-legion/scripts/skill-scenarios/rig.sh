@@ -128,7 +128,9 @@
 # run's pane reaches the batch's Envoy listener through envoy-standin.ts (the front run_case starts),
 # which answers a send to a session of the case's world as the listener answers a send to a live
 # session. A plain session records no `dispatch-read`: it has no launcher directory.
-# A case world names commits and no files (git-world.ts): each commit's tree holds CHANGES.md, a
+# A case world names commits and, where it states them, a commit's files (git-world.ts). A commit
+# that names files, or stands above one that does, holds the world's files alone: its first
+# parent's, with its own written over them. Every other commit's tree holds CHANGES.md, a
 # line for it and each commit under it, and, at each commit off the default branch's first-parent
 # line and every commit above one, a generated Go module: go.mod at the root and, for each `check`
 # block of the world's documents whose `run` is a `go test` command, in each package directory it
