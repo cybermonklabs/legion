@@ -35,67 +35,77 @@ package supervise
 //     another claim — comes back at the end of that decision (Machine.Handle, settleUntakenCredit),
 //     and so does the post that reaches a machine already holding a credit, which refreshPlugin
 //     releases at once because one machine holds one credit (the arrival rule).
-//   - A machine holds a credit only while a WakePluginRefresh wake of its own is parked or is
-//     having its turn, and every decision that ends with no such wake on the machine gives the
-//     credit back as it ends (Machine.unlock, endRefreshLane). Every path that drops, spends or
-//     never raises such a wake is covered by that one check without naming the lane at all — the
-//     branches of refreshPlugin that raise no relaunch, the refusal of every launch there is, the
-//     park of another kind over this lane's wake, the wake's own turn, and the process let go with
-//     the wake parked over it.
+//   - A machine holds a credit only while the launch of the lane it was admitted on is owed on
+//     the machine, wherever that launch waits (laneLaunchOwed): a WakePluginRefresh wake of its
+//     own, parked in the pacing, held by the project pause's gate or parked at its issue pod's
+//     start gate, or a retry of that launch on TimerRelaunch, armed where the store did not take
+//     its write of StateLaunching or did not answer its hold of the session or its lifecycle
+//     check (relaunchLater). The decision that runs a turn of that launch holds the credit to its
+//     end, and every decision that ends with no such launch owed gives the credit back as it ends
+//     (Machine.unlock, endRefreshLane). Every path that starts, drops or never raises such a
+//     launch is covered by that one check without naming the lane at all — the branches of
+//     refreshPlugin that raise no relaunch, a refused launch that arms no retry, the park of
+//     another kind over this lane's wake, a launch that starts its process or fails for good, a
+//     start that waits for the session store or for its pod's update round, whose retry is an
+//     ordinary launch's (startWaitsForStore, startWaitsForPodRound), and the process let go with
+//     the wake or the retry over it, by a suspension, the pause's stop or any other end (letGo).
 //
-// A credit that outlived its wake would cost the lane more than the credit: the machine goes on
+// A credit that outlived its launch would cost the lane more than the credit: the machine goes on
 // reading it as held, so its next uncredited post skips the gate and parks a wake the gate never
 // granted, which is the one thing this bound promises cannot happen (Machine.refreshCredit,
 // refreshPlugin).
 //
+// So the bound holds of the wakes themselves: every WakePluginRefresh wake in the pacing holds
+// the credit its launch was admitted on, no launch of the lane asks the gate a second time, and
+// the lane's wakes in the pacing are never more than K. Two relaunches of a stale plugin stand
+// outside the gate, and neither waits in the pacing as a wake of the lane: the project
+// controller's, which the pacing never holds and which takes no credit (reserveWake,
+// claim.IsController), and a stale registration's, which waits under the launch kind because it
+// is one claim's own launch (staleRegistration, relaunchStale).
+//
 // The correction is the backstop for a path that rule does not name, which the bound needs:
-// a credit a machine took and then let go without giving it back, or kept past the wake it was
+// a credit a machine took and then let go without giving it back, or kept past the launch it was
 // taken for, by a path that no decision's end reaches. At each sweep the gate asks the machine
 // that holds each credit granted before the previous correction whether it still holds it, and
 // waits on nothing to ask (Machine.reclaimCredit). A machine that is deciding keeps the credit,
 // because the decision may be the turn of the wake that credit paid for: the turn takes the wake
 // off the machine's view, and the credit comes back only as the decision ends. A machine between
-// decisions keeps it while it holds it with a refresh wake of its own waiting. Every other such
-// credit is taken back there and then, and logged, since a credit taken back is one a path gave
-// up without giving it back. A credit granted since the previous correction is kept whatever its
-// machine shows, so a correction never lowers the count below the admissions granted since the
-// sweep before. A lost credit is therefore kept through the first correction after its admission
-// and taken back at the second, when its machine no longer holds it; if its machine is deciding
-// then, it is taken back at the first correction after that which finds the machine between
-// decisions. A credit still in its post has no machine to ask: the decision of that post, or the
-// stop's close of the inbox it waits in, gives it back, a machine's feed decides every event it
-// takes, and nothing else drops an inbox.
+// decisions keeps it while the launch it was taken for is still owed, which it reads as the end
+// of a decision does (laneLaunchOwed). Every other such credit is taken back there and then, and
+// logged, since a credit taken back is one a path gave up without giving it back. A credit
+// granted since the previous correction is kept whatever its machine shows, so a correction never
+// lowers the count below the admissions granted since the sweep before. A lost credit is
+// therefore kept through the first correction after its admission and taken back at the second,
+// when its machine no longer holds it; if its machine is deciding then, it is taken back at the
+// first correction after that which finds the machine between decisions. A credit still in its
+// post has no machine to ask: the decision of that post, or the stop's close of the inbox it
+// waits in, gives it back, a machine's feed decides every event it takes, and nothing else drops
+// an inbox.
 //
 // No re-read lowers the count below the credits the correction keeps, and the order in which a
 // machine stores its view and gives a credit back cannot open a window in either direction. A
 // re-read is made of the views the machines publish, so it can miss a refresh posted a moment
-// before it, and a refresh whose turn is running (the turn takes the wake off the view before the
-// decision that runs it ends): each of those credits is still out, its machine keeps it, and the
-// count holds it. A re-read can also see a wake whose credit came back a moment before its
-// machine stored the view without it: the correction then counts one more than is out, which
-// admits one fewer until the next sweep.
+// before it, a refresh whose turn is running (the turn takes the wake off the view before the
+// decision that runs it ends), and a launch of the lane that waits outside the pacing — held by
+// the pause's gate, parked at its issue pod's start gate, or a retry — which no view shows as a
+// wake waiting: each of those credits is still out, its machine keeps it, and the count holds it.
+// A re-read can also see a wake whose credit came back a moment before its machine stored the
+// view without it: the correction then counts one more than is out, which admits one fewer until
+// the next sweep. Since every refresh wake in the pacing holds a credit, that lag is the one way
+// a reading exceeds the credits out.
 //
-// Holding a credit through the turn costs the lane while a relaunch is slow. A credit is out from
-// its admission to the end of the decision that runs its turn, and that decision includes the
-// relaunch itself, which under Kubernetes can wait minutes for a pod: while relaunches run, the
-// gate admits fewer than K new refreshes at a sweep, though fewer than K of the lane's wakes wait
-// in the pacing.
-//
-// Two windows of the lane lean the other way, and the correction answers both: each is a wake of
-// this lane that enters the pacing with no admission behind it and waits there until the next
-// correction counts it. The first is the retry of a refused launch: a launch of this
-// lane the lifecycle recheck refuses gives its credit back at the end of the decision that met
-// the refusal, wherever that refusal came from — the launch path's own pre-check, the recheck a
-// wake's turn makes, the relaunch a failure raises — and the retry that refusal may arm
-// re-enters the pacing asking this gate nothing (relaunchRefused, retryHolding). The second is
-// the retry of a launch whose write of StateLaunching failed: the credit went back at the end
-// of the decision that launch ran in, whether it waited a turn or ran where it was raised, and
-// the retry re-enters the gate asking it nothing in just the same way (launchTries,
-// relaunchLater).
-//
-// The bound a reader derives from this gate counts both: the lane can hold one wake over the
-// bound for each such retry waiting, and each of them costs it only until a sweep's correction
-// reads more refresh wakes waiting than credits out.
+// Holding a credit through every wait of its launch costs the lane while a relaunch is slow or
+// held. A credit is out from its admission to the end of the decision that leaves its launch owed
+// no longer, and that decision includes the relaunch itself, which under Kubernetes can wait
+// minutes for a pod. A retry keeps its credit for up to the probe interval it waits out
+// (probe_interval_seconds, 30 s by default); a wake the pause's gate holds keeps it until the
+// pause's stop drops the wake or the resume lets it out; and a try parked at its issue pod's start
+// gate keeps it until the grant. In two refresh waves of the INFRA daemon on 2026-11-25, 3 of 30
+// and 4 of 31 lane wakes parked at the pod's start gate, for 20 to 101 s, so about one credit in
+// ten was held up to about 100 s past its turn. While credits are held so, the gate admits fewer
+// than K new refreshes at a sweep, though fewer than K of the lane's wakes wait in the pacing, and
+// a wave drains a little more slowly; the bound does not change, and the other lanes keep the
+// share of the pacing it leaves them.
 //
 // It lives in this package rather than in internal/daemon because Deps already carries the rest
 // of the lane's facts (PluginContract, PluginRelaunchable, NoPluginInstall, WakePace) and because
@@ -179,8 +189,10 @@ func (c *RefreshCredit) holderNow() *Machine {
 	return c.holder
 }
 
-// RefreshGate is the gate itself: K credits, one held by each stale-plugin refresh the lane has
-// in the daemon's wake pacing, from its post to the end of the decision that runs its turn.
+// RefreshGate is the gate itself: K credits, one held by each stale-plugin relaunch from its post
+// until no launch of it is owed, in the pacing or outside it (the package doc's rule of return),
+// so the lane's WakePluginRefresh wakes in the daemon's wake pacing are never more than K. The
+// project controller's relaunch and a stale registration's are the two outside the gate.
 //
 // A rate of zero or less is the pacing off: the gate grants every request and corrects nothing.
 type RefreshGate struct {
@@ -193,9 +205,9 @@ type RefreshGate struct {
 	// in. It is exact: each credit leaves it when it is given back (RefreshCredit.Release), and
 	// nothing else removes one.
 	out map[*RefreshCredit]uint64
-	// held is what Admit bounds: never below the credits out, and above them by the refresh wakes
-	// the last correction read waiting beyond them — the lane's wakes with no admission behind them
-	// that the package doc names.
+	// held is what Admit bounds: never below the credits out, and above them only by the refresh
+	// wakes the last correction read waiting beyond them, which is the lag of a view its machine
+	// had not stored yet that the package doc names.
 	held int
 	// window counts the corrections made: a credit granted since the last one carries its value,
 	// and the next correction keeps such a credit whatever its machine shows.
@@ -259,10 +271,13 @@ func (g *RefreshGate) release(c *RefreshCredit) {
 // correction, and one still in its post, are kept. It then sets the held count to waiting, the
 // refresh wakes the sweep has just re-read in the pacing, or to the credits still out, whichever
 // is more. The re-read never lowers the count below those credits: it misses the refresh posted a
-// moment before it and the one whose turn is running, and the credits of both are out. A reading
-// above K is kept as it is rather than capped: the lane then holds more of the pacing than the
-// gate would grant, which is a fact about the wakes waiting, and the gate admits nothing until a
-// later correction reads fewer.
+// moment before it, the one whose turn is running and every launch of the lane that waits outside
+// the pacing, and the credits of all of them are out. Every refresh wake in the pacing holds a
+// credit, so the lane's wakes there are never more than K, and a reading above the credits out is
+// only the lag of a view: a wake whose credit came back a moment before its machine stored the
+// view without it, which admits one fewer until the next sweep. A reading above K, which only that
+// lag can make, is kept as it is rather than capped, and the gate admits nothing until a later
+// correction reads fewer.
 //
 // The machines are asked with the gate's lock released, since a machine gives a credit back under
 // its own lock and the credit's, and the gate's lock is the last of those.
@@ -339,8 +354,9 @@ func (m *Machine) laneLaunchOwed() bool {
 }
 
 // creditTakenBackMessage is the line a correction writes for each credit it takes back from a
-// machine that no longer holds it for a refresh wake (reclaimCredit), with the claim's state and
-// whether the machine holds any wake. It is pinned because a test reads it whole.
+// machine that no longer holds it for a launch of the lane (reclaimCredit, laneLaunchOwed), with
+// the claim's state and whether the machine holds any wake; the line's "refresh wake" is that
+// launch, wherever it waits. It is pinned because a test reads it whole.
 const creditTakenBackMessage = "supervise: the refresh gate's correction took back a credit this claim's machine no longer held for a refresh wake; a path gave it up without giving it back"
 
 // reclaimCredit is the gate's correction asking this machine whether it still holds credit, a
@@ -373,18 +389,20 @@ func (m *Machine) reclaimCredit(credit *RefreshCredit) {
 // endRefreshLane holds the stale-plugin lane to its invariants, at the one line every decision of
 // a machine ends on (Machine.unlock): the credit goes back unless a launch of the lane is still
 // owed on this machine (laneLaunchOwed), which is the one thing a credit is held for, from the
-// park that raises its wake to the end of the decision that runs its launch, through every wait
-// of that launch outside the pacing: a hold of the pause's gate, a wait at its issue pod's start
-// gate, and a retry on TimerRelaunch. The intent goes whatever the decision did with it: it names
-// one launch and no other, and a retry that still owes one carries it in its own closure
-// (retryHolding).
+// decision that raises that launch to the end of the decision that leaves it owed no longer,
+// through every wait of it: in the pacing, in the pause's gate, at its issue pod's start gate and
+// in a retry on TimerRelaunch. So every WakePluginRefresh wake in the pacing holds the credit its
+// launch was admitted on, and the lane's wakes there are never more than K (RefreshGate). The
+// intent goes whatever the decision did with it: it names one launch and no other, and a retry
+// that still owes one carries it in its own closure (retryHolding).
 //
-// So the credit outlives a park of this lane's own kind and no other (dispatch://INFRA-2712 R1):
-// that wake is the one the credit was taken for, whether it is parked for the first time or taken
-// up again (reserveWake, reparkWake). A park of any other kind replaces that wake — the second
-// launch raised over a claim whose refresh still waits, which reserveWake states — so the end of
-// that decision gives the credit back, since a credit whose wake is gone is worse than a credit
-// merely lost (RefreshGate).
+// The credit outlives a park or a retry of this lane's own kind and no other
+// (dispatch://INFRA-2712 R1): that launch is the one the credit was taken for, whether its wake is
+// parked for the first time or taken up again, or its retry waits (reserveWake, reparkWake,
+// relaunchLater). A park of any other kind replaces that wake — the second launch raised over a
+// claim whose refresh still waits, which reserveWake states — so the end of that decision gives
+// the credit back, since a credit whose launch is gone is worse than a credit merely lost
+// (RefreshGate).
 //
 // No decision of this package raises that second launch over a parked refresh today: the lane
 // returns over a claim that already holds a wake of any kind, a stale registration raises nothing

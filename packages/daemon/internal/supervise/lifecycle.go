@@ -91,20 +91,20 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // runParkedLaunchNow), and no decision of this package raises a launch over one still waiting
 // (endRefreshLane lists them).
 //
-// Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
-// retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
-// makes then waits under the lane that raised it rather than under the launch kind every other
-// launch takes (reserveWake, dispatch://INFRA-2712 R4). A retry armed here with the bare
-// relaunch would park under `launch`, where the reader this kind exists for counts no refresh of
-// a claim the lane is still working through, and where the correction the sweep makes from the
-// lane's own parked wakes never counts it at all (api.State.ClaimsToRefresh,
-// refreshStalePlugins in internal/daemon).
+// Why the retry such a refusal may arm carries the intent, and what holding the credit through
+// it costs the gate, is where retryHolding and the gate state it (retryHolding, RefreshGate): the
+// launch that retry makes then waits under the lane that raised it rather than under the launch
+// kind every other launch takes (reserveWake, dispatch://INFRA-2712 R4). A retry armed here with
+// the bare relaunch would park under `launch`, where the reader this kind exists for counts no
+// refresh of a claim the lane is still working through, and where the machine holds no credit for
+// it, so a relaunch of the lane would wait in the pacing outside the gate's bound
+// (api.State.ClaimsToRefresh, laneLaunchOwed).
 //
 // Two roads reach this line with an intent on the machine, and each is a retry of this lane
-// refused a second time: the retry a failed write of StateLaunching armed (launchTries), and the
-// retry the refused turn of this lane's own parked wake armed (runWake). Both put the intent
-// back as they run and raise the same launch anew from the top, whose own lifecycle check is
-// refused here (launchAfter, retryHolding).
+// refused a second time: the retry a failed write of StateLaunching or an unanswered hold of the
+// session armed (launchTries, relaunchAtProbe), and the retry the refused turn of this lane's own
+// parked wake armed (runWake). Both put the intent back as they run and raise the same launch
+// anew from the top, whose own lifecycle check is refused here (launchAfter, retryHolding).
 //
 // The other two callers hold no intent where they refuse, so the wrapping is inert for them.
 // The wake's turn took the intent off the wake it was parked with and puts it back only past
@@ -211,14 +211,18 @@ type waitingRelaunch struct {
 // relaunchLater leaves a claim whose process is already let go waiting launching with no process,
 // its task kept, and tries relaunch again after wait (TimerRelaunch, relaunchAgain): a relaunch
 // whose lifecycle check the store did not answer (relaunchRefused), or a launch whose write failed
-// (launchAfter), each at the probe interval, and a start the session store could not answer, at
-// its own minute (startWaitsForStore). Nothing else would relaunch such a claim before a restart,
-// which takes it up from what the store last holds.
+// or whose hold of the session the store did not answer (relaunchAtProbe), each at the probe
+// interval, and a start the session store could not answer or that waits for its pod's update
+// round, each at its own minute (startWaitsForStore, startWaitsForPodRound). Nothing else would
+// relaunch such a claim before a restart, which takes it up from what the store last holds.
 //
 // kind is the wake kind of the launch relaunch retries, recorded with it. A retry of a launch of
 // the stale-plugin lane is that lane's launch still owed, so the machine keeps the credit of the
 // refresh gate that launch was admitted on until the retry is dropped, or runs and leaves nothing
-// of that launch owed (laneLaunchOwed, endRefreshLane).
+// of that launch owed (laneLaunchOwed, endRefreshLane). The retries of a start that waits for the
+// session store or for its pod's update round pass WakeLaunch whatever launch they retry: each
+// waits on a fault outside the daemon or on a pod's round, which can take hours, and a credit
+// held that long would stop the lane (startWaitsForStore, startWaitsForPodRound).
 func (m *Machine) relaunchLater(wait time.Duration, kind WakeKind, relaunch func(context.Context) error) {
 	m.claim.State = StateLaunching
 	m.relaunch = &waitingRelaunch{retry: relaunch, kind: kind}

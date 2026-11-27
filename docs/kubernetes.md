@@ -4738,7 +4738,11 @@ Nothing opens such a round now, and a boot takes every claim an earlier daemon l
 The pod update round is untouched by all this: it replaces a pod and its disk, so it still asks each role it waits for, before the pod goes, to push its work, let its subagents and background jobs finish or stop them and push what they made, and it ends at its bound whatever the roles answer ("Pinning a release that drops what a running pod still uses" above).
 
 How many of those relaunches are in the pacing at once is bounded, because the lane shares one queue with every wake that starts or continues a tree's work.
-A gate grants the lane `worker_wakes_per_minute` credits (`RefreshGate` in `internal/supervise/gate.go`), one held by each relaunch from the moment the pass posts it until its wake runs, so the lane holds about a minute of the pacing and a newly admitted tree's first launch waits that long rather than the whole fleet's refresh.
+A gate grants the lane `worker_wakes_per_minute` credits (`RefreshGate` in `internal/supervise/gate.go`), one held by each relaunch from the moment the pass posts it until no launch of that relaunch is owed, so the lane holds about a minute of the pacing and a newly admitted tree's first launch waits that long rather than the whole fleet's refresh.
+A relaunch keeps its credit through a retry, a hold of the project pause's gate and a wait at its issue pod's start gate.
+So each `plugin-refresh` wake in the pacing holds a credit, and the lane never has more than `worker_wakes_per_minute` wakes in the pacing.
+A start that waits for the session store or for the pod's update round gives its credit back, because that wait can take hours.
+The retry of that start waits as a plain `launch` wake.
 The pass re-reads the machines' own waiting wakes at every orphan sweep and corrects the count, and the sweep posts the next credits' worth, so a fleet of N stale sessions drains in about N ÷ rate minutes.
 A deployment with `worker_wakes_per_minute: 0` has no pacing and no gate, and the pass admits every stale claim in one tick.
 Each of those relaunches waits under a wake kind of its own, `plugin-refresh`, which no other launch carries, so `wakesWaiting` on `GET /legion/v1/state` tells a fleet's refresh from the launches that start work; `claimsToRefresh` on the same body is what the lane still has to do, which the wakes cannot say while the gate holds only a minute of them.
