@@ -96,7 +96,8 @@ The time before the proof step is two figures, one observed and one a bound:
 - 1050 s, a bound: this branch's step "Download the Go modules this job builds",
   5 x 180 + 150 = 1050 s, which those runs did not have.
 
-42 + 1050 + 5880 = 6972 s -> 117 min. The first sum, the script's 75 minutes plus the proof
-step's 1350 s, is 5850 s -> 98 min. Rounding the larger sum leaves 48 s to spare. The 42 s
-is not a bound: with the full module retry bound spent and more than 90 s spent by the other
-setup steps, the job can stop the proof before its own deadline (dispatch://INFRA-1545, round 72).
+42 + 1050 + 5880 = 6972 s -> 117 min. The first sum is 42 + 4500 + 1350 = 5892 s -> 99 min:
+the job's measured duration, its 42 s of setup and the script's 75 minutes, plus the proof
+step's 1350 s. Rounding the larger sum leaves 48 s to spare. The 42 s is not a bound: with the
+full module retry bound spent and more than 90 s spent by the other setup steps, the job can
+stop the proof before its own deadline (dispatch://INFRA-1545, round 72).

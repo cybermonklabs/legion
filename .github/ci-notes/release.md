@@ -611,9 +611,9 @@ a whole-run rerun of this image needs, and says there why the write is a replace
 
 ## The release jobs' budgets
 
-Each job carries the budget it carried before dispatch://INFRA-1545 as its first term, the
-measured minutes its `timeout-minutes` held, plus the arithmetic of its single slowest retried
-step alone, the rule of the Budgets note of .github/ci-budgets.md. publish and
+Each job's limit follows .github/ci-budgets.md#the-budgets-note. Its measured term is the budget
+it carried before dispatch://INFRA-1545, the measured minutes its `timeout-minutes` held, and each
+line below names its slowest retried step. publish and
 worker_image_release also set `JOB_TIMEOUT_MINUTES` to their own `timeout-minutes`, which
 gh-read.sh's wait for a spent API budget stays within (check-workflow-files.sh holds them equal).
 

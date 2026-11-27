@@ -8,9 +8,8 @@ the reasoning behind it is here, as `.github/ci-notes/README.md` says.
 
 ## The jobs' budgets
 
-Each job carries the budget it carried before dispatch://INFRA-1545 as its first term, plus the
-arithmetic of its single slowest retried step, the rule of the Budgets note of
-`.github/ci-budgets.md`.
+Each job's limit follows .github/ci-budgets.md#the-budgets-note. Its measured term is the budget
+the job carried before dispatch://INFRA-1545, and each line below names its slowest retried step.
 
 - `targets`: 600 s, the measured 10 minutes this job carried, plus its slowest retried step
   alone: the leak-guard fetch of the release-push.sh steps, 6 call sites of one 450 s fetch =

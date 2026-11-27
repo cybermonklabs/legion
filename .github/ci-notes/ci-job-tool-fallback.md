@@ -133,7 +133,7 @@ dispatch://INFRA-1545 that figure counted the first five rows alone, 3 x 1708 + 
 since main's #5152. The job's key is built from the part-by-part construction
 .github/ci-budgets.md's "The tool-fallback job's budget, part by part" writes: 207 + 18 = 225,
 with the ten minutes it always had 235, and one minute more, since 235 minutes, 14100 s, falls
-10 s under the Budgets note's sum, as review round 29 of dispatch://INFRA-1545 first found the
+10 s under the Budgets note's first sum, as review round 29 of dispatch://INFRA-1545 first found the
 key 6 s under it. It clears that sum: this job's 28.7-minute run of job 129478173535, 1722 s,
 with the seven steps of the helm row added at the 5 s they took in job 137926467879
 (`install-helm` 3 s, and cases 17 and 18 2 s in all, in the merge-group run of main's #5152),

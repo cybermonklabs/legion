@@ -98,21 +98,14 @@ dispatch-browser-pr, on a pull request that selects both, and passes its own id 
 every caller does: so its artifacts are `dispatch-references-…` beside `dispatch-browser-pr-…`,
 and each merge job reads only its own caller's legs.
 
-A step that holds a retried download carries its own retry arithmetic instead of a measured
-maximum - five attempts at the call's own bound with the helper's sleeps between them,
-5 x <bound> + 150 s, or 8 x <bound> + 127 s where curl makes the attempts itself - at the next
-whole minute strictly above it (dispatch://INFRA-1545). A job carries a first term - the budget
-the measured rule above gives it, which every job derives from its own table - plus the
-arithmetic of its single slowest retried step alone, never the sum of every retried step, and
-it stands above its largest step budget, so it cancels no step the step's own bound was meant
-to end. The sum answers the wrong case: a job whose every download exhausts every attempt at
-once has met an outage of the host rather than the transient fault a retry survives, and in an
-outage failing at the job's budget is the right behaviour, where each step's own budget is
-where that step's exhausted retry stops. .github/ci-budgets.md's Budgets note writes that rule
-down in full, and .github/scripts/check-download-retry.sh's rule 8 is what refuses a step or a
-job that carries less than its own arithmetic. Where a job's line below writes `<a> + <b> = <c>
-s -> <key> min`, the first term is that measured budget and the second the slowest retried
-step's ladder.
+A step that holds a retried download, and a job that holds such a step, take their budgets from
+.github/ci-budgets.md#the-budgets-note (dispatch://INFRA-1545). The step carries its own retry
+arithmetic there instead of a measured maximum, and the job's measured term is the budget the
+measured rule above gives it, which every job derives from its own table.
+.github/scripts/check-download-retry.sh's rule 8 refuses a step or a job whose budget does not
+strictly exceed the retry arithmetic it holds. Where a job's line below writes
+`<a> + <b> = <c> s -> <key> min`, the first term is that measured budget and the second the
+slowest retried step's ladder.
 
 ## Why GOPROXY falls through to direct
 

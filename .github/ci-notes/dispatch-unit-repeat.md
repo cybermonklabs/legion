@@ -35,8 +35,8 @@ times the fastest. Taken once, those maxima would give 69, 9 and 136 minutes in 
 and 140, before the retry term below. The job budget stays a backstop behind the step's, and
 decides no verdict.
 
-`retry_seconds` is the retry arithmetic of the job's single slowest retried step, which
-`dispatch-browser.md`'s rule adds to every job of this repository that retries a download
+`retry_seconds` is the retry arithmetic of the job's single slowest retried step, the term
+.github/ci-budgets.md#the-budgets-note adds for a job that retries a download
 (dispatch://INFRA-1545): the setup-bun step's two `ci_tools_fetch` calls at 3416 s
 (`ci-budgets.md`'s Budgets note), above the workspace install's 1050 s and the harness leg's zsh
 install's 1400 s. With it the three jobs take 127, 67 and 197 minutes. The download gate reads no

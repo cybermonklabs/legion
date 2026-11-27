@@ -882,8 +882,9 @@
 #      landed at 17:22:16.7444966Z and the runner's kill at 17:22:16.7483230Z, four milliseconds
 #      apart. Lose that race and the step reports GitHub's bare `The action '…' has timed out
 #      after 5 minutes.` instead of naming the site and its attempts, which is the loud failure
-#      the retry exists to give. GitHub's granularity is the minute, so a whole minute is the
-#      smallest margin that can be written.
+#      the retry exists to give. GitHub's granularity is the minute, so the least budget this
+#      rule passes is the next whole minute strictly above the arithmetic, a margin of 60 s or
+#      less: 1050 s passes under 18 minutes, 1080 s.
 #
 #      A step holding an arithmetic above zero and writing no `timeout-minutes` at all is
 #      refused with the figure it needs. A budget that does not exist is judged by nothing, and
@@ -955,9 +956,8 @@
 #      instance, in its step `Check the package holds every row of .github/ci-images.yaml`: its
 #      reads are `urlopen` calls inside .github/scripts/check-ci-images.sh, held to the floor by
 #      rule 6 and budgeted by hand.
-#      This is the rule ci-budgets.md's Budgets note already writes for a reader — a job carries its
-#      measured duration plus the arithmetic of its slowest retried step — read here as the
-#      half a check can make, which is the arithmetic and not the measurement.
+#      A job's limit is derived in .github/ci-budgets.md#the-budgets-note, and this rule
+#      reads the half of it a check can make, which is the arithmetic and not the measurement.
 #      That half is read twice, because one reading of it left a whole class green. A job is
 #      refused when its ceiling sits at or under a step's RETRY ARITHMETIC, and refused again
 #      when its ceiling is not above that step's OWN `timeout-minutes`: the second is what
@@ -1249,10 +1249,9 @@
 #      what lets that fetch's last attempt name itself rather than GitHub's bare timeout line
 #      cutting it. What it does not cover:
 #      two separate fault windows in one build, on two hosts at different times, each needing a ladder of its own.
-#      The comparison is the one half a check can make: the build's measured duration is no
-#      figure this check can read, so the price comment above the key carries both terms, the
-#      measured build and the ladder, and the key is priced at their sum. This is no change to
-#      rule 8, which still sums every ladder of a workflow step's own calls and charges a
+#      The check reads only the ladder. The build step's limit also includes the observed time
+#      for its other work. For the job's limit, use .github/ci-budgets.md#the-budgets-note.
+#      Rule 8 still sums every ladder of a workflow step's own calls and charges a
 #      Dockerfile's to none. A composite action's step is read for its file and not for a key,
 #      since GitHub takes none there.
 #
@@ -6627,9 +6626,8 @@ for path, who, target, step, job, holder in dockerfile_built:
                 "fetches one after another, so a fault window is paid once, through the first "
                 "fetch that meets it, and that one ladder is what the build can wait for above "
                 "its measured duration: a key at or under it cuts that fetch before its last "
-                "attempt can name it (rule 10; dispatch://INFRA-1545, round 37). Price the key "
-                f"as the build's measured duration plus {ladder} s, both terms in the comment "
-                "above it, and write the whole minute strictly above their sum.")
+                "attempt can name it (rule 10). Allow time for the rest of the build in "
+                "the step's limit. Derive the job's limit from .github/ci-budgets.md#the-budgets-note.")
 
 # ---------------------------------------------------------------- the verdict
 
@@ -10495,9 +10493,10 @@ for budget in budgets:
             f"{job_carries}, and its step '{step_name(budget)}' holds retries taking {cost} s to "
             "exhaust, which that budget does not strictly exceed. A job whose ceiling sits at or "
             "under one of its own steps' arithmetic cuts that step before the step's own budget "
-            "can name the site that failed, so the step's `timeout-minutes` buys nothing: a job "
-            "carries its measured duration plus the arithmetic of its slowest retried step, which "
-            "is the rule ci-budgets.md's Budgets note writes out. ", "."))
+            "can name the site that failed, so the step's `timeout-minutes` buys nothing. This "
+            "check holds a job's ceiling above each of its steps' retry arithmetic, which is a "
+            "floor under the job limit .github/ci-budgets.md#the-budgets-note derives, not that "
+            "limit. ", "."))
         problems.append("")
         continue
     if allowed <= budget.minutes:
@@ -10521,9 +10520,9 @@ for budget in budgets:
             "ceilings therefore ends the run mid-ladder and reports GitHub's bare "
             "`The job running on runner … has exceeded the maximum execution time` instead "
             "of the step naming the site that failed, which is the same loss the step-budget "
-            "refusal refuses by another road. The Budgets note derives a job budget as its "
-            "measured duration plus its slowest retried step's whole ladder, and a program "
-            "cannot read a measurement, so this is the half of that rule a check can hold. ",
+            "refusal refuses by another road. This check holds a job's ceiling above each of its "
+            "steps' own `timeout-minutes` and reads no measurement, so what it asks is a floor "
+            "under the job limit .github/ci-budgets.md#the-budgets-note derives. ",
             ", or the figure that job's own comment derives, whichever is larger. "
             "(dispatch://INFRA-1545, round 27: twenty-two job keys stood below their own "
             "documented derivation while this check was green, because it read only a step's "
@@ -10661,9 +10660,10 @@ for path in sorted(set(budget.path for budget in budgets)):
                     "Rewrite the sentence from the figures this check prices, or correct the "
                     "key.")
 
-# Rule 8, the job's own derivation, read against the sum the job's own comment states — the
-# Budgets note's whole rule, a measured term plus the arithmetic of the single slowest retried
-# step — where the comment ties that sum to this key as `<measured> + <step> = <total> s ->
+# Rule 8, the job's own derivation, read against the sum the job's own comment states — a
+# measured term plus the arithmetic of the single slowest retried step, the first of the two
+# sums .github/ci-budgets.md#the-budgets-note compares, whose second this clause does not read —
+# where the comment ties that sum to this key as `<measured> + <step> = <total> s ->
 # <key> min`. The second term is recomputed from THIS CHECK'S OWN STEP ARITHMETIC and never
 # from a figure scraped from prose, because three hand readers of this class each mis-paired a
 # figure with a block that did not own it, one reading a job as 268 minutes by swallowing a
@@ -10699,7 +10699,7 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     with ten minutes added` and, at the staging step's 207 minutes, 207 + 18 = 225 and 235 with
 #     the ten, and the comment above its key (the `tool-fallback` job's `timeout-minutes: 236`,
 #     which .github/workflows/ci-job-tool-fallback.yaml writes since the merge of main's #3675) also
-#     writes the Budgets note's sum, `1727 + 12383 = 14110 s -> 236 min` since review round 36
+#     writes the Budgets note's first sum, `1727 + 12383 = 14110 s -> 236 min` since review round 36
 #     of dispatch://INFRA-1545 counted every staged row, which this clause reads and which the
 #     key's 14160 s strictly exceeds.
 # Each of the three has a harness case that pins it, so a change that starts or stops reading one
@@ -10734,11 +10734,11 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
         least, why = job_key_floor(path, job, total // 60 + 1)
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
-                f"own comment derives {measured} + {term} = {total} s, which that key does not strictly exceed. A job "
-                "is its measured duration plus the arithmetic of its slowest retried step "
-                "(ci-budgets.md's Budgets note), so a key at or under the sum the comment itself "
-                "states reports GitHub's bare timeout line part way through a step that is still "
-                f"inside its own budget. {why}Write `timeout-minutes: {least}` or more, or "
+                f"own comment derives {measured} + {term} = {total} s, which that key does not strictly exceed. This "
+                "clause reads that sum, a measured term plus the slowest retried step's arithmetic, and no "
+                "other part of the job limit .github/ci-budgets.md#the-budgets-note derives. A key at or "
+                "under the sum its own comment states reports GitHub's bare timeout line part way through a "
+                f"step that is still inside its own budget. {why}Write `timeout-minutes: {least}` or more, or "
                 "correct the derivation.")
         continue
     recomputed = measured + row["cost"]

@@ -91,15 +91,14 @@ jobs:
           REQUESTED: ${{ inputs.script }}
         run: .github/scripts/select-e2e-proofs.sh
 
-  # One job per proof. Its limit is the script's own row of .github/e2e-scripts.json: that
-  # script's measured duration with headroom — child-adoption drives eleven steps of a whole
-  # booted daemon through its envelopes and routes, and every proof builds its driver first —
-  # plus the retry arithmetic of the slowest retried step the row selects, which is install-jj's
-  # for a row whose `jj` is true, setup-bun's for a `bun` row that installs no jj, and the apt
-  # steps' for a row that takes neither. Those three figures are written in that file's own
-  # comment beside the rows they size, and in the steps below beside the steps they come from,
-  # and this comment writes none of them: a step re-priced below moves every row selecting it,
-  # and the row list is where that move is counted.
+  # One job per proof. Its limit is the script's own row of .github/e2e-scripts.json, the larger
+  # sum of .github/ci-budgets.md#the-budgets-note. The row's inputs are that script's measured
+  # duration with headroom — child-adoption drives eleven steps of a whole booted daemon through
+  # its envelopes and routes, and every proof builds its driver first — and the slowest retried
+  # step the row selects, which that file's own comment names for each kind of row. Those
+  # figures are written in that comment beside the rows they size, and in the steps below beside
+  # the steps they come from, and this comment writes none of them: a step re-priced below moves
+  # every row selecting it, and the row list is where that move is counted.
   # .github/scripts/check-download-retry.sh's rule 8 reads no number out of the expression
   # below, so it says nothing about these rows at all: that list's own comment holds the
   # arithmetic, and holds it by hand.

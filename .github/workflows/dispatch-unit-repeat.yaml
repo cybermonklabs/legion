@@ -141,8 +141,8 @@ jobs:
         # set from them, with a margin of twice the slowest, each line's arithmetic beside it. The
         # job takes the other steps twice too, where dispatch-browser.yaml's rule takes them once:
         # a margin of this file's own, which the notes measure. The job also takes retry_seconds,
-        # the retry arithmetic of its single slowest retried step alone, by the rule
-        # dispatch-browser.yaml's head states: the setup-bun step's two `ci_tools_fetch` calls at
+        # the retry arithmetic of its single slowest retried step alone, the term
+        # .github/ci-budgets.md#the-budgets-note adds: the setup-bun step's two `ci_tools_fetch` calls at
         # 3416 s (ci-budgets.md's Budgets note), above the workspace install's 1050 s and the
         # harness leg's zsh install's 1400 s. check-download-retry.sh's rule 8 reads no number out
         # of job_minutes (its paragraph A CEILING WRITTEN AS AN EXPRESSION names this job), so the

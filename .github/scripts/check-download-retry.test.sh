@@ -15693,12 +15693,16 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "passes the literal program whose first line names python3, run by xargs behind env" \
   "$(is "$(contains "$out" "step 'Hand the program to xargs behind env'")" false)"
-check "refuses the built path xargs runs, at the run" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=14::step 'Hand a built path to xargs behind env' of job 'build' runs .xargs., which runs .\$tool., whose last path element is an expansion, so this check cannot name the script that runs there")"
-check "and at the assignment that builds it" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=13::step 'Hand a built path to xargs behind env' of job 'build' writes .tool=.github/scripts/zz-wrap.py. in the words before its command, a variable's value or a wrapper's argument, and it names .github/scripts/zz-wrap.py")"
-check "refuses the program with no first line as the command word xargs runs" \
-  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=16::step 'Hand a program with no first line to xargs behind env' of job 'build' writes ..github/scripts/zz-plain.py. as a command word that does not open with a .#!. line naming its own interpreter, and it names .github/scripts/zz-plain.py")"
+check 'refuses the built path xargs runs at line 14, naming the step, the job, xargs and $tool' \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=14::' \
+    'Hand a built path to xargs behind env' build xargs '$tool')"
+check "and the assignment that builds it at line 13, naming the step, the job, the assignment and its path twice" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=13::' \
+    'Hand a built path to xargs behind env' build 'tool=.github/scripts/zz-wrap.py' .github/scripts/zz-wrap.py)"
+check "refuses at line 16 the program with no first line as the command word xargs runs, naming the step, the job, its path twice and #!" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=16::' \
+    'Hand a program with no first line to xargs behind env' build .github/scripts/zz-plain.py \
+    .github/scripts/zz-plain.py '#!')"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
 
 # W17. Six glob shapes the Spec draft's review drove past the gate at bd06b2a2, each exit 0 under
