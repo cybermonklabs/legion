@@ -95,6 +95,7 @@ func motoUser(t *testing.T, endpoint string, root motoKeys, name, policy string)
 // the config holds with no credential of its own lets that endpoint sign in, and the using line
 // says so.
 func TestTheBuiltCLIAgainstMoto(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBroker, main.startSecretBrokerWith, t.Setenv at secret_test.go:293).
 	endpoint := os.Getenv("AGENT_SECRETS_MOTO_URL")
 	if endpoint == "" {
 		t.Fatal("AGENT_SECRETS_MOTO_URL is unset: run packages/envoy/scripts/aws-moto-check.sh, which starts moto and names it")

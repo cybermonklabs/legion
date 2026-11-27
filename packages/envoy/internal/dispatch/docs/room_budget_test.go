@@ -419,7 +419,7 @@ func TestTheDocumentSocketChargesNothingUntilItsRoomLoads(t *testing.T) {
 	})
 	t.Run("its admission load fails", func(t *testing.T) {
 		watch.failing.Store(failing)
-		if connection, err := dialDocument(httpServer.URL, failing); err == nil {
+		if connection, err := dialDocument(t, httpServer.URL, failing); err == nil {
 			_ = connection.Close()
 			t.Fatal("the socket opened, want the failed load answered 503")
 		} else if !strings.Contains(err.Error(), "503") {
@@ -430,7 +430,7 @@ func TestTheDocumentSocketChargesNothingUntilItsRoomLoads(t *testing.T) {
 	})
 	t.Run("the budget has no room for it", func(t *testing.T) {
 		// One room a browser holds, which no sweep may close, and a limit under its charge.
-		holder, err := dialDocument(httpServer.URL, joined)
+		holder, err := dialDocument(t, httpServer.URL, joined)
 		if err != nil {
 			t.Fatalf("open the room that fills the budget: %v", err)
 		}
@@ -457,7 +457,7 @@ func TestTheDocumentSocketChargesNothingUntilItsRoomLoads(t *testing.T) {
 		requireNothingCharged(t, service)
 	})
 	t.Run("it joins its room", func(t *testing.T) {
-		connection, err := dialDocument(httpServer.URL, joined)
+		connection, err := dialDocument(t, httpServer.URL, joined)
 		if err != nil {
 			t.Fatalf("open the document: %v", err)
 		}
@@ -494,7 +494,7 @@ func TestTheRoomBudgetClosesUnusedRoomsAndRefusesWhenNoneIsLeft(t *testing.T) {
 	ids := createDocuments(t, database, 3)
 	used, written, refused := ids[0], ids[1], ids[2]
 
-	connection, err := dialDocument(httpServer.URL, used)
+	connection, err := dialDocument(t, httpServer.URL, used)
 	if err != nil {
 		t.Fatalf("open the document in use: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestTheRoomBudgetAdmissionWaitsForItsSweepAndIsAdmittedIntoTheRoomItMakes(t
 	// the admission passes.
 	service.SetRoomBudgetForTest(charged - 1)
 	t.Cleanup(func() { service.SetRoomBudgetForTest(0) })
-	connection, err := dialDocument(httpServer.URL, joining)
+	connection, err := dialDocument(t, httpServer.URL, joining)
 	if err != nil {
 		t.Fatalf("an admission to a budget its unused rooms fill was refused: %v", err)
 	}
@@ -964,7 +964,7 @@ func TestTheRoomBudgetClosesARoomTheServerOpenedOverItOnceUnusedAndNeverABrowser
 			service.budget.full.Load(), service.srv.GetDoc(opened) != nil, service.srv.GetDoc(joined) != nil)
 	}
 
-	connection, err := dialDocument(httpServer.URL, joined)
+	connection, err := dialDocument(t, httpServer.URL, joined)
 	if err != nil {
 		t.Fatalf("open the room the server opened: %v", err)
 	}
@@ -1247,7 +1247,7 @@ func (s *admissionWatchStore) requireChargedAtLoad(t *testing.T, room string, wa
 // close it at once with code and reason, before any sync.
 func requireClosedAtUpgrade(t *testing.T, serverURL, room string, code int, reason string) {
 	t.Helper()
-	connection, err := dialDocument(serverURL, room)
+	connection, err := dialDocument(t, serverURL, room)
 	if err != nil {
 		t.Fatalf("open the document: %v, want an upgrade the server closes", err)
 	}

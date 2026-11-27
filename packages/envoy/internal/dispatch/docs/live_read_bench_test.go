@@ -13,6 +13,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // BenchmarkLiveDocumentRead measures what a read of a resident room costs by each way it can be
@@ -301,7 +302,7 @@ func benchmarkKeystrokeUpdate(b *testing.B, live *crdt.Doc) []byte {
 func observedReplica(tb testing.TB, service *Service, live *crdt.Doc, rendering *replicaRendering) *renderedReplica {
 	tb.Helper()
 	log := live.OpenUpdateLog()
-	tb.Cleanup(log.Close)
+	testcleanup.Add(tb, log.Close)
 	replica := service.keepReplica(live, log, rendering, nil)
 	live.Transact(func(*crdt.Transaction) {})
 	replica.observe("bench")

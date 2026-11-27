@@ -4672,7 +4672,7 @@ func matchGrants(windows []grantWindow, holds []loadSlotHold) []int {
 // the server does bound is the time a caller's request may spend WAITING at the pod's memory
 // bounds - its write limiter and its load slots - which is fifteen seconds from the request's
 // arrival, after which the write is refused 503 rather than left waiting for the client to give
-// up (docs.WriteWaitBound, docs.BoundWriteWait, api's trackTransactions). The client is the one
+// up (docs.WriteWaitBound, docs.BoundWriteWait, api's markCallerRequest). The client is the one
 // every agent's `dispatch` command goes through, which bounds each HTTP call at
 // DISPATCH_TOOL_DEADLINE_MS, 60 seconds (packages/envoy-client/src/dispatch-http.ts:291,
 // requestSignal).
@@ -6709,7 +6709,7 @@ func firstXMLText(node any) *crdt.YXmlText {
 // budget holds at that weight.
 func (h *memoryHarness) readCacheFill(t *testing.T) ([]string, int64) {
 	t.Helper()
-	markdown := heaviestAdmitted(t, func(units int) string { return strings.Repeat("# a\n", units) })
+	markdown := heaviestAdmittedNamed(t, "headings")
 	weight, err := docs.DocumentReadWeightForTest(markdown)
 	if err != nil {
 		t.Fatalf("weigh the cache-fill document: %v", err)

@@ -37,7 +37,7 @@ type SessionEntry struct {
 	// refused (cmd/listener's subscribeHandler), and no delivery opens a connection to a
 	// session. The field is kept because every released client parses it in the listener's
 	// answers, and because an entry an older listener stored can still carry a port until it
-	// lapses (the session bucket's TTL, 5 minutes by default).
+	// lapses (at the session bucket's TTL).
 	Port           int      `json:"port"`
 	MachineID      string   `json:"machine_id"`
 	Dir            string   `json:"dir"`
@@ -65,9 +65,9 @@ type SessionEntry struct {
 	// Delivery is DeliveryConsumer when the session registered for consumer delivery and the
 	// listener it registered through holds its session consumer (bus.SessionConsumers): the
 	// session's stored messages reach it from that consumer, relayed by the listener that owns it,
-	// so the durable path acknowledges them with nothing to deliver and no exception
-	// (Resolve). Empty for a session on the core path: a plugin that did not ask, an older
-	// listener, or a hub that refused the consumer.
+	// so the topic fan-out acknowledges them with nothing to deliver and no exception (Resolve).
+	// Empty for a session on the core path: a plugin that did not ask, an older listener, or a
+	// hub that refused the consumer.
 	Delivery string `json:"delivery,omitempty"`
 	// Epoch is the session's delivery epoch while Delivery is DeliveryConsumer: a random string per
 	// plugin NATS connection, so a new one tells the relay the session reconnected and its consumer
@@ -75,26 +75,25 @@ type SessionEntry struct {
 	Epoch string `json:"epoch,omitempty"`
 	// ConsumerStart is the stream sequence the session's consumer starts at, as the registration
 	// that wrote this entry read it (bus.SessionConsumers.Ensure). Every stored message at or after
-	// it is the consumer's to deliver. One below it is in no consumer, and since a session receives
-	// only what its own consumer relays, the durable path does not deliver it; which message it
-	// NAKs, defers or skips, and what it logs, is decided by agentSubjectDelivery and
-	// fanoutDelivery in cmd/listener/delivery.go (Resolve, ConsumerHoldsStored). A restart of the
-	// consumer normally moves its start forward, to the sequence after its ack floor, past messages
-	// it has acked, so a start recorded before that restart still names a sequence the consumer
-	// covers from. Only a registration writes this field (cmd/listener sessionEntryFromSubscribe),
-	// though, so a repair or a relay restart that creates the consumer below it leaves it above the
-	// consumer's real start until the session's next registration rewrites it. A create that clamps
-	// a start past the stream's end to the stream's first sequence does that where an earlier build
-	// or a restored stream left a start past the end here, and so does a restart at an ack floor
-	// the server lowered after the stream lost data, or at the stream's first sequence after its
-	// sequences went back (bus.SessionConsumers.create, bus.SessionConsumers.RestartAtFloor). Until
-	// then a message between the two starts reads as in no consumer, so the durable path does not
-	// deliver it; which message it NAKs, defers or skips, and what it logs, is decided by
-	// agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go. The consumer holds that
-	// message all the same and its relay delivers it, and once the next registration has rewritten
-	// the start, ConsumerHoldsStored answers that the consumer holds it. Zero for a session on the
-	// core path, and for one whose entry an earlier release wrote, which the durable path reads as
-	// today: the consumer holds every stored message of it.
+	// it is the consumer's to deliver. One below it is in no consumer, and the topic fan-out
+	// counts it as a delivery that failed (fanoutDelivery in cmd/listener/delivery.go; Resolve,
+	// ConsumerHoldsStored). A message on the session's own agent subject is not judged by this
+	// field: the listener acknowledges it while the session has a record (cmd/listener's
+	// agentSubjectNeedsDelivery). A restart of the consumer normally moves its start forward, to
+	// the sequence after its ack floor, past messages it has acked, so a start recorded before that
+	// restart still names a sequence the consumer covers from. Only a registration writes this
+	// field (cmd/listener sessionEntryFromSubscribe), though, so a repair or a relay restart that
+	// creates the consumer below it leaves it above the consumer's real start until the session's
+	// next registration rewrites it. A create that clamps a start past the stream's end to the
+	// stream's first sequence does that where an earlier build or a restored stream left a start
+	// past the end here, and so does a restart at an ack floor the server lowered after the stream
+	// lost data, or at the stream's first sequence after its sequences went back
+	// (bus.SessionConsumers.create, bus.SessionConsumers.RestartAtFloor). Until then a message
+	// between the two starts reads as in no consumer to the topic fan-out. The consumer holds
+	// that message all the same and its relay delivers it, and once the next registration has
+	// rewritten the start, ConsumerHoldsStored answers that the consumer holds it. Zero for a
+	// session on the core path, and for one whose entry an earlier release wrote, which the
+	// fan-out reads as today: the consumer holds every stored message of it.
 	ConsumerStart uint64 `json:"consumer_start,omitempty"`
 	// Plugin is the npm package the session registered through and PluginVersion that plugin's
 	// build; both empty for a session whose plugin predates the fields.
@@ -188,12 +187,13 @@ const DeliveryConsumer = "consumer"
 
 // ConsumerHoldsStored reports whether the session's own consumer holds the stored message of stream
 // sequence storedSeq, so no delivery path owes it anything: a session on consumer delivery is held
-// every message at or after the sequence its consumer starts at (ConsumerStart). A durable message
-// below that start is in no consumer — one NAKed, or deferred, before the consumer was created, and
-// redelivered after it — and the durable path does not deliver it; which message it NAKs, defers or
-// skips, and what it logs, is decided by agentSubjectDelivery and fanoutDelivery in
-// cmd/listener/delivery.go. storedSeq 0 names a message that is not the durable's copy of a stored
-// one (a core frame), whose stored copy the consumer holds whatever its sequence.
+// every message at or after the sequence its consumer starts at (ConsumerStart). A stored message
+// below that start is in no consumer, and the topic fan-out counts it as a delivery that failed
+// (fanoutDelivery in cmd/listener/delivery.go). A message on the session's own agent subject is
+// not judged here: the listener acknowledges it while the session has a record, whatever its
+// consumer holds (cmd/listener's agentSubjectNeedsDelivery). storedSeq 0 names a message that is
+// not the durable's copy of a stored one (a core frame), whose stored copy the consumer holds
+// whatever its sequence.
 func (e SessionEntry) ConsumerHoldsStored(storedSeq uint64) bool {
 	return e.Delivery == DeliveryConsumer && (storedSeq == 0 || storedSeq >= e.ConsumerStart)
 }
@@ -222,12 +222,13 @@ func WithSessionReplicas(n int) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.replicas = n }
 }
 
-// BucketMaxAge is the maximum age OpenSessionRegistry creates the envoy_sessions bucket with, and
-// so the age a registration record lives for in a deployment that sets no ENVOY_SESSION_MAX_AGE
-// (WithSessionMaxAge). A record the bucket expires reads gone, whatever its own age says, so a
-// reader that acts on a gone session - the role claim reaper's period, say
-// (cmd/listener's defaultRoleClaimReapInterval) - reads this rather than a copy of it.
-const BucketMaxAge = 5 * time.Minute
+// BucketMaxAge is the maximum age OpenSessionRegistry creates the envoy_sessions bucket with: the
+// gone horizon plus one hour. A record the bucket expires reads gone, whatever its own age says.
+// At this age a stalled session's record stands past the gone horizon, so the session reads
+// unresponsive and then gone before the bucket drops its record. It is the age of a bucket the
+// listener creates. A bucket that already exists keeps its own age until ENVOY_SESSION_MAX_AGE
+// (WithSessionMaxAge) changes it, and a bucket an older build created was created at 5 minutes.
+const BucketMaxAge = GoneHorizon + time.Hour
 
 func WithSessionTTL(d time.Duration) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.ttl = d }
@@ -321,11 +322,11 @@ type SessionRegistry struct {
 	// lastSeenRetention is WithLastSeenRetention's value; zero, as in a registry built from a
 	// struct literal, means one TTL (retention).
 	lastSeenRetention time.Duration
-	// conn and js are the connection and the JetStream context the bucket was opened through,
-	// which the maximum age is written through (applyMaxAge), and maxAge is WithSessionMaxAge's value, zero when the deployment
-	// sets none and the bucket's own age stands. Both are fixed when the registry is opened, and
-	// a registry built from a struct literal, which only a test does, has neither and writes no
-	// age.
+	// conn and js are the connection and the JetStream context on it that the bucket was opened
+	// through, which the maximum age is written through (applyMaxAge), and maxAge is
+	// WithSessionMaxAge's value, zero when the deployment sets none and the bucket's own age
+	// stands. All three are fixed when the registry is opened, and a registry built from a struct
+	// literal, which only a test does, has none of them and writes no age.
 	conn   *nats.Conn
 	js     nats.JetStreamContext
 	maxAge time.Duration
@@ -859,10 +860,12 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 }
 
 // PutWithin writes sessionID's entry, each bucket call waiting no longer than ctx (bus.Bounded): an
-// HTTP route passes its request's own context. A write ctx abandoned may still land after this
-// answer. That is safe: it writes the entry the caller's retry writes again, it rides the
-// connection ahead of any write this listener sends on it later, so it cannot undo one, and it is
-// conditional on the revision it replaces.
+// HTTP route passes its request's own context. While nats.go reconnects the bucket's connection a
+// call waits for it within ctx, and a ctx that ends first fails it as bus.ErrReconnecting with
+// nothing sent, so it never lands after this answer. A write ctx abandoned once it was sent may
+// still land after this answer. That is safe: it writes the entry the caller's retry writes again,
+// it rides the connection ahead of any write this listener sends on it later, so it cannot undo
+// one, and it is conditional on the revision it replaces.
 //
 // The entry written carries the gap mark of the entry it replaces (RepositoryGap), whatever
 // entry's own field says: the mark is SetRepositoryGap's and ClearRepositoryGap's alone to write,
@@ -1032,7 +1035,7 @@ var errUndecodableEntry = errors.New("the stored value is no session entry")
 // refused for good, since the record carries another stream's first Nats-Sequence header; PutWithin
 // reads the stream leader on the retry (readEntryFromLeader), which reports the true sequence.
 func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionEntry, uint64, error) {
-	got, _, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, _, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return SessionEntry{}, 0, nil
 	}
@@ -1067,7 +1070,7 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 	if err != nil {
 		return false, err
 	}
-	written, _, err := bus.Bounded(ctx, func() (uint64, error) {
+	written, _, err := bus.Bounded(ctx, kv.Conn(), func() (uint64, error) {
 		if revision == 0 {
 			return kv.Create(sessionID, buf)
 		}
@@ -1291,7 +1294,7 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // marker, a value that does not decode and a row past its TTL are not found.
 func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, answered, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}
@@ -1303,14 +1306,18 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 // applies what it read to the cache as Refresh does, answers as Get would for that row, and maps
 // every error the same way, ctx's end included.
 //
-// It is the read for the caller that cannot afford a stale miss, because a miss makes it take
+// It is the read for the callers that cannot afford a stale miss, because a miss makes them take
 // something away from the session on the strength of the session having no record at all: the
 // listener's delete of a session's JetStream consumer, which re-reads this bucket under the
-// session's lock and deletes only where the session is gone from it (cmd/listener). A copy that
-// has not applied a relaunch's registration would answer that read "not found", and the delete
-// would then remove the consumer of a live relaunch, whose relay stops until it registers again.
-// Every other caller asks Refresh, which costs the server less: a direct get is answered by any
-// copy that is near enough to current, where this read is one more thing for the leader to do.
+// session's lock and deletes only where the session is gone from it; the interest and role claim
+// reapers' test of a session the cache does not hold (cmd/listener's sessionMayBeLive); and a
+// soft role claim's reads of the holder it would take the role from (cmd/listener's
+// roleSupersessionVerdict). A copy that has not applied a relaunch's registration would answer
+// that read "not found", and the delete would then remove the consumer of a live relaunch, whose
+// relay stops until it registers again, the reaper a live session's interest or role, or the soft
+// claim a live holder's role. Every other caller asks Refresh, which costs the server less: a
+// direct get is answered by any copy that is near enough to current, where this read is one more
+// thing for the leader to do.
 func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
 	got, err := kv.GetFromLeader(ctx, sessionID)

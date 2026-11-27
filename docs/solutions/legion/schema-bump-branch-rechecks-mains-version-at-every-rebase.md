@@ -125,11 +125,8 @@ already say:
 - **A migration that reads an external system must run exactly once**, so the renumber has to
   keep that property: `loadState` writes the migrated state right after the `.bak`, and the test
   reloads the file with a resolver that throws.
-- **`LEGION_DAEMON_API_VERSION` and the plugin manifest's `legion.daemonApiVersion` are the same
-  kind of serial**, and Dispatch's `0025_…` SQL migration numbers are too. Two branches that each
-  change a `LegionDaemonApi` shape will both bump 1 → 2; the check before every push is the same
-  `file show -r main@origin … | grep` on each counter your branch claims. See
-  `../daemon/plugin-daemon-api-contract-version-gate.md`.
+- **Dispatch's `0025_…` SQL migration numbers are the same kind of serial**: the check before
+  every push is the same `file show -r main@origin … | grep` on each counter your branch claims.
 
 When the collision arrives *after* the reviewer's approval is pinned to a head, resolve it with a
 merge commit on top of the approved head (`jj new <branch head> main@origin`, resolve, describe)
@@ -137,21 +134,15 @@ rather than a rebase, so the approved SHAs stay real —
 `long-lived-branch-mechanics-jj-new-and-merge-not-rebase.md` §2 — and say what the merge
 renumbered in the PR body's "Merge with main" note.
 
-## Not every serial renumbers: the daemon/plugin contract integer (LEGION-52)
+## The daemon/plugin contract integer is no serial a branch holds (LEGION-52, dispatch://INFRA-1569)
 
-The bullet above says `LEGION_DAEMON_API_VERSION` is "the same kind of serial" — for the *check*,
-yes; for the *remedy*, no. LEGION-52 (#1018) bumped it 1 → 2 so a daemon would refuse every
-plugin release without the credential file; LEGION-20 (#975) took 2 on `main` 52 minutes after
-the first handoff, and release 1.23.0 — the first to declare 2 — already wrote the credential
-file. A migration version keys a step, so two branches cannot share one and the second renumbers;
-a contract integer only has to differ from what every incompatible release declares, so one bump
-satisfied both branches. Bumping to 3 would have refused 1.23.0 for no behaviour change. The
-branch dropped its bump on rebase (a clean one — GitHub never said CONFLICTING) and landed the
-widened rule and the history as a docs PR. The check is the same `file show -r main@origin …
-| grep` at every phase boundary; the decision differs: for a contract integer, look at what the
-release declaring the new number already contains before renumbering. Detail in
-`../daemon/plugin-daemon-api-contract-version-gate.md`, "When another branch takes the number
-first".
+Until dispatch://INFRA-1569 `LEGION_DAEMON_API_VERSION` and the plugin manifest's contract field
+were a third serial of this kind, with another remedy: LEGION-52 (#1018) bumped it 1 → 2, LEGION-20
+(#975) took 2 on `main` first with a release that already carried LEGION-52's behaviour, and the
+branch dropped its bump rather than renumber
+(`../daemon/plugin-daemon-api-contract-version-gate.md`). Since then a contract change adds an
+entry with `bash scripts/daemon-contract-entry.sh <slug>` and edits no number, and a build numbers
+its entries in `main`'s merge order, so this note's check is for a migration version alone.
 
 ## Related
 

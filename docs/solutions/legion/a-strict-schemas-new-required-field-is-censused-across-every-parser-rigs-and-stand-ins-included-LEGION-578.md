@@ -20,10 +20,11 @@ related_issues:
 
 Extends docs/solutions/daemon/plugin-daemon-api-contract-version-gate.md.
 
-- The contract gate (`DaemonAPIVersion` against `legion.daemonApiVersion`) pairs one producer with
-  one consumer: the daemon and the plugin that boots against it. A test rig, a stand-in daemon or a
-  fixture that hand-writes a body and parses it through the same strict schema has no version to
-  bump and no gate to refuse it; a required member added to the schema breaks it at module load.
+- The contract gate (the daemon's own contract number against the one the plugin's packed manifest
+  declares) pairs one producer with one consumer: the daemon and the plugin that boots against it.
+  A test rig, a stand-in daemon or a fixture that hand-writes a body and parses it through the same
+  strict schema has no contract to declare and no gate to refuse it; a required member added to the
+  schema breaks it at module load.
 - Before the push that adds a required field to a `strictObject` in `packages/contracts`, census
   every parser: `grep -rn "<SchemaName>" packages scripts --include=*.ts --include=*.sh`, then give
   each hit a disposition — the real reader (paired by the gate), a fixture (regenerated), a
@@ -39,8 +40,8 @@ Extends docs/solutions/daemon/plugin-daemon-api-contract-version-gate.md.
 
 sjawhar/legion#1846 made `capabilities` a required member of `LegionStateResponse`
 (`packages/contracts/src/legion-api.ts`) and bumped the daemon API contract (`DaemonAPIVersion` in
-`packages/daemon/internal/api/version.go`) with the plugin in the same commit, as the gate's rule
-says. Round 1's blocking review finding, outside the diff:
+`packages/daemon/internal/api/version.go`, contract 16) with the plugin in the same commit, as the
+gate's rule then said. Round 1's blocking review finding, outside the diff:
 `packages/pi-legion/scripts/grant-rig/daemon-standin.ts` builds its `GET /legion/v1/state` document
 with a literal and parses it at module load (`LegionStateResponse.parse({...})`), so the grant rig
 (`scripts/grant-rig/README.md`) and the skill-scenario rig (`scripts/skill-scenarios/rig.sh`) threw

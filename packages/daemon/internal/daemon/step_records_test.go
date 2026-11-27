@@ -2,7 +2,7 @@
 // package's tests (startScratchDispatchOn), and a reader reads the records of the issue back with
 // GET /api/v1/issues/{key}/steps, the read `dispatch steps` and the tab Steps make.
 //
-// Each test boots the whole daemon (startDaemonWithin) over the package's broker, the real store,
+// Each test boots the whole daemon (startDaemonLogging) over the package's broker, the real store,
 // the real outbox and the real Dispatch client, and walks an issue, from planning to done or
 // through the part of the walk the records it reads need (planning alone, or a child of the walk's
 // issue from its review to its retro), through the transports production has: each role's agent
@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -74,6 +75,7 @@ var stepRecordsTen = []stepWant{
 // record from Dispatch's store, its node and its tuples, and the same assertion must then name the
 // missing record.
 func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
@@ -110,6 +112,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 // issue's seven records reach it, each ended. The control holds the outage real: while Dispatch is
 // stopped, the outbox holds the issue's step records unfinished and the read finds no server.
 func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
@@ -149,6 +152,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 // boot token it holds. The tester answers again and completes, the walk ends at done, and the read
 // holds exactly one record of testing for that run, ended, under the id its start wrote.
 func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
@@ -193,15 +197,20 @@ var stepRecordsSeven = []stepWant{
 // run is open and the outbox holds the issue's step records and its other writes unsent, beside a
 // count of starts of each step that ran. With the daemon stopped, the operator's way back runs as
 // the roll forward's header carries it (internal/textcheck holds it to docs/kubernetes.md), and
-// every outbox row and every count stands after it as it stood before. The earlier release's move
+// every outbox row and every count stands after it as it stood before. The earlier release came
+// before the owner's plan too, so the rollback also takes the way back of the plan's migration
+// (rollBackOwnersPlans), which drops the issue's plan rows: kept, the place of its task would stand
+// at implementing while the earlier release moves the issue to testing. The earlier release's move
 // is then written as the rows this release reads of it: the issue in testing, and the tester's
 // entry raised again with its last handoff cleared; none of that release's deliveries stands in
-// the store. The newer image boots, its Migrate applying the roll forward. The walk ends at done,
+// the store. The newer image boots, its Migrate applying the roll forward and the plan's migration
+// again, which leaves the issue with no plan rows, so it walks today's line. The walk ends at done,
 // and the read holds the implementer's run that the earlier release ended stopped at the moment
 // the way back kept, under the id its start wrote, the tester's run that release started as a
 // record of its own at the next count, started when its entry was raised, and the tester's run
 // this release counted under its own id.
 func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
@@ -225,6 +234,10 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	}) {
 		t.Fatalf("at the rollback the outbox holds %d step records and %d other rows and step_starts holds %q; want both kinds of row unsent and implementing's second start open, or the way back runs over nothing it could lose",
 			stepRows, otherRows, starts)
+	}
+	var tasks int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from plan_tasks where issue = $1`, r.key).Scan(&tasks); err != nil || tasks != 1 {
+		t.Fatalf("at the rollback %s holds %d plan tasks (%v), want its one task default: a way back that drops nothing proves nothing", r.key, tasks, err)
 	}
 	r.rollBackStepRecords()
 	// The way back keeps the moment of the rollback beside the issue's witness, and the roll forward
@@ -262,6 +275,14 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 		got.Entry != testerRow.Entry+1 || !got.EntryRaisedAt.Equal(earlierStart) {
 		t.Fatalf("the tester's row the earlier release moved into testing is %+v, want its last round's handoff cleared and its entry raised at %s, the rest of %+v kept",
 			got, earlierStart, testerRow)
+	}
+	// The way back of the plan's migration drops the columns this release's read of a phases row
+	// names, so it runs once the reads above are done; the earlier release's writes name neither
+	// those columns nor the plan's tables, so the store is the same as had it run first.
+	r.rollBackOwnersPlans()
+	var left *string
+	if err := r.st.Pool().QueryRow(context.Background(), `select to_regclass('plan_tasks')::text`).Scan(&left); err != nil || left != nil {
+		t.Fatalf("after the way back of the owner's plan the store holds the table %v (%v), want none", left, err)
 	}
 	r.dispatch.start()
 	r.reboot()
@@ -334,7 +355,7 @@ func (r *stepRecordsRig) phaseOf(role claim.Role) record.PhaseRow {
 	r.t.Helper()
 	ctx := context.Background()
 	var rows []record.PhaseRow
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = r.records.Phases(ctx, tx, r.key)
 		return err
@@ -361,6 +382,34 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 	r.exec(block)
 }
 
+// rollBackOwnersPlans runs the way back of the migration that adds the plan rows
+// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the transaction that
+// ends its header (migrations.WayBack), with <PROJECT> the run's project. A rollback of the
+// release whose owner's plan picks the steps to any release before it takes that way back too
+// (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
+// the plan's tables and columns, so the roll forward creates them again empty. The way back of the
+// givers of a plan version, in the header of the migration whose name ends
+// _plan_earlier_givers.up.sql, runs too, here before it (the guide allows either order), so the
+// roll forward adds its column again to the table it creates.
+func (r *stepRecordsRig) rollBackOwnersPlans() {
+	r.t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		r.t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, suffix := range []string{"_plan_earlier_givers.up.sql", inFlightPlanMigration} {
+		at := slices.IndexFunc(all, func(migration migrations.Migration) bool { return strings.HasSuffix(migration.Name, suffix) })
+		if at < 0 {
+			r.t.Fatalf("no embedded migration ends %s", suffix)
+		}
+		block, err := migrations.WayBack(all[at].Version)
+		if err != nil {
+			r.t.Fatalf("read the way back of %s: %v", all[at].Name, err)
+		}
+		r.exec(strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project))
+	}
+}
+
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
 // the child when its step starts, so the record of its step 5 names that architect, with the
 // session its claim holds and the model that answered it last. The child stands in reviewing under
@@ -372,6 +421,7 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 //   - The control: the child's own architect was never started, so it holds no role, the tree's
 //     architect owns the child, and it signs the child off.
 func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
+	t.Parallel()
 	acceptance := func(r *stepRecordsRig, child string, agent claim.Token, session, model string) {
 		r.t.Helper()
 		r.waitStepsOf(child, "the child's acceptance as its owning architect's", func(read stepRecordsRead) error {
@@ -440,6 +490,7 @@ func (r *stepRecordsRig) childInAccepting() string {
 // (api.Options.AwaitStream, which serve gives the daemon's awaitStream), so the record of planning
 // ends naming the planner's session and that answer's model, not the model of the answer before.
 func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/planner-first"
@@ -472,6 +523,7 @@ func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
 // with another, and the child's acceptance ends failed, back at implementing, with the architect's
 // session and the second model.
 func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	child := r.childInAccepting()
 	architect := r.worker(claim.RoleArchitect)
@@ -585,7 +637,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	number := r.number + 1
 	parent := r.key
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Parent: &parent, Project: r.cfg.Project,
 			Title: "A child in the walk's tree", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
@@ -607,6 +659,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 // planner's session and no model, as for an agent that named none. The model that answered first
 // did not answer last, so the record does not name it.
 func TestAModelHoldingANulIsNotKept(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/first"
@@ -632,6 +685,7 @@ func TestAModelHoldingANulIsNotKept(t *testing.T) {
 // the merge names its token and no session and no model. A step that runs names no session yet:
 // its end names the session and the model together.
 func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/planner"

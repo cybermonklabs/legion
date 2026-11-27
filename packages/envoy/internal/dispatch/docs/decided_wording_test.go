@@ -17,6 +17,7 @@ import (
 // the plan read, so it leaves the moved row alone and returns no id, and the restoration is
 // refused (errDecidedWordingsMoved).
 func TestARestorationRefusesAnAskAnsweredSinceItsPlan(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	service, original := newTestService(t)
 	service.settle = time.Hour

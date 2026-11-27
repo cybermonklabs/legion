@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,7 @@ import (
 // it, and that nothing has registered it yet, so the architect knows what to register and
 // whether to ask for approval.
 func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		policy config.DesignGate
@@ -88,6 +90,7 @@ func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
 // is said to be carried as well when its old root's gate came with it, so the architect registers
 // no spec. The same root at a later generation (closed and reopened) is a root like any other.
 func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
+	t.Parallel()
 	for _, at := range []phase.Phase{phase.Planning, phase.Reviewing, phase.Accepting} {
 		for _, gateCarried := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s, gate carried %t", at, gateCarried), func(t *testing.T) {
@@ -124,6 +127,7 @@ func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
 // whose ready drops it names it again, and only the forget of what a delivered catch-up named (the
 // outbox's notice) leaves nothing for the launch after.
 func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	seedAdmittedTree(t, pool, 1)
@@ -166,6 +170,81 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 	}
 }
 
+// INFRA-3136 R2 at the moment a catch-up is composed: a decision kept for a running tree is named
+// only while it is still the person's word (classify.ReviewSuperseded), asked of the gate as it
+// stands. Nothing clears this tree's gate, so the catch-up itself is what asks. A changes request
+// the person's approval came after is dropped, and its row deleted. A changes request made after
+// that approval is named. Dispatch's order decides: the sequences when both marks carry one, even
+// where the two times say the other thing, and a kept approval that is the gate's own approval
+// stands.
+func TestACatchUpNamesAKeptDecisionOnlyWhileNoLaterApprovalSupersededIt(t *testing.T) {
+	t.Parallel()
+	approvedAt := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	approved := record.EventMark{Seq: 10, At: approvedAt}
+	for _, tc := range []struct {
+		name     string
+		decision record.DecisionKind
+		mark     record.EventMark
+		named    bool
+	}{
+		{"a changes request the approval came after", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 8, At: approvedAt.Add(-time.Hour)}, false},
+		{"a changes request made after the approval", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 12, At: approvedAt.Add(time.Hour)}, true},
+		{"a changes request Dispatch's sequence puts before the approval its time is after", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 8, At: approvedAt.Add(time.Hour)}, false},
+		{"the kept approval the gate holds", record.DecisionDesignApproved, approved, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := migratedPool(t)
+			seedAdmittedTree(t, pool, 1)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			records := record.NewStore()
+			version := 3
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if err := records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+					LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true}); err != nil {
+					return err
+				}
+				return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
+					Decision: tc.decision, Actor: "user:alice", At: tc.mark.At, Seq: tc.mark.Seq})
+			}); err != nil {
+				t.Fatalf("keep the person's decision beside the gate's approval: %v", err)
+			}
+			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
+			got := lastCatchUp(t, pool)
+			var kept []record.ParkedDecision
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				var err error
+				kept, err = records.ParkedDecisions(ctx, tx, "LEGION-1")
+				return err
+			}); err != nil {
+				t.Fatalf("read what is kept: %v", err)
+			}
+			if !tc.named {
+				if got.Decided != "" || got.Kept != nil {
+					t.Fatalf("the catch-up names %q (kept %#v): the person's approval at %#v came after the decision at %#v", got.Decided, got.Kept, approved, tc.mark)
+				}
+				if len(kept) != 0 {
+					t.Fatalf("kept %#v after the catch-up dropped it: a decision a later approval superseded is deleted, not asked again", kept)
+				}
+				return
+			}
+			want := fmt.Sprintf("While nobody in LEGION-1's tree could hear it, a person decided on the tree: dispatch://LEGION-1/spec (%s by user:alice). Read each before you continue.", tc.decision)
+			if got.Decided != want {
+				t.Fatalf("the catch-up names %q, want %q", got.Decided, want)
+			}
+			if got.Kept == nil || len(got.Kept.Decisions) != 1 || got.Kept.Decisions[0].Seq != tc.mark.Seq {
+				t.Fatalf("the catch-up's kept record %#v, want the decision with Dispatch's sequence %d", got.Kept, tc.mark.Seq)
+			}
+			if len(kept) != 1 || kept[0].Seq != tc.mark.Seq || !kept[0].At.Equal(tc.mark.At) {
+				t.Fatalf("kept %#v, want the decision at Dispatch's mark %#v, claimed by the catch-up", kept, tc.mark)
+			}
+		})
+	}
+}
+
 func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 	t.Helper()
 	var got *record.CatchUp
@@ -189,6 +268,7 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 // workflow (signOff), and the catch-up is what tells the architect the issue is there to be
 // decided.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
+	t.Parallel()
 	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
 	awaiting := func(keys string) string {
 		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
@@ -229,6 +309,7 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 // holds the tree as the spec does, so the catch-up states it as a step of its own, after the
 // spec and gated as the spec is. A root that registered none is told the spec alone, as before.
 func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T) {
+	t.Parallel()
 	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Artifact: "artifact-1", Version: 4, Approved: 4, Open: true}
 	for _, tc := range []struct {
 		name     string
@@ -260,6 +341,7 @@ func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T)
 // workflow is told nothing, nor is a phase worker on the root; a child's own architect is told
 // the child and the issues under it, with no gate.
 func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
+	t.Parallel()
 	// A lingering root set back to todo still lingers until admission takes it again: only its
 	// linger, not its status, says the tree has left the workflow.
 	lingering := func(root *record.Issue) {
@@ -358,35 +440,42 @@ func catchUpRows(t *testing.T, pool *pgxpool.Pool) []int64 {
 }
 
 // The catch-up a start writes in place of a launch waits its turn in the daemon's wake pacing:
-// the ready carries the mark only that start sets (intake.ClaimReady.Paced), the engine takes one
-// turn from the limiter it was given, and the row is due at the moment that turn comes and
-// carries it (record.Notice.PacedAt), which is what the outbox reads for the wait in the line
-// that wake writes and what a ready compares its now against. A launch's own ready takes no turn,
-// whatever the pacing: the launch already took one at the machine's gate. An engine with no
-// limiter at all — the deployment that paces nothing — writes both at once, with no moment.
-func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
+// the ready carries the mark only that start sets (intake.ClaimReady.Paced). The row is written
+// held, with no due moment, and once it has committed the daemon's hook is told its id to join
+// it to the pacing's queue (Config.HoldCatchUp). A launch's own ready holds no catch-up, and
+// without pacing both kinds are due at once.
+func TestAPacedReadysCatchUpIsWrittenHeldForTheWakePacing(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)
-	turn := now.Add(90 * time.Second)
+	held := record.CatchUpHeldAt
 	for _, tc := range []struct {
 		name    string
 		paced   bool
 		pacing  bool
 		due     time.Time
-		marked  time.Time
-		reserve int
+		pacedAt time.Time
+		holds   int
 	}{
-		{name: "a start's ready while the pacing is on", paced: true, pacing: true, due: turn, marked: turn, reserve: 1},
+		{name: "a start's ready while the pacing is on", paced: true, pacing: true, due: held, pacedAt: held, holds: 1},
 		{name: "a launch's ready while the pacing is on", pacing: true, due: now},
 		{name: "a start's ready while the pacing is off", paced: true, due: now},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedAdmittedTree(t, pool, 1)
-			reserved := 0
+			holds := 0
+			var joined int64
 			cfg := Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Repositories: testRepositories,
 				Clock: func() time.Time { return now }}
 			if tc.pacing {
-				cfg.Reserve = func(time.Time) time.Time { reserved++; return turn }
+				cfg.HoldCatchUp = func(id int64, issue string) {
+					holds++
+					joined = id
+					var due time.Time
+					if err := pool.QueryRow(t.Context(), `select next_at from outbox where id = $1 and issue = $2`, id, issue).Scan(&due); err != nil || !due.Equal(held) {
+						t.Errorf("the hold hook saw row %d due at %s, error %v; want a committed held row", id, due, err)
+					}
+				}
 			}
 			engine := New(record.NewStore(), cfg, nil)
 			token, err := claim.NewToken("legion", "LEGION-1", claim.RoleArchitect)
@@ -399,20 +488,66 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 			}
 
 			var due time.Time
-			// A catch-up the pacing reserved no moment for carries none at all (omitzero).
+			var id int64
+			// A catch-up no pacing holds carries no paced_at at all (omitzero).
 			var marked *time.Time
-			if err := pool.QueryRow(t.Context(), `select next_at, (payload->>'paced_at')::timestamptz from outbox
-				where kind = 'notice' and payload->>'kind' = 'catch-up'`).Scan(&due, &marked); err != nil {
+			if err := pool.QueryRow(t.Context(), `select id, next_at, (payload->>'paced_at')::timestamptz from outbox
+				where kind = 'notice' and payload->>'kind' = 'catch-up'`).Scan(&id, &due, &marked); err != nil {
 				t.Fatalf("read the catch-up: %v", err)
 			}
-			var reservedAt time.Time
+			var pacedAt time.Time
 			if marked != nil {
-				reservedAt = marked.UTC()
+				pacedAt = marked.UTC()
 			}
-			if !due.UTC().Equal(tc.due) || !reservedAt.Equal(tc.marked) || reserved != tc.reserve {
-				t.Fatalf("the catch-up is due at %s, reserved for %s, after %d reservations; want %s, %s, %d",
-					due.UTC(), reservedAt, reserved, tc.due, tc.marked, tc.reserve)
+			if !due.UTC().Equal(tc.due) || !pacedAt.Equal(tc.pacedAt) || holds != tc.holds {
+				t.Fatalf("the catch-up is due at %s with paced_at %s, after %d holds; want %s, %s, %d",
+					due.UTC(), pacedAt, holds, tc.due, tc.pacedAt, tc.holds)
+			}
+			if tc.holds != 0 && id != joined {
+				t.Fatalf("the hold was told row %d, want catch-up %d", joined, id)
 			}
 		})
+	}
+}
+
+// TreeCatchUp is the record half of the catch-up QueueCatchUp queues, with the notice's reason,
+// and a pure read of the record: the outbox composes it again where it delivers the row, inside
+// its read-only read of the tree (the daemon's readNoticeTree), so the architect reads the tree
+// as the record holds it then. Read at once after the queueing, in a read-only transaction, it is
+// the queued tree and reason exactly; the launch and the kept decisions are the queueing's alone.
+func TestTreeCatchUpIsTheQueuedCatchUpsTreeReadWithoutAWrite(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := migratedPool(t)
+	root := seedAdmittedTree(t, pool, 1)
+	parent := root.Key
+	seedIssue(t, pool, record.Issue{Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Waiting", Parent: &parent,
+		Phase: phase.Accepting, Generation: 1, Status: "in_progress", Rank: "W"})
+	claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
+	var queued record.Notice
+	for _, payload := range noticeRows(t, pool) {
+		if notice, ok := payload.(record.Notice); ok && notice.Kind == "catch-up" {
+			queued = notice
+		}
+	}
+	if queued.CatchUp == nil {
+		t.Fatal("the ready queued no catch-up")
+	}
+
+	var state record.CatchUpTree
+	var reason string
+	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		state, reason, err = TreeCatchUp(ctx, tx, record.NewStore(), config.DesignGateRootIssues.Steps(), root)
+		return err
+	}); err != nil {
+		t.Fatalf("compose the tree in a read-only transaction: %v", err)
+	}
+	want := queued.CatchUp.CatchUpTree
+	if !reflect.DeepEqual(state, want) || reason != queued.Reason {
+		t.Fatalf("TreeCatchUp = %+v, %q; want the queued catch-up's tree %+v, %q", state, reason, want, queued.Reason)
+	}
+	if !strings.Contains(reason, "waiting for your acceptance, which no worker gives: LEGION-3") {
+		t.Fatalf("the reason %q does not name LEGION-3, which waits in accepting", reason)
 	}
 }

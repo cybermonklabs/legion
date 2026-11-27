@@ -1,3 +1,6 @@
+/** Every row drives a refusal the document room alone decides - the bounds a browser's update is
+ *  weighed against and the close code it is given - and reads what the editor shows and whether
+ *  the stored document moved. */
 import type { ArtifactText } from "@legion/contracts";
 import { type Browser, expect, type Page, test } from "@playwright/test";
 import { createDecoder, readVarUint } from "lib0/decoding";

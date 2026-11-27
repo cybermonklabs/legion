@@ -27,6 +27,7 @@ import (
 // tree stored past the bound - before the check, or by a write the check does not judge - is
 // outside the schema for every route alike (TestEveryRouteAnswersAStoredTreeOutsideTheSchemaAlike).
 func TestEveryReadServesATreeAtTheDepthBound(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		depth    int

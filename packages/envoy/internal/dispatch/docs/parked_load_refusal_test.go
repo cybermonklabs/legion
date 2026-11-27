@@ -108,7 +108,7 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 
 		awaitRecovered(t, service, artifactID)
 		opened := time.Now()
-		connection, err := dialDocument(server.URL, artifactID)
+		connection, err := dialDocument(t, server.URL, artifactID)
 		if connection != nil {
 			_ = connection.Close()
 		}

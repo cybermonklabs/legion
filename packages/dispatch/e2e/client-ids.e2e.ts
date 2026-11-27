@@ -1,3 +1,6 @@
+/** The client id is minted by the document socket's admission, stored with the person and given
+ *  back to the socket that presents it; the row reads what the live room relays and what a
+ *  settled version holds under it. */
 import { DOCUMENT_CLIENT_ID_PARAMETER } from "@legion/contracts";
 import {
   createDecoder,

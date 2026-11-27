@@ -32,6 +32,7 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 // on the one the daemon read, under that one name. With no pair configured none of it happens:
 // nothing is heard under the second name until an issue is recorded on it.
 func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
@@ -94,6 +95,7 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 // is used for the side no record names, which is how a pair configured before the transfer is
 // heard.
 func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The pair is written in the deployment's own case, which is neither name as GitHub spells it.
 	pair := ghrepo.MustRenames(ghrepo.MustRename("SJAWHAR/Legion", "CyberMonkLabs/legion"))
@@ -153,6 +155,7 @@ func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
 //   - An unanswered read counted as not served fails I0's first row, where the pair is served as
 //     configured until GitHub answers (INFRA-4401 D2).
 func TestTheRenameRuleResolvesARecordedRepositoryOverTheSixInstallationStates(t *testing.T) {
+	t.Parallel()
 	const recordedOld, recordedNew = renameFrom, renameTo
 	pair := transferredLegion
 	for _, tc := range []struct {
@@ -283,6 +286,7 @@ func transferredRuntime(t *testing.T, installs *installations, tokens *mintingTo
 // 6): with served meaning a repository that a record names, sjawhar/legion is served under its own
 // name and each of the three goes to sjawhar, whose installation covers nothing.
 func TestARecordOnAPairsOldNameGetsTheNewOwner(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const old, moved = renameFrom, renameTo
 	tokens := &mintingTokens{servedOwnerTokens: servedOwnerTokens{owner: "cybermonklabs"}}
@@ -313,6 +317,7 @@ func TestARecordOnAPairsOldNameGetsTheNewOwner(t *testing.T) {
 // finds it under the name it resolves to. Control: with the read of the pair's other name removed,
 // the issue is refused for the Apps the old name lacks.
 func TestAnIssueResolvingToAPairsOldNameIsRecordedOnItsNewName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const old, moved = renameFrom, renameTo
 	installs := &installations{missing: map[string]bool{"implement " + old: true, "review " + old: true}}
@@ -340,6 +345,7 @@ func TestAnIssueResolvingToAPairsOldNameIsRecordedOnItsNewName(t *testing.T) {
 // of 2026-11-06, api/handoff_rename_test.go). Control: with an unanswered read counted as not
 // served, the record is served under its own name and the mint goes to sjawhar, which refuses it.
 func TestAnUnansweredReadOfAPairsNewNameStillServesIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const old, moved = renameFrom, renameTo
 	tokens := &mintingTokens{servedOwnerTokens: servedOwnerTokens{owner: "cybermonklabs"}}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -147,9 +148,7 @@ func newHeldSecondDocument(t *testing.T) *heldSecondDocument {
 	}
 	alice.appendParagraph(t, "Typed before the close.\n")
 	alice.barrier(t)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, heldSecondDocumentWait); waiting < 1 {
-		t.Fatal("alice's append never came to wait on the second document's lock")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	// The issue closes as a release older than the withdrawal closed one, after alice's keystroke,
 	// which the append gate then stores (docs' observedBeforeClose). Nothing tells the rooms.
 	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, f.issue); err != nil {
@@ -198,8 +197,10 @@ func (f *heldSecondDocument) secondHead(t *testing.T) int64 {
 
 // sweepAsAnUnkeyedClose runs served's close's sweep of issue (sweepClosedIssueAsks) on a goroutine
 // of its own, on the context an unkeyed close hands it: its request's, marked as every request is
-// (trackTransactions) and detached from its client (outlivingTheClient), whose client has then
-// gone away. It answers when the sweep began, and answered, sent nil once the sweep has returned.
+// (trackTransactions: the caller's mark markCallerRequest puts on a row's request, and the
+// transaction tracking routeContext adds) and detached from its client (outlivingTheClient), whose
+// client has then gone away. It answers when the sweep began, and answered, sent nil once the
+// sweep has returned.
 func sweepAsAnUnkeyedClose(served *server, issue string) (started time.Time, answered <-chan error) {
 	client, leave := context.WithCancel(context.Background())
 	var outliving context.Context
@@ -237,13 +238,25 @@ func (f *heldSecondDocument) repairInThePass() (started time.Time, answered <-ch
 func (f *heldSecondDocument) holdTheCycle(t *testing.T, what string, answered <-chan error) (release func()) {
 	t.Helper()
 	ctx := context.Background()
-	if waiting := storetest.WaitForLockWaiters(t, f.holder, 2, heldSecondDocumentWait); waiting < 2 {
+	type seen struct {
+		waiting int
+		err     error
+		early   bool
+	}
+	got := testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("%s to wait for the second document's lock behind alice's append, or to answer (what was last read)", what), func() (seen, bool) {
 		select {
 		case err := <-answered:
-			t.Fatalf("%s answered (%v) before it waited for the second document's lock", what, err)
+			return seen{err: err, early: true}, true
 		default:
 		}
-		t.Fatalf("%s never came to wait for the second document's lock behind alice's append (%d waiting)", what, waiting)
+		waiting, err := storetest.LockWaiters(ctx, f.holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return seen{waiting: waiting}, waiting >= 2
+	})
+	if got.early {
+		t.Fatalf("%s answered (%v) before it waited for the second document's lock", what, got.err)
 	}
 	if f.pool.HeldForTest() == 0 {
 		t.Fatalf("%s waits for the second document's lock holding nothing of the pool", what)

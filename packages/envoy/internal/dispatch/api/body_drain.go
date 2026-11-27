@@ -77,7 +77,12 @@ func (d readDeadline) lift() {
 // and withhold the answer itself where its body ran past the limit.
 func (s *server) readFor(w http.ResponseWriter) (lift func()) {
 	deadline := newReadDeadline(w)
-	if !deadline.set(time.Now().Add(s.drainBound())) {
+	began := time.Now()
+	at := began.Add(s.drainBound())
+	if s.drainDeadlineSet != nil {
+		s.drainDeadlineSet(began, at)
+	}
+	if !deadline.set(at) {
 		return func() {}
 	}
 	return deadline.lift
@@ -91,8 +96,8 @@ func expectsContinue(r *http.Request) bool {
 }
 
 // errUploadTooLarge is an upload route's answer to a body past its limit, errHandoffTooLarge the
-// handoff write's, errMarkdownRoundTripTooLarge the markdown round trip's, and errJSONTooLarge
-// every other route's (routeBody, decodeJSON).
+// handoff write's, errMarkdownRoundTripTooLarge and errFileRoundTripTooLarge the two round trips',
+// and errJSONTooLarge every other route's (routeBody, decodeJSON).
 var (
 	errUploadTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "artifact blob exceeds 25 MB")
 	errJSONTooLarge   = errorf(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body exceeds %d bytes", maxJSONRequestBytes)

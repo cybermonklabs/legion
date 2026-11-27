@@ -79,9 +79,11 @@ type valueState struct {
 	// refused is whether the value is refused, ReasonValueMalformed, at the version refusedAt:
 	// by the decoder of a read (readValues) or by a mint's own (RefuseValue). Each read that
 	// decodes sets it afresh; a read that fails keeps it when the read was of that version, and
-	// ends it when the read was of another version listed since.
+	// ends it when the read was of another version listed since. why is the decoder's or the
+	// mint's error, the refusal's Detail, which never quotes the value (DecodeValue).
 	refused   bool
 	refusedAt string
+	why       string
 	// failing is whether the last read of the value failed: ValueReadFailedMessage was written for
 	// it, and ValueReadRecoveredMessage is owed at the next read that succeeds.
 	failing bool
@@ -96,11 +98,12 @@ type valueRead struct {
 }
 
 // valueOutcome is what one valueRead came to: the read's error, or whether the decoder refused the
-// value it read.
+// value it read, and its words of why.
 type valueOutcome struct {
 	valueRead
 	err     error
 	refused bool
+	why     string
 }
 
 // NewCurrent loads the policy once, failing when that load fails, reads and decodes the value of
@@ -223,12 +226,21 @@ func (c *Current) reload(ctx context.Context) (reads []valueRead, first bool, er
 				c.recent[name] = c.now()
 			}
 		}
-		set = setOf(set.Secrets, set.Refused, set.Pending, set.versions)
+		set = setOf(c.loader.Profiles, set.Secrets, set.Refused, set.Pending, set.versions)
 	}
 	first = c.base == nil
 	c.base = set
 	reads = c.list()
 	c.publish(c.withhold(), first)
+	// Each profile the live set serves behind its own proxy string whose source's proxy tag names
+	// the same kind is a string the file can drop now: one line for each, at each full load, so
+	// it stands out until the file drops it, and no reread repeats it. The loop goes with the
+	// proxy string, once every source a profile names carries its own proxy tag.
+	live := c.Get()
+	for _, name := range live.redundantProxy {
+		served := live.Secrets[name]
+		slog.Warn(ProxyKindRedundantMessage, "profile", name, "source", served.Profile.Source, "kind", served.Proxy)
+	}
 	// A full load, and only a full load, names its groups to the reader: a group it names for
 	// the first time is read at once, and a reread's new group (RefreshOne) waits for the next
 	// load, admitting nobody until then. The groups are those of the stored secrets with the
@@ -267,7 +279,7 @@ var ErrValueUnchecked = errors.New("the reread merged the secret's tags, and its
 // A type secret whose value this pod has not decoded at the version and type the reread
 // lists is then read and decoded (readValues), on ctx, and the answer is the policy's after that:
 // a served secret the live policy refuses answers that refusal, ReasonValueMalformed for a value
-// refused, or a reason of the profiles file's (ReasonGitHubAppNoProfile, ReasonProfileNameTaken).
+// refused, or a reason of the profiles file's (ReasonGitHubAppNoProfile, ReasonGitHubInstallationsNoProfile, ReasonProfileNameTaken).
 // A stored secret profiles of other names use answers as the store holds it, served, since what
 // a reread tells its caller is whether the write it made took; a request names one of its
 // profiles. A profile's name (Profiles.Lookup) rereads the profile's source, which is the secret
@@ -404,7 +416,7 @@ func (c *Current) reread(ctx context.Context, name string) (Lookup, []valueRead,
 	if changed {
 		merged := &Set{Secrets: maps.Clone(c.base.Secrets), Refused: maps.Clone(c.base.Refused), Pending: maps.Clone(c.base.Pending), versions: maps.Clone(c.base.versions)}
 		merge(merged, name, id, lk)
-		c.base = setOf(merged.Secrets, merged.Refused, merged.Pending, merged.versions)
+		c.base = setOf(c.loader.Profiles, merged.Secrets, merged.Refused, merged.Pending, merged.versions)
 		c.recent[name] = c.now()
 	}
 	read, unread := c.listOne(name)
@@ -569,11 +581,15 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 		outcome := valueOutcome{valueRead: read}
 		switch {
 		case errors.Is(err, secrets.ErrValueNotText):
-			outcome.refused = true
+			// The sentinel's own words: the store's error around it names the call and the
+			// secret, which the refusal's line names already.
+			outcome.refused, outcome.why = true, secrets.ErrValueNotText.Error()
 		case err != nil:
 			outcome.err = err
 		default:
-			outcome.refused = DecodeValue(read.key.secretType, value) != nil
+			if err := DecodeValue(read.key.secretType, value); err != nil {
+				outcome.refused, outcome.why = true, err.Error()
+			}
 		}
 		outcomes = append(outcomes, outcome)
 	}
@@ -597,7 +613,7 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 				state.failing = true
 			}
 			if state.refused && state.refusedAt != o.key.version {
-				state.refused, changed = false, true
+				state.refused, state.why, changed = false, "", true
 			}
 			continue
 		}
@@ -606,10 +622,10 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 			state.failing = false
 		}
 		state.decoded = o.key
-		if state.refused != o.refused {
+		if state.refused != o.refused || state.why != o.why {
 			changed = true
 		}
-		state.refused, state.refusedAt = o.refused, o.key.version
+		state.refused, state.refusedAt, state.why = o.refused, o.key.version, o.why
 	}
 	if changed {
 		c.publish(c.withhold(), first)
@@ -620,15 +636,16 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 // RefuseValue refuses the value of the type secret name at version, read as type, as
 // a load's decode refuses one (ReasonValueMalformed): the mint path calls it when
 // secrets.ParseValue refused the value a release read, with the version the live policy listed
-// for name when that release read it (Set.ValueVersion) and the type that release
-// decoded it under, so a pod whose own load could not read the value refuses the secret from its
-// first mint. A key that is no longer the one listed - a load or reread has listed a new value
-// since, or a retag a new type for the same value - is not refused, since that key is
-// decoded afresh; nor is a name Current holds no type secret for. A secret it newly refuses is
-// published, writing one RefusedMessage line. It waits on the writer lock for as long as ctx
-// lives, the release's own request: one whose caller has gone marks nothing, and the next mint of
-// the secret, or the next load that reads a new version, marks it then.
-func (c *Current) RefuseValue(ctx context.Context, name, version, secretType string) {
+// for name when that release read it (Set.ValueVersion), the type that release decoded it under,
+// and the minter's error, the refusal's Detail, which never quotes the value; so a pod whose own
+// load could not read the value refuses the secret from its first mint. A key that is no longer
+// the one listed - a load or reread has listed a new value since, or a retag a new type for the
+// same value - is not refused, since that key is decoded afresh; nor is a name Current holds no
+// type secret for. A secret it newly refuses, or refuses for other words, is published, writing
+// one RefusedMessage line. It waits on the writer lock for as long as ctx lives, the release's
+// own request: one whose caller has gone marks nothing, and the next mint of the secret, or the
+// next load that reads a new version, marks it then.
+func (c *Current) RefuseValue(ctx context.Context, name, version, secretType string, cause error) {
 	// A profile has no value of its own: what a release of it decoded is its source's, so the
 	// refusal is the source's, as a load's would be, and every profile of the source is refused
 	// with it (withhold).
@@ -641,9 +658,13 @@ func (c *Current) RefuseValue(ctx context.Context, name, version, secretType str
 	if !known || state.listed != (valueKey{version: version, secretType: secretType}) {
 		return
 	}
-	wasRefused := state.refused
-	state.refused, state.refusedAt = true, version
-	if !wasRefused {
+	why := ""
+	if cause != nil {
+		why = cause.Error()
+	}
+	was, wasWhy := state.refused, state.why
+	state.refused, state.refusedAt, state.why = true, version, why
+	if !was || wasWhy != why {
 		c.publish(c.withhold(), false)
 	}
 }
@@ -669,10 +690,10 @@ func (c *Current) withhold() *Set {
 			maps.Copy(refused, c.base.Refused)
 		}
 		delete(served, name)
-		refused[c.storeID(name)] = Refusal{Reason: ReasonValueMalformed, Owner: secret.Owner}
+		refused[c.storeID(name)] = Refusal{Reason: ReasonValueMalformed, Owner: secret.Owner, Detail: state.why, SupersededBy: secret.SupersededBy}
 	}
 	if served != nil {
-		set = setOf(served, refused, c.base.Pending, c.base.versions)
+		set = setOf(c.loader.Profiles, served, refused, c.base.Pending, c.base.versions)
 	}
 	return c.loader.Profiles.apply(set, c.loader.Prefix)
 }

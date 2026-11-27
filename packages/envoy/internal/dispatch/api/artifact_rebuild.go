@@ -23,8 +23,8 @@ type rebuildArtifactInput struct {
 // closed first if this server holds it, and the browsers connected to it drop their unsent
 // edits; any other document is refused unchanged, 409 DOCUMENT_LIVE while this server holds its
 // room and 409 DOCUMENT_LOADS otherwise (docs.Service.RebuildDocument). It needs the person scope
-// (routeScopes) because a rebuild intentionally deletes durable history, so only a credential
-// acting as its person may ask for one. The rebuild, the version supplied markdown
+// (its route's OAuthScopes) because a rebuild intentionally deletes durable history, so only a
+// credential acting as its person may ask for one. The rebuild, the version supplied markdown
 // writes, its artifact.version event and the move of the open approval request to that version
 // commit in one transaction, so no refusal or failure leaves a changed document without them. A
 // closed issue's document is rebuilt with the close's ask states written into its seed

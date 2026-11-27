@@ -1,15 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { dispatchToolSchema, dispatchToolSpecs, zodSchemaApi } from "@legion/contracts";
 import { z } from "zod";
+import { fakeDispatchFetch } from "../../test/fake-dispatch";
+import { bearerCredential } from "../bearer";
 import {
+  COMMANDS_OUTSIDE_THE_SPECS,
   commandFlags,
   commandHelp,
   commandLine,
   commandName,
+  commandsHelp,
+  fieldFlag,
   flagName,
   parseCommand,
   toolForCommand,
 } from "../dispatch-command";
+import { executeDispatchTool } from "../dispatch-execute";
+import { NotUtf8Error } from "../dispatch-file-text";
+import { projectBody } from "./dispatch-command-surface-responses";
 
 const noFiles = {
   readText: (path: string): string => {
@@ -47,6 +55,26 @@ function shellWords(line: string): string[] {
   return words;
 }
 
+/** The parts of a call's JSON schema the help cases read. */
+interface SchemaNode {
+  readonly description?: string;
+  readonly items?: SchemaNode;
+  readonly properties?: Readonly<Record<string, SchemaNode>>;
+}
+
+/**
+ * The part of `help` under `flag`: from the flag's own line, `\n  --issue <text>` or
+ * `\n  --multiple` for a flag with no value, up to the next flag's line or the end. Empty when no
+ * line of `help` is the flag's.
+ */
+function flagSection(help: string, flag: string): string {
+  const line = `\n  ${flag}`;
+  const at = Math.max(help.indexOf(`${line} `), help.indexOf(`${line}\n`));
+  if (at === -1) return "";
+  const end = help.indexOf("\n  --", at + 1);
+  return help.slice(at, end === -1 ? undefined : end);
+}
+
 describe("the dispatch command surface", () => {
   test("every spec's example survives commandLine then parseCommand unchanged", () => {
     for (const spec of dispatchToolSpecs) {
@@ -57,8 +85,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 37 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(37);
+  test("names map both ways for all 45 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(45);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);
@@ -69,30 +97,58 @@ describe("the dispatch command surface", () => {
   });
 
   // A flag that takes JSON lists the keys of its object, or of each item of its list, from the
-  // schema the call is checked against, so a caller learns the field names from --help rather
-  // than from the refusal of a wrong one.
-  test("every JSON flag's help lists each key its object or list item takes", () => {
-    interface Node {
-      readonly type?: string;
-      readonly items?: Node;
-      readonly properties?: Readonly<Record<string, Node>>;
-    }
+  // schema the call is checked against, each key on its own line with the description its schema
+  // gives it, so a caller learns the field names and what each holds from --help rather than from
+  // the refusal of a wrong one.
+  test("every JSON flag's help lists each key its object or list item takes, with the key's description", () => {
     let checked = 0;
     for (const spec of dispatchToolSpecs) {
-      const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as Node;
       const help = commandHelp(spec.name);
+      const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as SchemaNode;
       for (const [field, node] of Object.entries(schema.properties ?? {})) {
         const keys = node.properties ?? node.items?.properties;
         if (keys === undefined) continue;
-        const flag = `  --${flagName(field)}-json <json>\n`;
-        const at = help.indexOf(flag);
-        expect(at, `${spec.name} ${field}`).toBeGreaterThan(-1);
-        const end = help.indexOf("\n  --", at + flag.length);
-        const section = help.slice(at, end === -1 ? undefined : end);
-        for (const key of Object.keys(keys)) {
-          expect(section, `${spec.name} ${field}.${key}`).toContain(`\n        ${key} (`);
+        const flag = `--${flagName(field)}-json`;
+        const section = flagSection(help, flag);
+        expect(section, `${spec.name} ${field}`).toStartWith(`\n  ${flag} `);
+        for (const [key, { description }] of Object.entries(keys)) {
+          const told = `${spec.name} ${field}.${key}`;
+          const line = `\n        ${key} (`;
+          expect(section, told).toContain(line);
           checked++;
+          if (description === undefined) continue;
+          // `<key> (<type>): <description>`, the description on the key's own line, each later
+          // line of it indented as every line of a flag's help is.
+          const at = section.indexOf(line);
+          const said = section.indexOf(`): ${description.replaceAll("\n", "\n      ")}`, at);
+          expect(said, `${told} has no description after it`).toBeGreaterThan(at);
+          expect(
+            section.slice(at + 1, said),
+            `${told}'s description is not on its own line`
+          ).not.toContain("\n");
         }
+      }
+    }
+    expect(checked).toBeGreaterThan(20);
+  });
+
+  // A command's help prints its tool's description, and under the flag that sets a field the
+  // description the field's schema holds, so the help says what the spec says.
+  test("every command's help prints its spec's description and each field's under its flag", () => {
+    let checked = 0;
+    for (const spec of dispatchToolSpecs) {
+      const help = commandHelp(spec.name);
+      expect(help, spec.name).toContain(`\n\n${spec.description}\n\n`);
+      const schema = z.toJSONSchema(dispatchToolSchema(spec, zodSchemaApi(z))) as SchemaNode;
+      for (const [field, { description }] of Object.entries(schema.properties ?? {})) {
+        if (description === undefined) continue;
+        const flag = fieldFlag(spec.name, field);
+        const section = flagSection(help, flag);
+        expect(section, `${spec.name} ${field}`).toStartWith(`\n  ${flag}`);
+        expect(section, `${spec.name} ${field}`).toContain(
+          description.replaceAll("\n", "\n      ")
+        );
+        checked++;
       }
     }
     expect(checked).toBeGreaterThan(20);
@@ -100,31 +156,21 @@ describe("the dispatch command surface", () => {
 
   test("doc-edit --help lists each key an operation takes, with its type and its values", () => {
     const help = commandHelp("dispatch_doc_edit");
+    expect(help).toContain("\n  --ops-json <json>\n");
     expect(help).toContain(
       [
-        "  --ops-json <json>",
-        "      Flat tagged edits; an operation takes only the keys below, a misspelled one is refused rather than ignored, and the server validates the fields its op requires. Required.",
+        "Required.",
         "      Each item's keys:",
-        "        op (required; replace|delete|insert|retype|move|delete_row|delete_column): Edit operation.",
-        "",
+        "        op (required; replace|delete|insert|retype|move|delete_row|delete_column)",
       ].join("\n")
     );
-    expect(help).toContain(
-      "\n        index (integer): Zero-based row or column index for delete_row or delete_column.\n"
-    );
-    expect(help).toContain("\n        type (text): Typed block name for retype.\n");
-    expect(help).toContain("\n        attributes (any JSON): Typed block attributes for retype;");
-    expect(help).toContain(
-      [
-        "      Its keys:",
-        "        document (text): Token for the exact canonical document returned by dispatch doc-read.",
-        "        blocks (list of objects): Every content block this batch changes, each with the token dispatch doc-read --blocks lists.",
-        "          Each item's keys:",
-        "            id (required; text): Stable block id dispatch doc-read --blocks lists.",
-        "            token (required; text): That block's full-state token, including inline marks.",
-        "",
-      ].join("\n")
-    );
+    expect(help).toContain("\n        index (integer)");
+    expect(help).toContain("\n        type (text)");
+    expect(help).toContain("\n        attributes (any JSON)");
+    expect(help).toContain("\n      Its keys:\n        document (text)");
+    expect(help).toContain("\n        blocks (list of objects)");
+    expect(help).toContain("\n          Each item's keys:\n            id (required; text)");
+    expect(help).toContain("\n            token (required; text)");
   });
 
   test("dispatch project takes its key and name as one flag each", () => {
@@ -134,6 +180,51 @@ describe("the dispatch command surface", () => {
       kind: "call",
       tool: "dispatch_project",
       args: { key: "SMOKE684", name: "Smoke" },
+      dryRun: false,
+    });
+  });
+
+  test("dispatch project-update takes the project and on or off as one flag each", () => {
+    expect(commandName("dispatch_project_update")).toBe("project-update");
+    expect(commandFlags("dispatch_project_update")).toEqual(
+      expect.arrayContaining(["--project", "--proven-sessions"])
+    );
+    for (const setting of ["on", "off"]) {
+      expect(
+        parseCommand(["project-update", "--project", "CORE", "--proven-sessions", setting], noFiles)
+      ).toEqual({
+        kind: "call",
+        tool: "dispatch_project_update",
+        args: { project: "CORE", proven_sessions: setting },
+        dryRun: false,
+      });
+    }
+  });
+
+  // --labels-add, repeated, is the call's labels_add, which adds labels and keeps the issue's
+  // others; --label stays labels, the whole set. A command line whose --labels-add were dropped
+  // would send an update naming no field.
+  test("dispatch issue-update --labels-add, repeated, is the call's labels_add", () => {
+    expect(commandFlags("dispatch_issue_update")).toEqual(
+      expect.arrayContaining(["--label", "--labels-add"])
+    );
+    expect(
+      parseCommand(
+        [
+          "issue-update",
+          "--issue",
+          "ACME-10",
+          "--labels-add",
+          "accessibility",
+          "--labels-add",
+          "api",
+        ],
+        noFiles
+      )
+    ).toEqual({
+      kind: "call",
+      tool: "dispatch_issue_update",
+      args: { issue: "ACME-10", labels_add: ["accessibility", "api"] },
       dryRun: false,
     });
   });
@@ -241,6 +332,24 @@ describe("the dispatch command surface", () => {
 
   test("an unknown command is refused with the list of commands", () => {
     expect(parseCommand(["isue"], noFiles)).toMatchObject({ kind: "refused" });
+  });
+
+  test("dispatch --help lists every command as a row, and an unknown command's refusal names each", () => {
+    const outside = COMMANDS_OUTSIDE_THE_SPECS.map(({ name }) => name);
+    expect(outside).toEqual(["proxy", "login"]);
+    const names = [...dispatchToolSpecs.map((spec) => commandName(spec.name)), ...outside];
+    const rows = commandsHelp()
+      .split("\n")
+      .flatMap((line) => /^ {2}([a-z][a-z0-9-]*) {2,}\S/.exec(line)?.[1] ?? []);
+    expect(rows).toEqual(names);
+    // Each row of a command outside the specs is the first sentence of its own help.
+    for (const { name, sentence, help } of COMMANDS_OUTSIDE_THE_SPECS) {
+      expect(commandsHelp()).toContain(`  ${sentence}\n`);
+      expect(help().split("\n\n")[1], name).toStartWith(sentence);
+    }
+    const refused = parseCommand(["isue"], noFiles);
+    if (refused.kind !== "refused") throw new Error(`isue was not refused: ${refused.kind}`);
+    expect(refused.problems.join("\n")).toContain(`the commands are: ${names.join(", ")}`);
   });
 
   test("a bare issue key first is the --issue of a command that takes --issue", () => {
@@ -567,6 +676,134 @@ describe("a bare - given to a text flag", () => {
       kind: "refused",
       tool: "dispatch_result",
       problems: [bareDash("--run"), "unknown flag --runn"],
+    });
+  });
+});
+
+describe("a file flag whose bytes are not UTF-8", () => {
+  const bytes = Uint8Array.of(0x41, 0xff);
+  const notUtf8 = {
+    readText: (path: string): string => {
+      if (path === "bad") throw new NotUtf8Error(bytes);
+      throw new Error(`unexpected read ${path}`);
+    },
+  };
+
+  test("is refused for the bytes, naming the field the flag sets, unless the argv is refused for a field given twice, in either order", () => {
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({ kind: "unstorable", tool: "dispatch_comment", field: "body", bytes });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad", "--body", "x"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body-file and --body both set body"],
+    });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body", "x", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body and --body-file both set body"],
+    });
+  });
+});
+
+// `dispatch project-update` turns a project's proven-sessions setting on with a PUT and off with a
+// DELETE of `/api/v1/projects/{key}/proven-sessions`, and prints the setting as Dispatch answered
+// it; `dispatch projects` marks each project that has it on. Each case drives `executeDispatchTool`
+// over the shared fake Dispatch (`test/fake-dispatch.ts`) as a fetch.
+describe("dispatch project-update and the proven-sessions line of dispatch projects", () => {
+  const config = {
+    enabled: true,
+    url: "http://dispatch.test",
+    credential: bearerCredential("secret"),
+    error: null,
+  };
+
+  /** `tool` with `args` over a fake Dispatch that answers every request with `answer()`. */
+  function run(tool: string, args: Record<string, unknown>, answer: () => Response) {
+    const dispatch = fakeDispatchFetch({ handler: answer });
+    const result = executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: async (file, argv) => {
+        throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
+      },
+      fetchImpl: dispatch.fetchImpl,
+    });
+    return { result, requests: dispatch.calls };
+  }
+
+  test("on sends PUT /api/v1/projects/CORE/proven-sessions as the session, and prints the answered setting", async () => {
+    const { result, requests } = run(
+      "dispatch_project_update",
+      { project: "CORE", proven_sessions: "on" },
+      () => Response.json(projectBody(true))
+    );
+
+    const answered = await result;
+
+    expect(requests.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+      "PUT /api/v1/projects/CORE/proven-sessions",
+    ]);
+    expect(JSON.parse(requests[0]?.body ?? "")).toMatchObject({
+      actor: { kind: "session", id: "session-1" },
+    });
+    expect(answered.text).toBe("Project CORE (Core): proven sessions on.");
+    expect(answered.details).toEqual({ project: "CORE", proven_sessions: true });
+  });
+
+  test("off sends DELETE /api/v1/projects/CORE/proven-sessions, and prints the answered setting", async () => {
+    const { result, requests } = run(
+      "dispatch_project_update",
+      { project: "CORE", proven_sessions: "off" },
+      () => Response.json(projectBody(false))
+    );
+
+    const answered = await result;
+
+    expect(requests.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+      "DELETE /api/v1/projects/CORE/proven-sessions",
+    ]);
+    expect(answered.text).toBe("Project CORE (Core): proven sessions off.");
+    expect(answered.details).toEqual({ project: "CORE", proven_sessions: false });
+  });
+
+  test("a refusal prints the server's code before its message", async () => {
+    for (const [setting, code, message] of [
+      ["off", "OAUTH_SCOPE_REQUIRED", "this route needs the person scope"],
+      ["on", "PROJECT_SCOPE", "this token is scoped to project OPS"],
+    ] as const) {
+      const { result } = run(
+        "dispatch_project_update",
+        { project: "CORE", proven_sessions: setting },
+        () => Response.json({ code, error: message }, { status: 403 })
+      );
+
+      await expect(result, setting).rejects.toThrow(`${code}: ${message}`);
+    }
+  });
+
+  test("dispatch projects prints proven sessions on only for a project whose row has it", async () => {
+    const { result } = run("dispatch_projects", {}, () =>
+      Response.json([projectBody(true), { ...projectBody(false), key: "OPS", name: "Ops" }])
+    );
+
+    const answered = await result;
+
+    expect(answered.text).toBe("CORE Core proven sessions on\nOPS Ops");
+    expect(answered.details).toEqual({
+      projects: [
+        { key: "CORE", name: "Core" },
+        { key: "OPS", name: "Ops" },
+      ],
     });
   });
 });

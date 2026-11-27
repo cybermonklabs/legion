@@ -20,6 +20,8 @@ const modelRoles: Record<string, string> = { implementer: "anthropic/claude-opus
 let retry = { enabled: true, modelFallback: true };
 /** Selectors `ctx.models.resolve` answers nothing for: a model this session cannot use. */
 const unresolvable = new Set<string>();
+/** Selectors `ctx.models.resolve` throws for, as a host whose resolution fails does. */
+const throwing = new Set<string>();
 /** Set when a host module itself fails, as one does when the chain settings are unreadable. */
 let chainsThrow = false;
 /** The role hint each resolution was keyed by. */
@@ -62,6 +64,7 @@ const ctx = {
   models: {
     resolve: (spec: string): HostModel | undefined => {
       if (unresolvable.has(spec)) return undefined;
+      if (throwing.has(spec)) throw new Error(`${spec} cannot be resolved`);
       const [provider, id] = spec.split("/");
       return provider === undefined || id === undefined ? undefined : { provider, id };
     },
@@ -75,6 +78,7 @@ const ctx = {
 beforeEach(() => {
   retry = { enabled: true, modelFallback: true };
   unresolvable.clear();
+  throwing.clear();
   chainsThrow = false;
   roleHints.length = 0;
   warnings.length = 0;
@@ -138,5 +142,29 @@ describe("a host that fails", () => {
       model: "anthropic/claude-opus-5-5",
       error: "retry.fallbackChains is not readable",
     });
+  });
+
+  test("a next entry whose resolution throws is one warning, and the session stays", async () => {
+    throwing.add("anthropic/claude-opus-4-8");
+    expect(await nextModel(MODEL)).toBeUndefined();
+    expect(warnings).toEqual([
+      {
+        message: "legion: the model fallback chain entry did not resolve; staying on this model",
+        context: {
+          model: "anthropic/claude-opus-5-5",
+          entry: "anthropic/claude-opus-4-8",
+          error: "anthropic/claude-opus-4-8 cannot be resolved",
+        },
+      },
+    ]);
+  });
+
+  test("the whole list leaves out an entry whose resolution throws, and goes on", async () => {
+    throwing.add("anthropic/claude-opus-4-8");
+    const { fallbackModels } = await import("./fallback-chain");
+    expect(await fallbackModels(ctx, MODEL)).toEqual([{ provider: "openai", id: "gpt-5.5" }]);
+    expect(warnings.map((warning) => warning.message)).toEqual([
+      "legion: the model fallback chain entry did not resolve; leaving that entry out",
+    ]);
   });
 });

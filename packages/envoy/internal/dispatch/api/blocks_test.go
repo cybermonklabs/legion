@@ -11,6 +11,7 @@ import (
 )
 
 func TestArtifactBlocksReferenceCanonicalMarkdownByteRanges(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
@@ -62,6 +63,7 @@ func TestArtifactBlocksReferenceCanonicalMarkdownByteRanges(t *testing.T) {
 // item reads while its windows are not written, as an item a build before them wrote has none
 // until the block-index tick reaches it.
 func TestTheBlocksRoutesSayWhereMeaningSearchStands(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "EMBD", "Block embedding", "# Heading\n\nSecond paragraph\n")
@@ -150,6 +152,7 @@ func TestTheBlocksRoutesSayWhereMeaningSearchStands(t *testing.T) {
 // Each block is what GET /api/v1/artifacts/{id}/blocks reports, references and embedding included,
 // and that route still answers the bare array a client older than the server reads.
 func TestTheTextRoutesCarryTheBlocksTheirMarkdownHolds(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{

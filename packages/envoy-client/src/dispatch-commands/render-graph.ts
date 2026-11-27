@@ -8,7 +8,7 @@ import type {
   IssueCoverage,
   IssueReferencesAnswer,
 } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorText, deletedMark, editedMark, withEditedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
 import type { DispatchClient, GraphReferencesQuery } from "../dispatch-http";
 import { ITEM_KINDS, type ItemKind, type ParsedDispatchRef } from "../dispatch-owner";
@@ -35,10 +35,21 @@ function isItemKind(kind: GraphNode["kind"] | undefined): kind is ItemKind {
 
 /** One edge of a graph read. A part of an ask, or a block of a comment or message (a block node
  *  naming no document), shows as its item, then the block: `ask <item ref> block <part id>`,
- *  `comment <item ref> block <id>`. */
+ *  `comment <item ref> block <id>`. Where the row names a comment or message its author
+ *  withdrew, the mark every read prints for a deleted post (`deletedMark`) stands where its
+ *  excerpt would: the server sends none, so the row would otherwise carry a bare time and leave
+ *  the deletion unsaid. Where it names one its author edited, the mark every line prints for an
+ *  edited post (`editedMark`) follows its excerpt, or stands alone where the row has none, so the
+ *  row never gives a post's words without saying they may not be the ones it first held. */
 export function edgeLine(edge: GraphEdge): string {
   const { node } = edge;
-  const excerpt = edge.excerpt === undefined ? "" : `${textHead(edge.excerpt.text)} · `;
+  const words = edge.excerpt === undefined ? "" : `${textHead(edge.excerpt.text)} · `;
+  const excerpt =
+    node.deleted_at == null
+      ? node.edited_at == null
+        ? words
+        : `${words}${editedMark(node.edited_at)} · `
+      : `${deletedMark(node.deleted_at, node.deleted_by)} · `;
   const block = edge.block === undefined ? "" : ` (block ${edge.block.ref ?? edge.block.id})`;
   const parent = node.parent ?? undefined;
   const item =
@@ -166,10 +177,15 @@ function nodeLine(node: GraphNode): string[] {
  * last changed in and that text, the claim a `check` makes among it. A comment's or message's block:
  * one line naming the block, its item and the comment revision its text last changed in (`Block
  * b2 of comment <id> (changed in revision 1):`), then its text; neither has a type or attributes.
- * A part of an ask reads the same way, under the name `noun` gives it (`Option b2 of ask <id>
- * (changed in revision 1):`), the revision being the ask's parts'. A block no current version or
- * revision holds has no changed version, text, type or attribute. Then for a pinned ref how the
- * block stands against the version or revision it pins and its text there.
+ * A block of a comment or message its author edited ends that line with the mark every line
+ * prints for an edited post (`editedMark`: `… (changed in revision 2) · edited <time>:`): the
+ * revision says only when this block's own text last changed, which an edit of another block of
+ * the post leaves as it was, and the line is the head of every read of the block, a pinned one's
+ * included. A part of an ask reads the same way, under the name `noun` gives it (`Option b2 of
+ * ask <id> (changed in revision 1):`), the revision being the ask's parts'; its node carries no
+ * edit mark. A block no current version or revision holds has no changed version, text, type or
+ * attribute. Then for a pinned ref how the block stands against the version or revision it pins
+ * and its text there.
  */
 export function blockLines(
   node: GraphNode,
@@ -195,7 +211,12 @@ export function blockLines(
           ...(node.text === undefined ? [] : ["Text:", node.text]),
         ]
       : [
-          `${noun} ${blockID} of ${ref.item.kind} ${ref.item.id}${node.changed_version === undefined ? "" : ` (changed in revision ${node.changed_version})`}:`,
+          // Dispatch answers no read of a deleted post's block (404, `itemBlockReferenceNode`), so
+          // the post a node read here is of stands, and its edit mark is the post's.
+          `${withEditedMark(
+            `${noun} ${blockID} of ${ref.item.kind} ${ref.item.id}${node.changed_version === undefined ? "" : ` (changed in revision ${node.changed_version})`}`,
+            node.edited_at
+          )}:`,
           ...(node.text === undefined ? [] : [node.text]),
         ];
   const { pin } = node;

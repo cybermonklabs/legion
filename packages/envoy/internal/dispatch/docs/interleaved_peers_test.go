@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Two peers' updates reach the room's persistence in whatever order their read loops hand them
@@ -31,6 +32,7 @@ import (
 // held hand-over; and once that hand-over runs it stores nothing and leaves the room counting no
 // update as pending, so nothing holds the room's settlement or its record (unusedLocked).
 func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	var attempts atomic.Int64
@@ -40,7 +42,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	held, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	releaseHeld := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseHeld)
+	testcleanup.Add(t, releaseHeld)
 	load := service.srv.OnLoadDocument
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 		if err := load(ctx, room, doc); err != nil {
@@ -60,7 +62,7 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	}
 	seedServiceText(t, service, artifactID, "before")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	// Pages of this build, each given its own client id, so no edit of theirs is a claim
 	// (claimable), as a page of the earlier build's first edit is.
 	alpha := openPage(t, server.URL, artifactID, "alice")
@@ -162,6 +164,7 @@ const cutFrameClient = 9
 // own update carries both, which the room stores and the replica, following the log's updates
 // alone, holds as the room does.
 func TestARoomsParkedOnlyCommitStoresNothingAndLandsWithItsPredecessor(t *testing.T) {
+	t.Parallel()
 	t.Run("valid", func(t *testing.T) { parkedOnlyCommitLandsWithItsPredecessor(t, false) })
 	t.Run("truncated_delete_set", func(t *testing.T) { parkedOnlyCommitLandsWithItsPredecessor(t, true) })
 }
@@ -214,7 +217,7 @@ func parkedOnlyCommitLandsWithItsPredecessor(t *testing.T, truncated bool) {
 	room.OnUpdate(func([]byte, any) { updates.Add(1) })
 	stored := storedUpdateCount(t, service.store, artifactID)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	if truncated {
 		// ygo refuses the cut frame and the hook closes that browser 4413 (documentUpdateRefused),
 		// so it is sent on a socket of its own: its close is what says the room has taken it,
@@ -334,6 +337,7 @@ func parkedOnlyCommitLandsWithItsPredecessor(t *testing.T, truncated bool) {
 // sends the frame again to the room that replaces the closed one, and once the predecessor arrives
 // that room holds and stores both clients' edits.
 func TestAPeerUpdateThatChangesTheRoomAndParksStoresWhatItIntegratedAndLandsTheRestWhenResent(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -361,7 +365,7 @@ func TestAPeerUpdateThatChangesTheRoomAndParksStoresWhatItIntegratedAndLandsTheR
 
 	stored := storedUpdateCount(t, service.store, artifactID)
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	peer := connectPeer(t, server.URL, artifactID, "alice")
 	if err := peer.Write(ygsync.EncodeUpdate(mixed)); err != nil {
 		t.Fatalf("send an update that changes the room and parks: %v", err)

@@ -1,7 +1,6 @@
 package bus
 
 import (
-	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // leaderReadBucket opens bucket on a connection of its own and answers the server's URL with it,
@@ -37,7 +37,10 @@ func leaderReadBucket(t *testing.T, bucket string) (string, KeyValue) {
 
 // requestFor is the next message the subscription holds whose subject names stream, waited for up
 // to wait, and nil where none came: the requests of the other rows sharing this server, and of
-// this row's own setup, name another stream and are passed over.
+// this row's own setup, name another stream and are passed over. A row waiting for a request that
+// must come gives the test binary's deadline less testwait's margin (testwait.Remaining), so a
+// request a loaded machine sends late is still read; one showing a request is absent gives
+// noRequestFor.
 func requestFor(t *testing.T, sub *nats.Subscription, stream string, wait time.Duration) *nats.Msg {
 	t.Helper()
 	deadline := time.Now().Add(wait)
@@ -74,6 +77,7 @@ const noRequestFor = 500 * time.Millisecond
 // a direct get for a key it has not applied yet. Who answers each request is nats-server's, and
 // it turns on nothing but the subject the request was sent to.
 func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_wire"
 	const key = "ses_live"
 	stream := "KV_" + bucket
@@ -102,7 +106,7 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 	if _, err := kv.Get(key); err != nil {
 		t.Fatalf("Get(%s): %v", key, err)
 	}
-	direct := requestFor(t, directGets, stream, 5*time.Second)
+	direct := requestFor(t, directGets, stream, testwait.Remaining(t, 30*time.Second))
 	if direct == nil {
 		t.Fatalf("Get(%s) sent no direct get of %s; this read is the one the leader need not answer", key, stream)
 	}
@@ -113,12 +117,12 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 		t.Errorf("Get(%s) sent %s too, want the direct get alone", key, sent.Subject)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	if _, err := kv.GetFromLeader(ctx, key); err != nil {
 		t.Fatalf("GetFromLeader(%s): %v", key, err)
 	}
-	leader := requestFor(t, streamMsgGets, stream, 5*time.Second)
+	leader := requestFor(t, streamMsgGets, stream, testwait.Remaining(t, 30*time.Second))
 	if leader == nil {
 		t.Fatalf("GetFromLeader(%s) sent no stream message get of %s; a direct get would be answered by a copy that is behind", key, stream)
 	}
@@ -138,10 +142,11 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 // marker are nats.ErrKeyNotFound, and a key no read may name is refused with the error Get
 // refuses it with, word for word, before anything is sent.
 func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_answers"
 	_, kv := leaderReadBucket(t, bucket)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	revision, err := kv.Put("ses_live", []byte("live"))
 	if err != nil {
@@ -202,11 +207,12 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 // put is answered as GetFromLeader answers it, and a key the stream holds no message for is
 // nats.ErrKeyNotFound.
 func TestTheNewestLeaderReadAnswersAMarkerAtTheSequenceItIsStoredAt(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_leader_newest"
 	_, kv := leaderReadBucket(t, bucket)
 	conn := kv.Streams().Conn()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	put, err := kv.Put("ses_live", []byte("live"))
 	if err != nil {

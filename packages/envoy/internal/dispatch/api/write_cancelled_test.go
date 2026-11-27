@@ -236,7 +236,7 @@ func TestAWriteWhoseRequestEndsWhileItWaitsForTheOwnersRowIsDocServiceUnavailabl
 // The request is taken past the bound by its mark rather than by the clock, as the write-bound
 // tests take theirs (docs.CallerRequestSinceForTest): the edit route's handler runs inside
 // compressAnswers, on the request's context marked as begun docs.WriteRequestBound ago where
-// trackTransactions would mark it begun now.
+// markCallerRequest would mark it begun now.
 func TestAWriteTheWholeWriteBoundEndsWhileItsRequestIsLiveIsDocServiceUnavailable(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	_, artifactID := seedCancelledWriteIssue(t, handler, served)

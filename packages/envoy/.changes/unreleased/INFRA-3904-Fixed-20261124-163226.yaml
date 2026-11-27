@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The outbox no longer sends a deleted comment's held copy to the session a mention of it was
+  waiting to reach. The copy is the comment's `comment.created`, which the outbox keeps back for
+  that session while the mention's send runs past a claim lease, and publishes only if the send
+  fails. The author's delete fails that send and settles the copy with nothing published, in one
+  commit, but a fallback pass that had claimed the copy just before the delete, or a copy held
+  just after it, could still read the send as failed and publish the deleted text to the
+  session's own topic ahead of its `comment.deleted`. The fallback pass now reads whether the
+  comment is deleted after every other read of its decision, and settles a copy of a deleted
+  comment with nothing sent. The `comment.created` event itself, which the outbox holds back
+  while a mention is being sent, still goes out as recorded after a delete, as before.
+time: 2026-11-24T16:32:26Z
+custom:
+    Issue: INFRA-3904

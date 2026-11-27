@@ -296,8 +296,8 @@ func TestSignedInCallersWhoseBodiesStallHoldNoWriteSlot(t *testing.T) {
 		if refused.StatusCode != http.StatusServiceUnavailable || refusalCode(refusal) != "BODY_STALLED" {
 			t.Fatalf("the %dth stalled body was answered %d %s, want 503 BODY_STALLED at its deadline", index, refused.StatusCode, refusal)
 		}
-		if !body.closedByServer(drainLimit) {
-			t.Fatalf("the connection of the %dth stalled body was still open %s after its answer", index, drainLimit)
+		if !body.closedByServer() {
+			t.Fatalf("the connection of the %dth stalled body was still open after its answer", index)
 		}
 	}
 }

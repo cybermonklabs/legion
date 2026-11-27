@@ -42,6 +42,7 @@ import (
 //	            select embeddings_enqueue_window($1, $2 || '#' || w.suffix, w.text, w.covers)
 //	            from jsonb_to_recordset($3::jsonb) as w (suffix text, text text, covers text[])
 func TestADocumentWriteWritesNoWindowUnderTheIssueRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	sent := &sentStatements{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, sent, nil)}

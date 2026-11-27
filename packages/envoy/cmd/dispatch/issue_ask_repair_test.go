@@ -21,6 +21,7 @@ import (
 // The boot's repair withdraws the open ask a close by an older release left on a closed issue,
 // naming that close's actor, and logs its counts.
 func TestRepairIssueAsksAtBootWithdrawsAndLogsItsCounts(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
 	for _, query := range []string{

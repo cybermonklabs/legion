@@ -22,6 +22,7 @@ import (
 // through 0067 and no further: what it holds is 0067's own effect, which every upgrade from a
 // store older than it still walks.
 func TestTheAssignmentColumnsArriveEmptyWith0067(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, 66)

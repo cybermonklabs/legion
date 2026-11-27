@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // These tests hold the judgement's mint of an id from 2^32 up that no row names and the document
@@ -113,10 +114,13 @@ func TestTwoPeopleSendingEditsUnderOneFreedIDTheFirstMintLandsAndTheSecondIsRefu
 	if err := mallory.Write(ygsync.EncodeUpdate(forged)); err != nil {
 		t.Fatal(err)
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, 30*time.Second); waiting < 2 {
-		t.Fatalf("%d of the two edits' mints of id %d waited behind its held row, want both: alice's page ended %v, mallory's %v",
-			waiting, freed, connectionEnd(alice), connectionEnd(mallory))
-	}
+	testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("both edits' mints of id %d to wait behind its held row (how many waited, and how each page ended)", freed), func() (string, bool) {
+		waiting, err := storetest.LockWaiters(ctx, holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%d waiting; alice's page ended %v, mallory's %v", waiting, connectionEnd(alice), connectionEnd(mallory)), waiting >= 2
+	})
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}

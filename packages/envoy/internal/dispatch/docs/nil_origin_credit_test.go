@@ -263,6 +263,7 @@ func paragraphLine(t *testing.T, markdown, prefix string) string {
 // the room itself, with no origin - credits no browser. It holds on both paths: where the room's
 // observer classifies the commit as a content change, and where it classifies it as no change.
 func TestRenderReuseANilOriginCommitCreditsNoOne(t *testing.T) {
+	t.Parallel()
 	t.Run("the browser's delete of a bold run it never saw", testADeleteThatDanglesABoldRun)
 	t.Run("a nil-origin commit a recovered replica counts as changed", testANilOriginCommitAfterARecover)
 	t.Run("a nil-origin commit an open write's shadow counts as changed", testANilOriginCommitAnOpenWritesShadowMeasures)

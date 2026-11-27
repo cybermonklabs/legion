@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -34,6 +33,7 @@ import (
 // addSession by a road of its own (destinations.leftToMention,
 // TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice).
 func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
+	t.Parallel()
 	const role = "mentioned-and-held-by-nobody-this-read-can-name"
 	const author = "ses_wrote_the_thread_root"
 	const issueTopic = "notifications.dispatch.issue.T-1.comment.created"
@@ -90,8 +90,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	// The pass that reads that row waits on it: the resend is still owed, and whichever session
 	// it pins is a session this read cannot name (mentionHolds.state).
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	time.Sleep(time.Second)
-	if got := wrote.received(); len(got) != 0 {
+	if got := wrote.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the resend of the mention of %s is still owed: the resend can pin this very author, and that send lands under %q, which this copy does not claim",
 			author, keysOf(got), target, mentionKey)
 	}
@@ -117,7 +116,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, 10*time.Second, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
 	want := []string{eventKey}
 	if got := keysOf(wrote.received()); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once the resend had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",

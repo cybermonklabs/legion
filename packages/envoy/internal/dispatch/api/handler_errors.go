@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // How a handler's error becomes a response: one function, writeHandlerError, that every route's
@@ -88,8 +90,16 @@ type editPreconditionError struct {
 // names the number it read beside its write and adds the sentence saying where a current token
 // is printed (writeUploadDocumentError).
 func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionError {
+	return preconditionBody(failed.CurrentDocument, failed.Mismatches, failed.Error())
+}
+
+// preconditionBody is that body from its parts: the token that stands, the mismatches that named
+// what the caller expected, and the sentence saying so. A block mismatch's current token is
+// listed in current.blocks. A file's upload, whose refusal no document write raises, builds its
+// body here (fileUploadPreconditionBody).
+func preconditionBody(currentDocument string, mismatches []model.EditPreconditionMismatch, message string) editPreconditionError {
 	currentBlocks := make([]model.EditBlockPrecondition, 0)
-	for _, mismatch := range failed.Mismatches {
+	for _, mismatch := range mismatches {
 		if mismatch.Scope == "block" && mismatch.Current != nil {
 			currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
 				ID: mismatch.BlockID, Token: *mismatch.Current,
@@ -98,9 +108,9 @@ func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionEr
 	}
 	return editPreconditionError{
 		Code:       "PRECONDITION_FAILED",
-		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
-		Error:      failed.Error(),
-		Mismatches: failed.Mismatches,
+		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: currentDocument},
+		Error:      message,
+		Mismatches: mismatches,
 	}
 }
 
@@ -115,6 +125,16 @@ type editLostError struct {
 	LostOps      *[]int        `json:"lost_ops,omitempty"`
 	Participants []model.Actor `json:"participants"`
 	Suggestion   *string       `json:"suggestion,omitempty"`
+}
+
+// deletedPostError is the 409 every write that would put text on a post its author withdrew
+// answers, and the one place that names that refusal's code and its words: a reply under the
+// post, an edit or a delete of it, an accept or a reject of its suggestion, a send or a reply
+// of a delivery of it. kind names the post in the message, as the route's caller met it ("this
+// comment is deleted"). A deleted post keeps its row and its place, so a write that moves no
+// text - a resolve, a reopen - takes it and meets this refusal nowhere.
+func deletedPostError(kind refs.ItemKind) *apiError {
+	return errorf(http.StatusConflict, "POST_DELETED", "this %s is deleted", kind)
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
@@ -132,6 +152,19 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		if apiErr.status == http.StatusInternalServerError {
 			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
 		}
+		return
+	}
+	// A write that R24 refuses names each issue that holds the rule (parent_status_rule.go).
+	var conflict *parentStatusConflict
+	if errors.As(err, &conflict) {
+		WriteJSON(w, http.StatusConflict, conflict.body())
+		return
+	}
+	// An acceptance write refused for an open child of another project names each such child
+	// (refuseOpenForeignChildren in issue_parent.go).
+	var open openForeignChildrenError
+	if errors.As(err, &open) {
+		WriteJSON(w, http.StatusConflict, open.body())
 		return
 	}
 	documentCode := documentErrorCode(err)
@@ -329,7 +362,7 @@ func (s *server) endedWithACancelledContext(w http.ResponseWriter, err error) bo
 
 // answersCall is embedded in a writer that knows the call it answers, naming the context that call
 // runs on: compressAnswers' two writers, which every row of the table answers through, name the
-// request's context as trackTransactions marked it, and the keyed run's writer (keyedAnswer),
+// request's context as markCallerRequest marked it, and the keyed run's writer (keyedAnswer),
 // which hides every writer beneath it, names the run's.
 type answersCall struct{ call context.Context }
 
@@ -349,6 +382,20 @@ func callOf(w http.ResponseWriter) context.Context {
 		w = inner.Unwrap()
 	}
 }
+
+// errorAnswer records what an error writer (writeHandlerError, writeAuthenticationError) writes:
+// its status, its headers and its body, for a caller that answers it in a form of its own. A test
+// hook sends it as a process's acknowledgement (runTestHook), and the status-change route answers
+// it with the entries of the steps that committed (writeStatusChangeRefusal).
+type errorAnswer struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (a *errorAnswer) Header() http.Header         { return a.header }
+func (a *errorAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
+func (a *errorAnswer) WriteHeader(status int)      { a.status = status }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading
 // anchor that resolved in several places.

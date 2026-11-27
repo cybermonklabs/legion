@@ -33,6 +33,7 @@ func seedLegionProjects(t *testing.T, handler http.Handler, keys ...string) {
 // its daemon, the GET reads it with the actor that set it, a second PUT moves the URL and keeps
 // that actor, and the DELETE removes it, leaving every other project's alone.
 func TestALegionSettingRoundTripsAndIsRemoved(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	seedLegionProjects(t, handler, "INFRA", "CORE")
 
@@ -101,6 +102,7 @@ func TestALegionSettingRoundTripsAndIsRemoved(t *testing.T) {
 // badly spelled key is 400 INVALID_PROJECT and an unknown project loadProject's 404
 // PROJECT_NOT_FOUND, whichever of the three daemon routes is called.
 func TestAnUnknownProjectAndABadStateURLAreRefused(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	seedLegionProjects(t, handler, "INFRA")
 
@@ -140,9 +142,10 @@ func TestAnUnknownProjectAndABadStateURLAreRefused(t *testing.T) {
 }
 
 // TestALegionSettingIsRefusedToAProjectScopedToken: pointing Dispatch at a host belongs to the
-// deployment, so a credential that may write one project is refused both writes by name, though
+// deployment, so a credential that names one project is refused both writes by name, though
 // the path names that very project.
 func TestALegionSettingIsRefusedToAProjectScopedToken(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-that-may-not-point-dispatch-at-a-daemon"

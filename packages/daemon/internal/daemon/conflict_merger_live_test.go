@@ -16,14 +16,17 @@
 // pull request, and the reviewer is asked to read the merge with `git show --remerge-diff` and
 // approve the new head (R2). A required check that settles red on the new head is told to the
 // merger and the architect, and not to the implementer. GitHub's merge of the pull request closes
-// the issue. Throughout, the issue never enters implementing: no read of GET /legion/v1/state shows
-// that phase, and the daemon writes no in_progress status to Dispatch. Last, the merger's own
-// prompt, as its launch carries it, is printed beside what the daemon sent it, for a reader to
+// the issue. Throughout, the issue never enters implementing: every move the daemon logs for it goes
+// from accepting to retro to merging to done, no read of GET /legion/v1/state shows implementing,
+// and the daemon writes no in_progress status to Dispatch. Last, the merger's launch names the
+// role prompt parts the daemon composed for a merger, not the driver's own prompt, and the
+// headings of each part are printed beside what the daemon sent the merger, for a reader to
 // hold the one against the other. scripts/e2e/conflict-merger.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// `-tags e2e`, owns the nats-server it runs against, and takes the PostgreSQL from
+// LEGION_TEST_PG_DSN, which it starts none of.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
-// other whole-daemon proofs boot it (startDaemonWithin, through conflictLive's bootLogged), so the
+// other whole-daemon proofs boot it (startDaemonLogging, through conflictLive's bootLogged), so the
 // proof exercises the real configuration, the real store and its migrations, the real HTTP API,
 // the real claim supervision and its worker stream, the real openWorkflow, the real JetStream
 // consumers, the real merge-state reads and the real outbox lanes — the lane that runs the second
@@ -65,6 +68,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -90,11 +94,6 @@ const (
 	mergerMergeHead    = "head-merged"
 )
 
-// mergerPromptSections are the headings of the merger's prompt a reader holds against what the
-// daemon sent the merger in the run (prompts/roles/merger.md): the conflict, and the check that
-// failed beneath it.
-var mergerPromptSections = []string{"## A head that conflicts with its base", "### A check that failed"}
-
 // conflictMergerLive is one run of the proof: the booted daemon, its log and the baseline of each
 // role topic (conflictLive), the three roles the driver acts as over the worker stream, and the
 // watch of the issue's phase over the whole run.
@@ -111,6 +110,9 @@ type conflictMergerLive struct {
 // on the new head told to the merger and not the implementer, GitHub's merge closing the issue
 // with no move into implementing at any point, and the merger's prompt as its launch carries it.
 func TestAConflictPastTheReviewIsTheMergersLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newConflictMergerLive(t)
 	r.step("step1-a-conflict-in-accepting-is-recorded-and-asks-nobody", r.acceptingRecordsTheConflict)
 	r.step("step2-sign-off-and-retro-ask-nothing-and-merging-asks-the-merger", r.mergingAsksTheMerger)
@@ -300,8 +302,8 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: mergerAcceptedHead,
 		Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext}
 	told := r.awaitHeard(claim.RoleMerger, 1, bound)
-	if told[0].Message != ask.Message(r.key, liveRepo) || !strings.Contains(told[0].Message, "The merge and its conflict are yours to resolve") {
-		t.Fatalf("the merger was told %q, want the merge forward's ask to the merger %q", told[0].Message, ask.Message(r.key, liveRepo))
+	if told[0].Message != ask.Message(r.key, record.PullRequest{Repo: liveRepo}) || !strings.Contains(told[0].Message, "The merge and its conflict are yours to resolve") {
+		t.Fatalf("the merger was told %q, want the merge forward's ask to the merger %q", told[0].Message, ask.Message(r.key, record.PullRequest{Repo: liveRepo}))
 	}
 	r.note("read back: one message on the merger's role topic — %s", told[0].Message)
 	checksRed := func() ([]record.Notice, []record.Notice) {
@@ -365,17 +367,20 @@ func (r *conflictMergerLive) mergerMergeLands() {
 	landed := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardLanded, Head: mergerAcceptedHead,
 		Landed: mergerMergeHead, Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext}
 	told := r.awaitHeard(claim.RoleMerger, 2, bound)
-	if told[1].Message != landed.Message(r.key, liveRepo) ||
+	// The landing asked the reviewer, since the issue's task has a reviewer step, so the merger's
+	// landing holds its merge to that approval (MergeForward.ReviewAsked).
+	landedPR := record.PullRequest{Repo: liveRepo, MergeForward: &record.MergeForward{Landed: mergerMergeHead, ReviewAsked: true}}
+	if told[1].Message != landed.Message(r.key, landedPR) ||
 		!strings.Contains(told[1].Message, "only once the reviewer's approval of that head is on the pull request") {
-		t.Fatalf("the merger was told %q, want the landing %q", told[1].Message, landed.Message(r.key, liveRepo))
+		t.Fatalf("the merger was told %q, want the landing %q", told[1].Message, landed.Message(r.key, landedPR))
 	}
 	r.note("read back: the merger's role topic took the landing — %s", told[1].Message)
 	review := landed
 	review.Role, review.Step = claim.RoleReviewer, record.MergeForwardReview
 	asked := r.awaitHeard(claim.RoleReviewer, 1, bound)
-	if asked[0].Message != review.Message(r.key, liveRepo) || !strings.Contains(asked[0].Message, "git show --remerge-diff "+mergerMergeHead) ||
+	if asked[0].Message != review.Message(r.key, landedPR) || !strings.Contains(asked[0].Message, "git show --remerge-diff "+mergerMergeHead) ||
 		!strings.Contains(asked[0].Message, mergerAcceptedHead) {
-		t.Fatalf("the reviewer was told %q, want the review of the merge %q", asked[0].Message, review.Message(r.key, liveRepo))
+		t.Fatalf("the reviewer was told %q, want the review of the merge %q", asked[0].Message, review.Message(r.key, landedPR))
 	}
 	r.note("read back: the reviewer's role topic took the review ask — %s", asked[0].Message)
 	logged := r.awaitLogged("workflow: the merge forward landed", r.key, bound)
@@ -440,10 +445,16 @@ func (r *conflictMergerLive) redCheckReachesTheMerger() {
 }
 
 // Step 5. GitHub merges the pull request at the merger's head, which closes the issue: done. Then
-// what held over the whole run: every read of GET /legion/v1/state the watch made showed the
-// issue in accepting, retro, merging and done, in that order, and never in implementing; the daemon
-// wrote no in_progress status to Dispatch; and every merge-forward message it delivered or ended
-// went to the merger or the reviewer, none to the implementer.
+// what held over the whole run: the moves the daemon logged for the issue went from accepting to
+// retro, to merging and to done, and no other; every read of GET /legion/v1/state the watch made
+// showed the issue in those phases, in that order, and never in implementing; the daemon wrote no
+// in_progress status to Dispatch; and every merge-forward message it delivered or ended went to the
+// merger or the reviewer, none to the implementer.
+//
+// The order of the phases is read from the daemon's log, not from the watch. The daemon logs each
+// move its transition table makes once the move commits (phaseChangedLine). The watch reads the
+// state ten times a second, and the driver completes retro at once, so retro can fall between two
+// of its reads (phaseWatch). The watch still holds what the route showed.
 func (r *conflictMergerLive) mergeClosesTheIssue() {
 	t := r.t
 	r.waitProcessed(r.publishMergeOf(r.number, r.key, mergerMergeHead, conflictBase))
@@ -451,14 +462,25 @@ func (r *conflictMergerLive) mergeClosesTheIssue() {
 	done := r.waitFor("the issue done", func(got api.Issue) bool { return got.Phase == phase.Done })
 	r.note("read back: %s is %s, status %s", r.key, done.Phase, done.Status)
 
+	var moves []string
+	testwait.WithinPolling(t, testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, "the daemon's line for "+r.key+"'s move to done", func() bool {
+		moves = r.phaseMoves()
+		return len(moves) > 0 && strings.HasSuffix(moves[len(moves)-1], " to "+string(phase.Done))
+	})
+	if want := []string{"accepting to retro", "retro to merging", "merging to done"}; !slices.Equal(moves, want) {
+		t.Fatalf("the daemon logged the moves %v of %s, want exactly %v: never implementing", moves, r.key, want)
+	}
 	reads, failed, seen := r.watch.stop()
 	if reads == 0 {
 		t.Fatalf("the watch of %s's phase read GET /legion/v1/state no time (%d reads failed): it saw nothing, so it says nothing", r.key, failed)
 	}
-	if want := []phase.Phase{phase.Accepting, phase.Retro, phase.Merging, phase.Done}; !slices.Equal(seen, want) {
-		t.Fatalf("the watch of %s read the phases %v over %d reads, want exactly %v: never implementing", r.key, seen, reads, want)
+	order := []phase.Phase{phase.Accepting, phase.Retro, phase.Merging, phase.Done}
+	if seen[0] != phase.Accepting || seen[len(seen)-1] != phase.Done || !inOrder(seen, order) {
+		t.Fatalf("the watch of %s read the phases %v over %d reads, want accepting first, done last and each in the order %v: never implementing",
+			r.key, seen, reads, order)
 	}
-	r.note("read back over the whole run: %d reads of GET /legion/v1/state (%d failed) showed %s in %v, in that order, and never in implementing", reads, failed, r.key, seen)
+	r.note("read back over the whole run: the daemon logged the moves %v of %s, and %d reads of GET /legion/v1/state (%d failed) showed it in %v, in that order and never in implementing",
+		moves, r.key, reads, failed, seen)
 	var statuses []string
 	for _, write := range r.board.writes() {
 		if write.Issue == r.key && write.Status != "" {
@@ -473,42 +495,50 @@ func (r *conflictMergerLive) mergeClosesTheIssue() {
 }
 
 // Step 6. The merger's prompt as its launch carries it: the role prompt the daemon composed at
-// boot, read from the paths the merger's launch named rather than from any prompt the driver wrote.
-// Its section on a head that conflicts with its base, and the subsection on a check that failed,
-// are printed whole, beside the messages step 2, 3 and 4 printed, for a reader to hold the one
-// against the other.
+// boot. The merger's launch names exactly the parts of the composer's snapshot that the composer
+// gives a merger, in its order (composedParts, in live_proof_test.go), each below the snapshot's
+// shared/ or go/; and each part holds bytes. So it does not name the driver's own prompt file,
+// prompts/<token>.md (rolePromptPath), which a launch names alone once the seed writes one for the
+// claim (specs.rolePromptPaths), and the failure names that file. For a reader to hold the prompt
+// against the messages steps 2, 3 and 4 printed, it prints the Markdown headings of each part:
+// each line outside a fenced block that starts with `#`, a rule that needs no word of the prompt.
 func (r *conflictMergerLive) mergerPromptAsLaunched() {
 	t := r.t
 	token := r.token(claim.RoleMerger)
 	launch := lastLaunch(t, r.rt, token)
 	override := rolePromptPath(r.cfg.StateDir, token)
-	var text strings.Builder
-	for _, path := range launch.Prompt.RolePromptPaths {
-		if path == override {
-			t.Fatalf("the merger's launch names the driver's own prompt %s, want the role prompt the daemon composed", path)
-		}
+	parts := composedParts[composedRole{claim.RoleMerger, false}]
+	snapshot := filepath.Join(r.cfg.StateDir, "prompts")
+	want := make([]string, 0, len(parts))
+	for _, part := range parts {
+		want = append(want, filepath.Join(snapshot, part))
+	}
+	if !slices.Equal(launch.Prompt.RolePromptPaths, want) {
+		t.Fatalf("the merger's launch names the role prompt parts %v, want the parts the composer gives a merger %v and not the driver's own prompt %s", launch.Prompt.RolePromptPaths, want, override)
+	}
+	size := 0
+	for i, path := range launch.Prompt.RolePromptPaths {
 		body, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("read the merger's role prompt %s: %v", path, err)
+			t.Fatalf("read the merger's role prompt part %s: %v", path, err)
 		}
-		text.Write(body)
+		if len(body) == 0 {
+			t.Fatalf("the merger's role prompt part %s is empty", path)
+		}
+		size += len(body)
+		r.note("read back: part %d of %d of the merger's role prompt is the composer's %s, %d bytes, with the headings:",
+			i+1, len(parts), parts[i], len(body))
+		fenced := false
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.HasPrefix(line, "```") {
+				fenced = !fenced
+			} else if !fenced && strings.HasPrefix(line, "#") {
+				r.note("prompt| %s", line)
+			}
+		}
 	}
-	r.note("read back: the merger's launch names %d role prompt parts the daemon composed at boot, %d bytes in all", len(launch.Prompt.RolePromptPaths), text.Len())
-	composed := text.String()
-	start := strings.Index(composed, mergerPromptSections[0]+"\n")
-	if start < 0 {
-		t.Fatalf("the merger's composed prompt has no section %q", mergerPromptSections[0])
-	}
-	section := composed[start:]
-	if end := strings.Index(section[len(mergerPromptSections[0]):], "\n## "); end >= 0 {
-		section = section[:len(mergerPromptSections[0])+end]
-	}
-	if !strings.Contains(section, "\n"+mergerPromptSections[1]+"\n") {
-		t.Fatalf("the merger's section %q holds no subsection %q", mergerPromptSections[0], mergerPromptSections[1])
-	}
-	for _, line := range strings.Split(strings.TrimSpace(section), "\n") {
-		r.note("prompt| %s", line)
-	}
+	r.note("read back: the merger's launch names the %d role prompt parts the daemon composed for a merger at boot, %d bytes in all, and not the driver's own prompt %s",
+		len(parts), size, override)
 }
 
 // noMergeForwardTo holds that no merge-forward message of the issue was addressed to role: the
@@ -550,12 +580,67 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 	return *pr
 }
 
+// phaseChangedLine is the line the daemon logs for each move of an issue its transition table
+// makes, once the move commits (workflow's arrive), naming the phase it left (`from`) and the
+// phase it entered (`to`). A parent held before its retro (holdBeforeRetro) is logged with its
+// retro as `to` while it stands held. No other write of an issue's phase logs the line: a failed
+// claim's hold (claimFailed) and its release (retryPhase); a stopped task's hold (stopTask), its
+// restart at its first step (restartTask) and its wait for that step again (waitForFirstStep); a
+// held parent's start of its retro (StartHeldRetro); a lingering tree's member closed at its merge
+// (closeMerged); a leave that writes done (endTaskWithLeave) and a member an adoption parks at done
+// (moveIntoTree); a root's move into awaiting_person (enterAwaiting) and admission's move of it
+// back to admitted once its wait is answered; a parent's move into awaiting_children
+// (awaitChildren) and its return once no child is open (ReturnFromChildren); and the record of an
+// issue at admitted: a new root's, a re-admitted root's and the record of a child that enters its
+// tree (enterChild).
+//
+// The run moves no phase through any of them. Its root is seeded in accepting with no child, and
+// the driver sends no stop, plan, retry, adoption or Dispatch event. GitHub's merge closes the root
+// through the table, because its tree lingers only once the root has left. The root's leave that
+// follows does reach one of them: beginLinger runs endTaskWithLeave, which writes done over the
+// done the move wrote and so changes no phase. The driver scripts no failure of the fake runtime
+// either. A claim that failed anyway holds the issue only where its role works the issue's phase
+// and is not an architect (claimFailed): here the implementer's in retro and the merger's in
+// merging. A failed claim of any other role holds nothing. A hold in retro fails the driver before
+// retro ends, since the daemon refuses the retro completion of a held issue, and a hold from
+// merging before step 4's last read of the issue fails a read that wants merging. The one release
+// of a hold in the run is GitHub's merge of an issue held from merging (closeMerged), which the
+// daemon logs as merging to done. So a hold from merging after step 4's last read leaves the three
+// moves in the log, and step 5's check of the watch refuses it only where one of the watch's reads
+// fell inside it.
+const phaseChangedLine = "workflow: phase changed"
+
+// phaseMoves is each move of the issue the daemon logged (phaseChangedLine), oldest first, as
+// "<from> to <to>".
+func (r *conflictMergerLive) phaseMoves() []string {
+	var moves []string
+	for _, line := range r.loggedFor(phaseChangedLine, r.key) {
+		moves = append(moves, fmt.Sprintf("%v to %v", line.Attrs["from"], line.Attrs["to"]))
+	}
+	return moves
+}
+
+// inOrder says whether each phase of seen stands in order after the phase seen before it.
+func inOrder(seen, order []phase.Phase) bool {
+	rest := order
+	for _, p := range seen {
+		at := slices.Index(rest, p)
+		if at < 0 {
+			return false
+		}
+		rest = rest[at+1:]
+	}
+	return true
+}
+
 // phaseWatch reads GET /legion/v1/state ten times a second, on a goroutine of its own, from the
 // boot until stop, and once more after stop, so the phase the caller saw before it stopped the
 // watch is the last one kept. It keeps each phase the issue showed, in the order it showed them, a
-// phase shown again in a row kept once. It reads through a client of its own and fails no test
-// itself: a read that fails is counted, and stop answers how many reads were made and failed, so a
-// watch that read nothing says so rather than passing.
+// phase shown again in a row kept once. Its reads are samples: a phase shorter than a tenth of a
+// second can fall between two of them, so it says what the route showed, not every phase the
+// issue entered; the order of the moves comes from the daemon's log (phaseMoves). It reads through
+// a client of its own and fails no test itself: a read that fails is counted, and stop answers how
+// many reads were made and failed, so a watch that read nothing says so rather than passing.
 type phaseWatch struct {
 	stopping chan struct{}
 	stopped  chan struct{}

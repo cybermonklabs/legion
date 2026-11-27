@@ -19,6 +19,7 @@ import (
 // last write is copied by the next pass, which writes the record at once with the sequence it
 // reached, young as the last write is.
 func TestATakeoverRecordThatNothingMovesIsWrittenOncePerRefresh(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, role = "ses_rw_a", "ses_rw_b", "rw"
 	rig.gone(a)
@@ -52,19 +53,9 @@ func TestATakeoverRecordThatNothingMovesIsWrittenOncePerRefresh(t *testing.T) {
 		latest = stored
 	}
 
-	t.Run("a record nothing moves, two listeners sweeping every five minutes for an hour: four writes", func(t *testing.T) {
-		const hour = time.Hour
-		for elapsed := time.Duration(0); elapsed < hour; elapsed += roleWakeInterval {
-			rig.clock.advance(roleWakeInterval)
-			for _, cfg := range listeners {
-				pass(cfg)
-			}
-		}
-		if got, want := writes.Load(), int32(hour/takeoverRecordRefresh); got != want {
-			t.Fatalf("the record was written %d times in the hour; want %d, once per takeoverRecordRefresh", got, want)
-		}
-	})
-
+	// The control runs first, while the record is inside its hour. The row below crosses the hour,
+	// and its last pass finishes the record; a finished record is one no listener runs a pass of
+	// (runTakeoverPasses), so a control after it would show a pass no sweep makes.
 	t.Run("control: a pass that copies writes the record at once", func(t *testing.T) {
 		before, at := writes.Load(), latest.Record.Next
 		rig.lateForward(a, role, "stored after the record's last write")
@@ -74,6 +65,20 @@ func TestATakeoverRecordThatNothingMovesIsWrittenOncePerRefresh(t *testing.T) {
 		}
 		if latest.Record.Next <= at {
 			t.Fatalf("the record's sequence is %d after the copy; want past %d", latest.Record.Next, at)
+		}
+	})
+
+	t.Run("a record nothing moves, two listeners sweeping every five minutes for an hour: four writes", func(t *testing.T) {
+		const hour = time.Hour
+		before := writes.Load()
+		for elapsed := time.Duration(0); elapsed < hour; elapsed += roleWakeInterval {
+			rig.clock.advance(roleWakeInterval)
+			for _, cfg := range listeners {
+				pass(cfg)
+			}
+		}
+		if got, want := writes.Load()-before, int32(hour/takeoverRecordRefresh); got != want {
+			t.Fatalf("the record was written %d times in the hour; want %d, once per takeoverRecordRefresh", got, want)
 		}
 	})
 }

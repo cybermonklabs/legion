@@ -37,6 +37,7 @@ type copyRowSequences struct {
 // project again, so its next boot on this release refills it: the mark a boot stamped reads
 // unstamped again, and a mark no boot stamped stays as it was.
 func TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, valueSequencesVersion-1)

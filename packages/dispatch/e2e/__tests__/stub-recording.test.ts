@@ -14,6 +14,7 @@ import { describe, expect, test } from "bun:test";
 import { recordedOrigin } from "../stub/origin";
 import {
   type Har,
+  type HarEntry,
   normalise,
   refuseACredential,
   retargeted,
@@ -103,6 +104,61 @@ describe("a committed recording", () => {
     // would make the page render an invalid date. Masking belongs to the comparison alone.
     const body = '{"as_of":"2026-11-09T00:51:05.715869Z","rows":[]}';
     expect(normalise(recorded({ body }), from).log.entries[0].response.content.text).toBe(body);
+  });
+
+  test("keeps one entry per request routeFromHAR can serve, the first", () => {
+    // Playwright serves a URL's first entry among those whose headers match equally, so a second
+    // read of the same request is dead weight; a read of another URL is kept.
+    const first = recorded({ body: '{"rows":[1]}' }).log.entries;
+    const again = recorded({ at: "2026-11-09T00:00:05Z", body: '{"rows":[2]}' }).log.entries;
+    const other = recorded({ url: "/api/v1/inbox/threads" }).log.entries;
+    const har = recorded({});
+    har.log.entries = [...first, ...again, ...other];
+    const written = normalise(har, from).log.entries;
+    expect(written.map((entry) => [entry.request.url, entry.response.content.text])).toEqual([
+      [`${recordedOrigin}/api/v1/inbox`, '{"rows":[1]}'],
+      [`${recordedOrigin}/api/v1/inbox/threads`, expect.any(String)],
+    ]);
+  });
+
+  test("keeps the answered entry of a request over a cancelled one recorded before it", () => {
+    // The router passes over a status -1 entry without an answer, so a cancelled first read kept
+    // in front of an answered one would leave every replayed read of it unanswered.
+    const statusesKept = (statuses: number[]) => {
+      const har = recorded({});
+      har.log.entries = statuses.flatMap(
+        (status, index) =>
+          recorded({ body: `{"read":${index}}`, status, time: 1000 + index }).log.entries
+      );
+      return normalise(har, from).log.entries.map((entry) => entry.response.status);
+    };
+    expect(statusesKept([-1, 200])).toEqual([200]);
+    expect(statusesKept([-1, 200, 200])).toEqual([200]);
+    expect(statusesKept([200, -1])).toEqual([200]);
+    // With no answered entry, the cancelled one stays, so a reader of the recording sees the race.
+    expect(statusesKept([-1, -1])).toEqual([-1]);
+  });
+
+  test("keeps an answer whose body it holds over one whose body Playwright never read", () => {
+    // The page that asked went before the body arrived: Playwright writes the answer with
+    // `content.size` -1 and no text, and the router would serve it as an empty body the page
+    // cannot parse.
+    const bodiless = () => {
+      const entries = recorded({ time: 1000 }).log.entries;
+      for (const entry of entries)
+        entry.response.content = { mimeType: "application/json", size: -1 };
+      return entries;
+    };
+    const withBody = () => recorded({ body: '{"rows":[7]}', time: 1001 }).log.entries;
+    const textsKept = (...groups: HarEntry[][]) => {
+      const har = recorded({});
+      har.log.entries = groups.flat();
+      return normalise(har, from).log.entries.map((entry) => entry.response.content.text);
+    };
+    expect(textsKept(bodiless(), withBody())).toEqual(['{"rows":[7]}']);
+    expect(textsKept(withBody(), bodiless())).toEqual(['{"rows":[7]}']);
+    // With no answer whose body was read, the bodiless one stays: it is still the server's status.
+    expect(textsKept(bodiless(), bodiless())).toEqual([undefined]);
   });
 
   test("names no encoding of a body it holds decoded", () => {

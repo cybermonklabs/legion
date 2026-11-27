@@ -1,0 +1,5 @@
+[
+  { "job": "go-checks", "leg": "", "commit": "c1", "ended": true },
+  { "job": "go-checks-platforms", "leg": "linux", "commit": "c1", "ended": true },
+  { "job": "go-checks-platforms", "leg": "arm", "commit": "c1", "ended": true }
+]

@@ -25,6 +25,9 @@ import (
 // heap of the process they run in, which inside the package's run took this test 94 s on this pod
 // on 2026-11-03, against 53 s on main's tree, with the same readings either way.
 func TestADocumentReadWeighsAboutTheHeapItHolds(t *testing.T) {
+	// Not parallel: it reads the whole process's heap (runtime.ReadMemStats HeapAlloc around
+	// runtime.GC, in heldByDocumentRead) as what one document read holds, which the heap of the
+	// tests beside it would add to.
 	const minWeightToHeap, maxWeightToHeap = 0.97, 1.25
 	for _, shape := range []struct{ name, markdown string }{
 		{"a table whose header cells are long", longHeaderTable()},

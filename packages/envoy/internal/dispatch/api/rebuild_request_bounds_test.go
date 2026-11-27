@@ -74,7 +74,7 @@ func newRebuildWatchServer(t *testing.T) (http.Handler, *server, *rebuildWatch, 
 // write: the context RebuildDocument is handed is Join's, whose deadline is WriteRequestBound from
 // when the request began (docs.Service.Join, boundWriteRequest), so every statement, lock wait
 // and memory wait of the rebuild ends there. The request's start is marked as the request enters
-// the route's chain (trackTransactions, docs.WithCallerRequest), under a key only docs reads, so
+// the route's chain (markCallerRequest, docs.WithCallerRequest), under a key only docs reads, so
 // the deadline is held between the bound measured from just before the request was sent and the
 // bound measured from when the rebuild was asked for. Handed the request's own context instead,
 // the rebuild runs under no deadline at all.

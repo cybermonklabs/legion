@@ -169,7 +169,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	}).Env([]string{s.serviceURL}); err != nil {
 		return nil, nil, err
 	}
-	return listener, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
+	return listener, &listenerUser{path: path, machineID: machineID, nkey: l.NKey}, nil
 }
 
 // clusteredHubListenerCredentialFor resolves the token check the listener l, declared at path,

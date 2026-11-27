@@ -3,15 +3,15 @@
 // The harness of this package's live proofs of one issue on an open pull request, whose roles the
 // fake runtime launches and the driver plays over the daemon's worker stream and HTTP routes:
 // behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go,
-// conflict_merger_live_test.go and phase_entry_converge_live_test.go, each built with `-tags e2e`
-// by the script under scripts/e2e/ that bears its name. Each driver embeds liveIssueProof,
-// liveProof (live_proof_test.go) grown for that one issue: the issue's seed and the daemon's boot
-// over the fake runtime; the reads of a claim's token, its launch and the issue's state; each
-// role's agent, as the registered session it is over HTTP (liveSession) and as the turns a step
-// plays on the shim (liveClaimant); GitHub's REST API for the pull request at the head the driver
-// last pushed (liveGitHub); and a push to the issue's branch with GitHub's synchronize, and a push
-// onto the base. firstLine, the cut of a prompt a note prints, is here too, for these drivers and
-// the other e2e ones. What one proof alone drives stays in its driver.
+// conflict_merger_live_test.go, phase_entry_converge_live_test.go and parent_waits_live_test.go,
+// each built with `-tags e2e` by the script under scripts/e2e/ that bears its name. Each driver
+// embeds liveIssueProof, liveProof (live_proof_test.go) grown for that one issue: the issue's seed
+// and the daemon's boot over the fake runtime; the reads of a claim's token, its launch and the
+// issue's state; each role's agent, as the registered session it is over HTTP (liveSession) and as
+// the turns a step plays on the shim (liveClaimant); GitHub's REST API for the pull request at the
+// head the driver last pushed (liveGitHub); and a push to the issue's branch with GitHub's
+// synchronize, and a push onto the base. firstLine, the cut of a prompt a note prints, is here too,
+// for these drivers and the other e2e ones. What one proof alone drives stays in its driver.
 package daemon
 
 import (
@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -128,13 +130,15 @@ func (p *liveIssueProof) seedImplementing(head string) {
 // it was seeding on an error.
 func (p *liveIssueProof) write(what string, body func(tx pgx.Tx) error) {
 	p.t.Helper()
-	if err := p.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), p.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		p.t.Fatalf("seed %s: %v", what, err)
 	}
 }
 
 // boot starts the whole daemon on the seeded store through this package's whole-daemon harness
-// (startDaemonWithin), with GitHub the stand-in serveGitHub started (the proof's github) and the
+// (startDaemonLogging), with GitHub the stand-in serveGitHub started (the proof's github) and the
 // two Apps' tokens workflowTokenRecorder's placeholders. The runtime provisions each claim's
 // workspace itself (fake.Runtime's InPod), so a start reaches the fake's launch without the daemon
 // cloning acme/widgets from github.com, which the tmux answer would have it try. tune, when not
@@ -148,7 +152,7 @@ func (p *liveIssueProof) boot(tune func(*overrides)) {
 	if tune != nil {
 		tune(&o)
 	}
-	p.d = startDaemonWithin(p.t, p.cfg, o, p.log(), 60*time.Second)
+	p.d = startDaemonLogging(p.t, p.cfg, o, p.log())
 }
 
 // token is the claim token of role on the proof's issue, as the daemon spells it.
@@ -240,21 +244,8 @@ func (p *liveIssueProof) publishPush(from, to, headSubject, sender string) {
 // sender and before, the head the move left; with none it names neither.
 func (p *liveIssueProof) publishSynchronize(before, head, sender string) {
 	p.t.Helper()
-	fields := map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(p.number),
-		"head_sha": head, "base_ref": p.base, "head_ref": "legion/" + p.key, "title": p.title,
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(p.number),
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	}
-	if sender != "" {
-		fields["before"], fields["sender"] = before, sender
-	}
-	payload, err := json.Marshal(fields)
-	if err != nil {
-		p.t.Fatalf("encode the synchronize payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), p.number)
-	p.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", p.number, head), string(payload))
+	p.publishPullRequest(livePullRequestEvent{action: "synchronize", number: p.number, issue: p.key, head: head, base: p.base,
+		title: p.title, updated: time.Now().UTC(), before: before, sender: sender}, fmt.Sprintf("pr-%d-synchronize-%s", p.number, head))
 }
 
 // publishBasePush publishes another pull request's merge onto the issue's base branch, as Envoy
@@ -305,7 +296,7 @@ func (p *liveIssueProof) register(role claim.Role, session string) *liveSession 
 	sh := dialShim(t, address, launch.BootToken)
 	status, body := p.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)
@@ -452,12 +443,14 @@ func (c *liveClaimant) endTurn() {
 // liveGitHub is GitHub's REST API for acme/widgets as a live proof's daemon reads it: the one
 // pull request at the head the driver last pushed, with its base and the `mergeable` the driver
 // last set, true until it sets one (conflicts; readPullRequest), the `mergeable_state` a proof
-// sets (mergeState), and its reviews as none (readReviews). It also answers what a launch and a
-// disarm read: any repository, with the proof's base as its default branch, and a GraphQL root
-// that knows no pull request. Anything else is answered 404 unless the proof's also answers it, so
-// a read the proof did not foresee fails the step that waited on it rather than reaching
-// github.com. A liveIssueProof starts it with serveGitHub; late_completion_live_test.go, whose
-// panes are real, starts one of its own.
+// sets (mergeState), and its reviews as none (readReviews). Its GraphQL endpoint answers a batch's
+// query of pull requests by number (the daemon's chunkQuery) with each it serves, as GraphQL
+// spells the same answer (liveBatchNode), null for any other, and every other query as knowing no
+// pull request. It also answers what a launch and a disarm read: any repository, with
+// the proof's base as its default branch. Anything else is answered 404 unless the proof's also
+// answers it, so a read the proof did not foresee fails the step that waited on it rather than
+// reaching github.com. A liveIssueProof starts it with serveGitHub; late_completion_live_test.go,
+// whose panes are real, starts one of its own.
 type liveGitHub struct {
 	t      *testing.T
 	url    string
@@ -507,6 +500,10 @@ func (g *liveGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
+		if asked, batch := liveBatchQuery(req); batch {
+			_, _ = io.WriteString(w, liveBatchAnswer(g.t, asked, g.batchNodes()))
+			return
+		}
 		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		return
 	}
@@ -515,6 +512,27 @@ func (g *liveGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+}
+
+// batchNodes is every pull request the stand-in answers, by number, as the batch query spells
+// each (liveBatchNode): its own pull request, on its base, and each one a proof's also answers at
+// /pulls/<number> in GET /pulls/{number}'s shape.
+func (g *liveGitHub) batchNodes() map[int]map[string]any {
+	nodes := map[int]map[string]any{g.number: liveBatchNode(g.number, g.sha, "legion/"+g.key, g.base, !g.conflicting, g.mergeState)}
+	for path, answer := range g.also {
+		number, isPull := strings.CutPrefix(path, "/pulls/")
+		pull, isObject := answer.(map[string]any)
+		if !isPull || strings.Contains(number, "/") || !isObject {
+			continue
+		}
+		onto, _ := pull["base"].(map[string]string)
+		head, _ := pull["head"].(map[string]string)
+		n, _ := pull["number"].(int)
+		mergeable, _ := pull["mergeable"].(bool)
+		state, _ := pull["mergeable_state"].(string)
+		nodes[n] = liveBatchNode(n, head["sha"], head["ref"], onto["ref"], mergeable, state)
+	}
+	return nodes
 }
 
 // answer writes the stand-in's answer to a GET of path, and says whether it had one.
@@ -568,4 +586,59 @@ func firstLine(task string) string {
 		line = line[:120] + "…"
 	}
 	return line
+}
+
+// liveBatchQuery reads req, a POST to the GraphQL endpoint, as a batch's query of pull requests by
+// number (the daemon's chunkQuery), and answers the numbers it asks for and whether it is one: any
+// other query is none.
+func liveBatchQuery(req *http.Request) ([]int, bool) {
+	var sent struct {
+		Query string `json:"query"`
+	}
+	if json.NewDecoder(req.Body).Decode(&sent) != nil {
+		return nil, false
+	}
+	var asked []int
+	for _, match := range liveAlias.FindAllStringSubmatch(sent.Query, -1) {
+		number, _ := strconv.Atoi(match[1])
+		asked = append(asked, number)
+	}
+	return asked, len(asked) > 0
+}
+
+// liveAlias is one pull request a batch's query asks for by number, under its alias.
+var liveAlias = regexp.MustCompile(`\w+: pullRequest\(number: (\d+)\)`)
+
+// liveBatchNode is one open pull request as the batch query answers it: number at head on branch,
+// on base, GitHub's `mergeable` as GraphQL spells it (MERGEABLE or CONFLICTING), and its merge
+// state in GraphQL's capitals, none where the REST answer carries none.
+func liveBatchNode(number int, head, branch, base string, mergeable bool, state string) map[string]any {
+	spelled := "CONFLICTING"
+	if mergeable {
+		spelled = "MERGEABLE"
+	}
+	node := map[string]any{"number": number, "state": "OPEN", "headRefOid": head, "headRefName": branch, "baseRefName": base, "mergeable": spelled}
+	if state != "" {
+		node["mergeStateStatus"] = strings.ToUpper(state)
+	}
+	return node
+}
+
+// liveBatchAnswer is the batch query's answer to asked: each number nodes holds under its alias
+// (the daemon's pullAlias), and null for each other.
+func liveBatchAnswer(t *testing.T, asked []int, nodes map[int]map[string]any) string {
+	t.Helper()
+	repository := map[string]any{}
+	for _, number := range asked {
+		var node any
+		if found, ok := nodes[number]; ok {
+			node = found
+		}
+		repository[pullAlias(number)] = node
+	}
+	body, err := json.Marshal(map[string]any{"data": map[string]any{"repository": repository}})
+	if err != nil {
+		t.Errorf("encode the batch answer: %v", err)
+	}
+	return string(body)
 }

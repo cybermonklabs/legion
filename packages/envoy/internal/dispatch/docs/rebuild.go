@@ -371,17 +371,17 @@ func nearACapUnencoded(doc *crdt.Doc, tracked int64) bool {
 // markdown, which changes the document), a tree it would be built from - the history's own or the
 // latest version's - holding an element this build does not know (ErrDocNewerContent, as every
 // read of it answers), and markdown that is not a Proof document, drops an open ask block,
-// introduces a block pointer at a block the attribute may not name (refuseBlockPointers), or
-// introduces a check block that breaks a rule of a check CI proves (refuseCICheckBlocks), both
-// against the latest version. Supplied markdown is caller text: it is parsed as an upload is, and
-// its rendering is weighed as a new document's is (SeedText). The latest version is the server's
-// own rendering of the document, read back as every stored rendering is (pmdoc.ParseRendering), so
-// a document whose version is past what one write may make - stored before that bound, or grown
-// past it by browser edits - still rebuilds, and so does one holding an element this build reads
-// but may not create yet, which the seed puts back rather than creates (rebuiltSeed,
-// pmdoc.UpdateHolding), as it puts back such an element a history's own tree holds. Supplied
-// markdown that differs from the latest version is a document change, so the same transaction
-// writes its version, which moves the open approval request to it (writeVersionTx,
+// introduces a check block that breaks a rule of a check CI proves (refuseCICheckText,
+// refuseCICheckBlocks) or a block pointer at a block the attribute may not name
+// (refuseBlockPointers), both against the latest version. Supplied markdown is caller text: it is
+// parsed as an upload is, and its rendering is weighed as a new document's is (SeedText). The
+// latest version is the server's own rendering of the document, read back as every stored
+// rendering is (pmdoc.ParseRendering), so a document whose version is past what one write may make
+// - stored before that bound, or grown past it by browser edits - still rebuilds, and so does one
+// holding an element this build reads but may not create yet, which the seed puts back rather than
+// creates (rebuiltSeed, pmdoc.UpdateHolding), as it puts back such an element a history's own tree
+// holds. Supplied markdown that differs from the latest version is a document change, so the same
+// transaction writes its version, which moves the open approval request to it (writeVersionTx,
 // MoveApprovalAsk); the VersionResult is what the caller's artifact.version event names. A
 // failure anywhere rolls the whole rebuild back with the transaction. The room refuses loads
 // until that transaction ends (Ledger.holdRebuild): a load before the commit would read the old
@@ -645,16 +645,22 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 		// Supplied markdown is a caller's write, so a block pointer or a check block it introduces
-		// over the latest version is checked. That version is read back as the tree before the
-		// write; one that does not read back holds no pointer and no check block.
+		// over the latest version is checked: the rules that read a check block alone first, then
+		// those that read the database. That version is read back as the tree before the write;
+		// one that does not read back holds no pointer and no check block. The check blocks the
+		// write introduces are found once, for both refusals that read them.
 		var prior *pmdoc.Node
 		if latestTree, err := pmdoc.ParseRendering(latest.markdown); err == nil {
 			prior = latestTree
 		}
+		introduced := introducedCIChecks(tree, prior)
+		if err := refuseCICheckText(introduced); err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
 		if err := refuseBlockPointers(ctx, tx, artifactID, tree, prior, offsets); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, prior); err != nil {
+		if err := refuseCICheckBlocks(ctx, tx, artifactID, introduced); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}
@@ -693,7 +699,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		}
 		logUnindexedAskBlocks(*owner.IssueKey, closedStates.marked)
 	}
-	if markdown == nil || canonical == latest.markdown {
+	// Supplied markdown whose rendering the latest version holds - byte for byte, or as another
+	// renderer version's spelling of the same tree (latestVersionRow.holds) - writes no version.
+	if markdown == nil || latest.holds(canonical) {
 		return report, VersionResult{Version: latest.Version}, nil
 	}
 	// RebuildTx holds the document's advisory lock until this transaction ends, so the pending
@@ -720,7 +728,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		return RebuildReport{}, VersionResult{}, err
 	}
 	report.SourceVersion = written.version.Number
-	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes}, nil
+	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes, Blocks: written.blocks}, nil
 }
 
 // rebuildHistory is what a rebuild builds from out of a stored history that decodes

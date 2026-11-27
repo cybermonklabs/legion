@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A sub-architect holds a grant for the whole tree, so it can name any issue of it, but
@@ -39,7 +40,7 @@ func TestASubArchitectReleasesAndRerunsOnlyIssuesUnderItsOwn(t *testing.T) {
 	// The record holds a child only once it is todo, so the triage grandchildren are Dispatch's
 	// alone, and the running and done ones are recorded under their parents.
 	records := record.NewStore()
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, grandchild := range []struct {
 			key, parent, status string
 			at                  phase.Phase

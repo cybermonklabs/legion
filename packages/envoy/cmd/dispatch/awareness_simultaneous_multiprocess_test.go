@@ -16,6 +16,8 @@ import (
 // its pending awareness changes loses the others until each reader's next heartbeat (15 s in
 // y-protocols), and these readers send none.
 func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "SIM")
 	pair.a.createProject(t, project, "Simultaneous cursors")

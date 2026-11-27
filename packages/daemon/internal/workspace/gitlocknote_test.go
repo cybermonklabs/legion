@@ -66,6 +66,21 @@ func noteForOneLock(t *testing.T, now time.Time) (string, string) {
 	return StaleGitLockNote(gitLockFailure(lock), now), lock
 }
 
+// wantNoteNaming fails t unless note is one line for each of locks, in order, each naming its lock
+// and its age (noteAge).
+func wantNoteNaming(t *testing.T, note string, locks ...string) {
+	t.Helper()
+	lines := strings.Split(note, "\n")
+	if len(lines) != len(locks) {
+		t.Fatalf("the note is %q, want one line for each of %q", lines, locks)
+	}
+	for i, lock := range locks {
+		if !strings.HasPrefix(lines[i], "git lock "+lock+" was last written "+ageWords+" ago") {
+			t.Errorf("line %d is %q, want it to name %s and its age", i, lines[i], lock)
+		}
+	}
+}
+
 func TestStaleGitLockNoteNamesTheLockAndTellsTheRoleToRunTheCommandAgain(t *testing.T) {
 	now := time.Now()
 	note, lock := noteForOneLock(t, now)
@@ -83,15 +98,7 @@ func TestStaleGitLockNoteNamesTheLockAndTellsTheRoleToRunTheCommandAgain(t *test
 		ref := plantedLock(t, dir, "main.lock", now)
 		// jj's backend and the git it ran both report the index lock: one line all the same.
 		output := strings.Join([]string{jjLockFailure(index), gitLockFailure(index), gitLockFailure(ref)}, "\n")
-		lines := strings.Split(StaleGitLockNote(output, now), "\n")
-		if len(lines) != 2 {
-			t.Fatalf("the note is %q, want one line for each of the two locks", lines)
-		}
-		for i, lock := range []string{index, ref} {
-			if !strings.HasPrefix(lines[i], "git lock "+lock+" was last written "+ageWords+" ago") {
-				t.Errorf("line %d is %q, want it to name %s and its age", i, lines[i], lock)
-			}
-		}
+		wantNoteNaming(t, StaleGitLockNote(output, now), index, ref)
 	})
 
 	t.Run("nothing for output that names no lock, or names one already gone", func(t *testing.T) {
@@ -101,6 +108,38 @@ func TestStaleGitLockNoteNamesTheLockAndTellsTheRoleToRunTheCommandAgain(t *test
 		}
 		if note := StaleGitLockNote(gitLockFailure(gone), now); note != "" {
 			t.Errorf("the note for a lock already gone is %q, want none", note)
+		}
+	})
+
+	// git and jj print the lock's path between single quotes and do not escape it, so a path that
+	// holds a quote of its own (a TMPDIR or a checkout named so) still names its lock. Two rules
+	// read it, and pi-shared's git-lock.test.ts holds its copy to the same rows: the path ends at
+	// the first closing text after its opening, so two locks one report names on one line are two
+	// paths, not one path running from the first opening to the last closing; and a path stays on
+	// its line, so an opening cut off at the end of a line takes nothing from the next line's report.
+	t.Run("a lock whose path holds a single quote", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "tmp-sq'x", "it's here")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		index := plantedLock(t, dir, "index.lock", now)
+		ref := plantedLock(t, dir, "main.lock", now)
+		for _, tc := range []struct {
+			name   string
+			output string
+			locks  []string
+		}{
+			{"git's report", gitLockFailure(index), []string{index}},
+			{"jj's report", jjLockFailure(index), []string{index}},
+			{"both reports of one lock, two lines", jjLockFailure(index) + "\n" + gitLockFailure(index), []string{index}},
+			{"two locks git names on one line", gitLockFailure(index) + " " + gitLockFailure(ref), []string{index, ref}},
+			{"two locks jj names on one line", jjLockFailure(index) + " " + jjLockFailure(ref), []string{index, ref}},
+			{"a cut-off git opening before git's report", "fatal: Unable to create '/cut off\n" + gitLockFailure(index), []string{index}},
+			{"a cut-off jj opening before jj's report", "Error: The lockfile at '/cut off\n" + jjLockFailure(index), []string{index}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				wantNoteNaming(t, StaleGitLockNote(tc.output, now), tc.locks...)
+			})
 		}
 	})
 }

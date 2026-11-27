@@ -8,9 +8,77 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
+
+// The workspace's creation record lives in its own .jj directory, on the issue's volume, which
+// every agent of the issue can write. So the record is read and written through the one
+// descriptor openJJ answers, never by its path: a .jj swapped for a link once it is open reaches
+// no other directory.
+
+// errLinkedJJ is the refusal of a workspace whose .jj is a symbolic link (openJJ).
+var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
+
+// openJJ opens the .jj directory of the workspace at dir with O_NOFOLLOW and no O_DIRECTORY, so a
+// .jj that is a symbolic link is refused with errLinkedJJ, and then has the descriptor's own fstat
+// refuse anything but a directory with ENOTDIR. A link there would carry the record into a
+// directory off the workspace's disk: a record read there says nothing of this workspace, and one
+// written there can be lost at a container restart while the workspace keeps its work.
+//
+// The open does not ask for O_DIRECTORY because the kernels it runs under answer a link opened with
+// O_DIRECTORY|O_NOFOLLOW three ways: Linux with ENOTDIR, other kernels with ELOOP, and gVisor, which
+// every issue pod runs under, by following the link and opening its target
+// (TestALinkedJJIsRefusedBeforeTheCreationRecordIsReadOrWritten fails in a gVisor pod with
+// O_DIRECTORY). O_NOFOLLOW alone is refused at a link under each of them (ELOOP on Linux and gVisor; the
+// Lstat names the refusal on a kernel that answers otherwise), and the fstat of what was opened, not
+// of the path, is what says it is a directory (CERT FIO01-C). O_NONBLOCK keeps a .jj that is a FIFO
+// from holding the open, and O_NOCTTY keeps a .jj that is a terminal from becoming the controlling
+// terminal of the process that opens it. The open is asked again where a signal interrupts it, as
+// os.OpenFile asks (rolefile.Openat), and the descriptor is an *os.File from the moment it is open,
+// so its fstat (File.Stat) is asked again on an interrupt too, and every refusal closes it through
+// File.Close (the Legion reviewer's Minor on #5285 at 69e00593). Every read and write of the record
+// goes through the open directory (openat), so nothing after this open reads .jj by its path again.
+// held, when set, runs once the directory is open and before the record is read or written: a
+// test's seam for a .jj swapped in that window.
+func openJJ(dir string, held func()) (*os.File, error) {
+	path := filepath.Join(dir, ".jj")
+	fd, err := rolefile.Openat(unix.AT_FDCWD, path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if info, statErr := os.Lstat(path); errors.Is(err, unix.ELOOP) || (statErr == nil && info.Mode()&fs.ModeSymlink != 0) {
+			return nil, fmt.Errorf("%w: %s: %w", errLinkedJJ, path, err)
+		}
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	jj := os.NewFile(uintptr(fd), path)
+	info, err := jj.Stat()
+	if err != nil {
+		jj.Close()
+		return nil, err
+	}
+	if !info.IsDir() {
+		jj.Close()
+		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.ENOTDIR}
+	}
+	if held != nil {
+		held()
+	}
+	return jj, nil
+}
+
+// openIn opens name in the open directory jj with flags, adding O_NOFOLLOW and O_CLOEXEC, so a
+// record a role planted as a link is not followed. The file's name is only used for diagnostics.
+func openIn(jj *os.File, name string, flags int, perm uint32) (*os.File, error) {
+	path := filepath.Join(jj.Name(), name)
+	fd, err := unix.Openat(int(jj.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, perm)
+	if err != nil {
+		return nil, &fs.PathError{Op: "openat", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
 
 // createdFile is where provisioning records the moment it created a workspace: in the workspace's
 // own .jj directory, which jj never snapshots, so the record is never committed, and which goes with
@@ -20,10 +88,23 @@ const createdFile = "legion-created"
 // createdRecordLimit bounds how much of the record Created reads: one RFC 3339 instant and a newline.
 const createdRecordLimit = 128
 
-// RecordCreated records at, in UTC, as the moment the workspace at dir was created.
+// RecordCreated records at, in UTC, as the moment the workspace at dir was created. It writes the
+// record through .jj's descriptor (openJJ), and refuses a .jj that is a link or a record that is.
 func RecordCreated(dir string, at time.Time) error {
-	path := filepath.Join(dir, ".jj", createdFile)
-	if err := os.WriteFile(path, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
+	jj, err := openJJ(dir, nil)
+	if err != nil {
+		return fmt.Errorf("record the creation of workspace %s: %w", dir, err)
+	}
+	defer jj.Close()
+	file, err := openIn(jj, createdFile, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("record the creation of workspace %s: %w", dir, err)
+	}
+	_, err = file.WriteString(at.UTC().Format(time.RFC3339Nano) + "\n")
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
 		return fmt.Errorf("record the creation of workspace %s: %w", dir, err)
 	}
 	return nil
@@ -31,33 +112,44 @@ func RecordCreated(dir string, at time.Time) error {
 
 // Created is the moment RecordCreated recorded for the workspace at dir. ok is false when it holds
 // none: no workspace is there, or provisioning created it before it kept the record. The record is
-// on the issue's volume, which every agent of the issue can write, so it is opened without following a
-// link or blocking on a special file and read only up to createdRecordLimit, and anything but one
-// RFC 3339 instant is refused, naming the file.
-func Created(dir string) (at time.Time, ok bool, err error) {
-	path := filepath.Join(dir, ".jj", createdFile)
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+// on the issue's volume, which every agent of the issue can write, so it is read through .jj's
+// descriptor (openJJ), opened without following a link or blocking on a special file and read only
+// up to createdRecordLimit, and anything but one RFC 3339 instant is refused, naming the file.
+func Created(dir string) (at time.Time, ok bool, err error) { return created(dir, nil) }
+
+// created is Created, with held run as openJJ runs it.
+func created(dir string, held func()) (at time.Time, ok bool, err error) {
+	jj, err := openJJ(dir, held)
 	if errors.Is(err, fs.ErrNotExist) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", path, err)
+		return time.Time{}, false, fmt.Errorf("read the creation record of workspace %s: %w", dir, err)
+	}
+	defer jj.Close()
+	record := filepath.Join(jj.Name(), createdFile)
+	file, err := openIn(jj, createdFile, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", path, err)
+		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)
 	}
 	if !info.Mode().IsRegular() {
-		return time.Time{}, false, fmt.Errorf("the creation record %s is not a regular file (%s)", path, info.Mode().Type())
+		return time.Time{}, false, fmt.Errorf("the creation record %s is not a regular file (%s)", record, info.Mode().Type())
 	}
 	body, err := io.ReadAll(io.LimitReader(file, createdRecordLimit))
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", path, err)
+		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)
 	}
 	at, err = time.Parse(time.RFC3339Nano, strings.TrimSpace(string(body)))
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("the creation record %s holds %q, not an RFC 3339 instant", path, body)
+		return time.Time{}, false, fmt.Errorf("the creation record %s holds %q, not an RFC 3339 instant", record, body)
 	}
 	return at, true, nil
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // What a room holds in memory beyond its document: the record of each update its persistence has
@@ -26,6 +27,7 @@ import (
 // the same update - two commits that change nothing encode alike - so each of two such updates
 // takes its own class, and only a slice no class holds falls back to the bytes.
 func TestAnUpdateClassHoldsNoCopyAndMatchesByIdentity(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	// Durable classes, so the room's record holds them (pendingUpdates) until each is taken.
@@ -84,6 +86,8 @@ func TestAnUpdateClassHoldsNoCopyAndMatchesByIdentity(t *testing.T) {
 // can stay open for hours, and not the preload map. A weak pointer to the losing state's update
 // bytes is cleared by a collection while both sockets are still open.
 func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC) and holds the losing
+	// preload to going in them.
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
@@ -94,7 +98,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	release := make(chan struct{})
 	var released sync.Once
 	releaseSockets := func() { released.Do(func() { close(release) }) }
-	t.Cleanup(releaseSockets)
+	testcleanup.Add(t, releaseSockets)
 	service.afterSocketPreload = func(room string, loaded *persistence.LoadResult) {
 		if room != artifactID {
 			return
@@ -117,7 +121,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	sockets := make(chan opened, 2)
 	for range 2 {
 		go func() {
-			connection, err := dialDocument(server.URL, artifactID)
+			connection, err := dialDocument(t, server.URL, artifactID)
 			sockets <- opened{connection, err}
 		}()
 	}
@@ -139,7 +143,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 			t.Fatalf("open a cold socket: %v", socket.err)
 		}
 		connections = append(connections, socket.connection)
-		t.Cleanup(func() { _ = socket.connection.Close() })
+		testcleanup.Add(t, func() { _ = socket.connection.Close() })
 	}
 	waitFor(t, roomWait(t), "both sockets to join the loaded room", func() bool {
 		return service.srv.GetDoc(artifactID) != nil && registeredConnections(service) == 2

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A publish that waits for NATS to reconnect is woken by the reconnect itself: it returns within
@@ -31,13 +32,10 @@ func TestAPublishWaitingForAReconnectWakesOnTheReconnect(t *testing.T) {
 	client.mu.Unlock()
 
 	server.Stop(t)
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Connected() {
-		if time.Now().After(deadline) {
-			t.Fatal("the client still reads connected 5s after its server stopped")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the client to read its connection lost once its server stopped (the last read is whether it still read connected)", func() (bool, bool) {
+		connected := client.Connected()
+		return connected, !connected
+	})
 	reconnected := conn.StatusChanged(nats.CONNECTED)
 	waitsBefore := client.reconnectWaits.Load()
 
@@ -55,19 +53,9 @@ func TestAPublishWaitingForAReconnectWakesOnTheReconnect(t *testing.T) {
 	time.Sleep(outage)
 	server.Start(t)
 
-	var reconnectedAt time.Time
-	select {
-	case <-reconnected:
-		reconnectedAt = time.Now()
-	case <-time.After(10 * time.Second):
-		t.Fatal("the client did not reconnect within 10s of its server starting again")
-	}
-	var result outcome
-	select {
-	case result = <-published:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the publish did not return within 5s of the reconnect")
-	}
+	testwait.Receive(t, "the client to reconnect once its server started again", reconnected)
+	reconnectedAt := time.Now()
+	result := testwait.Receive(t, "the publish waiting through the reconnect to return", published)
 	if result.err != nil {
 		t.Fatalf("the publish waiting through the reconnect answered %v, want nil", result.err)
 	}
@@ -106,13 +94,10 @@ func TestAPublishWaitingForAReconnectWhoseEventIsDelayedStillReturns(t *testing.
 	t.Cleanup(func() { close(release) })
 
 	server.Stop(t)
-	deadline := time.Now().Add(5 * time.Second)
-	for client.Connected() {
-		if time.Now().After(deadline) {
-			t.Fatal("the client still reads connected 5s after its server stopped")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Until(t, "the client to read its connection lost once its server stopped (the last read is whether it still read connected)", func() (bool, bool) {
+		connected := client.Connected()
+		return connected, !connected
+	})
 	reconnected := conn.StatusChanged(nats.CONNECTED)
 	published := make(chan error, 1)
 	go func() {
@@ -121,22 +106,12 @@ func TestAPublishWaitingForAReconnectWhoseEventIsDelayedStillReturns(t *testing.
 	}()
 	server.Start(t)
 
-	var reconnectedAt time.Time
-	select {
-	case <-reconnected:
-		reconnectedAt = time.Now()
-	case <-time.After(10 * time.Second):
-		t.Fatal("the client did not reconnect within 10s of its server starting again")
+	testwait.Receive(t, "the client to reconnect once its server started again", reconnected)
+	reconnectedAt := time.Now()
+	if err := testwait.Receive(t, "the publish waiting through the reconnect whose event was held to return", published); err != nil {
+		t.Fatalf("the publish waiting through the reconnect answered %v, want nil", err)
 	}
-	select {
-	case err := <-published:
-		if err != nil {
-			t.Fatalf("the publish waiting through the reconnect answered %v, want nil", err)
-		}
-		if lag := time.Since(reconnectedAt); lag > reconnectRecheck+500*time.Millisecond {
-			t.Fatalf("the publish returned %s after the reconnect, want within %s", lag, reconnectRecheck+500*time.Millisecond)
-		}
-	case <-time.After(reconnectRecheck + 2*time.Second):
-		t.Fatalf("the publish had not returned %s after the reconnect whose event was held", reconnectRecheck+2*time.Second)
+	if lag := time.Since(reconnectedAt); lag > reconnectRecheck+500*time.Millisecond {
+		t.Fatalf("the publish returned %s after the reconnect, want within %s", lag, reconnectRecheck+500*time.Millisecond)
 	}
 }
