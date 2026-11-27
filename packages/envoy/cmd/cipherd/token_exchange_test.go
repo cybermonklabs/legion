@@ -331,7 +331,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			form:   exchangeForm(mintPodToken(t, cluster, clusterKey, otherAccount, exchangeAudience, "pod-uid-unlisted"), "example-unlisted"),
 			status: http.StatusBadRequest, code: "invalid_request",
 			says:   "no entry lists the service account " + otherAccount,
-			proves: "a sound, correctly-audienced pod token of an account BROKER_EXCHANGE_ACCOUNTS does not list is refused, naming the account",
+			proves: "a sound, correctly-audienced pod token of an account no exchange entry lists is refused, naming the account",
 		},
 		{
 			name:   "a token minted for another audience mints nothing",
@@ -796,6 +796,72 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount is the live proof of a job entry, on
+// the real binary and a fresh schema: a pod of the account BROKER_EXCHANGE_JOB_ACCOUNTS lists for
+// public,PRIVA with a session of its own presents its projected token with a DPoP proof of its own
+// key and no client credential, naming no session and no project, and is answered a token the
+// listed API account reads back as exactly the job's: its account as the service, the project
+// scope public, the one private project its entry lists, the session the entry fixes, this
+// test's own key, and no person and no OAuth scope. Nothing was registered for the pod, since the
+// entry fixes the session.
+func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
+	const (
+		jobAccount = "system:serviceaccount:example-ns:example-sweeper"
+		jobSession = "example-sweeper"
+		jobPodUID  = "pod-uid-sweeper"
+	)
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_EXCHANGE_JOB_ACCOUNTS="+jobAccount+"=public,PRIVA="+jobSession)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	var token string
+
+	t.Run("a job entry's pod token mints a token with no session and no project named", func(t *testing.T) {
+		status, body := live.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, jobAccount, exchangeAudience, jobPodUID), ""))
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the job entry fixes the session, so the pod names none and is registered for nothing", jobAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the job's token, naming its account and no person", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, token, apiToken)
+		if status != http.StatusOK {
+			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+		}
+		// Read back through the one declaration both ends of the route share, so the answer is
+		// compared whole: a person or a scope would each be a field the literal does not carry.
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer oauthwire.Introspection
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+		}
+		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: jobSession, Service: jobAccount, ProjectScope: oauthwire.ProjectScopePublic, Projects: []string{"PRIVA"}, ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: a job's token names its account as its service, the project scope public and the private projects its entry lists, and no person and no scope", answer, want)
+		}
+		if answer.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+	})
 }
 
 // TestTheBinaryExchangesAPersonlessAccountEntrysPodToken is the live proof of an account entry
@@ -1350,9 +1416,11 @@ func projectsOf(t *testing.T, answer map[string]any) []string {
 // TestATradeNamesOnlyProjectsItsPersonSees is c-token-projects against the real broker binary and
 // a Dispatch stand-in answering both project-access routes: a trade naming a project its person
 // may see is answered a token whose introspection lists exactly that project; a trade naming one
-// its person may not see is refused; a restricted member's trade naming none is refused; and a
-// full member's trade naming none, and the same trade while Dispatch cannot be reached, are
-// answered with no project, as today.
+// its person may not see is refused; a restricted member's trade naming none is refused; a full
+// member's trade naming none is answered with no project, as today; and the same trade while
+// Dispatch cannot be reached is refused temporarily_unavailable, for the client to trade again,
+// since the broker cannot tell a restricted member's machine from anyone else's without Dispatch's
+// answer (approverUnreachable).
 func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
@@ -1411,17 +1479,50 @@ func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 			t.Fatalf("%s's token naming no project names %v, want none", privateOwner, got)
 		}
 	})
-	t.Run("the same trade while Dispatch cannot be reached is answered with no project, as today", func(t *testing.T) {
-		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
+	t.Run("the same trade while Dispatch cannot be reached is refused, for the client to trade again", func(t *testing.T) {
+		// The device-code grant of erin's machine login asks the hold gate about her. With Dispatch
+		// down it caches that failed person read for two seconds, which MemberKind now shares. An
+		// exchange inside that window is correctly refused from the failure but cannot prove an
+		// exchange read Dispatch. Keep Dispatch down and retry until the exchange itself reaches
+		// the stand-in; that attempt proves the outage refusal below.
 		dispatch.SetDown(true)
 		t.Cleanup(func() { dispatch.SetDown(false) })
+		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
 		before := dispatch.Calls()
-		_, body := live.exchange(t, machineTrade(access, "erin-box-1", ""))
-		if dispatch.Calls() == before {
-			t.Fatalf("the trade asked the stand-in nothing while it was down, so this case proves nothing about an outage")
+		outageDeadline := time.Now().Add(10 * time.Second)
+		var status int
+		var body map[string]any
+		for {
+			status, body = live.exchange(t, machineTrade(access, "erin-box-1", ""))
+			if dispatch.Calls() > before {
+				break
+			}
+			if time.Now().After(outageDeadline) {
+				t.Fatalf("the trade asked the stand-in nothing while it was down, so this case proves nothing about an outage")
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		description, _ := body["error_description"].(string)
+		if status != http.StatusServiceUnavailable || body["error"] != "temporarily_unavailable" || body["access_token"] != nil ||
+			!strings.Contains(description, "Dispatch could not be asked what kind of member") {
+			t.Fatalf("%s's trade naming no project while Dispatch was down = %d %v %q, want 503 temporarily_unavailable saying Dispatch could not be asked what kind of member the approver is",
+				fullMember, status, body["error"], description)
+		}
+		dispatch.SetDown(false)
+		// The broker answers a person's member-kind read that failed from that failure for two
+		// seconds after it came back (projectaccess's failureTTL), so the client's next trade is
+		// answered 503 inside that window and minted after it. The broker is its own process, so
+		// the window is waited out, bounded at five times its length.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			status, body = live.exchange(t, machineTrade(access, "erin-box-1", ""))
+			if status != http.StatusServiceUnavailable || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
 		}
 		if got := projectsOf(t, introspected(t, live, body, fullMember)); got != nil {
-			t.Fatalf("%s's token minted while Dispatch was down names %v, want none", fullMember, got)
+			t.Fatalf("%s's token minted once Dispatch answers again names %v, want none", fullMember, got)
 		}
 	})
 }

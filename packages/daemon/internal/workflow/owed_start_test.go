@@ -250,6 +250,7 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // — the waiting line's ordering key — and the later task, so one task is delivered when the slot
 // comes.
 func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
+	t.Parallel()
 	readyRoot := func(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string) {
 		t.Helper()
 		seedIssue(t, pool, record.Issue{Key: returnIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",

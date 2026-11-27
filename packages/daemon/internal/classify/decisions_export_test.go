@@ -259,38 +259,35 @@ func TestStaleReviewIsAReviewTheGateAlreadyFollowedWithAnother(t *testing.T) {
 	}
 }
 
-// The approval a news item names stands while the gate's row holds the item's document and its
-// approved version is the item's: through a new version that closes the gate, which keeps that
-// approval as the one below the latest, and no longer once the person approves a later version or
-// requests changes, which clears it. An item of a version the gate never approved names no
-// approval at all, and neither does an item of a document the step no longer records.
-func TestDesignApprovalStandsWhileTheGateStillRecordsItsVersionApproved(t *testing.T) {
-	gate := record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact", LatestVersion: 4}
-	approved := ApplyDesignGateEvent(gate, DesignGateApproved, 4, record.EventMark{Seq: 10})
-	closed := ApplyDesignGateEvent(approved, DesignGateVersion, 5, record.EventMark{})
+// A review of version 13 is superseded by the person's approval of a later version whatever its
+// mark, and by an approval of version 13 itself only when the review does not come after that
+// approval; a gate that records no approval supersedes nothing. The replay is dispatch://INFRA-3111:
+// a changes request of version 13 followed by the approval of version 19.
+func TestReviewSupersededIsAReviewAnApprovalFollowed(t *testing.T) {
+	at := time.Date(2026, 11, 11, 20, 3, 22, 0, time.UTC)
+	approvedAt := func(version int, mark record.EventMark) record.DesignGate {
+		return record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: version, ApprovedVersion: new(version), ApprovedMark: mark}
+	}
 	for _, tc := range []struct {
-		name     string
-		gate     record.DesignGate
-		artifact string
-		to       int
-		stands   bool
+		name       string
+		gate       record.DesignGate
+		mark       record.EventMark
+		superseded bool
 	}{
-		{name: "the approval of the version the item names", gate: approved, to: 4, stands: true},
-		{name: "a new version closed the gate since", gate: closed, to: 4, stands: true},
-		{name: "the person approved the new version", gate: ApplyDesignGateEvent(closed, DesignGateApproved, 5, record.EventMark{Seq: 12}), to: 4},
-		{name: "the item of that later approval", gate: ApplyDesignGateEvent(closed, DesignGateApproved, 5, record.EventMark{Seq: 12}), to: 5, stands: true},
-		{name: "the person requested changes on the new version", gate: ApplyDesignGateEvent(closed, DesignGateChangesRequested, 5, record.EventMark{Seq: 12}), to: 4},
-		{name: "an item of a version the gate never approved", gate: approved, to: 5},
-		{name: "a gate that records no approval", gate: gate, to: 4},
-		{name: "an item of a document the step no longer records", gate: approved, artifact: "another artifact", to: 4},
+		{name: "an approval of a later version", gate: approvedAt(19, record.EventMark{Seq: 40, At: at}), mark: record.EventMark{Seq: 52}, superseded: true},
+		{name: "an approval of a later version no mark places", gate: approvedAt(19, record.EventMark{}), mark: record.EventMark{Seq: 52}, superseded: true},
+		{name: "an approval of the same version after the review", gate: approvedAt(13, record.EventMark{Seq: 40, At: at}), mark: record.EventMark{Seq: 30}, superseded: true},
+		{name: "an approval of the same version after the review by time", gate: approvedAt(13, record.EventMark{At: at}), mark: record.EventMark{At: at.Add(-time.Minute)}, superseded: true},
+		{name: "an approval of the same version before the review", gate: approvedAt(13, record.EventMark{Seq: 40, At: at}), mark: record.EventMark{Seq: 41}},
+		{name: "an approval of the same version before the review by time", gate: approvedAt(13, record.EventMark{At: at}), mark: record.EventMark{At: at.Add(time.Minute)}},
+		{name: "an approval of an older version", gate: record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 13, ApprovedVersion: new(12),
+			ApprovedMark: record.EventMark{Seq: 40}}, mark: record.EventMark{Seq: 30}},
+		{name: "no approval at all", gate: RecordChangesTold(record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 13}, 13, "name the rollback path",
+			record.EventMark{Seq: 30}), mark: record.EventMark{Seq: 30}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			artifact := tc.artifact
-			if artifact == "" {
-				artifact = gate.ArtifactID
-			}
-			if got := DesignApprovalStands(tc.gate, artifact, tc.to); got != tc.stands {
-				t.Fatalf("DesignApprovalStands(%#v, %q, %d) = %v, want %v", tc.gate, artifact, tc.to, got, tc.stands)
+			if got := ReviewSuperseded(tc.gate, 13, tc.mark); got != tc.superseded {
+				t.Fatalf("ReviewSuperseded(%#v, 13, %#v) = %v, want %v", tc.gate, tc.mark, got, tc.superseded)
 			}
 		})
 	}

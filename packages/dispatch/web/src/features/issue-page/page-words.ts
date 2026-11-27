@@ -80,6 +80,7 @@ import {
 } from "./page-structure";
 import { joinWords, PART_ANSWER_SOURCES, PART_UNASKED_SOURCES } from "./page-words-parts";
 
+export * from "./page-words-dashboard";
 export * from "./page-words-j";
 export * from "./page-words-l";
 export * from "./page-words-m";
@@ -218,7 +219,8 @@ export const NODE_STATE_WORDS = joinWords("NODE_STATE_WORDS", {
 /** How an ask stands, by the `state` the server writes into its block. */
 export type AskState = keyof typeof NODE_STATE_WORDS.ask;
 
-/** How a check stands, over every result recorded against it (`tree-drafts.ts`'s `checkState`). */
+/** How a check stands, over every result recorded against it (`statement-rules.ts`'s
+ *  `checkState`). */
 export type CheckState = keyof typeof NODE_STATE_WORDS.check;
 
 /** How a decision stands with the reader, from the decisions read. */
@@ -278,12 +280,13 @@ export function sentenceCase(name: string): string {
   return name === "" ? name : `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`;
 }
 
-/** The five controls of the filter row in the order the row draws them (R2): Conversation,
- *  which is the page with no filter on, then the four filters in the order of his answer of
- *  2026-11-11 20:57Z, "the spec, the verification, the plan, the decisions"
- *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). The page opens on
- *  Conversation. */
+/** The six controls of the filter row in the order the row draws them (R2): Dashboard, which the
+ *  page opens on (dispatch://INFRA-5702/spec#b-r-new-page), then Conversation, which is the page
+ *  with no filter on, then the four filters in the order of his answer of 2026-11-11 20:57Z, "the
+ *  spec, the verification, the plan, the decisions"
+ *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). */
 export const PRESET_ORDER = freeze([
+  "dashboard",
   "conversation",
   "spec",
   "verification",
@@ -291,14 +294,16 @@ export const PRESET_ORDER = freeze([
   "decisions",
 ] as const);
 
-/** One control of the filter row, by its own token: `conversation`, which turns every filter
- *  off, or one of the four filters. Each has an address of its own (`issue-address.ts`). */
+/** One control of the filter row, by its own token: `dashboard`, `conversation`, which turns
+ *  every filter off, or one of the four filters. Each has an address of its own
+ *  (`issue-address.ts`). */
 export type Preset = (typeof PRESET_ORDER)[number];
 
 /** The name of each control of the filter row. Verification is his word for the filter that
  *  draws the checks (2026-11-11 21:57Z), and nothing is called Tree (R2). */
 export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   conversation: "Conversation",
+  dashboard: "Dashboard",
   decisions: "Decisions",
   plan: "Plan",
   spec: "Spec",
@@ -638,7 +643,7 @@ export const PROGRESS_NOUNS = joinWords("PROGRESS_NOUNS", {
 
 /** How the issue stands, in a line of its own where no control's word carries it: a closed
  *  issue, whose writes the identity block refuses, and an issue that advances as many
- *  priorities as one may, whose priority row offers no control that adds another
+ *  priorities as one may, whose priorities' picker refuses a further choice with this line
  *  (`features/priorities/IssuePriorityLine.tsx`). One line each, saying what is so. */
 export const STATE_LINES = joinWords("STATE_LINES", {
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
@@ -676,9 +681,9 @@ export const STATE_LINES = joinWords("STATE_LINES", {
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
- * R22). The page's other answers are tables of their own -
- * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
- * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
+ * R22). The page's other answers are tables of their own - `BLOCKED_BY_REFUSALS` here, `HELP_LINES`
+ * and `KEY_REPORTS` in `page-structure.ts`, `ADDRESS_FALLBACK_WORDS` in `page-words-l.ts` - and
+ * `ANSWER_SOURCES` gathers all five, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
  */
 export const ANSWER_LINES = joinWords("ANSWER_LINES", {
@@ -835,8 +840,10 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The labels control's word where the issue has no label yet, as `add_priority` is the
    *  priority's: the property's own name would draw "Labels" twice in its row of Details. */
   add_label: "Add a label",
-  /** The control that places an issue under a priority, where the issue advances none: the
-   *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
+  /** What the priorities' picker trigger draws in a row of Details while the issue advances
+   *  none, and the words its name begins with, which `IssuePriorityLine.tsx`'s
+   *  `addPriorityControlName` writes out with `control_name_to` and the issue's key ("Add a
+   *  priority to CORE-1"). */
   add_priority: "Add a priority",
   /** What the priority row says of a priority the issue advances because an issue above it
    *  does, which is that issue's to remove (dispatch://INFRA-2947 R4). */
@@ -845,16 +852,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   also_under: "Also under",
   /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
    *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). It is also
-   *  the focused open question's control that answers it, which sets the line at the foot of the
-   *  outline to answer it (R16, the prototype's `.acts`), as `a` does. */
+   *  the focused open question's control that sets the writer's answer to it, as `a` does (R16,
+   *  the prototype's `.acts`); nothing sends that answer yet (`OutlineWriter.answer`). */
   answer: "Answer",
-  /** What the line at the foot of the outline says of the open question it answers, before the
-   *  question's own first line (the prototype's `.tgt.ans`). */
-  answering: "Answering:",
-  /** What it says of the options the reader picked, before them: "you chose 1024 px". */
-  answer_chose: "you chose",
-  /** What the line says while it is empty and answers a question. */
-  answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
   /** The document a design-gate step reviews, by the step (`StepEntry.step`; `criteria` reviews
    *  the verification), as the names of that document's Approve and Request changes end with
    *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
@@ -873,8 +873,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   approval_version_of: "of",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
-  /** Changes the reader's own answer to a question, on its focused row: the line at the foot of
-   *  the outline answers it again over that answer (the old conversation's ask card's control). */
+  /** Changes the reader's own answer to a question, on its focused row: sets the writer's answer
+   *  to a change of it (`OutlineWriter.answer`; the old conversation's ask card's control). */
   change_answer: "Change answer",
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
    *  composer below, whose comment is anchored to the decision's own words. */
@@ -888,15 +888,15 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   control_name_of: "of",
   /** The word between the labels control's `add_label` and the issue's key, in the name it
    *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
-   *  (`labelsControlName`). */
+   *  (`labelsControlName`). `IssuePriorityLine.tsx`'s `addPriorityControlName` writes this word
+   *  out as a literal in the name of the priorities' trigger in a row of Details while the issue
+   *  advances none ("Add a priority to CORE-1"). */
   control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
    *  done" (R13, the 1440 px picture). */
   count_of: "of",
   count_done: "done",
-  /** The priority picker's first choice, which picks nothing. */
-  choose_priority: "Choose a priority",
   /** Closes the Details panel and the Outline sheet, each in its own head (R14); Escape does
    *  the same. */
   close: "Close",
@@ -959,6 +959,11 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
+  /** The name of the priorities' picker trigger, which adds one and takes one off alike, as the
+   *  labels' control beside it is named "Edit labels". `IssuePriorityLine.tsx`'s
+   *  `priorityTriggerName` says the same words inside `NoTooltips` and outside it; in a row of
+   *  Details, while the issue advances none, the trigger is named by `add_priority` instead. */
+  edit_priorities: "Edit priorities",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the outline to the rows whose words hold what is typed, which is
@@ -1049,8 +1054,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** What a row's byline, a parent line and a chip say after an edited post's time or words:
    *  ` · edited` (INFRA-1523, R2), as every surface's byline says it. */
   post_edited: POST_MARK_WORDS.edited,
-  /** The row of five controls, Conversation and the four filters, as a reader hears it named
-   *  (R2). */
+  /** The row of six controls, Dashboard, Conversation and the four filters, as a reader hears it
+   *  named (R2). */
   presets: "Filters",
   /** The priority picker, named by what the issue will do with the one picked. */
   priority_to_advance: "Priority to advance",
@@ -1102,10 +1107,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
-  /** Sends what the line at the foot of the outline holds (R16), and the answer it holds to the
-   *  question it answers (`send_answer`). */
+  /** Sends what the line at the foot of the outline holds (R16). */
   send: "Send",
-  send_answer: "Send answer",
   /** How many checks serve a requirement, which the coverage read counts without naming them
    *  (R4, until the chain read lands). */
   serving_checks: "Checks serving it",
@@ -1223,6 +1226,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  program: "program",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
@@ -1230,6 +1234,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
+  subject: "subject",
   surface: "surface",
   title: "title",
   urgency: "urgency",

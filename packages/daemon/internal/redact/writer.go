@@ -9,16 +9,16 @@ import (
 var separator = []byte("://")
 
 // Writer is w with URLCredentials applied to each write: the text of a write reaches w with the
-// query and the userinfo of every URL in it removed, in one write of w. A write that holds no
-// "://" reaches w as it is, with no allocation and no copy. Writer(nil) is nil, not a writer
-// around nil, so a caller that reads a nil writer as no output at all (exec.Cmd, which gives a
-// child the null device for one) reads Writer's answer the same way; and Writer of a writer
+// query of every URL in it removed and an authority holding an "@" replaced, in one write of w. A
+// write that holds no "://" reaches w as it is, with no allocation and no copy. Writer(nil) is nil,
+// not a writer around nil, so a caller that reads a nil writer as no output at all (exec.Cmd, which
+// gives a child the null device for one) reads Writer's answer the same way; and Writer of a writer
 // Writer made is that writer.
 //
-// A write the rule changed answers len(p) once w has taken the text, however much the rule removed
-// from it: io.Copy and log.Logger take a shorter count for a failed write (io.ErrShortWrite). When
-// w fails it, Write answers 0 and w's error. A write the rule leaves as it is reaches w as it is,
-// and Write answers w's own count and error.
+// A write the rule changed answers len(p) once w has taken the text, however much longer or shorter
+// the rule made it: io.Copy and log.Logger take a shorter count for a failed write
+// (io.ErrShortWrite). When w fails it, Write answers 0 and w's error. A write the rule leaves as it
+// is reaches w as it is, and Write answers w's own count and error.
 //
 // Each write is taken as a whole, and a URL is found only inside one write. Go's log.Logger and
 // each fmt.Fprint* call write one record in one call, and the launcher's role log writes each line
@@ -46,8 +46,9 @@ func (w urlWriter) Write(p []byte) (int, error) {
 		return w.out.Write(p)
 	}
 	text := URLCredentials(string(p))
-	// The rule only removes, so a text of the write's length is the write as it was.
-	if len(text) == len(p) {
+	// The rule can replace as well as remove, so only a text equal to the write is the write as it
+	// was; a text of the same length can be a replaced authority.
+	if text == string(p) {
 		return w.out.Write(p)
 	}
 	if _, err := io.WriteString(w.out, text); err != nil {

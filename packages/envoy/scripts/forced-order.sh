@@ -17,7 +17,7 @@
 # replaces nats-server, whose hooked copy would take the replacement's place. A module with no
 # workspace builds on a copy of its go.mod with the replace added (go test -modfile, which go
 # refuses in a workspace).
-# The script reads go's JSON (go work edit -json, go mod download -json) with jq. Nothing else of
+# The script reads go's JSON (go work edit -json, go list -m -json, go mod download -json) with jq. Nothing else of
 # nats-server changes, and no
 # build without this script sees a hook.
 #
@@ -167,12 +167,21 @@ for point in ${drops[@]+"${drops[@]}"}; do
     die "-drop $point: no hook of nats-server $server reports \"$point\"; its points are $(paste -sd ' ' <<<"$points")"
 done
 
-# Downloaded from the work directory, where no go.mod is, so the module's own go.sum is not
-# touched.
-(cd "$work" && GOWORK=off go mod download -json "$nats_server@v$server") >"$work/download.json" ||
-  die "go mod download could not fetch $nats_server@v$server"
-source_dir="$(jq -r '.Dir // empty' "$work/download.json")" || die "jq could not read go mod download's answer"
-[ -n "$source_dir" ] && [ -d "$source_dir" ] || die "go mod download found no source for $nats_server@v$server"
+# nats-server's tree, read where the module cache extracted it: `go list -m -json` names that
+# directory and fetches nothing. `go mod download` fetches the module's zip whenever the cache holds
+# none (cmd/go/internal/modcmd/download.go calls DownloadZip), and the CI caches are saved without
+# their zips (.github/ci-notes/ci-caches.md#why-the-fills-delete-the-module-zips), so it would fetch
+# the zip on every run. It is the fallback, for a version no cache holds (-server 2.10.29, which
+# no build links). Both run from the work directory, where no go.mod is, so the module's own go.sum
+# is not touched.
+source_dir="$(cd "$work" && GOWORK=off go list -m -json "$nats_server@v$server" 2>/dev/null | jq -r '.Dir // empty')" ||
+  source_dir=""
+if [ -z "$source_dir" ] || [ ! -d "$source_dir" ]; then
+  (cd "$work" && GOWORK=off go mod download -json "$nats_server@v$server") >"$work/download.json" ||
+    die "go mod download could not fetch $nats_server@v$server"
+  source_dir="$(jq -r '.Dir // empty' "$work/download.json")" || die "jq could not read go mod download's answer"
+fi
+[ -n "$source_dir" ] && [ -d "$source_dir" ] || die "neither go list -m nor go mod download found a source for $nats_server@v$server"
 copy="$work/nats-server"
 cp -R "$source_dir" "$copy"
 chmod -R u+w "$copy"

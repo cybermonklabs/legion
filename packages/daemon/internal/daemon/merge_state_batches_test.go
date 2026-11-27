@@ -69,10 +69,48 @@ func readBatchRequest(t *testing.T, r *http.Request) []int {
 }
 
 // batchNode is one pull request as the by-number query answers it: open on main at head, with
-// GitHub's `mergeable` and `mergeStateStatus` in GraphQL's capitals.
+// GitHub's `mergeable` and `mergeStateStatus` in GraphQL's capitals, no review request open, and
+// the head's rollup SUCCESS, as GitHub answers a pull request whose checks are done and that asks
+// nobody for a review. A test that needs another count or rollup sets it on the node.
 func batchNode(number int, head, mergeable, state string) map[string]any {
 	return map[string]any{"number": number, "state": "OPEN", "headRefOid": head, "headRefName": fmt.Sprintf("legion/CAPTURE-%d", number-85),
-		"baseRefName": "main", "mergeable": mergeable, "mergeStateStatus": state}
+		"baseRefName": "main", "mergeable": mergeable, "mergeStateStatus": state,
+		"reviewRequests": map[string]any{"totalCount": 0}, "commits": rollupOf(head, "SUCCESS")}
+}
+
+// rollupOf is the `commits(last: 1)` of a pull request whose head commit is head and whose
+// `statusCheckRollup` state is state, or null when state is "", with the counts GitHub gives such
+// a rollup: one check run in state, IN_PROGRESS for a PENDING rollup, and no commit status.
+func rollupOf(head, state string) map[string]any {
+	if state == "" {
+		return rollupCounted(head, "", nil, nil)
+	}
+	run := state
+	if state == "PENDING" {
+		run = "IN_PROGRESS"
+	}
+	return rollupCounted(head, state, map[string]int{run: 1}, nil)
+}
+
+// rollupCounted is the `commits(last: 1)` of a pull request whose head commit is head, whose
+// rollup state is state, null when state is "", and whose check runs and commit statuses GitHub
+// counts by state as runs and statuses say, every other state counted 0, as GitHub lists each.
+func rollupCounted(head, state string, runs, statuses map[string]int) map[string]any {
+	var rollup any
+	if state != "" {
+		counted := func(states []string, by map[string]int) []any {
+			out := make([]any, 0, len(states))
+			for _, s := range states {
+				out = append(out, map[string]any{"state": s, "count": by[s]})
+			}
+			return out
+		}
+		rollup = map[string]any{"state": state, "contexts": map[string]any{
+			"checkRunCountsByState": counted([]string{"ACTION_REQUIRED", "CANCELLED", "COMPLETED", "FAILURE", "IN_PROGRESS", "NEUTRAL",
+				"PENDING", "QUEUED", "SKIPPED", "STALE", "STARTUP_FAILURE", "SUCCESS", "TIMED_OUT", "WAITING"}, runs),
+			"statusContextCountsByState": counted([]string{"EXPECTED", "ERROR", "FAILURE", "PENDING", "SUCCESS"}, statuses)}}
+	}
+	return map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"oid": head, "statusCheckRollup": rollup}}}}
 }
 
 // batchAnswer is the by-number query's answer to asked: each of nodes under its alias, and for
@@ -131,8 +169,11 @@ func graphQLAnswerOf(t *testing.T, rest pullAnswer, asked []int) (int, string) {
 	if pull.State != "open" {
 		state = "CLOSED"
 	}
-	node := map[string]any{"number": pull.Number, "state": state, "headRefOid": pull.Head.SHA, "headRefName": pull.Head.Ref,
-		"baseRefName": pull.Base.Ref, "mergeable": mergeable, "mergeStateStatus": strings.ToUpper(pull.MergeableState)}
+	node := batchNode(pull.Number, pull.Head.SHA, mergeable, strings.ToUpper(pull.MergeableState))
+	node["state"], node["headRefName"], node["baseRefName"] = state, pull.Head.Ref, pull.Base.Ref
+	if count := pull.reviewsRequested(); count != nil {
+		node["reviewRequests"] = map[string]any{"totalCount": *count}
+	}
 	return http.StatusOK, batchAnswer(t, asked, node)
 }
 

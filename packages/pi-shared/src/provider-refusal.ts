@@ -25,12 +25,12 @@ export type ProviderTurnOutcome =
   | { kind: "provider-error" };
 
 /** Anthropic's refusal text: `Refusal`, or `Refusal (<category>)`, either one optionally followed
- * by `: <explanation>` (`packages/ai/src/providers/anthropic.ts:3188-3193` at the pinned tag).
+ * by `: <explanation>` (`packages/ai/src/providers/anthropic.ts:3243-3248` at the pinned tag).
  * The category is bounded as the Google reasons below are, and for the same reason. */
 const ANTHROPIC_REFUSAL = /^Refusal(?: \(([^)]{0,200})\))?(?::|$)/;
 
 /** What OpenAI's own filter leaves: the chat completion's `finish_reason`
- * (`packages/ai/src/providers/openai-completions.ts:3075-3076` at the pinned tag) and the
+ * (`packages/ai/src/providers/openai-completions.ts:3039-3040` at the pinned tag) and the
  * responses API's incomplete reason. */
 const OPENAI_FILTER_TEXTS = [
   "Provider finish_reason: content_filter",
@@ -39,7 +39,7 @@ const OPENAI_FILTER_TEXTS = [
 
 /** Gemini finish reasons that are a content filter; every `IMAGE_*` reason is one too. A finish
  * reason outside this set (`OTHER`, `MALFORMED_FUNCTION_CALL`, `LANGUAGE`, …) ends the turn as an
- * error that another model would not refuse (`packages/ai/src/providers/google-shared.ts:460-468`
+ * error that another model would not refuse (`packages/ai/src/providers/google-shared.ts:461-469`
  * at the pinned tag). */
 const GOOGLE_FILTER_REASONS: Record<string, true> = {
   SAFETY: true,
@@ -49,7 +49,7 @@ const GOOGLE_FILTER_REASONS: Record<string, true> = {
   RECITATION: true,
 };
 
-/** `packages/ai/src/providers/google-shared.ts:856` at the pinned tag.
+/** `packages/ai/src/providers/google-shared.ts:857` at the pinned tag.
  *
  * Every repetition below is bounded, and that bound is what keeps a long error text cheap. The
  * text is the provider's own and nothing limits its length, so an unbounded `[^)]*` behind a
@@ -60,12 +60,12 @@ const GOOGLE_FILTER_REASONS: Record<string, true> = {
  * above the longest of them changes no answer and leaves the work linear in the text. */
 const GOOGLE_FINISH_REASON = /Generation failed with finish reason: ([A-Z_]{1,64})/;
 
-/** The prompt feedback Google returns in place of a candidate (`google-shared.ts:808-814` at the
+/** The prompt feedback Google returns in place of a candidate (`google-shared.ts:809-815` at the
  * pinned tag), and the same block as the Gemini-through-Droid provider words it. */
 const GOOGLE_PROMPT_BLOCKED = /Request blocked by Google \(([^)]{0,200})\)/;
 const GOOGLE_FILTERS_BLOCKED = /Generation was blocked by content filters \(([^)]{0,200})\)/;
 
-/** `packages/ai/src/providers/amazon-bedrock.ts:1071-1075` at the pinned tag: the service's own
+/** `packages/ai/src/providers/amazon-bedrock.ts:1069-1073` at the pinned tag: the service's own
  * filters, and a guardrail the request configured. */
 const BEDROCK_FILTER_TEXTS = [
   "Response filtered by Amazon Bedrock content filters",
@@ -73,10 +73,10 @@ const BEDROCK_FILTER_TEXTS = [
 ];
 
 /** What the host puts in front of the provider's own error text when it names why it walked the
- * fallback chain: ``reason: `Request failed: ${message.errorMessage ?? "provider returned an
- * error without details"}` `` (`packages/coding-agent/src/session/turn-recovery.ts` at the
- * pinned tag). It is taken off before the texts above are read, so one list of patterns reads
- * both a message's own error text and that reason. */
+ * fallback chain: ``const reason = `Request failed: ${failedMessage.errorMessage ?? "provider
+ * returned an error without details"}` `` (`packages/coding-agent/src/session/turn-recovery.ts:3241`
+ * at the pinned tag). It is taken off before the texts above are read, so one list of patterns
+ * reads both a message's own error text and that reason. */
 const REQUEST_FAILED = /^Request failed: /;
 
 /** How the provider ended the turn that this message settled. */

@@ -91,8 +91,9 @@ class Filter:
 
 
 class PathsFilter:
-    """One dorny/paths-filter filter, as v4.0.3 evaluates it (src/filter.ts:58-66,133-149,195-213
-    at ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d), under one of the two quantifiers this models.
+    """One dorny/paths-filter filter, as v4.0.3 evaluates it (its `PredicateQuantifier`, the
+    `SOME_WITH_EXCLUDES` case of its predicate and `createRuleItem`, at
+    https://github.com/dorny/paths-filter/blob/ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d/src/filter.ts), under one of the two quantifiers this models.
     Under `some`, the default, a file matches when any pattern matches it; picomatch reads a
     leading `!` as "not this pattern", so there a `!` pattern matches every file outside it. Under
     `some-with-excludes` a file matches when a pattern without `!` matches it and no `!` pattern

@@ -12,6 +12,7 @@ import (
 // observed at, and an index on the project each consumer reads whole, in the key order it reads
 // it in.
 func TestTheDispatchMirrorArrivesWith0052(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 51)

@@ -1,6 +1,6 @@
 name: CI job envoy-go-checks
 
-# The steps of ci.yaml's `envoy-go-checks` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#envoy-go-checks` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -21,13 +21,13 @@ name: CI job envoy-go-checks
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -65,6 +65,7 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -72,6 +73,7 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+
       # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
       # instead of building helm with `go run`, which downloads and compiles it first: the render
       # took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in job
@@ -87,8 +89,22 @@ jobs:
       # each other, no more at once than the runner has cores, in the order queued (the longest
       # first, so the shorter ones fill the other cores around them), and "Wait for the script
       # harnesses and judge them" is their verdict and prints each one's log.
+      # The operator-token-minters check's harness is queued first: it is the longest, 706 s in its
+      # last whole run on a developer box (2026-11-25), so the shorter ones fill the other cores.
+      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
+        run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
+        working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
-        run: ../../.github/scripts/harness-pool.sh start loadtest/cluster/cluster.test.sh bash loadtest/cluster/cluster.test.sh
+        # The suite's own bound, --minutes 15, which its waits end 30 s before: the pool hands the
+        # harness HARNESS_POOL_DEADLINE_MS, its start plus the bound less 30 s, and the command passes
+        # it on as LEGION_PROOF_DEADLINE_MS, which proof-wait.sh's proof_guard_from_env reads. As a
+        # step of its own the suite took at most 378 s over this job's 20 newest green merge-group
+        # runs to 2026-11-22 (45023796663 to 45039647589), and its bound was 11 min, a deadline 1.67
+        # times that. Beside the other harnesses it takes longer: 447.9 to 525.0 s in the 8 newest
+        # green merge-group jobs of 2026-11-26 (139990699341 to 140036455206), and 15 min is a
+        # deadline 1.66 times 525.0 s. The pool starts it under a minute into the job, so the
+        # deadline falls inside the job's 30 min.
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 loadtest/cluster/cluster.test.sh bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh'
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
         run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
@@ -135,13 +151,22 @@ jobs:
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: ../../.github/scripts/harness-pool.sh start scripts/dev-postgres.test.sh bash scripts/dev-postgres.test.sh
         working-directory: packages/envoy
-      - name: Required-input test for airlock-check.sh k7 (no stack or network)
+      - name: Required-input and result test for airlock-check.sh (no stack or network)
         run: ../../.github/scripts/harness-pool.sh start scripts/airlock-check.test.sh bash scripts/airlock-check.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for proxy-chain-check.sh (its arguments, call's reading of an s_client-shaped transcript, the clock file, the report; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/proxy-chain-check.test.sh bash scripts/proxy-chain-check.test.sh
+        working-directory: packages/envoy
+      - name: Count test for airlock-mutants.sh (a fixture tree and a stand-in go; no database or model)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants.test.sh bash scripts/airlock-mutants.test.sh
+        working-directory: packages/envoy
+      - name: Apply test for airlock-mutants.sh's patches (git apply --check of each; no database, model or Lean)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants-apply.test.sh bash scripts/airlock-mutants-apply.test.sh
         working-directory: packages/envoy
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: ../../.github/scripts/harness-pool.sh start loadtest/run-step.test.sh bash loadtest/run-step.test.sh
         working-directory: packages/envoy
-      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
+      - name: Stack and broker-start test for lib/check-stack.sh and lib/exec-env.sh, which judge-check.sh and proxy-chain-check.sh share, and judge-check.sh's result (a stand-in broker; no stack)
         run: ../../.github/scripts/harness-pool.sh start scripts/judge-check.test.sh bash scripts/judge-check.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
@@ -149,6 +174,16 @@ jobs:
         working-directory: packages/envoy
       - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
         run: ../../.github/scripts/harness-pool.sh start scripts/restore-dispatch-dump.test.sh bash scripts/restore-dispatch-dump.test.sh
+        working-directory: packages/envoy
+      # approve-check.sh's scan of its session (scripts/approve/scan.ts), k31's step (e): it finds a
+      # logged binding's key as bare PEM and as PEM inside a JSON string, finds a token of the
+      # broker's shape in each form a file, a URL or an environment writes it in, and is UNKNOWN,
+      # exit 3, when it compared nothing.
+      - name: Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/approve/ bun test scripts/approve/
+        working-directory: packages/envoy
+      - name: Exit test for approve-check.sh (its steps library alone; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/approve-check.test.sh bash scripts/approve-check.test.sh
         working-directory: packages/envoy
       # The verdict on the script harnesses the steps above queued: it waits for the last of them,
       # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming

@@ -32,6 +32,7 @@ func projectFormIssueCreatedEnvelope(t *testing.T) []byte {
 // An issue event named in the new form decodes to the very fact the same event named in the old
 // form does, and only the old form is reported as such (decodedMessage.LegacyName).
 func TestAnIssueEventDecodesToOneFactInEitherFormOfItsName(t *testing.T) {
+	t.Parallel()
 	old, err := decodeMessage("notifications.dispatch.issue.CAPTURE-4.issue.created", "CAPTURE", capturedRepositories, capturedIssueCreatedEnvelope(t))
 	if err != nil {
 		t.Fatalf("decode the old form: %v", err)
@@ -54,6 +55,7 @@ func TestAnIssueEventDecodesToOneFactInEitherFormOfItsName(t *testing.T) {
 // Another project's issue event is no fact in either form, as it always was in the old one: the
 // stream carries every project's events and this daemon acts on its own.
 func TestAnotherProjectsIssueEventIsNoFactInEitherForm(t *testing.T) {
+	t.Parallel()
 	for subject, legacy := range map[string]bool{
 		"notifications.dispatch.issue.CAPTURE-4.issue.created":         true,
 		"notifications.dispatch.issue.CAPTURE.CAPTURE-4.issue.created": false,
@@ -69,6 +71,7 @@ func TestAnotherProjectsIssueEventIsNoFactInEitherForm(t *testing.T) {
 // (errIssueNameInNeitherForm), never another project's event acknowledged with no fact: a daemon
 // that acknowledged a name it could not read would stop working its project in silence.
 func TestAnIssueNameInNeitherFormIsPoison(t *testing.T) {
+	t.Parallel()
 	for _, subject := range []string{
 		"notifications.dispatch.issue.CAPTURE.issue.created",
 		"notifications.dispatch.issue.LEGION.CAPTURE-4.issue.created",
@@ -96,6 +99,7 @@ func TestAnIssueNameInNeitherFormIsPoison(t *testing.T) {
 // form with no fact and no error, as the merge base did for a key it could not read; the wait for
 // the ERROR line times out, the name acknowledged with nothing logged.
 func TestTheDispatchDurableReadsBothFormsAndRefusesANameInNeither(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)

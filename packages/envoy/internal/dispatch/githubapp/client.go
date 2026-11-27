@@ -25,6 +25,8 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/githubrate"
+	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -132,11 +134,17 @@ const tokenExpirySlack = 5 * time.Minute
 // dispatch inspects. AccountLogin (the installation's own account -- a user or an org) is set
 // only by ListInstallations (GET /app/installations), which is account-less in its own answer
 // shape; RepositoryToken's own installation()/DeliveryPermissions() lookups never set it, since
-// they already know the account from the owner/repo they resolved.
+// they already know the account from the owner/repo they resolved. AppID is the App's numeric id
+// as the installation object names it, 0 where it names none. Permissions is the part of the
+// installation's permissions Dispatch reads; Granted is every permission GitHub named for it, with
+// its access, as GitHub named it (the rate reading logs them), and is empty, never nil, where
+// GitHub named none.
 type Installation struct {
 	ID           int64
+	AppID        int64
 	AppSlug      string
 	Permissions  auth.AppPerms
+	Granted      map[string]string
 	AccountLogin string
 }
 
@@ -307,6 +315,26 @@ func WithLimits(limits Limits) Option {
 	return func(c *Client) { c.limits = limits }
 }
 
+// WithRateCounter makes the client count its calls to GitHub on counter, for the rate reading
+// (githubrate): every request it sends goes through counter's Transport, and every installation
+// token it mints is registered with its installation, so each call made with that token is counted
+// under that installation and the caller kind its context carries (githubrate.WithCaller). A
+// transport alone could not do the second half, since only the mint knows whose token it is.
+// Every client of one process that calls with installation tokens takes the one Counter, as
+// Dispatch's two do (the API's, which the architecture importer and the delivery intakes and
+// reconcile share, and the CI reconcile's), because GitHub budgets the installation and the
+// reading reports what the process spent of it, whichever client spent it. A nil counter counts
+// nothing, which is a client built without the option.
+func WithRateCounter(counter *githubrate.Counter) Option {
+	return func(c *Client) {
+		if counter == nil {
+			return
+		}
+		c.rate = counter
+		c.http.Transport = counter.Transport(c.http.Transport)
+	}
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
@@ -317,6 +345,9 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
+	// rate counts this client's calls to GitHub for the rate reading (WithRateCounter); nil
+	// counts none.
+	rate *githubrate.Counter
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -478,7 +509,10 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return Installation{}, fmt.Errorf("decode installation: %w", ShownErr(err))
 	}
-	return Installation{ID: payload.ID, AppSlug: payload.AppSlug, Permissions: payload.Permissions}, nil
+	return Installation{
+		ID: payload.ID, AppID: payload.AppID, AppSlug: payload.AppSlug, Permissions: payload.Permissions.read,
+		Granted: payload.Permissions.granted(),
+	}, nil
 }
 
 // installationPayload is GitHub's one object shape for an installation, shared by
@@ -487,11 +521,50 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 // repo-scoped lookup already knows the account from its own owner/repo argument.
 type installationPayload struct {
 	ID      int64  `json:"id"`
+	AppID   int64  `json:"app_id"`
 	AppSlug string `json:"app_slug"`
 	Account struct {
 		Login string `json:"login"`
 	} `json:"account"`
-	Permissions auth.AppPerms `json:"permissions"`
+	Permissions installationPermissions `json:"permissions"`
+}
+
+// installationPermissions is an installation's permissions object as GitHub answers it, decoded
+// once into the part Dispatch reads (auth.AppPerms) and once whole, every permission whose access
+// is a string with its access.
+type installationPermissions struct {
+	read  auth.AppPerms
+	named map[string]string
+}
+
+// UnmarshalJSON decodes GitHub's permissions object into both its forms. The whole form is read
+// as values of any kind and keeps the strings: GitHub documents a string for every permission
+// today, and a value of another kind, a permission GitHub adds later, must fail no decode of an
+// installation, which every path that resolves one shares (RepositoryToken, DeliveryPermissions,
+// CheckSource, Installed).
+func (p *installationPermissions) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &p.read); err != nil {
+		return err
+	}
+	var named map[string]any
+	if err := json.Unmarshal(data, &named); err != nil {
+		return err
+	}
+	p.named = make(map[string]string, len(named))
+	for permission, access := range named {
+		if access, ok := access.(string); ok {
+			p.named[permission] = access
+		}
+	}
+	return nil
+}
+
+// granted is every permission GitHub named, an empty map where it named none.
+func (p installationPermissions) granted() map[string]string {
+	if p.named == nil {
+		return map[string]string{}
+	}
+	return p.named
 }
 
 // maxInstallations bounds ListInstallations' pagination the same way maxInstallationRepositories
@@ -512,42 +585,91 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 	if c == nil {
 		return nil, ErrNoAppKey
 	}
-	return c.installations.get(ctx, installationsCacheKey, func(ctx context.Context) ([]Installation, error) {
-		jwt, err := c.appJWT()
+	return c.installations.get(ctx, installationsCacheKey, c.listInstallations)
+}
+
+// ReadInstallations is ListInstallations as GitHub answers it now, read past the cache and
+// leaving it as it was. The rate reading lists the App's installations at every pass and writes
+// one line for each installation the list held, naming how many it held: the cache's ten minutes
+// are the reading's whole interval, so through it a pass would read an installation removed since
+// and miss one added since for up to a pass, and name a count GitHub no longer answers.
+func (c *Client) ReadInstallations(ctx context.Context) ([]Installation, error) {
+	if c == nil {
+		return nil, ErrNoAppKey
+	}
+	return c.listInstallations(ctx)
+}
+
+// listInstallations reads every page of GET /app/installations under the App's JWT.
+func (c *Client) listInstallations(ctx context.Context) ([]Installation, error) {
+	jwt, err := c.appJWT()
+	if err != nil {
+		return nil, err
+	}
+	var installations []Installation
+	for page := 1; ; page++ {
+		target := fmt.Sprintf("%s/app/installations?per_page=100&page=%d", c.base, page)
+		body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 		}
-		var installations []Installation
-		for page := 1; ; page++ {
-			target := fmt.Sprintf("%s/app/installations?per_page=100&page=%d", c.base, page)
-			body, status, header, err := c.request(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt, mediaTypeJSON, "", nil, responseLimit)
-			if err != nil {
-				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
-			}
-			if err := CheckResponse(status, header, body); err != nil {
-				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
-			}
-			var payload []installationPayload
-			if err := json.Unmarshal(body, &payload); err != nil {
-				return nil, fmt.Errorf("decode installations (page %d): %w", page, ShownErr(err))
-			}
-			if len(payload) == 0 {
-				break
-			}
-			for _, entry := range payload {
-				installations = append(installations, Installation{
-					ID: entry.ID, AppSlug: entry.AppSlug, Permissions: entry.Permissions, AccountLogin: entry.Account.Login,
-				})
-			}
-			if len(installations) > maxInstallations {
-				return nil, fmt.Errorf("list installations: the App has more than %d installations", maxInstallations)
-			}
-			if len(payload) < 100 {
-				break
-			}
+		if err := CheckResponse(status, header, body); err != nil {
+			return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 		}
-		return installations, nil
-	})
+		var payload []installationPayload
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, fmt.Errorf("decode installations (page %d): %w", page, ShownErr(err))
+		}
+		if len(payload) == 0 {
+			break
+		}
+		for _, entry := range payload {
+			installations = append(installations, Installation{
+				ID: entry.ID, AppID: entry.AppID, AppSlug: entry.AppSlug, Permissions: entry.Permissions.read,
+				Granted: entry.Permissions.granted(), AccountLogin: entry.Account.Login,
+			})
+		}
+		if len(installations) > maxInstallations {
+			return nil, fmt.Errorf("list installations: the App has more than %d installations", maxInstallations)
+		}
+		if len(payload) < 100 {
+			break
+		}
+	}
+	return installations, nil
+}
+
+// AppIdentity is the App's numeric id and its slug as GitHub's GET /app answers them to the App's
+// JWT. The configuration's own id and slug can be absent (the JWT names the App by its client ID
+// alone, and an end-to-end App has neither), and GitHub's answer is the one each of them is a
+// copy of.
+func (c *Client) AppIdentity(ctx context.Context) (id int64, slug string, err error) {
+	if c == nil {
+		return 0, "", ErrNoAppKey
+	}
+	jwt, err := c.appJWT()
+	if err != nil {
+		return 0, "", err
+	}
+	target := c.base + "/app"
+	body, status, header, err := c.do(ctx, AppScope, http.MethodGet, target, "Bearer "+jwt)
+	if err != nil {
+		return 0, "", err
+	}
+	if err := CheckResponse(status, header, body); err != nil {
+		return 0, "", fmt.Errorf("GET %s: %w", target, err)
+	}
+	var payload struct {
+		ID   int64  `json:"id"`
+		Slug string `json:"slug"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0, "", fmt.Errorf("decode the App: %w", ShownErr(err))
+	}
+	if payload.ID <= 0 || payload.Slug == "" {
+		return 0, "", fmt.Errorf("GET %s answered no App id or slug", target)
+	}
+	return payload.ID, payload.Slug, nil
 }
 
 // RepositoryToken returns an installation token of the installation covering owner/repo. The
@@ -842,6 +964,10 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		return cachedToken{}, fmt.Errorf("decode installation token: %w", ShownErr(err))
 	}
 	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: payload.Permissions}
+	// Registered before any caller holds the token, so its first call is counted too.
+	if c.rate != nil {
+		c.rate.Register(payload.Token, strconv.FormatInt(installationID, 10))
+	}
 	c.mu.Lock()
 	now := c.now()
 	for token, minted := range c.installationOf {
@@ -897,6 +1023,29 @@ func (c *Client) TokenScope(token string) string {
 	return ""
 }
 
+// OwnCalls is installation id's own calls on each of its two counters, REST core and GraphQL, by
+// caller kind, since each counter's last reset (githubrate.Counter.Own): the calls of every
+// client that counts on this client's Counter, which in Dispatch is the whole process's. Both are
+// empty, never nil, for a client built without one (WithRateCounter).
+func (c *Client) OwnCalls(installationID int64) (core, graphql map[string]int) {
+	if c == nil || c.rate == nil {
+		return map[string]int{}, map[string]int{}
+	}
+	return c.rate.Own(strconv.FormatInt(installationID, 10))
+}
+
+// SecondaryUntil is the end of the latest secondary limit GitHub answered one of installation
+// id's tokens with, as the client's Counter noted it from GitHub's answer
+// (githubrate.Counter.SecondaryUntil), and the zero time when none was or the client has no
+// Counter. The Counter is the process's, so the limits every client of the process that counts
+// through it met are here, and another process's are not.
+func (c *Client) SecondaryUntil(installationID int64) time.Time {
+	if c == nil || c.rate == nil {
+		return time.Time{}
+	}
+	return c.rate.SecondaryUntil(strconv.FormatInt(installationID, 10))
+}
+
 func (c *Client) do(ctx context.Context, scope, method, target, authorization string) ([]byte, int, http.Header, error) {
 	return c.doLimited(ctx, scope, method, target, authorization, responseLimit)
 }
@@ -911,20 +1060,27 @@ func (c *Client) doLimited(ctx context.Context, scope, method, target, authoriza
 // If-None-Match, so GitHub answers 304 Not Modified when its answer has not changed since the
 // caller read it, and charges the rate limit nothing for it; an empty one sends no such header.
 //
-// It is send with GitHub's own REST limit read, once: an answer RateLimit reads as a limit is
-// noted on the attempt ctx carries (githubreads), whatever the client and the scope, and
-// recorded under scope with GitHub's own wait where the client has Limits and scope is named, so
-// no process sends GitHub anything under that scope before the wait ends. Every REST call of this
-// package goes through here. GraphQL calls send itself and reads, notes and records the limit in
-// its answer itself, which is another detection and another scope (recordGraphQLLimit).
+// It is send with GitHub's own REST limit read, once (keepAnsweredLimit). Every REST call of this
+// package goes through here but ReadPastHold's, which keeps the limit its answer names the same
+// way. GraphQL calls send itself and reads, notes and records the limit in its answer itself,
+// which is another detection and another scope (recordGraphQLLimit).
 func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
 	responseBody, status, header, err := c.send(ctx, scope, method, target, authorization, accept, ifNoneMatch, body, limit)
 	if err != nil {
 		return responseBody, status, header, err
 	}
-	limited := RateLimit(status, header, responseBody)
+	c.keepAnsweredLimit(ctx, scope, method, target, status, header, responseBody)
+	return responseBody, status, header, nil
+}
+
+// keepAnsweredLimit reads GitHub's answer to a REST call, method to target, for a limit: one
+// RateLimit reads in it is noted on the attempt ctx carries (githubreads), whatever the client and
+// the scope, and recorded under scope with GitHub's own wait where the client has Limits and scope
+// is named, so no process sends GitHub anything under that scope before the wait ends.
+func (c *Client) keepAnsweredLimit(ctx context.Context, scope, method, target string, status int, header http.Header, body []byte) {
+	limited := RateLimit(status, header, body)
 	if limited == nil {
-		return responseBody, status, header, nil
+		return
 	}
 	noteFailure(ctx, limitNoted(method, target, limited))
 	if c.limits != nil && scope != "" {
@@ -936,14 +1092,47 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 			slog.Error("dispatch githubapp: GitHub's rate limit was not recorded; other processes may ask GitHub inside it", "scope", scope, "wait", limited.Wait, "error", err)
 		}
 	}
-	return responseBody, status, header, nil
+}
+
+// ReadPastHold is Read for the rate reading (githubrate): GET path with an installation token,
+// sent whatever limit the shared ledger holds the token's installation to. The reading reads an
+// installation's counter, and GitHub names the counter in every answer it gives, a refusal at the
+// limit among them, so a hold would keep the reading from the hour it is most needed for: one in
+// which the installation spent its budget, whose reading before the reset would otherwise be an
+// error with no count. GitHub asks that a client send nothing while limited, and this read does
+// send past a primary limit: one core request of a held installation a pass (two at its first pass
+// and after a 404, when its repository is listed again), and a pass every ten minutes and before
+// each counter reset of every installation, so about 6 + 2N core requests of a held installation
+// an hour from each process reading, N being the App's installations. The reading sends nothing
+// while a secondary limit holds the installation (SecondaryUntil), since GitHub may ban an
+// integration that goes on through one. A limit GitHub answers it with is noted and recorded under
+// the installation's scope as Read's is (keepAnsweredLimit), so every other read of the
+// installation holds, and a refused answer is the caller's, with its status and its headers, never
+// an error.
+func (c *Client) ReadPastHold(ctx context.Context, token, path string) ([]byte, int, http.Header, error) {
+	if c == nil {
+		return nil, 0, nil, ErrNoAppKey
+	}
+	target := c.base + path
+	// A concurrent mint can prune this token after its expiry while the request is in flight.
+	// Keep the installation that sent it, so a late refusal still holds the right scope.
+	scope := c.TokenScope(token)
+	// No scope, so send obeys no shared limit; the limit the answer names is kept under the
+	// token's own scope below.
+	body, status, header, err := c.send(ctx, "", http.MethodGet, target, "Bearer "+token, mediaTypeJSON, "", nil, responseLimit)
+	if err != nil {
+		return body, status, header, err
+	}
+	c.keepAnsweredLimit(ctx, scope, http.MethodGet, target, status, header, body)
+	return body, status, header, nil
 }
 
 // send is the one function that sends anything to GitHub, so it is where the shared limit on
 // scope is obeyed: while a limit is in force on it nothing is sent and a held *RateLimitError is
 // returned. A limit that cannot be read (the database failing) is logged and the request goes
 // ahead, as embedqueue.reserveTokens goes ahead: GitHub still answers each process's own
-// requests with the limit. An empty scope, or a client without Limits, is no shared limit.
+// requests with the limit. An empty scope, or a client without Limits, is no shared limit, which
+// is how ReadPastHold is sent past it.
 //
 // What GitHub's own answer says about a limit is the caller's to read, note and record, since
 // REST and GraphQL read an answer differently and budget it under different scopes: request
@@ -1003,11 +1192,12 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
-	// A 5xx and a 401 say GitHub could not answer or did not take the App's credentials. Every
-	// other status, a limit aside, is left to the caller, because the same answer is data at one
-	// point and a failure at another (a 404 is a deleted repository to one caller and a wrong
-	// workflow path to the next), and only the caller can tell the two apart.
-	if status := response.StatusCode; status/100 == 5 || status == http.StatusUnauthorized {
+	// An outage status (httpoutage.Is: a 408 or a 5xx) and a 401 say GitHub could not answer
+	// or did not take the App's credentials; its 429 is a limit, noted as one. Every other status, a
+	// limit aside, is left to the caller, because the same answer is data at one point and a failure
+	// at another (a 404 is a deleted repository to one caller and a wrong workflow path to the
+	// next), and only the caller can tell the two apart.
+	if status := response.StatusCode; status != http.StatusTooManyRequests && httpoutage.Is(status) || status == http.StatusUnauthorized {
 		noteFailure(ctx, &failedAnswer[[]byte]{method: method, target: target, status: status, detail: responseBody})
 	}
 	return responseBody, response.StatusCode, response.Header, nil
@@ -1024,17 +1214,17 @@ func noteFailure(ctx context.Context, err error) {
 }
 
 // failedAnswer is an answer send, request or GraphQL notes as a failure, worded as the client's
-// own errors are: "<METHOD> <target>: status <n>: <body>" (StatusText) for a 5xx or a 401, and
-// "<METHOD> <target>: rate-limited by GitHub (status <n>), next request in <wait>: <body>" for a
-// limit GitHub answered (limitNoted, RateLimitError), each with target as ShownBody shows it, as
+// own errors are: "<METHOD> <target>: status <n>: <body>" (StatusText) for a 408, a 5xx or a 401,
+// and "<METHOD> <target>: rate-limited by GitHub (status <n>), next request in <wait>: <body>" for
+// a limit GitHub answered (limitNoted, RateLimitError), each with target as ShownBody shows it, as
 // send shows it, and each ending at its head where there is no body (withBody). Its text is made
 // only where the note can still become a cause (githubreads.NoteFailure), so a request outside the
 // leased passes formats nothing. The target carries no token: every token travels in the
 // Authorization header.
 //
 // Its text carries a body only as StatusText and RateLimitError word one, never at a 2xx status:
-// for a 5xx or a 401 detail, the body send read, kept as the bytes it read, and for a limit its
-// Body, or at a 2xx GitHub's wording of the limit (answeredLimit) and never Body. So no
+// for a 408, a 5xx or a 401 detail, the body send read, kept as the bytes it read, and for a limit
+// its Body, or at a 2xx GitHub's wording of the limit (answeredLimit) and never Body. So no
 // failedAnswer has a text that carries a 2xx answer's data.
 //
 // It is not the only note of a limit. A limit github_rate_limits already holds is noted as its own

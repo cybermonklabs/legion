@@ -53,9 +53,9 @@ no pod had the tool (the spec's own audit had measured this; LEGION-629 turns di
 2's blocking review finding. The fix: `Capability.Awaits` on the CodeGraph row, a new status
 `installed` on both surfaces (the zod enum and fixtures widened in place at the branch's own
 contract number, which no release had shipped at the time — at a released number the widening
-needs a bump; that number later moved to the one `DaemonAPIVersion` in
-`packages/daemon/internal/api/version.go` declares, once `@sjawhar/pi-legion@8.3.0` shipped 15
-without `capabilities`: `docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md`),
+needed a number of its own, as it needs an entry of its own since dispatch://INFRA-1569; that
+number later moved to 16, once `@sjawhar/pi-legion@8.3.0` shipped 15 without `capabilities`:
+`docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md`),
 the live rows reworded as pending, and `docs/kubernetes.md`'s row saying the same. The image
 build at the fixed head printed
 `capability codegraph: installed (… on PATH; … enabled in …; a pod's agent gets the codegraph tool

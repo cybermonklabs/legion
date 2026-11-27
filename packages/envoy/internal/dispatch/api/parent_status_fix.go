@@ -80,7 +80,7 @@ func RunParentStatusFixAtBoot(ctx context.Context, deps Deps, leases duty.Leases
 			return ParentStatusRule{}, err
 		}
 		if !held {
-			ran := duty.Exclusive(ctx, leases, parentStatusFixLease, time.Time{}, 0, pass.run)
+			ran := duty.Exclusive(ctx, nil, leases, parentStatusFixLease, time.Time{}, 0, pass.run)
 			if pass.err != nil {
 				if ctx.Err() != nil {
 					return ParentStatusRule{}, ctx.Err()
@@ -323,7 +323,8 @@ func (s *server) planParentStatusFixUnderLocks(ctx context.Context, steps []pare
 	}
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(again))}
 	for index := range again {
-		again[index].title = rows[again[index].key].title
+		row := rows[again[index].key]
+		again[index].title, again[index].project = row.title, row.project
 		writes.steps = append(writes.steps, again[index].issueWriteStep)
 	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, parentStatusFixWriter(), writes)

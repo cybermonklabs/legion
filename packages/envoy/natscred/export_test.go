@@ -34,3 +34,7 @@ func SessionKeeper(run func(context.Context, func(context.Context, *cipherclient
 
 // PlaceholderJWT is the user JWT a session's CONNECT names.
 const PlaceholderJWT = placeholderJWT
+
+// ExpiryOf is when a platform identity token lapses, read from its 'exp' unverified, for the test
+// of what its refusals print.
+var ExpiryOf = expiryOf

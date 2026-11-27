@@ -16,6 +16,7 @@ import (
 // transaction and no GitHub read; so does a number neither name records. A fact that is no
 // review and no settlement is recorded whatever it names.
 func TestAReviewOfAPullRequestRecordedUnderTheOtherNameOfARenameIsRecorded(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	recordPullRequest(t, pool, "LEGION-208", 42)
 	renamed := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))

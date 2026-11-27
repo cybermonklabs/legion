@@ -156,6 +156,7 @@ func roleInitHelperLaunch(t *testing.T, self string, extra ...string) func(RoleI
 // the stage clones it into a role's new namespaces, and it reads the flags it would have been
 // given on the command line from its environment.
 func TestRoleInitHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(roleInitEnv)
 	if encoded == "" {
 		return

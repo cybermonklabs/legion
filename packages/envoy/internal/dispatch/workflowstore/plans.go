@@ -169,6 +169,16 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 			}
 		}
 	}
+	for _, task := range write.Tasks {
+		if task.Needs == nil {
+			continue
+		}
+		for _, need := range *task.Needs {
+			if !named[need] {
+				return "", nil, refusal(ErrPlanInput, "needs of task %s hold %q, which names no task of this plan: each need is the id of a task the plan holds", task.ID, need)
+			}
+		}
+	}
 	text, err := json.Marshal(write.Tasks)
 	if err != nil {
 		return "", nil, fmt.Errorf("encode the tasks of plan %s: %w", id, err)

@@ -20,6 +20,13 @@ import {
 } from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import { DEVICE_LOGIN_FILE_VAR } from "@legion/cipher-client/device-login-file";
+import {
+  BROKER_URL_VAR,
+  IDENTITY_DEVICE_LOGIN,
+  IDENTITY_VAR,
+} from "@legion/cipher-client/environment";
+import { PERSON_VAR } from "@legion/cipher-client/signins";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -181,6 +188,29 @@ test("dispatch login refuses a file setting that names no regular file, before a
   }
 });
 
+test("dispatch login --device refuses a code no poll could reach before it prints the code", async () => {
+  // A broker whose interval is no shorter than its code's life: the code would lapse before its
+  // first poll, and an approval of it would mint a launcher credential bound to a key no process
+  // holds. The command shows no code to approve, names the broker's interval and lifetime, and
+  // does not tell the person to ask again, which would meet the same answer.
+  const stub = broker({ interval: 1_800 });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  const { code, stdout } = await dispatch(["login", "--device", "--person", PERSON], {
+    HOME: tempDir(),
+    AGENT_SECRETS_URL: stub.url,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+  });
+  expect(code, stdout).toBe(1);
+  expect(stdout).not.toContain("WDJB-MJHT");
+  expect(stdout).not.toContain("enter the code");
+  expect(stdout).toContain(
+    "answered a device code that lives 600 s, with a poll interval of 1800 s"
+  );
+  expect(stdout).not.toContain("ask again");
+  expect(stub.authorizations).toHaveLength(1);
+  expect(stub.polls).toHaveLength(0);
+});
+
 test("a login approved and then not kept names its credential and where to revoke it", async () => {
   const stub = broker({ credentialId: "cred-unkept-1" });
   const file = path.join(tempDir(), "legion", "device-login.json");
@@ -240,12 +270,21 @@ test("a login kept whose lock is not let go says so, and asks for no revoke", as
 test("dispatch --help names dispatch login, and dispatch login --help says what it reads", async () => {
   const all = await dispatch(["--help"], { HOME: tempDir() });
   expect(all.code).toBe(0);
+  expect(all.stdout).toMatch(/^ {2}login +Logs this machine in at the secrets broker/m);
   expect(all.stdout).toContain("dispatch login --device");
   const one = await dispatch(["login", "--help"], { HOME: tempDir() });
   expect(one.code).toBe(0);
   expect(one.stdout).toContain("Usage: dispatch login --device [--person <address>]");
   expect(one.stdout).toContain("AGENT_SECRETS_URL");
   expect(one.stdout).toContain("AGENT_SECRETS_MACHINE_IDENTITY=device-login");
+  expect(one.stdout).toContain("It exits 0 once the login is kept");
+  // The help is written out without @legion/cipher-client (dispatch-login-command.ts), so these
+  // hold the names it gives to that package's constants.
+  expect(one.stdout).toContain(`It reads ${BROKER_URL_VAR}, the broker,`);
+  expect(one.stdout).toContain(`with; else ${PERSON_VAR}.`);
+  expect(one.stdout).toContain(`kept in the file ${DEVICE_LOGIN_FILE_VAR} names`);
+  expect(one.stdout).toContain(`sets ${IDENTITY_VAR}=${IDENTITY_DEVICE_LOGIN} trades`);
+  expect(one.stdout).toContain(`Example: ${DEVICE_LOGIN_COMMAND} --person `);
 });
 
 test("dispatch login refuses a call it cannot make, and says why", async () => {

@@ -11,9 +11,11 @@ import {
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
 import { SendStoppedError } from "../writes/keyed-write";
+import type { AgentNames } from "./CachedAuthor";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
+import { CHANGED_EDIT_LEAD, OFFER_LABELS } from "./composer-words";
 import { useHeldSend, useHeldSends } from "./held-sends";
-import { GoneReply } from "./KeptReply";
+import { GoneReply, type GoneReplyWords } from "./KeptReply";
 import type { SentDraft } from "./send-request";
 import { useUnsentDrafts } from "./unsent-drafts";
 import {
@@ -66,6 +68,7 @@ export function DraftOffer({
         <blockquote
           className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
         >
+          {/* The reader's own text as the field holds it: the reading list's `kept-draft`. */}
           {body}
         </blockquote>
         {replacement === "" ? null : (
@@ -115,11 +118,15 @@ export function DraftOffer({
  */
 export function KeptReplyToDeleted({
   actor,
+  agentNames = "live",
   mutationKey,
   parentKind,
 }: {
   /** The deleted post's author. */
   readonly actor: Actor;
+  /** How the deleted post's author is named (`GoneReply`): `cache` for a host that sends no
+   *  agents read when it draws. */
+  readonly agentNames?: AgentNames;
   readonly mutationKey: MutationKey;
   readonly parentKind: ReplyTarget["parentKind"];
 }): ReactNode {
@@ -131,6 +138,29 @@ export function KeptReplyToDeleted({
   const refused = held?.status === "refused" ? held : undefined;
   const draft = refused?.draft.draft ?? typed;
   if (draft === undefined) return null;
+  if (agentNames === "cache") {
+    return (
+      <div className="mt-2">
+        <DraftOffer
+          body={draft.body}
+          drop={{
+            label: "Discard my draft",
+            press: () => {
+              if (refused !== undefined) store.discard(mutationKey);
+              else unsent.write(name, undefined);
+            },
+          }}
+          lead={<GoneReply actor={actor} agentNames="cache" deleted parentKind={parentKind} />}
+          note={
+            refused?.refusal instanceof SendStoppedError
+              ? "Dispatch has not confirmed this reply: it may have been posted, and if it was, it is listed in this thread."
+              : undefined
+          }
+          replacement={draft.replacement}
+        />
+      </div>
+    );
+  }
   return (
     <div className="mt-2">
       <DraftOffer
@@ -159,8 +189,9 @@ export function KeptReplyToDeleted({
  * edit written over a body the comment no longer holds (`changed`), a draft a margin compose
  * kept for other words of its document (`offered`), and each reply it keeps whose comment or
  * message its host no longer lists, or lists deleted (`gone`). Each waits with the words that say
- * why, and with the reader's presses for it: one takes it into the field, where the composer can
- * send it, and the other drops it. Nothing is saved or sent meanwhile.
+ * why - a host's own sentences for the edit and the replies where it has them (`words`, the issue
+ * page's box) - and with the reader's presses for it: one takes it into the field, where the
+ * composer can send it, and the other drops it. Nothing is saved or sent meanwhile.
  */
 export function KeptDraftOffers({
   changed,
@@ -174,6 +205,7 @@ export function KeptDraftOffers({
   onTakeChanged,
   onTakeGone,
   onTakeOffered,
+  words,
 }: {
   readonly changed: SentDraft | undefined;
   readonly gone: readonly GoneReplyDraft[];
@@ -193,6 +225,9 @@ export function KeptDraftOffers({
   /** Use my draft, which a compose that could not send the draft - a kind its closed issue
    *  refuses - leaves out, so the offer waits until the reader drops it. */
   readonly onTakeOffered: (() => void) | undefined;
+  /** The host's own sentence before an edit that waits beside a newer comment (`changedLead`),
+   *  and for a reply whose post is gone (`goneReply`); with none, the composer's own. */
+  readonly words?: { readonly changedLead: string; readonly goneReply: GoneReplyWords };
 }): ReactNode {
   return (
     <>
@@ -202,9 +237,9 @@ export function KeptDraftOffers({
       {changed === undefined ? null : (
         <DraftOffer
           body={changed.body}
-          drop={{ label: "Discard my edit", press: onDiscardChanged }}
-          lead="This comment changed since you wrote your edit. The field shows the comment as it reads now. Your edit is kept here:"
-          take={{ label: "Use my edit", press: onTakeChanged }}
+          drop={{ label: OFFER_LABELS.dropEdit, press: onDiscardChanged }}
+          lead={words?.changedLead ?? CHANGED_EDIT_LEAD}
+          take={{ label: OFFER_LABELS.takeEdit, press: onTakeChanged }}
         />
       )}
       {/* A draft the margin's compose kept for other words of the document: a newer compose there
@@ -218,6 +253,7 @@ export function KeptDraftOffers({
         <DraftOffer
           body={offered.draft.body}
           drop={{ label: "Discard my draft", press: onDropOffered }}
+          // The words the draft was written for, as the document has them: `anchor-quote`.
           lead={`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
           note={offered.note}
           replacement={offered.draft.replacement}
@@ -238,7 +274,7 @@ export function KeptDraftOffers({
       {gone.map((away) => (
         <DraftOffer
           body={away.draft.body}
-          drop={{ label: "Discard my draft", press: () => onDropGone(away) }}
+          drop={{ label: OFFER_LABELS.dropDraft, press: () => onDropGone(away) }}
           key={away.replyTo.id}
           lead={
             <GoneReply
@@ -246,12 +282,13 @@ export function KeptDraftOffers({
               deleted={away.listing === "deleted"}
               parentKind={away.replyTo.parentKind}
               waits={goneTakes === "once empty"}
+              words={words?.goneReply}
             />
           }
           replacement={away.draft.replacement}
           take={
             goneTakes === "here"
-              ? { label: "Use it here", press: () => onTakeGone(away) }
+              ? { label: OFFER_LABELS.takeHere, press: () => onTakeGone(away) }
               : undefined
           }
         />

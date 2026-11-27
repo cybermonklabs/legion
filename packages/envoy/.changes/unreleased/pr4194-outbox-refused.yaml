@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  Dispatch's outbox no longer records a destination NATS refused as published. A destination
+  whose envelope and stand-in NATS both refuse is kept out of `published_destinations` and stored
+  with its error in the new nullable column `events.refused_destinations` (migration
+  `20261116112354_events_refused_destinations`, expand only), and the event is finished with no
+  retry. A retry of an event that also has a failed destination does not send the refused one
+  again. A payload that is not a JSON object gets the stand-in `{"payload_omitted":true}`, and a
+  refused mention fallback copy is settled unpublished. A full stream is still retried.
+time: 2026-11-16T18:39:50Z
+custom:
+    Issue: pr4194

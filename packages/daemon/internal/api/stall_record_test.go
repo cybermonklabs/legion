@@ -112,9 +112,9 @@ func TestTheStallRecordContractIsTheNumberTheBumpTakes(t *testing.T) {
 		t.Fatalf("stallRecordContract = %d, want %d, the contract whose entry in version.go adds the claim views' `step`",
 			stallRecordContract, addedStallRecord)
 	}
-	if stallRecordContract > DaemonAPIVersion {
+	if stallRecordContract > DaemonAPIVersion() {
 		t.Fatalf("stallRecordContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
-			stallRecordContract, DaemonAPIVersion)
+			stallRecordContract, DaemonAPIVersion())
 	}
 }
 

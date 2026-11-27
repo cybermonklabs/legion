@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `Priority` and `PriorityRow` carry `description_tree_exact`, whether the server's parser takes
+  `description` whole, so a writer's editor may take its markdown; `description_tree` still resets
+  the attributes the server owns. It is present exactly where `description_tree` is.

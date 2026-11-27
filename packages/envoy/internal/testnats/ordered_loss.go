@@ -1,7 +1,6 @@
 package testnats
 
 import (
-	"context"
 	"encoding/json"
 	"slices"
 	"strconv"
@@ -139,9 +138,9 @@ func (h *ConsumerHold) Release() {
 // the server sent before its call, so none is left unread.
 func (h *ConsumerHold) Replaced(t testing.TB) bool {
 	t.Helper()
-	// nats.go's flush takes only a context that carries a deadline; the minute is a guard on a
-	// server that never answers, and decides nothing a server that answers late would.
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	// nats.go's flush takes only a context that carries a deadline; the test's own deadline
+	// (boundOf) is one, so a server that answers late costs the test time and not its result.
+	ctx, cancel := boundOf(t).stepContext(noDeadline)
 	defer cancel()
 	if err := h.conn.FlushWithContext(ctx); err != nil {
 		t.Fatalf("read the consumer creates on %s: %v", h.stream, err)

@@ -31,8 +31,9 @@ import (
 // decision itself, xidRuntimeWaitProblem, is proven with no clock or load by storetest's
 // TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown and
 // TestAWaitOnAPHandedToALockedThreadDecidesNothing; that analyzeXidWindows applies it is shown
-// only by this row's runs that reach the UNKNOWN branch, which log it: envoy-go-docs-finalizers
-// runs the docs package with -v, so its log says which branch ran. Taking the wait out as the
+// only by this row's runs that reach the UNKNOWN branch, which log it: envoy-go-alone's step "Test
+// the xid window rows, the API's issue-list bound and the auth service's storm, alone" runs this
+// file's tests with -v, so its log says which branch ran. Taking the wait out as the
 // runtime's, the rig before this row read such a gap - a reviewer's forcing of 145 workers at
 // 72 Ps, 50.125 ms on the clock and 1.826 ms of the thread's CPU - as 0.159 ms made, and the
 // window kept D6 (2026-11-21).
@@ -50,6 +51,9 @@ import (
 // lockTransaction pins a window's thread to the CPU it is on); and they are kept within the CPUs
 // the thread had, so a run confined to a set of CPUs stays in it.
 func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also sets GOMAXPROCS to xidLoadProcs itself.
 	storetest.RequireXidGapJudgment(t)
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(xidLoadProcs))
 	_, database, tracer := xidService(t)

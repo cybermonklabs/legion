@@ -44,14 +44,16 @@ const DatabaseURLEnv = "BROKER_TEST_DATABASE_URL"
 
 // serverURL is the DatabaseURLEnv server every schema and database here is made on, skipping t
 // when the variable is unset: a run with no server is skipped rather than failed, which is the
-// contract URL, Open and DatabaseURL all state.
+// contract URL, Open and DatabaseURL all state. Every connect to it, and to each URL made from it,
+// waits until the test binary's deadline (testdb.WithConnectDeadline), not pgx's default, which is
+// two minutes in a pool and no bound through pgx.Connect.
 func serverURL(t testing.TB) string {
 	t.Helper()
 	raw := os.Getenv(DatabaseURLEnv)
 	if raw == "" {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed broker tests")
 	}
-	return raw
+	return testdb.WithConnectDeadline(t, raw)
 }
 
 // randomName mints the name of the schema one test gets of its own. It is random rather than

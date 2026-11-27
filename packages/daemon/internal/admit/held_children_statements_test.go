@@ -15,13 +15,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Every fact looks at every child a blocker holds: admission's promotion hands the workflow the
+// Every pass looks at every child a blocker holds: admission's promotion hands the workflow the
 // project's records and the mirror rows, and the workflow judges the tree of each child nothing
 // holds any longer (StartUnblockedChildren). That judgement reads what every one of those trees
 // is: a project whose trees each hold such a child paid a root, a slot list, a record list and a
-// design gate per tree, on every fact of every consumer, the API and the boot's replay, under the
-// one fact lock. It now reads the slots once and the gates of those trees once, whatever their
-// number.
+// design gate per tree, on every pass (the pass rule, Admission.Apply) of every consumer, the API
+// and the boot's replay, under the one fact lock. It now reads the slots once and the gates of
+// those trees once, whatever their number.
 //
 // Each tree here is a root of the waiting line that waits on an unfinished issue, so promotion
 // starts nothing and writes nothing, and no tree holds an open gate, so no child starts: the

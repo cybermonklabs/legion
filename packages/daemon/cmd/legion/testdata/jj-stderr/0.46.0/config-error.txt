@@ -1,0 +1,11 @@
+jj --ignore-working-copy --color=never config list -T '""'
+Config error: Configuration cannot be parsed as TOML document
+Caused by: TOML parse error at line 5, column 9
+  |
+5 | [aliases
+  |         ^
+unclosed table, expected `]`
+
+Hint: Check the config file: /legion/scratch/tmp/infra4172-impl/stderr-capture/run-0.46.0.wKTY/config-error.zbsH/home/.config/jj/repos/b50b59153ee6f4815fad/config.toml
+For help, see https://docs.jj-vcs.dev/latest/config/ or use `jj help -k config`.
+--- exit 1

@@ -47,8 +47,13 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"advertise_host must be an IP address or a DNS name, …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, top: "advertise_host: http://legion.internal.example\n"}.refuse(t)
 	},
-	// The Kelvin sign, which no ASCII name holds and which the refusal prints as its \u escape.
+	// The Kelvin sign, which no ASCII name holds and which the refusal of a URL's host prints as its
+	// \u escape.
 	`<key> must be an IP address or an ASCII DNS name; got "…\u212a…"`: func(t *testing.T) string {
+		return refusalFile{kubernetes: true, drop: []string{"daemon_url:"}, top: "daemon_url: http://legion\u212a.internal.example:13370\n"}.refuse(t)
+	},
+	// A value written whole as the host is refused without being printed.
+	"<key> must be an IP address or an ASCII DNS name; it holds a character that is not ASCII": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, drop: []string{"bind:"}, top: "bind: legion\u212a.internal.example\n"}.refuse(t)
 	},
 	"<key> is required when runtime is kubernetes: …": func(t *testing.T) string {
@@ -166,7 +171,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)
 	},
 	`projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`: func(t *testing.T) string {
-		return refusalFile{project: "    experiments: {Plan Length: {variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+		// A name of the key grammar, with a "_" the experiment pattern refuses: a name outside the
+		// grammar is named by its line instead (the `unknown key` row).
+		return refusalFile{project: "    experiments: {plan_length: {variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
 	`projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {mode: sometimes, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
@@ -252,6 +259,7 @@ var refusalsNoFixtureDrives = map[string]string{
 // space and are no texts. A row in neither table fails naming the row, as does a table row naming
 // no row of the copy.
 func TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (refusalFixtures).
 	rows := troubleshootingRows(t)
 	named := make(map[string]bool, len(rows))
 	compared := 0

@@ -172,6 +172,7 @@ func (h *keysHandler) handled() []string {
 // fact's own transaction, on the daemon's guarded pool (store.Pool), which would refuse the close a
 // second connection while the fact's transaction holds one.
 func TestAReplayAppliesTheStoredMessageOnceThroughTheLiveHandling(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	raw := migratedPool(t)
 	pool := store.NewPool(raw)
@@ -243,6 +244,7 @@ func TestAReplayAppliesTheStoredMessageOnceThroughTheLiveHandling(t *testing.T) 
 // naming the record's consumer, stream sequence and delivery count and the record it replays, so
 // a reader tells the replay from a redelivery.
 func TestASecondReplayAnswersAlreadyAppliedAndWritesTheDuplicateLine(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	logs := &lockedBuffer{}
@@ -292,6 +294,7 @@ func TestASecondReplayAnswersAlreadyAppliedAndWritesTheDuplicateLine(t *testing.
 // delivery would), and a message that decodes to no fact at all. No handler runs, nothing is
 // marked processed, and the record closes by its caller.
 func TestAReplayOfAMessageHandledWithNoTransactionAnswersNoFact(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name     string
 		consumer string
@@ -341,6 +344,7 @@ func TestAReplayOfAMessageHandledWithNoTransactionAnswersNoFact(t *testing.T) {
 // gives back its claim and leaves the record open, so it is counted among what remains: a handler
 // whose cause is not fixed yet, and a message that still does not decode.
 func TestAReplayThatFailsKeepsTheRecordOpenWithItsNewError(t *testing.T) {
+	t.Parallel()
 	dispatch := dispatchConsumerName("CAPTURE")
 	for _, row := range []struct {
 		name  string
@@ -378,6 +382,7 @@ func TestAReplayThatFailsKeepsTheRecordOpenWithItsNewError(t *testing.T) {
 // above the sequence untouched. It takes at most a hundred a call and says how many open records
 // of its selector are left.
 func TestABulkReplayAppliesAConsumersRecordsInStreamOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dispatch := dispatchConsumerName("CAPTURE")
 	t.Run("five records, the third failing, and one above the sequence", func(t *testing.T) {
@@ -435,6 +440,7 @@ func TestABulkReplayAppliesAConsumersRecordsInStreamOrder(t *testing.T) {
 // first replay's. A claim older than HandlerLimit, a replay that stopped without ending, holds
 // nothing: a replay takes the record again.
 func TestARecordAReplayClaimsIsNeitherReplayedAgainNorDiscarded(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	dispatch := dispatchConsumerName("CAPTURE")
@@ -505,6 +511,7 @@ func (p *beginCountingPool) BeginTx(ctx context.Context, options pgx.TxOptions) 
 // discarded, keeping who discarded it, when and why, applies nothing, keeps the row and answers
 // its id.
 func TestADiscardNeedsAReasonAndClosesTheRecord(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	raw := migratedPool(t)
 	pool := &beginCountingPool{Pool: raw}
@@ -549,6 +556,7 @@ func TestADiscardNeedsAReasonAndClosesTheRecord(t *testing.T) {
 // answers their ids in stream order. It leaves the consumer's records above the sequence, another
 // consumer's, and a record closed already, whose discard stays the one it had.
 func TestABulkDiscardClosesAConsumersOpenRecordsAtOrBelowASequence(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	dispatch, github := dispatchConsumerName("CAPTURE"), githubConsumerName("CAPTURE")
@@ -587,6 +595,7 @@ func TestABulkDiscardClosesAConsumersOpenRecordsAtOrBelowASequence(t *testing.T)
 // keeping the new error, and counts it among no open records; and a bulk replay takes no discarded
 // record.
 func TestADiscardedRecordCanBeReplayedAndKeepsItsDiscard(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	dispatch := dispatchConsumerName("CAPTURE")
@@ -631,6 +640,7 @@ func TestADiscardedRecordCanBeReplayedAndKeepsItsDiscard(t *testing.T) {
 // A replay of a record a replay closed, a discard of it, and a discard of a discarded record are
 // refused, naming how the record closed and when.
 func TestAClosedRecordIsRefusedWithHowAndWhenItClosed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	dispatch := dispatchConsumerName("CAPTURE")

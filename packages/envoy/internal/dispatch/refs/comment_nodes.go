@@ -33,7 +33,9 @@ var CommentInTheStore = `(anchor.ref_key is null or octet_length(anchor.ref_key)
 
 // commentRow is one comments row the comment write reads (CommentsNamingNoNode): its id, its
 // author as the row stored it, when it was written, the addresses of the artifact it is anchored
-// to and the artifact that owns it, and the event that stored it.
+// to and the artifact that owns it, the event that stored it, and the project its issue or its
+// document belongs to or the parties of the conversation that holds it (graphstore.SessionScope),
+// which its node carries.
 type commentRow struct {
 	id        string
 	author    model.Actor
@@ -41,6 +43,8 @@ type commentRow struct {
 	anchor    string
 	owner     string
 	event     int64
+	project   string
+	parties   []string
 }
 
 // CommentsNamingNoNode is the backfill's write (CommentWrite) of each comment of ids whose row
@@ -56,9 +60,11 @@ type commentRow struct {
 func CommentsNamingNoNode(ctx context.Context, q graphstore.Queryer, ids []string, causes []int64) (CommentWrite, error) {
 	rows, err := q.Query(ctx, `
 		select c.id::text, c.author, c.created_at,
-		       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), named.cause
+		       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), named.cause,
+		       coalesce(issue.project_key, owner.project_key, ''), coalesce(owner.session_id, '')
 		from unnest($1::uuid[], $2::bigint[]) as named (id, cause)
 		join comments c on c.id = named.id`+CommentStoreJoins+`
+		left join issues issue on issue.key = c.issue_key
 		where c.node_kind is null and `+CommentInTheStore+`
 		order by c.id
 	`, ids, causes)
@@ -113,12 +119,14 @@ func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 	for rows.Next() {
 		var row commentRow
 		var author []byte
-		if err := rows.Scan(&row.id, &author, &row.createdAt, &row.anchor, &row.owner, &row.event); err != nil {
+		var session string
+		if err := rows.Scan(&row.id, &author, &row.createdAt, &row.anchor, &row.owner, &row.event, &row.project, &session); err != nil {
 			return nil, fmt.Errorf("read a comment naming no node: %w", err)
 		}
 		if err := json.Unmarshal(author, &row.author); err != nil {
 			return nil, fmt.Errorf("read the author of comment %s: %w", row.id, err)
 		}
+		row.project, row.parties = graphstore.SessionScope(row.project, session)
 		batch = append(batch, row)
 	}
 	return batch, rows.Err()
@@ -136,10 +144,20 @@ type CommentWrite struct {
 	Tuples []graphstore.Tuple
 	// ids are the comments the write names the nodes of. A comment's node address is its own id.
 	ids []string
+	// baseAttributes is how many base attributes the store write states of the comment nodes it
+	// makes: each one's visibility and state, and its project or its parties where it belongs to
+	// one.
+	baseAttributes int64
 }
 
 // Comments is how many comments rows the write names the nodes of.
 func (w CommentWrite) Comments() int { return len(w.ids) }
+
+// BaseAttributes is how many base attributes the store write states of the comment nodes it makes,
+// which the writer does not state itself: every comment it reads names no node yet, so its insert
+// makes each one, stating its visibility and its state, and its project or its parties where it
+// belongs to one.
+func (w CommentWrite) BaseAttributes() int64 { return w.baseAttributes }
 
 // Queue queues the write on b: its one store write of every node and every tuple
 // (graphstore.QueueWrite), and then the node named on each comment's row, which has to follow the
@@ -164,7 +182,7 @@ func commentWriteOf(batch []commentRow) CommentWrite {
 		// out of the store, so neither reader reads it and no batch writes one: a far end past
 		// the bound does not reach here (api's commentStored, outbox's rule).
 		var node graphstore.Node
-		node, write.Tuples = graphstore.CommentFacts(write.Tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner)
+		node, write.Tuples = graphstore.CommentFacts(write.Tuples, row.id, row.author, row.createdAt, row.event, row.anchor, row.owner, row.project, row.parties)
 		write.Nodes = append(write.Nodes, node)
 		// The owner a proved session names is made once too; each comment still states its own
 		// authored_by and aliases.
@@ -181,6 +199,10 @@ func commentWriteOf(batch []commentRow) CommentWrite {
 			write.Tuples = append(write.Tuples, facts...)
 		}
 		write.ids = append(write.ids, row.id)
+		write.baseAttributes += 2
+		if row.project != "" || len(row.parties) > 0 {
+			write.baseAttributes++
+		}
 	}
 	return write
 }

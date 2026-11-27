@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  A turn that OpenAI refuses under `cyber_policy` climbs a ladder inside the same turn before the
+  refusal reaches the daemon: the request again as it was, then with one message appended, then
+  from a text summary (Oh My Pi's `soft` compaction) that covers the newest turn group too, then
+  on the first weaker model of the same family in `retry.fallbackChains`. A session with nothing
+  to compact gets the turn Oh My Pi resumes instead. Each rung waits first
+  (`LEGION_CYBER_POLICY_RETRY_WAIT_MS` 15000, `LEGION_CYBER_POLICY_MESSAGE_WAIT_MS`,
+  `LEGION_CYBER_POLICY_COMPACT_WAIT_MS` and `LEGION_CYBER_POLICY_FALLBACK_WAIT_MS` 25000 each, at
+  most 25000), and the appended message is `LEGION_CYBER_POLICY_RETRY_MESSAGE`. Each rung's
+  request is sent as input from outside the session, so Oh My Pi's hold ends for it; one pass runs
+  per refusal, and once 28 s of its settle handler have passed a rung starts no model switch and
+  sends nothing. Only a refusal of the last
+  rung settles the turn, so the daemon gets `cyber_policy` as before. A pane whose ladder has
+  compacted once runs no background compaction for the rest of its process, since the ladder's
+  `session_before_compact` handler cannot be removed.
+time: 2026-11-26T02:37:39Z
+custom:
+    Issue: INFRA-3530
