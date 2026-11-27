@@ -40,6 +40,7 @@ func slotsReadingIssue() record.Issue {
 // reads; Migrate then runs the migration again, and the times read as none, as at the first
 // upgrade.
 func TestTheSlotsReadingWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
@@ -161,6 +162,7 @@ func TestTheSlotsReadingWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 // of its own, and reads it back through the slots reading's own read (record.Store.HolderClaims),
 // which reads the claims of slot holders alone, so the claim's issue holds a slot.
 func TestAClaimsStopIsStampedWhenItStops(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	token, err := claim.NewToken("acme", "ACME-1", claim.RoleImplementer)

@@ -18,6 +18,7 @@ import (
 // so the hold keeps the moment it began. A hold written by hand, as an earlier release's daemon
 // wrote every hold, carries no time.
 func TestTheMoveIntoHeldKeepsWhenTheHoldBegan(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",

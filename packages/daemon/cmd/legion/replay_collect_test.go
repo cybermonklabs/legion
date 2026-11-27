@@ -19,6 +19,7 @@ import (
 // ACMEAUX-2; the Dispatch the command reads serves the events of ACME-1 and ACMEAUX-1, lists no
 // issue of ACME, holds an empty event log, and answers that it has no ACMEAUX-2.
 func TestReplayCollectPrintsEachAncestorDispatchDoesNotShow(t *testing.T) {
+	// Not parallel: it sets DISPATCH_URL, which collect reads to reach the test's own Dispatch, for the whole process (t.Setenv).
 	filed := func(id int, key, parent string) string {
 		project, _, _ := strings.Cut(key, "-")
 		return fmt.Sprintf(`{"id":%d,"issue_key":%q,"artifact_id":null,"project":%q,"seq":1,"type":"issue.created",`+

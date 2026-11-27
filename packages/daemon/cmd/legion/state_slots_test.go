@@ -120,6 +120,7 @@ func slotsLineMinute(at *time.Time) string {
 // ACME-5, a root waiting for its tree to be opened. ACME-6 ranks below ACME-1 and above the
 // other three holders the cap counts, and below the two P0 holders, which the line places first.
 func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_cmd_slots")
 	now := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
