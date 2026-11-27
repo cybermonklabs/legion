@@ -18,6 +18,7 @@ import { stepRecord } from "../steps/step-record-fixture";
 import { stepTasks } from "../steps/steps-model";
 import capturedRun from "./fixtures/step-with-report.json";
 import {
+  addressedPlace,
   buildHistory,
   type HistoryBlock,
   type HistoryDay,
@@ -1503,6 +1504,29 @@ describe("the timeline holds each run and the handoff it reports", () => {
     expect(timeline({ addressed: { kind: "steps" }, handoffs, loadedFrom, runs })).toEqual([
       "run:old+in-run",
     ]);
+  });
+
+  // The place the history draws down to and lands on for an address: the entry that holds the
+  // handoff, its own or its run's, and at `/steps` the newest run; none for a handoff the list
+  // does not hold, or for `/steps` where no run is read.
+  test("the place an address names is the entry that holds its handoff, or the newest run", () => {
+    seq = 0;
+    const runs = stepsOf([
+      runOf("older", "2026-11-14T09:00:00Z", { report: "in-run" }),
+      runOf("newest", "2026-11-15T09:00:00Z"),
+    ]);
+    const handoffs = [
+      handoffOf("in-run", "2026-11-14T09:30:00Z"),
+      handoffOf("alone", "2026-11-14T10:00:00Z"),
+    ];
+    const days = timelineDays({ handoffs, runs });
+    const at = (addressed: NonNullable<HistoryInput["addressed"]>) =>
+      addressedPlace(days, addressed)?.id;
+    expect(at({ id: "in-run", kind: "handoff" })).toBe("run:older");
+    expect(at({ id: "alone", kind: "handoff" })).toBe("handoff:alone");
+    expect(at({ id: "missing", kind: "handoff" })).toBeUndefined();
+    expect(at({ kind: "steps" })).toBe("run:newest");
+    expect(addressedPlace(timelineDays({ handoffs }), { kind: "steps" })).toBeUndefined();
   });
 
   // A run's place is its time with sequence 0, so runs at one instant are ordered by their ids,

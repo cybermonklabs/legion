@@ -103,6 +103,7 @@ export function runKeys(
 
 /** One entry of the history (`HistoryEntry`). */
 export function Entry({
+  addressed,
   bodies,
   drawnId,
   entry,
@@ -112,6 +113,9 @@ export function Entry({
   onPin,
   pinned,
 }: {
+  /** The id of the entry a handoff's address names, which is drawn marked, as the turn an
+   *  address names is (`Turn`). */
+  addressed: string | undefined;
   /** The reads of the bodies of the history's handoffs (`useHandoffBodies`). */
   bodies: HandoffBodies;
   /** The id the entry is drawn under: its own, or a run's key (`runKeys`). */
@@ -137,11 +141,15 @@ export function Entry({
       </li>
     );
   }
+  // The entry a handoff's address names is marked, as the turn an address names is (`Turn`).
+  const marked = addressed === entry.id;
+  const mark = marked ? ` rounded-r-md ${pageMarkBg}` : "";
   // A run is its task and its fields, and the handoff it reports, open as every handoff is.
   if (entry.kind === "run") {
     return (
       <li
-        className={`${ENTRY} flex min-w-0 flex-col gap-1`}
+        aria-current={marked ? "true" : undefined}
+        className={`${ENTRY} flex min-w-0 flex-col gap-1${mark}`}
         data-event-seq={entry.seq}
         data-step-run={entry.row.id}
         {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
@@ -165,7 +173,8 @@ export function Entry({
   if (entry.kind === "handoff") {
     return (
       <li
-        className={`${ENTRY} flex min-w-0 flex-wrap items-baseline gap-x-2`}
+        aria-current={marked ? "true" : undefined}
+        className={`${ENTRY} flex min-w-0 flex-wrap items-baseline gap-x-2${mark}`}
         data-event-seq={entry.seq}
         {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
       >

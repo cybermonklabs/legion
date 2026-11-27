@@ -49,7 +49,9 @@ import { settledState } from "./settled";
  *   its own entry or in its run's, its line `[data-handoff-line="<id>"]`, then a `span` holding
  *   its fold control (a button carrying `aria-expanded`) and its fields
  *   `[data-handoff-field="<key>"]`, a list in them an `ol`, an object a `dl` of
- *   `[data-handoff-key="<key>"]`.
+ *   `[data-handoff-key="<key>"]`. The entry a handoff's page address names carries
+ *   `aria-current="true"`, and an address of no handoff of the issue draws
+ *   `[data-handoff-missing]` under the heading.
  */
 
 /** The issue's history, in Details. */
@@ -391,6 +393,33 @@ export function bandPlaces(page: Page, ids: readonly string[]): Promise<Record<s
     }
     return places;
   }, ids);
+}
+
+/** Whether `part` of the history stands wholly in the view of the box Details scrolls in, to a
+ *  pixel, as `bandPlaces` finds that box. */
+export function whollyInHistoryView(part: Locator): Promise<boolean> {
+  return part.evaluate((element) => {
+    let box: HTMLElement | null = element.parentElement;
+    while (box !== null && !["auto", "scroll"].includes(getComputedStyle(box).overflowY)) {
+      box = box.parentElement;
+    }
+    const view = box === null ? { bottom: innerHeight, top: 0 } : box.getBoundingClientRect();
+    const at = element.getBoundingClientRect();
+    return at.height > 0 && at.top >= view.top - 1 && at.bottom <= view.bottom + 1;
+  });
+}
+
+/** The days the history draws that are not drawn open, by their `data-history-day`: one that
+ *  holds no entry, or holds an entry that draws no box. */
+export function historyDaysNotOpen(page: Page): Promise<string[]> {
+  return historyPanel(page).evaluate((history) =>
+    [...history.querySelectorAll("[data-history-day]")].flatMap((day) => {
+      const entries = [...day.querySelectorAll(":scope > ol > [data-history-entry]")];
+      return entries.length === 0 || entries.some((entry) => entry.getClientRects().length === 0)
+        ? [day.getAttribute("data-history-day") ?? ""]
+        : [];
+    })
+  );
 }
 
 /** The page's reads of one issue's steps, as `watchStepsReads` sees them, counted from 0 in the

@@ -492,6 +492,18 @@ export function turnPlace(days: readonly HistoryDay[], id: string): HistoryPlace
   return entry === undefined ? undefined : placeOf(entry);
 }
 
+/** The place of the entry `addressed` names in `days` (`addressedEntry`): the one that holds its
+ *  handoff, or at `/steps` the newest run; undefined where `days` holds none. */
+export function addressedPlace(
+  days: readonly HistoryDay[],
+  addressed: NonNullable<HistoryInput["addressed"]>
+): HistoryPlace | undefined {
+  const dated = datedIn(days);
+  const id = addressedEntry(dated, addressed);
+  const entry = dated.find((one) => one.id === id);
+  return entry === undefined ? undefined : placeOf(entry);
+}
+
 /**
  * The history as the panel draws it down to `end`: each day with its entries that stand at `end`
  * or above it, and with the line that says what is new where the entry under that line is drawn

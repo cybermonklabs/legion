@@ -11,8 +11,8 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps, ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { type ComponentProps, type ReactNode, useState } from "react";
+import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
@@ -20,12 +20,14 @@ import {
   type IntersectionControl,
   installIntersectionObserver,
 } from "../../__tests__/intersection-observer";
+import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { EventPages } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
+import { liveSocketFor } from "../../api/live-socket";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
 import { refreshQueries } from "../../api/query-refresh";
 import type {
@@ -55,7 +57,7 @@ import { useHandoffFold } from "./HistoryHandoff";
 import { historyLogKey } from "./history-log";
 import { arriveInHistoryLog } from "./history-log-fixture";
 import { HISTORY_EXCLUDED_TYPES } from "./history-model";
-import { type AddressedTurn, IssueHistory } from "./IssueHistory";
+import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -101,9 +103,11 @@ function handoffsRead(): Mock<typeof api.listHandoffs> {
 }
 
 /** The history with the fold the page holds for its issue (`useHandoffFold`), as
- *  `DetailsHistory` draws it. */
-function HeldHistory(props: Omit<ComponentProps<typeof IssueHistory>, "fold">): ReactNode {
-  return <IssueHistory {...props} fold={useHandoffFold(props.issue.key)} />;
+ *  `DetailsHistory` draws it, at an address that names no handoff and is no `/steps`. */
+function HeldHistory(
+  props: Omit<ComponentProps<typeof IssueHistory>, "addressed" | "fold">
+): ReactNode {
+  return <IssueHistory {...props} addressed={undefined} fold={useHandoffFold(props.issue.key)} />;
 }
 
 /** The entries of the history as it draws them, newest first: a line of an event, a run of
@@ -4127,6 +4131,380 @@ describe("the history is the issue's one timeline", () => {
       unmount?.();
       getHandoff.mockRestore();
       restoreReads();
+    }
+  });
+});
+
+/** The handoffs the addresses of table E name, each id a UUID, as a handoff's address names it. */
+const ADDRESSED = "0195f3a4-0000-7000-8000-000000000001";
+const NEWER = "0195f3a4-0000-7000-8000-000000000002";
+const NOT_LISTED = "0195f3a4-0000-7000-8000-000000000003";
+
+/** The page address of handoff `id` of `KEY`. */
+function handoffPath(id: string): string {
+  return buildIssuePath({ handoffId: id, key: KEY, kind: "handoff" });
+}
+
+/** What a row of table E holds of the page it draws (`drawAtAddress`): Details' drawer and the
+ *  page's router, every element the page brought into view, how many times the history's heading
+ *  landed, the bodies read, the band's observer, and what puts it all back. */
+interface AddressedPage {
+  readonly bodies: Mock<typeof api.getHandoffBodies>;
+  readonly headingLandings: () => number;
+  readonly hold: AddressHold;
+  readonly landed: readonly Element[];
+  readonly near: IntersectionControl;
+  readonly restore: () => void;
+}
+
+/** Details' drawer around the history, and the page's router, as `DetailsAtAddress` hands them
+ *  over: whether Details is open, what opens and shuts it, and what follows an address. */
+interface AddressHold {
+  isOpen?: boolean;
+  navigate?: NavigateFunction;
+  open?: (open: boolean) => void;
+}
+
+/** Details as the page draws it around the history (`DetailsHistory`), in its drawer, which
+ *  starts shut, so an address opens it. */
+function DetailsAtAddress({ hold }: { hold: AddressHold }): ReactNode {
+  const [open, setOpen] = useState(false);
+  hold.isOpen = open;
+  hold.navigate = useNavigate();
+  hold.open = setOpen;
+  const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
+  return (
+    <MarginSlotProvider drawer={drawer}>
+      <DetailsHistory
+        issue={{ artifacts: [], key: KEY, last_seq: 100000 } as unknown as IssueDetails}
+        state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
+      />
+    </MarginSlotProvider>
+  );
+}
+
+/** The page at `path`, its log answering `events`, and Details' history in a box of its own that
+ *  it scrolls in, as Details' drawer is; each handoff's body, once read, says whose it is. */
+function drawAtAddress(path: string, events: readonly DispatchEvent[] = [claim(1)]): AddressedPage {
+  const restoreReads = stubHistoryReads(events);
+  const sockets = installFakeLiveSockets();
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockImplementation(async (_key, ids) => ({
+    bodies: ids.map((id) => ({ body: handoffRecord(`The body of ${id}`).body, id })),
+    left: [],
+  }));
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  let headings = 0;
+  box.addEventListener(HISTORY_HEADING_LANDED_EVENT, () => {
+    headings += 1;
+  });
+  const landed: Element[] = [];
+  const intoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    landed.push(this);
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["agents"], []);
+  const hold: AddressHold = {};
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={queryClient}>
+        <DetailsAtAddress hold={hold} />
+      </QueryClientProvider>
+    </MemoryRouter>,
+    { container: box }
+  );
+  return {
+    bodies,
+    headingLandings: () => headings,
+    hold,
+    landed,
+    near,
+    restore: () => {
+      view.unmount();
+      liveSocketFor(queryClient).close();
+      queryClient.clear();
+      sockets.restore();
+      near.restore();
+      intoView.mockRestore();
+      bodies.mockRestore();
+      box.remove();
+      restoreReads();
+    },
+  };
+}
+
+/** How many times the page brought into view the entry `id` or a part of it. */
+function landingsOn(page: AddressedPage, id: string): number {
+  return page.landed.filter(
+    (element) => element.closest("[data-history-entry]")?.getAttribute("data-history-entry") === id
+  ).length;
+}
+
+/** Whether the history draws the entry `id` marked. */
+function entryMarked(id: string): boolean {
+  return (
+    document.querySelector(`[data-history-entry="${id}"]`)?.getAttribute("aria-current") === "true"
+  );
+}
+
+/** The control that folds and opens handoff `id`'s fields. */
+function handoffFold(id: string): HTMLElement {
+  const found = document
+    .querySelector(`[data-handoff-line="${id}"]`)
+    ?.parentElement?.querySelector<HTMLElement>("button[aria-expanded]");
+  if (found == null) throw new Error(`the history draws no handoff ${id}`);
+  return found;
+}
+
+/** Lets the reads a draw started answer, and the effects of what they drew run, so a row can say
+ *  that the page sent no other read. */
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 5; turn += 1) {
+    await act(() => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 10);
+      return promise;
+    });
+  }
+}
+
+// A handoff's page address and `/steps` open Details at the history (R3, the plan's D14): the
+// handoff's entry marked, its handoff drawn open and brought into view once for each following,
+// however old it is, with no page of the log read for it; an id the list does not hold says so;
+// and `/steps` lands on the newest run, else on the History heading.
+describe("an address lands as its table says", () => {
+  test("E1: a handoff's address marks its entry, draws the handoff open and brings it into view once for each following", async () => {
+    handoffsRead().mockResolvedValue([listedHandoff(NEWER, 30, 2), listedHandoff(ADDRESSED, 60)]);
+    const page = drawAtAddress(handoffPath(ADDRESSED));
+    const entry = `handoff:${ADDRESSED}`;
+    try {
+      await waitFor(() =>
+        expect(entryMarked(entry), "the handoff's address marked no entry").toBe(true)
+      );
+      expect(page.hold.isOpen, "the handoff's address left Details shut").toBe(true);
+      expect(entryMarked(`handoff:${NEWER}`), "an entry the address does not name is marked").toBe(
+        false
+      );
+      expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "true");
+      await waitFor(() =>
+        expect(landingsOn(page, entry), "the address did not bring its entry into view").toBe(1)
+      );
+      expect(page.headingLandings()).toBe(0);
+      // The bodies are read once the history has landed, the addressed handoff's first (B12).
+      await showHandoffs(page.near);
+      await waitFor(() => expect(page.bodies).toHaveBeenCalled());
+      expect(
+        page.bodies.mock.calls[0]?.[1][0],
+        "the first read of bodies is not led by the handoff the address names"
+      ).toBe(ADDRESSED);
+      await within(
+        document.querySelector<HTMLElement>(`[data-history-entry="${entry}"]`) as HTMLElement
+      ).findByText(`The body of ${ADDRESSED}`);
+
+      act(() => page.hold.navigate?.(handoffPath(ADDRESSED)));
+      await waitFor(() =>
+        expect(
+          landingsOn(page, entry),
+          "the same address followed again did not bring the entry into view again"
+        ).toBe(2)
+      );
+      expect(entryMarked(entry)).toBe(true);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E2: the address of a handoff the reader folded opens it", async () => {
+    handoffsRead().mockResolvedValue([listedHandoff(ADDRESSED, 60)]);
+    const page = drawAtAddress(`/issues/${KEY}`);
+    try {
+      act(() => page.hold.open?.(true));
+      await waitFor(() => expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "true"));
+      await userEvent.click(handoffFold(ADDRESSED));
+      expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "false");
+
+      act(() => page.hold.navigate?.(handoffPath(ADDRESSED)));
+      await waitFor(() =>
+        expect(
+          handoffFold(ADDRESSED),
+          "the address left the folded handoff folded"
+        ).toHaveAttribute("aria-expanded", "true")
+      );
+      expect(entryMarked(`handoff:${ADDRESSED}`)).toBe(true);
+    } finally {
+      page.restore();
+    }
+  });
+
+  // The log's first page is full, 200 claims of the last few minutes, and the handoff was written
+  // an hour ago, before every event of it: its entry is drawn under them all, and no older page of
+  // the log is read for it, so the requests of a first load stay bounded however long the log.
+  test("E3: a handoff older than the log read so far is drawn, and no page is read for it", async () => {
+    const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+    handoffsRead().mockResolvedValue([listedHandoff(ADDRESSED, 3600)]);
+    const page = drawAtAddress(handoffPath(ADDRESSED), firstPage);
+    const entry = `handoff:${ADDRESSED}`;
+    try {
+      await waitFor(() =>
+        expect(entryMarked(entry), "a handoff older than the log read is not drawn marked").toBe(
+          true
+        )
+      );
+      await waitFor(() => expect(landingsOn(page, entry)).toBe(1));
+      expect(drawnIds().at(-1), "the handoff does not stand under every entry read").toBe(entry);
+      expect(drawnEntries()).toHaveLength(201);
+      await settle();
+      const reads = (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mock.calls;
+      expect(
+        reads.filter(([, options]) => options?.before !== undefined),
+        "the history read an older page of the log for the handoff the address names"
+      ).toEqual([]);
+      expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "true");
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E4: an id the list does not hold says that no such handoff exists", async () => {
+    handoffsRead().mockResolvedValue([listedHandoff(NEWER, 30, 2)]);
+    const page = drawAtAddress(handoffPath(NOT_LISTED));
+    try {
+      const history = await screen.findByTestId("issue-history");
+      await within(history).findByText(ANSWER_LINES.handoff_missing);
+      expect(page.hold.isOpen, "an address of no handoff of the issue left Details shut").toBe(
+        true
+      );
+      expect(document.querySelector('[data-history-entry][aria-current="true"]')).toBe(null);
+      await waitFor(() =>
+        expect(page.headingLandings(), "the address did not land on the History heading").toBe(1)
+      );
+      await showHandoffs(page.near);
+      await waitFor(() => expect(page.bodies).toHaveBeenCalled());
+      expect(
+        page.bodies.mock.calls.flatMap(([, ids]) => ids),
+        "the page asked for the body of a handoff the issue does not hold"
+      ).not.toContain(NOT_LISTED);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E5: a list that did not read says so with a Retry, and not that the handoff is missing", async () => {
+    handoffsRead().mockRejectedValue(new Error("the handoffs are down"));
+    const page = drawAtAddress(handoffPath(ADDRESSED));
+    try {
+      const history = await screen.findByTestId("issue-history");
+      await waitFor(() =>
+        expect(within(history).getByRole("alert").textContent).toBe(
+          ANSWER_LINES.handoffs_unreadable
+        )
+      );
+      expect(
+        within(history).queryByText(ANSWER_LINES.handoff_missing),
+        "a list that did not read said the handoff is missing"
+      ).toBe(null);
+      await waitFor(() => expect(page.headingLandings()).toBe(1));
+
+      handoffsRead().mockResolvedValue([listedHandoff(ADDRESSED, 60)]);
+      await userEvent.click(within(history).getByRole("button", { name: CONTROL_LABELS.retry }));
+      await waitFor(() =>
+        expect(entryMarked(`handoff:${ADDRESSED}`), "the list read again marked no entry").toBe(
+          true
+        )
+      );
+      expect(within(history).queryByText(ANSWER_LINES.handoff_missing)).toBe(null);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E6: /steps lands on the newest run", async () => {
+    stepsRead().mockResolvedValue(
+      stepsOf(
+        [
+          stepRecord({ id: "plan-1", started_at: secondsAgo(300) }),
+          stepRecord({ id: "implement-1", started_at: secondsAgo(10) }),
+        ],
+        [stepRecord({ id: "other-1", started_at: secondsAgo(100), task: "other" })]
+      )
+    );
+    const page = drawAtAddress(buildIssuePath({ key: KEY, kind: "steps" }));
+    try {
+      await waitFor(() =>
+        expect(landingsOn(page, "run:implement-1"), "/steps did not land on the newest run").toBe(1)
+      );
+      expect(page.hold.isOpen, "/steps left Details shut").toBe(true);
+      expect(landingsOn(page, "run:plan-1") + landingsOn(page, "run:other-1")).toBe(0);
+      expect(page.headingLandings()).toBe(0);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E7: /steps with no run lands on the heading", async () => {
+    const page = drawAtAddress(buildIssuePath({ key: KEY, kind: "steps" }));
+    try {
+      await waitFor(() =>
+        expect(page.headingLandings(), "/steps with no run did not land on the heading").toBe(1)
+      );
+      expect(page.hold.isOpen).toBe(true);
+      expect(page.landed).toEqual([]);
+    } finally {
+      page.restore();
+    }
+  });
+
+  test("E8: /steps whose runs did not read lands on the heading, beside the failure line", async () => {
+    stepsRead().mockRejectedValue(new Error("the runs are down"));
+    const page = drawAtAddress(buildIssuePath({ key: KEY, kind: "steps" }));
+    try {
+      const history = await screen.findByTestId("issue-history");
+      await waitFor(() =>
+        expect(within(history).getByRole("alert").textContent).toBe(ANSWER_LINES.steps_unreadable)
+      );
+      await waitFor(() =>
+        expect(page.headingLandings(), "/steps whose runs failed did not land on the heading").toBe(
+          1
+        )
+      );
+      expect(page.hold.isOpen).toBe(true);
+      expect(page.landed).toEqual([]);
+    } finally {
+      page.restore();
+    }
+  });
+
+  // Back to an address the history already landed at finds Details where the reader left it: the
+  // handoff's entry is not brought into view again, and the fold the reader made stays.
+  test("E9: coming back to an address already landed moves nothing", async () => {
+    handoffsRead().mockResolvedValue([listedHandoff(NEWER, 30, 2), listedHandoff(ADDRESSED, 60)]);
+    const page = drawAtAddress(handoffPath(ADDRESSED));
+    const entry = `handoff:${ADDRESSED}`;
+    try {
+      await waitFor(() => expect(landingsOn(page, entry)).toBe(1));
+      act(() => page.hold.navigate?.(`/issues/${KEY}`));
+      await waitFor(() => expect(entryMarked(entry)).toBe(false));
+      await userEvent.click(handoffFold(ADDRESSED));
+      expect(handoffFold(ADDRESSED)).toHaveAttribute("aria-expanded", "false");
+
+      act(() => page.hold.navigate?.(-1));
+      await waitFor(() => expect(entryMarked(entry)).toBe(true));
+      await settle();
+      expect(landingsOn(page, entry), "Back to the address brought its entry into view again").toBe(
+        1
+      );
+      expect(
+        handoffFold(ADDRESSED),
+        "Back to the address opened the handoff the reader folded"
+      ).toHaveAttribute("aria-expanded", "false");
+      expect(page.headingLandings()).toBe(0);
+    } finally {
+      page.restore();
     }
   });
 });

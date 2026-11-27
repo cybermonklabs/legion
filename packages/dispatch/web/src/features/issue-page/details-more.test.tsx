@@ -2334,24 +2334,23 @@ describe("a fold lasts while the reader stays on the issue", () => {
 
   // The handoff's page address opens it, though the reader folded it, once for each following
   // of the address: the reader's next fold there stays, and the address followed again opens it
-  // again.
+  // again. The address names a handoff by its id, a UUID, as the server writes it.
   test("C5: the handoff's address opens it once for each following, and the reader's next fold stays", async () => {
-    const opened = await openWith([listedHandoff("handoff-1", 2)], "handoff-1");
-    const address = `/issues/${KEY}/handoffs/handoff-1`;
+    const handoff = "0195f3a4-0000-7000-8000-0000000000c5";
+    const opened = await openWith([listedHandoff(handoff, 2)], handoff);
+    const address = `/issues/${KEY}/handoffs/${handoff}`;
     try {
-      await userEvent.click(foldControl("handoff-1"));
+      await userEvent.click(foldControl(handoff));
       act(() => opened.hold.navigate?.(address));
       await waitFor(() =>
-        expect(folded("handoff-1"), "the handoff's address left it folded").toBe(false)
+        expect(folded(handoff), "the handoff's address left it folded").toBe(false)
       );
-      await userEvent.click(foldControl("handoff-1"));
+      await userEvent.click(foldControl(handoff));
       await act(async () => {});
-      expect(folded("handoff-1"), "the address opened the handoff again at one following").toBe(
-        true
-      );
+      expect(folded(handoff), "the address opened the handoff again at one following").toBe(true);
       act(() => opened.hold.navigate?.(address));
       await waitFor(() =>
-        expect(folded("handoff-1"), "the address followed again left it folded").toBe(false)
+        expect(folded(handoff), "the address followed again left it folded").toBe(false)
       );
     } finally {
       opened.restore();

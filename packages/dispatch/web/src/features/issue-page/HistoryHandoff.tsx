@@ -52,30 +52,54 @@ export interface HandoffFold {
   readonly setFolded: (handoffId: string, folded: boolean) => void;
 }
 
-/** No handoff folded. */
+/** No handoff folded, and no address followed. */
 const NONE_FOLDED: ReadonlySet<string> = new Set();
+
+/** The handoffs folded on one issue's page, and the followings of a handoff's address that opened
+ *  theirs (`useHandoffFold`). */
+interface HeldFold {
+  readonly ids: ReadonlySet<string>;
+  readonly issue: string;
+  readonly opened: ReadonlySet<string>;
+}
 
 /**
  * The handoffs the reader folded on the page of `issueKey` (`HandoffFold`), held by the one that
  * calls it: `DetailsHistory`, which stays mounted for the life of the panel, so a fold lasts
  * while Details shuts and opens, while a live update or the next page draws the history again,
  * and while a run takes the handoff into its entry. It forgets every fold when the issue changes.
+ * A handoff's page address (`addressed`, with the following it is at, `useFollowing`) opens that
+ * handoff once for each following, as it is drawn: the reader's next fold there stays, and Back or
+ * Forward to a following it opened at already leaves the fold the reader made since.
  */
-export function useHandoffFold(issueKey: string): HandoffFold {
-  const [held, setHeld] = useState<{ readonly ids: ReadonlySet<string>; readonly issue: string }>(
-    () => ({ ids: NONE_FOLDED, issue: issueKey })
-  );
-  if (held.issue !== issueKey) setHeld({ ids: NONE_FOLDED, issue: issueKey });
-  const ids = held.issue === issueKey ? held.ids : NONE_FOLDED;
+export function useHandoffFold(
+  issueKey: string,
+  addressed?: { readonly following: string; readonly id: string }
+): HandoffFold {
+  const [held, setHeld] = useState<HeldFold>(() => ({
+    ids: NONE_FOLDED,
+    issue: issueKey,
+    opened: NONE_FOLDED,
+  }));
+  let current =
+    held.issue === issueKey ? held : { ids: NONE_FOLDED, issue: issueKey, opened: NONE_FOLDED };
+  if (addressed !== undefined && !current.opened.has(addressed.following)) {
+    const ids = new Set(current.ids);
+    ids.delete(addressed.id);
+    current = { ids, issue: issueKey, opened: new Set([...current.opened, addressed.following]) };
+  }
+  if (current !== held) setHeld(current);
+  const ids = current.ids;
   return useMemo(
     () => ({
       folded: (handoffId) => ids.has(handoffId),
       setFolded: (handoffId, folded) =>
-        setHeld((current) => {
-          const next = new Set(current.issue === issueKey ? current.ids : NONE_FOLDED);
+        setHeld((now) => {
+          const kept = now.issue === issueKey ? now : undefined;
+          const next = new Set(kept?.ids ?? NONE_FOLDED);
           if (folded) next.add(handoffId);
           else next.delete(handoffId);
-          return { ids: next, issue: issueKey };
+          return { ids: next, issue: issueKey, opened: kept?.opened ?? NONE_FOLDED };
         }),
     }),
     [ids, issueKey]

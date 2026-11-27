@@ -368,6 +368,7 @@ function HistoryWithHandoff(): ReactNode {
   return (
     <IssueHistory
       activityFollowing={undefined}
+      addressed={undefined}
       fold={useHandoffFold(KEY)}
       issue={{ artifacts: [], key: KEY } as unknown as IssueDetails}
       item={undefined}

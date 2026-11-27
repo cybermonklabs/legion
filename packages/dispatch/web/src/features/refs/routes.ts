@@ -36,6 +36,7 @@ export type IssueRoute =
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
+  | { key: string; kind: "handoff"; handoffId: string }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
@@ -237,6 +238,8 @@ const sessionRouteIDPattern = /^[A-Za-z0-9_-]+$/;
 const personLoginOnlyPattern = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 /** One machine's page: `/machines/<machine>`, the machine name as one percent-encoded segment. */
 const machinePathPattern = /^\/machines\/([^/]+)$/;
+/** A handoff's id as the server writes it: a UUID in its canonical form, in lower case. */
+const handoffIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The page of an agent's artifact, the router's pattern for `AgentArtifactRoute`. */
 export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
@@ -504,6 +507,17 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "decisions") {
     return { key, kind: "decisions" };
   }
+  // A handoff's page address: the id a handoff has, a UUID, in the form the server writes it. It
+  // opens that handoff's entry in the history on the new page and its card on today's
+  // Conversation tab, and names nothing in text (`pageRoutes`), as the server's `text` reads no
+  // handoff. The id is `handoffId`, not `id`, so no reader of an item's route takes it in.
+  const handoff = target.match(/^handoffs\/([^/?#\s]+)$/);
+  if (handoff !== null) {
+    const handoffId = decodedSegment(handoff[1] ?? "")?.toLowerCase();
+    return handoffId !== undefined && handoffIdPattern.test(handoffId)
+      ? { handoffId, key, kind: "handoff" }
+      : undefined;
+  }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
@@ -681,6 +695,10 @@ function pageRoutes(
   if (route === undefined || (isProjectRoute(route) && route.kind !== "document")) {
     return undefined;
   }
+  // A handoff's page names nothing in text, as the server's `text` reads it (`parseIssuePath`).
+  if (route.kind === "handoff") {
+    return undefined;
+  }
   // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
   // whatever its fragment, as the server's `text` and the agent client read the page.
   if (route.kind === "decisions") {
@@ -757,6 +775,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   // verification, plan, steps, activity, children, artifacts, collaborators and the
   // conversation's `log` - were references the server refused to read.
   if (isPlainIssueRoute(route) || route.kind === "conversation") {
+    return issue;
+  }
+  // A handoff's page is the issue, as every tab is, though no reference names the handoff.
+  if (route.kind === "handoff") {
     return issue;
   }
   if (route.kind === "decisions") {
@@ -995,6 +1017,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} spec${block}`;
     case "conversation":
       return `${route.key} log`;
+    case "handoff":
+      return `${route.key} handoff`;
     case "decisions":
       return `${route.key} decisions`;
     case "artifact":
@@ -1140,6 +1164,9 @@ export function buildIssuePath(route: IssueRoute): string {
   }
   if (route.kind === "conversation") {
     return `${issue}/conversation`;
+  }
+  if (route.kind === "handoff") {
+    return `${issue}/handoffs/${encodeURIComponent(route.handoffId)}`;
   }
   if (route.kind === "decisions") {
     return `${issue}/decisions`;

@@ -126,6 +126,7 @@ import {
   handoffFoldControl,
   handoffLineOf,
   historyDayOf,
+  historyDaysNotOpen,
   historyEntries,
   historyHeading,
   historyItem,
@@ -135,6 +136,7 @@ import {
   historyShowMore,
   historyShowMoreState,
   holdBodiesReads,
+  isOlderPageRead,
   newestHistoryEntry,
   olderPageAnswered,
   putStepExperiment,
@@ -144,6 +146,7 @@ import {
   seededHistoryEntry,
   stepRun,
   watchStepsReads,
+  whollyInHistoryView,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { approvalChip, viewportAt } from "./issue-page-p";
@@ -151,8 +154,9 @@ import { tabWalk } from "./issue-page-v";
 import { seedLegionState } from "./legion-state-seed";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import { sql } from "./psql";
 import { READING_PANE_WIDTH } from "./reading-pane";
-import { setCreatedAt, setEventCreatedAt } from "./seed";
+import { setCreatedAt, setEventCreatedAt, sqlLiteral } from "./seed";
 import { navigateInApp } from "./sends";
 import {
   type Browser,
@@ -7349,6 +7353,286 @@ test("the history reads the bodies of the entries near the view and keeps the re
     await readTheLeftIds(tall, seeded.large, true);
   } finally {
     await alice.close();
+  }
+});
+
+/** The issues of the handoffs' page addresses (the check b-c-address), with the handoffs and the
+ *  run their addresses name. */
+interface AddressSeed {
+  /** The plan's handoff, written three days ago, which no run reports, at `earlierAt`. */
+  readonly earlier: string;
+  readonly earlierAt: string;
+  readonly key: string;
+  /** The four handoffs written after `today`, each sent as 200,000 bytes, so they stand above it. */
+  readonly large: readonly string[];
+  /** The newest run, half an hour old, under every entry of today written after it. */
+  readonly newestRun: string;
+  /** An issue whose handoff was written before 205 status moves: neither the log's first page of
+   *  200 events nor the history's first 20 entries holds it. */
+  readonly paged: { readonly key: string; readonly older: string };
+  /** The handoff of today, under the four of 200,000 bytes and twelve notes of the daemon's, so
+   *  that it stands below the first screen of today's Conversation tab too. */
+  readonly today: string;
+  /** When yesterday's run started, the day between today and `earlierAt`. */
+  readonly yesterdayAt: string;
+}
+
+/** Dates handoff `id` of issue `key`, and the `handoff.recorded` event of its write, at `at`: the
+ *  server stamps both with the moment of the write. */
+async function dateHandoff(key: string, id: string, at: string): Promise<void> {
+  await sql(
+    `UPDATE handoffs SET created_at = ${sqlLiteral(at)}::timestamptz WHERE id = ${sqlLiteral(id)}::uuid`
+  );
+  const recorded = (await allEvents(key)).find(
+    (event) => event.type === "handoff.recorded" && event.payload.handoff_id === id
+  );
+  if (recorded === undefined) throw new Error(`${key} recorded no event of handoff ${id}`);
+  await setEventCreatedAt(recorded.id, at);
+}
+
+/**
+ * The seed of the handoffs' page addresses. Its first issue holds, oldest first: the plan's
+ * handoff of three days ago, which no run reports; yesterday's run of the planner's; the newest
+ * run, half an hour ago; then, today, 25 status moves, the implementer's handoff, four handoffs of
+ * 200,000 bytes and twelve notes of the daemon's. Its second holds one handoff and then 205 status
+ * moves, more than 20 entries and more than 200 events.
+ */
+async function seedAddresses(): Promise<AddressSeed> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Handoff addresses" });
+  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const agent = (role: string) => `legion-core-${issue.key.toLowerCase()}-${role}`;
+  const write = async (key: string, phase: string, body: object) =>
+    (await createHandoff(key, phase, { phase, issue: key, ...body }, implementer)).id;
+  const earlierAt = ago(3 * 24 * 60);
+  const earlier = await write(issue.key, "plan", { summary: "The plan of three days ago." });
+  await dateHandoff(issue.key, earlier, earlierAt);
+  const yesterdayAt = ago(26 * 60);
+  await putStep(issue.key, crypto.randomUUID(), {
+    agent: agent("planner"),
+    ended_at: ago(25 * 60),
+    generation: 1,
+    kind: "step",
+    model: "anthropic/claude-opus-5",
+    result: "passed",
+    role: "planner",
+    started_at: yesterdayAt,
+    step: 1,
+    task: "default",
+    type: "planning",
+  });
+  const newestRun = crypto.randomUUID();
+  await putStep(issue.key, newestRun, {
+    agent: agent("implementer"),
+    generation: 1,
+    kind: "step",
+    role: "implementer",
+    started_at: ago(30),
+    step: 2,
+    task: "default",
+    type: "implementation",
+  });
+  await writeStatusMoves(issue.key, 25);
+  const today = await write(issue.key, "implement", {
+    summary: "The implementation the address names.",
+  });
+  const large: string[] = [];
+  for (let index = 1; index <= 4; index += 1) {
+    const body = handoffSentAs(`Review ${index}`, 200_000);
+    large.unshift((await createHandoff(issue.key, "review", body, implementer)).id);
+  }
+  for (let index = 0; index < 12; index += 1) {
+    await createMessage(
+      issue.key,
+      { body: `A note of the daemon's after the handoffs, ${index}.` },
+      asDaemon
+    );
+  }
+  const paged = await createIssue({ project: "CORE", title: "A handoff under 205 status moves" });
+  const older = await write(paged.key, "test", { summary: "The test pass under the first page." });
+  await writeStatusMoves(paged.key, 205);
+  return {
+    earlier,
+    earlierAt,
+    key: issue.key,
+    large,
+    newestRun,
+    paged: { key: paged.key, older },
+    today,
+    yesterdayAt,
+  };
+}
+
+/**
+ * Waits until the history at a handoff's page address has landed on handoff `id`, whose entry is
+ * `entry`: Details open, the entry marked, the handoff drawn open with its fields and its line
+ * wholly in Details' view, and no day of the history folded. `what` names the case.
+ */
+async function expectHandoffLanded(
+  page: Page,
+  entry: string,
+  id: string,
+  what: string
+): Promise<void> {
+  await expect(marginShell(page), `${what}: the address did not open Details`).toBeVisible();
+  await expect(
+    historyPanel(page).locator(`[data-history-entry="${entry}"]`),
+    `${what}: the address did not mark the entry that holds the handoff`
+  ).toHaveAttribute("aria-current", "true");
+  await expect(
+    handoffFoldControl(page, id),
+    `${what}: the address left the handoff folded`
+  ).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    handoffFieldsOf(page, id).first(),
+    `${what}: the handoff's fields are not drawn`
+  ).toBeVisible();
+  await expect
+    .poll(() => whollyInHistoryView(handoffLineOf(page, id)), {
+      message: `${what}: the handoff is not in Details' view`,
+    })
+    .toBe(true);
+  expect(await historyDaysNotOpen(page), `${what}: a day of the history is folded`).toEqual([]);
+}
+
+// A handoff's page address opens the new page with Details open at the history's entry that
+// holds that handoff, marked, the handoff open and in view, no day folded (the check
+// b-c-address): a handoff of today, under four handoffs of 200,000 bytes whose bodies, read once
+// the history has landed, grow above it and leave it in view; a handoff of three days ago, with
+// yesterday drawn open between; and a handoff older than the log's first page of 200 events and
+// the history's first 20 entries, drawn with no older page of the log read. An id that is no
+// handoff of the issue opens Details and says no such handoff exists, and `/steps` opens Details
+// at the newest run. On a phone Details stays open at each. With the new page off, the same
+// address opens today's Conversation tab with the handoff's card open and in view, though it
+// stands below the tab's first screen.
+// SLOW(>=2s): two issues of 236 writes, four handoffs of 200,000 bytes read, and six loads.
+test("a handoff page address opens its entry in the history @phone", async ({ browser }) => {
+  test.setTimeout(240_000);
+  const seeded = await seedAddresses();
+  const alice = await reader(browser, "alice");
+  try {
+    const page = await alice.newPage();
+
+    // Today's handoff, under the four of 200,000 bytes: the address marks it and draws it open,
+    // and the bodies of the four, within one screen of the view, are read once the history has
+    // landed and drawn above it, and it stays in view.
+    await gotoIssue(page, `/issues/${seeded.key}/handoffs/${seeded.today}`);
+    await expect(
+      historyPanel(page).locator(`[data-history-entry="handoff:${seeded.today}"]`),
+      "the address of a handoff of today opened no entry"
+    ).toHaveAttribute("aria-current", "true");
+    for (const id of seeded.large) {
+      await expect(
+        handoffFieldsOf(page, id).first(),
+        `the body of the handoff of 200,000 bytes ${id} above the marked one is not drawn`
+      ).toBeVisible();
+    }
+    await expectHandoffLanded(
+      page,
+      `handoff:${seeded.today}`,
+      seeded.today,
+      "a handoff of today under four handoffs of 200,000 bytes"
+    );
+
+    // A handoff of an earlier day, three days ago: the history is drawn down to it, and every
+    // day it draws is open, yesterday's between them among them.
+    await gotoIssue(page, `/issues/${seeded.key}/handoffs/${seeded.earlier}`);
+    for (const at of [seeded.yesterdayAt, seeded.earlierAt]) {
+      const { date } = await historyDayOf(page, at);
+      await expect(
+        historyPanel(page).locator(`[data-history-day="${date}"]`),
+        `the history at a handoff of an earlier day draws no day ${date}`
+      ).toHaveCount(1);
+    }
+    expect(
+      await historyDaysNotOpen(page),
+      "the history at a handoff of an earlier day folds another day"
+    ).toEqual([]);
+    await expectHandoffLanded(
+      page,
+      `handoff:${seeded.earlier}`,
+      seeded.earlier,
+      "a handoff of an earlier day"
+    );
+
+    // A handoff older than the log's first page of 200 events and the history's first 20
+    // entries: its entry is drawn under them, and no older page of the log is read for it.
+    const olderReads: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (isOlderPageRead(url, seeded.paged.key)) olderReads.push(url.search);
+    });
+    await gotoIssue(page, `/issues/${seeded.paged.key}/handoffs/${seeded.paged.older}`);
+    await expectHandoffLanded(
+      page,
+      `handoff:${seeded.paged.older}`,
+      seeded.paged.older,
+      "a handoff older than the history's first page"
+    );
+    expect(olderReads, "the history read an older page of the log for the handoff").toEqual([]);
+
+    // An id that is no handoff of the issue.
+    await gotoIssue(page, `/issues/${seeded.key}/handoffs/${crypto.randomUUID()}`);
+    await expect(marginShell(page), "an address of no handoff did not open Details").toBeVisible();
+    await expect(
+      historyPanel(page).locator("[data-handoff-missing]"),
+      "an address of no handoff of the issue does not say that no such handoff exists"
+    ).toHaveText(ANSWER_LINES.handoff_missing);
+    await expect(historyPanel(page).locator('[aria-current="true"]')).toHaveCount(0);
+
+    // `/steps`: Details at the history's newest run, which stands under the first 20 entries.
+    await gotoIssue(page, `/issues/${seeded.key}/steps`);
+    await expect(marginShell(page), "/steps did not open Details").toBeVisible();
+    const newestHead = stepRun(page, seeded.newestRun).locator('[data-step-field="task"]');
+    await expect(newestHead, "/steps did not draw the newest run").toHaveCount(1);
+    await expect
+      .poll(() => whollyInHistoryView(newestHead), {
+        message: "/steps did not open Details at the newest run",
+      })
+      .toBe(true);
+    await expect(marginShell(page), "Details shut after /steps landed").toBeVisible();
+  } finally {
+    await alice.close();
+  }
+
+  // With the new page off, today's page: the Conversation tab, the handoff's card open and in
+  // view, though the cards of the twelve notes and the four handoffs written after it take it
+  // below the tab's first screen.
+  const bob = await asUser(browser, "bob");
+  try {
+    const page = await bob.newPage();
+    await page.goto(`/issues/${seeded.key}/handoffs/${seeded.today}`);
+    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    const card = page.locator(`li[data-turn="${conversationItemId("handoff", seeded.today)}"]`);
+    await expect(card, "the address did not mark the handoff's card").toHaveAttribute(
+      "aria-current",
+      "true"
+    );
+    await expect(
+      card.getByRole("button", { name: "Hide fields" }),
+      "the address left the handoff's card shut"
+    ).toHaveAttribute("aria-expanded", "true");
+    await expect(card.locator('[data-handoff-field="summary"]')).toContainText(
+      "The implementation the address names."
+    );
+    expect(
+      await card.evaluate((turn) => {
+        let box: HTMLElement | null = turn.parentElement;
+        while (box !== null && !["auto", "scroll"].includes(getComputedStyle(box).overflowY)) {
+          box = box.parentElement;
+        }
+        const port = box ?? document.scrollingElement ?? document.documentElement;
+        const top = box === null ? 0 : box.getBoundingClientRect().top;
+        return turn.getBoundingClientRect().top - top + port.scrollTop > port.clientHeight;
+      }),
+      "the handoff's card stands within the tab's first screen, so the row proves nothing"
+    ).toBe(true);
+    await expect(card, "the address did not bring the handoff's card into view").toBeInViewport();
+  } finally {
+    await bob.close();
   }
 });
 

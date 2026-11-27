@@ -26,7 +26,12 @@ import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
 import { useHandoffFold } from "./HistoryHandoff";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
-import { type AddressedTurn, HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
+import {
+  type AddressedHistory,
+  type AddressedTurn,
+  HISTORY_HEADING_LANDED_EVENT,
+  IssueHistory,
+} from "./IssueHistory";
 import { type IssueAddress, issueAddress } from "./issue-address";
 import { LegionBlock, LegionRunsFollower } from "./LegionBlock";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
@@ -271,13 +276,16 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  *
  * `/issues/<key>/activity`, and the address of a turn of a thread the history holds, open
  * Details at the history - its heading brought into view, or that turn marked, drawn and brought
- * into view; `/issues/<key>/collaborators` opens Details at the collaborators' row of the People
- * section (`useOpenDetailsAt`), whose list `DetailsPeople` opens. Each address opens Details once
- * per following of it (`useFollowing`), and the reader's own Close is the later word for as long
- * as they stay there. This place is drawn outside every section Details can collapse, so it is
- * mounted for the life of the panel and keeps the following it last opened for, and the reader's
- * read mark for the visit, which the history is handed. `t v` and `t o` open those two addresses
- * and put the focus in what they open.
+ * into view; a handoff's page address, `/issues/<key>/handoffs/<id>`, opens it at the entry that
+ * holds that handoff, marked, with the handoff open (`useHandoffFold`), and `/issues/<key>/steps`
+ * at the newest run (`IssueHistory`'s `addressed`); `/issues/<key>/collaborators` opens Details
+ * at the collaborators' row of the People section (`useOpenDetailsAt`), whose list
+ * `DetailsPeople` opens. Each address opens Details once per following of it (`useFollowing`),
+ * and the reader's own Close is the later word for as long as they stay there. This place is
+ * drawn outside every section Details can collapse, so it is mounted for the life of the panel
+ * and keeps the following it last opened for, the reader's read mark for the visit, which the
+ * history is handed, and the handoffs they folded. `t v` and `t o` open `/activity` and
+ * `/collaborators` and put the focus in what they open.
  *
  * The history's log is read only while Details is open or an address opens it, so a load that
  * leaves Details shut costs no request for it. Whether an item's address names a turn of a
@@ -312,7 +320,15 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   // here.
   const [turn, setTurn] = useState<AddressedTurn | undefined>(undefined);
   const item = namesItem && turn?.following === following ? turn : undefined;
-  const opensHistory = route?.kind === "activity" || item !== undefined;
+  // A handoff's page address and `/steps` name a place in the history: the entry that holds the
+  // handoff, or the newest run, for the following of the address the reader is at.
+  const inHistory: AddressedHistory | undefined =
+    route?.kind === "handoff"
+      ? { following, id: route.handoffId, kind: "handoff" }
+      : route?.kind === "steps"
+        ? { following, kind: "steps" }
+        : undefined;
+  const opensHistory = route?.kind === "activity" || inHistory !== undefined || item !== undefined;
   const opensCollaborators = route?.kind === "collaborators";
   const opensPanel = opensCollaborators || opensHistory;
   const drawer = useMarginDrawer();
@@ -365,8 +381,9 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   }
   // The handoffs the reader folded on this issue's page, held beside the visit's read mark for
   // the same reason: the history is not drawn while Details is shut, so a fold held there would
-  // not outlive a close and an open (the plan's D12).
-  const fold = useHandoffFold(issue.key);
+  // not outlive a close and an open (the plan's D12). A handoff's page address opens its handoff
+  // once for each following.
+  const fold = useHandoffFold(issue.key, inHistory?.kind === "handoff" ? inHistory : undefined);
   useKeymap("issue", [
     {
       id: "tab-activity",
@@ -411,6 +428,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
           ) : null}
           <IssueHistory
             activityFollowing={route?.kind === "activity" ? following : undefined}
+            addressed={inHistory}
             fold={fold}
             issue={issue}
             item={item}

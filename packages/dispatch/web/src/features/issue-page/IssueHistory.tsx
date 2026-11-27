@@ -11,6 +11,7 @@ import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import { handoffsQuery, issueResultsQuery, issueStepsQuery } from "../../api/queries";
 import type { IssueDetails, UserState } from "../../api/types";
+import { compareTimestamps } from "../../lib/timestamps";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { dateKey } from "../activity/activity-model";
 import { scrollElementToTop } from "../doc/scroll-block";
@@ -27,10 +28,12 @@ import { type HandoffFold, useHandoffBodies } from "./HistoryHandoff";
 import { Entry, runKeys } from "./history-entries";
 import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
 import {
+  addressedPlace,
   buildHistory,
   comparePlaces,
   HISTORY_EXCLUDED_TYPES,
   HISTORY_PAGE,
+  type HistoryInput,
   type HistoryPlace,
   historyBlocks,
   historyDownTo,
@@ -64,6 +67,13 @@ export interface AddressedTurn {
   readonly id: string;
 }
 
+/** What a page address names in the history (`DetailsHistory`), with the following of that
+ *  address it was named at (`useFollowing`): a handoff, by its id, at
+ *  `/issues/<key>/handoffs/<id>`, or the newest run, at `/issues/<key>/steps`. */
+export type AddressedHistory =
+  | { readonly following: string; readonly id: string; readonly kind: "handoff" }
+  | { readonly following: string; readonly kind: "steps" };
+
 /**
  * The issue's history, a list in the panel (`history-model.ts`): newest first, every day drawn
  * open under a line that names it, which is no control. It draws its first `HISTORY_PAGE`
@@ -84,12 +94,17 @@ export interface AddressedTurn {
  * does. The list waits for its first answer of the runs and of the handoffs, and says under its
  * heading where either read failed, with a Retry, above the line of the newest run's experiment.
  *
- * `/activity`, `t v` and the address of a turn of such a thread open Details here:
+ * `/activity`, `t v`, the address of a turn of such a thread, a handoff's page address and
+ * `/steps` open Details here:
  * at `/activity` the heading is brought into Details' view once for each following of that
  * address (`useFollowing`), `t v` pressed there among them, except a reader's coming back to the
  * history they left drawn, who finds it where they left it;
  * `item` is the turn such an address names, which is marked, drawn with every entry above its
- * thread, and brought into view once for each following of its address. It writes no read mark.
+ * thread, and brought into view once for each following of its address;
+ * `addressed` is the handoff or the newest run the other two name, whose entry is drawn however
+ * old it is, with no page of the log read for it, and brought into view once for each following
+ * of its address, the handoff's entry marked; a handoff the list does not hold is said to be
+ * none, and an address that names no entry lands on the heading. It writes no read mark.
  * The line that says what is new is drawn at `visitMark`,
  * where the reader's mark stood as the history first drew in this visit, which
  * `DetailsHistory` holds while Details is shut and this list is not drawn: so a later move of
@@ -102,6 +117,7 @@ export interface AddressedTurn {
  */
 export function IssueHistory({
   activityFollowing,
+  addressed,
   fold,
   issue,
   item,
@@ -112,6 +128,9 @@ export function IssueHistory({
    *  address: each following of `/activity` brings the history's heading into Details' view
    *  once. */
   activityFollowing: string | undefined;
+  /** The handoff or the newest run the address names, which the list draws and brings into view
+   *  once for each following of that address, the handoff's entry marked. */
+  addressed: AddressedHistory | undefined;
   /** The handoffs the reader folded on the issue's page, which `DetailsHistory` holds
    *  (`useHandoffFold`), so a fold outlives this list. */
   fold: HandoffFold;
@@ -220,6 +239,19 @@ export function IssueHistory({
         : undefined,
     [events, older]
   );
+  // What the address names in the history, kept once the reader follows another address of the
+  // issue, so the entry it drew stays drawn there however old it is (`HistoryInput.addressed`),
+  // and no page of the log is read for it then either.
+  const [kept, setKept] = useState<NonNullable<HistoryInput["addressed"]> | undefined>(undefined);
+  if (
+    addressed !== undefined &&
+    (kept?.kind !== addressed.kind ||
+      (kept?.kind === "handoff" && addressed.kind === "handoff" && kept.id !== addressed.id))
+  ) {
+    setKept(
+      addressed.kind === "handoff" ? { id: addressed.id, kind: "handoff" } : { kind: "steps" }
+    );
+  }
   // The day the reader is in, read every render so a midnight rollover moves the `Today` label;
   // the model is rebuilt only when one of its reads changes.
   const today = dateKey(new Date().toISOString());
@@ -239,6 +271,7 @@ export function IssueHistory({
       handoffs: handoffs.data,
       issueCreatedAt: issue.created_at,
       lastReadSeq: visitMark,
+      ...(kept === undefined ? {} : { addressed: kept }),
       ...(loadedFrom === undefined ? {} : { loadedFrom }),
       messages: messages.data,
       runs: runs.data,
@@ -254,6 +287,7 @@ export function IssueHistory({
     issue.created_at,
     issue.open_asks,
     issueKey,
+    kept,
     loadedFrom,
     messages.data,
     refusesCheck,
@@ -299,14 +333,27 @@ export function IssueHistory({
     () => (itemId === undefined ? undefined : turnPlace(days, itemId)),
     [days, itemId]
   );
+  // The entry the address names, or last named on this page (`kept`): the one that holds the
+  // handoff, or the newest run. It is drawn however far under the entries drawn it stands, with
+  // every entry above it, and where it is older than the log read so far (`loadedFrom`) it stands
+  // under every entry read, and the history reads on for none of them until a press asks.
+  const keptPlace = useMemo(
+    () => (kept === undefined ? undefined : addressedPlace(days, kept)),
+    [days, kept]
+  );
+  const keptBeyond =
+    keptPlace !== undefined &&
+    loadedFrom !== undefined &&
+    compareTimestamps(keptPlace.at, loadedFrom) < 0;
   const drawn = useMemo(() => historyDownTo(days, shownEnd), [days, shownEnd]);
   // Whether the history reads the log's next page before it draws on. Its first entries wait
   // until it holds more than `HISTORY_PAGE`, and the next ones a press asks for until more than
   // `HISTORY_PAGE` are read and not drawn, or in either case until the log has ended: so every
   // draw leaves an entry read and not drawn while an older page is unread, and Show more says
   // how many. A history drawn down to every entry read, as to the turn an address names, reads
-  // on as well.
-  const short = older && (asked ? drawn.left <= HISTORY_PAGE : drawn.left === 0);
+  // on as well, but for one drawn down to the entry a handoff's address or `/steps` names that
+  // stands older than the log read so far (`keptBeyond`), whose pages between are read at a press.
+  const short = older && (asked ? drawn.left <= HISTORY_PAGE : drawn.left === 0 && !keptBeyond);
   // A failed read of the log stops the reading on: the history draws what it holds, and the next
   // page's Retry reads on from there (`failed` below).
   const stopped = log.isError && !log.isFetching;
@@ -326,6 +373,12 @@ export function IssueHistory({
     (shownEnd === undefined || comparePlaces(itemPlace, shownEnd) < 0)
   ) {
     nextEnd = itemPlace;
+  } else if (
+    keptPlace !== undefined &&
+    settled &&
+    (shownEnd === undefined || comparePlaces(keptPlace, shownEnd) < 0)
+  ) {
+    nextEnd = keptPlace;
   } else if (end === undefined && settled && (!short || stopped)) {
     nextEnd = shownEnd;
   }
@@ -422,6 +475,13 @@ export function IssueHistory({
   const navigation = useNavigationType();
   const heading = useRef<HTMLHeadingElement>(null);
   const headingLanded = useRef<string | undefined>(undefined);
+  // Brings the heading to the top of the box Details scrolls in, and says it has landed.
+  const landHeading = (element: HTMLHeadingElement) => {
+    const box = scrollingAncestor(element);
+    if (box === null) return;
+    scrollElementToTop(element, box);
+    element.dispatchEvent(new CustomEvent(HISTORY_HEADING_LANDED_EVENT, { bubbles: true }));
+  };
   useEffect(() => {
     const element = heading.current;
     if (
@@ -435,21 +495,69 @@ export function IssueHistory({
     }
     const comingBack = navigation === "POP" && headingLanded.current !== undefined;
     headingLanded.current = activityFollowing;
+    if (!comingBack) landHeading(element);
+  });
+  // A handoff's page address lands on the entry that holds that handoff, and `/steps` on the
+  // newest run, once for each following of the address, on the first render that draws that
+  // entry: brought into view as a turn an address names is, a handoff by its own line and fields
+  // inside a run's entry, and kept there by the history's anchor (`keepRow`) as the bodies of the
+  // entries around it are read and drawn; the handoff's entry is marked (`Entry`'s `addressed`)
+  // and its fields drawn open (`useHandoffFold`). An address whose handoff the answered list does
+  // not hold, or whose list did not read, and `/steps` where no run is read, land on the heading,
+  // as `/activity` does. Back or Forward to an address once this list has landed one (`POP`)
+  // brings nothing, as at `/activity`.
+  const addressLanded = useRef<string | undefined>(undefined);
+  const addressedHere = addressed === undefined ? undefined : keptPlace;
+  useEffect(() => {
+    const element = heading.current;
+    if (
+      addressed === undefined ||
+      addressLanded.current === addressed.following ||
+      element === null ||
+      element.getClientRects().length === 0 ||
+      !listDrawn
+    ) {
+      return;
+    }
+    const entry =
+      addressedHere === undefined
+        ? null
+        : (element.parentElement?.querySelector<HTMLElement>(
+            `[${HISTORY_ENTRY_ATTRIBUTE}="${CSS.escape(addressedHere.id)}"]`
+          ) ?? null);
+    if (addressedHere !== undefined && (entry === null || entry.getClientRects().length === 0)) {
+      return;
+    }
+    const comingBack = navigation === "POP" && addressLanded.current !== undefined;
+    addressLanded.current = addressed.following;
     if (comingBack) return;
-    const box = scrollingAncestor(element);
-    if (box === null) return;
-    scrollElementToTop(element, box);
-    element.dispatchEvent(new CustomEvent(HISTORY_HEADING_LANDED_EVENT, { bubbles: true }));
+    if (entry === null) {
+      landHeading(element);
+      return;
+    }
+    const target =
+      (addressed.kind === "handoff"
+        ? entry.querySelector(`[data-handoff-line="${CSS.escape(addressed.id)}"]`)?.parentElement
+        : undefined) ?? entry;
+    const box = scrollingAncestor(target);
+    const tall = box !== null && target.getBoundingClientRect().height > box.clientHeight;
+    target.scrollIntoView({ block: tall ? "start" : "center" });
+    anchor.current?.keepRow(entry, target === entry ? undefined : target);
   });
   // The bodies' loader starts once the history has landed where the address it is at lands it:
-  // the turn an address names, or the heading at `/activity`, after the landing above.
+  // the turn an address names, the heading at `/activity`, or the entry a handoff's address or
+  // `/steps` names, after the landings above; the handoff such an address names, where the history
+  // draws it, is the first it asks for.
   useEffect(() => {
     if (
       listDrawn &&
       (item === undefined || landed.current === item.following) &&
-      (activityFollowing === undefined || headingLanded.current === activityFollowing)
+      (activityFollowing === undefined || headingLanded.current === activityFollowing) &&
+      (addressed === undefined || addressLanded.current === addressed.following)
     ) {
-      bodies.band.landed();
+      bodies.band.landed(
+        addressed?.kind === "handoff" && addressedHere !== undefined ? addressed.id : undefined
+      );
     }
   });
   // The history is newest first, so every event the feed prepends lands above a reader who is
@@ -704,6 +812,12 @@ export function IssueHistory({
   // The experiment and the variant the newest run's records name, once, above the list: the
   // steps model's own line (`stepVariant`), as today's Steps tab draws it.
   const variant = runs.data === undefined ? null : stepVariant(runs.data);
+  // A handoff's page address whose id the answered list does not hold says that no such handoff
+  // exists, under the heading; while the list holds no answer, its own line says why instead.
+  const handoffMissing =
+    addressed?.kind === "handoff" &&
+    handoffs.data !== undefined &&
+    !handoffs.data.some((handoff) => handoff.id === addressed.id);
 
   return (
     <section
@@ -741,6 +855,16 @@ export function IssueHistory({
           retrying={handoffs.isFetching}
         />
       ) : null}
+      {handoffMissing ? (
+        <p
+          className={`text-xs ${pageMutedText}`}
+          data-handoff-missing=""
+          role="status"
+          {...pageChrome}
+        >
+          {ANSWER_LINES.handoff_missing}
+        </p>
+      ) : null}
       {variant === null ? null : (
         <p
           className={`min-w-0 text-xs leading-[18px] break-words ${pageMutedText}`}
@@ -776,6 +900,7 @@ export function IssueHistory({
                     const drawnId = drawnIds.get(entry.id) ?? entry.id;
                     return (
                       <Entry
+                        addressed={addressed?.kind === "handoff" ? addressedHere?.id : undefined}
                         bodies={bodies.value}
                         drawnId={drawnId}
                         fold={fold}

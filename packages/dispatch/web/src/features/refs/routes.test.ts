@@ -736,6 +736,65 @@ test("the decisions tab owns its path and names the issue's decisions.md", () =>
   }
 });
 
+// A handoff's page address: both pages read it, the new page to open its entry in the history
+// and today's to open its card on the Conversation tab. Its id is a handoff's, a UUID, and the
+// route names it `handoffId`, not `id`, so no reader of an item's route (`ItemRoute`) takes it
+// for an ask, a comment or a message.
+const HANDOFF_ID = "0195f3a4-7b2c-7d10-9a3e-5c1d2e3f4a5b";
+
+test("a handoff address is read and written back", () => {
+  const route = { handoffId: HANDOFF_ID, key: "CORE-1", kind: "handoff" as const };
+  const path = `/issues/CORE-1/handoffs/${HANDOFF_ID}`;
+
+  expect(parseIssuePath(path)).toEqual(route);
+  expect(buildIssuePath(route)).toBe(browserPath(path));
+  expect(parseIssuePath(buildIssuePath(route))).toEqual(route);
+  // The id as the server writes it, whichever case the address spells it in.
+  expect(parseIssuePath(`/issues/CORE-1/handoffs/${HANDOFF_ID.toUpperCase()}`)).toEqual(route);
+  expect(parseIssuePath(`/issues/CORE-1/handoffs/${encodeURIComponent(HANDOFF_ID)}`)).toEqual(
+    route
+  );
+  // Today's page opens it on the Conversation tab, at that handoff's card.
+  expect(issueTabForRoute(route, undefined)).toBe("conversation");
+  // Its page is the issue's, as every tab's is.
+  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1");
+  expect(shortForm(route)).toBe("CORE-1 handoff");
+});
+
+test("an id that does not decode reads as no route", () => {
+  for (const id of [
+    "%E0%A4%A",
+    "%00",
+    "handoff-1",
+    "not-a-uuid",
+    `${HANDOFF_ID}0`,
+    HANDOFF_ID.replaceAll("-", ""),
+    `{${HANDOFF_ID}}`,
+    `${HANDOFF_ID}/fields`,
+    "",
+  ]) {
+    expect(parseIssuePath(`/issues/CORE-1/handoffs/${id}`), id).toBeUndefined();
+  }
+  expect(parseIssuePath(`/issues/CORE-1/handoff/${HANDOFF_ID}`)).toBeUndefined();
+});
+
+test("a handoff address names nothing in text", () => {
+  // The server's `text` reads no handoff, by its page or by a reference, so neither cites one
+  // here: a link to it in a body is a link, and no reference.
+  expect(parseDispatchReference(`dispatch://CORE-1/handoff/${HANDOFF_ID}`)).toBeUndefined();
+  expect(parseDispatchReference(`dispatch://CORE-1/handoffs/${HANDOFF_ID}`)).toBeUndefined();
+  for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {
+    for (const fragment of ["", "#b-x"]) {
+      expect(
+        read(
+          `https://dispatch.test/issues/CORE-1/handoffs/${HANDOFF_ID}${fragment}`,
+          "https://dispatch.test"
+        )
+      ).toBeUndefined();
+    }
+  }
+});
+
 test("parses and builds project, documents, and document routes with version and item query", () => {
   expect(parseProjectPath("/projects/CORE")).toEqual({ kind: "project", project: "CORE" });
   // The filter strip's URL state (`?label=`, `?q=`, `?needs-you=`, `?unread=`) never changes
