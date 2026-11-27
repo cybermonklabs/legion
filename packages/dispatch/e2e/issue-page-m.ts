@@ -20,10 +20,11 @@ import { settledState } from "./settled";
  * and `daemonOf`, the Legion daemon of a project as their seed's writes name it.
  *
  * This file is those rows' own, and the reading list's drivers of Details' history
- * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`: it
- * imports the readers of `e2e/issue-page.ts`, `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`,
- * `settledState` of `e2e/settled.ts`, and `baseUrl` and `e2eAgentToken` of `e2e/api.ts`, and
- * copies none of them.
+ * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`, as
+ * part L's rows of the box do its `daemonOf` (`e2e/issue-page-l.ts`'s `seedHistoryTurns`) and its
+ * `historyItem` (`e2e/issue-page-l.e2e.ts`): it imports the readers of `e2e/issue-page.ts`,
+ * `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`, `settledState` of `e2e/settled.ts`, and
+ * `baseUrl` and `e2eAgentToken` of `e2e/api.ts`, and copies none of them.
  *
  * The DOM a row reads, all of it inside Details (`[data-testid="desktop-margin-shell"]`):
  *

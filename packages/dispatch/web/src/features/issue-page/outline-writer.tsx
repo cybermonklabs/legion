@@ -24,8 +24,10 @@ import { type AgentText, useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
+import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
+import { FOOT_BOX } from "./margin-slot";
 import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
@@ -54,13 +56,16 @@ export interface OutlineWriter {
   readonly changeAnswer: (node: TreeNode) => void;
   /** Sets the line back to a new comment on the issue. */
   readonly clear: () => void;
-  /** Asks the outline to take the reader to what a write from the line just landed
-   *  (`Landing`), once its read has drawn it. */
+  /** Asks the page to take the reader to what a write from the line just landed (`Landing`),
+   *  once its read has drawn it: the outline, or the panel's history where the write answered a
+   *  turn of a thread the history holds (`HeldLanding.in`). */
   readonly land: (landing: Landing) => void;
-  /** Says the outline has taken the reader there, which ends the ask. */
+  /** Says the part of the page that takes the landing has taken the reader there, or given the
+   *  landing up, which ends the ask. */
   readonly landed: () => void;
-  /** Where the outline is asked to take the reader after a write; undefined once it has. */
-  readonly landing: Landing | undefined;
+  /** Where the page is asked to take the reader after a write, and which part of it takes them
+   *  there; undefined once it has. */
+  readonly landing: HeldLanding | undefined;
   /** Puts the caret in the line, once it is drawn. */
   readonly focus: () => void;
   /** What the line writes with no reply set: a comment, or a question. */
@@ -136,6 +141,26 @@ export interface Landing {
     | undefined;
 }
 
+/**
+ * A landing as the writer holds it (`OutlineWriter.landing`): what the line asked for, and which
+ * part of the page takes the reader there. `history` where `under` is a turn of a thread the
+ * panel's history holds (`agents-only.ts`), of which the outline draws no row: the history takes
+ * the reader to their new turn in that thread, or back to that turn (`IssueHistory.tsx`).
+ * `outline` for every other landing, which the outline takes (`IssueTree.tsx`). It is told once,
+ * as the line asks (`land`), by the one rule of which turns the history draws, from the reads the
+ * outline and the history draw the conversation from, so no landing is taken by both of them and
+ * none is left by both.
+ */
+export interface HeldLanding extends Landing {
+  readonly in: "history" | "outline";
+}
+
+/** How long a write's landing waits for the read that draws it, in milliseconds: the line's send
+ *  has landed and its read is a request away, so a read that has not drawn the write by then is
+ *  not going to. The outline then takes the reader to their newest node where it looked
+ *  (`IssueTree.tsx`), and the history gives the landing up (`IssueHistory.tsx`). */
+export const LANDING_WAIT_MS = 10_000;
+
 /** The answer the writer holds (`OutlineWriter.answer`, which says what reads it). */
 export interface AnswerTarget {
   /** The ask's own id, which the answer is written to. */
@@ -181,7 +206,7 @@ export function useOutlineWriter(): OutlineWriter | undefined {
 const DRAWING_FRAMES = 10;
 
 /** The line's field, wherever the page draws it (`IssueComposer.tsx`). */
-const COMPOSER_FIELD = '[data-testid="issue-composer"] textarea';
+const COMPOSER_FIELD = `${FOOT_BOX} textarea`;
 
 /** Holds the writer for one issue's body. */
 export function OutlineWriterProvider({
@@ -198,7 +223,7 @@ export function OutlineWriterProvider({
     store.get(sendKey)?.request.kind === "ask" ? "ask" : "comment"
   );
   const [answer, setAnswer] = useState<AnswerTarget | undefined>(undefined);
-  const [landing, setLanding] = useState<Landing | undefined>(undefined);
+  const [landing, setLanding] = useState<HeldLanding | undefined>(undefined);
   const landed = useCallback(() => setLanding(undefined), []);
   // The reader's own comment the line is editing, if it is: its id and its words as they stand.
   const [editing, setEditing] = useState<{ readonly body: string; readonly id: string }>();
@@ -217,6 +242,18 @@ export function OutlineWriterProvider({
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
+  // Which part of the page takes a landing (`HeldLanding.in`): the history where what the write
+  // answered is a turn of a thread it holds, by the rule the outline leaves those threads out by
+  // and the history draws them by (`agentsOnlyIds`), over the same reads under the same keys.
+  const land = useCallback(
+    (asked: Landing) => {
+      const history =
+        asked.under !== undefined &&
+        agentsOnlyIds(comments.data, messages.data, asks.data).has(asked.under.id);
+      setLanding({ ...asked, in: history ? "history" : "outline" });
+    },
+    [asks.data, comments.data, messages.data]
+  );
   // The animation frame `focus()` is waiting on, if any: a new `focus()` cancels the earlier one
   // before scheduling its own, and unmounting the provider cancels it so no frame of an unmounted
   // writer moves the focus.
@@ -396,7 +433,7 @@ export function OutlineWriterProvider({
       editing,
       focus,
       kind,
-      land: setLanding,
+      land,
       landed,
       landing,
       pick,
@@ -418,6 +455,7 @@ export function OutlineWriterProvider({
       editing,
       focus,
       kind,
+      land,
       landed,
       landing,
       pick,

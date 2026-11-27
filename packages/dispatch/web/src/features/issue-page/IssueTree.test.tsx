@@ -30,6 +30,7 @@ import * as Y from "yjs";
 import { correction } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
@@ -43,6 +44,7 @@ import type {
   IDCandidate,
   IssueDecisions,
   IssueDetails,
+  MessageRead,
 } from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
@@ -67,11 +69,11 @@ import {
 } from "./document-admission";
 import { DocumentStage, DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
-import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
+import { IssueTree, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import type { NodeChip, TreeNode } from "./issue-tree";
-import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import { DETAILS_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
 import { lineOrKindWord } from "./node-line";
@@ -83,6 +85,7 @@ import {
   useOutlineRequest,
 } from "./outline-request";
 import {
+  LANDING_WAIT_MS,
   type Landing,
   type OutlineWriter,
   OutlineWriterProvider,
@@ -494,18 +497,19 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
 
 /**
  * The tree under the providers the page's `slots/providers.tsx` draws around its body - the row
- * writer and the Contents list's requests - with `reader` signed in. It hands back the list's
- * ask and its Focus branch toggle, the writer's landing, a switch that takes the tree off the
- * page and draws it again (a view drawn in its place and turned off), and a redraw over another
- * tree (a read answering).
+ * writer and the Contents list's requests - with `reader` signed in, and the writer's read of the
+ * issue's messages answering `messages`. It hands back the list's ask and its Focus branch
+ * toggle, the writer's landing, a switch that takes the tree off the page and draws it again (a
+ * view drawn in its place and turned off), and a redraw over another tree (a read answering).
  */
-function renderPageTree(root: TreeNode, reader = "alice") {
+function renderPageTree(root: TreeNode, reader = "alice", messages: readonly MessageRead[] = []) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["whoami"], { kind: "user", login: reader });
-  // The writer's own reads, answered empty, so it asks the network for nothing.
-  for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  // The writer's own reads, answered, so it asks the network for nothing.
+  for (const read of ["asks", "comments"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(["issue-messages", KEY], [...messages]);
   const held: PageHold = {};
   const draw = (drawn: TreeNode) => (
     <MemoryRouter>
@@ -618,6 +622,21 @@ function cardInDetails(): HTMLElement {
       <button type="button">{thread}</button>
     </aside>
   ).getByRole("button", { name: thread });
+}
+
+/** The box at the page's foot (`IssueComposer.tsx`), drawn after the tree, as at 1440 px where
+ *  it stands between the outline and Details in the order Tab goes: its field and its Send. */
+function boxAtFoot(): { readonly field: HTMLElement; readonly send: HTMLElement } {
+  const drawn = render(
+    <section data-testid={FOOT_BOX_TEST_ID}>
+      <textarea aria-label="Comment" />
+      <button type="button">Send</button>
+    </section>
+  );
+  return {
+    field: drawn.getByRole("textbox", { name: "Comment" }),
+    send: drawn.getByRole("button", { name: "Send" }),
+  };
 }
 
 /** Lets the next frame come, and React draw what it changed. */
@@ -1052,6 +1071,86 @@ test("Tab out of the outline lets go of the row at once: no body, no focused loo
   ).not.toContain(pageFocusedRow);
   expect(first.querySelector("[data-node-body]")).toBeNull();
   expect(first.querySelector("[data-row-acts]")).toBeNull();
+});
+
+// Decision 570: where Details stands beside the outline, the first Tab stop after a row is the
+// box at the page's foot, and Details comes after the box. The outline let go of the row's facts
+// as the focus went into the box, so Details drew the issue's by the time Tab reached it, and its
+// controls for the row - "What references this row" among them - could not be reached by Tab.
+// The facts stay while the focus is in the box, through each of its stops and on into Details.
+test("Tab from a row into the box at the page's foot, through it and on into Details keeps the row's facts", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const box = boxAtFoot();
+  const card = cardInDetails();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  expect(view.focusedNode()?.id, "the panel holds no facts of the focused row").toBe("comment-1");
+
+  await user.tab();
+  expect(document.activeElement === box.field, "Tab from the row did not go to the box").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going from the row into the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  expect(document.activeElement === box.send, "Tab did not go on to the box's Send").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus moving inside the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  expect(document.activeElement === card, "Tab from the box did not go on to Details").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going on from the box at the page's foot into Details let go of the row's facts"
+  ).toBe("comment-1");
+});
+
+// The focus going on from the box at the page's foot to anywhere but Details or the outline is
+// the reader leaving the row, as the focus going there from the row is.
+test("the focus leaving the box at the page's foot for a control outside Details lets go of the row's facts", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const box = boxAtFoot();
+  const outside = controlOutside();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+
+  await user.tab();
+  expect(document.activeElement === box.field, "Tab from the row did not go to the box").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going from the row into the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the box did not go on to the control outside Details"
+  ).toBe(true);
+  expect(
+    view.focusedNode(),
+    "the focus leaving the box at the page's foot for a control outside Details kept the row's facts"
+  ).toBeUndefined();
 });
 
 // Escape anywhere on the page closes at once the body a press outside the outline keeps, with
@@ -8613,6 +8712,83 @@ test("a landing's late fallback leaves the focus where the reader moved it", asy
   } finally {
     realClock();
   }
+});
+
+// A write from the line at the foot that answered a turn of a thread the panel's history holds -
+// here the Legion daemon's message, whose thread the history draws whole (`agents-only.ts`) - is
+// the history's to land (`HeldLanding.in`). The outline draws no row of that turn, and it leaves
+// the landing alone: it ends nothing and moves no focus, through a read that draws the tree again
+// too. A write under a row of the outline is still the outline's, which takes the reader to their
+// new row once a read draws it.
+test("a landing under a turn of the history is left to the history, and one under a row of the outline is still the outline's", async () => {
+  setViewport(1440);
+  const daemon: MessageRead = {
+    message: {
+      author: { id: "legion-daemon:CORE", kind: "session" },
+      body: "The planner's session was replaced; its claim moves to the new one.",
+      broadcast_id: null,
+      created_at: "2026-11-16T08:00:00Z",
+      deliveries: [],
+      ...messageCorrectionFields(),
+      id: "m-daemon",
+      in_reply_to: null,
+      issue_key: KEY,
+      reply_block: null,
+      target: null,
+    },
+    replies: [],
+  };
+  const thread = (replies: TreeNode[]) =>
+    node({
+      children: [
+        node({
+          children: replies,
+          held: replies.length,
+          id: "comment-1",
+          text: "A thread.",
+          type: "comment",
+        }),
+        node({ id: "comment-9", text: "After the thread.", type: "comment" }),
+      ],
+      id: KEY,
+      type: "issue",
+    });
+  const mine = node({
+    at: "2026-11-16T09:00:00Z",
+    author: { id: "alice", kind: "user" },
+    id: "comment-3",
+    text: "My reply.",
+    type: "comment",
+  });
+  const tree = renderPageTree(thread([]), "alice", [daemon]);
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  await act(async () =>
+    tree.writer()?.land({ to: "newest", under: { id: "m-daemon", kind: "message" } })
+  );
+  tree.redraw(thread([]));
+  expect(
+    tree.writer()?.landing,
+    "the outline took a landing under a turn of the history"
+  ).toMatchObject({ in: "history", under: { id: "m-daemon" } });
+  expect(
+    focusedRow(container),
+    "a landing under a turn of the history moved the outline's focus"
+  ).toBe("comment-1");
+
+  await tree.land("comment-1");
+  expect(
+    tree.writer()?.landing?.in,
+    "a landing under a row of the outline is not the outline's"
+  ).toBe("outline");
+  tree.redraw(thread([mine]));
+  await waitFor(() =>
+    expect(focusedRow(container), "the outline did not take the reader to their new row").toBe(
+      "comment-3"
+    )
+  );
+  expect(tree.writer()?.landing).toBeUndefined();
 });
 
 // `r` sets the line at the foot to reply to the focused row, and `a` the writer's answer to the
