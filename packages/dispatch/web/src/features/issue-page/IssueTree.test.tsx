@@ -4303,23 +4303,26 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
 test.each([
   ["isComposing", { isComposing: true }],
   ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were", async (_mark, modifiers) => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const { editable, view } = await caretInStatement(user);
-  controlOutside();
-  await act(async () => {
-    pressIn(editable, "Tab", modifiers);
-  });
-  await nextFrame();
-  expect(
-    document.activeElement === editable,
-    "a Tab pressed in a composition moved the focus out of the row's editor"
-  ).toBe(true);
-  expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
-    "artifact-spec"
-  );
-});
+] as const)(
+  "a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were",
+  async (_mark, modifiers) => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const { editable, view } = await caretInStatement(user);
+    controlOutside();
+    await act(async () => {
+      pressIn(editable, "Tab", modifiers);
+    });
+    await nextFrame();
+    expect(
+      document.activeElement === editable,
+      "a Tab pressed in a composition moved the focus out of the row's editor"
+    ).toBe(true);
+    expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
+      "artifact-spec"
+    );
+  }
+);
 
 // What the node's own block draws is the node's: from the caret in a plan task's words, Tab stops
 // at the link the task's header draws, as the browser would, and the editing stays. Tab from that
@@ -10170,9 +10173,13 @@ test("a failed asks read draws its line over the tree and opens the page on its 
   asks.mockRejectedValueOnce(serverDown());
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = view;
     const { inTree, line, overTree, retry } = await failedLines(container, 1, "asks");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.asks_unreadable);
@@ -10290,9 +10297,13 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
   asks.mockRejectedValueOnce(serverDown());
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = view;
     const { line, retry } = await failedLines(container, 1, "asks");
     await waitFor(
@@ -10381,9 +10392,13 @@ test("a read whose refresh failed while it holds its answer draws no line, and a
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const body = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     await waitFor(
       () =>
         expect(focusPlace(body.view.container), "the page did not open on the question").toBe(
@@ -10452,10 +10467,13 @@ test("a failed results read draws its line over the tree, and the page opens on 
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-      issueResultsQuery(KEY).queryKey,
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY], issueResultsQuery(KEY).queryKey]
+    );
     const { container } = view;
     const { inTree, line, overTree } = await failedLines(container, 1, "results");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.results_unreadable);
@@ -10494,10 +10512,13 @@ test("with the asks and the results reads failed, the page opens on the asks' Re
   const asks = spyOn(api, "listIssueAsks").mockRejectedValue(serverDown());
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-      issueResultsQuery(KEY).queryKey,
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY], issueResultsQuery(KEY).queryKey]
+    );
     const { container } = view;
     await failedLines(container, 2, "asks and results");
     expect(
@@ -10539,9 +10560,13 @@ test("with the asks read failed, the page opens on a question that waits on the 
     open_asks: [{ ...WAITING_QUESTION, last_reply: null, options: [] }],
   };
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, issue, [
-      ["asks", KEY],
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      issue,
+      [["asks", KEY]]
+    );
     const { container } = view;
     const { line } = await failedLines(container, 1, "asks");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.asks_unreadable);
@@ -10576,10 +10601,13 @@ test("a failed asks read that answers with a question that waits before its Retr
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   const frames = framesByHand();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-      issueResultsQuery(KEY).queryKey,
-    ]);
+    const body = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY], issueResultsQuery(KEY).queryKey]
+    );
     const { container } = body.view;
     await failedLines(container, 2, "asks and results");
     expect(
@@ -10629,9 +10657,13 @@ test("a failed comments read opens the page on its Retry where no question waits
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([elsewhere] as never);
   const comments = spyOn(api, "listComments").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, undefined, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      undefined,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = view;
     const { line } = await failedLines(container, 1, "comments");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.comments_unreadable);
@@ -10675,9 +10707,13 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
   const out = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const body = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = body.view;
     await failedLines(container, 2, "asks and names");
     await waitFor(
@@ -10749,9 +10785,13 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   const asksOut = Promise.withResolvers<never>();
   const namesOut = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const body = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = body.view;
     await failedLines(container, 2, "asks and names");
     await waitFor(
@@ -10847,7 +10887,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     }) as never;
   });
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails());
+    const body = renderAddressedBody(`/issues/${KEY}/conversation`, [], StageSlot, issueDetails());
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     expect(
@@ -10940,7 +10980,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     return Promise.resolve(stepNamed(`Hang the lanterns as ${cited} asks.`)) as never;
   });
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails());
+    const body = renderAddressedBody(`/issues/${KEY}/conversation`, [], StageSlot, issueDetails());
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     expect(
@@ -11019,7 +11059,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
   const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
   const asksOut = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails(), [
+    const body = renderAddressedBody(`/issues/${KEY}/conversation`, [], StageSlot, issueDetails(), [
       issueAsksQuery(KEY).queryKey,
     ]);
     const { container } = body.view;
@@ -11105,7 +11145,7 @@ test("a names line both names reads stand failed by keeps its alert and the focu
     return Promise.resolve(stepNamed(`Hang the lanterns as ${cited} asks.`)) as never;
   });
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails());
+    const body = renderAddressedBody(`/issues/${KEY}/conversation`, [], StageSlot, issueDetails());
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     await framesPass();
@@ -11529,9 +11569,12 @@ test.each([
       await user.pointer({ keys: "[TouchA>]", target: row });
     },
   ],
-] as const)("a read that drops the focused row %s leaves the focus on the page's body and scrolls nothing", async (when, readerAct) => {
-  await expectDropLeavesBody(when, readerAct);
-});
+] as const)(
+  "a read that drops the focused row %s leaves the focus on the page's body and scrolls nothing",
+  async (when, readerAct) => {
+    await expectDropLeavesBody(when, readerAct);
+  }
+);
 
 // The app holds one store of writes (`write-store.ts`), and a write of the reader's that draws
 // nothing of this tree lands in it too: here a pin of another issue, which writes the reader's
@@ -11709,75 +11752,78 @@ test.each([
     true,
     "Keep's own read, after another session's, left the focus on no row of the tree, or not on the row now in its place",
   ],
-] as const)("Keep on a decision only the frontier unfolded drops its row %s and hands the focus to the row now in its place", async (_when, readBetween, lost) => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const kept = spyOn(api, "keepDecision").mockResolvedValue({
-    ...decision,
-    waiting_review: false,
-  } as never);
-  const reply = node({
-    author: { id: "bob", kind: "user" },
-    id: "comment-9",
-    text: "A reply of bob's under the decision.",
-    type: "comment",
-  });
-  const issue = (waiting: boolean, replies: TreeNode[] = []) =>
-    node({
-      children: [
-        node({
-          children: [
-            node({
-              children: replies,
-              held: replies.length,
-              id: "decisions#b-d1",
-              reference: decision.ref,
-              type: "decision",
-              waiting,
-            }),
-          ],
-          held: 1 + replies.length,
-          id: "ask-1",
-          text: "Which flag?",
-          type: "ask",
-        }),
-      ],
-      id: KEY,
-      type: "issue",
+] as const)(
+  "Keep on a decision only the frontier unfolded drops its row %s and hands the focus to the row now in its place",
+  async (_when, readBetween, lost) => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const kept = spyOn(api, "keepDecision").mockResolvedValue({
+      ...decision,
+      waiting_review: false,
+    } as never);
+    const reply = node({
+      author: { id: "bob", kind: "user" },
+      id: "comment-9",
+      text: "A reply of bob's under the decision.",
+      type: "comment",
     });
-  const view = renderTree(issue(true), {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
-  });
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe("ask-1"));
-    await user.keyboard("j");
-    await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
-    await view.findByRole("button", { name: "Keep" });
+    const issue = (waiting: boolean, replies: TreeNode[] = []) =>
+      node({
+        children: [
+          node({
+            children: [
+              node({
+                children: replies,
+                held: replies.length,
+                id: "decisions#b-d1",
+                reference: decision.ref,
+                type: "decision",
+                waiting,
+              }),
+            ],
+            held: 1 + replies.length,
+            id: "ask-1",
+            text: "Which flag?",
+            type: "ask",
+          }),
+        ],
+        id: KEY,
+        type: "issue",
+      });
+    const view = renderTree(issue(true), {
+      artifacts: [decisionsDocument],
+      decisions: { decisions: [decision], document: null, open_questions: [] },
+    });
+    try {
+      await waitFor(() => expect(focusedRow(view.container)).toBe("ask-1"));
+      await user.keyboard("j");
+      await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
+      await view.findByRole("button", { name: "Keep" });
 
-    await user.keyboard("{Shift>}K{/Shift}");
-    await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
-    if (readBetween) {
-      // Another session's read draws the tree again first, the decision as it was.
-      await act(async () => view.reread(issue(true, [reply])));
+      await user.keyboard("{Shift>}K{/Shift}");
+      await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
+      if (readBetween) {
+        // Another session's read draws the tree again first, the decision as it was.
+        await act(async () => view.reread(issue(true, [reply])));
+        expect(
+          focusedRow(view.container),
+          "another session's read that drew the decision as it was took the focus off its row"
+        ).toBe("decisions#b-d1");
+      }
+      // The decisions' read draws the decision kept.
+      await act(async () => view.reread(issue(false, readBetween ? [reply] : [])));
       expect(
-        focusedRow(view.container),
-        "another session's read that drew the decision as it was took the focus off its row"
-      ).toBe("decisions#b-d1");
+        rowsFor(view.container, "decisions#b-d1"),
+        "the question's branch did not fold over the kept decision"
+      ).toEqual([]);
+      expect(focusedRow(view.container), lost).toBe("ask-1");
+      await expectReadersPlace(view.container, "ask-1");
+      view.unmount();
+    } finally {
+      kept.mockRestore();
     }
-    // The decisions' read draws the decision kept.
-    await act(async () => view.reread(issue(false, readBetween ? [reply] : [])));
-    expect(
-      rowsFor(view.container, "decisions#b-d1"),
-      "the question's branch did not fold over the kept decision"
-    ).toEqual([]);
-    expect(focusedRow(view.container), lost).toBe("ask-1");
-    await expectReadersPlace(view.container, "ask-1");
-    view.unmount();
-  } finally {
-    kept.mockRestore();
   }
-});
+);
 
 // A read that drops the row being edited, with no act of the reader's since the tree was last
 // drawn - a version a collaborator wrote - takes the editor's focus out with it, which the
@@ -11972,29 +12018,32 @@ async function expectEditingEndedOnBody(
 test.each([
   ["a paragraph", paragraph("r1", "A statement of the spec.")],
   ["a heading", heading("r1", 2, "A statement of the spec.")],
-] as const)("the reader's edit that takes the focused row, %s, out of their filter by words hands the focus to the row now in its place once a read drops the row", async (_kind, statement) => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const { editable, editor, view } = await caretInLiveStatement(user, liveBlocks(statement));
-  const before = blocksOf(editor);
-  const words = wordsOf(editable, "r1");
-  // The filter's word, `statement`, typed over.
-  await select(words, 2, words, 11);
-  typeInEditor(editor, "rule");
-  expect(blocksOf(editor), "the reader's edit did not go in").toEqual(
-    withWords(before, "r1", "A rule of the spec.")
-  );
+] as const)(
+  "the reader's edit that takes the focused row, %s, out of their filter by words hands the focus to the row now in its place once a read drops the row",
+  async (_kind, statement) => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const { editable, editor, view } = await caretInLiveStatement(user, liveBlocks(statement));
+    const before = blocksOf(editor);
+    const words = wordsOf(editable, "r1");
+    // The filter's word, `statement`, typed over.
+    await select(words, 2, words, 11);
+    typeInEditor(editor, "rule");
+    expect(blocksOf(editor), "the reader's edit did not go in").toEqual(
+      withWords(before, "r1", "A rule of the spec.")
+    );
 
-  await dropStatement(view);
-  await waitFor(() =>
-    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
-  );
-  expect(
-    focusedRow(view.container),
-    "a read that dropped the row the reader's edit took out of their filter left the focus on no row of the tree, or not on the row now in its place"
-  ).toBe("comment-3");
-  await expectReadersPlace(view.container, "comment-3");
-});
+    await dropStatement(view);
+    await waitFor(() =>
+      expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+    );
+    expect(
+      focusedRow(view.container),
+      "a read that dropped the row the reader's edit took out of their filter left the focus on no row of the tree, or not on the row now in its place"
+    ).toBe("comment-3");
+    await expectReadersPlace(view.container, "comment-3");
+  }
+);
 
 // A save of the reader's lands between two of their keys: the read that draws their first edit,
 // the row still in their filter by words, comes before the read that drops the row after their

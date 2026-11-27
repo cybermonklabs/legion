@@ -1053,6 +1053,7 @@ func TestProbeImageRefusesARoleConfigFilesValueNoRoleCarries(t *testing.T) {
 // the deployment (a name of the role grammar, claim.IsRole) is recorded with its overlays as one of
 // Legion's is.
 func TestProbeImageTakesADeploymentRolesOverlays(t *testing.T) {
+	t.Parallel()
 	var flag roleConfigFilesFlag
 	if err := flag.Set("checker=/etc/checker.yml"); err != nil {
 		t.Fatalf("Set(checker=/etc/checker.yml) = %v, want nil", err)

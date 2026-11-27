@@ -2,10 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/apifixture"
@@ -209,5 +213,77 @@ func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
 	}
 	if supported := SupportedContracts(); !slices.Equal(supported[:len(frozenContracts)], frozenContracts) {
 		t.Errorf("SupportedContracts() = %v, want it to begin with the frozen list %v", supported, frozenContracts)
+	}
+}
+
+// constantsSentence is the sentence of frozenContracts' comment that lists the entries the list
+// writes as constants, read with the comment's line breaks folded to spaces: the numbers, then
+// "are constants rather than their numbers".
+var constantsSentence = regexp.MustCompile(`((?:\d+, )*\d+ and \d+) are constants rather than their numbers`)
+
+// The comment on frozenContracts (answers.go) lists the number of every entry the list writes as
+// a constant rather than as its number, and names each of those constants. A number that list
+// leaves out reads as an entry written as itself, so a reader who renumbers an entry, or checks
+// from the comment which elements a renumber moves, misses it. The list's elements are read out
+// of answers.go in their order, so the i-th is frozenContracts[i], and a constant is an element
+// that is an identifier.
+func TestTheFrozenListsCommentNamesEachConstantItHolds(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "answers.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse answers.go: %v", err)
+	}
+	var doc *ast.CommentGroup
+	var elements []ast.Expr
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != 1 || value.Names[0].Name != "frozenContracts" || len(value.Values) != 1 {
+				continue
+			}
+			literal, ok := value.Values[0].(*ast.CompositeLit)
+			if !ok {
+				t.Fatal("answers.go's frozenContracts is not a composite literal, which this test reads")
+			}
+			doc, elements = gen.Doc, literal.Elts
+		}
+	}
+	if len(elements) != len(frozenContracts) {
+		t.Fatalf("answers.go's frozenContracts literal has %d elements and the list holds %d: this test read the wrong declaration, or none",
+			len(elements), len(frozenContracts))
+	}
+	text := strings.Join(strings.Fields(doc.Text()), " ")
+	var constants []int
+	for i, element := range elements {
+		name, ok := element.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		constants = append(constants, frozenContracts[i])
+		if !strings.Contains(text, name.Name) {
+			t.Errorf("the comment on frozenContracts does not name %s (%d), which the list holds", name.Name, frozenContracts[i])
+		}
+	}
+	if len(constants) == 0 {
+		t.Fatal("frozenContracts holds no constant this test read, so the comment is held to nothing")
+	}
+	match := constantsSentence.FindStringSubmatch(text)
+	if match == nil {
+		t.Fatalf("the comment on frozenContracts holds no sentence %q, which this test reads", constantsSentence.String())
+	}
+	var listed []int
+	for _, number := range regexp.MustCompile(`\d+`).FindAllString(match[1], -1) {
+		contract, err := strconv.Atoi(number)
+		if err != nil {
+			t.Fatalf("the comment's number %q: %v", number, err)
+		}
+		listed = append(listed, contract)
+	}
+	if !slices.Equal(listed, constants) {
+		t.Errorf("the comment on frozenContracts lists %v as the entries written as constants, and the list's constants are %v",
+			listed, constants)
 	}
 }

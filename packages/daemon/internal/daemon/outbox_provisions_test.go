@@ -315,8 +315,8 @@ func TestALaunchProvisionsAWorkspaceWhoseCheckoutFailed(t *testing.T) {
 	}
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return repo, "main", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: repo, DefaultBranch: "main"}, nil
 		},
 		hostWorkspaces:  true,
 		ensureWorkspace: r.ensureWorkspace,

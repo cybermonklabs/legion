@@ -81,6 +81,7 @@ func assertMergerStarts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, t
 // starts at d's move to its merge), and a base moved within the run, at a move back (its control:
 // the base check at every act's start, under which d's move back to its implementer queues a row).
 func TestAVersionThatMakesARunningTaskMergeMovesItsBaseOnceAtItsMerge(t *testing.T) {
+	t.Parallel()
 	pool, engine, root, blocks := dNeedsAC(t, true)
 	pr := pullRequestOfTask(t, pool, root.Key, "d")
 	pr.Base = "legion/LEGION-208.join"
@@ -114,6 +115,7 @@ func TestAVersionThatMakesARunningTaskMergeMovesItsBaseOnceAtItsMerge(t *testing
 // which needs d, while d reviews. d's reviewer passes: d is done at its last step, with no retro, no
 // merge and no task_branch row of d beyond its start's, and f starts.
 func TestAVersionThatMakesARunningTaskNonMergingMovesNoBase(t *testing.T) {
+	t.Parallel()
 	pool, engine, root, blocks := dNeedsAC(t, false)
 	pr := pullRequestOfTask(t, pool, root.Key, "d")
 	pr.Base = "main"
@@ -151,6 +153,7 @@ func TestAVersionThatMakesARunningTaskNonMergingMovesNoBase(t *testing.T) {
 // base's gate of a count of tasks also refuses), and a base check that undoes a stack an implementer
 // made on purpose (its control: the check with no read of plan rows, under which (2) waits).
 func TestTheBaseOfAnIssueWithPlanRowsMovesAtItsMerge(t *testing.T) {
+	t.Parallel()
 	t.Run("a plan of one task", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

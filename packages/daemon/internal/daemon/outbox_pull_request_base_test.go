@@ -62,6 +62,7 @@ func (g *pullBaseGitHub) serve(w http.ResponseWriter, r *http.Request) bool {
 // branches into the task's branch at its merge (its control: taskBranch with no case of the merge
 // place, under which the row reads and writes branches the fake does not serve).
 func TestTheBranchRowSetsTheBaseOnlyWhereItDiffers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, base string
 		writes     []string

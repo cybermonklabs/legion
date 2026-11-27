@@ -223,7 +223,7 @@ func TestMigration20261120144241KeepsEachIntakeFailureToItsRules(t *testing.T) {
 		{shape: "a fence of a pull request that is not recorded", repo: "acme/widgets", number: 1209, kind: "pull_request", position: 0, head: "h1",
 			code: "23503", constraint: "pull_request_settled_heads_pull_request_fkey"},
 	} {
-		// Store.Migrate runs through 20261127031536, which keys what a pull request remembers by
+		// Store.Migrate runs through 20261127234212, which keys what a pull request remembers by
 		// its repository and its number, so each row names the pull request it is of.
 		_, err := store.Pool().Exec(ctx, `insert into pull_request_settled_heads (repo, number, kind, position, head, fence)
 			values ($1, $2, $3, $4, $5, '{"checkRuns": []}'::jsonb)`, row.repo, row.number, row.kind, row.position, row.head)

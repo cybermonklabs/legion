@@ -27,6 +27,7 @@ const checkOfEachMergeRelease = "the release that keeps a production check for e
 // it. The two columns are unknown before the migration, which is what shows the fixture is the
 // old shape.
 func TestTheCheckOfTheReleaseBeforeReadsWithGenerationZeroAndNoTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, checkOfEachMergeVersion-1)
@@ -74,6 +75,7 @@ func TestTheCheckOfTheReleaseBeforeReadsWithGenerationZeroAndNoTask(t *testing.T
 // row. So the roll forward's Migrate applies the file again, and the key and the two columns stand
 // again.
 func TestTheWayBackOfTheCheckOfEachMergeRestoresTheKeyByIssue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {

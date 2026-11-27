@@ -923,6 +923,7 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 // name's role keeps its App. The change of App moves no owner directory, so the pod reads no drift
 // and no update round replaces it.
 func TestASlotsGhFilesFollowItsClaimsRole(t *testing.T) {
+	t.Parallel()
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {

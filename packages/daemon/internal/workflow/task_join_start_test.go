@@ -83,6 +83,7 @@ func joinsEnd(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 // (its control: start without the join's check, so d's step starts at once and the assertion
 // that it waits fails).
 func TestEachStartOfATaskWaitsForItsJoin(t *testing.T) {
+	t.Parallel()
 	t.Run("the first start of a task with needs waits for its join", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -233,6 +234,7 @@ func joinRowsOf(t *testing.T, pool *pgxpool.Pool, key string) []string {
 // The fault it catches is a join that nothing queues again, so its task waits for ever (its
 // control: the settle without the join again: no row at generation 2, and the test fails).
 func TestAJoinThatWaitedAtAReadmissionStartsAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -288,6 +290,7 @@ func TestAJoinThatWaitedAtAReadmissionStartsAgain(t *testing.T) {
 //
 // It is the twin of TestEachStartOfATaskWaitsForItsJoin's last case on a plan of one task.
 func TestThePlansOneTaskStartsAtOnceOnTheIssuesBranch(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)

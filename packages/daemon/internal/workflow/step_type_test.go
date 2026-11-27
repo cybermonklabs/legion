@@ -23,6 +23,7 @@ func checkerAndCriticDeployment() plan.Deployment {
 // Legion's own roles. An engine whose configuration names no deployment stores Legion's own roles
 // with theirs.
 func TestAStoredStepTakesTheTypeOfItsRoleInTheDeployment(t *testing.T) {
+	t.Parallel()
 	t.Run("the project's default steps", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := engineRunningByDefault(t, "implementer", "checker")

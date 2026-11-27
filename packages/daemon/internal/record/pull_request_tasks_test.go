@@ -101,7 +101,7 @@ func TestTwoTasksOfOneIssueKeepTwoPullRequests(t *testing.T) {
 // recorded on legion/LEGION-208.b while b waits with no branch, is no task's, and b's once b's
 // start gives it that branch, and it is then the merge's. A second pull request opened on
 // legion/LEGION-208, #44, keeps a row of its own beside #41 (the record is keyed by the repository
-// and the number, migration 20261127031536), and #41 stays a's own: neither is on a's base, so the
+// and the number, migration 20261127234212), and #41 stays a's own: neither is on a's base, so the
 // first opened is (dispatch://INFRA-5910 decision 5), and #44 is another pull request of a.
 //
 // The fault it catches is a task the row stored when it was written (its control: the reads on

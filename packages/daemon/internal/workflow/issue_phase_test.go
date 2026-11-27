@@ -38,6 +38,7 @@ func stepAtPlace(n int) record.TaskPlace {
 // issuePhaseOfTasks answering the last running task's phase, which answers reviewing for the first
 // case, and the issue would give its slot back while task a implements).
 func TestTheIssueStandsAtTheFirstPhaseOfItsRunningTasks(t *testing.T) {
+	t.Parallel()
 	noAct := record.TaskPlace{}
 	stepLine := []phase.Phase{phase.Step, phase.Testing, phase.Retro, phase.Merging}
 	for _, tc := range []struct {
@@ -92,6 +93,7 @@ func TestTheIssueStandsAtTheFirstPhaseOfItsRunningTasks(t *testing.T) {
 // The fault it catches is an issue of one task that walks another way than before a plan held
 // several.
 func TestAnIssueOfOneTaskStandsWhereItsTaskStands(t *testing.T) {
+	t.Parallel()
 	places := []record.TaskPlace{stepAtPlace(1), stepAtPlace(2), stepAtPlace(3), stepAtPlace(4), stepAtPlace(5),
 		{Kind: record.PlaceRetro}, {Kind: record.PlaceMerge}}
 	type state struct {

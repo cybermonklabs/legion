@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -34,8 +35,9 @@ const resolvedX = "from a\nfrom c\n"
 // jjCommand is a command a task tells its agent to run: a jj command between backquotes.
 var jjCommand = regexp.MustCompile("`(jj [^`]+)`")
 
-// taskCopyDir is the directory of the working copy of branch under copies: the branch without
-// legion/, as the runtime names a task's working copy (workspace.Name).
+// taskCopyDir is the directory under copies of the working copy of branch, or of the working copy
+// name the engine hands its directory (workflow.Config.WorkspaceDir): the branch without legion/,
+// as the runtime names a task's working copy (workspace.Name).
 func taskCopyDir(copies, branch string) string {
 	return filepath.Join(copies, strings.TrimPrefix(branch, "legion/"))
 }
@@ -46,7 +48,7 @@ func taskCopyDir(copies, branch string) string {
 func seedJoinRepair(t *testing.T) (*taskBranchRig, record.Issue, string) {
 	t.Helper()
 	copies := t.TempDir()
-	rig, issue := seedJoin(t, func(_ record.Issue, branch string) string { return taskCopyDir(copies, branch) }, taskNeedingD)
+	rig, issue := seedJoin(t, func(name string, _ ghrepo.Repository) string { return taskCopyDir(copies, name) }, taskNeedingD)
 	return rig, issue, copies
 }
 
@@ -323,7 +325,7 @@ func TestAJoinBranchThatCannotMergeIntoTheTasksBranchIsMergedThere(t *testing.T)
 func TestAJoinOfATaskThatMergesIsRepairedOnItsBranch(t *testing.T) {
 	t.Parallel()
 	copies := t.TempDir()
-	rig, issue := seedJoin(t, func(_ record.Issue, branch string) string { return taskCopyDir(copies, branch) })
+	rig, issue := seedJoin(t, func(name string, _ ghrepo.Repository) string { return taskCopyDir(copies, name) })
 	runJoinOfD(t, rig, issue)
 	branch := rig.branch(t, "d")
 	a, c := rig.github.Head(t, rig.branch(t, "a")), rig.github.Head(t, rig.branch(t, "c"))

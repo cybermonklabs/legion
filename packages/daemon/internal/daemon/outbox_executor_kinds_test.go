@@ -2,11 +2,9 @@ package daemon
 
 import (
 	"go/ast"
+	"go/constant"
 	"go/parser"
 	"go/token"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -79,61 +77,34 @@ func executorCases(t *testing.T) map[string]bool {
 }
 
 // payloadTypesByKind is the payload type of each kind, as the record package's source declares it:
-// the type whose method OutboxKind returns the constant of that kind. It reads every file of the
-// package but its tests, and fails the test where it finds no such method.
+// the type whose method OutboxKind returns the constant of that kind. The kind is the constant's
+// value as the type checker reads it, however the constant is spelled: a string literal, or another
+// package's constant, as each state event's kind is the one package stateevent names
+// (record.OutboxKindStateChange is stateevent.KindChange). It type-checks the package's non-test
+// source against the compiler's export data of its dependencies (compiledImports, checkPackage),
+// and fails the test where a method OutboxKind returns what it cannot read as a string constant,
+// or where it finds no such method.
 func payloadTypesByKind(t *testing.T) map[record.OutboxKind]string {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join("..", "record", "*.go"))
-	if err != nil {
-		t.Fatalf("list the record package's files: %v", err)
-	}
-	constants := map[string]record.OutboxKind{}
-	returned := map[string]string{}
-	for _, path := range paths {
-		if strings.HasSuffix(path, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		for _, decl := range file.Decls {
-			switch decl := decl.(type) {
-			case *ast.GenDecl:
-				for _, spec := range decl.Specs {
-					value, ok := spec.(*ast.ValueSpec)
-					if !ok || decl.Tok != token.CONST || len(value.Values) != len(value.Names) {
-						continue
-					}
-					if kind, ok := value.Type.(*ast.Ident); !ok || kind.Name != "OutboxKind" {
-						continue
-					}
-					for i, name := range value.Names {
-						if literal, ok := value.Values[i].(*ast.BasicLit); ok && literal.Kind == token.STRING {
-							text, err := strconv.Unquote(literal.Value)
-							if err != nil {
-								t.Fatalf("read the constant %s of %s: %v", name.Name, path, err)
-							}
-							constants[name.Name] = record.OutboxKind(text)
-						}
-					}
-				}
-			case *ast.FuncDecl:
-				if decl.Name.Name != "OutboxKind" || decl.Recv == nil || len(decl.Body.List) != 1 {
-					continue
-				}
-				if ret, ok := decl.Body.List[0].(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
-					if constant, ok := ret.Results[0].(*ast.Ident); ok {
-						returned[receiverName(decl)] = constant.Name
-					}
-				}
-			}
-		}
-	}
+	fset, imports := compiledImports(t)
+	pkg := checkPackage(t, fset, imports, "record")
 	payloads := map[record.OutboxKind]string{}
-	for payload, constant := range returned {
-		if kind, ok := constants[constant]; ok {
-			payloads[kind] = payload
+	for _, file := range pkg.files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != "OutboxKind" || fn.Recv == nil || fn.Body == nil || len(fn.Body.List) != 1 {
+				continue
+			}
+			ret, ok := fn.Body.List[0].(*ast.ReturnStmt)
+			if !ok || len(ret.Results) != 1 {
+				continue
+			}
+			value := pkg.info.Types[ret.Results[0]].Value
+			if value == nil || value.Kind() != constant.String {
+				t.Fatalf("record.%s's OutboxKind returns what the type checker reads as no string constant, at %s: this test cannot tell its kind",
+					receiverName(fn), pkg.pos(ret.Results[0]))
+			}
+			payloads[record.OutboxKind(constant.StringVal(value))] = receiverName(fn)
 		}
 	}
 	if len(payloads) == 0 {

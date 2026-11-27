@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -110,7 +111,9 @@ func TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents(t *testing.T) {
 func TestClosedIssueDeliversACommentMentionItsRetryAndTheAgentsReply(t *testing.T) {
 	t.Parallel()
 	listener, sends := closedIssueListener(t)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// This tests delivery on a closed issue, not the lookup timeout. The listener must answer
+	// the creation lookup even when the scheduler takes longer than that timeout's wall span.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Closed mention", "before")
 	closeIssue(t, handler, issue.Key)
 

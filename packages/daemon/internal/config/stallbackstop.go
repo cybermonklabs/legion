@@ -328,7 +328,8 @@ func saturatingSum(parts ...time.Duration) time.Duration {
 // (readHours). 0 is the backstop off for that role and is the one reason this key reads its own
 // numbers rather than calling readHours, which refuses 0 because every key it serves arms a timer
 // that a zero would fire at once. A role named twice, no role's name (isRoleConfigName), a value
-// that is no number and a negative value are each refused naming the entry.
+// that is no number and a negative value are each refused naming the entry, by its line where its
+// name has no key's shape (shownRoleName).
 func readStallBackstops(value *yaml.Node, key string) (map[claim.Role]time.Duration, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -347,9 +348,9 @@ func readStallBackstops(value *yaml.Node, key string) (map[claim.Role]time.Durat
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
 		}
 		if _, seen := bounds[role]; seen {
-			return nil, fmt.Errorf("%s names %s twice", key, role)
+			return nil, fmt.Errorf("%s names %s twice", key, shownRoleName(roleNode))
 		}
-		field := key + "." + string(role)
+		field := key + "." + shownRoleName(roleNode)
 		var hours float64
 		if hoursNode.Kind != yaml.ScalarNode || (hoursNode.Tag != "!!int" && hoursNode.Tag != "!!float") || hoursNode.Decode(&hours) != nil {
 			return nil, fmt.Errorf("%s must be a number of hours, or 0 to switch the backstop off for that role", field)

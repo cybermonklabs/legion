@@ -48,6 +48,7 @@ func partBlock(id, of, role string) plan.Task {
 // task outside its own (its control: the rule skipped for the owner, so the owner's version that
 // lacks f1 is taken and f1 is deleted, and the third case fails).
 func TestASubOwnerChangesOnlyItsParts(t *testing.T) {
+	t.Parallel()
 	t.Run("the sub-owner of f changes the parts of f alone", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

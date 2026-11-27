@@ -23,8 +23,12 @@ import (
 // last — the handoff record the implementer last named for a file-backed phase
 // (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
 // (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
-// moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
-// is recorded, and its production check opened at the time a check report names
+// moved the issue back (record.PhaseRow.EntryMovedBack), whether that role's row records its
+// completion of its current phase (record.PhaseRow.Completed, which the owed route reads and the
+// completion route does not), its pull request record, nil while none is recorded — the
+// completion route judges the head a completion names against it, and the owed route reads it in
+// merging, where a merged pull request is what finishes the phase (workflow.PhaseFinished) — and
+// its production check opened at the time a check report names
 // (HandoffCompleteRequest.CheckOpenedAt), nil where no check was opened then.
 //
 // Of a plan of any count of tasks, one among them, the task is named in ofTask, and the position is
@@ -48,17 +52,27 @@ type completionPosition struct {
 	pass           int
 	entry          int64
 	entryMovedBack bool
+	completed      bool
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
 }
 
-// handoffPosition reads key's position (completionPosition) for the completing role and the claim
-// that completes, whose phases row names the entry it was last raised to, and the check opened at
-// checkOpenedAt, the time a check report names (the issue's newest for the zero time).
-// An issue the workflow does not record is a position with no issue and no error. The pull
-// request is the row of the completion's task (record.Store.PullRequestRowOfTask): the route reads
-// its head and its state and writes nothing of it.
+// merged is whether the position's phase is merging and its pull request is merged: the fact
+// that finishes merging, read by the rule workflow.PhaseFinished applies, since the merger
+// merges and a merged root then stands in merging until the rest of its tree leaves.
+func (p completionPosition) merged() bool {
+	return p.issue != nil && p.issue.Phase == phase.Merging &&
+		p.pullRequest != nil && p.pullRequest.State == record.PullRequestMerged
+}
+
+// handoffPosition reads key's position (completionPosition) for role, the completing role or the
+// role asking what it owes, and for completing, the claim that completes or asks, whose phases row
+// names the entry it was last raised to and whether it has completed, and the check opened at
+// checkOpenedAt, the time a check report names (the issue's newest for the zero time, which the
+// owed route asks for). An issue the workflow does not record is a position with no issue and no
+// error. The pull request is the row of the position's task (record.Store.PullRequestRowOfTask):
+// each route reads its head and its state and writes nothing of it.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, completing claim.Token, checkOpenedAt time.Time) (completionPosition, error) {
 	var position completionPosition
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
@@ -85,7 +99,8 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 			return err
 		}
 		position = completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), branch: claim.IssueBranch(key),
-			lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: row.Entry, entryMovedBack: row.EntryMovedBack}
+			lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: row.Entry, entryMovedBack: row.EntryMovedBack,
+			completed: row.Completed()}
 		counts := record.ImplementerCounts(rows)
 		if stored != nil {
 			task, act, ok, err := s.completingTask(ctx, tx, *issue, stored, rows, completing)

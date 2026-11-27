@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -63,6 +62,7 @@ func stepReviewedHead(t *testing.T, pool *pgxpool.Pool, key string, role claim.R
 // cleared between the rounds, the critic's second task names none, so the commit comes from that
 // row alone.
 func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		role    claim.Role
@@ -117,10 +117,15 @@ func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T)
 // `implementer critic`, the critic (review) running on entry resetEntry with its task and the
 // reviewed commit W on its phases row (a round of the generation before read it), and the pull
 // request at head X; then clears the root's tree's generation (record.Store.ClearTreeGeneration),
-// and fails unless the critic's row holds no commit right after the clear.
+// handed the forget the engine hands every clear in production (Engine.forgetSuperseded, the
+// record.KeptForget the clear runs over the decisions kept on the tree before it deletes the gates
+// that forget's rule reads, and which the clear refuses a nil one in place of). This seed keeps no
+// decision and queues no changes request, so the forget runs over an empty set and deletes
+// nothing. It fails unless the critic's row holds no commit right after the clear.
 func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 	t.Helper()
 	pool := migratedPool(t)
+	engine := deploymentEngine()
 	liveRootOf(t, pool, "LEGION-207", 0)
 	parent := "LEGION-207"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: parent,
@@ -131,12 +136,13 @@ func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: "critic", Claim: "critic-claim", Entry: resetEntry,
 		EntryTask: "Continue child. Issue: LEGION-208. Phase: step.", ReviewedHead: stepCommitW})
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().ClearTreeGeneration(t.Context(), tx, "LEGION-207", time.Now().UTC())
+		_, err := record.NewStore().ClearTreeGeneration(t.Context(), tx, "LEGION-207", engine.forgetSuperseded)
+		return err
 	})
 	if head := stepReviewedHead(t, pool, "LEGION-208", "critic"); head != "" {
 		t.Fatalf("the critic's row holds the commit %q right after the clear of its tree's generation, want none", head)
 	}
-	return pool, deploymentEngine(), *issueRecord(t, pool, "LEGION-208")
+	return pool, engine, *issueRecord(t, pool, "LEGION-208")
 }
 
 // Only a completion of the entry that stands, on a row that holds that entry's task, moves a review
@@ -151,6 +157,7 @@ func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 // writes X, which that task names. Without the promotion (the root waits in the line), the row
 // stands on the entry before the reset with no task, and a completion of that entry writes none.
 func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		promoted bool
@@ -212,6 +219,7 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 // ready of the critic's claim at step 2 of `implementer critic`, whose row holds X, sends a resume
 // task naming X; the same ready with the row holding none names no commit.
 func TestAResumedReviewStepIsToldTheCommitItsStepRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		head string

@@ -1878,6 +1878,7 @@ const keyedReviewClaim claim.Token = "legion-legion-legion-208-tester"
 // reviewer's own session decides a round, for the one case that tells the two reads apart and
 // that the live run, whose plan keys no step, never makes.
 func TestAKeyedAgentOnTheReviewersStepDecidesTheRoundByTheSessionOfItsOwnClaim(t *testing.T) {
+	t.Parallel()
 	const setAside = "workflow: a review decides nothing: the review App submitted it from a session that is not the reviewer's"
 	for _, tc := range []struct {
 		name     string

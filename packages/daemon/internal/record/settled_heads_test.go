@@ -295,7 +295,7 @@ func TestAWriteDeletesTheSettledHeadsTheRecordNoLongerHolds(t *testing.T) {
 }
 
 // Each pull request of an issue keeps its own memory of its settled heads, keyed by its repository
-// and its number (migration 20261127031536): the pull requests of two tasks of one issue, on two
+// and its number (migration 20261127234212): the pull requests of two tasks of one issue, on two
 // branches, each read back their own, and a write of one that drops a head leaves the other's
 // whole. Keyed by the issue alone, the second write would delete the first's memory.
 func TestEachPullRequestOfAnIssueKeepsItsOwnSettledHeads(t *testing.T) {

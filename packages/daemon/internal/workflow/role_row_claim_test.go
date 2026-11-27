@@ -42,6 +42,7 @@ func roleRowClaims(t *testing.T, pool *pgxpool.Pool, issue, kind string) []struc
 // a's agent, `…-implementer`, works both steps, so both prompts name it, and not the role's own
 // claim `…-tester`.
 func TestAHookPromptNamesTheAgentOfItsRolesStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	engine.cfg.Hooks = []Hook{{Name: "work-back", On: HookEventWorkBack, Every: 1,

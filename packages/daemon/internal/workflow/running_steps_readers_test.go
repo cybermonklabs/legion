@@ -100,6 +100,7 @@ func owedEntry(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) {
 // The fault it catches is a running step that no resume path reaches (its control: OpenStepsOf
 // answering its first step alone, which gives the reviewer nothing).
 func TestEachResumePathReachesEachRunningStep(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-209"
 	stand := func(t *testing.T, pool *pgxpool.Pool) record.Issue {
 		t.Helper()
@@ -228,6 +229,7 @@ func TestEachResumePathReachesEachRunningStep(t *testing.T) {
 // reviewer's claim under its due reminder, and the checks' reader on RunningAt of the issue's
 // phase, which tells the held tester and not the reviewer).
 func TestTheIdleReleaseTakesNoClaimOfARunningStep(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	view := pods.IdleView{Issue: "LEGION-208", Tree: "LEGION-208", Found: true, Phase: phase.Implementing, Status: "in_progress",
 		Generation: 3, Root: pods.IdleRoot{Phase: phase.Implementing, Status: "in_progress", Generation: 3}, Planned: true,
@@ -256,7 +258,7 @@ func TestTheIdleReleaseTakesNoClaimOfARunningStep(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			view := view
 			view.Claims = tc.claims
-			decision := IdleRelease(view, now, time.Hour, true, 1)
+			decision := IdleRelease(view, now, time.Hour, true, false, 1)
 			if decision.Hold != tc.hold || decision.Release != (tc.hold == IdleHoldNone) {
 				t.Fatalf("the idle release = %+v, want the hold %s (a release where none)", decision, tc.hold)
 			}

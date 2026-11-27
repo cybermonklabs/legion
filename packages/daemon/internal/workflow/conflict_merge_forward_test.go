@@ -111,6 +111,7 @@ func seededClaim(t *testing.T, _ phase.Phase, role claim.Role) claim.Token {
 // implementer's and the tester's steps is told once, by the ask: addressRoles names each claim
 // once.)
 func TestAMergeForwardMessageNamesTheClaimOfItsRolesStep(t *testing.T) {
+	t.Parallel()
 	implementer := claim.Token(token(t, "LEGION-208", claim.RoleImplementer))
 	keyB := claim.Token(token(t, "LEGION-208", claim.RoleReviewer))
 	for _, tc := range []struct {

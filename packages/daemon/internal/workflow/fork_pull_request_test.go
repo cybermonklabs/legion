@@ -21,6 +21,7 @@ import (
 // task's, and the merge then acts on it. The control: the recorder without its rule of the head's
 // repository.
 func TestAPullRequestFromAForkIsNeverRecorded(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 11, 23, 9, 0, 0, 0, time.UTC)
 	headIn := func(opened intake.PullRequestOpened, repo string) intake.PullRequestOpened {
 		opened.HeadRepo = repo

@@ -53,6 +53,7 @@ func mergingAtNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 // leftMergingAt reading the issue's phase, the revision before, which answers "the issue stands in
 // implementing, not merging").
 func TestAQueueRemovalOfOneTasksPullRequestReachesItsMerger(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -79,6 +80,7 @@ func TestAQueueRemovalOfOneTasksPullRequestReachesItsMerger(t *testing.T) {
 // The fault it catches is a move back of one task's merge that moves or counts another task (its
 // control: the move read on the issue's other task, b, which moves b and leaves a at its merge).
 func TestTheMergersMoveBackReturnsItsTaskAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)

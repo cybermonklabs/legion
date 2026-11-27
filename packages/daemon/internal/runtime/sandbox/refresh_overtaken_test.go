@@ -29,6 +29,7 @@ import (
 // tick began. The slot holds a lease the daemon has since re-minted, so the refresh has a write to
 // make. The control is the same launch made before the tick.
 func TestARefreshALaunchOvertakesLeavesTheSlotOnTheLaunchesApp(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// during is the role of the refresh's mint the launch lands in: "" for the control, which
@@ -135,6 +136,7 @@ func TestARefreshALaunchOvertakesLeavesTheSlotOnTheLaunchesApp(t *testing.T) {
 // its slot is refreshed for the implement App. The control is the same stored claim at
 // generation 1, whose slot holds the tester's App the record names.
 func TestARefreshReadsTheLaunchRecordOnlyOfTheClaimsLatestGeneration(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		generation uint64

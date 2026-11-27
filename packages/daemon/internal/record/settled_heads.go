@@ -9,7 +9,7 @@ import (
 )
 
 // The two kinds of row pull_request_settled_heads holds (migration 20261120144241), each keyed by
-// its pull request's repository and number (migration 20261127031536), so each pull request of an
+// its pull request's repository and number (migration 20261127234212), so each pull request of an
 // issue keeps its own, however many stand on one branch: the pull request's own memory of its
 // settled heads (PullRequest.SettledHeads), and the memory its open head run was anchored with
 // (HeadRun.Settled).

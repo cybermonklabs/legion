@@ -129,6 +129,7 @@ type Runtime struct {
 	probes       []ProbeResult
 	failures     map[string]error
 	drift        map[claim.Token][]string
+	repository   map[claim.Token]string
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
 	otherImages  map[string]bool
@@ -186,6 +187,7 @@ func NewRuntime() *Runtime {
 		Now:         time.Now,
 		failures:    map[string]error{},
 		drift:       map[claim.Token][]string{},
+		repository:  map[claim.Token]string{},
 		gone:        map[claim.Token]bool{},
 		issuePods:   map[string]string{},
 		otherImages: map[string]bool{},
@@ -289,6 +291,22 @@ func (r *Runtime) ScriptPodGone(token claim.Token, gone bool) {
 		return
 	}
 	r.gone[token] = true
+}
+
+// ScriptPodRepository makes every later PodRepository of token's claim answer repo, as the
+// Sandbox runtime answers with the repository the pod's own workspace fetch names. A claim no
+// call named answers "", which is a runtime whose processes share no such place and a pod that
+// clones no repository; "" clears this claim's answer. A replacement does not move it: the pod
+// built in the replaced one's stead is built from the configuration the daemon holds now, so a
+// test that relaunches a role into that pod scripts the repository that pod was built from.
+func (r *Runtime) ScriptPodRepository(token claim.Token, repo string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if repo == "" {
+		delete(r.repository, token)
+		return
+	}
+	r.repository[token] = repo
 }
 
 // ScriptIssuePod makes every later IssuePod of issue answer pod, as the Sandbox runtime answers

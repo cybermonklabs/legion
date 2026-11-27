@@ -30,6 +30,7 @@ import (
 // startAfterWait passing "" as from, the revision before, under which the implementer's entry
 // names none and the check of the implementer's phases row fails).
 func TestAMoveBackOutOfMergingWhoseStartWaitedForItsAgentIsLeftByThePass(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := tickingEngine()
 	root := stepRoot(t, pool, phase.Implementing)

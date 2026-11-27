@@ -19,6 +19,7 @@ import (
 )
 
 func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name   string

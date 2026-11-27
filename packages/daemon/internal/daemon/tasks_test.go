@@ -524,8 +524,11 @@ func (r *tasksRig) takeFor(role claim.Role, task string) *stepClaimant {
 }
 
 // workingCopyLine is the working copy line of a task of a plan of several tasks (workflow's
-// WorkingCopy): its branch, then its directory, which holds no space.
-var workingCopyLine = regexp.MustCompile(` Working copy: branch (\S+), directory (\S+)\.(\s|$)`)
+// WorkingCopy): its branch, then its directory, which holds no space, then the line break that ends
+// it. A task opens with the line (workflow's taskOpening), and a prompt carries the task at its
+// start or after a note supervise puts in front of it, which ends with a blank line (supervise's
+// Delivery.message), so the line stands at the prompt's start or right after a line break.
+var workingCopyLine = regexp.MustCompile(`(?:^|\n)Working copy: branch (\S+), directory (\S+)\.\n`)
 
 // takeIn is takeFor that answers the directory of the working copy the task names too, and the
 // task's whole text.
@@ -535,7 +538,7 @@ func (r *tasksRig) takeIn(role claim.Role, task string) (*stepClaimant, string, 
 	prompt := c.take()
 	line := workingCopyLine.FindStringSubmatch(prompt.Message)
 	if branch := r.branchOf(task); line == nil || line[1] != branch {
-		r.t.Fatalf("the %s's task = %q, want task %s's, naming its working copy on %s and its directory", role, prompt.Message, task, branch)
+		r.t.Fatalf("the %s's task = %q, want task %s's, which opens with its working copy on %s and its directory", role, prompt.Message, task, branch)
 	}
 	return c, line[2], prompt.Message
 }

@@ -51,6 +51,7 @@ func startsOfAgent(t *testing.T, key string, agent claim.Agent, starts ...[]reco
 // still waits for k; and stopTask that queues its step_stop for a step that waits, under which a
 // step_stop names k's claim).
 func TestAStopOfAStepThatWaitsStartsNothingAndStopsNothingElse(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := tickingEngine()
 	root := stepRoot(t, pool, phase.Admitted)

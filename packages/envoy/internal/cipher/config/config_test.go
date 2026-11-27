@@ -1551,12 +1551,13 @@ func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 // malformed entry of the list — one without exactly one "=", an account that is no ServiceAccount
 // subject (a google: one included), a namespace's default account on either side — and a pair
 // given twice are refused naming the setting and the entry, and the list is refused with no
-// cluster issuer. The audience is refused naming it and the other setting when it equals the
-// broker's own audience, the token exchange's or the NATS auth service's, each set beside it, and
-// refused with no cluster issuer. A registrar with two pod accounts, a pod account with two
-// registrars and an account paired with itself load as exactly those pairs beside an audience of
-// its own, with no BROKER_SERVICE_LOGINS at all: a registrar the logins do not list is not
-// refused, since it can register nothing and the boot names it instead.
+// cluster issuer. The audience is refused naming it and the other setting when it equals an
+// audience the broker's own BROKER_K8S_OIDC_AUDIENCE lists, the first or a later one, the token
+// exchange's or the NATS auth service's, each set beside it, and refused with no cluster issuer.
+// A registrar with two pod accounts, a pod account with two registrars and an account paired
+// with itself load as exactly those pairs beside an audience of its own, with no
+// BROKER_SERVICE_LOGINS at all: a registrar the logins do not list is not refused, since it can
+// register nothing and the boot names it instead.
 func TestRegistrarSettings(t *testing.T) {
 	const (
 		daemonA = "system:serviceaccount:legion-system:legion-daemon-a"
@@ -1643,6 +1644,14 @@ func TestRegistrarSettings(t *testing.T) {
 			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_AUDIENCE"},
 		},
 		{
+			name: "the audience equal to the second listed audience",
+			env: withAudiences(map[string]string{
+				"BROKER_K8S_OIDC_AUDIENCE":         "agent-secrets example-pod-new",
+				"BROKER_POD_REGISTRATION_AUDIENCE": "example-pod-new",
+			}),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
 			name: "the audience equal to the token exchange's", env: withAudiences(audience("dispatch-exchange")),
 			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
 		},
@@ -1679,6 +1688,121 @@ func TestRegistrarSettings(t *testing.T) {
 			}
 			if !maps.Equal(cfg.PodRegistrars, row.registrars) || cfg.PodRegistrationAudience != row.audience {
 				t.Fatalf("Load read the pairs %v and the audience %q, want exactly %v and %q", cfg.PodRegistrars, cfg.PodRegistrationAudience, row.registrars, row.audience)
+			}
+		})
+	}
+}
+
+// TestThePodTokenAudienceSettingIsAList pins BROKER_K8S_OIDC_AUDIENCE as a list: one or more
+// audiences, separated by white space of any kind, read in the order given, one alone read as it
+// is today. With the issuer set, white space alone is refused naming the setting, and an
+// audience listed twice is refused naming the setting, the audience and the word "twice". With
+// neither setting the broker reads no issuer and no audience; the audience with no issuer is
+// refused naming the issuer. A listed audience equal to BROKER_EXCHANGE_K8S_AUDIENCE or
+// BROKER_NATS_K8S_AUDIENCE is refused naming both settings, the second listed one and one listed
+// alone alike. The exchange's, the registration route's and the NATS auth service's audiences,
+// each set and each different from every listed audience, load beside the list as one value each.
+func TestThePodTokenAudienceSettingIsAList(t *testing.T) {
+	user, account, curve, _ := natsSeeds(t)
+	// issuer is the cluster issuer withK8sIssuer sets, which pod's rows read.
+	issuer := withK8sIssuer()["BROKER_K8S_OIDC_ISSUER"]
+	// pod is withK8sIssuer with BROKER_K8S_OIDC_AUDIENCE as audiences, and set.
+	pod := func(audiences string, set map[string]string) map[string]string {
+		e := withK8sIssuer()
+		e["BROKER_K8S_OIDC_AUDIENCE"] = audiences
+		maps.Copy(e, set)
+		return e
+	}
+	// natsAudience is the NATS auth service on, as TestNATSCalloutSettings's full sets it, with
+	// its audience for the cluster's tokens.
+	natsAudience := map[string]string{
+		"BROKER_NATS_URLS":             "nats://hub-a:4222, nats://hub-b:4222",
+		"BROKER_NATS_SEED_FILE":        user,
+		"BROKER_NATS_ISSUER_SEED_FILE": account,
+		"BROKER_NATS_XKEY_SEED_FILE":   curve,
+		"BROKER_NATS_SERVICES":         "listener/dev-stack/*=system:serviceaccount:example-ns:example-listener",
+		"BROKER_NATS_K8S_AUDIENCE":     "example-envoy-nats",
+	}
+	everyOther := maps.Clone(natsAudience)
+	everyOther["BROKER_EXCHANGE_K8S_AUDIENCE"] = "example-exchange"
+	everyOther["BROKER_POD_REGISTRATION_AUDIENCE"] = "example-pod-registration"
+	withNeither := validEnv()
+	withoutIssuer := validEnv()
+	withoutIssuer["BROKER_K8S_OIDC_AUDIENCE"] = "example-pod-new example-pod-old"
+	for _, row := range []struct {
+		name string
+		env  map[string]string
+		// refused is every text the refusal must name; none for an environment that loads.
+		refused []string
+		// issuer and audiences are what an environment that loads reads for the pair, and
+		// exchange, registration and nats each other audience of the cluster's tokens.
+		issuer                       string
+		audiences                    []string
+		exchange, registration, nats string
+	}{
+		{
+			name: "C1 two audiences", env: pod("example-pod-new example-pod-old", nil),
+			issuer: issuer, audiences: []string{"example-pod-new", "example-pod-old"},
+		},
+		{
+			name: "C2 three audiences between spaces, a tab and a line feed", env: pod(" example-a\texample-b\nexample-c ", nil),
+			issuer: issuer, audiences: []string{"example-a", "example-b", "example-c"},
+		},
+		{
+			name: "C3 one audience", env: pod("example-pod-new", nil),
+			issuer: issuer, audiences: []string{"example-pod-new"},
+		},
+		{
+			name: "C4 white space alone", env: pod(" \t\n ", nil),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
+			name: "C5 an audience listed twice", env: pod("example-pod-new example-pod-new", nil),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", strconv.Quote("example-pod-new"), "twice"},
+		},
+		{name: "C6 neither setting", env: withNeither},
+		{
+			name: "C7 the audience with no issuer", env: withoutIssuer,
+			refused: []string{"BROKER_K8S_OIDC_ISSUER"},
+		},
+		{
+			name: "C8 the second listed audience equal to the exchange's", env: pod("example-pod-new example-exchange", map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "example-exchange"}),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name: "C9 one listed audience equal to the exchange's", env: pod("example-exchange", map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "example-exchange"}),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name: "C10 the second listed audience equal to the NATS auth service's", env: pod("example-pod-new example-envoy-nats", natsAudience),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_NATS_K8S_AUDIENCE"},
+		},
+		{
+			name: "C11 every other audience set and different from both listed", env: pod("example-pod-new example-pod-old", everyOther),
+			issuer: issuer, audiences: []string{"example-pod-new", "example-pod-old"},
+			exchange: "example-exchange", registration: "example-pod-registration", nats: "example-envoy-nats",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg, err := Load(env(row.env))
+			for _, name := range row.refused {
+				if err == nil || !strings.Contains(err.Error(), name) {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, strings.Join(row.refused, " and "))
+				}
+			}
+			if len(row.refused) > 0 {
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load = %v, want no refusal", err)
+			}
+			// reflect.DeepEqual tells a nil list from an empty one: with neither setting the
+			// broker holds no list at all.
+			if cfg.K8sOIDCIssuer != row.issuer || !reflect.DeepEqual(cfg.K8sOIDCAudiences, row.audiences) {
+				t.Fatalf("Load read the issuer %q and the audiences %#v, want exactly %q and %#v", cfg.K8sOIDCIssuer, cfg.K8sOIDCAudiences, row.issuer, row.audiences)
+			}
+			if cfg.ExchangeK8sAudience != row.exchange || cfg.PodRegistrationAudience != row.registration || cfg.NATS.K8sAudience != row.nats {
+				t.Fatalf("Load read the exchange audience %q, the registration audience %q and the NATS audience %q, want %q, %q and %q", cfg.ExchangeK8sAudience, cfg.PodRegistrationAudience, cfg.NATS.K8sAudience, row.exchange, row.registration, row.nats)
 			}
 		})
 	}

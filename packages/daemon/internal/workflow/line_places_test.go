@@ -25,6 +25,7 @@ import (
 // step 1 at the planning of the last line and so answers planning for its implementer; the walk's
 // table built on those places, whose gate's opening puts the first line's task at step 1).
 func TestEachReaderGivesAPositionOfALineOnePlace(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-208"
 	task := func(id, owner string, needs ...string) record.PlanTask {
 		return record.PlanTask{Issue: key, Generation: 1, Task: id, PlanVersion: 1, OwnerRole: owner, Needs: needs, State: record.TaskWaiting}
@@ -142,6 +143,7 @@ func TestEachReaderGivesAPositionOfALineOnePlace(t *testing.T) {
 // numbering its steps from 0, which moves the walk's places and the record's together, so a test
 // that compares the two cannot see it, and this one fails).
 func TestTheRecordReadsTodaysPlaces(t *testing.T) {
+	t.Parallel()
 	want := []record.TaskPlace{atStep(1), atStep(2), atStep(3), atStep(4), atStep(5), {Kind: record.PlaceRetro}, {Kind: record.PlaceMerge}}
 	for at, p := range phase.Order {
 		steps := record.RunningOf(record.Issue{Key: "LEGION-208", Phase: p}, false, nil)

@@ -73,6 +73,7 @@ func (r subOwnersRows) queue(kind, payload string) error {
 // (MoveTask) and refuses either at a position from 1. The control is the store before the
 // migration: there the test fails on its second write, the task at its parts.
 func TestTheStoreHoldsATaskAtItsParts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, subOwnersVersion-1)
@@ -188,6 +189,7 @@ const (
 // such a task. The control is the block without its update of the tasks: the check it writes again
 // then refuses the tasks at their parts.
 func TestMigrationSubOwnersWayBackStandsEachTaskAtItsPartsAtNoAct(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	block := wayBackOf(t, subOwnersVersion, "the sub-owners")
 	from, to := strings.Index(block, subOwnersWayBackUpdate), strings.Index(block, subOwnersWayBackUpdateEnd)

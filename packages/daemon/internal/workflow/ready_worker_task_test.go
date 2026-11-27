@@ -123,6 +123,7 @@ func TestAQueuedStartOfThePhaseCoversASecondReadyOfItsWorker(t *testing.T) {
 // startClaim answering the claim of the step's agent for a run with no plan rows, under which the
 // implementer's start of implementing stands beside the tester's).
 func TestTheReadyOfAClaimOfAnIssueOfOneTaskTakesThePlaceOfItsOwedStart(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-209"
 	for name, planned := range map[string]bool{"no plan rows": false, "a plan of one task": true} {
 		t.Run(name, func(t *testing.T) {

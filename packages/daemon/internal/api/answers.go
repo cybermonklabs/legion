@@ -54,7 +54,7 @@ func SupportedContracts() []int { return registry().supported }
 // headers out of version.go and holds this list to them in both directions, and
 // TestReleasedContractsGolden writes it as `released-contracts.json`.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and 275 are constants rather than their
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 267 and 275 are constants rather than their
 // numbers, because the entries that added them name them (shapedAnswersContract, the shaped
 // answers' entry; repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the

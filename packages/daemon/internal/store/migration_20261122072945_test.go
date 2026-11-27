@@ -18,6 +18,7 @@ const podWakeBackstopClaimVersion = 20261122072945
 // every row and drops the column, so the release before's second arm of a role is refused again,
 // and the roll-forward then runs the migration again.
 func TestThePodWakeBackstopClaimMigrationKeysAnOpenBackstopByItsClaim(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, podWakeBackstopClaimVersion-1)

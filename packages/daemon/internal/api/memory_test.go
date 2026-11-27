@@ -42,16 +42,18 @@ func drawnAt(t *testing.T, experiment string) string {
 // hold of that entry, two roots carry the architect-stalled arm the daemon reads for them, each
 // reviewing root of it carries what its round waits on from GitHub, every issue of a live tree
 // carries that tree's quiet time, the issues of its drawn tree carry the experiment answers they
-// hold, every root carries whether its tree runs, its capability report holds the repository
-// caches' row with that source's own word, and the body carries the daemon's Dispatch credential
-// under dispatch_token_broker. The same record ten seconds into a pause is the paused state
-// (pausedState), which carries `paused`; narrowing_test.go's narrowingState puts that pause beside
-// this state, so one state proves every band of stateNarrowings, that they compose, and the value
-// strip of a capability row's `source` beside them. It stands no member of the line of the kind 132
-// added, whose value strip waiting_on_issue_test.go proves, and the pause's other key, `lastPause`,
-// is the last-pause fixture's. What the quiet-time band is measured on in finer grain — both halves
-// on each member of one tree, and neither on an issue whose tree has left the workflow — is
-// quiet_time_test.go's state of its own, and what the gate-basis band is, gate_basis_wire_test.go's.
+// hold, every root carries whether its tree runs, one issue carries the correction of its
+// repository and one the change Dispatch has named that the daemon has not applied, its capability
+// report holds the repository caches' row with that source's own word, and the body carries the
+// daemon's Dispatch credential under dispatch_token_broker. The same record ten seconds into a
+// pause is the paused state (pausedState), which carries `paused`; narrowing_test.go's
+// narrowingState puts that pause beside this state, so one state proves every band of
+// stateNarrowings, that they compose, and the value strip of a capability row's `source` beside
+// them. It stands no member of the line of the kind 132 added, whose value strip
+// waiting_on_issue_test.go proves, and the pause's other key, `lastPause`, is the last-pause
+// fixture's. What the quiet-time band is measured on in finer grain — both halves on each member
+// of one tree, and neither on an issue whose tree has left the workflow — is quiet_time_test.go's
+// state of its own, and what the gate-basis band is, gate_basis_wire_test.go's.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -255,10 +257,21 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// the contract that added it, so a pod at it is served the key and every pod below it is
 		// not.
 		plans bool
+		// correction is whether the caller is served what a correction of an issue's repository
+		// left on its record (repositoryCorrectionContract), the contract that added the four keys:
+		// a caller at it is served them, and a caller below it that its header places, or a pod
+		// whose claims record a contract below shapedAnswersContract, is not. A pod whose claims
+		// record shapedAnswersContract up to below repositoryCorrectionContract is in no pod
+		// reading (podContracts), so it is served them.
+		correction bool
 		// priority is whether the caller is served each issue's `priority` and its waitingLine's
 		// `priority` (priorityContract), the contract that added both, so a pod at it is served
 		// the keys and every pod below it is not.
 		priority bool
+		// seq is whether the caller is served `daemon.stateSeq`, the sequence of the newest state
+		// event the body's snapshot holds (stateSeqContract's entry, which added it), so a pod
+		// below the entry's number is not served the key.
+		seq bool
 		// caches is whether the caller is served the repository-cache-room row's `source`,
 		// `caches` (cachesSourceContract), the contract that added the word. The word is a value,
 		// held back from every caller whose pod's lowest contract is below that contract
@@ -362,18 +375,22 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// band's foot and at its top alike.
 		{name: "a pod at repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: repositoryAppsContract},
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: pauseContract - 1},
-		// The band from pauseContract to below shapedAnswersContract, the last a pod's claims
-		// place a caller in (callerKind.reaches): every key a later row of stateNarrowings adds is
-		// held back, `intakeGiveUps` among them, the repositories block written in the shape
-		// contract 152 gave it, the step issue served as at work, as is the repository caches'
-		// row's `source`, the value cachesSourceContract added, at the band's foot and at its top
-		// alike. The populated state holds no pause, so these rows read as the band below them. The
-		// pause's band is read over pausedState, by TestTheStateRouteServesAPodItsPluginContractsPause.
+		// The band from pauseContract to below shapedAnswersContract, the last band a pod's
+		// reading reaches (callerKind.reaches): every key a later row of stateNarrowings adds is
+		// held back, `intakeGiveUps` and the four repository keys among them, the repositories
+		// block written in the shape contract 152 gave it, the step issue served as at work, as is
+		// the repository caches' row's `source`, the value cachesSourceContract added, at the
+		// band's foot and at its top alike. The populated state holds no pause, so these rows read
+		// as the band below them. The pause's band is read over pausedState, by
+		// TestTheStateRouteServesAPodItsPluginContractsPause. A claim at shapedAnswersContract or
+		// above is in no pod's reading (podContracts), since its build states its contract in the
+		// header, so the bands above this one reach a caller by its header alone
+		// (contract_shapes_test.go).
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: pauseContract},
 		{name: "a pod just below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, contract: shapedAnswersContract - 1},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, roles: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, roles: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, roles: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion()), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, roles: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, roles: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, repos: true, roles: true, plans: true, correction: true, priority: true, seq: true, caches: true, giveUps: true, contract: DaemonAPIVersion(), basis: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -493,6 +510,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if tc.refresh && count != fullCount {
 				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
+			if _, carried := stateSeqServed(t, body); carried != tc.seq {
+				t.Errorf("the state %s carries daemon.stateSeq = %v, want %v; the reader before entryNumber(stateSeqContract) refuses it", body, carried, tc.seq)
+			}
 
 			// Nothing else of the body differs: it is the full state with the stripped keys gone,
 			// `wakesWaiting` among them where the caller is below contract 53, since the reader
@@ -580,6 +600,14 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if !tc.held {
 				delete(want["admission"].(map[string]any), "held")
 			}
+			// A pod below entryNumber(stateSeqContract) is served the daemon block without
+			// `stateSeq`, `stateId` and `stateRun`, the three keys that entry added (api's
+			// withoutStateSeq).
+			if !tc.seq {
+				delete(want["daemon"].(map[string]any), "stateSeq")
+				delete(want["daemon"].(map[string]any), "stateId")
+				delete(want["daemon"].(map[string]any), "stateRun")
+			}
 			for _, issue := range want["issues"].(map[string]any) {
 				issue := issue.(map[string]any)
 				if !tc.memory {
@@ -602,6 +630,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					for _, key := range recordFieldIssueKeys {
 						delete(issue, key)
 					}
+				}
+				if !tc.correction {
+					stripRepositoryCorrection(issue)
 				}
 				if !tc.assigned {
 					delete(issue, "assignments")

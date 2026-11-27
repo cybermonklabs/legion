@@ -73,6 +73,7 @@ func baseOfD(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) strin
 // branch no start of it made (its control: BaseOf as PlannedBase alone, the revision before, under
 // which case (1)'s text names no base and case (2)'s names legion/LEGION-208.join).
 func TestAVersionThatChangesARunningTasksMergeKeepsItsBase(t *testing.T) {
+	t.Parallel()
 	const joined = "Open the pull request of this task against legion/LEGION-208.join"
 	t.Run("a version makes d merge", func(t *testing.T) {
 		pool, engine, root, blocks := dNeedsAC(t, true)

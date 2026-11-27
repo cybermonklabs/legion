@@ -20,6 +20,7 @@ const taskCopyRemoveVersion = 20261123072431
 // merge_holds_changed among them (taskCopiesKinds), and deletes its version row, so the roll-forward
 // runs the migration again.
 func TestMigrationTaskCopyRemoveQueuesTheRemovalOfARemovedTasksWorkingCopy(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, taskCopyRemoveVersion-1)

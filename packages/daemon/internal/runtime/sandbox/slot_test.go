@@ -18,6 +18,7 @@ import (
 // generation is under its name, never under a role read off the token, so an address that moved
 // since that generation started is observed.
 func TestALocatorOfANameThatIsNoRoleIsAnIssuePodsAndIsObserved(t *testing.T) {
+	t.Parallel()
 	issue, _, ok := workerToken.Cut()
 	if !ok {
 		t.Fatalf("Cut(%s) names no issue", workerToken)

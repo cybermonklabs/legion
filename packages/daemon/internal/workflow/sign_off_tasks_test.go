@@ -21,6 +21,7 @@ import (
 // implements, so the call that names no task is refused SIGNOFF_OUTSIDE_ACCEPTING, not
 // TASK_REQUIRED).
 func TestASignOffNamesItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)

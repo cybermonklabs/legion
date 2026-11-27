@@ -30,21 +30,22 @@
 -- included: Migrate applies every unrecorded migration in version order, so on a database main
 -- migrated this file runs after main's, late, and its list is the last word there. So it names
 -- every kind: 20261119203047's thirty, task_branch, main's two basis seeds (pending_basis_seed and
--- reparent_seed, main's 20261122154643) and main's merge_holds_changed (main's 20261126110259), two
--- migrations that sort above this file. Without them an upgrade of a database main migrated stops
--- on a queued row of one of those three kinds (SQLSTATE 23514) and the daemon does not boot. A
--- fresh database is unharmed: the three kinds arrive here rather than at main's migrations, and
--- 20261126144204 writes the list again above them all.
+-- reparent_seed, main's 20261122154643), main's merge_holds_changed (main's 20261126110259) and
+-- main's three state kinds (state_change, state_admission and state_boot, main's 20261126163320),
+-- three migrations that sort above this file. Without them an upgrade of a database main migrated
+-- stops on a queued row of one of those six kinds (SQLSTATE 23514) and the daemon does not boot. A
+-- fresh database is unharmed: the six kinds arrive here rather than at main's migrations, and
+-- 20261127142558 writes the list again above them all.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. It deletes each task_branch row
 -- first, since the check written again without the kind refuses a row that holds it, and the
 -- earlier release decodes no such row; and each task-join-failed notice not yet sent, a kind the
 -- earlier release decodes no row of either. The check it writes again keeps main's two basis seeds
--- (pending_basis_seed and reparent_seed) and main's merge_holds_changed, as this file's own list
--- does: main's 20261122154643 and 20261126110259 stay recorded after the way back, and a queued row
--- of any of the three kinds stays with them, which a check without its kind would refuse, and the
--- way back with it (SQLSTATE 23514):
+-- (pending_basis_seed and reparent_seed), main's merge_holds_changed and main's three state kinds,
+-- as this file's own list does: main's 20261122154643, 20261126110259 and 20261126163320 stay
+-- recorded after the way back, and a queued row of any of the six kinds stays with them, which a
+-- check without its kind would refuse, and the way back with it (SQLSTATE 23514):
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
@@ -58,7 +59,7 @@
 --     'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
 --     'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
 --     'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
---     'merge_holds_changed'));
+--     'merge_holds_changed', 'state_change', 'state_admission', 'state_boot'));
 --   alter table plan_tasks drop column if exists branch, drop column if exists join_conflicts,
 --     drop column if exists join_unmerged, drop column if exists start_reason;
 --   drop table if exists plan_branches;
@@ -100,4 +101,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch', 'pending_basis_seed',
-  'reparent_seed', 'merge_holds_changed'));
+  'reparent_seed', 'merge_holds_changed', 'state_change', 'state_admission', 'state_boot'));

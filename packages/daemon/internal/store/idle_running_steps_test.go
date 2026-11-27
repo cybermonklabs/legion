@@ -25,6 +25,7 @@ import (
 // The fault it catches is an idle view that reads one running step of several (its control: the
 // view's read of the single row of one step, which fails on the issue of two tasks).
 func TestTheIdleViewReadsEachRunningStep(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()

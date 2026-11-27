@@ -39,6 +39,7 @@ func podBuiltBeforeChecker(t *testing.T, g *rig) runtime.Locator {
 // did not push, and only the pod's update round or its release replaces it (ruling 18). The
 // runtime answers which issue's pod lacks which name.
 func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)
 	g.clearActions()
@@ -69,6 +70,7 @@ func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) 
 // the deployment: the pod is judged by the slots and roles it was built with, so the missing
 // Secret of the deployment's role is no reason to replace it.
 func TestABuiltinRoleLaunchesIntoAPodBuiltBeforeADeploymentRole(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)
 
@@ -82,6 +84,7 @@ func TestABuiltinRoleLaunchesIntoAPodBuiltBeforeADeploymentRole(t *testing.T) {
 // records the configuration it was built from, so the update round opens over it; a pod built
 // with that role names no such reason.
 func TestAPodBuiltBeforeARoleDriftsOnItsRoles(t *testing.T) {
+	t.Parallel()
 	want := []string{"roles architect, planner, implementer, tester, reviewer, merger, now architect, planner, implementer, tester, reviewer, merger, checker"}
 	g := newRig(t, nil)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
@@ -108,6 +111,7 @@ func TestAPodBuiltBeforeARoleDriftsOnItsRoles(t *testing.T) {
 // Resume, and its text names the pod and the role, so the operator who reads the claim's last
 // start failure can tell which pod holds the role back.
 func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingThePodAndTheRole(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)
 	g.clearActions()
@@ -135,6 +139,7 @@ func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingTheP
 // step's role can be two names, so a launch into a pod built before a role of the deployment waits
 // where the pod lacks either, its text naming the one it lacks, and goes on where it holds both.
 func TestALaunchIntoAKeptPodWaitsForTheSlotOfItsClaimAndTheRoleOfItsStep(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		token claim.Token
@@ -178,6 +183,7 @@ func TestALaunchIntoAKeptPodWaitsForTheSlotOfItsClaimAndTheRoleOfItsStep(t *test
 // pod was built with, its own --role values, and never the Secret the pod has no role of: that
 // read would fail at every tick and log a failed refresh for a role no process of the pod runs.
 func TestTheRefreshOfAPodBuiltBeforeARoleReadsNoSecretOfThatRole(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	restarted := secondRuntime(t, g, withChecker)()

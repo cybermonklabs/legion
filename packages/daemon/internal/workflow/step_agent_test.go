@@ -63,6 +63,7 @@ func keyedRun(t *testing.T) (*pgxpool.Pool, record.Issue) {
 // the record of step 2 names it as its agent. An entry that named no agent started a fresh tester
 // for the second step of key a.
 func TestAKeyedAgentsTwoStepsStartOneClaim(t *testing.T) {
+	t.Parallel()
 	pool, root := keyedRun(t)
 	keyed := claim.Token(token(t, root.Key, claim.RoleImplementer))
 	row := storedPhaseRow(t, pool, root.Key, claim.RoleTester)
@@ -89,6 +90,7 @@ func TestAKeyedAgentsTwoStepsStartOneClaim(t *testing.T) {
 // entry, 1, does not refuse the task of its second step. Numbered on the tester's row alone, the
 // entry was 1.
 func TestAnEntryRisesAcrossTheRowsOfItsClaim(t *testing.T) {
+	t.Parallel()
 	pool, root := keyedRun(t)
 	if got := storedPhaseRow(t, pool, root.Key, claim.RoleImplementer).Entry; got != 1 {
 		t.Fatalf("the implementer's row holds entry %d, want 1", got)
@@ -106,6 +108,7 @@ func TestAnEntryRisesAcrossTheRowsOfItsClaim(t *testing.T) {
 // rows, is 4. Numbered by the rows that name its claim alone, it fell to 1, which the completion
 // route reads as behind.
 func TestAnEntryNeverFallsBelowItsRowsOwn(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -130,6 +133,7 @@ func TestAnEntryNeverFallsBelowItsRowsOwn(t *testing.T) {
 // An issue with no plan rows names no agent of a key: the worker of its first phase starts in its
 // role's own claim, which its row names, at the row's own entry plus one (R20).
 func TestARunWithNoPlanRowsNamesNoAgent(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)

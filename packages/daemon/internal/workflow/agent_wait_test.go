@@ -90,6 +90,7 @@ func assertNothingStarted(t *testing.T, pool *pgxpool.Pool, key, task string, pl
 // step, so it is an implementer's of an agent of its own, which starts at the first step beside
 // x's, and the assertion of one start of k fails).
 func TestAStepWaitsForItsAgentInAnotherTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, logged := tickingEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -149,6 +150,7 @@ func TestAStepWaitsForItsAgentInAnotherTask(t *testing.T) {
 // The fault it catches is a rule that only the first start of a task obeys (its control: the check
 // in startReady alone, the revision before, so the transition queues a second start of k).
 func TestATransitionToTheNextStepOfABusyAgentWaits(t *testing.T) {
+	t.Parallel()
 	t.Run("the next step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, _ := tickingEngine()
@@ -237,6 +239,7 @@ func TestATransitionToTheNextStepOfABusyAgentWaits(t *testing.T) {
 // the revision before, where the store still gives k the step that ends: y keeps its wait in both
 // cases).
 func TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		steps  []string
@@ -283,6 +286,7 @@ func TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter(t *testing.T) {
 // (its control: start's check without the steps that wait, AgentWaiter, so r's step takes k and
 // p and q keep waiting).
 func TestAFreedAgentTakesTheStepThatWaitedLongest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := tickingEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -351,6 +355,7 @@ func aWaitsWhileMWorks(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 // read as k's: the failed claim holds a, whose step never started, and k's completion makes a
 // done and leaves m at work).
 func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
+	t.Parallel()
 	t.Run("its reads, the boot's resume and a failed claim of k", func(t *testing.T) {
 		pool, engine, root := aWaitsWhileMWorks(t)
 		issue := issueOf(t, pool, engine, root.Key)
@@ -412,6 +417,7 @@ func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
 // every later issue the same fact wrote are handed on to nobody (its control: the hand-on that
 // returns at such an issue, under which p keeps its wait).
 func TestTheHandOnGoesOnPastAnIssueWithNoRecord(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := tickingEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -503,6 +509,7 @@ func moveBackStart(t *testing.T, back moveBack, busy bool) (record.SuperviseRequ
 // its entry fence taking the completion of the entry before it at the head the record holds (its
 // control: the start after a wait that tells no start reason).
 func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		back moveBack
@@ -515,7 +522,8 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 				move: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 					taskMoves(t, pool, engine, key, "w", TriggerTesterFailed, "")
 				}},
-			told: " Pull request: sjawhar/legion#45. Reason: Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: head-w. Tester's verdict: fail. Task text:",
+			told: " Pull request: sjawhar/legion#45. Reason:" + handoffPartOf(t, "LEGION-208", "test", 1) +
+				" Handoff commit: head-w. Where a later version names another head, the head this task names is still head-w. Tester's verdict: fail. Task text:",
 		},
 		{
 			name: "a review's request for changes",
@@ -524,7 +532,8 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 				move: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 					taskMoves(t, pool, engine, key, "w", TriggerReviewRejected, changesBody)
 				}},
-			told: " Pull request: sjawhar/legion#45. Reason: Handoff: review version 1 (dispatch handoff-read --issue LEGION-208 --phase review --version 1). Handoff commit: head-w. " + changesBody + " Task text:",
+			told: " Pull request: sjawhar/legion#45. Reason:" + handoffPartOf(t, "LEGION-208", "review", 1) +
+				" Handoff commit: head-w. Where a later version names another head, the head this task names is still head-w. " + changesBody + " Task text:",
 		},
 		{
 			name: "the owner's send-back",
@@ -569,6 +578,7 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 //
 // It is the twin of TestATransitionToTheNextStepOfABusyAgentWaits on a plan of one task.
 func TestAStepOfThePlansOneTaskStartsForItsAgentAtOnce(t *testing.T) {
+	t.Parallel()
 	t.Run("the next step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, _ := tickingEngine()

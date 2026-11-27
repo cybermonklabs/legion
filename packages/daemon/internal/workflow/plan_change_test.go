@@ -351,6 +351,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 // before the work a version starts on a recorded issue (its control: planGiven answering the added
 // tasks only after afterVersion, under which version 1 answers none).
 func TestAPlansApplyAnswersTheTasksItsVersionAdds(t *testing.T) {
+	t.Parallel()
 	const child = "LEGION-500"
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -385,6 +386,7 @@ func TestAPlansApplyAnswersTheTasksItsVersionAdds(t *testing.T) {
 // record only for an id it marked, under which the give under an id never marked reaches the apply
 // and is refused 409 PLAN_VERSION_OLD).
 func TestAGiveOfAVersionTheStoreHoldsAppliesNothingWhateverItsID(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	recordedAt(t, pool, "LEGION-208", "LEGION-208")

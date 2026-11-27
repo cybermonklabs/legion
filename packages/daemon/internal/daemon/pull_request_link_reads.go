@@ -144,7 +144,7 @@ func (w *workflowRuntime) hearGitHubSpelling(ctx context.Context, repo ghrepo.Re
 // refusal, since a read that failed says nothing of the repository, and the link is read again.
 func (w *workflowRuntime) linkUnserved(ctx context.Context, repo ghrepo.Repository) (string, error) {
 	served := w.repositories.serving(repo)
-	answer, err := w.prepareName(ctx, served, repo, nil)
+	answer, err := w.prepareName(ctx, served, repo, nil, false)
 	if err != nil {
 		return "", err
 	}

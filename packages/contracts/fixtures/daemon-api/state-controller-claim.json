@@ -4,7 +4,10 @@
     "schemaVersion": 0,
     "boots": 2,
     "firstBootAt": "2126-10-06T17:02:11Z",
-    "startedAt": "2126-10-06T18:01:11Z"
+    "startedAt": "2126-10-06T18:01:11Z",
+    "stateSeq": 43,
+    "stateId": "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37",
+    "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
   },
   "admission": {
     "cap": 8,

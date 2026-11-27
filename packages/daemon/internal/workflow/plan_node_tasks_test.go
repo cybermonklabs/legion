@@ -34,6 +34,7 @@ func nodeTask(id string, steps []string, needs ...string) record.PlanRecordTask 
 // another task names a task the node does not hold (its control: planNode writing the first task
 // alone, which loses b and its need of a).
 func TestThePlanNodeHoldsEachTask(t *testing.T) {
+	t.Parallel()
 	node := func(key string, generation uint64, version int, tasks ...record.PlanRecordTask) record.PlanRecord {
 		return record.PlanRecord{ID: PlanID(key, generation), Generation: generation, Source: record.PlanSourceOwner,
 			PlanDocument: &record.PlanDocument{ArtifactID: "plan-artifact", Version: version}, Tasks: tasks}

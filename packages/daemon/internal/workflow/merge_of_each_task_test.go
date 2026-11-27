@@ -110,6 +110,7 @@ func checksAre(t *testing.T, pool *pgxpool.Pool, key string, want ...string) {
 // one of them unchecked (its control: the leave reading the issue's merge pull request alone, e's,
 // the last once both are done, under which a's check never opens).
 func TestTheLeaveAtTheLastMergeOpensTheCheckOfThatMerge(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Merging)
@@ -135,6 +136,7 @@ func TestTheLeaveAtTheLastMergeOpensTheCheckOfThatMerge(t *testing.T) {
 // The fault it catches is a retro told of another task's pull request (its control: the held
 // retro reading the issue's first pull request in task order, a's #42).
 func TestAHeldRetroReadsItsTasksPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -169,6 +171,7 @@ func TestAHeldRetroReadsItsTasksPullRequest(t *testing.T) {
 // The fault it catches is a merge whose issue a person closed while it waited, left with no check
 // (its control: a leave that reads no merge where no task's end ends the issue).
 func TestAPersonsDoneWhileTheLastMergeWaitsOpensItsCheck(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	stepRoot(t, pool, phase.Implementing)
@@ -197,6 +200,7 @@ func TestAPersonsDoneWhileTheLastMergeWaitsOpensItsCheck(t *testing.T) {
 // read from one task (its control: the leave reading the issue's merge pull request alone, once its
 // tasks are written done, c's, the last: no check where c's is open, one where it merged).
 func TestAPersonsDoneChecksEachMergeBeforeMerging(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		cMerged bool
@@ -236,6 +240,7 @@ func TestAPersonsDoneChecksEachMergeBeforeMerging(t *testing.T) {
 // tasks that have a merge read without the left tasks, and a left task counted only at its merge,
 // under which case (1) opens none).
 func TestAParkedChildSetDoneChecksItsMerge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		at          record.TaskPlace
@@ -285,6 +290,7 @@ func TestAParkedChildSetDoneChecksItsMerge(t *testing.T) {
 // The fault it catches is a check opened under a park, whose suspension then stops its look (its
 // control: the leave opening the checks of its merges at any status, under which it holds one).
 func TestAParkOpensNoCheck(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	stepRoot(t, pool, phase.Implementing)
@@ -305,6 +311,7 @@ func TestAParkOpensNoCheck(t *testing.T) {
 // The fault it catches is a notice that tells the architect of a pull request the daemon is closing
 // (its control: the notice without its filter of the queued closes, which names #43 open).
 func TestTheNoticeAtTheMergeThatEndsTheIssueNamesNoPullRequestTheMergeCloses(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	stepRoot(t, pool, phase.Implementing)
@@ -347,6 +354,7 @@ func leaveByTasksLines(logged *bytes.Buffer, key string) int {
 // lingering tree's last merge that checks only itself (its control: that branch opening the check of
 // its own merge alone, under which a's check is missing).
 func TestEachDoorFromTheTasksLeavesThroughOnePlace(t *testing.T) {
+	t.Parallel()
 	merged := taskAt{id: "a", state: record.TaskDone, place: atMerge, number: 42, merged: true, merges: true}
 	for _, tc := range []struct {
 		name string
@@ -429,6 +437,7 @@ func TestEachDoorFromTheTasksLeavesThroughOnePlace(t *testing.T) {
 // The fault it catches is a merge of a lingering root never checked in production (its control:
 // the leave of a lingering root returning before it reads its merges, under which it holds none).
 func TestARootParkedThenSetDoneInItsLingerChecksItsMerge(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, logged := loggedEngine()
 	root := stepRoot(t, pool, phase.Reviewing)
@@ -460,6 +469,7 @@ func TestARootParkedThenSetDoneInItsLingerChecksItsMerge(t *testing.T) {
 // made, or one not started for a merge still to come (its control: the phase read from the pull
 // request of the task of a copy, which the stored issue does not name, so it is never finished).
 func TestAnIssueInMergingIsFinishedWhenEachTaskAtItsMergeMerged(t *testing.T) {
+	t.Parallel()
 	finished := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) (bool, bool) {
 		t.Helper()
 		var done, owed bool
@@ -515,6 +525,7 @@ func TestAnIssueInMergingIsFinishedWhenEachTaskAtItsMergeMerged(t *testing.T) {
 // c's merge reading whether the issue's merging is finished, which a's open pull request keeps not
 // finished, so the merger is named for c's merge).
 func TestAMergeGitHubMadeStartsNoMergerWhileAnotherTaskWaitsAtItsMerge(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Retro)

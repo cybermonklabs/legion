@@ -124,6 +124,7 @@ func atAct(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, plac
 // report, which takes the added part at the retro; taskPlaceWords as at the base, which says `step
 // 0 ()`; heldTaskSummary as at the base, which says `task f, step 0`).
 func TestASubOwnersVersionDependsOnWhereItsTaskStands(t *testing.T) {
+	t.Parallel()
 	for _, place := range []struct {
 		name  string
 		at    record.TaskPlace
@@ -299,6 +300,7 @@ func TestASubOwnersVersionDependsOnWhereItsTaskStands(t *testing.T) {
 // waiting; restart that starts the sub-owner, which fails the retry: the branch of its step is
 // unknown).
 func TestAReleasedTaskStartsItsWaitingPart(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -344,6 +346,7 @@ func TestAReleasedTaskStartsItsWaitingPart(t *testing.T) {
 // start after a wait with no start of the tasks that may start, and taskJoined with none of its own,
 // which leave f1 waiting).
 func TestAPartStartsWhereItsTasksJoinEndsAtAnyEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)

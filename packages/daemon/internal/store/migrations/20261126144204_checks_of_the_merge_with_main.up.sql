@@ -11,31 +11,36 @@
 --
 -- Each check is one list, and each branch wrote its own lists of it. Main's 20261114232555 names
 -- awaiting_children without step, its 20261122154643 the two basis seeds without the three task
--- kinds, and its 20261126110259 merge_holds_changed without them. This branch's 20261117223524
--- names step and awaiting_children, which main's 20261114232555 wrote below it; its
--- 20261121165047 and 20261122122826 name task_branch and task_pull_requests_close with main's two
--- seeds and its merge_holds_changed, which they must, since they sort below main's 20261122154643
--- and 20261126110259 and so are the last word on a database main migrated; and its 20261123072431
--- names every task kind, both seeds and merge_holds_changed, for the same reason. This
--- file stands above all of them and above main's 20261126110259, so it is the last word on every
--- database, and it names every value of both branches: 36 kinds, main's merge_holds_changed among
--- them. On a fresh database Migrate applies every migration in version order and this file ends
--- the lists; on a database main migrated, or one a build of this branch migrated before its merge
--- of main, Migrate applies the unrecorded migrations late and this file still ends them. Every
--- database ends with the same two lists.
+-- kinds, its 20261126110259 merge_holds_changed without them, and its 20261126163320 the three
+-- state kinds (state_change, state_admission, state_boot; dispatch://INFRA-3931) without them.
+-- This branch's 20261117223524 names step and awaiting_children, which main's 20261114232555
+-- wrote below it; its 20261121165047 and 20261122122826 name task_branch and
+-- task_pull_requests_close with main's two seeds, its merge_holds_changed and its three state
+-- kinds, which they must, since they sort below main's 20261122154643, 20261126110259 and
+-- 20261126163320 and so run late on a database main migrated; and its 20261123072431 names every
+-- task kind, both seeds, merge_holds_changed and the state kinds, for the same reason. This file
+-- stands above all of them and above main's 20261126110259, and it names every value of both
+-- branches: 39 kinds, main's merge_holds_changed and its three state kinds among them. It stands
+-- below main's 20261126163320, which a later merge of main brought, so on a fresh database that
+-- migration runs after this file and writes the outbox list without the three task kinds, and on a
+-- database main migrated this file runs late, after it. 20261127142558, which stands above every
+-- migration, writes both lists again with every value of both branches and is the last word on
+-- every database; this file keeps its version, since a build of this branch recorded it.
 --
 -- An upgrade applies a list late over the rows the table holds, and a row the list refuses stops
 -- it (SQLSTATE 23514) before this file runs. That is why 20261121165047, 20261122122826 and
--- 20261123072431, which sort below main's 20261126110259 and so run after it on a database main
--- migrated, name main's two basis seeds and its merge_holds_changed in their own lists: a queued row
+-- 20261123072431, which sort below main's 20261126110259 and 20261126163320 and so run after them
+-- on a database main migrated, name main's two basis seeds, its merge_holds_changed and its three
+-- state kinds in their own lists, and this file names them for the same reason: a queued row
 -- of any of them stands, the upgrade runs through, and no operator deletes a row. On a database a
 -- build of this branch migrated, main's 20261114232555 refuses an issue that stands at the phase
--- step (it leaves issues_held_from_check, which keeps step, as it was), and main's 20261122154643
--- and 20261126110259 each refuse a queued row of the three task kinds. No deployment holds such a
--- database: only a build of this branch made one. With every daemon of it stopped, an operator
--- first finishes or stops each task whose issue stands at step, and deletes the queued rows of the
--- three kinds (`delete from outbox where kind in ('task_branch', 'task_pull_requests_close',
--- 'task_copy_remove')`), then runs the upgrade. What that delete costs is the work those rows owed:
+-- step (it leaves issues_held_from_check, which keeps step, as it was), and main's 20261122154643,
+-- 20261126110259 and 20261126163320 each refuse a queued row of the three task kinds. No
+-- deployment holds such a database: only a build of this branch made one. With every daemon of it
+-- stopped, an operator first finishes or stops each task whose issue stands at step, and deletes
+-- the queued rows of the three kinds (`delete from outbox where kind in ('task_branch',
+-- 'task_pull_requests_close', 'task_copy_remove')`), then runs the upgrade. What that delete costs
+-- is the work those rows owed:
 -- a task's branch made on GitHub, the close of the other pull requests of an issue, and the removal
 -- of a removed task's working copy.
 --
@@ -64,4 +69,5 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'task_branch', 'task_pull_requests_close', 'task_copy_remove'));
+  'merge_holds_changed', 'task_branch', 'task_pull_requests_close', 'task_copy_remove',
+  'state_change', 'state_admission', 'state_boot'));

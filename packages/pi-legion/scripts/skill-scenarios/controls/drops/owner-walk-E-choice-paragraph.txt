@@ -1,3 +1,0 @@
-
-
-For each step, decide whether a fresh agent works it or the agent of an earlier step, and write that choice and its reason in the task's text. This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow, so it cannot carry that choice out yet; write it all the same, because it records what the work needed.

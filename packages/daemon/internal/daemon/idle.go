@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"iter"
 	"log/slog"
 	"slices"
 	"strings"
@@ -47,6 +48,88 @@ type issuePods interface {
 
 // Without it, a sandbox.Runtime missing a method fails the rt.(issuePods) checks with no error.
 var _ issuePods = (*sandbox.Runtime)(nil)
+
+// issuePodRepository is the repository the pod of issue was built from, read through the claims
+// of the issue the daemon supervises (podRepository), for the idle rule's repository hold
+// (podRepositoryDrifted).
+//
+// It is the pod's own fact and not the record's: a pod clones one repository into the issue's
+// workspace at its creation and holds the gh directories and the token of that repository's
+// owner for its whole life, so this is the repository every role in it works, and the
+// repository every byte of unpushed work on its disk is of, until the pod is replaced.
+//
+// The claims are read as their machines last published them (supervise.Machine.View), never
+// waiting on a decision in flight, exactly as the capability report reads them
+// (supervision.deployment).
+//
+// It answers "" with no error where nothing can say: a daemon with no supervisor or no runtime,
+// an issue no claim of which records a process, and the tmux runtime, whose panes share no pod
+// and which answers "" itself. Each of those is an unknown rather than a statement, which is
+// the rule every reader of a pod's repository already follows (repositoryDrift).
+func issuePodRepository(ctx context.Context, sup *supervisor, issue string) (string, error) {
+	if sup == nil || sup.deps.Runtime == nil {
+		return "", nil
+	}
+	return podRepository(ctx, sup.deps.Runtime, func(yield func(supervise.Claim) bool) {
+		for _, m := range sup.supervised() {
+			if c := m.View().Claim; c.Issue == issue && !yield(c) {
+				return
+			}
+		}
+	})
+}
+
+// podRepository is the repository the pod claims run in was built from, as that pod itself
+// names it (runtime.Runtime.PodRepository), asked through the claim of claims that records a
+// process and has the lowest token. One claim answers for the whole issue: every role of an
+// issue runs in that one pod and works the one workspace its fetch cloned. The claim is chosen
+// by its token and not by the order claims arrive in, so the readers that hand it every claim of
+// the issue ask the pod through the same claim whichever list they hold: the idle rule reads the
+// claims the daemon supervises (issuePodRepository), and the update-round sweep reads the claims
+// the store answered (supervision.groupDrift). That is what lets the release and the replacement
+// agree on which pods are on a repository the issue has left (podRepositoryDrifted). It answers
+// "" with no error where no claim records a process.
+func podRepository(ctx context.Context, rt runtime.Runtime, claims iter.Seq[supervise.Claim]) (string, error) {
+	var pod supervise.Claim
+	found := false
+	for c := range claims {
+		if c.Locator != nil && (!found || c.Token < pod.Token) {
+			pod, found = c, true
+		}
+	}
+	if !found {
+		return "", nil
+	}
+	repository, err := rt.PodRepository(ctx, runtime.Known{Claim: pod.Token, Locator: pod.Locator})
+	if err != nil {
+		return "", fmt.Errorf("ask the pod through the claim %s: %w", pod.Token, err)
+	}
+	return repository, nil
+}
+
+// podRepositoryDrifted is whether the issue's pod was built from a repository the issue's
+// record no longer holds, which is the idle rule's repository hold (workflow.IdleHoldRepository)
+// and the one input of it the daemon's Postgres does not hold on its own. It is the update-round
+// sweep's reading of the same pair, through the same claim (podRepository) and the sweep's own
+// comparison (repositoryDrift), so the release and the replacement never disagree about which
+// pods are on a repository the issue has left: the sweep opens a round over exactly the pods
+// this holds.
+//
+// Anything that leaves either name unread answers false — a runtime that cannot be asked, a pod
+// that names no repository, a deployment with no workflow, a record that cannot be read — since
+// an unknown is never a statement that something drifted, and a hold on one would keep a pod
+// that nothing is going to replace.
+func (s *supervision) podRepositoryDrifted(ctx context.Context, issue string) bool {
+	pod, err := issuePodRepository(ctx, s.supervisor, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("idle release: read the repository this issue's pod was built from", "issue", issue, "error", err)
+		}
+		return false
+	}
+	_, reason := s.repositoryDrift(ctx, issue, pod)
+	return reason != ""
+}
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),
 // under both release rules: the release of a pod no claim owns, whose every claim is failed,
@@ -106,8 +189,13 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 
 // releaseIdlePod decides one issue's pod and, when the rule releases it, writes the release's
 // rows and its mark in one transaction with the view they rest on (store.ReleaseIdleIssue). The
-// pod's image is read before that transaction, from the runtime's own store of pods, because it
-// is the one input the daemon's Postgres does not hold.
+// pod's image and the repository it was built from are read before that transaction, from the
+// runtime's own store of pods, because they are the inputs the daemon's Postgres does not hold.
+// The repository, and the record it is read against, are read only for a pod on the configured
+// image: the rule holds any other pod for its image, or for an earlier reason, before it reads
+// the repository (workflow.IdleRelease), so a read there would decide nothing. A deployment that
+// wired no repository reader — a test that builds the runtime by hand — reads no drift, as a pod
+// whose repository cannot be read does.
 //
 // A pod the rule kept that was quiet for the whole idle period is recorded as a hold
 // (recordIdleHold): that is a pod release would have taken and something else stopped, which is
@@ -121,6 +209,7 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	now := w.clockNow().UTC()
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
+	repositoryDrifted := onConfiguredImage && w.idleRepositoryDrifted != nil && w.idleRepositoryDrifted(ctx, issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	podUID := w.runningPod(issue)
@@ -133,7 +222,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 			view.PodUID = podUID
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion())
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, repositoryDrifted, api.DaemonAPIVersion())
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
@@ -276,7 +365,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	var quiet, holding bool
 	var waiting []claim.Role
 	var heldFor string
-	var suspended []string
+	var held suspensionHolders
 	podUID := w.runningPod(issue)
 	// The mark's line and the wake of its lane are hooks of its commit, as the idle pass's are. The
 	// pass counts the release from what Transact answers, never from a hook, so a hook the watcher
@@ -304,7 +393,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
-			waiting, heldFor, suspended = view.StartsWaitingForPod, view.HeldFor, operatorSuspended(view)
+			waiting, heldFor, held = view.StartsWaitingForPod, view.HeldFor, heldSuspensions(view)
 			if !decision.Release {
 				return store.IdleReleaseMark{}, nil
 			}
@@ -329,18 +418,20 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	if !marked {
 		w.log.Debug("unowned release: the pod is kept", "issue", issue, "hold", decision.Hold.String())
 		// A suspension the operator or the controller holds keeps a pod a role's start waits for
-		// (main's IdleHoldUnownedSuspensionHolds, which either holder's suspension sets). The
-		// controller is told of the operator's alone, once for each streak of the hold, at the
-		// pass that opens it (HeldFor names no streak of it yet), before it is recorded: a
-		// suspension the controller holds is its own act, and the notice's words name the operator
-		// and the claims it suspended (podWaitHeldWords, operatorSuspended), so a hold with none
-		// of those would tell the controller of an empty list.
+		// (main's IdleHoldUnownedSuspensionHolds, which either holder's suspension sets), and
+		// nothing ends that wait until the holder acts. The controller is told of either, once for
+		// each streak of the hold, at the pass that opens it (HeldFor names no streak of it yet),
+		// before the pass records it: the streak is what keeps every later pass of it from telling
+		// again, whichever holder set it. The words name each holder with the claims it suspended
+		// (podWaitHeldWords): the operator's, which only the operator lifts, and the controller's
+		// own, which it resumes or stops itself. A holder with no claim is never named, and a view
+		// that names no claim under either tells nothing, so no notice tells of an empty list.
 		if decision.Hold == workflow.IdleHoldUnownedSuspensionHolds && quiet && len(waiting) > 0 &&
-			len(suspended) > 0 && heldFor != workflow.IdleHoldUnownedSuspensionHolds.String() {
+			!held.empty() && heldFor != workflow.IdleHoldUnownedSuspensionHolds.String() {
 			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: waiting[0],
-				Reason: podWaitHeldWords(issue, waiting, suspended, w.idlePeriod)}
+				Reason: podWaitHeldWords(issue, waiting, held, w.idlePeriod)}
 			if _, err := w.enqueueOutbox(ctx, issue, notice); err != nil {
-				w.log.Warn("unowned release: could not tell the controller of a pod an operator's suspension holds", "issue", issue, "error", err)
+				w.log.Warn("unowned release: could not tell the controller of a pod a suspension holds", "issue", issue, "error", err)
 			}
 		}
 		// This rule names one reason per pass and no kinds beside it, so its holds carry no
@@ -351,30 +442,62 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	return workflow.IdleHoldNone, true
 }
 
-// operatorSuspended is each claim of view an operator suspended, as `<role> (<state>)`.
-func operatorSuspended(view pods.IdleView) []string {
-	var held []string
+// suspensionHolders is each claim of an issue's pod that a suspension that holds is over
+// (pods.IdleClaim.SuspensionHolds, the predicate main's IdleHoldUnownedSuspensionHolds reads), as
+// `<role> (<state>)`, by its holder. The pod-wait-held notice tells the controller of them
+// (podWaitHeldWords), and the two holders are told apart because the controller resumes or stops
+// the claims it suspended itself, while only the operator lifts the operator's
+// (supervise.ErrOperatorHolds).
+type suspensionHolders struct {
+	operator, controller []string
+}
+
+// heldSuspensions is view's suspensionHolders.
+func heldSuspensions(view pods.IdleView) suspensionHolders {
+	var held suspensionHolders
 	for _, c := range view.Claims {
-		if c.SuspendedBy == supervise.SuspendedByOperator {
-			held = append(held, fmt.Sprintf("%s (%s)", c.Role, c.State))
+		if !c.SuspensionHolds() {
+			continue
+		}
+		name := fmt.Sprintf("%s (%s)", c.Role, c.State)
+		switch c.SuspendedBy {
+		case supervise.SuspendedByOperator:
+			held.operator = append(held.operator, name)
+		case supervise.SuspendedByController:
+			held.controller = append(held.controller, name)
 		}
 	}
 	return held
 }
 
+// empty is whether h names no claim under either holder.
+func (h suspensionHolders) empty() bool {
+	return len(h.operator) == 0 && len(h.controller) == 0
+}
+
 // podWaitHeldWords is what the controller is told of the roles waiting, whose start waits for
-// the pod of issue that an operator's suspension of the claims suspended holds (ruling 18 point
-// 4), for the controller agent in plain words.
-func podWaitHeldWords(issue string, waiting []claim.Role, suspended []string, idle time.Duration) string {
+// the pod of issue that the suspensions held holds (ruling 18 point 4), for the controller agent
+// in plain words. Each holder is named only with the claims it suspended, so a holder with none is
+// not named at all.
+func podWaitHeldWords(issue string, waiting []claim.Role, held suspensionHolders, idle time.Duration) string {
 	names := make([]string, len(waiting))
 	for i, role := range waiting {
 		names[i] = string(role)
 	}
 	roles := strings.Join(names, ", ")
-	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made before the deployment defined the slot or the role that each of those starts needs, and no role runs in it. "+
-		"The daemon removes such a pod when it has had no activity for %d minutes, but not while an operator holds a claim of it. "+
-		"The operator suspended %s. Resume or stop that claim. Then the daemon replaces or removes the pod, and %s start in a new pod.",
-		roles, issue, issue, int(idle.Minutes()), strings.Join(suspended, ", "), roles)
+	var words strings.Builder
+	fmt.Fprintf(&words, "%s of %s cannot start. The pod of %s was made before the deployment defined the slot or the role that each of those starts needs, and no role runs in it. "+
+		"The daemon removes such a pod when it has had no activity for %d minutes, but not while the operator or you hold a claim of it suspended.",
+		roles, issue, issue, int(idle.Minutes()))
+	if len(held.operator) > 0 {
+		fmt.Fprintf(&words, " The operator suspended %s, and only the operator's resume or stop ends that suspension.",
+			strings.Join(held.operator, ", "))
+	}
+	if len(held.controller) > 0 {
+		fmt.Fprintf(&words, " You suspended %s. Resume or stop each once its cause is gone.", strings.Join(held.controller, ", "))
+	}
+	fmt.Fprintf(&words, " Once each of those claims is resumed or stopped, the daemon replaces or removes the pod, and %s start in a new pod.", roles)
+	return words.String()
 }
 
 // closeLeftPods finishes the close of each pod whose issue left the workflow while its tree runs
@@ -526,16 +649,16 @@ func (w *workflowRuntime) runningPod(issue string) string {
 // place a streak ends outside a hold of another reason (releaseIdlePod).
 //
 // Every other value is a reason worth a row, the ones that are working as designed
-// (background_work, in_turn, delivery_waiting, reminder_due, awaiting_person) as much as the
-// ones that are not (image, plugin_contract, unreported, unpushed_work, workspace_unread,
-// overtaken, unauthorized): a deployment reads release's health from which of them it sees, so
-// leaving the healthy ones out would leave it unable to tell a pod kept for good reason from one
-// never decided at all. IdleHoldTreeNotLive is recorded too: it holds a pod of an issue the
-// workflow has taken out only while a close of that pod is still to come or still running
-// (workflow.LeftPodClose) — a tree that lingers, a root out of the workflow, an open look of the
-// issue's production check, a role stop or a Sandbox suspension of the issue still queued — so a
-// deployment that sees it every tick past a linger's end or a look's bound is seeing a close that
-// is stuck.
+// (background_work, in_turn, delivery_waiting, reminder_due, awaiting_person, repository, which
+// is a pod the update round is about to replace) as much as the ones that are not (image,
+// plugin_contract, unreported, unpushed_work, workspace_unread, overtaken, unauthorized): a
+// deployment reads release's health from which of them it sees, so leaving the healthy ones out
+// would leave it unable to tell a pod kept for good reason from one never decided at all.
+// IdleHoldTreeNotLive is recorded too: it holds a pod of an issue the workflow has taken out only
+// while a close of that pod is still to come or still running (workflow.LeftPodClose) — a tree
+// that lingers, a root out of the workflow, an open look of the issue's production check, a role
+// stop or a Sandbox suspension of the issue still queued — so a deployment that sees it every tick
+// past a linger's end or a look's bound is seeing a close that is stuck.
 //
 // The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedSuspensionHolds
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one

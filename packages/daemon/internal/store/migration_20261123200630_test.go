@@ -16,6 +16,7 @@ const planAddedVersion = 20261123200630
 // the tasks its write names. The way back the header gives drops the column and deletes its
 // version row, so the roll-forward runs the migration again, and every version then reads none.
 func TestMigrationPlanAddedReadsNoneForEachVersionAndItsWayBackDropsTheColumn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	exec := func(what, statement string) {

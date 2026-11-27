@@ -203,7 +203,12 @@ func URL(raw string) string {
 //     of this machine, its authority empty or `localhost`, keeps an "@" in its path: RFC 8089
 //     gives it no userinfo to write a credential in, and a path's own "@" is common there
 //     (`file:///…/node_modules/@scope/…`). An "@" in such a URL's query or fragment, or in any
-//     file URL that names a host, marks it as any other;
+//     file URL that names a host, marks it as any other. A Dispatch reference (dispatchPin) keeps
+//     the one "@" past its host that pins a version, `@v<N>`, in its path (a document's version,
+//     `artifact/<slug>@v2`) or its fragment (a block's, `#b-<id>@v2`): Dispatch writes every
+//     other "@" of a reference encoded, so a raw one there is only ever a pin, and no request
+//     dials a `dispatch:` URL, so nothing reads a host from it. Its "@" in the query, a second
+//     "@" past its host, or any other word after the "@" marks it as any other;
 //   - the fragment starts at the first "#" after the authority, and it stays. A "?" after that "#"
 //     is the fragment's;
 //   - the query runs from the first "?" after the authority up to the fragment, or up to the end
@@ -261,8 +266,11 @@ func URLCredentials(text string) string {
 	// and again from fragment after a removed query. lastAt is the last "@" before end, found when
 	// end is: every URL that ends at end starts at or after the at it was found from, so a URL has
 	// an "@" past its host exactly when lastAt is at or after that host, and the stretches it is
-	// looked for in lie apart from one another.
-	end, lastAt := -1, -1
+	// looked for in lie apart from one another. prevAt is the last "@" before lastAt, found with it
+	// from the same at, so a URL has one "@" past its host, the one at lastAt, exactly when lastAt
+	// is at or after that host and prevAt is before it; its search reads the stretch before
+	// lastAt, which the search for lastAt did not.
+	end, lastAt, prevAt := -1, -1, -1
 	slash, question, hash := nextByte{c: '/', at: -1}, nextByte{c: '?', at: -1}, nextByte{c: '#', at: -1}
 	for at := 0; ; {
 		i := strings.Index(text[at:], "://")
@@ -283,18 +291,23 @@ func URLCredentials(text string) string {
 		}
 		if end < at {
 			end = at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
-			lastAt = strings.LastIndexByte(text[at:end], '@')
+			lastAt, prevAt = strings.LastIndexByte(text[at:end], '@'), -1
 			if lastAt >= 0 {
 				lastAt += at
+				if prevAt = strings.LastIndexByte(text[at:lastAt], '@'); prevAt >= 0 {
+					prevAt += at
+				}
 			}
 		}
 		host := min(slash.from(text, at), question.from(text, at), hash.from(text, at), end)
 		// An "@" past the host writes the whole URL as the mark, and the search goes on from the
 		// URL's end, so every "://" in [host, end) is this URL's own. A query pending from a URL
 		// before this one lies in it only when that URL is a local file URL, which an "@" in its
-		// path leaves whole, and which ends where this one does: the mark covers that query, so it
-		// is no longer pending.
-		if lastAt >= host && !localFilePath(text, sep, at, host, min(question.from(text, host), hash.from(text, host), end), lastAt) {
+		// path leaves whole, or a Dispatch reference, which the "@" of its pin leaves whole
+		// (dispatchPin), and which ends where this one does: the mark covers that query, so it is
+		// no longer pending.
+		if lastAt >= host && !localFilePath(text, sep, at, host, min(question.from(text, host), hash.from(text, host), end), lastAt) &&
+			!dispatchPin(text, sep, host, min(question.from(text, host), end), min(hash.from(text, host), end), end, prevAt, lastAt) {
 			replace(at, end, URLWithCredentials)
 			at = end
 			query = -1
@@ -333,6 +346,54 @@ func localFilePath(text string, sep, at, host, pathEnd, lastAt int) bool {
 		return false
 	}
 	return lastAt < pathEnd
+}
+
+// dispatchPin reports whether the URL whose "://" is at sep, whose authority ends at host, whose
+// query starts at query and fragment at fragment (each end where it has none) and which ends at
+// end, is a Dispatch reference whose one "@" past its host, at lastAt (prevAt is the "@" before
+// it), pins a version: its scheme is `dispatch`, in lower case as Dispatch reads one; prevAt is
+// before host; the "@" stands in the path (a document's version) or the fragment (a block's), and
+// never in the query, which no reference carries; and what follows it is a pin (versionPin).
+// Dispatch writes every other "@" of a reference encoded (EncodeBlockID in
+// packages/envoy/internal/dispatch/text), and reads a raw one as a pin and nothing else.
+func dispatchPin(text string, sep, host, query, fragment, end, prevAt, lastAt int) bool {
+	if !dispatchSchemeEndsAt(text, sep) || prevAt >= host {
+		return false
+	}
+	if lastAt > min(query, fragment) && !(fragment < end && lastAt > fragment) {
+		return false
+	}
+	return versionPin(text[lastAt+1 : end])
+}
+
+// dispatchSchemeEndsAt reports whether the scheme that ends at sep, the index of a "://" in text,
+// is `dispatch`, in lower case: Dispatch reads `dispatch://` and no other case of it.
+func dispatchSchemeEndsAt(text string, sep int) bool {
+	const dispatch = "dispatch"
+	start := sep - len(dispatch)
+	return start >= 0 && text[start:sep] == dispatch && (start == 0 || !schemeByte(text[start-1]))
+}
+
+// versionPin reports whether tail, what follows a Dispatch reference's "@" up to the end of the
+// URL, is a pin of a version as Dispatch reads one, "v" and a number from 1 with no leading zero
+// (versionPattern in packages/envoy/internal/dispatch/text), followed by nothing but the
+// punctuation Dispatch drops from the end of a reference written in prose (trimReference): ".",
+// ",", ";", ":", "!", "?", "*", "_", "~" and ")". So a reference a sentence quotes keeps its pin
+// with the comma after it, as a refusal of a plan writes one.
+func versionPin(tail string) bool {
+	if len(tail) < 2 || tail[0] != 'v' || tail[1] < '1' || tail[1] > '9' {
+		return false
+	}
+	i := 2
+	for i < len(tail) && '0' <= tail[i] && tail[i] <= '9' {
+		i++
+	}
+	for ; i < len(tail); i++ {
+		if strings.IndexByte(".,;:!?*_~)", tail[i]) < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // nextByte is the index of the next c in a text at or after the position it was last looked for

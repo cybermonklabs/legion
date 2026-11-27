@@ -173,13 +173,13 @@ func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token,
 }
 
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
-// the workspace's place on the issue's disk. It runs at every launch and expects nothing of that
-// disk. The pod's own disk is created with the pod and deleted with it (INFRA-80). A kept volume
-// (keptVolume) outlives the pod, so a new pod of the issue finds on it what the pods before it
-// left. Only a new or replacement pod provisions its workspace (provision, which relaunch runs
-// only when it replaces the pod), and a role launched into the live pod finds the workspace the
-// roles before it left. docs/kubernetes.md, "The disk dies with its pod", states which launch is
-// which.
+// the workspace's place on the issue's disk (WorkspaceDir). It runs at every launch and
+// expects nothing of that disk. The pod's own disk is created with the pod and deleted with it
+// (INFRA-80). A kept volume (keptVolume) outlives the pod, so a new pod of the issue finds on it
+// what the pods before it left. Only a new or replacement pod provisions its workspace
+// (provision, which relaunch runs only when it replaces the pod), and a role launched into the
+// live pod finds the workspace the roles before it left. docs/kubernetes.md, "The disk dies with
+// its pod", states which launch is which.
 func (issuePod) prepare(l *launch) error {
 	spec := l.spec
 	if spec.Repository.IsZero() {
@@ -197,7 +197,9 @@ func (issuePod) prepare(l *launch) error {
 // issue's disk (workspace.Location under TreeRoot), the working directory of every role container
 // of the pod (issuePod.prepare), and so the directory each agent of the issue starts in. The
 // workflow engine names it in every task it composes (workflow.Config.WorkspaceDir, which the
-// daemon reads from here).
+// daemon reads from here), and the daemon names it to the roles of an issue's next pod for the
+// workspace that a pod of another repository left on a kept volume (internal/daemon's
+// keptDiskMessage), so a change of the pod's layout moves all three.
 func WorkspaceDir(repository ghrepo.Repository, issue string) (string, error) {
 	working, err := workspace.Location(TreeRoot, repository, issue)
 	if err != nil {
@@ -273,7 +275,7 @@ func (issuePod) secretAnnotations(l launch) map[string]string {
 
 // initContainers is workspace-init, which fills the clone directly on the issue volume. It mounts
 // the provisioning Secret and its in-memory TMPDIR for its one-shot credentials, the issue volume,
-// and the config home that holds the clone's jj configuration. Each takes the pod's one
+// and the config home that holds the clone's jj configuration. It takes the pod's one
 // reservation, which adds nothing to the pod's: the scheduler counts a pod's request as the larger
 // of its main containers' sum and its largest init container.
 func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {

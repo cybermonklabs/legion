@@ -33,6 +33,7 @@ const basisOpening = " The spec step stands open on an ancestor's approval: a pe
 // each is sent the opened message, with the clause that nothing changed since the version of the
 // opening step it took (openingDelivery), as the gate messages tests seed it.
 func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t *testing.T) {
+	t.Parallel()
 	merger := rolePrompt(t, claim.RoleMerger)
 	fill := strings.NewReplacer("<tree>", gatedRoot, "<n>", "2", "<step>", string(record.DesignStepCriteria), "<id>", criteriaDoc)
 	for _, tc := range []struct {
@@ -105,6 +106,7 @@ func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t
 // person's changes request on the root's document. A person's approval of the root's own document
 // while the step waited names that approval and then the end of the wait.
 func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
+	t.Parallel()
 	changes := ancestorReview(intake.DispatchArtifactChangesRequested, 4, 61, "name the rollback path")
 	for _, tc := range []struct {
 		name  string
@@ -165,8 +167,8 @@ func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
 			if root.Awaiting == nil || root.Awaiting.AnsweredAt == nil {
 				t.Fatalf("the waiting root = %#v, want its wait answered", root.Awaiting)
 			}
-			step, gate := gateInQuestion(engine.cfg.Steps, gatesOf(t, pool, gatedRoot))
-			task := resumeTask(gatedRoot, *root.Awaiting, step, gate, nil, true)
+			gates := gatesOf(t, pool, gatedRoot)
+			task := resumeTask(gatedRoot, *root.Awaiting, stepInQuestion(engine.cfg.Steps, gates), gates, nil, true)
 			for _, want := range tc.want {
 				if !strings.Contains(task, want) {
 					t.Fatalf("resume task %q, want it to name %q", task, want)
@@ -187,14 +189,16 @@ func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
 // it names R1's path: a registration on an approved ancestor's approval, where the root is a view
 // on that ancestor (dispatch://INFRA-3320, R2). A task with no approval kept names neither.
 func TestTheKeptDecisionsTaskNamesThePersonsApprovalAndR1sPath(t *testing.T) {
-	task := KeptDecisionsTask("LEGION-208", record.KeptDecisions{KeptApproval: record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 5}})
+	t.Parallel()
+	task, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208",
+		record.KeptDecisions{KeptApproval: record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 5}})
 	want := "A person approved version 2 of the primary document, and the primary document is now at version 5. " +
 		"Request approval of version 5, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. " +
 		"The other way is to write LEGION-208 as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says."
 	if task != want {
 		t.Fatalf("the start task = %q, want %q", task, want)
 	}
-	decided := KeptDecisionsTask("LEGION-208", record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-208/spec",
+	decided, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208", record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-208/spec",
 		Decision: record.DecisionDesignApproved, Actor: "user:alice"}}})
 	if strings.Contains(decided, "view on an approved ancestor") || strings.Contains(decided, "Request approval") {
 		t.Fatalf("the start task %q with no approval kept names a request or R1's path", decided)

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -284,6 +285,81 @@ var urlCredentialsCases = []struct {
 		text: "https://h.example/p?a=file:///a.js?mtime=1&token=" + planted + " done",
 		want: "https://h.example/p done",
 	},
+	{
+		// A refusal of a plan quotes a pinned need with the comma of its sentence after it: the
+		// pin's "@" is the reference's one "@" past its host, in its fragment, and stays.
+		name: "a Dispatch reference pinned in its fragment keeps its pin",
+		text: "task d needs dispatch://ACME-2/artifact/plan-md#b-a@v2, which names another issue",
+		want: "task d needs dispatch://ACME-2/artifact/plan-md#b-a@v2, which names another issue",
+	},
+	{
+		name: "a Dispatch reference pinned in its path keeps its pin",
+		text: "see dispatch://CORE-1/artifact/design-md@v12.",
+		want: "see dispatch://CORE-1/artifact/design-md@v12.",
+	},
+	{
+		// A credential holding a "/" written as the user of a dispatch: URL: what follows its "@"
+		// is a host, not a pin.
+		name: "a Dispatch reference with a host after its @ takes the mark",
+		text: "dispatch://CORE-1/" + planted + "@host.example/x",
+		want: "dispatch://" + URLWithCredentials,
+	},
+	{
+		name: "a Dispatch reference with two @ past its host takes the mark",
+		text: "dispatch://CORE-1/spec#b-" + planted + "@v2@v3",
+		want: "dispatch://" + URLWithCredentials,
+	},
+	{
+		name: "a Dispatch reference whose @ is in its query takes the mark",
+		text: "dispatch://CORE-1/spec?" + planted + "@v2",
+		want: "dispatch://" + URLWithCredentials,
+	},
+	{
+		name: "a version with a leading zero is no pin",
+		text: "dispatch://CORE-1/spec#b-" + planted + "@v02",
+		want: "dispatch://" + URLWithCredentials,
+	},
+	{
+		name: "a pin followed by a word takes the mark",
+		text: "dispatch://CORE-1/spec#b-x@v2" + planted + " end",
+		want: "dispatch://" + URLWithCredentials + " end",
+	},
+	{
+		name: "a pin on another scheme is no pin",
+		text: "dial https://" + planted + "/x@v2 refused",
+		want: "dial https://" + URLWithCredentials + " refused",
+	},
+	{
+		// Dispatch reads `dispatch://` in lower case alone.
+		name: "DISPATCH in upper case is no Dispatch reference",
+		text: "DISPATCH://CORE-1/spec#b-" + planted + "@v2",
+		want: "DISPATCH://" + URLWithCredentials,
+	},
+	{
+		name: "a scheme that ends in dispatch is another scheme",
+		text: "xdispatch://CORE-1/spec#b-" + planted + "@v2",
+		want: "xdispatch://" + URLWithCredentials,
+	},
+	{
+		// The pin leaves the reference whole past its authority, and its userinfo is written as
+		// the mark as any other.
+		name: "a Dispatch reference's userinfo takes the mark, and its pin stays",
+		text: "dispatch://" + plantedUserinfo + "@CORE-1/spec#b-x@v2",
+		want: "dispatch://" + URLWithCredentials + "/spec#b-x@v2",
+	},
+	{
+		// The "@" of the pin is past the https URL's host, which is no Dispatch reference.
+		name: "a pinned Dispatch reference in another URL's path marks that URL",
+		text: "https://h.example/see/dispatch://CORE-1/spec#b-x@v2 then",
+		want: "https://" + URLWithCredentials + " then",
+	},
+	{
+		// The pinned reference is a URL of its own in the path of a file URL of this machine,
+		// whose "@" past its host is the pin's, in its path: both stay whole.
+		name: "a pinned Dispatch reference in a local file URL's path",
+		text: "file:///notes/dispatch://CORE-1/artifact/notes-md@v3 end",
+		want: "file:///notes/dispatch://CORE-1/artifact/notes-md@v3 end",
+	},
 }
 
 // HostShown writes a URL's host as the mark in an error that names it, and prints no error for a
@@ -391,6 +467,11 @@ func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
 // schemeRunes are the characters a scheme holds, for urlCredentialsQuadratic's own reading of it.
 const schemeRunes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-."
 
+// pinTail is what follows the "@" of a pinned Dispatch reference up to the URL's end, for
+// urlCredentialsQuadratic's own reading of it: "v", a version from 1 with no leading zero, and
+// the punctuation Dispatch drops from the end of a reference written in prose.
+var pinTail = regexp.MustCompile(`^v[1-9][0-9]*[.,;:!?*_~)]*$`)
+
 // urlCredentialsQuadratic is URLCredentials as it was before it kept its searches: the same rule,
 // which for each "://" searches again to the URL's end, three times, so a run of "://" that
 // nothing ends (`a://a://…`) takes it time quadratic in the run's length. It is kept as the
@@ -442,7 +523,13 @@ func urlCredentialsQuadratic(text string) string {
 		pathEnd := host + orLen(strings.IndexAny(text[host:end], "?#"), end-host)
 		local := strings.EqualFold(scheme, "file") && (authority == "" || strings.EqualFold(authority, "localhost")) &&
 			strings.IndexByte(text[pathEnd:end], '@') < 0
-		if strings.IndexByte(text[host:end], '@') >= 0 && !local {
+		// A Dispatch reference whose one "@" past its host stands in its path or its fragment,
+		// with a pin and the end of a sentence after it.
+		fragmentAt := host + orLen(strings.IndexByte(text[host:end], '#'), end-host)
+		pin := host + strings.LastIndexByte(text[host:end], '@')
+		pinned := scheme == "dispatch" && strings.Count(text[host:end], "@") == 1 &&
+			(pin < pathEnd || pin > fragmentAt) && pinTail.MatchString(text[pin+1:end])
+		if strings.IndexByte(text[host:end], '@') >= 0 && !local && !pinned {
 			replace(at, end, URLWithCredentials)
 			at = end
 			query = -1
@@ -477,7 +564,7 @@ func TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives(t *testing.T) {
 	for _, tc := range urlCredentialsCases {
 		texts = append(texts, tc.text)
 	}
-	pieces := []string{"https", "file", "FILE", "localhost", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
+	pieces := []string{"https", "file", "FILE", "localhost", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff", "dispatch", "v", ","}
 	random := rand.New(rand.NewPCG(4193, 4463))
 	for range 5000 {
 		some := []string{"a", "://"}

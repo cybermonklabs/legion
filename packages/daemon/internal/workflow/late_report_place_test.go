@@ -37,6 +37,7 @@ import (
 // look at a production check. Without these rows neither report is of a run, and both are
 // refused HANDOFF_NOT_CURRENT_PHASE.
 func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := stepRoot(t, pool, phase.Step)

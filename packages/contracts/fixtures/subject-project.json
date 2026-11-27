@@ -40,7 +40,8 @@
       "args": ["_", "lead-reviewer"],
       "want": "notifications.role._.lead-reviewer"
     },
-    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" }
+    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" },
+    { "fn": "legionStateSubject", "args": ["infra"], "want": "notifications.legion.infra.state" }
   ],
   "issueProject": [
     { "key": "INFRA-12", "project": "INFRA", "ok": true },

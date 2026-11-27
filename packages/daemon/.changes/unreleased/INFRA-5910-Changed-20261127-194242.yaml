@@ -22,7 +22,7 @@ body: |-
     pull request of the issue (contract entry 20261127183022 pull-requests). The role prompts say
     that a fix in another repository can be a second pull request of the same issue, linked on
     it, and that the work of an issue ends when no pull request of the issue is open. Before a
-    rollback, run the way back of migration 20261127031536 (docs/kubernetes.md, "Rolling back the
+    rollback, run the way back of migration 20261127234212 (docs/kubernetes.md, "Rolling back the
     release that keys each pull request by its repository and number").
 time: 2026-11-27T19:42:42Z
 custom:

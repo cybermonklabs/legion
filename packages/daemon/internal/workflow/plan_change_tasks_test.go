@@ -44,6 +44,7 @@ func seedAToE(t *testing.T, pool *pgxpool.Pool, root record.Issue) {
 // task of a plan of several holding the issue, as a plan of one task's stop does, which leaves the
 // issue held while a runs).
 func TestAStoppedTaskHoldsOnlyTheTasksThatNeedIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -150,6 +151,7 @@ func keyed(t *testing.T, id, text string, words []string, needs ...string) plan.
 // assertion of the refusal fails; and planGiven taking the change of a held task, which the
 // refusal of the held g then fails).
 func TestALaterVersionAddsChangesAndRemovesTasks(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -238,6 +240,7 @@ func TestALaterVersionAddsChangesAndRemovesTasks(t *testing.T) {
 //
 // The fault it catches is a held issue that a change of its stopped task leaves held.
 func TestAVersionThatChangesTheStoppedTaskStartsItAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -272,6 +275,7 @@ func TestAVersionThatChangesTheStoppedTaskStartsItAgain(t *testing.T) {
 // a need that changes no task's merge (its control: the refusal of each need on a task at its
 // retro, the revision before, which refuses the version where e says merges).
 func TestAVersionThatNeedsTheMergingTaskAtItsRetroIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, says := range []bool{false, true} {
 		t.Run(map[bool]string{false: "e merges as the task no task needs", true: "e says merges"}[says], func(t *testing.T) {
 			pool := migratedPool(t)
@@ -333,6 +337,7 @@ func cNeedsAB(t *testing.T, extra ...plan.Task) []plan.Task {
 // then told a branch that does not exist (its control: BaseOf as the plan's base alone, the
 // revision before, under which c's implementation step is told legion/LEGION-208.c.join).
 func TestAVersionKeepsTheBaseOfAStartedTask(t *testing.T) {
+	t.Parallel()
 	for _, held := range []bool{false, true} {
 		t.Run(map[bool]string{false: "running", true: "held"}[held], func(t *testing.T) {
 			pool := migratedPool(t)
@@ -376,6 +381,7 @@ func TestAVersionKeepsTheBaseOfAStartedTask(t *testing.T) {
 // (its control: BaseOf as the plan's base alone, under which c's step is told no base after version
 // 3).
 func TestAVersionMovesTheBaseOfAWaitingTaskAndNotOfAStartedOne(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)

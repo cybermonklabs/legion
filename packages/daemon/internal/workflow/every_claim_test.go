@@ -85,6 +85,7 @@ func seedRoleClaims(t *testing.T, pool *pgxpool.Pool, keys ...string) {
 // open past it, leaves it out by name and by role: no row names it, and no row by role reaches it,
 // here the claim of the worker on the tester's step.
 func TestEveryClaimWritesARowForEachStoredClaim(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	store := record.NewStore()

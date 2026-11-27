@@ -225,6 +225,12 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 	return api.State{Repositories: api.RepositoriesView{Live: live}}, nil, nil
 }
 
+// ObservedState answers the empty state for the observed view: `legion controller start` reads the
+// whole state.
+func (fixedStateSource) ObservedState(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, nil
+}
+
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
 // `legion issue status` reach it: the real api.NewServer over an in-memory controller record, grants,
 // and Dispatch, on a loopback port, with every request that reached it recorded.
@@ -1340,6 +1346,7 @@ func TestControllerStartUnreachableDaemonIsNamedAndNoOtherAddressTried(t *testin
 // daemon without them, and so does the refusal when the daemon cannot be reached (printRefusal), whose
 // *url.Error masks only the password.
 func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	const credential = "madeUpDaemonUser0123:madeUpDaemonPassword0123"
 	holdsNone := func(t *testing.T, errb string) {
 		t.Helper()

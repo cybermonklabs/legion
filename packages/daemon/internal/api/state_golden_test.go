@@ -585,7 +585,9 @@ func approvedAt(version *int) string {
 // assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
 // intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
 // root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
-// (withoutGateBasis, gateBasisContract's row), the seven other rows of stateNarrowings above the
+// (withoutGateBasis, gateBasisContract's row), no issue's `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason` (withoutRepositoryCorrection,
+// repositoryCorrectionContract's row), the seven other rows of stateNarrowings above the
 // contract it is served at, the phase step served as implementing and no issue's `stepRole` or
 // `startWaitsForPod` (withoutDeploymentRoles, deploymentRolesContract's row), no stranded claim's
 // `token` (withoutStrandedTokens, strandedTokenContract's row), no issue's `tasks` (withoutTasks,
@@ -619,6 +621,14 @@ func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 // two to, field for field.
 func TestIssueRecordGolden(t *testing.T) {
 	stateGolden(t, "issue-record.json", populatedState(t).Issues[recordGoldenIssue])
+}
+
+// The observed view's golden (observed-state.json): what `GET /legion/v1/state?view=observed`
+// answers over the state state.json holds (observedOf), the same daemon block, settings and
+// admission block, and each issue with the members Dispatch observes (ObservedIssue), so
+// `legion-api.test.ts` holds the observed schema to the body a deployment with this state serves.
+func TestObservedStateGolden(t *testing.T) {
+	stateGolden(t, "observed-state.json", observedOf(populatedState(t)))
 }
 
 // What `GET /healthz` answers: that the daemon is serving, and the project it serves.

@@ -105,6 +105,7 @@ func recordedNumbers(t *testing.T, pool *pgxpool.Pool, key string) []int {
 // (impl, after the run before plans, takes legion/LEGION-208), and AssignTaskBranch without the
 // exception of a plan of one task (its task leaves the issue's branch and its pull request).
 func TestARunNotCarriedTakesNoEarlierNameAndClosesTheEarlierPullRequests(t *testing.T) {
+	t.Parallel()
 	t.Run("a plan of several taken from an earlier generation from its start", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

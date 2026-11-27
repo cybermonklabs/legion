@@ -20,6 +20,7 @@ const deliveryBranchVersion = 20261122131321
 // step. A delivery the release before wrote, which names no such column, reads back with none,
 // which is the issue's own branch.
 func TestADeliveryKeepsItsBranch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-213-implementer")
@@ -53,6 +54,7 @@ func TestADeliveryKeepsItsBranch(t *testing.T) {
 // before decodes strictly, drops the column, and deletes its version row, so the roll-forward runs
 // the migration again.
 func TestMigrationDeliveryBranchKeepsEachDeliveryAndItsWayBackTakesTheBranchOff(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, deliveryBranchVersion-1)

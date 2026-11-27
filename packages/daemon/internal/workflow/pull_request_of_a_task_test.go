@@ -47,6 +47,7 @@ func openedOn(number int, branch string, at time.Time, reopened bool) intake.Pul
 // its first step read as holding the issue's branch (b's pull request); the merge's close without
 // the rule (#9 is closed).
 func TestAPullRequestOnABranchNoTaskWasGivenIsNotTheIssues(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 11, 23, 9, 0, 0, 0, time.UTC)
 
 	t.Run("a pull request on a branch of a task's shape that no task holds", func(t *testing.T) {
@@ -120,6 +121,7 @@ func TestAPullRequestOnABranchNoTaskWasGivenIsNotTheIssues(t *testing.T) {
 // holding the issue's branch (#1 is recorded); the recorder without its read of the names the
 // generation gave (#42 is recorded).
 func TestAPullRequestTheRecordLetGoIsNotRecordedAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("an earlier run's pull request that a run started again closed", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -185,6 +187,7 @@ func TestAPullRequestTheRecordLetGoIsNotRecordedAgain(t *testing.T) {
 // The fault: x, stopped, read as a task that has not started, so its pull request is no task's.
 // The control: the read of a pull request's task without the task's place (#42 is no task's).
 func TestATaskThatStartedOnTheIssuesBranchKeepsItsPullRequestThroughAStop(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := tasksRoot(t, pool)

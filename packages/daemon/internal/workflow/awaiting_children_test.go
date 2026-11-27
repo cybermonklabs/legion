@@ -131,6 +131,7 @@ func cwVerdict(trigger TriggerKind) string {
 // awaiting_children holding that start, with no worker started and the one awaiting-children
 // notice in place of the phase-finished the start would have sent.
 func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	held := map[phase.Phase]bool{}
@@ -176,6 +177,7 @@ func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.
 // acceptance; the architect's sign-off into retro; and any start of an issue whose pull request
 // has merged.
 func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	for i, tc := range []struct {
@@ -217,6 +219,7 @@ func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
 // ends the wait, and carries what the notice it replaces carried: the worker's summary and the
 // tester's verdict, or the words of a move back.
 func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		from    phase.Phase
@@ -274,6 +277,7 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 // ended by a full stop, in the children-first notice and in the awaiting_children notice alike:
 // two such children are two sentences, never one run together.
 func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
+	t.Parallel()
 	open := []record.OpenChild{{Key: cwChild, Status: "todo", Cycle: cwParent}, {Key: "LEGION-210", Status: "backlog"},
 		{Key: "LEGION-211", Status: "todo", Cycle: cwParent}}
 	want := " " + ChildCycleReason(cwChild, cwParent) + ". " + ChildCycleReason("LEGION-211", cwParent) + "."
@@ -293,6 +297,7 @@ func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
 // takes a child out from under the parent to an issue outside its tree or to no parent, and it
 // says the child goes never under another issue of this tree, with the reason.
 func TestTheChildrenFirstNoticeNamesNoMoveUnderAnotherIssueOfTheTree(t *testing.T) {
+	t.Parallel()
 	reason := ChildrenFirstNotice(record.ChildWait{Parent: cwParent, Open: []record.OpenChild{{Key: cwChild, Status: "todo"}}}).Reason
 	for _, want := range []string{
 		"moved out from under " + cwParent + " to an issue outside its tree or to no parent;",
@@ -308,6 +313,7 @@ func TestTheChildrenFirstNoticeNamesNoMoveUnderAnotherIssueOfTheTree(t *testing.
 // its worker, its reason and the moment the wait began; the moment of the move, which outlives the
 // phase; and the status in_progress, written to Dispatch from the status the record held.
 func TestTheMoveKeepsTheHeldStart(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	cwSeedParent(t, pool, cwParent, phase.Implementing, 42)
 	seedMirrorChild(t, pool, cwChild, "in_progress", cwParent)
@@ -337,6 +343,7 @@ func TestTheMoveKeepsTheHeldStart(t *testing.T) {
 
 // A parent that leaves a phase showing another status is written in_progress (R11).
 func TestTheMoveWritesInProgressOverAnotherStatus(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	cwSeedParent(t, pool, cwParent, phase.Testing, 42)
 	seedMirrorChild(t, pool, cwChild, "todo", cwParent)
@@ -357,6 +364,7 @@ func sameChildrenWait(a, b *record.ChildrenWait) bool {
 // A second move of a parent already waiting writes nothing and sends nothing again: the admission
 // pass reads every parent on every pass, and the architect was told once.
 func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	cwSeedParent(t, pool, cwParent, phase.Testing, 42)
@@ -392,6 +400,7 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 // hear it; the same move with no child open fires the hook. A request for changes counts its
 // round, and the cap's message names the parent as waiting on its children.
 func TestAHeldMoveCountsAsTodayAndFiresNoHook(t *testing.T) {
+	t.Parallel()
 	hooked := New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester,
 		ReviewAppLogin: testReviewApp, Repositories: testRepositories, Clock: func() time.Time { return cwAt },
@@ -457,6 +466,7 @@ func TestAHeldMoveCountsAsTodayAndFiresNoHook(t *testing.T) {
 // engine's pod tables; an engine built without them moves the parent all the same and cancels
 // nothing.
 func TestTheMoveCancelsThePodsOpenBackstops(t *testing.T) {
+	t.Parallel()
 	openBackstops := func(t *testing.T, pool *pgxpool.Pool) int {
 		t.Helper()
 		var open int
@@ -504,6 +514,7 @@ func TestTheMoveCancelsThePodsOpenBackstops(t *testing.T) {
 // awaiting_children): a conflicting head moves nothing, and a merge is recorded on the pull
 // request and leaves the held start for the return.
 func TestFactsDuringTheWaitStartNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	waiting := cwSeedWaiting(t, pool, cwParent, phase.Testing)
 	seedMirrorChild(t, pool, cwChild, "todo", cwParent)
@@ -544,6 +555,7 @@ func TestFactsDuringTheWaitStartNothing(t *testing.T) {
 // retried phase with the retry's reason, and start nobody; the todo's release writes in_progress
 // over the todo Dispatch shows. An escalation stays as it is today.
 func TestAReleaseOfAHoldWithAnOpenChildWaitsOnTheChildren(t *testing.T) {
+	t.Parallel()
 	heldFrom := func(from phase.Phase) func(*record.Issue) {
 		return func(issue *record.Issue) {
 			issue.Hold, issue.Status, issue.DispatchStatus, issue.LastDispatchSeq = &record.Hold{From: from}, PhaseStatus(from), PhaseStatus(from), 4
@@ -634,6 +646,7 @@ const cwBackAsTesting = "goes back to testing by itself, or to %[1]s, the start 
 // workflow does. A worker acts on no child, so its refusal ends by naming the architect that does
 // and gives none of the architect's rules.
 func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	cwSeedWaiting(t, pool, cwParent, phase.Reviewing)
 	seedMirrorChild(t, pool, cwChild, "in_progress", cwParent)
@@ -678,6 +691,7 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 // reports work the wait ended, which the return starts again on an entry of its own; a completion
 // of an entry raised after that move is recorded as a left phase's always is.
 func TestACompletionOfAPhaseTheWaitStoppedIsRefused(t *testing.T) {
+	t.Parallel()
 	waited := cwAt.Add(-time.Hour)
 	completion := intake.HandoffComplete{Generation: 1, Issue: cwParent, Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass",
 		Summary: "tested", HandoffRecord: "test-1", HandoffVersion: 1}

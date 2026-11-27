@@ -42,7 +42,7 @@ The daemon could not ask the session store for a role's start. Open one finding 
 
 ## `pod-wait-held`
 
-The start of `role` waits for the issue's pod, which only an operator can free. When `reason` names claims an operator suspended, `dispatch ask` that operator whether to resume or stop each; otherwise `dispatch ask` the operator what to do, quoting `reason`. Never propose deleting the pod. It comes once per wait.
+The start of `role` waits for the issue's pod. A claim you suspended: `resume_agent` or `stop` it once its cause is gone. One an operator suspended: `dispatch ask` that operator whether to resume or stop it. Else `dispatch ask` the operator what to do, quoting `reason`. Never propose deleting the pod. It comes once per wait.
 
 ## `provider-errors`
 

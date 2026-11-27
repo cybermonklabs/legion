@@ -92,6 +92,7 @@ func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
 // table built past the end of its line (its control: TableOf moving the last step on to the next
 // phase of the line, which there is none of).
 func TestTheLastStepOfALineThatDoesNotMergeMovesToDone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		line    []phase.Phase
 		trigger TriggerKind
@@ -260,6 +261,7 @@ func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 // rows by the positions of the line, not by the first place of each phase, and StoredTableOf adds
 // the fail rows to each earlier step that the fail row to the implementer does not reach.
 func TestTwoPlacesThatRunAsStepAreTwoRows(t *testing.T) {
+	t.Parallel()
 	line := []phase.Phase{phase.Implementing, phase.Step, phase.Step, phase.Retro, phase.Merging}
 	step := func(n int) record.TaskPlace { return record.TaskPlace{Kind: record.PlaceStep, Position: n} }
 	retro := record.TaskPlace{Kind: record.PlaceRetro}
@@ -457,6 +459,7 @@ var awaitingChildrenIgnores = map[TriggerKind]string{
 // trigger there to its reason in awaitingChildrenIgnores. The two triggers of one act, a tester's
 // pass and failure or a review's approval and rejection, share one reason.
 func TestEveryTriggerInAwaitingChildrenIsANamedIgnore(t *testing.T) {
+	t.Parallel()
 	for _, row := range Table {
 		if row.From == phase.AwaitingChildren {
 			t.Errorf("the table holds a row out of awaiting_children (%s -> %s), want none: only the admission pass's return leaves it", row.Trigger, row.To)

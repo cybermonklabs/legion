@@ -1,10 +1,13 @@
 # owner-walk, form E (ctl-E, the approved control of v-guidance-judge): form B with the owner's
-# sentences on the choice of an agent taken out: the paragraph of go/architect-common.md, and the
-# sentence of the architect's plan reference. These are the two texts an owner loads that ask for
-# the choice and that the skills trim (#5564) keeps; patches/README.md says why there is no third.
-# So E is the control with every choice text taken out only at a label that carries that trim. At
-# a label without it, plan.md still holds the bullet "write the choice all the same", which asks
-# the owner for the choice, and a run of E there is no control of this form: it measures an owner
-# that was still asked.
-drop packages/daemon/internal/prompts/go/architect-common.md controls/drops/owner-walk-E-choice-paragraph.txt
+# sentences on the choice of an agent taken out: the sentence of go/architect-common.md that asks
+# for it, and the sentence of the architect's plan reference. These are the two texts an owner
+# loads that ask for the choice at a label that carries #5169's keyed steps (the steps of one key
+# run as one agent), which carry the choice out; patches/README.md says why there is no third. The
+# rest of the prompt's paragraph, how a plan has one agent work several steps, stays: it is form
+# B's grammar of `steps` and asks for no choice. So E is the control with every choice text taken
+# out only at a label that carries the keyed steps. At a label without them, the prompt's
+# paragraph goes on "write it all the same", and plan.md holds the bullet "write the choice all the
+# same" unless the skills trim (#5564) deleted it; each asks the owner for the choice, and a run of
+# E there is no control of this form: it measures an owner that was still asked.
+drop packages/daemon/internal/prompts/go/architect-common.md controls/drops/owner-walk-E-choice-prompt.txt
 drop skills/legion-architect/references/plan.md controls/drops/owner-walk-E-choice-sentence.txt

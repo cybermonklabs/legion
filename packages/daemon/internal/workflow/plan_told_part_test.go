@@ -18,6 +18,7 @@ import (
 // it drops f, which the part does not need (its control: planToldOf that tells a conflict only of
 // a need of the task, under which f1 is told g alone).
 func TestAPartIsToldTheConflictOfItsTasksBranch(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", DefaultBranch: "main"}
 	implementer := func(task string) []record.PlanStep {
 		return []record.PlanStep{{Issue: issue.Key, Task: task, Position: 1, Role: "implementer", Type: plan.TypeImplementation}}

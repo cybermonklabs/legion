@@ -20,6 +20,7 @@ import (
 // claim, the architect's own, is never held to one. An issue held from admitted, where the
 // architect works, for a stopped task, is refused as its plan's hold before any claim is read.
 func TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks(t *testing.T) {
+	t.Parallel()
 	keyed := claim.Token(token(t, entryIssue, claim.RoleImplementer))
 	other := claim.Token(token(t, entryIssue, claim.RoleReviewer))
 	for _, tc := range []struct {

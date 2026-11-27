@@ -1,0 +1,1 @@
+For each step, decide whether a fresh agent works it or the agent of an earlier step, and write that choice and its reason in the task's text. 

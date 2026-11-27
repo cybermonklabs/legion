@@ -50,6 +50,7 @@ func completedBy(t *testing.T, key string, role claim.Role, agent claim.Agent, t
 // The fault it catches is a completion that moves the other task (its control: the read tree's
 // task of a completion, the issue's first running task, so implementer-2's completion moves a).
 func TestTwoCompletionsOfOneRoleAreOfTheirOwnTasks(t *testing.T) {
+	t.Parallel()
 	t.Run("two tasks of one role", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()

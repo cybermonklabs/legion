@@ -32,8 +32,8 @@ func isRoleConfigName(role claim.Role) bool {
 // runtime.kubernetes.pod.env). A role named twice or no role's name (isRoleConfigName), a list
 // that is empty or not a list of strings, and an entry that is relative, unclean, holds
 // PI_CONFIG_FILES' separator `:` or repeats another of the role's are each refused naming the
-// entry: a relative path would resolve against wherever the role's Oh My Pi starts, which is no
-// file of the operator's.
+// entry, by its line where its name has no key's shape (shownRoleName): a relative path would
+// resolve against wherever the role's Oh My Pi starts, which is no file of the operator's.
 func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -52,9 +52,9 @@ func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string,
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
 		}
 		if _, seen := files[role]; seen {
-			return nil, fmt.Errorf("%s names %s twice", key, role)
+			return nil, fmt.Errorf("%s names %s twice", key, shownRoleName(roleNode))
 		}
-		field := key + "." + string(role)
+		field := key + "." + shownRoleName(roleNode)
 		list, err := readOverlayFiles(listNode, field, "the role's Oh My Pi", "the role")
 		if err != nil {
 			return nil, err

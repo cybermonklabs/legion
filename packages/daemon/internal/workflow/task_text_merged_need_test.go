@@ -22,6 +22,7 @@ import (
 // no join of the task's needs made (its control: each conflict's branch read from the need's row, as
 // planToldOf read it, under which d is told legion/LEGION-208.b@origin and f is told to join c).
 func TestAJoinConflictIsToldWithTheBranchThatHoldsTheNeedsWork(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Implementing)

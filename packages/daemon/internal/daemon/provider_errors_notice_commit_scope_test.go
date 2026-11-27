@@ -103,6 +103,7 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 // reaches the architect above that child, here the root's, and never the child's own architect,
 // which still holds its role, so the controller relays nothing for it either.
 func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testing.T) {
+	t.Parallel()
 	const reason = "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"
 	for _, tc := range []struct {
 		name      string

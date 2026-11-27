@@ -53,6 +53,7 @@ func stopEveryTask(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record
 // the run's no-plan scope (noPlanScope), which fails that door; at the parent, where only a copy
 // read for one task of several named its claim, the rows of the plan of one task fail.
 func TestEveryPlannedStartNamesItsStepsClaim(t *testing.T) {
+	t.Parallel()
 	// Each door acts on the plan's last task, which holds the issue's own branch and its pull
 	// request #42, so its start waits for no join; step is the place of the started step's agent.
 	doors := []struct {
@@ -132,6 +133,7 @@ func TestEveryPlannedStartNamesItsStepsClaim(t *testing.T) {
 // The fault it catches is a hold written on the issue alone for a plan of one task (its control:
 // arrive holding the task only where the plan holds several).
 func TestAOneTaskParentHeldForItsChildrenHoldsItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Reviewing)

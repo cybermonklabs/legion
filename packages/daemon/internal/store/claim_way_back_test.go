@@ -87,6 +87,7 @@ func decodeAsTheReleaseBefore(payload []byte, shape any) error {
 // the release before then decodes the row; this release still decodes it after the roll forward,
 // with no claim named.
 func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := emptyStore(t)
 	if _, err := st.Migrate(ctx); err != nil {

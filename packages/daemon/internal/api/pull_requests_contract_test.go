@@ -43,6 +43,11 @@ func (pullRequestsState) State(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	return state, nil, err
 }
 
+func (pullRequestsState) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: record.NewStore(), Project: pullRequestsProject, Now: pullRequestsNow})
+	return observed, nil, err
+}
+
 // pullRequestsEntry is the number this build gives the contract entry that added each issue's
 // `pullRequests`, the hold reason `pull-requests` and its held word `pull_requests`.
 func pullRequestsEntry(t *testing.T) int {

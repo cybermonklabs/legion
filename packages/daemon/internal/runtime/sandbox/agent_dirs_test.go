@@ -21,6 +21,7 @@ func reroledSpec(t *testing.T) runtime.SpawnSpec {
 // transcript its first role's generation left under the agent's directory is the one its tester
 // generation resumes, and the start frame names that session.
 func TestAClaudeAgentOnItsSecondRoleResumesItsTranscript(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,7 @@ func TestAClaudeAgentOnItsSecondRoleResumesItsTranscript(t *testing.T) {
 // agents in two slots: each keeps its own state home and its own plugin generation, so neither
 // reads or replaces the other's.
 func TestTwoClaimsOfOneRoleKeepTwoStateHomes(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +96,7 @@ func TestTwoClaimsOfOneRoleKeepTwoStateHomes(t *testing.T) {
 // role it now runs stays that claim's own. So an address that moved since the re-roled
 // generation started is observed, and the other claim's generation is not read as this one.
 func TestAMovedAddressIsObservedOnAReroledClaimsGeneration(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	tester := workerSpec(t)
 	tester.Generation, tester.BootToken = 2, "boot-tester-g2"

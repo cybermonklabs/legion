@@ -21,6 +21,7 @@ import (
 // fails the fact that tells both (its control: the record of the base, whose validation refuses
 // that copy).
 func TestAControllersCopyOfANoticeToASubOwnerNamesNoClaim(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Implementing)

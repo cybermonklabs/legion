@@ -48,6 +48,7 @@ func copyRemovals(t *testing.T, pool *pgxpool.Pool) []record.TaskCopyRemove {
 // issue's own working copy (its control: the row queued for a task on the issue's branch too,
 // which the row's own check refuses, record.TaskCopyRemove, so the version fails).
 func TestARemovedTaskQueuesTheRemovalOfItsWorkingCopy(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Testing)
@@ -93,6 +94,7 @@ func TestARemovedTaskQueuesTheRemovalOfItsWorkingCopy(t *testing.T) {
 // x, an implementer's, runs on legion/LEGION-208 and its owner stops it; version 2 gives task y in
 // its place.
 func TestAPlanOfOneTaskQueuesNoRemovalOfAWorkingCopy(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Implementing)

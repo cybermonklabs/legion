@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+    A pinned Dispatch reference prints whole in every log line and refusal the URL rule cleans:
+    `register_plan`'s refusal of a need written `dispatch://ACME-2/artifact/plan-md#b-a@v2` named it
+    `dispatch://[a URL with credentials]`, so the owner could not tell which need was refused. The
+    rule reads the one `@` past the host of a `dispatch://` reference (in lower case, as Dispatch
+    reads one) as the pin it is when `v` and a version from 1 with no leading zero follow it, in
+    the path (a document's version) or the fragment (a block's), with nothing after them but the
+    punctuation that ends a sentence. Any other `@` past a host still writes the URL as the mark:
+    in a reference's query, a second one, or one followed by anything else, such as a host; on any
+    other scheme; and in a reference's userinfo, whose authority is the mark as before.
+
+    A name with no key's shape written as an entry of `roles`, `worker_backends`,
+    `role_config_files` or `worker_stall_backstop_hours` is named by its line
+    (`roles.<the name at line 9>.type is security, …`) in every refusal of that entry, where only
+    the refusal of a name no role holds named its line: a value the entry refuses, a name given
+    twice, a role's block that is not a mapping or names a key it does not take, a type, a model or
+    a `github_app` it refuses, and the name of a sub-owner's agent. A role whose prompt file cannot
+    be read is named by that file. A hook's role and a step of a project's `default_steps` with no
+    key's shape that no role holds are named by their place (`hooks[0].roles[1]`, `step 2`). A
+    lower-case hex API key of 32 digits that starts with a letter fits the role grammar, and each
+    of those printed it. A name of Legion's own is named as written.
+time: 2026-11-27T13:34:44.955222801Z
+custom:
+    Issue: pr5169

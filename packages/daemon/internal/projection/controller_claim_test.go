@@ -39,27 +39,7 @@ func TestTheControllersClaimIsOnNoIssue(t *testing.T) {
 	}
 	controller := claim.ControllerToken("legion")
 	admitted := time.Date(2026, 10, 6, 18, 2, 11, 0, time.UTC)
-	store := projectionStore{
-		issues: []record.Issue{
-			{Key: issue, Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Status: "in_progress", Phase: phase.Admitted, Generation: 1, HandedOver: true},
-			{Key: "LEGION-209", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Status: "todo", Phase: phase.Admitted, Generation: 1},
-			{Key: "LEGION-210", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Status: "todo", Phase: phase.Admitted, Generation: 1, Rank: "00010", HandedOver: true},
-			{Key: "LEGION-211", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Status: "todo", Phase: phase.Implementing, Generation: 2, Rank: "00011", HandedOver: true, HandedOverFrom: "LEGION-200"},
-		},
-		phases: map[string][]record.PhaseRow{issue: {{Issue: issue, Role: claim.RoleArchitect, Claim: architect}}},
-		slots:  []record.Slot{{Issue: issue, Index: 0, AdmittedAt: admitted}},
-		// The tree the architect runs stands open under the workflow, which is what makes it a
-		// live tree now that its slot no longer says so.
-		lifecycles: []string{issue},
-		mirror: []record.DispatchIssueRow{
-			{Key: issue, Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 4},
-			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300"}, Seq: 5},
-			{Key: "LEGION-210", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-301"}, Seq: 6},
-			{Key: "LEGION-211", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-302"}, Seq: 7},
-			{Key: "LEGION-300", Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 8},
-			{Key: "LEGION-302", Project: "LEGION", Status: "todo", Blockers: []string{}, Seq: 9},
-		},
-	}
+	store := controllerClaimStore(architect, admitted)
 	architectLocator := sandboxLocator(architect, "legion-legion-legion-208", "4b7e1c2a-0d93-4f6e-8a51-3c2f9e7d1b04", 1)
 	// The architect's session sent its live rows on a `claims/ready` of its own, measured at an
 	// idle tick of its own interval rather than at its boot (LEGION-663, INFRA-927), from the
@@ -152,5 +132,33 @@ func sandboxLocator(token claim.Token, sandbox, podUID string, generation uint64
 	return &runtime.Locator{
 		Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(podUID, generation),
 		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: sandbox, PodUID: podUID, Container: container, Generation: generation},
+	}
+}
+
+// controllerClaimStore is the store TestTheControllersClaimIsOnNoIssue projects: the tree of
+// LEGION-208, its architect's phases row under architect and its slot admitted at admitted, the
+// two roots waiting in the line, and the mirror of what each waits on.
+func controllerClaimStore(architect claim.Token, admitted time.Time) projectionStore {
+	const issue = "LEGION-208"
+	return projectionStore{
+		issues: []record.Issue{
+			{Key: issue, Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Status: "in_progress", Phase: phase.Admitted, Generation: 1, HandedOver: true},
+			{Key: "LEGION-209", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Status: "todo", Phase: phase.Admitted, Generation: 1},
+			{Key: "LEGION-210", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Status: "todo", Phase: phase.Admitted, Generation: 1, Rank: "00010", HandedOver: true},
+			{Key: "LEGION-211", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Status: "todo", Phase: phase.Implementing, Generation: 2, Rank: "00011", HandedOver: true, HandedOverFrom: "LEGION-200"},
+		},
+		phases: map[string][]record.PhaseRow{issue: {{Issue: issue, Role: claim.RoleArchitect, Claim: architect}}},
+		slots:  []record.Slot{{Issue: issue, Index: 0, AdmittedAt: admitted}},
+		// The tree the architect runs stands open under the workflow, which is what makes it a
+		// live tree now that its slot no longer says so.
+		lifecycles: []string{issue},
+		mirror: []record.DispatchIssueRow{
+			{Key: issue, Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 4},
+			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300"}, Seq: 5},
+			{Key: "LEGION-210", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-301"}, Seq: 6},
+			{Key: "LEGION-211", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-302"}, Seq: 7},
+			{Key: "LEGION-300", Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 8},
+			{Key: "LEGION-302", Project: "LEGION", Status: "todo", Blockers: []string{}, Seq: 9},
+		},
 	}
 }

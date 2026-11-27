@@ -210,10 +210,14 @@ func issueKeys(m map[string]map[string]any) []string {
 }
 
 // Each claim the row leaves out for an older caller is logged, one line each, naming the caller's
-// plugin contract and the claim: the checker's stranded claim on LEGION-241, its waiting wake and
-// the open pause's wait on its stop are three lines, and none of the three is served.
+// plugin contract and the claim: on the populated record ten seconds into a pause (pausedState),
+// the checker's stranded claim on LEGION-241, its waiting wake and the open pause's wait on its
+// stop are three lines, and none of the three is served.
 func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
-	state := populatedState(t)
+	state := pausedState(t)
+	if state.Paused == nil {
+		t.Fatal("the paused state carries no `paused`, so no pause stop of the checker can be left out; this test proves nothing")
+	}
 	state.WakesWaiting = append(slices.Clone(state.WakesWaiting), WakeWaiting{Claim: "legion-legion-legion-241-checker", Issue: "LEGION-241", Role: "checker",
 		Kind: "launch", DueAt: time.Date(2026, 9, 22, 9, 18, 20, 0, time.UTC)})
 	paused := *state.Paused

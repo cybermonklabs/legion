@@ -76,6 +76,7 @@ func assertPushRecorded(t *testing.T, pool *pgxpool.Pool, key, task, after strin
 // catches a read asked of another pull request than c's, which the daemon would read in its place
 // (its control: basePush appending the key of b's #44).
 func TestAPushOnTheBranchOfANeedMovesTheBaseOfItsDependent(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	var asked, bases []string
@@ -150,6 +151,7 @@ func seedNeedAndDependent(t *testing.T, pool *pgxpool.Pool) record.Issue {
 // is of, so c's head is not read (its control: askMergeState asking the read of the issue's merge
 // pull request).
 func TestAFactOfATasksPullRequestAsksTheReadOfThatTasksPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	var asked []string

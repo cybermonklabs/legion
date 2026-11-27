@@ -548,6 +548,7 @@ func checkShippedExample(t *testing.T, edit func(string) string) string {
 // the projects' lines: its type, its model, the GitHub App it works as (the review App, since the
 // file names none) and its prompt file as the loader resolved it beside the file.
 func TestCheckConfigPrintsEachRoleOfTheDeployment(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	config := stageShippedExample(t, func(example string) string {
 		return example + "\nroles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n"
 	})
@@ -571,6 +572,7 @@ func TestCheckConfigPrintsEachRoleOfTheDeployment(t *testing.T) {
 // of the file refuses it too, naming the key and the path, rather than pass a file the start then
 // refuses.
 func TestCheckConfigRefusesARolesPromptFileItCannotRead(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
 	config := stageShippedExample(t, func(example string) string {
 		return example + "\nroles: {checker: {type: testing, prompt_file: checker.md}}\n"
 	})

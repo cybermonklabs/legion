@@ -81,6 +81,7 @@ func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 // does work of a type of the deployment's own, is the implementer's phase, step two times, then
 // Legion's own retro and merge. The line is read from each step's role, never from its type.
 func TestAWalkOfDeploymentStepsRunsThemAsStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Implementing)
@@ -109,6 +110,7 @@ func TestAWalkOfDeploymentStepsRunsThemAsStep(t *testing.T) {
 // second, the implementer's at the retro, which it works, and none at no act, where a task that
 // has not started stands.
 func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Implementing)
@@ -485,6 +487,7 @@ func seedTwoDeploymentSteps(t *testing.T, pool *pgxpool.Pool, key string, genera
 // it on to its retro. A move back from step 3 to step 2 stays in step and is a move back all the
 // same: it counts the task a pass under its pair, step-step.
 func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
+	t.Parallel()
 	t.Run("two passes", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := deploymentEngine()
@@ -522,6 +525,7 @@ func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
 // place derives no phase (its control: the walk's line plan.Line(StepsOf(f), merges) alone, retro
 // merging, whose planning has no place, and the case fails).
 func TestTheWalkOfATaskWithASubOwner(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-208"
 	f := record.PlanTask{Issue: key, Generation: 1, Task: "f", OwnerRole: "architect", State: record.TaskWaiting}
 	h := record.PlanTask{Issue: key, Generation: 1, Task: "h", Needs: []string{"f"}, State: record.TaskWaiting}

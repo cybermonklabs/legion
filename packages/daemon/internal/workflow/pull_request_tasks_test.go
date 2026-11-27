@@ -53,6 +53,7 @@ func seedTaskBranch(t *testing.T, pool *pgxpool.Pool, key, task, branch string) 
 // the branch it is on (its control: viewOfPullRequest on the row's own task, which names none, so
 // nobody is told and nothing moves).
 func TestAFactOfThePullRequestOnTheIssuesBranchReachesTheTaskThatHoldsIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, branch string
 	}{
@@ -108,6 +109,7 @@ func TestAFactOfThePullRequestOnTheIssuesBranchReachesTheTaskThatHoldsIt(t *test
 // task's (its control: viewOfPullRequest answering the issue's first running task, a, so the
 // request for changes on b's pull request is read at a's testing and returns nothing).
 func TestAReviewOfOneTasksPullRequestMovesThatTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Testing)

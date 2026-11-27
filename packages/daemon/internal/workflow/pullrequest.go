@@ -60,7 +60,7 @@ import (
 // GitHub stamped it with, and the mark says when the daemon saw the issue move.
 //
 // A pull request of the issue's own repository is kept in the spelling of its issue's record
-// (issueSpelling), the rule migration 20261127031536 keeps each row by: a fact that names the
+// (issueSpelling), the rule migration 20261127234212 keeps each row by: a fact that names the
 // other name of a configured rename (Config.RepositoryRenames), as each fact after a transfer does
 // until the one-time rename pass, writes the row under the issue's name, and moves a row the record
 // holds under the other name there first (record.Store.MovePullRequest, an update of its key, so

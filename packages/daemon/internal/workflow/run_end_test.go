@@ -90,6 +90,7 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 // parent's wait in awaiting_children follows the step, and it runs no step of its own. With the
 // move's end named after the guard instead of before it, every one of these steps ends stopped.
 func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	held := 0

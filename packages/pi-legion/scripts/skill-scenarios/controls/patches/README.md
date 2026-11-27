@@ -57,25 +57,42 @@ git archive --format=tar 6b0ece5c101b1d63bec807f90417a6c75bb0870f \
 
 Each file holds the exact bytes a `drop` line takes out, with no final newline. Where a text
 starts with one or two newlines, those are the end of the line before it and the blank line after
-the paragraph above it, so the file keeps one blank line between the paragraphs that stay. Each
-text was read with `git show <commit>:<path>` and occurs once in its file at #4902's head
-`6b0ece5c101b1d63bec807f90417a6c75bb0870f`.
+the paragraph above it, so the file keeps one blank line between the paragraphs that stay. Where a
+text ends with a space, that is the space before the next sentence of its paragraph, which then
+opens the paragraph. Each text was read with `git show <commit>:<path>` and occurs once in its file
+at #4902's head `6b0ece5c101b1d63bec807f90417a6c75bb0870f`.
 
 | Drop text | Its file | What it takes out | Count at #4902's head | Count at `main` `d27405712c7c` |
 | --- | --- | --- | --- | --- |
-| `owner-walk-E-choice-paragraph.txt` | `packages/daemon/internal/prompts/go/architect-common.md` | the paragraph "For each step, decide whether a fresh agent works it or the agent of an earlier step, …" (line 6) | 1 | 1 |
+| `owner-walk-E-choice-prompt.txt` | `packages/daemon/internal/prompts/go/architect-common.md` | the sentence "For each step, decide whether a fresh agent works it or the agent of an earlier step, and write that choice and its reason in the task's text." that opens the paragraph on the choice (line 6), and the space after it | 1 | 1 |
 | `owner-walk-E-choice-sentence.txt` | `skills/legion-architect/references/plan.md` | the sentence "For each step, a fresh agent or the agent of an earlier step, and why." of the task block's example (line 18) | 1 | 1 |
+
+Until #5169's keyed steps, E took the whole paragraph of `architect-common.md` out:
+`owner-walk-E-choice-paragraph.txt`, the sentence above and the one after it, "This release gives
+each role one agent for each issue, …, so it cannot carry that choice out yet; write it all the
+same, because it records what the work needed." The keyed steps carry the choice out (the steps of
+one key run as one agent), so they delete that second sentence and go on with the grammar of a key
+in `steps`; a drop of the whole paragraph occurs 0 times in their `architect-common.md`. E now
+takes out the first sentence alone, which #4902's head, `main` `d27405712c7c`, #5564's head
+`e42a6ceaf799` and a label of the keyed steps each hold once, so the manifest applies at all four.
+The key's grammar stays in E's tree: it is form B's grammar of `steps`, and asks for no choice and
+no reason. At a label without the keyed steps the second sentence stays in E's tree and still asks
+for the choice, so E is no control there.
 
 E took out a third text until the skills trim (#5564): the bullet of `plan.md` that said this
 release cannot carry out the choice of a fresh or an earlier agent, "write the choice all the same"
-(lines 25-26 at #4902's head). The trim deletes that bullet, so a drop of it occurs 0 times at any
-label that carries the trim, and the Job stops building E's tree. Its drop is gone, and nothing
-replaces it: at #5564's head `e42a6ceaf799`, `git grep -i -E 'fresh agent|agent of an earlier|fresh
-or an earlier|earlier agent'` over `packages/daemon/internal/prompts`, `skills`,
-`packages/pi-legion/src` and `packages/pi-shared/src` finds the two texts E drops and no other. At a
-label without the trim, E's tree keeps the bullet. `rig.test.ts`'s row "E's manifest applies to this
-checkout's own two files" holds E to the texts a label of this checkout carries, so a change that
-deletes one of E's two texts fails that row before it reaches a Job.
+(lines 25-26 at #4902's head). The trim deletes that bullet, and the keyed steps replace it with
+the key's grammar, so a drop of it occurs 0 times at any label that carries either, and the Job
+stops building E's tree. Its drop is gone, and nothing replaces it: at #5564's head
+`e42a6ceaf799`, `git grep -i -E 'fresh agent|agent of an earlier|fresh or an earlier|earlier
+agent'` over `packages/daemon/internal/prompts`, `skills`, `packages/pi-legion/src` and
+`packages/pi-shared/src` finds the two texts E drops and no other. At a label of the keyed steps it
+also finds the sentence of each file's key grammar that refuses "a fresh agent of a role whose name
+another agent of the plan holds", and, at one without the trim, the lines of `wake-routing.md` and
+`wake-routing-steps.md` on the fresh agent that runs a role whose session was lost; none of these
+asks for the choice. `rig.test.ts`'s row "E's manifest applies to this checkout's own two files"
+holds E to the texts a label of this checkout carries, so a change that deletes one of E's two
+texts fails that row before it reaches a Job.
 
 | Drop text | Its file | What it takes out | Count at #4902's head | Count at `main` `d27405712c7c` |
 | --- | --- | --- | --- | --- |

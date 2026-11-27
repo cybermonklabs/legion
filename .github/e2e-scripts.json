@@ -446,7 +446,7 @@
     },
     {
       "script": "pack-memory-probe.sh",
-      "needs": "the worker image and the Job pack-memory-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and lib/pack-memory-peak.py into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache, fetch and provision on the Job's disk volume and judges nothing a runner could give it"
+      "needs": "the worker image and the Job pack-memory-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and lib/pack-memory-peak.py into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache and provision on the Job's disk volume and judges nothing a runner could give it"
     },
     {
       "script": "repository-cache-burst-job.sh",

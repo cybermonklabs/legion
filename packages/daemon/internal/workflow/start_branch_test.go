@@ -109,6 +109,7 @@ func seedStartBranchPlan(t *testing.T, pool *pgxpool.Pool) map[string]string {
 // a, whose task holds the issue's own branch, names none, as every start of a task on the issue's
 // own branch did before tasks had branches of their own.
 func TestAStartOfATaskNamesItsBranch(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	parent := "LEGION-208"
 	branches := seedStartBranchPlan(t, pool)
@@ -137,6 +138,7 @@ func TestAStartOfATaskNamesItsBranch(t *testing.T) {
 // The fault it catches is a step's start whose step is unknown queued as a start on the issue's own
 // branch (its control: startBranch answering no branch for it, as it did).
 func TestAStartOfAStepThePlanDoesNotRunIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	parent := "LEGION-208"
 	seedStartBranchPlan(t, pool)
@@ -164,6 +166,7 @@ func TestAStartOfAStepThePlanDoesNotRunIsRefused(t *testing.T) {
 
 // An issue with no plan rows runs on its own branch, and its start names no branch, as before.
 func TestAStartOfAnIssueWithNoPlanRowsNamesNoBranch(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
