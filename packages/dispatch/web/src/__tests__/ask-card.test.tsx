@@ -1696,6 +1696,83 @@ test("a card of another request of the same document and version shows no form r
   }
 });
 
+// With no request open, the document's approval names the ask of its latest review, here a request
+// that the person answered with Request changes. A refusal of the header's Approve then is the
+// document's own and not that answered request's, so the request's completed card, at the same
+// version, shows no refusal and keeps no reason in its draft.
+test("a form refusal of the header's Approve with no request open does not reach the card of a request answered before", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    specFormRefusal()
+  );
+  const input = answered(
+    ask({
+      approval: {
+        artifact_id: "artifact-1",
+        documents: null,
+        name: "spec.md",
+        requested_version: 12,
+        version: 12,
+      },
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    }),
+    ["Request changes"],
+    "Name each term."
+  );
+  const document: Artifact = {
+    approval: {
+      ask_id: "ask-1",
+      latest_version: 12,
+      state: "changes_requested",
+      version: 12,
+    } as ArtifactApproval,
+    created_at: "2026-09-09T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id: "artifact-1",
+    issue_key: "CORE-1",
+    kind: "doc",
+    name: "spec.md",
+    primary: true,
+    project: "CORE",
+    ref_key: "CORE-1/spec-md",
+    session_id: null,
+    slug: "spec-md",
+    versions: [],
+  };
+  const { view } = renderCard(
+    <>
+      <div data-testid="header">
+        <ApprovalChip artifact={document} variant="header" />
+      </div>
+      {/* The completed card draws its refusal and its unsent draft beside its record, not inside
+          it, so the row reads the whole card through a box of its own. */}
+      <div data-testid="card">
+        <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+      </div>
+    </>
+  );
+
+  try {
+    const header = view.getByTestId("header");
+    const card = view.getByTestId("card");
+    const approve = within(header).getByRole("button", { name: "Approve" });
+    await user.click(approve);
+
+    expect((await within(header).findByRole("alert")).textContent).toBe(
+      specFormRefusalBody.error
+    );
+    // The press's focus comes back to Approve in an effect of the same draw as the card's effect
+    // that would put the reason in the request's draft, so both have run once it is there.
+    await waitFor(() => expect(approve).toHaveFocus());
+    expect(within(card).queryByRole("alert")).toBeNull();
+    expect(within(card).queryByTestId("ask-unsent-answer")).toBeNull();
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
 // Nothing that the person typed is lost (plan decision 14): after a refused Approve the field holds
 // Dispatch's reason, then one empty line, then the person's note as it was. The draft belongs to
 // the request, so each card of the request shows the same text: the note is typed in the first
