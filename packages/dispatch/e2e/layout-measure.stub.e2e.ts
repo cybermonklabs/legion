@@ -805,11 +805,11 @@ const redrawingRoute: LayoutRoute = {
 };
 
 // `checkLayout` reads a `reuseWide` route at 1440 and 1920 px by resizing the page it read at the
-// width before, and waits for the page to settle again before it reads (`settleResized`). This
-// row holds that wait. Its page's size observer redraws after a resize, and each resized reading
-// must report what it drew, a page `REDRAWN_PAST_PX` wider than the viewport, while no width
-// loaded fresh reports it. A reading taken without the wait reads the page as it was before the
-// redraw, and reports nothing.
+// width before, and waits for the page to settle again before it reads (`waitForRouteSettled`).
+// This row holds that wait. Its page's size observer redraws after a resize, and each resized
+// reading must report what it drew, a page `REDRAWN_PAST_PX` wider than the viewport, while no
+// width loaded fresh reports it. A reading taken without the wait reads the page as it was before
+// the redraw, and reports nothing.
 //
 // The delay. The wait holds the Inbox number's quiet window, 500 ms, before it lets the reading
 // be taken (`waitForRouteSettled`); the page's observer runs in the first frame drawn at the new

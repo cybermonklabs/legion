@@ -224,8 +224,7 @@ export function MentionField({
     // replaces. A reader who acts before that frame (`READER_ACTS`) - a key typed straight after
     // the pick, or a press elsewhere - has put the focus and the caret where they want them, and
     // the words they typed meanwhile are there; a late frame that put the caret back after the
-    // pick would split them, so it does nothing. The pick's own act - its Enter, or the press and
-    // click on its row - reached the window before the guard is made, so it does not end it.
+    // pick would split them, so it does nothing.
     const acted = abortOnReaderAct();
     requestAnimationFrame(() => {
       if (!claimUnacted(acted)) return;

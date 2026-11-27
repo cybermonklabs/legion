@@ -181,8 +181,7 @@ export function useIssueKeymap(issueKey: string): void {
         // unmounted with it - a view draws its rows at another depth than the outline does. A
         // reader who acts before the part takes the focus (`READER_ACTS`) - a key, or a press in
         // another field and words typed there - has put the focus where they want it, so the
-        // frames that wait for the part do nothing then. The chord's own keys reached the window
-        // before the guard is made, so they do not end it.
+        // frames that wait for the part do nothing then.
         const acted = abortOnReaderAct();
         requestAnimationFrame(() => reachPart(part, acted));
       },

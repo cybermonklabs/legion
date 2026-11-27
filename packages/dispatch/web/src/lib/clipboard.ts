@@ -8,8 +8,7 @@ export async function copyText(text: string): Promise<boolean> {
     // caret where they want them, so a refusal then copies nothing and says so, and the caller
     // offers the words to copy by hand. The fallback's taking and giving back would blur and
     // focus the reader's field again, which ends what its focus holds open - an edit, a picker, a
-    // word being composed. The press or the key that asked for the copy reached the window before
-    // the guard is made, so it does not end it.
+    // word being composed.
     const acted = abortOnReaderAct();
     try {
       await navigator.clipboard.writeText(text);

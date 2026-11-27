@@ -877,6 +877,14 @@ export function landingReadOf(pathname: string): LandingRead {
  * Every other failure - the 404 of a Dispatch older than this route, which a rolling deploy puts
  * in front of a browser, a dropped connection, a 5xx - says only that this one read did not
  * happen, and the page falls back to reading as it read before.
+ *
+ * The route's scope refusal falls back too. The landing requires the `person` scope and refuses
+ * every other credential at once, 403 `OAUTH_SCOPE_REQUIRED`, before its handler runs. The
+ * dashboard does not meet it: a browser's session holds all three scopes (`Credential.Scopes` in
+ * `packages/envoy/internal/dispatch/model/model.go`). Where a page does, it reads as it read
+ * before - `GET /auth/whoami`, which answers only a signed-in person, and each part's own route,
+ * which answers or refuses on its own scopes - so the fallback gives a credential nothing the
+ * landing refused it.
  */
 function refusalIsTheAnswer(error: unknown): boolean {
   return isUnauthorized(error) || isEventHeadUnavailable(error) || isEventHeadReadFailed(error);

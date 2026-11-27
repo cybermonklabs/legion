@@ -416,8 +416,7 @@ export function DecisionsFilterBody({
   // (`READER_ACTS`) - a key, or a press in another field and words typed there - has put the
   // focus where they want it, so the row takes none then (`revealActs`), though the foot still
   // unfolds for it. The guard is made in the commit that draws the address, before any read it
-  // waits on answers; the press or the key that followed the address reached the window before
-  // that, so it does not end it.
+  // waits on answers.
   const taken = useRef<string | undefined>(undefined);
   const revealActs = useRef<AbortController | undefined>(undefined);
   useLayoutEffect(() => {

@@ -398,29 +398,6 @@ async function loadSettled(
  *  and the first wide one are each read on a cold load. */
 const RESIZED_WIDTHS: ReadonlySet<LayoutWidth> = new Set<LayoutWidth>([1440, 1920]);
 
-/** Waits until `route` has settled again on the page the viewport just resized: the same wait a
- *  load gets (`waitForRouteSettled`), so the route's ready locators are on the screen and the
- *  Inbox number holds one value for its whole window, at least 500 ms, again. That window is the
- *  time a page that redraws for the new width - in a size observer or a `resize` listener - has
- *  to draw before the reading. Not `resizeSettled` of `e2e/frames.ts`, which waits out the new
- *  issue page's resize.
- *
- *  It waits for no animation frame. Under the page clock `checkLayout` pins (`setFixedTime`), the
- *  page's `requestAnimationFrame` is Playwright's own timer, which fires every 16 ms, so a wait
- *  for two frames waited for two of its ticks and for no frame the browser draws.
- *
- *  The row "checkLayout reads a resized width only once the page has redrawn for it" of
- *  `e2e/layout-measure.stub.e2e.ts` holds this wait: its page's size observer redraws 250 ms
- *  after a resize, and with this wait taken out the row reads each resized width before that
- *  redraw and fails. */
-async function settleResized(
-  page: Page,
-  route: LayoutRoute,
-  inFlight: InFlightRequests
-): Promise<void> {
-  await waitForRouteSettled(page, route, inFlight);
-}
-
 /** Reads the settled page: the pinned faces loaded in the document that is current now, then
  *  `measureLayout`. */
 async function measureSettledPage(page: Page): Promise<LayoutReading> {
@@ -457,7 +434,7 @@ export function layoutRowTimeoutMs(route: Pick<LayoutRoute, "states">): number {
  *  `judgeReading` found.
  *
  *  A route marked `reuseWide` reads each width of `RESIZED_WIDTHS` on the page it read at the
- *  width before, resized (`settleResized`), where that reading's viewport was its width: the
+ *  width before, resized and settled again, where that reading's viewport was its width: the
  *  document's width (`LayoutReading.viewport`, `document.documentElement.clientWidth`) is the
  *  width `ProofDocument.tsx` read as it opened its editor, so a page that read another width at
  *  1280 px may have decided on the compact side, and the next width loads fresh instead. A
@@ -490,7 +467,18 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
     const resized = route.reuseWide === true && RESIZED_WIDTHS.has(width) && readItsWidth;
     await page.setViewportSize({ height: HEIGHT, width });
     if (resized) {
-      await settleResized(page, route, inFlight);
+      // The same wait a load gets: the route's ready locators on the screen, and the Inbox
+      // number holding one value for its whole window, at least 500 ms, again. That window is
+      // the time a page that redraws for the new width - in a size observer or a `resize`
+      // listener - has to draw before the reading. Not `resizeSettled` of `e2e/frames.ts`, which
+      // waits out the new issue page's resize. It waits for no animation frame: under the clock
+      // pinned above (`setFixedTime`), the page's `requestAnimationFrame` is Playwright's own
+      // timer, which fires every 16 ms, so a wait for two frames waited for two of its ticks and
+      // for no frame the browser draws. The row "checkLayout reads a resized width only once the
+      // page has redrawn for it" of `e2e/layout-measure.stub.e2e.ts` holds this wait: its page's
+      // size observer redraws 250 ms after a resize, and with this wait taken out the row reads
+      // each resized width before that redraw and fails.
+      await waitForRouteSettled(page, route, inFlight);
     } else {
       await loadSettled(page, route, address, inFlight);
     }

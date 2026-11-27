@@ -169,8 +169,7 @@ export function OutlineWriterProvider({
   const focus = useCallback(() => {
     // A reader who acts before the line takes the focus (`READER_ACTS`) - a key the outline's
     // keymap reads, or a press in another field and words typed there - has put the focus where
-    // they want it, so the frames that wait for the line do nothing then. The press or the key
-    // that asked for the line reached the window before the guard is made, so it does not end it.
+    // they want it, so the frames that wait for the line do nothing then.
     const acted = abortOnReaderAct();
     // The field that is drawn: the line keeps its write field mounted, hidden, while it answers
     // a question or edits a comment (`IssueComposer.tsx`), and a hidden field takes no caret.

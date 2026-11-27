@@ -301,8 +301,7 @@ export function IssueAddMenu({
             drawer.setOpen(!inHeader);
             // A reader who acts before the two frames below have run (`READER_ACTS`) - a key, or
             // a press in another field and words typed there - has put the focus where they want
-            // it, so the frames reach nothing then. The press or the key on the entry reached the
-            // window before the guard is made, so it does not end it.
+            // it, so the frames reach nothing then.
             const acted = abortOnReaderAct();
             requestAnimationFrame(() =>
               requestAnimationFrame(() => {

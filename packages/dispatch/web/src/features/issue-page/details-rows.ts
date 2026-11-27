@@ -75,8 +75,7 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
       }
       // A reader who acts before the two frames below have run (`READER_ACTS`) - a key, or a
       // press in another field and words typed there - has put the focus where they want it, so
-      // the frames do nothing then. The press or the key that asked for the row reached the
-      // window before the guard is made, so it does not end it.
+      // the frames do nothing then.
       const acted = abortOnReaderAct();
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {

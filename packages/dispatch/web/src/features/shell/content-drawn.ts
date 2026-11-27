@@ -31,10 +31,10 @@ import { afterNextPaint } from "./after-next-paint";
  * and its shell starts them after its first paint. The hold ends at the first of:
  *
  * - the live document drew, or it cannot draw: a failed admission, an admission that found
- *   content this build cannot read yet, a failed load, a live connection that went offline, or
- *   the document left the page (`contentDrawn`, from `ProofDocument.tsx`); the issue page and
- *   the document page end it too when their reads say they draw no document at all
- *   (`useEndHoldWhen`);
+ *   content this build cannot read yet, a failed load, a live connection that went offline, a
+ *   first socket that closed before it ever connected (its `onClose`), or the document left the
+ *   page (`contentDrawn`, from `ProofDocument.tsx`); the issue page and the document page end it
+ *   too when their reads say they draw no document at all (`useEndHoldWhen`);
  * - the reader pressed a key or a pointer anywhere. That is the reader asking the page for
  *   something, and what they ask for may be the margin or a reference's card;
  * - `HOLD_LIMIT_MS` passed since the hold began. That is for a document that neither draws nor

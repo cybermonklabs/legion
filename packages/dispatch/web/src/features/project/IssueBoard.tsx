@@ -448,9 +448,8 @@ export function IssueBoard({
   // observer has notified, and would focus the doomed node. A reader who acts before focus
   // follows (`READER_ACTS`) - `j` to another card, or a press in another field and words typed
   // there while the move's dry run is out - has put the focus where they want it, so the card
-  // takes none then (`acted`). The move's key reached the window before the guard is made, so it
-  // does not end it; a choice in the question the move asks is a press that asks for the move
-  // again, and the guard is made anew from it (`moveActs`).
+  // takes none then (`acted`). A choice in the question the move asks is a press that asks for
+  // the move again, and the guard is made anew from it (`moveActs`).
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     acted: AbortController;
