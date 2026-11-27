@@ -127,7 +127,8 @@ const (
 	keyedBodyMax = maxArtifactBlobSize + 1<<20
 	// keyedBookkeeping bounds the layer's work around the handler - the claim before it, and each
 	// statement recording its answer after it - which runs on past a client that went away, since
-	// its retry needs the key claimed and the answer recorded.
+	// its retry needs the key claimed and the answer recorded. It runs on the server's clock
+	// (Deps.Clock), as the handler's own bound does.
 	keyedBookkeeping = 10 * time.Second
 	// keyedClaimTries bounds how often one request goes round the claim's insert, read and takeover
 	// when another request moves the row between them; each pass is one such move.
@@ -472,7 +473,9 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		s.detached.start()
 		defer s.detached.done()
-		detached, stop := context.WithTimeout(context.WithoutCancel(r.Context()), s.keyedRunLimit())
+		// The run's bound is on the server's clock (Deps.Clock): a test that drives a fake decides
+		// when it comes, whatever a loaded machine took to bring the handler there.
+		detached, stop := s.clock().WithTimeout(context.WithoutCancel(r.Context()), s.keyedRunLimit())
 		defer stop()
 		stopRenewing := s.renewRequestKeyLease(detached, claim)
 		answer := &keyedAnswer{w: w}
@@ -544,7 +547,7 @@ func (s *server) keyLease() time.Duration {
 }
 
 // keyedRunLimit is how long a keyed handler runs once its client's cancellation no longer bounds
-// it (keyedHandlerLimit; requestKeyRunLimit in a test).
+// it (keyedHandlerLimit; requestKeyRunLimit in a test), on the server's clock.
 func (s *server) keyedRunLimit() time.Duration {
 	if s.requestKeyRunLimit > 0 {
 		return s.requestKeyRunLimit
@@ -986,7 +989,7 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 func (s *server) claimRequestKey(
 	w http.ResponseWriter, r *http.Request, login, key, digest string, route keyedRoute,
 ) (claim requestKeyClaim, answered bool) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
+	ctx, cancel := s.clock().WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
 	defer cancel()
 	pool := s.deps.Store.Pool
 	// recovery is the point of the row the last round found and could not take over, which a
@@ -1491,7 +1494,7 @@ func (s *server) settleRequestKey(ctx context.Context, claim requestKeyClaim, an
 		// Non-nil, so an empty answer is stored as empty rather than as one not kept.
 		response = append([]byte{}, answer.body.Bytes()...)
 	}
-	bookkeeping, cancel := context.WithTimeout(context.WithoutCancel(ctx), keyedBookkeeping)
+	bookkeeping, cancel := s.clock().WithTimeout(context.WithoutCancel(ctx), keyedBookkeeping)
 	defer cancel()
 	if _, err := s.deps.Store.Pool.Exec(bookkeeping, `
 		update request_keys set status = $4, headers = $5, response = $6, leased_at = null
@@ -1507,7 +1510,7 @@ func (s *server) settleRequestKey(ctx context.Context, claim requestKeyClaim, an
 // marked - keeps it, and is released at once, so the next attempt is answered from that point, or
 // KEY_COMMITTED, rather than making the write a second time.
 func (s *server) releaseRequestKey(ctx context.Context, claim requestKeyClaim) {
-	bookkeeping, cancel := context.WithTimeout(context.WithoutCancel(ctx), keyedBookkeeping)
+	bookkeeping, cancel := s.clock().WithTimeout(context.WithoutCancel(ctx), keyedBookkeeping)
 	defer cancel()
 	if _, err := s.deps.Store.Pool.Exec(bookkeeping, `
 		with released as (

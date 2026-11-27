@@ -244,16 +244,16 @@ type Deps struct {
 	// resolves its caller again (whileCallerResolves), the bound on each listener lookup of a
 	// comment's route and mentions (resolveMentionTarget's mentionLookupTimeout), the listener
 	// client's window, the take-over's tries (takeoverRetry), the related-item check's allowance
-	// (relatedBounds), an agent view's wait for its replay (agentStreamReplayTimeout) and the time
-	// each access-log line records (accesslog.HandlerOn), which a test hands AnswersLatency's
-	// clock too. Three listener lookups bound themselves on the wall clock instead
-	// (context.WithTimeout), and only the listener client's window of each runs on this clock:
-	// roleHolderMayBe, the question whether a session may hold a role (mentionLookupTimeout);
-	// listRouteRoster, the read of the listener's session list (routeRosterTimeout); and a
-	// broadcast's resolution of its recipients (resolveBroadcastSessions,
-	// broadcastResolveAllowance). Nil, which every deployment leaves it, is clock.Real(), for a
-	// server Register builds and for one built directly alike (server.clock); a test passes a
-	// clocktest.Fake and moves it.
+	// (relatedBounds), an agent view's wait for its replay (agentStreamReplayTimeout), a keyed
+	// handler's run (keyedRunLimit) and the time each access-log line records
+	// (accesslog.HandlerOn), which a test hands AnswersLatency's clock too. Three listener lookups
+	// bound themselves on the wall clock instead (context.WithTimeout), and only the listener
+	// client's window of each runs on this clock: roleHolderMayBe, the question whether a session
+	// may hold a role (mentionLookupTimeout); listRouteRoster, the read of the listener's session
+	// list (routeRosterTimeout); and a broadcast's resolution of its recipients
+	// (resolveBroadcastSessions, broadcastResolveAllowance). Nil, which every deployment leaves it,
+	// is clock.Real(), for a server Register builds and for one built directly alike
+	// (server.clock); a test passes a clocktest.Fake and moves it.
 	Clock clock.Clock
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
 	// a parent's status out of line with its children's (R24) is refused 409

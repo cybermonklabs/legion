@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -92,6 +93,14 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 	}
 }
 
+// TestConcurrentMentionRetryResolvesNewAttemptUnderLock counts the role lookups the comment's
+// creation and the two retries make. The creation's lookup is bounded on the server's clock
+// (resolveMentionTarget, mentionLookupTimeout, 250 ms); on the wall clock, a lookup a loaded machine
+// answered past that bound counted as unanswered, the mention sender resolved the role again when it
+// sent, and the row read three lookups for two (INFRA-3904: lookups:3 in an api race run). The
+// server runs on a clock nothing moves (clocktest.Held: its Now is the wall clock, and none of its
+// timers fires by itself), so each lookup ends on the listener's answer, never on the machine's
+// speed, and the creation makes its one.
 func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
@@ -140,7 +149,7 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
 	direct := directServer(deps)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent mention retry", "before")
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
