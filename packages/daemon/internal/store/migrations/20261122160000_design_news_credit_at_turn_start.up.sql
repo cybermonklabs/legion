@@ -30,7 +30,10 @@
 -- version order, whatever it recorded above it (Store.Migrate), so a migration versioned between
 -- 20261119203047 and this one and merged after it would run last on a store that recorded this one,
 -- put back the credit at confirmed_at, and fail no test. The comment this file sets on the function
--- says the same to whoever reads the schema.
+-- says the same to whoever reads the schema. 20261122154643_outbox_kinds_with_the_basis_seeds
+-- (dispatch://INFRA-3320) is versioned between 20261119203047 and this one, and a store that
+-- recorded this one before it applies it after this one; it writes outbox_kind_check and not
+-- design_news_told_in, so it puts back no credit.
 --
 -- The way back is the block below, run with the daemon stopped before the earlier image is pinned,
 -- and before the way back of 20261113175649_task_numbers, which drops turn_started (at a rollback
@@ -42,19 +45,42 @@
 -- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
 -- (that migration set none), and deletes this migration's version row, so the roll forward runs
 -- this file again. The release before this one, main's build that carries contract entries
--- 20261125161436 (#4580's role-identities), 20261125174608 (#5505's cyber-policy), 20261125181543
--- (#5463's look-names-its-check) and 20261125211005 (#5566's wake-due-earliest-moment) after
--- contract 275 (the one whose
+-- 20261125161152 (#4592's gate-basis), 20261125161436 (#4580's role-identities), 20261125174608
+-- (#5505's cyber-policy), 20261125180842 (#5285's launcher-workspace-read), 20261125181047 (#5488's
+-- p-0-bound), 20261125181543 (#5463's look-names-its-check), 20261125182642 (#4065's agent-actions)
+-- and 20261125211005 (#5566's wake-due-earliest-moment) after contract 275 (the one whose
 -- internal/api/version.go carries the entry for dispatch://INFRA-4425, cybermonklabs/legion#4392's
 -- daemon that writes to Dispatch as itself under dispatch_token_broker), as main releases it after
--- #5505, whose newest migration is that release's 20261125223008_claim_held_for, carries
+-- #5487, whose newest migration is #4065's 20261126110259_merge_holds_changed, carries
 -- 20261119203047 and
--- not the task numbers, and then reads the function it wrote; a rollback to a release before #5505
+-- not the task numbers, and then reads the function it wrote; a rollback to a release before #5487
+-- takes controller_turn_bound_minutes and controller_session_max_age_hours out of legion.yaml where
+-- the file sets them, and this block reads nothing of that release's
+-- 20261125021636_claim_session_run, which carries no way back; one to a release before #5488 takes
+-- admission_p0_bound out of legion.yaml where the file sets it, and this block reads nothing of
+-- that release's 20261125181828_p0_bound, which carries no way back; one to a release before #4065
+-- takes that release's steps with the daemon stopped (docs/kubernetes.md, "Rolling back the release
+-- whose controller acts on agents and whose daemon tells a held role of a merge hold"), and this
+-- block reads nothing of its 20261115060739_claim_suspended_by_controller,
+-- 20261115121838_drop_controller_wakes_for_nothing and 20261126110259_merge_holds_changed, which
+-- carry no way back; one to a release before #4592 takes that release's steps with every daemon of
+-- the database stopped (docs/kubernetes.md, "Rolling back the release that holds a parent's start
+-- while a child of it is open"), and this block reads nothing of its
+-- 20261114064234_design_gate_basis, 20261114232555_awaiting_children and
+-- 20261122154643_outbox_kinds_with_the_basis_seeds, which carry no way back; a rollback to a
+-- release before #5505
 -- first takes the outbox key decided off each supervise row, with every daemon of the database
 -- stopped (docs/kubernetes.md), and this block reads nothing of that release's
 -- 20261125223008_claim_held_for, which carries no way back; a rollback to a release before #5566
 -- runs the way back in the header of 20261125163328_message_wake_pacing first of all, before this
--- block, with every daemon of the database stopped; a rollback to a release before #5463 also runs
+-- block, with every daemon of the database stopped; one to a release before #5285 runs the way back
+-- in the header of 20261125023100_pod_replacements before this block, with every daemon of the
+-- database stopped, once that release's launcher's workspace checks and the rows that name podUid
+-- have left the outbox, its unsent workspace-kept and workspace-taken notices are deleted and each
+-- issue's architect is told what each row of pod_replacements read (docs/kubernetes.md, "Rolling
+-- back the release that keeps no saved workspace"), and the way back of its
+-- 20261125023041_idle_release_declines_told_pod runs only in a rollback past 20261123050533, before
+-- that migration's own; a rollback to a release before #5463 also runs
 -- that release's step (docs/kubernetes.md,
 -- "Rolling back the release whose check report names its check"), one to a release before #4472
 -- takes private_name_rules_file out of legion.yaml where the file sets it, one to a release before

@@ -202,14 +202,18 @@
 -- block brought back are dropped again by this file's last statements. The missing row does not
 -- move the number the state read reports while the older image runs (Store.SchemaVersionTx, the
 -- highest row recorded): every database this release migrated records
--- 20261125223008_claim_held_for, that older daemon's own newest migration, above this version, so
--- the number reads 20261125223008 before the delete and after it, which is the truth about the
--- image that is running. A rollback to a release before #5505 reads 20261125223008 there too:
--- neither that migration nor #5575's 20261125212800 nor #5398's 20261124130001 nor #4392's
--- 20261124182040 nor #5372's 20261124143026 nor #5349's 20261124073512
--- nor #5365's 20261124060500 carries a way back, and the way back of #5566's 20261125163328 deletes
--- no version row, so their rows stand, and the ways back in the headers of
--- 20261125000600_production_check_failed_looks, which a rollback to a release before
+-- 20261126110259_merge_holds_changed, that older daemon's own newest migration, above this version,
+-- so the number reads 20261126110259 before the delete and after it, which is the truth about the
+-- image that is running. A rollback to a release before #4065 reads 20261126110259 there too:
+-- neither that migration nor #4065's 20261115060739 and 20261115121838 nor #5487's 20261125021636
+-- nor #5488's 20261125181828 nor #4592's 20261114064234, 20261114232555 and 20261122154643 nor
+-- #5505's 20261125223008 nor #5575's 20261125212800 nor #5398's 20261124130001 nor #4392's
+-- 20261124182040 nor #5372's 20261124143026 nor #5349's 20261124073512 nor #5365's 20261124060500
+-- carries a way back, the steps of #4065's and #4592's releases delete no version row, and the way
+-- back of #5566's 20261125163328 deletes none either, so their rows stand, and the ways back in the
+-- headers of 20261125023100_pod_replacements, which a rollback to a release before #5285 runs, of
+-- 20261125023041_idle_release_declines_told_pod, which a rollback past #4869's 20261123050533 runs
+-- too, of 20261125000600_production_check_failed_looks, which a rollback to a release before
 -- #5385 runs first, and of 20261123224717_members_owed, which a rollback to a release before #5303
 -- runs first, each delete that version's row alone.
 --
@@ -226,13 +230,22 @@
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
 -- after this one builds on the fourteen columns it drops whose way back has not already run, and
--- at this release thirty-seven of the thirty-eight recorded after it touch none of them:
+-- at this release forty-seven of the forty-eight recorded after it touch none of them:
 -- 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
 -- 20261114020537_claim_entry_handshake adds the four claims.handshake_* columns,
 -- 20261114031356_merge_queue_removal rewrites outbox_kind_check,
--- 20261114061900_phase_entry_verbatim adds phases.entry_verbatim,
+-- 20261114061900_phase_entry_verbatim adds phases.entry_verbatim, 20261114064234_design_gate_basis
+-- (cybermonklabs/legion#4592) adds the basis and kept-approval columns of design_gates and
+-- issues.view_of, and rewrites no kind list, 20261114232555_awaiting_children
+-- (cybermonklabs/legion#4592) adds the phase awaiting_children to issues_phase_check, six columns
+-- of issues and phases.entry_from, phases.entry_given_task, phases.entry_given_entry and
+-- phases.entry_given_generation, and rewrites no kind list,
+-- 20261115060739_claim_suspended_by_controller (cybermonklabs/legion#4065) writes
+-- claims_suspended_by_check again with the source controller added, and rewrites no kind list,
+-- 20261115121838_drop_controller_wakes_for_nothing (cybermonklabs/legion#4065) deletes the queued
+-- controller_notice rows of the kinds awaiting-person and unslotted, and rewrites no kind list,
 -- 20261115194357_project_pause adds the tables project_pauses, project_pause_stops and
 -- project_pause_pod_holds, pod_resumes.clock_at with the trigger that fills it,
 -- pod_resumes.pause_id and outbox.held_by_pause, and rewrites no kind list,
@@ -266,6 +279,8 @@
 -- cleared_pull_requests and pull_request_settled_heads, and rewrites no kind list,
 -- 20261121170714_dispatch_issue_applied_seq (cybermonklabs/legion#4903) adds
 -- dispatch_issues.applied_seq at its default, 0, and rewrites no kind list,
+-- 20261122154643_outbox_kinds_with_the_basis_seeds (cybermonklabs/legion#4592) rewrites
+-- outbox_kind_check a seventh time with pending_basis_seed and reparent_seed,
 -- 20261123050533_idle_release_keeps_no_workspace (cybermonklabs/legion#4869) drops
 -- workspace_bundles and adds the table idle_release_declines and the column
 -- issue_releases.turn_start, and rewrites no kind list,
@@ -290,17 +305,27 @@
 -- list, 20261124182040_issue_pod_disks (cybermonklabs/legion#4392) adds the table issue_pod_disks
 -- and rewrites no kind list, 20261125000600_production_check_failed_looks
 -- (cybermonklabs/legion#5385) adds production_checks.failed_looks at its default, 0, and rewrites
--- no kind list, 20261125163328_message_wake_pacing (cybermonklabs/legion#5566) adds
+-- no kind list, 20261125021636_claim_session_run (cybermonklabs/legion#5487) adds
+-- claims.session_run at its default, the empty run, with turnFinished true on every row that
+-- records a session, and rewrites no kind list, 20261125023041_idle_release_declines_told_pod
+-- (cybermonklabs/legion#5285) adds idle_release_declines.told_pod, null on every row it finds, and
+-- rewrites no kind list, 20261125023100_pod_replacements (cybermonklabs/legion#5285) adds the table
+-- pod_replacements, empty, and rewrites no kind list, 20261125163328_message_wake_pacing
+-- (cybermonklabs/legion#5566) adds
 -- claims.message_mark_at, null on every row it finds, and pod_resumes.queued at its default, false,
--- and rewrites no kind list, 20261125212800_claims_tree (cybermonklabs/legion#5575) adds the index
--- claims_tree on claims (tree) and rewrites no kind list, and 20261125223008_claim_held_for
+-- and rewrites no kind list, 20261125181828_p0_bound (cybermonklabs/legion#5488) adds the table
+-- project_p0_bound_changes, empty, and issues.resolved_known, issues.resolved_priority and
+-- issues.priority_from, and rewrites no kind list, 20261125212800_claims_tree
+-- (cybermonklabs/legion#5575) adds the index
+-- claims_tree on claims (tree) and rewrites no kind list, 20261125223008_claim_held_for
 -- (cybermonklabs/legion#5505) adds claims.held_for at its default, the empty string, writes
 -- provider_error in place of each cyber_policy the two cause columns of claims hold, and rewrites
--- no kind list.
+-- no kind list, and 20261126110259_merge_holds_changed (cybermonklabs/legion#4065) rewrites
+-- outbox_kind_check an eighth time with merge_holds_changed.
 -- 20261119203047_design_news reads no column this block drops or puts back: its functions read
 -- pending_task_deliveries.confirmed_at, which both releases keep, and its four columns stand
 -- through the block, so this block reverses nothing of it, and the two hold in either order.
--- The twenty-fourth, 20261122160000_design_news_credit_at_turn_start, is this release's own: it
+-- The twenty-ninth, 20261122160000_design_news_credit_at_turn_start, is this release's own: it
 -- writes #3995's function design_news_told_in again, reading pending_task_deliveries.turn_started,
 -- which this block drops, so its way back, the last paragraph of its header, runs before this
 -- block and writes #3995's text of the function back; every rollback of this release starts with
@@ -337,28 +362,83 @@
 -- header, which drops issue_plans.earlier_givers where the table still stands and deletes its
 -- version row, runs only in a rollback past 20261117034837_issue_plans, before or after that
 -- migration's way back and in the same sessions; it reads nothing 20261122160000's way back or this
--- block drops or writes back. The release before this one carries the other thirty-seven: it is
--- main's build that carries contract entries 20261125161436 (#4580's role-identities),
--- 20261125174608 (#5505's cyber-policy), 20261125181543 (#5463's look-names-its-check) and
--- 20261125211005 (#5566's wake-due-earliest-moment), after contract 275, the one whose
+-- block drops or writes back. 20261125021636_claim_session_run and 20261125181828_p0_bound, above
+-- the five too, need nothing in the store: neither carries a way back, since an earlier release
+-- names claims.session_run in no statement, and reads no row of project_p0_bound_changes and none
+-- of the three columns that 20261125181828 adds to issues (each migration's header), and neither
+-- reads what 20261122160000's way back or this block drops or writes back; a rollback past either
+-- takes the legion.yaml keys it adds out first, controller_turn_bound_minutes and
+-- controller_session_max_age_hours past the first and admission_p0_bound past the second, since an
+-- earlier release refuses each as a key it does not know. 20261125023100_pod_replacements, above
+-- the five too, carries a way back of its own, the last paragraph of its header, which drops
+-- pod_replacements and deletes its version row, with every daemon of the database stopped; it reads
+-- nothing 20261122160000's way back or this block drops or writes back.
+-- 20261125023041_idle_release_declines_told_pod, above the five too, needs nothing where the
+-- earlier release has idle_release_declines, since that release reads no told_pod and writes its
+-- rows without it; its way back, the last paragraph of its header, which drops
+-- idle_release_declines.told_pod and deletes its version row, runs only in a rollback past
+-- 20261123050533_idle_release_keeps_no_workspace, before that migration's way back; it reads
+-- nothing 20261122160000's way back or this block drops or writes back.
+-- 20261126110259_merge_holds_changed, above the five too, carries no way back: it writes
+-- outbox_kind_check again, keeping every kind an earlier release writes, and a rollback past it
+-- takes the steps of #4065's release (docs/kubernetes.md, "Rolling back the release whose
+-- controller acts on agents and whose daemon tells a held role of a merge hold") instead, which
+-- delete the queued rows of its kind; it reads nothing 20261122160000's way back or this block
+-- drops or writes back. The release before this one carries the other forty-seven: it is main's
+-- build that carries contract entries 20261125161152 (#4592's gate-basis), 20261125161436 (#4580's
+-- role-identities), 20261125174608 (#5505's cyber-policy), 20261125180842 (#5285's
+-- launcher-workspace-read), 20261125181047 (#5488's p-0-bound), 20261125181543 (#5463's
+-- look-names-its-check), 20261125182642 (#4065's agent-actions) and 20261125211005 (#5566's
+-- wake-due-earliest-moment), after contract 275, the one whose
 -- internal/api/version.go carries the entry for dispatch://INFRA-4425,
 -- cybermonklabs/legion#4392's daemon that writes to Dispatch as itself under dispatch_token_broker,
--- as main releases it after #5505, its newest migration that release's
--- 20261125223008_claim_held_for, so the rollback to it runs 20261122160000's way back and this
--- block and leaves the thirty-seven standing.
+-- as main releases it after #5487, its newest migration #4065's 20261126110259_merge_holds_changed,
+-- so the rollback to it runs 20261122160000's way back and this block and leaves the forty-seven
+-- standing.
 -- A rollback to
 -- contract 275, or to any release before
 -- it, also crosses contract entry 20261125161436, which takes no step of its own beyond
 -- re-pinning the earlier release, except that the operator of a tmux daemon deletes
--- <state_dir>/bin/jj (docs/kubernetes.md). A rollback to a release before #5505 also crosses
+-- <state_dir>/bin/jj (docs/kubernetes.md). A rollback to a release before #5487 also crosses
+-- 20261125021636_claim_session_run, which needs nothing in the store, and so takes
+-- controller_turn_bound_minutes and controller_session_max_age_hours out of legion.yaml before the
+-- earlier image is pinned, where the file sets them, since an earlier release refuses both keys. A
+-- rollback to a release before #5488 also crosses contract entry 20261125181047 and
+-- 20261125181828_p0_bound, which needs nothing in the store, and so takes admission_p0_bound out of
+-- legion.yaml before the earlier image is pinned, where the file sets it, since an earlier release
+-- refuses the key. A rollback to a release before #4065 also crosses contract entry 20261125182642,
+-- 20261115060739_claim_suspended_by_controller, 20261115121838_drop_controller_wakes_for_nothing
+-- and 20261126110259_merge_holds_changed, none of which carries a way back, and so takes that
+-- release's steps with the daemon stopped, before the earlier image is pinned (docs/kubernetes.md,
+-- "Rolling back the release whose controller acts on agents and whose daemon tells a held role of a
+-- merge hold"): they delete the queued merge_holds_changed rows and the merge-holds-changed and
+-- provider-errors notices, hand each suspension the controller holds to the operator and take
+-- runtime.kubernetes.pod.controller_service_account out of legion.yaml where the file sets it. A
+-- rollback to a release before #4592 also crosses contract entry 20261125161152,
+-- 20261114064234_design_gate_basis, 20261114232555_awaiting_children and
+-- 20261122154643_outbox_kinds_with_the_basis_seeds, none of which carries a way back, and so takes
+-- that release's steps with every daemon of the database stopped, before the earlier image is
+-- pinned (docs/kubernetes.md, "Rolling back the release that holds a parent's start while a child
+-- of it is open"): they wait until no issue stands in awaiting_children or move each one out of it,
+-- clear the outbox of what an earlier release refuses, and clear phases.entry_from and, on a
+-- rollback below 20261111225552_phase_entry, the three given columns of phases. A rollback to a
+-- release before #5505 also crosses
 -- contract entry 20261125174608 and 20261125223008_claim_held_for, which carries no way back, and
 -- so runs that release's one statement before the earlier image boots, with every daemon of the
 -- database stopped: it takes the outbox key decided off each supervise row, since an earlier
 -- release decodes outbox rows strictly (docs/kubernetes.md). A rollback to a release before #5566
 -- also crosses contract entry 20261125211005 and 20261125163328_message_wake_pacing, and so runs
 -- that migration's own way back first of all, before 20261122160000's way back. A rollback to a
--- release
--- before #5463 also crosses contract entry 20261125181543, and so runs that release's step before
+-- release before #5285 also crosses contract entry 20261125180842, 20261125023100_pod_replacements
+-- and 20261125023041_idle_release_declines_told_pod, and so runs the way back in the header of
+-- 20261125023100 before 20261122160000's way back, with every daemon of the database stopped, once
+-- that release's launcher's workspace checks and the rows that name podUid have left the outbox,
+-- its unsent workspace-kept and workspace-taken notices are deleted and each issue's architect is
+-- told what each row of pod_replacements read (docs/kubernetes.md, "Rolling back the release that
+-- keeps no saved workspace"); the way back of 20261125023041 runs only in a rollback past
+-- 20261123050533_idle_release_keeps_no_workspace, before that migration's own. A rollback to a
+-- release before #5463 also crosses contract entry 20261125181543, and so runs that release's step
+-- before
 -- the earlier image is pinned
 -- (docs/kubernetes.md, "Rolling back the release whose check report names its check"); one to a
 -- release before #4472 takes private_name_rules_file out of legion.yaml where the file sets it,
@@ -439,17 +519,37 @@
 -- so every database records them before it, and neither touches the fourteen columns. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
--- them: #5505's statement, which takes the outbox key decided off each supervise row, the way back
--- of #5566's 20261125163328_message_wake_pacing, #5463's step, #4580's and the way back of #5385's
--- 20261125000600_production_check_failed_looks first; then #5505's 20261125223008_claim_held_for,
--- #5575's 20261125212800_claims_tree,
+-- them: #4065's 20261115060739_claim_suspended_by_controller,
+-- 20261115121838_drop_controller_wakes_for_nothing and 20261126110259_merge_holds_changed, which
+-- carry no way back, with that release's steps, which delete the queued merge_holds_changed rows
+-- and the merge-holds-changed and provider-errors notices, hand each suspension the controller
+-- holds to the operator and take runtime.kubernetes.pod.controller_service_account out of
+-- legion.yaml where the file sets it (docs/kubernetes.md, "Rolling back the release whose
+-- controller acts on agents and whose daemon tells a held role of a merge hold"), #4592's
+-- 20261114064234_design_gate_basis, 20261114232555_awaiting_children and
+-- 20261122154643_outbox_kinds_with_the_basis_seeds, which carry no way back, with that release's
+-- steps, which clear the outbox of what an earlier release refuses, move each issue out of
+-- awaiting_children where the rollback cannot wait and clear phases.entry_from and the three given
+-- columns of phases, with every daemon of the database stopped (docs/kubernetes.md, "Rolling back
+-- the release that holds a parent's start while a child of it is open"), #5505's statement, which
+-- takes the outbox key decided off each supervise row, the way back of #5566's
+-- 20261125163328_message_wake_pacing, the ways back of #5285's 20261125023100_pod_replacements and
+-- 20261125023041_idle_release_declines_told_pod, newest first, once that release's launcher's
+-- workspace checks and the rows that name podUid have left the outbox, its unsent workspace-kept
+-- and workspace-taken notices are deleted and each issue's architect is told what each row of
+-- pod_replacements read (docs/kubernetes.md, "Rolling back the release that keeps no saved
+-- workspace"), #5463's step, #4580's and the way back of #5385's
+-- 20261125000600_production_check_failed_looks first; then #5487's
+-- 20261125021636_claim_session_run, #5488's 20261125181828_p0_bound, #5505's
+-- 20261125223008_claim_held_for, #5575's 20261125212800_claims_tree,
 -- #5398's 20261124130001_pull_request_reviews_requested, #4392's 20261124182040_issue_pod_disks,
 -- #5372's 20261124143026_issue_release_teardown, #5349's 20261124073512_claim_cause_times and
 -- #5365's 20261124060500_issue_priority, which need nothing, since none carries a way back and no
--- earlier release names the columns, the table and the index they add, with #4392's two legion.yaml
--- keys, dispatch_token_broker and
--- dispatch_token_transition_file, taken out and dispatch_token_file named again where the file
--- sets them; the way back in the header of
+-- earlier release names the columns, the tables and the index they add, with #5487's two
+-- legion.yaml keys, controller_turn_bound_minutes and controller_session_max_age_hours, and #5488's
+-- admission_p0_bound taken out where the file sets them, and #4392's two, dispatch_token_broker and
+-- dispatch_token_transition_file, taken out and dispatch_token_file named again where the file sets
+-- them; the way back in the header of
 -- 20261123050533_idle_release_keeps_no_workspace,
 -- #4869's, which makes workspace_bundles again, empty, drops idle_release_declines and
 -- issue_releases.turn_start and deletes its version row, with every daemon of the database
@@ -510,8 +610,10 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those thirty-seven that are
--- the root architect's entry (all but the six kind lists, the five other migrations of contract
+-- of its kind behind; contract 146's block, which reverses the four of those forty-seven that are
+-- the root architect's entry (all but the eight kind lists, #4592's
+-- 20261122154643_outbox_kinds_with_the_basis_seeds and #4065's 20261126110259_merge_holds_changed
+-- among them, the five other migrations of contract
 -- 152, contract 160's 20261116144907_claim_sessions, contract 178's 20261115194357_project_pause,
 -- contract 188's 20261120055717_dispatch_issue_value_sequences, contract 189's
 -- 20261120042902_claim_agent_resume_generation, contract 205's
@@ -525,10 +627,14 @@
 -- 20261123224717_members_owed, whose own way back has run, #5365's
 -- 20261124060500_issue_priority, #5349's 20261124073512_claim_cause_times, #5372's
 -- 20261124143026_issue_release_teardown, #4392's 20261124182040_issue_pod_disks, #5398's
--- 20261124130001_pull_request_reviews_requested, #5575's 20261125212800_claims_tree and #5505's
--- 20261125223008_claim_held_for, which carry none, #5385's
--- 20261125000600_production_check_failed_looks and #5566's
--- 20261125163328_message_wake_pacing, whose own ways back have run, and #3995's
+-- 20261124130001_pull_request_reviews_requested, #5575's 20261125212800_claims_tree, #5505's
+-- 20261125223008_claim_held_for, #5487's 20261125021636_claim_session_run and #5488's
+-- 20261125181828_p0_bound, which carry none, #4592's 20261114064234_design_gate_basis and
+-- 20261114232555_awaiting_children and #4065's 20261115060739_claim_suspended_by_controller and
+-- 20261115121838_drop_controller_wakes_for_nothing, which carry none and whose releases' steps have
+-- run, #5385's 20261125000600_production_check_failed_looks, #5566's
+-- 20261125163328_message_wake_pacing and #5285's 20261125023100_pod_replacements and
+-- 20261125023041_idle_release_declines_told_pod, whose own ways back have run, and #3995's
 -- 20261119203047_design_news, whose own four statements are its way back);
 -- the merge-queue removal's outbox delete; the
 -- five statements of the release whose update round ends at its bound, whose
@@ -553,12 +659,17 @@
 -- no earlier release names, nor #4392's 20261124182040_issue_pod_disks, nor #5398's
 -- 20261124130001_pull_request_reviews_requested, whose five columns no earlier release names, nor
 -- #5575's 20261125212800_claims_tree, whose index changes no read or write of claims, nor #5505's
--- 20261125223008_claim_held_for, whose claims.held_for no earlier release names, nor contract 160's
+-- 20261125223008_claim_held_for, whose claims.held_for no earlier release names, nor #5487's
+-- 20261125021636_claim_session_run, whose claims.session_run no earlier release names, nor #5488's
+-- 20261125181828_p0_bound, whose table and three columns of issues no earlier release reads, nor
+-- #4592's 20261114064234_design_gate_basis, whose columns of design_gates and issues.view_of no
+-- earlier release names, nor contract 160's
 -- 20261111091500_claim_pod_end, whose claims.pod_end an earlier release leaves
 -- unread and unwritten; the tables pod_volume_notices its 20261111090000_volume_trim_notices adds,
 -- claim_sessions its 20261116144907_claim_sessions adds, the three contract 228's
--- 20261120144241_intake_failures adds and issue_pod_disks, which #4392's
--- 20261124182040_issue_pod_disks adds, stand too, read by no earlier release.
+-- 20261120144241_intake_failures adds, issue_pod_disks, which #4392's
+-- 20261124182040_issue_pod_disks adds, and project_p0_bound_changes, which #5488's
+-- 20261125181828_p0_bound adds, stand too, read by no earlier release.
 -- The release before the phase entry reads the three
 -- marks as the release before this one does, and neither
 -- contract 146's block, the step records', the commit statuses', the reviewed commit's nor the
