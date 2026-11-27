@@ -45,7 +45,14 @@ it reads the same configuration, binds no listener and applies no migration.
 reads a profiles file with the broker's own code and exits 1, naming the kind or the profile and
 the field, or the parse position, when the broker would not serve that file, or when its start
 check of the results profile `DISPATCH_RESULTS_TOKEN`, of kind `dpop`, refuses it.
-A `proxy` block of any kind but `dpop` is refused, naming `kinds`, which replaced it.
+In a file that declares a kind, a `proxy` block of any kind but `dpop` is refused, naming `kinds`,
+which replaced it. A file that declares no kind is read as the broker before the kinds read it,
+until every deployment's file declares kinds: each block of no kind, `aws` or `azure` serves its
+profile's name behind the block's hosts, headers and `allow`, under a kind of its own that no
+`proxy` tag names, and a block's `judge` or `guidance` is refused, naming the source's tag that
+holds it now. The results profile `DISPATCH_RESULTS_TOKEN` is outside that older reading: its
+block is held to kind `dpop` in every file, since the broker mints and holds that credential and
+releases it to nobody.
 `--private-upstream` takes the value `BROKER_PROXY_PRIVATE_UPSTREAM` gives the broker, and holds
 each destination's address to the start's rule: an address no broker takes as a destination
 (loopback, link-local, a metadata server, an IPv6 form that carries an IPv4 address and the rest of
@@ -223,3 +230,7 @@ unless `AIRLOCK_MODEL` names a built Lean model (`internal/cipher/proxyrules/air
 The broker's docs (`docs/site/src/content/docs/broker/`: `concepts.md`, `operate.md` and
 `guides/`) say how its packages, policy, enrollment and CLI work; `cmd/cipher-refgen` writes their
 reference pages from the code's doc comments at the docs build, not in `go test`.
+
+Cipher's proxy signs each bound host's leaf with a pod's own intermediate; "The proxy's chain" in
+`concepts.md` says which names its constraints bind, and in which clients.
+A copied intermediate key can sign, for up to 7 days, a certificate with no DNS alternative name that curl, Python and Node accept for a name outside the allowed ones when its common name is one label, such as `localhost`, or a wildcard over two or more labels, such as `*.evil.example` for `a.evil.example`. They refuse a plain name, such as `evil.example`, and a wildcard over one label, such as `*.example`, so for them the key reaches names of one label, and names of three or more labels through a wildcard, but no name of two labels. Bun accepts any name through the common name when the certificate also has a URI, email or registered-ID alternative name. git on GnuTLS rejects every form. Only the 7-day life limits this.

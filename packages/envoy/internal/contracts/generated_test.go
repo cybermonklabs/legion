@@ -33,6 +33,7 @@ func validSignalQualityEnvelope() Envelope {
 }
 
 func TestEnvelopeSignalQualityFieldsRoundTrip(t *testing.T) {
+	t.Parallel()
 	want := validSignalQualityEnvelope()
 
 	encoded, err := json.Marshal(want)
@@ -51,6 +52,7 @@ func TestEnvelopeSignalQualityFieldsRoundTrip(t *testing.T) {
 }
 
 func TestEnvelopeValidateRejectsInvalidSignalQualityFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(*Envelope)
@@ -96,6 +98,7 @@ func TestEnvelopeValidateRejectsInvalidSignalQualityFields(t *testing.T) {
 // A message that wants no reply says so with the JSON literal false, so a reader decides what the
 // sender wants from the value rather than from one word out of three.
 func TestEnvelopeMarshalsNoReplyAsTheJSONLiteralFalse(t *testing.T) {
+	t.Parallel()
 	envelope := validSignalQualityEnvelope()
 	envelope.ExpectsReply = ExpectsReplyNone
 	if err := envelope.Validate(); err != nil {
@@ -118,6 +121,7 @@ func TestEnvelopeMarshalsNoReplyAsTheJSONLiteralFalse(t *testing.T) {
 // An envelope holding a token no vocabulary names never reaches a reader: the marshaller refuses
 // it by naming what a sender may write, rather than putting the token on the wire.
 func TestEnvelopeMarshalRefusesAnUnknownExpectsReply(t *testing.T) {
+	t.Parallel()
 	envelope := validSignalQualityEnvelope()
 	envelope.ExpectsReply = "later"
 
@@ -131,12 +135,14 @@ func TestEnvelopeMarshalRefusesAnUnknownExpectsReply(t *testing.T) {
 }
 
 func TestEnvelopeValidateAcceptsSignalQualityFields(t *testing.T) {
+	t.Parallel()
 	if err := validSignalQualityEnvelope().Validate(); err != nil {
 		t.Errorf("Validate() error = %v, want nil", err)
 	}
 }
 
 func TestEnvelopeValidateAcceptsOmittedOptionalStringFields(t *testing.T) {
+	t.Parallel()
 	want := validSignalQualityEnvelope()
 	want.InReplyTo = ""
 	want.Supersedes = ""
@@ -155,6 +161,7 @@ func TestEnvelopeValidateAcceptsOmittedOptionalStringFields(t *testing.T) {
 }
 
 func TestEnvelopeSignalQualityFieldsOmitEmpty(t *testing.T) {
+	t.Parallel()
 	encoded, err := json.Marshal(Envelope{})
 	if err != nil {
 		t.Fatalf("marshal envelope: %v", err)
@@ -172,6 +179,7 @@ func TestEnvelopeSignalQualityFieldsOmitEmpty(t *testing.T) {
 }
 
 func TestValidateWireRejectsEmptyOptionalEnvelopeStrings(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		raw  string

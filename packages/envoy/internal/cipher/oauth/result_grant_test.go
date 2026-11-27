@@ -24,7 +24,8 @@ const (
 	// resultsHost is the host the proxy block of the profile DISPATCH_RESULTS_TOKEN binds:
 	// Dispatch's public host, the one a grant's writes go to through the proxy.
 	resultsHost = "dispatch.test"
-	// airlockProxyURL and airlockCA are what the broker hands a run to reach its proxy by.
+	// airlockProxyURL and airlockCA are what the broker hands a run to reach its proxy by: its
+	// URL, and the roots the authority answers at the trade (AirlockSettings.ProxyRoots).
 	airlockProxyURL = "https://airlock.test:13381"
 	airlockCA       = "-----BEGIN CERTIFICATE-----\nnot-a-real-certificate\n-----END CERTIFICATE-----\n"
 	// resultsEntryDigest stands for the broker's results entry (AirlockSettings.EntryDigest): 64
@@ -37,7 +38,7 @@ const (
 func newResultsFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixture {
 	t.Helper()
 	return newExchangeFixture(t, func(c *oauth.Config) {
-		c.Airlock = &oauth.AirlockSettings{ProxyURL: airlockProxyURL, CACertificatePEM: airlockCA, ResultHosts: []string{resultsHost}, EntryDigest: resultsEntryDigest}
+		c.Airlock = &oauth.AirlockSettings{ProxyURL: airlockProxyURL, ProxyRoots: func() string { return airlockCA }, ResultHosts: []string{resultsHost}, EntryDigest: resultsEntryDigest}
 		adjust(c)
 	})
 }

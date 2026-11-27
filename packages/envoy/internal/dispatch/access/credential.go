@@ -3,11 +3,12 @@ package access
 import "slices"
 
 // Credential is Dispatch's rule over a person already resolved: PersonSees is what the
-// credential's person sees (Resolve of that person at a browser), and no consumer builds one
-// without it. Listed is the credential's list of projects, Person whether it acts for a person,
-// Browser whether it is the person's own cookie, and Restricted whether its person is a restricted
-// member, which decides whether its list narrows every project it reaches or only the private ones
-// (CredentialCovers).
+// credential's person sees (Resolve of that person at a browser). The write checks in
+// internal/dispatch/api build a Credential with Listed alone, since CredentialCovers reads no
+// person's limit. Listed is the credential's list of projects, Person whether it acts for a
+// person, Browser whether it is the person's own cookie, and Restricted whether its person is a
+// restricted member, which decides whether its list narrows every project it reaches or only the
+// private ones (CredentialCovers).
 type Credential struct {
 	Listed, PersonSees          []string
 	Person, Browser, Restricted bool
@@ -30,8 +31,18 @@ type Credential struct {
 // an unlisted credential's.
 //
 // VisibleProjectsSQL is its SQL twin for reads, which TestTheListRuleIsOneInGoAndSQL holds equal to
-// it over every combination. Nothing in this tree calls it on a write; a later slice's checks of a
-// write are to call it with the project the write names.
+// it over every combination. Each write check in internal/dispatch/api calls it with Listed
+// alone, the project each write names, and that project's visibility, which each check reads in
+// the statement or the transaction that reads the project, before the write. The project check of
+// a retraction asks it once more, for the check's issue, before any other layer reads the request
+// (api's secondProjectResolverFor), and a status change asks it once more for the issue it names,
+// under its planner's owner locks (api's planStatusChangeUnderLocks). seenBy calls it the same way
+// to leave out of an answer each issue that the caller cannot see: the issues of a 409
+// PARENT_STATUS_CONFLICT (seenConflictIssues), the children of a 409 FOREIGN_CHILD_OPEN and the
+// checks that a result's check value matches. No caller builds a restricted member's credential,
+// so the change that turns on restricted member kinds for writes must change each of these calls:
+// each write check, the retraction's second check, the status change's check of its named issue
+// and seenBy.
 func CredentialCovers(cred Credential, project string, private bool) bool {
 	if cred.Browser {
 		return true
