@@ -37,23 +37,38 @@ func APIRoot(endpoint string) string {
 	return endpoint
 }
 
-// client is the HTTP client every Client call goes through (SetTransport), nil for
-// http.DefaultClient.
-var client atomic.Pointer[http.Client]
+// clients are the HTTP clients every Client call goes through (SetTransport): follow, which
+// follows redirects Go's own way, for every call but GetPage's, and paged, which follows none, for
+// GetPage's. Nil is http.DefaultClient and unfollowed.
+type clients struct{ follow, paged *http.Client }
+
+// client is the clients every Client call goes through (SetTransport), nil for http.DefaultClient
+// and unfollowed.
+var client atomic.Pointer[clients]
+
+// unfollowed is the client GetPage sends through while no SetTransport set one: http.DefaultClient's
+// transport, following no redirect.
+var unfollowed = &http.Client{CheckRedirect: stopAtRedirect}
+
+// stopAtRedirect is the redirect policy of GetPage's client: it follows none, and answers the
+// redirect itself (http.ErrUseLastResponse), so each GET a redirect asks for is a request the
+// caller sends, and counts, on its own.
+func stopAtRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // SetTransport makes every call of every Client go through rt, nil for http.DefaultClient's own,
 // which is what a process that never calls it gets. The daemon's boot sets it to its GitHub rate
 // counter's transport (githubrate.Counter.Transport), so each call a workflow read makes with an
-// installation token counts on that installation's budget. This process-wide transport belongs
-// to the daemon's one workflow; separate workflows cannot count through separate transports in
-// one process. A failed boot resets it, and tests that set it restore it with SetTransport(nil).
-// It is safe to replace while calls run: each call reads the client once, as it starts.
+// installation token counts on that installation's budget, GetPage's among them. This process-wide
+// transport belongs to the daemon's one workflow; separate workflows cannot count through separate
+// transports in one process. A failed boot resets it, and tests that set it restore it with
+// SetTransport(nil). It is safe to replace while calls run: each call reads the client once, as it
+// starts.
 func SetTransport(rt http.RoundTripper) {
 	if rt == nil {
 		client.Store(nil)
 		return
 	}
-	client.Store(&http.Client{Transport: rt})
+	client.Store(&clients{follow: &http.Client{Transport: rt}, paged: &http.Client{Transport: rt, CheckRedirect: stopAtRedirect}})
 }
 
 // HTTPClient is the client a Client call goes through now: one on the transport SetTransport set,
@@ -63,15 +78,25 @@ func SetTransport(rt http.RoundTripper) {
 // another host.
 func HTTPClient() *http.Client {
 	if held := client.Load(); held != nil {
-		return held
+		return held.follow
 	}
 	return http.DefaultClient
 }
 
+// pagedClient is the client GetPage goes through now: HTTPClient's transport, following no
+// redirect.
+func pagedClient() *http.Client {
+	if held := client.Load(); held != nil {
+		return held.paged
+	}
+	return unfollowed
+}
+
 // Client calls GitHub with an installation token. Its API is a REST base, which Get, GetHeaders,
-// Post, GetPages and GetListPages take paths under: a repository's (RepositoryAPI), or GitHub's
-// root (APIRoot) for a call that names no repository. An empty endpoint is api.github.com. A
-// client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint) sends queries (GraphQL) instead.
+// Post, GetPage, GetPages and GetListPages take paths under: a repository's (RepositoryAPI), or
+// GitHub's root (APIRoot) for a call that names no repository. An empty endpoint is
+// api.github.com. A client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint) sends queries
+// (GraphQL) instead.
 //
 // ETags, when set, makes every GET the client sends conditional: it carries the ETag GitHub last
 // answered for the same URL under the same Scope (If-None-Match), and GitHub's 304, which says the
@@ -175,14 +200,15 @@ type Page[T any] struct {
 	Redirect string
 }
 
-// GetPage reads one page of the JSON array GitHub answers at path, a hundred items to a page: a
-// path under the client's REST base, or a Next or Redirect an earlier page named.
+// GetPage reads one page of the JSON array GitHub answers at path, a hundred items to a page, with
+// one GET and never another: path is a path under the client's REST base, or a Next or Redirect an
+// earlier page named. A redirect is not followed: it is the page's Redirect, for the caller to send
+// as a request of its own. A path, a next page or a redirect on another scheme or host than the
+// REST base's is refused before any request goes there, so the token goes nowhere but the API it
+// was configured for. A reader that keeps a budget of GETs, such as the daemon's merge read, so
+// counts a redirect's GET as one, and saves Next between its turns.
 func GetPage[T any](ctx context.Context, c Client, path string) (Page[T], error) {
-	items, err := getPages[T](ctx, c, path, "")
-	if err != nil {
-		return Page[T]{}, err
-	}
-	return Page[T]{Items: items}, nil
+	return getPage[T](ctx, c, path, "")
 }
 
 // GetPages reads every page of the JSON array GitHub answers at path, a hundred items to a page,
@@ -198,49 +224,94 @@ func GetListPages[T any](ctx context.Context, c Client, path, field string) ([]T
 	return getPages[T](ctx, c, path, field)
 }
 
-// getPages is GetPages, reading each page's items from the field of the object it answers when
-// field is not empty. A next page on another scheme or host than the REST base's is refused, so the
-// token goes nowhere but the API it was configured for.
+// maxRedirects is the most redirects in a row getPages sends the GETs of: where Go's own client
+// stops following them (http.Client's default CheckRedirect).
+const maxRedirects = 10
+
+// getPages is GetPages, one page (getPage) at a time, reading each page's items from the field of
+// the object it answers when field is not empty. It sends the GET a deferred redirect asks for
+// itself, as Go's own client follows one, and stops after maxRedirects of them in a row, where
+// Go's client stops. getPage refuses a next page or a redirect on another origin.
 func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, error) {
-	base, err := url.Parse(c.API)
-	if err != nil {
-		return nil, fmt.Errorf("parse the REST base %q: %w", c.API, err)
-	}
-	separator := "?"
-	if strings.Contains(path, "?") {
-		separator = "&"
-	}
 	var all []T
-	for target := c.API + path + separator + "per_page=100"; target != ""; {
-		var page []T
-		var object map[string]json.RawMessage
-		var into any = &page
-		if field != "" {
-			into = &object
-		}
-		next, _, err := c.call(ctx, http.MethodGet, target, nil, into)
+	redirects := 0
+	for target := path; target != ""; {
+		page, err := getPage[T](ctx, c, target, field)
 		if err != nil {
 			return nil, err
 		}
-		if field != "" {
-			list, ok := object[field]
-			if !ok {
-				return nil, fmt.Errorf("GitHub answered GET %s with no %q list", path, field)
+		if page.Redirect != "" {
+			if redirects++; redirects == maxRedirects {
+				return nil, fmt.Errorf("GET %s: stopped after %d redirects", path, maxRedirects)
 			}
-			if err := json.Unmarshal(list, &page); err != nil {
-				return nil, fmt.Errorf("decode the %q list GitHub answered GET %s with: %w", field, path, err)
-			}
+			target = page.Redirect
+			continue
 		}
-		all = append(all, page...)
-		if next != "" {
-			nextURL, err := url.Parse(next)
-			if err != nil || nextURL.Scheme != base.Scheme || !strings.EqualFold(nextURL.Host, base.Host) {
-				return nil, fmt.Errorf("GET %s: GitHub's next page %q is not on %s://%s, the only origin sent the token", path, next, base.Scheme, base.Host)
-			}
-		}
-		target = next
+		redirects = 0
+		all = append(all, page.Items...)
+		target = page.Next
 	}
 	return all, nil
+}
+
+// getPage is GetPage, reading the page's items from the field of the object it answers when field
+// is not empty. It sends one GET, through pagedClient, which follows no redirect. A path that is
+// an absolute URL is a Next or Redirect an earlier page named, sent as it is; any other path is
+// under the REST base, asking a hundred items to a page. A path, a next page or a redirect on
+// another scheme or host than the REST base's is refused (onOrigin), the path before any request.
+func getPage[T any](ctx context.Context, c Client, path, field string) (Page[T], error) {
+	base, err := url.Parse(c.API)
+	if err != nil {
+		return Page[T]{}, fmt.Errorf("parse the REST base %q: %w", c.API, err)
+	}
+	target := path
+	if continuation, err := url.Parse(path); err == nil && continuation.IsAbs() {
+		if !onOrigin(path, base) {
+			return Page[T]{}, fmt.Errorf("GET %s: it is not on %s://%s, the only origin sent the token", path, base.Scheme, base.Host)
+		}
+	} else {
+		separator := "?"
+		if strings.Contains(path, "?") {
+			separator = "&"
+		}
+		target = c.API + path + separator + "per_page=100"
+	}
+	var page []T
+	var object map[string]json.RawMessage
+	var into any = &page
+	if field != "" {
+		into = &object
+	}
+	next, redirect, _, err := c.exchange(ctx, pagedClient(), http.MethodGet, target, nil, into, restAccept)
+	if err != nil {
+		return Page[T]{}, err
+	}
+	if redirect != "" {
+		if !onOrigin(redirect, base) {
+			return Page[T]{}, fmt.Errorf("GET %s: GitHub's redirect to %q is not on %s://%s, the only origin sent the token", path, redirect, base.Scheme, base.Host)
+		}
+		return Page[T]{Redirect: redirect}, nil
+	}
+	if field != "" {
+		list, ok := object[field]
+		if !ok {
+			return Page[T]{}, fmt.Errorf("GitHub answered GET %s with no %q list", path, field)
+		}
+		if err := json.Unmarshal(list, &page); err != nil {
+			return Page[T]{}, fmt.Errorf("decode the %q list GitHub answered GET %s with: %w", field, path, err)
+		}
+	}
+	if next != "" && !onOrigin(next, base) {
+		return Page[T]{}, fmt.Errorf("GET %s: GitHub's next page %q is not on %s://%s, the only origin sent the token", path, next, base.Scheme, base.Host)
+	}
+	return Page[T]{Items: page, Next: next}, nil
+}
+
+// onOrigin says whether raw, a URL GitHub named or a caller passed on, is on base's scheme and
+// host, the only origin a Client sends its token to.
+func onOrigin(raw string, base *url.URL) bool {
+	target, err := url.Parse(raw)
+	return err == nil && target.Scheme == base.Scheme && strings.EqualFold(target.Host, base.Host)
 }
 
 // restAccept is the media type every REST call asks for.
@@ -253,18 +324,22 @@ const restAccept = "application/vnd.github+json"
 // with ETags is conditional (Client.ETags): GitHub's 304 is read as the answer kept for target, its
 // body and its next page.
 func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (string, http.Header, error) {
-	return c.exchange(ctx, method, target, body, into, restAccept)
+	next, _, headers, err := c.exchange(ctx, HTTPClient(), method, target, body, into, restAccept)
+	return next, headers, err
 }
 
-// exchange is call with accept as the request's Accept header.
-func (c Client) exchange(ctx context.Context, method, target string, body []byte, into any, accept string) (string, http.Header, error) {
+// exchange is call with accept as the request's Accept header, sent through through: HTTPClient,
+// which follows redirects Go's own way, or pagedClient, which follows none. A redirect through
+// pagedClient is returned as redirect, the URL its Location names resolved against target, with
+// no body read into into: the caller sends that GET itself, or refuses it.
+func (c Client) exchange(ctx context.Context, through *http.Client, method, target string, body []byte, into any, accept string) (next, redirect string, headers http.Header, err error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", accept)
@@ -280,33 +355,50 @@ func (c Client) exchange(ctx context.Context, method, target string, body []byte
 			request.Header.Set("If-None-Match", kept.etag)
 		}
 	}
-	response, err := HTTPClient().Do(request)
+	response, err := through.Do(request)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	defer response.Body.Close()
 	answer, err := io.ReadAll(response.Body)
 	if err != nil {
-		return "", response.Header, err
+		return "", "", response.Header, err
 	}
 	if response.StatusCode == http.StatusNotModified && kept.etag != "" {
 		// Unchanged since the answer kept for target: that answer is GitHub's answer now.
 		if into == nil {
-			return kept.next, response.Header, nil
+			return kept.next, "", response.Header, nil
 		}
-		return kept.next, response.Header, json.Unmarshal(kept.body, into)
+		return kept.next, "", response.Header, json.Unmarshal(kept.body, into)
+	}
+	if location := response.Header.Get("Location"); redirected(response.StatusCode) && location != "" {
+		// Only a client that follows no redirect gets here: HTTPClient follows each of these.
+		resolved, err := request.URL.Parse(location)
+		if err != nil {
+			return "", "", response.Header, fmt.Errorf("%s %s: GitHub's redirect to %q: %w", method, c.answerPath(request.URL), location, err)
+		}
+		return "", resolved.String(), response.Header, nil
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return "", response.Header, c.refusal(method, request.URL, response, answer)
+		return "", "", response.Header, c.refusal(method, request.URL, response, answer)
 	}
-	next := nextPage(response.Header.Get("Link"))
+	next = nextPage(response.Header.Get("Link"))
 	if conditional {
 		c.ETags.keep(cacheKey, response.Header.Get("ETag"), answer, next)
 	}
 	if into == nil {
-		return next, response.Header, nil
+		return next, "", response.Header, nil
 	}
-	return next, response.Header, json.Unmarshal(answer, into)
+	return next, "", response.Header, json.Unmarshal(answer, into)
+}
+
+// redirected says whether status is a redirect Go's own client follows: 301, 302, 303, 307 or 308.
+func redirected(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
