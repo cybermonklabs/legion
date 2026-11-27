@@ -53,11 +53,12 @@ export type DispatchWritingBox =
  * What a box's write makes:
  *
  * - `comment`: a comment on an issue or on a document, a reply to one included. The comment
- *   route is the one route that resolves a mention and delivers it.
+ *   route resolves a mention and delivers it, and so does the answer route (`ask-answer`).
  * - `comment-edit`: a new body for a comment already posted; its save carries no mention.
  * - `suggestion`: a comment that offers replacement text for the document it is anchored to.
  * - `ask`: a new ask, with its options.
- * - `ask-answer`: an answer to an ask, which reaches whoever asked it.
+ * - `ask-answer`: an answer to an ask, which reaches whoever asked it and each agent and role
+ *   its text names.
  * - `ask-back`: a question back at the asker, which is a comment on the ask.
  * - `ask-decline`: a person's note on declining to answer an ask, which closes it with no
  *   answer; the note is stored on the ask's resolution and read by whoever asked.
@@ -117,11 +118,12 @@ export interface DispatchWritingBoxRow {
    *  own (the document body, the agent live conversation). A box with no picker says why in
    *  `reason`. */
   readonly covered: boolean;
-  /** Whether Dispatch tells an agent or a role that this write names it. Only a comment does: a
-   *  message reaches the session it is addressed to and tells nobody it names, and an ask, an
-   *  answer, a spec, a reason and a setting tell nobody they name. A person is never told, and a
-   *  person's reference is their name with no link until a person has a page (R5), which is why
-   *  a delivering box says so. */
+  /** Whether Dispatch tells an agent or a role that this write names it. A comment does, and so
+   *  does an answer to an ask, which goes to each agent and role its text names beside whoever
+   *  asked (`answerPartiesOf` in the Go API's ask_transitions.go). A message reaches the session
+   *  it is addressed to and tells nobody it names, and an ask, a spec, a reason and a setting tell
+   *  nobody they name. A person is never told, and a person's reference is their name with no
+   *  link until a person has a page (R5), which is why a delivering box says so. */
   readonly delivers: boolean;
   /** Whether the picker here lists the rows that need an issue - the issue's people. A box that
    *  writes on no issue lists everyone who has signed in instead. For a box whose surface is
@@ -140,8 +142,9 @@ export interface DispatchWritingBoxRow {
 /** How each door is opened, which every hint starts with. */
 const DOORS = "Type @ for an agent, a role or a person, # for an issue, [[ for anything else.";
 
-/** What a box says when a mention on its write is delivered. The comment route tells an agent
- *  or a role the body names and never a person (`commentPartiesOf` in the Go API's
+/** What a box says when its write is a comment, which delivers a mention: every delivering write
+ *  but the ask card's answer, whose box says `DISPATCH_WRITING_HINT_ASK`. The comment route tells
+ *  an agent or a role the body names and never a person (`commentPartiesOf` in the Go API's
  *  comment_create.go), and it tells a role only while a session holds it: a role nobody holds is
  *  refused at once ("no holder for role …", `resolveDeliveryTarget`) and kept for no later
  *  holder, though the picker offers the issue's stopped roles and the reader links them. A
@@ -157,13 +160,13 @@ const PICKED_QUIET =
 /**
  * What a box says when its write tells nobody it names, by the write: that a pick links and
  * tells nobody, and then what does tell, which is the write's own doing. Only the comment route
- * reads the parties of a body and delivers to them (`createCommentFor` in the Go API's
- * comment_create.go), so each sentence says where the write itself goes, or, for a write that
- * goes nowhere, which comment would tell a picked agent or role, or that nothing would. A
- * suggestion's replacement box does not say that a pick links. Until someone accepts the
- * suggestion, its card shows the replacement as the characters written, with no link and no
- * name drawn over a reference (the reading list's `margin-suggestion-diff`), so the box says
- * that instead.
+ * and the answer route read the parties of a body and deliver to them (`createCommentFor` in the
+ * Go API's comment_create.go, `answerAsk` in ask_transitions.go), so each sentence says where
+ * the write itself goes, or, for a write that goes nowhere, which comment would tell a picked
+ * agent or role, or that nothing would. A suggestion's replacement box does not say that a pick
+ * links. Until someone accepts the suggestion, its card shows the replacement as the characters
+ * written, with no link and no name drawn over a reference (the reading list's
+ * `margin-suggestion-diff`), so the box says that instead.
  *
  * - a message reply goes to the target of its thread, and to whoever wrote the message it
  *   answers (`createStoredMessage`, and the outbox's `addAuthorRoutes`);
@@ -196,13 +199,18 @@ export const DISPATCH_WRITING_HINT_QUIET = {
   suggestion: `${DOORS} Until someone accepts the suggestion, the replacement shows the characters you write. Nobody you pick is told. A pick in the Reason box tells an agent or a role.`,
 } as const satisfies Partial<Record<DispatchWriting, string>>;
 
-/** What the ask card's one box says, since the reader chooses there which write it makes: an
- *  answer reaches whoever asked and tells nobody it names, while a question back is a comment,
- *  which tells what a delivering box's line says it tells (`DISPATCH_WRITING_HINT_DELIVERED`): a
- *  picked agent or role while a session holds it, never a role that is not running, which still
- *  gets a link, and never a person. Both of that box's rows carry it, since the box shows one
- *  line for the two. */
-export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever asked and tells nobody you pick. Ask back to tell a picked agent or role while a session holds it. A role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
+/** What the ask card's one box says, since the reader chooses there which write it makes. Both
+ *  writes tell a picked agent or role, by two rules. An answer goes to whoever asked and to each
+ *  agent and role its text names (`answerPartiesOf` in the Go API's ask_transitions.go), and a
+ *  role nobody holds is not refused: the outbox keeps the answer for the role, and a session that
+ *  claims the role within three hours is handed it (`maxRoleKeeps` in outbox/role_expiry.go, of
+ *  the listener's one-hour `roleKeepWindow`), after which it is recorded undelivered. A question
+ *  back is a comment, which tells what a delivering box's line says it tells
+ *  (`DISPATCH_WRITING_HINT_DELIVERED`): a picked agent or role while a session holds it, never a
+ *  role that is not running, which still gets a link, and never a person. A person is told by
+ *  neither, and their reference shows as their name with no link. Both of that box's rows carry
+ *  this line, since the box shows one line for the two. */
+export const DISPATCH_WRITING_HINT_ASK = `${DOORS} An answer goes to whoever asked and to each agent or role you pick. A picked role that is not running gets the answer if a session claims the role within three hours. Ask back tells a picked agent or role while a session holds it, so a role that is not running gets a link and is not told. A picked person shows as a name without a link and is not told.`;
 
 /** Why the delivery settings boxes have no picker. */
 const SETTINGS_REASON =
@@ -213,10 +221,12 @@ const QUIET_WORDS: Partial<Record<DispatchWriting, string>> = DISPATCH_WRITING_H
 
 /**
  * The line under a box, from what its write does: none where there is no picker; the ask card's
- * one line for its two writes, since the reader chooses there which one they make; the line of a
- * write that tells a picked agent or role; and otherwise the words of the write that tells nobody
- * it names, which say what does. A covered write that tells nobody and has no words of its own
- * is a mistake in this list, so it throws rather than leaving the box with no words.
+ * one line for its two writes, since the reader chooses there which one they make, and both
+ * deliver but treat a role nobody holds apart, so the comment's line alone is not true of the
+ * box; the line of any other write that tells a picked agent or role; and otherwise the words of
+ * the write that tells nobody it names, which say what does. A covered write that tells nobody
+ * and has no words of its own is a mistake in this list, so it throws rather than leaving the box
+ * with no words.
  */
 function writingHint(row: Omit<DispatchWritingBoxRow, "hint">): string {
   if (!row.covered) return "";
@@ -488,11 +498,12 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     write: "ask",
   },
   // The ask card's one box, which the Inbox and a document's decision block both draw: an
-  // answer goes to whoever asked, and a question back is a comment on the ask.
+  // answer goes to whoever asked and to each agent and role it names, and a question back is a
+  // comment on the ask.
   {
     box: "ask-answer",
     covered: true,
-    delivers: false,
+    delivers: true,
     files: ["packages/dispatch/web/src/features/inbox/AskCard.tsx"],
     issueRows: true,
     reach: "[data-ask-answer]",
@@ -510,8 +521,8 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
   // The note on declining to answer, which the ask card's own Decline to answer opens and
   // which is the person's to leave empty. It is written onto the ask's resolution, where the
   // asking agent reads it beside the sentences Dispatch writes there; the decline route
-  // resolves no party out of it, as only the comment route does, so a party picked here is a
-  // reference for a reader and nobody is told.
+  // resolves no party out of it, which only the comment route and the answer route do, so a
+  // party picked here is a reference for a reader and nobody is told.
   {
     box: "ask-decline-note",
     covered: true,

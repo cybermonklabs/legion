@@ -46,7 +46,8 @@ const ON_PAGE = {
  *
  * A picked session is a reference written in the draft's text. The comment that Ask back and
  * Reply post carries it to the server, and the server delivers the comment to that session. An
- * answer keeps the reference as a link in its text and delivers to nobody it names.
+ * answer keeps the reference as a link in its text, and the server sends the answer to that
+ * session too, beside whoever asked.
  */
 export function AskAnswerArea<Name extends string, UploadDraft>({
   actions,

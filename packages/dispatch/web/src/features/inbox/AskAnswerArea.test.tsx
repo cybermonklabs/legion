@@ -193,8 +193,10 @@ test("Ask back posts the picked session as a mention, and Answer sends a draft t
     await waitFor(() => expect(posted).toHaveLength(1));
     expect(posted[0]).toEqual({ ask_id: "ask-1", body: `Ask ${PLANNER_MENTION}` });
 
-    // The answer keeps the picked session as the reference in its text.
+    // The answer keeps the picked session as the reference in its text, and the box lists the
+    // session it names, since an answer goes to each agent and role its text names.
     await pickPlanner(view, field, "Over to ");
+    expect(view.getByRole("list", { name: "Mention targets" }).textContent).toContain("session:A");
     await userEvent.setup().click(view.getByRole("button", { name: "Answer" }));
     await waitFor(() =>
       expect(answered).toEqual([
@@ -346,6 +348,55 @@ test("an empty answer area refuses Answer and Ask back, sends nothing, and keeps
     }
     expect(answered).toEqual([]);
     expect(posted).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The draft belongs to the ask, not to the card showing it, so a mention picked in one card
+// stands in the other's draft - the one way "Answer with it anyway" is offered over a draft that
+// holds a mention, since picking one in the card that offered the choice takes the choice away.
+// An answer goes to each agent and role its text names, so the choice sends that draft, the
+// reference in its text.
+test("Answer with it anyway sends a draft another card put a mention in", async () => {
+  const input = ask();
+  const answered: unknown[] = [];
+  const view = renderWithClient(
+    <>
+      <AskCard
+        answerAsk={async (_id, answerInput) => {
+          answered.push(answerInput);
+          return input;
+        }}
+        ask={input}
+        getAskThread={async () => thread(input)}
+      />
+      <AskCard ask={input} getAskThread={async () => thread(input)} />
+    </>
+  );
+
+  try {
+    const fields = (await view.findAllByLabelText("Your answer")) as HTMLTextAreaElement[];
+    const [asking, other] = fields;
+    if (asking === undefined || other === undefined) throw new Error("expected two answer boxes");
+    const user = userEvent.setup();
+    await user.click(asking);
+    await user.paste("How does this fit the release plan?");
+    await user.click(view.getAllByRole("button", { name: "Answer" })[0] as HTMLElement);
+    const choice = await view.findByRole("group", { name: "Question-shaped answer" });
+    const anyway = within(choice).getByRole("button", { name: "Answer with it anyway" });
+
+    await pickPlanner(view, other, "How does this fit the release plan? ");
+    await user.click(anyway);
+    await waitFor(() =>
+      expect(answered).toEqual([
+        {
+          expected_edited_at: null,
+          selected: [],
+          text: `How does this fit the release plan? ${PLANNER_MENTION}`,
+        },
+      ])
+    );
   } finally {
     view.unmount();
   }
