@@ -676,9 +676,9 @@ export const STATE_LINES = joinWords("STATE_LINES", {
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
- * R22). The page's other answers are tables of their own -
- * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
- * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
+ * R22). The page's other answers are tables of their own - `BLOCKED_BY_REFUSALS` here, `HELP_LINES`
+ * and `KEY_REPORTS` in `page-structure.ts`, `ADDRESS_FALLBACK_WORDS` in `page-words-l.ts` - and
+ * `ANSWER_SOURCES` gathers all five, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
  */
 export const ANSWER_LINES = joinWords("ANSWER_LINES", {
@@ -847,8 +847,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   also_under: "Also under",
   /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
    *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). It is also
-   *  the focused open question's control that answers it, which sets the line at the foot of the
-   *  outline to answer it (R16, the prototype's `.acts`), as `a` does. */
+   *  the focused open question's control that sets the writer's answer to it, as `a` does (R16,
+   *  the prototype's `.acts`); nothing sends that answer yet (`OutlineWriter.answer`). */
   answer: "Answer",
   /** What the line at the foot of the outline says of the open question it answers, before the
    *  question's own first line (the prototype's `.tgt.ans`). */
@@ -875,8 +875,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   approval_version_of: "of",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
-  /** Changes the reader's own answer to a question, on its focused row: the line at the foot of
-   *  the outline answers it again over that answer (the old conversation's ask card's control). */
+  /** Changes the reader's own answer to a question, on its focused row: sets the writer's answer
+   *  to a change of it (`OutlineWriter.answer`; the old conversation's ask card's control). */
   change_answer: "Change answer",
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
    *  composer below, whose comment is anchored to the decision's own words. */
@@ -1230,6 +1230,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  program: "program",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
@@ -1237,6 +1238,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
+  subject: "subject",
   surface: "surface",
   title: "title",
   urgency: "urgency",

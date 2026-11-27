@@ -68,7 +68,12 @@
 #      as one read through an output does,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
 #      or in a workflow it calls, where the filter is the one the resolved condition names, or
-#      the one it reads out of the list,
+#      the one it reads out of the list. A term that tests an output for not being 'true'
+#      (`needs.changes.outputs.<x> != 'true'`) gates on no filter: it holds the job back where
+#      <x> selected its own job, as dispatch-references' holds the preview off a run whose full
+#      lane runs (.github/ci-notes/ci.md#the-reference-rows-preview-job), and reads none of <x>'s
+#      paths; the same rule refuses one whose <x> is no output of the changes job, since
+#      needs.changes.outputs.<x> is then empty on every run and the term always holds,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
@@ -467,16 +472,20 @@
 # file when this check was written.
 #
 # Two kinds of go command run under this machine's own module cache instead. One is `go env
-# GOROOT`, which resolves the toolchain (below) and writes nothing. The other is
-# .github/scripts/go_build_tags.py's: ci_job_reads.py runs its tag_sets as it is imported, to give
-# each darwin vet step one Run per tag set, and rule 20 runs its platforms. Its `go list -find`
-# still resolves every import, so under the machine's GOPROXY it fetched every module a cold
-# runner's cache lacks, about half of the changes job's generation, and in a workspace wrote into
-# go.work.sum the checksum of each go.mod the committed files lacked (packages/envoy/infra/
-# go.work.sum lacked two). It runs with GOPROXY=off, so it fetches nothing. A run of any mode that
-# changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS workflows, and
-# generate's output and the .inputs file beside it, below), still fails naming each: for a
-# go.work.sum, commit what the run wrote. The tree is read before the first go
+# GOROOT`, which resolves the toolchain (below) and writes nothing. The other is a `go list -find`
+# that two scripts run, .github/scripts/go_build_tags.py and .github/scripts/go_legs.py:
+# ci_job_reads.py runs go_build_tags' tag_sets and compiled as it is imported, to give each
+# darwin vet step one Run per tag set and to read which test files a runner compiles, and
+# go_legs' go_packages, to hold the legs and name a package no legs line names in the plain gates'
+# Runs; rule 20 runs go_build_tags' platforms. A `go list -find` still resolves every import, so
+# under the machine's GOPROXY it fetched every module a cold runner's cache lacks, about half of
+# the changes job's generation, and in a workspace wrote into go.work.sum the checksum of each
+# go.mod the committed files lacked (packages/envoy/infra/go.work.sum lacked two). Each runs with
+# GOPROXY=off (go_legs' listing and declared_tests' calls of compiled with GOFLAGS empty too), so
+# it fetches nothing. A run of any mode that changes a file of the tree, but those its mode writes
+# (the PUSH_WORKFLOWS workflows, and generate's output and the .inputs file beside it, below),
+# still fails naming each: for a go.work.sum, commit what the run wrote. The tree is read before
+# the first go
 # command and after the last: each file git lists, tracked or untracked and not ignored (the files
 # the engine reads), by its bytes and execute bit, read off the file rather than taken as unchanged
 # because git says so (an assume-unchanged mark, a normalized line ending), so a file edited before

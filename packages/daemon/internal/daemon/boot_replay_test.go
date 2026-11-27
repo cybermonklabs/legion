@@ -399,7 +399,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		}
 	}()
 
-	startDaemonWithin(t, cfg, o, quietLogger(), 60*time.Second)
+	startDaemonLogging(t, cfg, o, quietLogger())
 
 	var conns []net.Conn
 	t.Cleanup(func() {

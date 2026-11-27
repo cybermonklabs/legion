@@ -185,6 +185,11 @@ func (s carryState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervis
 	return state, nil, err
 }
 
+func (s carryState) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: record.NewStore(), Project: testProject, Steps: s.steps, Now: fixedNow})
+	return observed, nil, err
+}
+
 // childServedSpec is the child's spec step as GET /legion/v1/state serves it under steps: the route
 // the `legion` tool's read_record reads an issue's record from, over the state the projection
 // builds from the store.

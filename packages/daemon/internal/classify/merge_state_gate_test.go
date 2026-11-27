@@ -46,6 +46,7 @@ func TestTheMergeStateReadGateAsksForEachReasonAlone(t *testing.T) {
 		{"a head move in admitted", in(phase.Admitted), phase.Order, MergeStateFactHeadMove, false},
 		{"a head move in a planning after the implementer", in(phase.Planning), plannedAfter, MergeStateFactHeadMove, true},
 		{"a head move of an issue held from a planning after the implementer", heldFrom(phase.Planning), plannedAfter, MergeStateFactHeadMove, true},
+		{"a head move in testing on a line with no tester", in(phase.Testing), plannedAfter, MergeStateFactHeadMove, false},
 
 		{"a base push in planning", in(phase.Planning), phase.Order, MergeStateFactBasePush, false},
 		{"a base push in implementing", in(phase.Implementing), phase.Order, MergeStateFactBasePush, false},
@@ -58,6 +59,7 @@ func TestTheMergeStateReadGateAsksForEachReasonAlone(t *testing.T) {
 		{"a base push of an issue held from accepting", heldFrom(phase.Accepting), phase.Order, MergeStateFactBasePush, true},
 		{"a base push in a planning after the implementer", in(phase.Planning), plannedAfter, MergeStateFactBasePush, true},
 		{"a base push in implementing before a planner", in(phase.Implementing), plannedAfter, MergeStateFactBasePush, false},
+		{"a base push in testing on a line with no tester", in(phase.Testing), plannedAfter, MergeStateFactBasePush, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := MergeStateReadOwed(tc.issue, tc.line, tc.fact); got != tc.want {

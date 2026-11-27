@@ -1429,9 +1429,8 @@ func TestHeldRowsListsLifecycleRowsBehindTheirIssuesRunningOne(t *testing.T) {
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload, at time.Time) int64 {
 		row, err := NewOutboxRow(issue, payload, at)
 		must(t, err)
-		must(t, records.Enqueue(ctx, tx, row))
-		var id int64
-		must(t, tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id))
+		id, err := records.EnqueueID(ctx, tx, row)
+		must(t, err)
 		return id
 	}
 	lease := func(tx pgx.Tx, id int64) {
@@ -1690,9 +1689,8 @@ func TestADueLifecycleRowWaitsWhileItsIssuesLifecycleRowRuns(t *testing.T) {
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) int64 {
 		row, err := NewOutboxRow(issue, payload, now)
 		must(t, err)
-		must(t, records.Enqueue(ctx, tx, row))
-		var id int64
-		must(t, tx.QueryRow(ctx, "select max(id) from outbox").Scan(&id))
+		id, err := records.EnqueueID(ctx, tx, row)
+		must(t, err)
 		return id
 	}
 	due := func(tx pgx.Tx, issue string, kinds []OutboxKind) []string {
@@ -2238,6 +2236,61 @@ func TestAStartWaitsForItsIssuesBranch(t *testing.T) {
 	}
 }
 
+// A start of an issue's role waits while an older issue_release row of the issue is in the
+// outbox, so no role starts in the pod the release's teardown is about to take: a wake taken after
+// the release recorded its role starts that role in the pod that comes back. Nothing else waits
+// on the teardown: a start queued before it, the release's own role stop (a supervise row of op
+// `release`), a suspend of the same issue, a row of another kind and another issue's start are
+// each due.
+func TestAStartWaitsForItsIssuesReleaseTeardown(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
+		row, err := NewOutboxRow(issue, payload, now)
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, row))
+	}
+	start := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1}
+	inTx(t, st, func(tx pgx.Tx) {
+		enqueue(tx, "LEGION-208", start)
+		enqueue(tx, "LEGION-208", SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1})
+		enqueue(tx, "LEGION-208", IssueRelease{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1})
+		enqueue(tx, "LEGION-208", start)
+		enqueue(tx, "LEGION-208", SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1})
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("testing", "in_progress", ""))
+		enqueue(tx, "LEGION-209", SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleArchitect, Generation: 1})
+	})
+	// claimed is every row due at at, in claim order, each claimed and finished before the next is
+	// claimed, as a lane runs its rows.
+	claimed := func(at time.Time) []string {
+		var keys []string
+		inTx(t, st, func(tx pgx.Tx) {
+			rows, err := records.DueRows(ctx, tx, "LEGION", "", nil, at)
+			must(t, err)
+			keys = outboxKeys(rows)
+			for _, row := range rows {
+				leased, ok, err := records.ClaimRow(ctx, tx, row.ID, at, time.Minute)
+				must(t, err)
+				if !ok {
+					t.Fatalf("row %d was listed due but not claimed", row.ID)
+				}
+				must(t, records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken))
+			}
+		})
+		return keys
+	}
+
+	if got, want := claimed(now), []string{"supervise:LEGION-208:start", "supervise:LEGION-208:release", "issue_release:LEGION-208",
+		"supervise:LEGION-208:suspend", "dispatch_status:LEGION-208:testing", "supervise:LEGION-209:start"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claimed with the teardown in the outbox = %v, want %v", got, want)
+	}
+	if got, want := claimed(now.Add(2*time.Minute)), []string{"supervise:LEGION-208:start"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("claimed once the teardown finished = %v, want the start that waited for it alone", got)
+	}
+}
+
 // A status write the outbox failed and pushed back is still unwritten, so it stays listed through its
 // backoff; a finished one is deleted and gone, and a row of another kind is never listed. The list
 // runs oldest first, the order an issue's statuses run in, so a newer write queued behind a
@@ -2379,7 +2432,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
-			"members_owed", "priority"},
+			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "earlier_givers"},
@@ -2394,7 +2447,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
-		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause", "state_seq", "state_at", "state_tx"},
 		"intake_failures": {"id", "project", "consumer", "subject", "stream_seq", "stored_at", "headers", "payload", "event_source", "event_id",
 			"first_failed_at", "updated_at", "deliveries", "ended_delivery", "last_error", "given_up_at", "give_up_reason", "notice_id",
 			"replay_claimed_at", "closed_at", "closed_how", "closed_by", "discarded_at", "discarded_by", "discard_reason"},

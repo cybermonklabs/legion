@@ -184,9 +184,33 @@ func (rig *sessionConsumerRig) startSeq(t *testing.T, sessionID string) uint64 {
 	return info.Config.OptStartSeq
 }
 
-// awaitPending waits until sessionID's consumer has want messages pending, and fails the test
-// when it does not within 2 s.
+// awaitPending waits until sessionID's consumer has want messages pending (awaitCount). Pending is
+// what the consumer has not delivered yet (NumPending), not what it delivered and no one acked
+// (NumAckPending): a message delivered into a pull is no longer pending, so the failure names both.
 func (rig *sessionConsumerRig) awaitPending(t *testing.T, sessionID string, want uint64) {
+	t.Helper()
+	rig.awaitCount(t, sessionID, want, false)
+}
+
+// awaitHeld waits until sessionID's consumer holds want messages, pending or delivered and not
+// acked (NumPending plus NumAckPending; awaitCount). A row that asks whether a message it stored
+// is the consumer's to deliver reads this, not the pending count, when a pull of that consumer
+// may still stand at the server: a relay restart answers with a pull whose request stands there
+// until its expiry (30 s), and ending it with Stop only queues the unsubscribe on the
+// session-consumer connection, so a message stored over another connection before that
+// unsubscribe arrives is delivered into the request. Delivered there, it is still the consumer's;
+// a message outside the consumer's filter is neither pending nor delivered, whatever pull stands.
+func (rig *sessionConsumerRig) awaitHeld(t *testing.T, sessionID string, want uint64) {
+	t.Helper()
+	rig.awaitCount(t, sessionID, want, true)
+}
+
+// awaitCount is the one wait of awaitPending and awaitHeld: it reads sessionID's consumer every
+// 20 ms, a gap no verdict reads, until its count is want, and fails the test naming both counts
+// when that has not come by listenerWaitBound, the package's bound of a wait for a fact the
+// server reports. The count is the pending one, plus the delivered and not acked one where
+// withDelivered is set.
+func (rig *sessionConsumerRig) awaitCount(t *testing.T, sessionID string, want uint64, withDelivered bool) {
 	t.Helper()
 	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
@@ -194,12 +218,20 @@ func (rig *sessionConsumerRig) awaitPending(t *testing.T, sessionID string, want
 		if err != nil {
 			t.Fatalf("read the consumer of %s: %v", sessionID, err)
 		}
-		if info.NumPending == want {
+		count := info.NumPending
+		if withDelivered {
+			count += uint64(info.NumAckPending)
+		}
+		if count == want {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the consumer of %s has %d messages pending, want %d (start %d, delivered %d, filters %v)",
-				sessionID, info.NumPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.Config.FilterSubjects)
+			if withDelivered {
+				t.Fatalf("the consumer of %s holds %d messages (%d pending, %d delivered and not acked), want %d (start %d, delivered %d, filters %v)",
+					sessionID, count, info.NumPending, info.NumAckPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.Config.FilterSubjects)
+			}
+			t.Fatalf("the consumer of %s has %d messages pending, want %d (start %d, delivered %d, delivered and not acked %d, filters %v)",
+				sessionID, info.NumPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.NumAckPending, info.Config.FilterSubjects)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -753,14 +785,17 @@ func TestVersionAtLeastComparesEachPartAsANumber(t *testing.T) {
 }
 
 // A session that receives nothing reads why in its own transcript, from this refusal, so the
-// refusal has to say what that session's own client must do. A build older than consumer delivery,
-// another client, or one that names its build vaguely is told the release to upgrade to and what
-// it registered as; a pi-envoy at or above that release is told the truth about itself instead,
-// since it asks for a consumer whenever its relay subject is open and that subject was not open -
-// telling it to upgrade to a release it already runs would name the wrong cause.
+// refusal has to say what that session's own client must do. A pi-envoy older than consumer
+// delivery, or one whose build this listener cannot date, is told the release to update to; any
+// other client is told to send the field. Each answer names what the client registered as. A
+// pi-envoy at or above that release is never refused for want of the field: it is given a consumer
+// as if it had asked (TestANewOldPluginSessionRegistersAfterAFailedFirstPass).
 func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
 	t.Parallel()
-	const upgrade = "upgrade to @sjawhar/pi-envoy 14.1.0 or later"
+	const (
+		update = "update @sjawhar/pi-envoy to 14.1.0 or later"
+		field  = "update this client to a build that sends that field"
+	)
 	for _, c := range []struct {
 		name      string
 		sessionID string
@@ -772,63 +807,46 @@ func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
 			name:      "a pi-envoy older than consumer delivery",
 			sessionID: "ses_old_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.0.0"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy 14.0.0"},
+			want:      []string{update, "@sjawhar/pi-envoy 14.0.0"},
+			unwanted:  field,
 		},
 		{
 			// 8 sorts above 14 as text, so a comparison made part by part as strings would call
-			// this release current and tell a session on a two-year-old plugin that its relay
-			// subject is closed. The tag pi-envoy-v8.14.1 exists.
+			// this release current and give a session on a two-year-old plugin a consumer it
+			// reads no frame of. The tag pi-envoy-v8.14.1 exists.
 			name:      "a released pi-envoy whose major sorts above the floor as text",
 			sessionID: "ses_text_sorted_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"8.14.1"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy 8.14.1"},
-		},
-		{
-			// A prerelease of the floor carries the floor's behaviour, so its suffix is left out
-			// of the comparison rather than making the build undatable.
-			name:      "a prerelease of the release that asks for one",
-			sessionID: "ses_prerelease_plugin",
-			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.1.0-rc.1"`,
-			want:      []string{"@sjawhar/pi-envoy 14.1.0-rc.1 asks for a consumer only while its relay subject is open"},
-			unwanted:  upgrade,
-		},
-		{
-			name:      "a pi-envoy at the release that asks for one",
-			sessionID: "ses_floor_plugin",
-			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.1.0"`,
-			want:      []string{"@sjawhar/pi-envoy 14.1.0 asks for a consumer only while its relay subject is open"},
-			unwanted:  upgrade,
-		},
-		{
-			name:      "a pi-envoy newer than it",
-			sessionID: "ses_current_plugin",
-			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"16.5.0"`,
-			want:      []string{"@sjawhar/pi-envoy 16.5.0 asks for a consumer only while its relay subject is open", "next heartbeat"},
-			unwanted:  upgrade,
+			want:      []string{update, "@sjawhar/pi-envoy 8.14.1"},
+			unwanted:  field,
 		},
 		{
 			name:      "a pi-envoy whose build is no version at all",
 			sessionID: "ses_unparsed_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"source"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy source"},
-		},
-		{
-			name:      "another plugin at a bundle commit",
-			sessionID: "ses_other_plugin",
-			client:    `"plugin":"@sjawhar/claude-envoy","plugin_version":"68de3e90c155"`,
-			want:      []string{upgrade, "@sjawhar/claude-envoy 68de3e90c155"},
+			want:      []string{update, "@sjawhar/pi-envoy source"},
+			unwanted:  field,
 		},
 		{
 			name:      "a client naming a package and no version",
 			sessionID: "ses_no_version",
 			client:    `"plugin":"@sjawhar/pi-envoy"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy, which names no version"},
+			want:      []string{update, "@sjawhar/pi-envoy, which names no version"},
+			unwanted:  field,
+		},
+		{
+			name:      "another plugin at a bundle commit",
+			sessionID: "ses_other_plugin",
+			client:    `"plugin":"@sjawhar/claude-envoy","plugin_version":"68de3e90c155"`,
+			want:      []string{field, "@sjawhar/claude-envoy 68de3e90c155", "an Oh My Pi session needs @sjawhar/pi-envoy 14.1.0 or later"},
+			unwanted:  update,
 		},
 		{
 			name:      "a client naming a version and no package",
 			sessionID: "ses_no_package",
 			client:    `"plugin_version":"16.5.0"`,
-			want:      []string{upgrade, "a client naming version 16.5.0 and no package"},
+			want:      []string{field, "a client naming version 16.5.0 and no package"},
+			unwanted:  update,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -842,8 +860,8 @@ func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
 					t.Fatalf("refusal %q names no %q", refusal.Error, want)
 				}
 			}
-			if c.unwanted != "" && strings.Contains(refusal.Error, c.unwanted) {
-				t.Fatalf("refusal %q names %q, which this client already runs", refusal.Error, c.unwanted)
+			if strings.Contains(refusal.Error, c.unwanted) {
+				t.Fatalf("refusal %q names %q, which is another client's remedy", refusal.Error, c.unwanted)
 			}
 			rig.requireNothingWritten(t, c.sessionID)
 		})
@@ -924,6 +942,7 @@ func TestSessionConsumerRegistrationTellsTheRelayWhenTheEpochChanges(t *testing.
 // apply starts on the entry's change. The edge side, where the resume does fire, is
 // TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission.
 func TestAHubRoleClaimSendsNoRelayResume(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	relay := &recordingRelay{}
 	rig.deps.consumers.relay = relay
@@ -1060,11 +1079,15 @@ func TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock(t *te
 // A relay restart that begins while a registration is between its filter and its interest row
 // waits for that row: the registration holds the session's consumer lock from the one to the other
 // (registerPass), so the restart rebuilds the filter from the row the registration wrote and
-// never from the row it was about to replace. A restart in that window sets the filter back to a
-// row without the topic the registration is answered 200 for, and nothing restores the messages
-// published on that topic meanwhile: the registration's own write then matches its plan, so it
-// answers 200 and plans no further pass, the session entry's ConsumerHoldsStored reads the mark
-// alone, and the session's next heartbeat puts the topic back but not the messages.
+// never from the row it was about to replace. Without the lock, a restart in that window sets the
+// filter back to a row without the topic the registration is answered 200 for, and the
+// registration's own repair after its entry (confirmRegistered, which registerPass calls before
+// the registration answers) reads the newest row and sets the filter back to what that row
+// builds; in this rig a message stored on the topic while the filter lacked it is still the
+// consumer's once the filter holds the topic again. So the row passes while the lock or that
+// repair holds: it fails on a fault of the lock only when the repair is gone too, and then at
+// requireFilters, not at awaitHeld, which fails only on a message the consumer does not hold, such
+// as one stored outside its filter.
 func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing.T) {
 	t.Parallel()
 	// Unowned: this task relays nothing, so the restart below is the session's only one and the
@@ -1111,9 +1134,11 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 	<-restarted
 
 	requireFilters(t, rig.sessionConsumerRig, sessionID, followed)
-	// A message on the topic the restart would have dropped is the consumer's to deliver.
+	// A message on the topic the restart would have dropped is the consumer's to deliver. The
+	// restart's pull may still stand at the server and take it, so what is read is what the
+	// consumer holds, pending or delivered (awaitHeld), not its pending count.
 	rig.store(t, "notifications.dispatch.issue.ROWLOCK.comment")
-	rig.awaitPending(t, sessionID, 1)
+	rig.awaitHeld(t, sessionID, 1)
 }
 
 // subscribeExceptionLanes subscribes over core NATS to every exception lane, through conn.
@@ -1146,28 +1171,35 @@ func deliveredMetrics(t *testing.T, harness listenerDeliveryHarness) string {
 
 // A consumer-delivery session's stored messages wait in its consumer, so the durable path
 // acknowledges them with nothing pushed and nothing reported, on its agent subject and on a
-// followed topic alike. An entry the previous build left for a session on the core path, portless
-// and on no consumer, is unreachable: its stored message is reported as undeliverable, which is
-// the honest answer and shows the exception lanes are heard.
+// followed topic alike. On the agent subject the session's record alone decides: an entry the
+// previous build left for a session on the core path, portless and on no consumer, is a record
+// too, so its message is acknowledged the same way and reports nothing; the consumer the
+// session's next registration starts delivers it. The probe's own control is an exception this
+// test publishes on a lane it reads, so a silent probe is the listener's silence and not a deaf
+// probe's.
 func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	exceptions := subscribeExceptionLanes(t, rig.harness.client.Conn)
+	control := listenerTestEnvelope("notifications.dispatch.issue.R.control", "probe-control")
+	if err := publishDeliveryException(rig.harness.client, control, "delivery_failed", "ses_probe_control"); err != nil {
+		t.Fatalf("publish the probe's control exception: %v", err)
+	}
+	if _, err := exceptions.NextMsg(2 * time.Second); err != nil {
+		t.Fatalf("the exception lanes did not carry the probe's own control exception: %v", err)
+	}
 	if err := rig.harness.sessions.Put("ses_core_only", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("write the entry of a session the previous build left on the core path: %v", err)
 	}
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.LegacyAgentSubject("ses_core_only"), "core-only"))})
-	if _, err := exceptions.NextMsg(2 * time.Second); err != nil {
-		t.Fatalf("the unreachable session's message raised no exception: %v", err)
-	}
 
 	rig.subscribe(t, `{"session_id":"ses_relayed","topics":["notifications.dispatch.issue.R.>"],"delivery":{"consumer":true,"epoch":"e"}}`)
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.LegacyAgentSubject("ses_relayed"), "relayed-agent"))})
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope("notifications.dispatch.issue.R.comment", "relayed-topic"))})
 
 	requireNoException(t, exceptions, "a consumer-delivery session's message")
-	if body := deliveredMetrics(t, rig.harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 2`) {
-		t.Fatalf("delivery metrics %s, want two skipped", body)
+	if body := deliveredMetrics(t, rig.harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 3`) {
+		t.Fatalf("delivery metrics %s, want three skipped", body)
 	}
 }
 
@@ -1198,6 +1230,8 @@ func listenerGrantBeforeSessionConsumers() []string {
 // reports one as live. The grant is the negative control: the same registration on a hub that
 // carries session consumers is answered consumer (the tests above).
 func TestSessionConsumerWithoutTheGrantIsRefusedAndWritesNothing(t *testing.T) {
+	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
 	t.Setenv("NATS_NKEY_SEED", seed)
@@ -1297,6 +1331,7 @@ func fillConsumerLimit(t *testing.T, client *bus.Client, limit int) {
 // holds is answered consumer delivery after that refusal: the cap refuses creates alone, which is
 // why this refusal takes no listener-wide backoff as no_grant does.
 func TestSessionConsumerAtTheStreamsConsumerLimitIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	const limit = 8
 	url := testnats.URL(t)
 	cappedNotificationStream(t, url, limit)

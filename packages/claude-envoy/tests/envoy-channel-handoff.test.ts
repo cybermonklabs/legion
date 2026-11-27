@@ -743,7 +743,7 @@ test("a role claim that fails at startup still starts the session, and the next 
         claims += 1
         if (claims <= 2) throw new Error("listener unavailable")
         holder = input.sessionID
-        return { claimed: true, interest: noInterest() }
+        return { claimed: true, interest: noInterest(), warnings: [] }
       },
       getRole: async (role) => ({ role, holder, last_seen: 1, state: "live" }),
     }),
@@ -847,7 +847,7 @@ test("a heartbeat the chain holds while shutdown begins writes no role once it i
         },
         setRole: async (input) => {
           if (shutdownBegun) roleCallsAfterShutdown.push(`setRole ${input.role}`)
-          return { claimed: true, interest: noInterest() }
+          return { claimed: true, interest: noInterest(), warnings: [] }
         },
       }),
       heartbeatMs: 20,
@@ -891,7 +891,7 @@ test("a record already past the sweep's age survives a startup whose claim was r
       claims += 1
       if (claims === 1) throw new Error("listener unavailable")
       holder = input.sessionID
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     getRole: async (role) => ({ role, holder, last_seen: 1, state: "live" }),
   })
@@ -931,7 +931,7 @@ test("a listener answer that is not JSON at startup still starts the session, an
       claims += 1
       if (claims === 1) return JSON.parse("<html><body>502 Bad Gateway</body></html>")
       holder = input.sessionID
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     getRole: async (role) => ({ role, holder, last_seen: 1, state: "live" }),
   })
@@ -972,7 +972,7 @@ test("a role file whose bytes are not JSON starts the session without the role, 
     },
     setRole: async (input) => {
       holder = input.sessionID
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
     getRole: async (role) => ({ role, holder, last_seen: 1, state: "live" }),
   })

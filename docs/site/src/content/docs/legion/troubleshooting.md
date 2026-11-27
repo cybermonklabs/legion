@@ -25,14 +25,15 @@ legion config check --config legion.yaml
 | `bind 127.0.0.1 is not an address a pod can reach, …` (or the same for `daemon_url`, `envoy_url`, `dispatch_url`, a `nats_urls` entry, or `advertise_host`) | Every address handed to a pod must be one a pod reaches: the daemon host's own address, never loopback or `0.0.0.0` — except `bind`, which may be `0.0.0.0` once `advertise_host` names the stable address pods dial instead. |
 | `bind 127.0.0.1 is loopback, where no pod reaches the worker stream, whatever advertise_host names; …` | With `advertise_host` set, `bind` is where the daemon listens: `0.0.0.0`, or the daemon host's own address. |
 | `advertise_host must be an IP address or a DNS name, …` or `advertise_host is not used when runtime is tmux: …` | `advertise_host` is the host alone (no scheme, port, path or brackets), and only `runtime: kubernetes` reads it. |
-| `<key> must be an IP address or an ASCII DNS name; got "…\u212a…"` (for `advertise_host`, `bind`, an NFS volume's `server`, or the host of `daemon_url`, `envoy_url`, `dispatch_url`, a `nats_urls` entry or `agent_secrets.url`) | The host has a character outside ASCII, printed as a `\u` or `\U` escape. Write the name in ASCII letters, digits, hyphens and dots (an internationalized name in its `xn--` form). |
+| `<key> must be an IP address or an ASCII DNS name; got "…\u212a…"` (for the host of `daemon_url`, `envoy_url`, `dispatch_url`, a `nats_urls` entry or `agent_secrets.url`, when that URL holds no user name or password) | The host has a character outside ASCII, printed as a `\u` or `\U` escape. Write the name in ASCII letters, digits, hyphens and dots (an internationalized name in its `xn--` form). |
+| `<key> must be an IP address or an ASCII DNS name; it holds a character that is not ASCII` (for `advertise_host`, `bind` or an NFS volume's `server`; and for `daemon_url host`, `envoy_url host`, `dispatch_url host` or `nats_urls host` when that URL holds a user name or a password) | The value has a character outside ASCII; it is not printed, since a value written here whole can be a credential pasted in its place, and a URL's host can be a password's tail (a password holding an unencoded `@` leaves its tail where the host goes). Write the name in ASCII letters, digits, hyphens and dots (an internationalized name in its `xn--` form), and percent-encode a password's `@` (`%40`). |
 | `<key> is required when runtime is kubernetes: …` | Add the key; the message says why a pod needs it. |
 | `worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …` | Raise it to 9 or more. A role's stop gives its agent 5 s to exit, drains its output for 1 s and waits at least 3 s for the CodeGraph warm-up to release its lease on the issue volume; a smaller grace would let the pod kill the shim with the lease held, and the role's relaunch would skip its own build for a minute. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
 | `<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …` or `<LEGION_LEAK_CHECK_MANIFEST_SHA256 or leak_check.manifest_sha256> is set and the repository is not: …` | The deployment's shared leak check is two values, set together or not at all: the repository it is published from and the check's manifest digest, one sha256 over every file it runs from ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). Set the half the message names, in the daemon's environment or in `legion.yaml`; or unset the half that is set, and the daemon runs no shared leak check. |
 | `connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec` | `postgres_dsn` sets `default_query_exec_mode` to `exec` or `simple_protocol`, in which pgx sends each value with no parameter type, so the store cannot apply its text rule to what it writes. Remove `default_query_exec_mode` from the DSN, or set another mode: `cache_statement` (pgx's default), `cache_describe` or `describe_exec`. |
-| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": the daemon takes each issue's repository from Dispatch …` is one: set the issue's repository, or the project's default repository, in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
+| `unknown key <key>` (or `unknown key at line <n> under <mapping>, whose name has no key's shape (…)`) | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": the daemon takes each issue's repository from Dispatch …` is one: set the issue's repository, or the project's default repository, in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). A name outside the keys' grammar (lower-case letters, digits and `_`, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit), such as a token or a URL pasted where a key goes, is named by its line alone: open the file at that line. A typo holding a `-` or an upper-case letter is named by its line too. |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
 | `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
 | `worker_backends runs a role on claude, and boot is missing …` | Under tmux, give the daemon's environment what the message names: `LEGION_CLAUDE_PATH` and `LEGION_BUN_PATH` (or `claude` and `bun` on `PATH`), and `LEGION_CLAUDE_PLUGIN_DIR`, the absolute path of a built `packages/claude-envoy`. A Kubernetes daemon needs none of them: the worker image carries the plugin and Claude Code's pin, and each Claude role's pod installs the pinned Claude Code at launch, so `worker_backends` is accepted there with nothing else set. A launch whose install fails or does not verify fails, printing a `legion claude-code: …` line, so such a pod must reach the npm registry. |
@@ -384,32 +385,37 @@ Check, in order:
    legion state --config legion.yaml --json | jq .admission
    ```
 
-   `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
-   line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
-   counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
-   is in `blocked`, with each child it waits for. So is a parent in phase `awaiting_children`, whose
-   phases had started: it holds no slot, `held` names it `awaiting_children`, and it goes on by
-   itself once no child under it is open
+   `active` lists the issues holding a slot, roots and children alike.
+   `waiting` lists the issues in line, `trees` lists the roots of the live trees, `cap` is
+   `admission_cap` (which counts only holders that are not P0), `p0Holders` counts the holders
+   that are P0 outside `cap`, and `p0Bound` gives the P0 bound in force.
+   A P0 issue needs no free regular slot and starts outside `cap` while below any P0 bound.
+   A parent whose own first phase waits for its open children is in `blocked`, with each child it
+   waits for.
+   So is a parent in phase `awaiting_children`, whose phases had started: it holds no slot, `held`
+   names it `awaiting_children`, and it goes on by itself once no child under it is open
    ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
 
    Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
-   that placed it, its own, else its tree root's (0 for P0 to 3 for P3, or null for one that waits
-   after P3); `part`, `returned` for
-   an issue whose work came back or `starting` for one that has not started; `kind`;
-   `partPlace` and `partLength` within its priority and part; `holdsSlot`, true where it holds its
-   admission slot already and so waits for no free one; `since`, or the `rootRank`, `ownRank`
-   and `rootKey` that placed it; and `reason`, the daemon's own sentence. Plain `legion state`
-   prints that sentence for the first ten waiting issues under the `admission:` counts, each
-   line reading `<KEY> <place> of <N>, <part>: <reason>`, and then `and <N> more`. It prints
-   `waiting line: none` while nothing waits, and
-   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
-   this caller no sentence. The line is ordered by Dispatch priority first, P0 to P3 and then the
-   issues with no priority; within one priority, an issue that has not started stands behind every
-   issue whose work came back, whatever its board rank, so that order is no fault to chase. An
-   issue waits behind every issue of a higher priority, whatever its part: `waitingLine.priority`
-   is the priority it waits at, and `issues.<KEY>.priority` is its own, so a child whose own is
-   null waits at its tree root's. A priority changed in Dispatch moves the issue at the next
-   admission pass, and priority takes no slot back from work that runs.
+   that placed it (the priority Dispatch resolves for it, 0 for P0 to 3 for P3, or null for one
+   that waits after P3); `part`, `returned` for an issue whose work came back or `starting` for
+   one that has not started; `kind`; `partPlace` and `partLength` within its priority and part;
+   `holdsSlot`, true where it holds its admission slot already and so waits for no free one;
+   `since`, or the `rootRank`, `ownRank` and `rootKey` that placed it; and `reason`, the daemon's
+   own sentence. Plain `legion state` prints that sentence for the first ten waiting issues under
+   the `admission:` counts, each line reading `<KEY> <place> of <N>, <part>: <reason>`, and then
+   `and <N> more`. It prints `waiting line: none` while nothing waits, and `waiting line: the
+   daemon sent no reasons at this caller's contract` where the daemon served this caller no
+   sentence. The line is ordered by the priority Dispatch resolves first, P0 to P3 and then issues
+   with no priority. Within one priority, an issue that has not started stands behind every issue
+   whose work came back, whatever its board rank, so that order is no fault to chase. An issue
+   waits behind every issue of a higher priority, whatever its part. `waitingLine.priority` is the
+   priority it waits at, `issues.<KEY>.priority` is its own, and `issues.<KEY>.resolvedPriority`
+   is what Dispatch resolved (with `priorityFrom` naming the ancestor when inherited). With an
+   older Dispatch release that sends no `resolved_priority`, an issue waits at its own priority,
+   else its Legion root's, for the line alone, and that fallback never makes an issue P0. A priority
+   change in Dispatch moves the issue at the next admission pass, and priority takes no slot back
+   from work that runs.
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -976,8 +982,10 @@ nobody read whether a turn of it runs. A claim stored working that no process st
 refused
 `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again, because this command has
 no agent to ask; for the project's own controller claim, which `--fresh-session` refuses and
-whose keeper does nothing while it is stored working, it names
-`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
+whose keeper ends its turn only once that turn has stayed open longer than
+`controller_turn_bound_minutes` (90 by default, `0` off), it names
+`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`, which
+wait for no bound.
 A handoff Oh My Pi refused — one asked for in a turn, a session with nothing to hand off — or
 answered with no document, or with a result that is not an object (`Oh My Pi gave a handoff
 result that is not an object. The daemon cannot say if the session changed.`), is printed with
@@ -1844,7 +1852,7 @@ These arrive as messages on the Dispatch issue:
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
   on, quoting GitHub's own answer: wait for what GitHub waits for, merge again at the head it
   re-reads, fix in its merge of the base what the base's newer code breaks, send the issue back
-  only for a change to the change's own logic, or tell the architect what only a person can change. A pull
+  for a change to the change's own logic, or tell the architect what only a person can change. A pull
   request a person already merged needs nothing: the daemon reads that merge and closes the
   issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
   parked.
@@ -2030,6 +2038,17 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
   says the limit this deployment runs with and where the daemon prints it. A consumer that
   stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
+- **A wake held for a release.** An Envoy listener's wake report that comes while an idle release
+  of its pod runs waits on the wake consumer (`legion-go-<project>-wake`) until the release ends,
+  for at most 15 minutes after the report. It counts in that consumer's `waiting`. Every 30 s the
+  daemon applies it again and logs `an intake fact waits and is applied again after its delay` at
+  INFO, with `retry_in` and an `error` that names the issue, the role, when the release was marked
+  and the deadline. A report sent back to wait is not handled, so the consumer shows `stalled` after
+  60 s when no other wake report is handled in that time. Past 5 minutes it also shows in the
+  warning `intake: a durable consumer is behind its stream; …` with `delivered` above 1. Nothing
+  to do: it ends when the release ends. A report the release does not end for within 15 minutes is
+  dropped with the warning `wake: a wake that came during a release was dropped: the release did not
+  end within 15 minutes of the report`.
 - **`unavailable`** names what NATS did not answer in time, or refused; the rest of the state is
   served all the same. Every consumer is read at the same time, each within two seconds,
   so one consumer's read that does not answer leaves the others' as they are. `read the consumer's
@@ -2142,8 +2161,8 @@ stream sequence (`--consumer` with `--through-seq`, or `consumer` with `throughS
    of one record by its id answers `failed` with the error, and leaves the record as it was.
 3. **Have the cause removed.** A cause outside the daemon, such as the database out of reach, a
    Dispatch or GitHub outage, or GitHub's rate limit, needs no change to Legion: go on once it has
-   cleared. A defect in the daemon needs a fix that runs in the daemon: give the fix to the tree
-   that already works on that code, or hand the defect over as an issue for Legion. The controller
+   cleared. A defect in the daemon needs a fix that runs in the daemon:
+   hand the defect over as an issue for Legion. The controller
    hands over a clear defect as its skill says.
 4. **Replay once the fix runs in the daemon.** A replay applies the stored message through the
    handling a live delivery takes, and publishes nothing to the stream. It judges the fact against
@@ -2276,7 +2295,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   after failures, not a backlog: a retried event keeps the time it was first stored. It can also
   be a second delivery of one event, which raises `delivered` with no failure of its own ([a
   handling that outlives its window](#a-handling-that-outlives-its-window)); the line `an intake
-  fact was delivered again and dropped as already applied` is what names one.
+  fact was delivered again and dropped as already applied` is what names one. On the wake
+  consumer it can also be a wake report held for a release, which is expected
+  ([GitHub events wait](#github-events-wait)).
   Every event that consumer has not reached waits: on the GitHub consumer a pull request's opened
   or push, on the Dispatch consumer a status change. `legion state`'s `consumer` lines
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the

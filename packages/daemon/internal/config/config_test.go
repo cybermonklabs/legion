@@ -1,11 +1,14 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +165,17 @@ func writeConfigFile(t *testing.T, body string) string {
 	return path
 }
 
+// withNATSPassword is a nats_urls line holding before and then a URL at host whose user legion has
+// password, a made-up value, built here so that no source line holds a URL with a password.
+func withNATSPassword(password, host string, before ...string) string {
+	last := "nats://legion:" + password + "@" + host
+	quoted := make([]string, 0, len(before)+1)
+	for _, entry := range append(before, last) {
+		quoted = append(quoted, fmt.Sprintf("%q", entry))
+	}
+	return "nats_urls: [" + strings.Join(quoted, ", ") + "]\n"
+}
+
 func noEnv(string) string { return "" }
 
 func envMap(pairs map[string]string) func(string) string {
@@ -242,7 +256,11 @@ func defaultsFor(port int) Config {
 		WorkerBackground:     4 * time.Hour,
 		ReviewRoundCap:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
-		Hooks:                DefaultHooks(),
+		// The controller replacement bounds a file that names neither key runs on
+		// (dispatch://INFRA-2045 R2 and R3).
+		ControllerTurnBound:     90 * time.Minute,
+		ControllerSessionMaxAge: 72 * time.Hour,
+		Hooks:                   DefaultHooks(),
 		// The worker stall-watch numbers this daemon's own environment sets, which noEnv sets
 		// none of: the plugin's own defaults, which the backstop's floor is computed from.
 		StallLimits: StallLimits{CallGrace: StallCallGrace, Step: StallStep},
@@ -262,10 +280,50 @@ func TestLoadMinimalFileAppliesDefaults(t *testing.T) {
 // Stage 2 command paths only need the local daemon record. They keep loading until Task 3.12
 // wires the workflow's App and Dispatch clients, which is the first operation that needs them.
 func TestLoadAllowsStage2ConfigWithoutWorkflowKeys(t *testing.T) {
-	_, err := Load(writeConfigFile(t, "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"), noEnv)
+	_, err := Load(writeConfigFile(t, "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"), noEnv)
 
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+}
+
+// A `project` the contract takes for no Dispatch project key is refused when the settings load,
+// naming the key: eleven capitals, one past the ten the contract's PROJECT_KEY_PATTERN takes
+// (claim.ProjectKeyPattern), and a key in lower case. The refusal is the loader's, so it comes
+// before the boot opens or migrates its store or mints any credential: the file's postgres_dsn
+// points at a port nothing serves and its implement App's key is read by a command that leaves a
+// mark when it runs, and the load answers with the key's refusal and leaves no mark.
+func TestLoadRefusesAProjectKeyTheContractRefusesBeforeTheStoreOrAnyCredential(t *testing.T) {
+	for _, key := range []string{"INFRASTRUCT", "demo"} {
+		t.Run(key, func(t *testing.T) {
+			mark := filepath.Join(t.TempDir(), "minted")
+			body := strings.Replace(minimalFile, "project: DEMO\n", "project: "+key+"\n", 1)
+			body = strings.Replace(body, "postgres://legion@127.0.0.1:5432/legion", "postgres://legion@127.0.0.1:1/legion?connect_timeout=1", 1)
+			body = strings.Replace(body, "private_key: implement-test-key", fmt.Sprintf("private_key_command: %q", "touch "+mark+"; printf implement-test-key"), 1)
+			if body == minimalFile || !strings.Contains(body, "project: "+key+"\n") || !strings.Contains(body, "127.0.0.1:1/") || !strings.Contains(body, mark) {
+				t.Fatalf("the file is not the one this test means: %s", body)
+			}
+
+			_, err := Load(writeConfigFile(t, body), noEnv)
+
+			want := fmt.Sprintf("project %q is no Dispatch project key: it must match ^[A-Z][A-Z0-9]{1,9}$, a capital letter and then one to nine capital letters or digits", key)
+			if err == nil || err.Error() != want {
+				t.Fatalf("Load = %v, want %q", err, want)
+			}
+			if _, err := os.Stat(mark); !os.IsNotExist(err) {
+				t.Fatalf("the App key command ran before the key was refused (stat %s: %v)", mark, err)
+			}
+		})
+	}
+	// The same file with a key the contract takes loads, its App key command run, so the mark is
+	// what tells a refusal that came first from one that came after the command.
+	mark := filepath.Join(t.TempDir(), "minted")
+	body := strings.Replace(minimalFile, "private_key: implement-test-key", fmt.Sprintf("private_key_command: %q", "touch "+mark+"; printf implement-test-key"), 1)
+	if _, err := Load(writeConfigFile(t, body), noEnv); err != nil {
+		t.Fatalf("Load of DEMO = %v, want it loaded", err)
+	}
+	if _, err := os.Stat(mark); err != nil {
+		t.Fatalf("the App key command left no mark on a load that ran it: %v", err)
 	}
 }
 
@@ -857,6 +915,62 @@ func TestLoadRefusesAPrivateKeyCommandASignalEndedNamingTheSignal(t *testing.T) 
 	}
 }
 
+// A private_key_command's stderr is quoted by providerkeys.go's rule: a word of the command of 10
+// characters or more (here a made-up secretsd key name, which can be the key itself pasted in its
+// place) stands as `[a word of the command]`, and a stderr that still holds part of one, or a PEM
+// block's first line, is not quoted at all; the live lines it writes to the daemon's stderr keep the
+// same rule a line at a time.
+func TestAPrivateKeyCommandsStderrQuotesNoWordOfItOrAPrivateKey(t *testing.T) {
+	const name = "madeUp_App_Key_Name_0123456789"
+	for _, tc := range []struct{ name, command, want string }{
+		{"the name echoed whole", "echo \"no secret named " + name + "\" >&2; exit 3 # " + name,
+			"github_apps.implement.private_key_command failed (exit 3): no secret named [a word of the command]"},
+		{"the name echoed folded", "echo \"no secret named $(echo " + name + " | tr a-z A-Z)\" >&2; exit 3 # " + name,
+			"github_apps.implement.private_key_command failed (exit 3): its stderr (46 bytes) holds part of the command or a private key, so it is not printed"},
+		{"a private key on stderr", "printf '%s\\n' '-----BEGIN'' PRIVATE KEY-----' madeUpKeyBody0123456789 '-----END PRIVATE KEY-----' >&2; exit 1",
+			"github_apps.implement.private_key_command failed (exit 1): its stderr (77 bytes) holds part of the command or a private key, so it is not printed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(minimalFile, "private_key: implement-test-key", fmt.Sprintf("private_key_command: %q", tc.command), 1)
+			_, err := Load(writeConfigFile(t, body), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+			for _, secret := range []string{strings.ToLower(name), "madeUpKeyBody0123456789"} {
+				if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret[:10])) {
+					t.Fatalf("the refusal %q holds %q", err, secret[:10])
+				}
+			}
+		})
+	}
+	var live bytes.Buffer
+	lines := &keyCommandLines{out: &live, field: "github_apps.implement.private_key_command", words: keyCommandWords("agent-secrets " + name + " --value")}
+	_, _ = lines.Write([]byte("waiting for approval of " + name + " (request r-1)\n-----BEGIN" + " PRIVATE KEY-----\nmadeUpBody0123456789xyz\n-----END PRIVATE KEY-----\ngranted, unended"))
+	lines.flush()
+	withheld := func(n int) string {
+		return fmt.Sprintf("github_apps.implement.private_key_command: a line of its stderr (%d bytes) holds part of the command or a private key, so it is not printed\n", n)
+	}
+	if want := "waiting for approval of [a word of the command] (request r-1)\n" + withheld(27) + withheld(23) + withheld(25) +
+		"granted, unended\n"; live.String() != want {
+		t.Fatalf("the live lines = %q, want %q", live.String(), want)
+	}
+	// A key pasted in the command's place is the command's first word: the shell's refusal quotes
+	// it (`sh: 1: <key>: not found`), and the refusal and the live line show it as a word of the
+	// command. The key is a made-up base64 blob.
+	const pasted = "TWFkZVVwUGFzdGVkQXBwS2V5MDEyMzQ1Njc4OQ"
+	body := strings.Replace(minimalFile, "private_key: implement-test-key", "private_key_command: "+pasted, 1)
+	_, err := Load(writeConfigFile(t, body), noEnv)
+	if err == nil || !strings.Contains(err.Error(), "[a word of the command]: not found") || strings.Contains(err.Error(), pasted[:10]) {
+		t.Fatalf("Load error = %v, want the shell's refusal with the pasted key as a word of the command", err)
+	}
+	live.Reset()
+	pastedLines := &keyCommandLines{out: &live, field: "github_apps.implement.private_key_command", words: keyCommandWords(pasted)}
+	_, _ = pastedLines.Write([]byte("sh: 1: " + pasted + ": not found\n"))
+	if want := "sh: 1: [a word of the command]: not found\n"; live.String() != want {
+		t.Fatalf("the live line = %q, want %q", live.String(), want)
+	}
+}
+
 func TestLoadRefusesEveryStage3Key(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -913,7 +1027,15 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 		{
 			name: "projects key is invalid",
 			body: minimalFile + "projects: {demo: {}}\n",
-			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
+			want: `projects key "demo" must match ^[A-Z][A-Z0-9]{1,9}$`,
+		},
+		{
+			// The contract's project key is at most ten characters (claim.ProjectKeyPattern). Eleven
+			// capitals have no key's shape (keyShape), so the refusal names the key by its line and
+			// never by its text (unknownKeyAt), and still names the pattern.
+			name: "projects key is eleven characters",
+			body: minimalFile + "projects: {INFRASTRUCT: {}}\n",
+			want: "unknown key at line 18 under projects, whose name has no key's shape (" + keyShapeWords + "): a project's key must match ^[A-Z][A-Z0-9]{1,9}$",
 		},
 		{
 			// The daemon takes each issue's repository from Dispatch, so a file that still names a
@@ -954,7 +1076,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 		},
 		{
 			name: "github_apps is required for workflow configuration",
-			body: "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nprojects: {DEMO: {}}\n",
+			body: "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nprojects: {DEMO: {}}\n",
 			want: "github_apps is required",
 		},
 		{
@@ -1060,8 +1182,46 @@ func TestResolveGitHubAppsRefusesAgentTierPrivateKey(t *testing.T) {
 
 	_, err := ResolveGitHubApps(apps)
 
-	if want := "App private key AGENT_APP_KEY is readable by agent-tier callers; move it to a daemon-only store"; err == nil || err.Error() != want {
+	if want := "github_apps.implement.private_key_secret: the App private key it names is readable by agent-tier callers; move it to a daemon-only store"; err == nil || err.Error() != want {
 		t.Errorf("ResolveGitHubApps error = %v, want %q", err, want)
+	}
+}
+
+// An App key pasted where private_key_secret's name goes is named in no refusal of the secrets
+// path: the setting is named, and the key stands as keyNameShown, as provider_keys' does. Made up
+// of letters, digits and underscores it passes as a name. Rows: no secrets command on PATH, a
+// secrets command that fails echoing what it was asked for, and one whose status is not one.
+func TestAPrivateKeySecretRefusalNamesNoKey(t *testing.T) {
+	const pasted = "madeUp_appKey_pasted_0123456789Zz"
+	for name, tc := range map[string]struct{ script, want string }{
+		"no secrets command": {"",
+			"github_apps.implement.private_key_secret: the secrets command is not on PATH, so the secretsd key it names cannot be read"},
+		"a failing secrets command that echoes the name": {"#!/bin/sh\necho \"no secret named $2\" >&2\nexit 3\n",
+			"github_apps.implement.private_key_secret: secrets get [the key name] --no-request failed (exit 3): no secret named [the key name]"},
+		"a status that is not one": {"#!/bin/sh\necho \"$2\"\n",
+			`github_apps.implement.private_key_secret: secrets get [the key name] --no-request printed an unparsable status (expected {"key","tier"})`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.script != "" {
+				if err := os.WriteFile(filepath.Join(dir, "secrets"), []byte(tc.script), 0o755); err != nil {
+					t.Fatalf("write fake secrets: %v", err)
+				}
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+"/usr/bin:/bin")
+			_, err := ResolveGitHubApps(GitHubApps{
+				Implement: GitHubApp{AppID: "1", PrivateKeySecret: pasted},
+				Review:    GitHubApp{AppID: "2", PrivateKey: "review-key"},
+			})
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("ResolveGitHubApps error = %v, want %q", err, tc.want)
+			}
+			for i := 0; i+10 <= len(pasted); i++ {
+				if strings.Contains(err.Error(), pasted[i:i+10]) {
+					t.Fatalf("the refusal %q holds %q of the pasted key", err, pasted[i:i+10])
+				}
+			}
+		})
 	}
 }
 
@@ -1099,6 +1259,77 @@ func TestEndpointURLKeepsAPath(t *testing.T) {
 	}
 }
 
+// The nats_urls lists the unquoted-item, mixing and address rules leave alone load: a quoted item,
+// tagged or not, and a block list carrying a user name (neither is split at a comma), an all-ws and
+// an all-nats list, the quoted password a withNATSPassword row writes, and a bracketed IPv6 address
+// with a port beside a host that names none.
+func TestNatsURLsThatLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		want       []string
+	}{
+		{"a quoted item with a user name", `nats_urls: ["nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"]` + "\n",
+			[]string{"nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"}},
+		{"a block list with a user name", "nats_urls:\n  - nats://127.0.0.1:4222\n  - nats://madeUpNatsUser@127.0.0.1:4223\n",
+			[]string{"nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"}},
+		{"an all-ws list", "nats_urls: [ws://127.0.0.1:8080, wss://127.0.0.1:8443]\n", []string{"ws://127.0.0.1:8080", "wss://127.0.0.1:8443"}},
+		{"an all-nats list", "nats_urls: [nats://127.0.0.1:4222, tls://127.0.0.1:4223]\n", []string{"nats://127.0.0.1:4222", "tls://127.0.0.1:4223"}},
+		{"a quoted password", withNATSPassword("madeUpNatsPassword", "127.0.0.1:4222"), []string{"nats://legion:madeUpNatsPassword" + "@127.0.0.1:4222"}},
+		{"a tagged quoted item with a user name", `nats_urls: ["nats://127.0.0.1:4222", !!str "nats://madeUpNatsUser@127.0.0.1:4223"]` + "\n",
+			[]string{"nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"}},
+		{"a bracketed IPv6 address and a host with no port", `nats_urls: ["nats://[::1]:4222", "nats://127.0.0.1"]` + "\n",
+			[]string{"nats://[::1]:4222", "nats://127.0.0.1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeConfigFile(t, strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n", tc.line, 1)), noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !slices.Equal(cfg.NatsURLs, tc.want) {
+				t.Fatalf("NatsURLs = %q, want %q", cfg.NatsURLs, tc.want)
+			}
+		})
+	}
+}
+
+// A file whose YAML does not parse is refused naming the line yaml.v3 names, and none of yaml.v3's
+// message, which can quote the file's text: in an unquoted flow item, a credential holding a comma
+// and then a `*` reads as an alias, and yaml.v3 quotes the letters, digits, `_` and `-` after the
+// `*` as the name of an anchor it does not know. Every loader that parses YAML refuses so: the boot
+// load, `legion config check`'s, the controller's and a pod file's. A message that names a line
+// keeps that line alone.
+func TestAFileWhoseYAMLDoesNotParsePrintsNoneOfIt(t *testing.T) {
+	const password = "madeUpNatsHead,*madeUpAliasRun0123456789,madeUpNatsTail"
+	aliased := "nats_urls: [nats://legion:" + password + "@127.0.0.1:4222]\n"
+	loaders := map[string]func(path string) error{
+		"Load":              func(path string) error { _, err := Load(path, noEnv); return err },
+		"LoadForValidation": func(path string) error { _, err := LoadForValidation(path, noEnv); return err },
+		"LoadController":    func(path string) error { _, err := LoadController(path, ""); return err },
+		"ReadPodFile":       func(path string) error { _, err := ReadPodFile(path); return err },
+	}
+	for name, load := range loaders {
+		t.Run(name, func(t *testing.T) {
+			err := load(writeConfigFile(t, aliased))
+			if err == nil {
+				t.Fatalf("%s loaded a file whose YAML does not parse", name)
+			}
+			for i := 0; i+10 <= len(password); i++ {
+				if run := password[i : i+10]; strings.Contains(err.Error(), run) {
+					t.Errorf("%s's refusal holds %q, a run of the made-up password: %v", name, run, err)
+					break
+				}
+			}
+			if !strings.Contains(err.Error(), "the YAML does not parse") {
+				t.Errorf("%s = %v, want a refusal saying the YAML does not parse", name, err)
+			}
+		})
+	}
+	_, err := Load(writeConfigFile(t, "nats_urls: [nats://127.0.0.1:4222\n"), noEnv)
+	if err == nil || !regexp.MustCompile(`: the YAML does not parse at line [0-9]+$`).MatchString(err.Error()) {
+		t.Fatalf("Load of an unclosed list = %v, want the line yaml.v3 names and nothing else of its message", err)
+	}
+}
+
 func TestLoadRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1108,12 +1339,12 @@ func TestLoadRefuses(t *testing.T) {
 	}{
 		{
 			name: "postgres_dsn absent from the file and the environment",
-			body: "project: demo\nstate_dir: /var/lib/legion\n",
+			body: "project: DEMO\nstate_dir: /var/lib/legion\n",
 			want: "postgres_dsn is required (or set LEGION_POSTGRES_DSN)",
 		},
 		{
 			name: "postgres_dsn present but blank",
-			body: "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: \"  \"\n",
+			body: "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: \"  \"\n",
 			want: "postgres_dsn is required (or set LEGION_POSTGRES_DSN)",
 		},
 		{
@@ -1123,7 +1354,7 @@ func TestLoadRefuses(t *testing.T) {
 		},
 		{
 			name: "state_dir absent",
-			body: "project: demo\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n",
+			body: "project: DEMO\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n",
 			want: "state_dir is required",
 		},
 		{
@@ -1171,17 +1402,155 @@ func TestLoadRefuses(t *testing.T) {
 			body: minimalFile + "daemon_url: http://127.0.0.1:13370/?x=1\n",
 			want: "daemon_url must not include a query string or fragment",
 		},
+		// Every refusal of a nats_urls entry names it by its position alone, never by any of its
+		// text: a query can hold a token, and a credential holding a "/", "?", "#", space or comma
+		// ends url.Parse's authority early or is no userinfo it reads, so its password's head reads
+		// as the port, a token written as the user parses with its head as the host, and nothing
+		// that removes a URL's userinfo finds the credential to cut.
 		{
 			name: "nats_urls entry with a query string",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
-				`nats_urls: ["nats://127.0.0.1:4222?token=token"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222?token=token" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+				`nats_urls: ["nats://127.0.0.1:4222?token=madeUpNatsQueryToken"]`+"\n", 1),
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
 		},
 		{
 			name: "nats_urls entry with a fragment",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://127.0.0.1:4222#fragment"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222#fragment" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+		},
+		{
+			name: "nats_urls entry whose password holds a /, second in the list",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword/abc", "127.0.0.1:4222", "nats://127.0.0.1:4222"), 1),
+			want: `nats_urls entry 2 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a ?",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword?abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a #",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword#abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a space",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 must be a valid URL`,
+		},
+		{
+			name: "nats_urls entry whose password holds a comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				withNATSPassword("madeUpNatsPassword,abc", "127.0.0.1:4222"), 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// Two servers in one entry: before, the entry loaded and the NATS client split it, and it
+			// is refused with the comma's reason, which says how to list them.
+			name: "nats_urls entry that lists two servers",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222,nats://127.0.0.1:4223"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// Two servers with a space after the comma, which endpointURL alone refuses as no valid
+			// URL: the comma is tested first, so the reason still says how to list them.
+			name: "nats_urls entry that lists two servers with a space after the comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222, nats://127.0.0.1:4223"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// An unquoted flow list splits a credential at its comma into two entries before any
+			// entry holds a comma, the made-up token's head the first entry's host. The second,
+			// unquoted and carrying a user name, is refused by position, whatever its scheme.
+			name: "nats_urls unquoted list that splits a credential at its comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://madeUpNatsTokenHead,nats://madeUpNatsTokenTail@127.0.0.1:4222]\n", 1),
+			want: `nats_urls entry 2 carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list`,
+		},
+		{
+			name: "nats_urls unquoted list that splits a credential at its comma, a foreign scheme after it",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://madeUpNatsTokenHead,x://madeUpNatsTokenTail@127.0.0.1:4222]\n", 1),
+			want: `nats_urls entry 2 carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list`,
+		},
+		{
+			// Quoted, the same two entries pass the unquoted-item rule; the list's tail rule still
+			// refuses the second for its scheme.
+			name: "nats_urls quoted list whose later entry carries a user name and a foreign scheme",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://madeUpNatsTokenHead", "x://madeUpNatsTokenTail@127.0.0.1:4222"]`+"\n", 1),
+			want: `nats_urls entry 2 cannot be read: it carries a user name or password and names none of the schemes nats, tls, ws and wss, as the part after a comma in a credential does once the list is split on its commas; in a nats or tls list such a URL connected before, but a credential split there has its head dialled and printed as a host: name the URL's scheme, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
+			// The NATS client refuses a list that mixes websocket and other servers at boot; the
+			// loader refuses it first, by position.
+			name: "nats_urls list that mixes nats and ws",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222", "ws://127.0.0.1:8080"]`+"\n", 1),
+			want: `nats_urls entry 2 cannot be read: the list mixes websocket (ws, wss) and other (nats, tls) schemes, which the NATS client refuses; list servers of one kind`,
+		},
+		{
+			// A websocket entry whose path stops parsing once decoded, as the NATS client's handshake
+			// decodes it: it loaded before and the daemon's connect then refused it; the loader now
+			// refuses it with natsurl's reason.
+			name: "nats_urls websocket entry whose path stops parsing once decoded",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["ws://127.0.0.1:4222/%25zz"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: its path does not parse once decoded, as the NATS client's websocket handshake decodes it; write a "%" in its path as %2525`,
+		},
+		{
+			name: "nats_urls entry naming a token that holds a / as its user",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://madeUpNatsToken/abc@127.0.0.1:4222"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
+		},
+		{
+			// A plain item written with an explicit tag is split at its commas as an untagged one is,
+			// so it is refused as unquoted (yaml.v3 gives it TaggedStyle, no quoting bit).
+			name: "nats_urls tagged plain item that carries a user name",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://127.0.0.1:4222, !!str nats://madeUpNatsUser@127.0.0.1:4223]\n", 1),
+			want: `nats_urls entry 2 carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list`,
+		},
+		// An entry whose host and port the NATS client cannot dial loaded, and boot failed on it with
+		// the dial's error; it is refused by position, without a lookup or a dial.
+		{
+			name: "nats_urls entry with a port past 65535",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:65536"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none`,
+		},
+		{
+			name: "nats_urls entry with three colons in its authority",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222", "nats://127.0.0.1:4222:4333"]`+"\n", 1),
+			want: `nats_urls entry 2 cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none`,
+		},
+		{
+			name: "nats_urls entry naming an IPv6 address and a port without brackets",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://::1:4222"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none`,
+		},
+		// An entry that is empty or no string is refused by its position, with none of its text.
+		{
+			name: "nats_urls empty entry",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222", ""]`+"\n", 1),
+			want: `nats_urls entry 2 must be a non-empty string`,
+		},
+		{
+			name: "nats_urls entry that is no string",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://127.0.0.1:4222, 4222]\n", 1),
+			want: `nats_urls entry 2 must be a non-empty string`,
 		},
 		{
 			name: "envoy_url with a query string",
@@ -1192,6 +1561,24 @@ func TestLoadRefuses(t *testing.T) {
 			name: "envoy_url with a fragment",
 			body: minimalFile + "envoy_url: https://envoy.example#fragment\n",
 			want: "envoy_url must not include a query string or fragment; use URL userinfo or a secret for credentials",
+		},
+		// A made-up token holding a "/", written as the user: url.Parse ends the authority at the
+		// "/", so the token's head reads as the host and the "@" stands in the path. Each key refuses
+		// it, naming the key and quoting none of it.
+		{
+			name: "envoy_url naming a token that holds a / as its user",
+			body: minimalFile + "envoy_url: https://madeUpEnvoyToken/rest@envoy.example\n",
+			want: `envoy_url cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
+		},
+		{
+			name: "daemon_url naming a token that holds a / as its user",
+			body: minimalFile + "daemon_url: http://madeUpDaemonToken/rest@127.0.0.1:13370\n",
+			want: `daemon_url cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
+		},
+		{
+			name: "dispatch_url naming a token that holds a / as its user",
+			body: strings.Replace(minimalFile, "dispatch_url: http://127.0.0.1:8080\n", "dispatch_url: http://madeUpDispatchToken/rest@127.0.0.1:8080\n", 1),
+			want: `dispatch_url cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
 		},
 		{
 			name: "worker_stream_port zero",
@@ -1319,7 +1706,7 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "nats_urls holding something that is not a URL",
 			body: minimalFile + "nats_urls: [nats://127.0.0.1:4222, nats-host]\n",
-			want: `nats_urls entry "nats-host" must be a valid URL`,
+			want: `nats_urls entry 2 must be a valid URL`,
 		},
 		{
 			name: "envoy_token_file blank",
@@ -1356,20 +1743,48 @@ func TestLoadRefuses(t *testing.T) {
 			body: minimalFile + "provider_keys: GEMINI_API_KEY_TESTS\n",
 			want: "provider_keys must be a mapping of the variable OMP reads to the key that holds it (a secretsd key, or file:/abs/path under runtime tmux; under runtime kubernetes, a key of the providers Secret), e.g. {GEMINI_API_KEY: GEMINI_API_KEY_TESTS}",
 		},
+		// A refusal of a provider key's variable or value names its entry by position, or by the
+		// variable it is for, never its text: what is refused can be the provider's key itself,
+		// pasted where a name goes, and `legion stop` prints this error as it is.
 		{
 			name: "provider_keys with a variable that is not a variable name",
-			body: minimalFile + "provider_keys: {1PASSWORD: ONEPASSWORD_TESTS}\n",
-			want: `provider_keys key "1PASSWORD" (the variable OMP reads) must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: GEMINI_API_KEY_TESTS, 1PASSWORD: ONEPASSWORD_TESTS}\n",
+			want: `provider_keys entry 2: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			name: "provider_keys with a provider's key pasted where the variable goes",
+			body: minimalFile + "provider_keys: {\"madeUp-provider-key-0123456789abcdef\": GEMINI_API_KEY_TESTS}\n",
+			want: `provider_keys entry 1: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			// A key made only of letters, digits and underscores, which a shell takes as a variable
+			// name: it would become the entry's name in every line about it, so it is refused for its
+			// lowercase letters.
+			name: "provider_keys with a name-shaped provider's key pasted where the variable goes",
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: GEMINI_API_KEY_TESTS, MadeUpProviderKey0123456789abcdefXYZ: OPENAI_API_KEY_TESTS}\n",
+			want: `provider_keys entry 2: its key (the variable OMP reads) must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "provider_keys with a command where the secretsd key goes",
 			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"secrets get GEMINI_API_KEY_TESTS\"}\n",
-			want: `provider_keys value "secrets get GEMINI_API_KEY_TESTS" for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
+			want: `provider_keys value for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
+		},
+		{
+			name: "provider_keys with a provider's key pasted where the secretsd key goes",
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"madeUp-provider-key-0123456789abcdef\"}\n",
+			want: `provider_keys value for GEMINI_API_KEY (the key that holds it) must be an environment variable name (letters, digits, and underscores, not starting with a digit), or file: and an absolute path`,
 		},
 		{
 			name: "provider_keys naming a file by a relative path",
 			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"file:keys/gemini\"}\n",
-			want: `provider_keys value "file:keys/gemini" for GEMINI_API_KEY names a file by a path that is not absolute; write file:/abs/path`,
+			want: `provider_keys value for GEMINI_API_KEY names a file by a path that is not absolute; write file:/abs/path`,
+		},
+		{
+			// A made-up nkey seed pasted after `file:` where the path goes: the refusal is the
+			// whole text, so it holds none of it.
+			name: "provider_keys with a seed pasted where the file's path goes",
+			body: minimalFile + "provider_keys: {GEMINI_API_KEY: \"file:SUAMADEUPPASTEDSEEDSHAPE0123456789ABCDEFGHIJKLMNOPQRSTUV\"}\n",
+			want: `provider_keys value for GEMINI_API_KEY names a file by a path that is not absolute; write file:/abs/path`,
 		},
 		{
 			name: "provider_keys with a secretsd key that is not a string",
@@ -1490,7 +1905,14 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "runtime.tmux.pane_env naming something that is not a variable",
 			body: minimalFile + "runtime: {tmux: {pane_env: {1ELAN: /opt/elan}}}\n",
-			want: `runtime.tmux.pane_env key "1ELAN" must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			want: `runtime.tmux.pane_env entry 1: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			// A credential pasted where a variable name goes, a made-up one: the refusal names the
+			// entry by its position and quotes none of it.
+			name: "runtime.tmux.pane_env with a credential pasted as a variable",
+			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: /opt/elan, \"madeUp-pane-credential-0123456789\": x}}}\n",
+			want: `runtime.tmux.pane_env entry 2: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			// The runtime composes every pane's PATH: the daemon's own behind its launcher directory.
@@ -1503,22 +1925,29 @@ func TestLoadRefuses(t *testing.T) {
 			// reaches a pane as a file.
 			name: "runtime.tmux.pane_env naming a credential",
 			body: minimalFile + "runtime: {tmux: {pane_env: {LEDGER_TOKEN: hunter2}}}\n",
-			want: "runtime.tmux.pane_env names LEDGER_TOKEN, a credential-shaped name: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line",
+			want: "runtime.tmux.pane_env entry 1 names a credential-shaped variable: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line",
 		},
 		{
 			name: "runtime.tmux.pane_env naming one variable twice",
 			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: /opt/elan, ELAN_HOME: /srv/elan}}}\n",
-			want: "runtime.tmux.pane_env names ELAN_HOME twice",
+			want: "runtime.tmux.pane_env entry 2 names a variable an earlier entry names",
 		},
 		{
 			name: "runtime.tmux.pane_env with a value that is not a string",
 			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: [/opt/elan]}}}\n",
-			want: "runtime.tmux.pane_env.ELAN_HOME must be a string",
+			want: "runtime.tmux.pane_env entry 1: its value must be a string",
 		},
 		{
 			name: "runtime.tmux.pane_env with a null value",
 			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: null}}}\n",
-			want: "runtime.tmux.pane_env.ELAN_HOME must be a string",
+			want: "runtime.tmux.pane_env entry 1: its value must be a string",
+		},
+		{
+			// A credential made only of letters, digits and underscores passes the name rule; with
+			// a null value the refusal names the entry by position and quotes none of it.
+			name: "runtime.tmux.pane_env with a token-shaped name and a null value",
+			body: minimalFile + "runtime: {tmux: {pane_env: {ELAN_HOME: /opt/elan, madeUp_pane_credential_0123456789: null}}}\n",
+			want: "runtime.tmux.pane_env entry 2: its value must be a string",
 		},
 		{
 			// PI_CONFIG_FILES separates its overlays with `:`, so it could not name this path.
@@ -1699,6 +2128,41 @@ func TestLoadReadsPostgresDSNFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// A postgres_dsn whose made-up password leaves part of itself after pgx's user part (a password
+// holding an unencoded "@", one holding an "@" and then a "/", or a "/" after digits) is refused by
+// the key it came from, the file's or LEGION_POSTGRES_DSN, and no part of the password is printed.
+func TestLoadRefusesAPostgresDSNWhosePasswordSpills(t *testing.T) {
+	const fileDSN = "postgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
+	for name, tc := range map[string]struct{ dsn, spilled string }{
+		"a password holding an @":             {"postgres://legion:madeuphead0123" + "@madeuptail0123@db.invalid:5432/legion", "madeuptail"},
+		"a password holding an @ and then /":  {"postgres://legion:madeuphead0123" + "@madeuptail0123/zqtwo@db.invalid:5432/legion", "madeuptail"},
+		"a password holding a / after digits": {"postgres://legion:48213579/madeuptail0123" + "@db.invalid:5432/legion", "48213579"},
+	} {
+		for key, load := range map[string]func() error{
+			"postgres_dsn": func() error {
+				_, err := Load(writeConfigFile(t, strings.Replace(minimalFile, fileDSN, "postgres_dsn: '"+tc.dsn+"'\n", 1)), noEnv)
+				return err
+			},
+			"LEGION_POSTGRES_DSN": func() error {
+				_, err := Load(writeConfigFile(t, strings.Replace(minimalFile, fileDSN, "", 1)), envMap(map[string]string{"LEGION_POSTGRES_DSN": tc.dsn}))
+				return err
+			},
+		} {
+			t.Run(name+"/"+key, func(t *testing.T) {
+				err := load()
+				if err == nil || !strings.HasPrefix(err.Error(), key+` cannot be read: it holds an "@" after its user name and password`) {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, key)
+				}
+				for _, part := range []string{tc.spilled, "madeuphead", "madeuptail"} {
+					if strings.Contains(err.Error(), part) {
+						t.Errorf("Load = %v, which holds %q", err, part)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestLoadReadsAdmissionCapFromTheEnvironment(t *testing.T) {
 	env := envMap(map[string]string{"LEGION_ADMISSION_CAP": "2"})
 
@@ -1827,6 +2291,8 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "operator_token_file", line: "operator_token_file: /var/run/legion/OPERATOR_TOKEN", class: modelled},
 		{key: "worker_wakes_per_minute", line: "worker_wakes_per_minute: 8", class: modelled},
 		{key: "worker_wake_burst", line: "worker_wake_burst: 1", class: modelled},
+		{key: "controller_turn_bound_minutes", line: "controller_turn_bound_minutes: 90", class: modelled},
+		{key: "controller_session_max_age_hours", line: "controller_session_max_age_hours: 72", class: modelled},
 
 		{key: "dispatch_url", line: "dispatch_url: https://dispatch.example", class: modelled},
 		{key: "dispatch_token_file", line: "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN", class: modelled},
@@ -1957,24 +2423,30 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 // port, and the daemon adds the port itself (shimAddress, internal/daemon/daemon.go). So the loader
 // refuses, by its exact message, every value that is not an IP address or a DNS name: under
 // runtime: kubernetes, the one runtime that reads advertise_host, so no other refusal can stand in
-// for this one, rather than `legion config check` passing a file no pod boots on.
+// for this one, rather than `legion config check` passing a file no pod boots on. The refusal
+// quotes no value: a URL with a made-up user name and password pasted there is a row.
 func TestAdvertiseHostMustBeABareHost(t *testing.T) {
 	const refused = "advertise_host must be an IP address or a DNS name, with no scheme, port, path or brackets: the daemon adds worker_stream_port itself"
 	for _, tc := range []struct{ name, yaml, want string }{
-		{"a scheme", "http://legion-daemon.legion.svc", refused + " (http://legion-daemon.legion.svc)"},
-		{"a port", "legion-daemon.legion.svc:13371", refused + " (legion-daemon.legion.svc:13371)"},
-		{"brackets", `"[::1]"`, refused + " ([::1])"},
-		{"an underscore", "legion_daemon.legion.svc", refused + " (legion_daemon.legion.svc)"},
-		{"a path", "legion-daemon.legion.svc/x", refused + " (legion-daemon.legion.svc/x)"},
-		{"a trailing slash", "legion-daemon.legion.svc/", refused + " (legion-daemon.legion.svc/)"},
-		{"a user", "legion@legion-daemon.legion.svc", refused + " (legion@legion-daemon.legion.svc)"},
-		{"a query", `"legion-daemon.legion.svc?x"`, refused + " (legion-daemon.legion.svc?x)"},
-		{"a fragment", `"legion-daemon.legion.svc#x"`, refused + " (legion-daemon.legion.svc#x)"},
-		{"a space", `"legion daemon"`, refused + " (legion daemon)"},
-		{"a space inside a DNS name", `"legion daemon.legion.svc"`, refused + " (legion daemon.legion.svc)"},
-		{"a zoned IPv6 address", `"fe80::1%eth0"`, refused + " (fe80::1%eth0)"},
-		{"a dotted capital I", "nas.\u0130nternal.example", `advertise_host must be an IP address or an ASCII DNS name; got "nas.\u0130nternal.example"`},
-		{"a Kelvin sign", "\u212Aube.example", `advertise_host must be an IP address or an ASCII DNS name; got "\u212aube.example"`},
+		{"a scheme", "http://legion-daemon.legion.svc", refused},
+		{"a port", "legion-daemon.legion.svc:13371", refused},
+		{"brackets", `"[::1]"`, refused},
+		{"an underscore", "legion_daemon.legion.svc", refused},
+		{"a path", "legion-daemon.legion.svc/x", refused},
+		{"a trailing slash", "legion-daemon.legion.svc/", refused},
+		{"a user", "legion@legion-daemon.legion.svc", refused},
+		{"a query", `"legion-daemon.legion.svc?x"`, refused},
+		{"a fragment", `"legion-daemon.legion.svc#x"`, refused},
+		{"a space", `"legion daemon"`, refused},
+		{"a space inside a DNS name", `"legion daemon.legion.svc"`, refused},
+		{"a zoned IPv6 address", `"fe80::1%eth0"`, refused},
+		{"a URL with a made-up user name and password", `"http://madeUpHostUser0123:` + `madeUpHostPassword0123@legion-daemon.legion.svc"`, refused},
+		{"a dotted capital I", "nas.\u0130nternal.example", `advertise_host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
+		{"a Kelvin sign", "\u212Aube.example", `advertise_host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
+		// A non-ASCII host behind a made-up user name and password: refused before the shape check,
+		// and named by the key alone.
+		{"a non-ASCII URL with userinfo", `"https://madeUpAsciiUser0123:` + `madeUpAsciiPassword0123@dash.ex` + "\u00e4" + `mple"`,
+			`advertise_host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
 		{"blank", `""`, "advertise_host must not be empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2073,6 +2545,86 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 			_, err := Load(writeConfigFile(t, minimalFile+tc.line+"\n"), noEnv)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// An unknown key whose name has no key's shape (keyShape: the configuration's grammar, with no run
+// of 8 hex digits and no run of 10 letters and digits that holds a digit) is named by its line
+// alone, wherever it stands, so a credential pasted where a key goes prints nowhere: at the root,
+// under a described mapping, under a project, under capabilities.decided, in a controller
+// configuration, as a project's key, and as an entry of the lists keyed by a role, a pod or an
+// experiment. The keys are made-up tokens in four shapes: one holding "-", longer than the 32
+// characters an experiment's name takes, one holding upper-case letters, a lower-case hex token of
+// 40 digits, and a lower-case base36 token of 34 characters with no run of hex digits; the last
+// two fit the grammar. A key of the grammar is still named as written, and so is a short token of
+// the grammar's letters (`abc_0123456`), the stated residual.
+func TestAnUnknownKeyOfNoKeyShapeIsNamedByItsLine(t *testing.T) {
+	load := func(path string) error { _, err := Load(path, noEnv); return err }
+	validate := func(path string) error { _, err := LoadForValidation(path, noEnv); return err }
+	controller := func(path string) error { _, err := LoadController(path, ""); return err }
+	for _, token := range []string{"madeup-dash-token-0123456789-abcdefgh", "ghp_MadeUpToken0123456789abcdef", "deadbeefcafe0123456789abcdef0123456789ab", "kq7zm2xw9rt4pvn8ys3lgj5hk6mn7pq8rs"} {
+		for name, tc := range map[string]struct {
+			load        func(path string) error
+			body, under string
+		}{
+			"the root":                     {load, minimalFile + token + ": 1\n", ", whose name"},
+			"a described mapping":          {validate, kubernetesFile + "    " + token + ": 1\n", " under runtime.kubernetes, whose name"},
+			"a project":                    {load, strings.Replace(minimalFile, "DEMO: {}", "DEMO: { "+token+": 1 }", 1), " under projects.DEMO, whose name"},
+			"capabilities.decided":         {load, minimalFile + "capabilities: {decided: {" + token + ": because}}\n", " under capabilities.decided, whose name"},
+			"the controller configuration": {controller, requiredControllerKeys + token + ": 1\n", ", whose name"},
+			"worker_backends":              {load, minimalFile + "worker_backends: {" + token + ": claude}\n", " under worker_backends, whose name"},
+			"role_config_files":            {load, minimalFile + "role_config_files: {" + token + ": [/etc/a.yml]}\n", " under role_config_files, whose name"},
+			"worker_stall_backstop_hours":  {load, minimalFile + "worker_stall_backstop_hours: {" + token + ": 6}\n", " under worker_stall_backstop_hours, whose name"},
+			"runtime.kubernetes.resources": {validate, kubernetesFile + "    resources: {" + token + ": {cpu: 1}}\n", " under runtime.kubernetes.resources, whose name"},
+			"an experiment":                {load, strings.Replace(minimalFile, "DEMO: {}", "DEMO: { experiments: {"+token+": {variants: [{name: only}]}} }", 1), " under projects.DEMO.experiments, whose name"},
+			"a project's key":              {load, strings.Replace(minimalFile, "DEMO: {}", token+": {}", 1), " under projects, whose name"},
+		} {
+			t.Run(name+"/"+token[:3], func(t *testing.T) {
+				err := tc.load(writeConfigFile(t, tc.body))
+				if err == nil || !regexp.MustCompile(`unknown key at line \d+`+regexp.QuoteMeta(tc.under)).MatchString(err.Error()) {
+					t.Fatalf("the refusal is %v, want the key named by its line%s", err, tc.under)
+				}
+				for i := 0; i+10 <= len(token); i++ {
+					if strings.Contains(err.Error(), token[i:i+10]) {
+						t.Fatalf("the refusal %q holds %q of the key", err, token[i:i+10])
+					}
+				}
+			})
+		}
+	}
+	if _, err := Load(writeConfigFile(t, minimalFile+"dispach_url: x\n"), noEnv); err == nil || err.Error() != "unknown key dispach_url" {
+		t.Fatalf("a typo of a key = %v, want it named as written", err)
+	}
+}
+
+// A legion.yaml, a controller.yaml and a pod file that yaml.v3 cannot decode are refused in fixed
+// words (yamlerr.Reason), never in yaml.v3's: a value written after a "*", here a made-up
+// password, is an anchor yaml.v3's own error names.
+func TestAFileYAMLCannotDecodeIsRefusedQuotingNothingOfIt(t *testing.T) {
+	const credential = "madeUpYamlPassword0123"
+	for name, tc := range map[string]struct {
+		load func(path string) error
+		want func(path string) string
+	}{
+		"legion.yaml": {func(path string) error { _, err := Load(path, noEnv); return err },
+			func(path string) string { return "parse " + path + ": the YAML does not parse" }},
+		"controller.yaml": {func(path string) error { _, err := LoadController(path, ""); return err },
+			func(string) string { return "Invalid controller configuration: the YAML does not parse" }},
+		"a pod file": {func(path string) error { _, err := ReadPodFile(path); return err },
+			func(path string) string { return "parse " + path + ": the YAML does not parse" }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfigFile(t, "postgres_dsn: *"+credential+"\n")
+			err := tc.load(path)
+			if err == nil || err.Error() != tc.want(path) {
+				t.Fatalf("the refusal is %v, want %q", err, tc.want(path))
+			}
+			for i := 0; i+7 <= len(credential); i++ {
+				if strings.Contains(err.Error(), credential[i:i+7]) {
+					t.Fatalf("the refusal %q holds %q of the value", err, credential[i:i+7])
+				}
 			}
 		})
 	}

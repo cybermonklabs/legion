@@ -250,7 +250,7 @@ func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T)
 	// A session that stopped cleanly more than 20 minutes ago: its entry is gone and the reaper has
 	// taken its interest row, leaving its record alone to say it follows the topic.
 	rig.register(t, "ses_stopped", []string{topic})
-	rig.clock = rig.clock.Add(21 * time.Minute)
+	rig.clock.Advance(21 * time.Minute)
 	rig.stop(t, "ses_stopped")
 	rig.reapInterest(t, "ses_stopped")
 	if _, known := rig.known.Get("ses_stopped"); !known {
@@ -289,7 +289,7 @@ func TestASessionThatUnsubscribesStopsBeingCounted(t *testing.T) {
 	rig.register(t, "ses_leaver", []string{topic})
 	assertCounts(t, rig.publish(t, topic, "unsubscribed-1"), 1, 1)
 
-	rig.clock = rig.clock.Add(session.KnownSessionRefreshAge + time.Minute)
+	rig.clock.Advance(session.KnownSessionRefreshAge + time.Minute)
 	rig.unsubscribe(t, "ses_leaver", []string{topic})
 	if interest, cached := rig.harness.registry.CachedInterest("ses_leaver"); cached && slices.Contains(interest.Topics, topic) {
 		t.Fatalf("ses_leaver's interest row still holds %q, so the unsubscribe did not take it", topic)

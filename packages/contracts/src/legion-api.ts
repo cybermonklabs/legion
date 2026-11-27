@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
 import { goBlankPattern } from "./go-blank";
 import {
   DISPATCH_KEY_PATTERN,
@@ -10,15 +11,26 @@ import {
 } from "./legion-roles";
 
 /**
- * The Legion daemon's HTTP API, as its readers see it.
+ * The Legion daemon's HTTP API and the bus message of its state lane, as their readers see them.
  *
- * Go owns this wire shape: `packages/daemon/internal/api` (`state.go`, `operator.go`) and the
- * claim wire in `packages/daemon/internal/claim/wire.go` are the source of truth, and every
- * schema here mirrors them field for field. The two are pinned to each other by
- * `packages/contracts/fixtures/daemon-api/*.json`, written by the Go golden tests
- * (`go test ./internal/api/ -update`, and `go test ./internal/projection/ -update` for
- * `state-controller-claim.json`) and parsed here by `legion-api.test.ts` — no generator runs in
- * either direction, so a Go field added without its line below fails that test.
+ * Go owns these wire shapes, and every schema here mirrors them field for field. The HTTP shapes
+ * are `packages/daemon/internal/api`'s (`state.go`, `operator.go`) and the claim wire's in
+ * `packages/daemon/internal/claim/wire.go`. The state lane's message (`legionStateMessage`) is
+ * written by `packages/daemon/internal/daemon/outbox.go` (`stateEvents`) from the rows
+ * `packages/daemon/internal/record/outbox.go` stores. The two sides are pinned to each other by
+ * `packages/contracts/fixtures/daemon-api/*.json`, which Go's tests write and `legion-api.test.ts`
+ * parses. internal/daemon's `TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds` writes the
+ * six state fixtures (`state.json`, `state-paused.json`, `state-stage3.json`,
+ * `state-operator-claim.json`, `state-last-pause.json` and `state-controller-claim.json`) from
+ * the daemon's own state source over a seeded database, and its `TestStateEventsGolden` writes
+ * `state-events.json`. internal/api's `TestStateNarrowedRepositoriesGolden`,
+ * `TestIssueRecordGolden` and `TestObservedStateGolden` write `state-narrowed-repositories.json`,
+ * `issue-record.json` and `observed-state.json` from `state.json`, internal/config's golden writes
+ * `stall-defaults.json`, and internal/api's other goldens write the rest.
+ * `apifixture.StateFixturesRewrite` is the two commands that rewrite
+ * the state fixtures and every fixture internal/api writes from `state.json`, in the order they
+ * must run. No generator runs in either direction, so a Go field added without its line below
+ * fails that test.
  *
  * Reached as `@legion/contracts/legion-api`, never from the barrel.
  */
@@ -561,15 +573,15 @@ const legionGatedStepView = z.object({
 const legionSlotView = z.object({
   index: z.number().int().nonnegative().optional(),
   admittedAt: timestamp.optional(),
-  lentTo: issueKey.optional(),
 });
 
 /** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
  * in the line, and `length`, how long that list was at this read, beside the line's own fields
  * for a program that acts on the line rather than reading the sentence `reason` renders:
- * `priority`, the Dispatch priority band the issue waits in, which is its own priority, else its
- * tree root's (0 for P0 to 3 for P3), or null for an issue placed after P3 because neither it nor
- * its tree root has one; `part`, which of the two parts of its band the issue waits in, and
+ * `priority`, the Dispatch priority band the issue waits in: the priority Dispatch resolves for
+ * it (or, with an older Dispatch release that sends no `resolved_priority`, its own priority else
+ * its tree root's for line order alone), 0 for P0 to 3 for P3, or null for an issue placed after
+ * P3; `part`, which of the two parts of its band the issue waits in, and
  * `kind`, why it waits there; `partPlace` and `partLength`, its place within its own band and
  * part and that part's length in that band; `holdsSlot`, whether it already holds one of the
  * cap's slots; and what placed it within its part — `since`, the moment its work came back, for
@@ -882,12 +894,22 @@ const legionIssue = z.object({
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
   /** The issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for an issue with none
-   * (contract 250): the priority Dispatch sends on the issue itself. The admission line places an
-   * issue at this priority, else at its tree root's, and the line's own `priority` says which.
-   * Present on every issue the workflow records; absent on an issue it does not record (phase
-   * `unrecorded`, an operator's claim), and from every issue of the body the route serves a
-   * caller below 250. */
+   * (contract 250): the priority Dispatch sends on the issue itself. Admission reads
+   * `resolvedPriority` where Dispatch sends one; the line's own `priority` says which band placed
+   * a waiting issue. Present on every issue the workflow records; absent on an issue it does not
+   * record (phase `unrecorded`, an operator's claim), and from every issue of the body the route
+   * serves a caller below 250. */
   priority: dispatchPriority,
+  /** The priority Dispatch resolves the issue to, 0 for P0 to 3 for P3, or null for none (the P0
+   * start's contract entry, dispatch://INFRA-5636): its own priority, else the nearest issue's above
+   * it on its Dispatch parent chain that has one. It is the priority admission reads, and `priority`
+   * keeps its meaning. Absent where Dispatch sent no resolved priority, as a Dispatch release before
+   * dispatch://INFRA-5793 sends none, and from every issue of the body the route serves a caller
+   * below the entry. */
+  resolvedPriority: dispatchPriority,
+  /** The key of the issue `resolvedPriority` comes from (Dispatch's `priority_from`), absent where it
+   * is the issue's own or none. */
+  priorityFrom: issueKey.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
@@ -1029,7 +1051,17 @@ const legionIssue = z.object({
   podHold: legionPodHold.optional(),
 });
 
-/** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
+/** `api.DaemonInfo` — the running daemon: its project, its store's schema, its boot history, and
+ * `stateSeq`, the sequence of the last state event the body's snapshot holds
+ * (`legionStateMessage`), 0 while the project has none: every event at or below it is in the body
+ * and none above it is, so a reader of the state lane starts at `stateSeq + 1`. Beside it,
+ * `stateId` is the id of the store that count is kept in, made at the project's first state event
+ * and never changed, absent while the project has none: a reader that takes this body as its
+ * starting point applies only a state message whose `stateId` is this one, since a message of
+ * another id is counted in another store and its sequences say nothing of this body's. The three
+ * keys of daemon API entry 20261125174131 state-seq are optional because a daemon before that
+ * entry writes none of them, and the route strips them from the body it serves a caller below the
+ * entry's number.
  * No plugin code reads a field of it: the controller's boot check read `project` here until it
  * read the health answer instead, and the controller's `read_state` hands the state to its
  * agent whole. So every field is optional, as `LEGION_ANSWER_READS` requires of a field no read
@@ -1040,6 +1072,14 @@ const daemonInfo = z.object({
   boots: z.number().int().nonnegative().optional(),
   firstBootAt: timestamp.optional(),
   startedAt: timestamp.optional(),
+  stateSeq: z.number().int().nonnegative().optional(),
+  stateId: z.uuid().optional(),
+  /** The id of the daemon run that serves the body, which is the `run` of every state message
+   * that run publishes. A reader takes it as the run of its starting point, so a `boot` event of
+   * that run at or below the starting point's `stateSeq` is one the reader already holds, not a
+   * daemon whose sequence went back. Only a daemon whose state events are on serves it: one that
+   * runs no workflow serves none. */
+  stateRun: z.uuid().optional(),
 });
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
@@ -1055,9 +1095,9 @@ const daemonInfo = z.object({
  * what the narrowing exists to prevent, since the plugin that body is narrowed for reads the
  * state with a strict schema and refuses the whole of it for one key it does not name. Such a
  * caller is told nothing here and the daemon's own log names its narrowing instead, which is why
- * a body carrying no mark says only that the daemon narrowed it or that it is the state as
- * internal/projection answered it, never that the daemon is older than this plugin: the boot gate
- * and `legion probe-image` refuse that pair. */
+ * a body carrying no mark says only that the daemon narrowed it or that it is a state fixture
+ * internal/daemon's composition test wrote with the route's marks taken off, never that the
+ * daemon is older than this plugin: the boot gate and `legion probe-image` refuse that pair. */
 const legionContract = z.object({
   daemon: z.number().int().positive().optional(),
   caller: z.number().int().positive().optional(),
@@ -1116,6 +1156,46 @@ const legionHeldIssue = z.object({
   heldBy: z.array(issueKey).optional(),
 });
 
+/** `api.PauseActorView` — who paused the project or ended its pause (contract 178), and who set the
+ * P0 bound while the daemon runs (the P0 start's contract entry): the controller, with the session it acted from,
+ * or the operator, who acts from none. The daemon's store holds these two shapes and no other
+ * (`project_pauses_by_session` and `project_pauses_ended_by_session` in its migration
+ * `20261115194357_project_pause`, `project_p0_bound_changes_by_session` in
+ * `20261125181828_p0_bound`), so a controller's entry always names its session, and the reader
+ * requires it: the controller's `read_state` summary names the session of each controller it prints
+ * (LEGION_ANSWER_READS). */
+const legionPauseActor = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
+  z.object({ kind: z.literal("operator") }),
+]);
+
+/** A P0 bound: how many P0 issues may hold an admission slot at once, a whole number from 1 to
+ * 2147483647, the most the daemon's store holds: the daemon refuses a set of any other number
+ * (`INVALID_P0_BOUND`) and a legion.yaml whose `admission_p0_bound` is any other. The plugin's tool
+ * checks a bound with it before it sends one, so a change of the range reaches both. */
+export const LegionP0BoundNumber = z.number().int().positive().max(2147483647);
+
+/** `api.P0BoundView` — the P0 bound (the P0 start's contract entry, dispatch://INFRA-5636): how many P0 issues may
+ * hold an admission slot at once, outside the cap. `bound` is the bound in force, null for none;
+ * `configured` is legion.yaml's `admission_p0_bound`, null where the file gives none; and `live` is
+ * the value the controller or the operator set while the daemon runs and that stands — its `bound`,
+ * null for a set of none, who set it, when and why — absent where none was set or the newest change
+ * cleared it. The state's `admission.p0Bound` and the answer to the controller's set and clear of
+ * the bound are this view. The controller's `read_state` summary prints the bound in force and the
+ * live value (LEGION_ANSWER_READS), so those are required; `configured` is read by no plugin code. */
+const legionP0Bound = z.object({
+  bound: LegionP0BoundNumber.nullable(),
+  configured: LegionP0BoundNumber.nullable().optional(),
+  live: z
+    .object({
+      bound: LegionP0BoundNumber.nullable(),
+      setBy: legionPauseActor,
+      setAt: timestamp,
+      reason: nonEmptyString,
+    })
+    .optional(),
+});
+
 /** `api.Admission` — the issue cap and the issues under it, in Dispatch rank order. Concurrency
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
@@ -1159,15 +1239,22 @@ const legionHeldIssue = z.object({
  * null, and it is optional here for the one reason `trees` is and no other: a reader before the
  * contract that added it refuses the key outright, so the route strips it for a caller in a pod
  * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
- * finds it absent has been served that stripped body and learns nothing about what is held. */
+ * finds it absent has been served that stripped body and learns nothing about what is held.
+ * `p0Holders` is how many of the issues holding a slot admission treats as P0 (Dispatch's
+ * resolved P0, or own P0 with an older Dispatch release), which start and hold their slot outside
+ * the cap, so the cap counts the other holders of `active` alone;
+ * `p0Bound` is the P0 bound in force (`legionP0Bound`). A daemon at the P0 start's contract entry writes both on
+ * every state, and both are optional here because the route strips them for a caller below the entry
+ * (`api.stateFor`, `withoutP0Start`). */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative().optional(),
+  p0Holders: z.number().int().nonnegative().optional(),
+  p0Bound: legionP0Bound.optional(),
   active: z.array(nonEmptyString).optional(),
   waiting: z.array(nonEmptyString).optional(),
   trees: z.array(issueKey).optional(),
   blocked: z.array(legionBlockedIssue).optional(),
   held: z.array(legionHeldIssue).optional(),
-  free: z.number().int().nonnegative().optional(),
 });
 
 /** `api.ControllerLocator` — the record of the session registered as the project's controller: the
@@ -1400,17 +1487,6 @@ const legionIntakeGiveUps = z.object({
   newest: z.array(legionIntakeGiveUp).optional(),
 });
 
-/** `api.PauseActorView` — who paused the project or ended its pause (contract 178): the
- * controller, with the session it acted from, or the operator, who acts from none. The daemon's
- * store holds these two shapes and no other (`project_pauses_by_session` and
- * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`), so a
- * controller's entry always names its session, and the reader requires it: the controller's
- * `read_state` summary names the session of each controller it prints (LEGION_ANSWER_READS). */
-const legionPauseActor = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("controller"), session: nonEmptyString }),
-  z.object({ kind: z.literal("operator") }),
-]);
-
 /** What every view of a pause carries: its id, when it began, who paused, and why. Each is
  * required: the controller's `read_state` summary names all four of the state's pauses
  * (LEGION_ANSWER_READS), and a refusal that names a pause is a body no plugin code parses, which
@@ -1515,7 +1591,8 @@ const legionPaused = z.object({
  * the route strips it for a caller below 75, read the same way, since a reader before 75 refuses
  * the key (`api.stateFor`, `withoutContractMark`). A caller that states no contract and whose
  * pod's claims record none, or that the daemon can place in no pod, is served the mark, and the
- * shapes `internal/projection` answers before the route marks them carry none either.
+ * state fixtures carry none either, since internal/daemon's composition test writes them with the
+ * route's marks taken off.
  * `paused` is the project's open pause, with the claims whose stop it still waits on and the rows
  * it holds, and `lastPause` is its newest ended pause, with when and by whom it was ended
  * (contract 178). The daemon writes each only where there is one: `paused` while the project is
@@ -1564,6 +1641,167 @@ export const LegionStateResponse = z.object({
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
+/** A claim as the observed view shows it: the `state` of the full state's claim view
+ * (`legionClaimView`), and nothing else. */
+const legionObservedClaim = z.object({
+  state: z.enum(LEGION_CLAIM_STATES),
+});
+
+/** `api.ObservedIssue` — one issue of the observed view: the members of the full state's issue
+ * (`legionIssue`) that Dispatch observes, each spelled and valued as the full state spells and
+ * values it. `tree` is absent on an issue the workflow does not record, `slot` where the issue
+ * holds no slot, `waitingOn` outside `awaiting_person`, `architect` where the issue shows no
+ * architect, and `workers` where the full state's `workers` is empty. Its `slot` carries the
+ * index alone and each claim its state alone. */
+const legionObservedIssue = z.object({
+  key: nonEmptyString,
+  phase: z.enum(LEGION_PHASES),
+  tree: issueKey.optional(),
+  slot: z.object({ index: z.number().int().nonnegative() }).optional(),
+  waitingOn: legionWaitingOn.optional(),
+  architect: legionObservedClaim.optional(),
+  workers: z.partialRecord(z.string(), z.object({ claim: legionObservedClaim })).optional(),
+});
+
+/** `api.ObservedState`, the body of `GET /legion/v1/state?view=observed` (daemon API entry
+ * 20261125174131 state-seq): what Dispatch reads of a daemon, read in the same snapshot as the
+ * full state would be.
+ * `daemon`, `settings` and `admission` are the full state's own blocks: the same `stateSeq`,
+ * `stateId` and `stateRun`, and the same admission block, unfiltered and in the same order, so an
+ * issue's place in the line is its index in `admission.waiting` plus one. `issues` lists every
+ * issue the full state lists. The daemon serves the view at the caller's contract with the full
+ * state's own rule, so at each contract every member is the member the full state serves there:
+ * a caller below the entry's number gets no `stateSeq`, `stateId` or `stateRun` in either answer.
+ * A request that names no `view` gets the full state, and so does one whose `view` is anything but
+ * one `observed` value, `observed` twice included; the daemon logs a warning for the latter at most
+ * once a minute, whoever asks, because a later version may refuse such a request (`stateViewOf`
+ * and `otherViewWarnings`, `packages/daemon/internal/api/state_route.go`). */
+export const LegionObservedStateResponse = z.object({
+  daemon: daemonInfo,
+  settings: legionSettings,
+  admission: legionAdmission,
+  issues: z.record(z.string(), legionObservedIssue),
+});
+
+export type LegionObservedState = z.output<typeof LegionObservedStateResponse>;
+
+/** The fields a state event's change names (the `state_change` outbox payload of
+ * `packages/daemon/internal/record/outbox.go`), each one Dispatch observes of an issue: its phase,
+ * its tree, its admission slot, what it waits on from a person, and one role's claim. */
+const LEGION_STATE_FIELDS = ["phase", "tree", "slot", "waitingOn", "claim"] as const;
+
+/** Each field's value as the state route serves it at that issue (`legionIssue`): the phase, the
+ * key of the tree's root, the slot's index, the `waitingOn` view, and the claim's state. */
+const legionStateFieldValues = {
+  phase: z.enum(LEGION_PHASES),
+  tree: issueKey,
+  slot: z.number().int().nonnegative(),
+  waitingOn: legionWaitingOn,
+  claim: z.enum(LEGION_CLAIM_STATES),
+} satisfies Record<(typeof LEGION_STATE_FIELDS)[number], z.ZodType>;
+
+/** A change's `old` or `new`: a value of one of the fields, or `null` where the issue holds
+ * none — no tree, no slot, no wait, no claim — and as `old` on the issue's first write. */
+const legionStateValue = z
+  .union([
+    legionStateFieldValues.phase,
+    legionStateFieldValues.tree,
+    legionStateFieldValues.slot,
+    legionStateFieldValues.waitingOn,
+    legionStateFieldValues.claim,
+  ])
+  .nullable();
+
+/** One field a write moved, from `old` to `new`, each a value of that field. A `claim` change
+ * names the claim's role, and a change of any other field names none. */
+const legionStateChange = z
+  .object({
+    field: z.enum(LEGION_STATE_FIELDS),
+    role: z.enum(LEGION_ROLES).optional(),
+    old: legionStateValue,
+    new: legionStateValue,
+  })
+  .superRefine((change, ctx) => {
+    if ((change.role !== undefined) !== (change.field === "claim")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["role"],
+        message: "a claim change names its role, and a change of any other field names none",
+      });
+    }
+    for (const side of ["old", "new"] as const) {
+      const value = change[side];
+      if (value !== null && !legionStateFieldValues[change.field].safeParse(value).success) {
+        ctx.addIssue({
+          code: "custom",
+          path: [side],
+          message: `${side} is no ${change.field} value`,
+        });
+      }
+    }
+  });
+
+/** A state event's sequence: the project's count of the state events its daemon committed, from 1,
+ * in commit order and with no gap (the outbox row's `state_seq`). */
+const legionStateSeq = z.number().int().positive();
+
+/** One state event, one row of the project's state lane with the sequence its commit took: a
+ * `change` names an issue and each field of it that one write moved; an `admission` is the
+ * judged admission block (`legionAdmission`, including `p0Holders` and without `p0Bound`, which
+ * the state route reads separately) after a pass that changed it; a `boot` is the
+ * first event of a daemon's run, the settings the state route serves (`legionSettings`) and
+ * `schemaVersion`, the highest migration version the daemon's store records once that boot's
+ * migrations ran. A reader compares it with the version its starting point holds (the state
+ * route's `daemon.schemaVersion`): a boot that moved the schema can have rewritten what the
+ * reader observes outside every write that publishes an event. */
+const legionStateEvent = z.discriminatedUnion("kind", [
+  z.object({
+    seq: legionStateSeq,
+    kind: z.literal("change"),
+    issue: issueKey,
+    changes: z.array(legionStateChange).min(1),
+  }),
+  z.object({ seq: legionStateSeq, kind: z.literal("admission"), admission: legionAdmission }),
+  z.object({
+    seq: legionStateSeq,
+    kind: z.literal("boot"),
+    settings: legionSettings,
+    schemaVersion: z.number().int().nonnegative(),
+  }),
+]);
+
+/** One message of a Legion deployment's state lane (`legionStateSubject`): the state events of one
+ * committed daemon transaction, in sequence order. `project` is the Dispatch project key the daemon
+ * works for, `run` the id of the daemon run that wrote the events, `stateId` the id of the store
+ * the events are counted in (the state route's `daemon.stateId`), `firstSeq` and `seq` the first
+ * and the last event's sequence, and `at` when the transaction committed, which every event of it
+ * shares. A reader applies only a message whose `stateId` is its starting point's: a message of
+ * another id is counted in another store. A transaction too large for one message is split between
+ * events into consecutive messages, and every one of them but the last carries `more: true`; the
+ * last, and every message of a transaction that fits in one, carries no `more`. A reader applies
+ * the events of a transaction only once the message without `more` has arrived. The events run
+ * from `firstSeq` to `seq` with no gap, so a reader that holds sequence `n` applies the message
+ * whose `firstSeq` is `n + 1`, and knows from a later one that it missed one. */
+export const legionStateMessage = z
+  .object({
+    project: z.string().regex(PROJECT_KEY_PATTERN),
+    run: z.uuid(),
+    stateId: z.uuid(),
+    firstSeq: legionStateSeq,
+    seq: legionStateSeq,
+    at: timestamp,
+    more: z.literal(true).optional(),
+    events: z.array(legionStateEvent).min(1),
+  })
+  .refine(
+    (message) =>
+      message.events.length === message.seq - message.firstSeq + 1 &&
+      message.events.every((event, index) => event.seq === message.firstSeq + index),
+    { path: ["events"], message: "the events run from firstSeq to seq, one sequence each" }
+  );
+
+export type LegionStateMessage = z.output<typeof legionStateMessage>;
+
 /** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 193): one
  * issue's record, equal field for field to the value the whole-project body holds under
  * `issues.<key>`. It is the very schema `LegionStateResponse` reads that value with, so the two
@@ -1585,7 +1823,11 @@ export type LegionHealth = z.output<typeof LegionHealthResponse>;
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
  * the task agents the role's prompts dispatch — what the session's subagents check measures its
- * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`. */
+ * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
+ * `replaces` (contract entry 20261125170509) is the session this registration replaces: the claim's session that
+ * the daemon forgot, when it is another session than the one registering. The session names it
+ * as `previous_session_id` in its Envoy role claim, so the listener hands that session's unread
+ * messages to it. Absent when the claim forgot no session, or forgot this very one. */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1594,6 +1836,7 @@ export const LegionRegisterResponse = z.object({
   generation: z.number().int().positive(),
   secret: nonEmptyString,
   promptAgents: z.array(nonEmptyString),
+  replaces: nonEmptyString.optional(),
 });
 
 export type LegionRegistration = z.output<typeof LegionRegisterResponse>;
@@ -1773,8 +2016,8 @@ const legionReleaseRecord = z.object({
 });
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
- * no release row is recorded for it), the role it was for, what woke it, when the wake reached the
- * daemon, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
+ * no release row is recorded for it), the role it was for, what woke it, when the daemon took the
+ * wake, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
  * that went ten minutes with no turn of the woken role. `pause` is the project pause that held
  * the wake (contract 178), absent on a wake no pause held: a held wake pairs with no release, so
  * its `release` is 0, and its time to the first turn measures the pause, so a reader of these
@@ -1847,12 +2090,15 @@ export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>
  * fetched, or a daemon-launched controller's own boot token): the project's controller role token,
  * the role `controller`, a generation — the capability's for the operator's controller, the
  * launch's for the daemon's own, which its `claims/ready` names — and the secret its controller
- * grants authenticate with. No tree, no issue. */
+ * grants authenticate with. No tree, no issue. `replaces` (contract entry 20261125170509) is the session this
+ * registration replaces, as on a claim's registration: the session names it as
+ * `previous_session_id` in its Envoy role claim. */
 export const LegionControllerRegisterResponse = z.object({
   claimToken: nonEmptyString,
   role: z.literal("controller").optional(),
   generation: z.number().int().positive(),
   secret: nonEmptyString,
+  replaces: nonEmptyString.optional(),
 });
 
 export type LegionControllerRegistration = z.output<typeof LegionControllerRegisterResponse>;
@@ -1897,8 +2143,12 @@ export const LegionControllerCredentialResponse = z.object({
 /** Claim routes refuse with only a sentence; credential and workflow routes add a stable code.
  * One object with an optional `code`, not a union of a sentence-only shape and a coded one: now
  * that the answer side ignores unknown keys, a union matches its first member and drops `code`,
- * and `daemonUnreachable` in `packages/pi-shared/src/daemon-client.ts` reads a 502 with no code as
- * a restarting daemon and retries it for ten minutes, so a coded refusal must keep its code. */
+ * which the daemon client's refusal names and its record read decides by (`RECORD_NOT_FOUND`), so
+ * a coded refusal must keep its code. A body in this shape, coded or not, is the daemon's own
+ * answer: the restart retry of `packages/pi-shared/src/daemon-client.ts`
+ * (`retryWhileDaemonRestarts`, by `daemonUnreachable`) waits out for up to ten minutes only an
+ * outage (a 5xx, a 408 or a 429) whose body is not this shape, such as a proxy's page in front of
+ * the daemon. */
 export const LegionErrorResponse = z.object({
   error: nonEmptyString,
   code: nonEmptyString.optional(),
@@ -2181,11 +2431,12 @@ const legionAnsweredPause = z.object({
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
  * plan whose content the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds
- * every reason in order; the body's `reasons` lists them by task, which `LegionErrorResponse`
+ * its reasons in order, the first reasons of each kind of cause and one more that counts the rest of
+ * that kind; the body's `reasons` lists the same reasons by task, which `LegionErrorResponse`
  * strips. A plan of an issue whose experiment's group takes no plan from its owner is answered
- * `409 PLAN_NOT_TAKEN` (contract 220), a sentence naming the group and no reasons. The
- * reader takes every field as optional, since no plugin code reads one: the `legion` tool hands
- * the answer to its agent whole. */
+ * `409 PLAN_NOT_TAKEN` (contract 220), a sentence naming the group and no reasons. The reader
+ * takes every field as optional, since no plugin code reads one: the `legion` tool hands the
+ * answer to its agent whole. */
 export const LegionPlanRegisterResponse = z.object({
   plan: z
     .object({
@@ -2215,6 +2466,12 @@ export const LegionProjectResumeResponse = z.object({
   pause: legionAnsweredPause.optional(),
   released: z.number().int().nonnegative().optional(),
 });
+
+/** `api.P0BoundView`, the answer to the controller's set or clear of the P0 bound (the P0 start's contract entry),
+ * `POST /legion/v1/project/p0-bound` and its `/clear`, and to the operator's two routes alike: the
+ * bound in force, legion.yaml's and the live value that stands (`legionP0Bound`). The controller's
+ * `set_p0_bound` and `clear_p0_bound` hand the answer to the agent whole (`pi-legion/src/tools.ts`). */
+export const LegionP0BoundResponse = legionP0Bound;
 
 /** `api.PauseFailure`, the refusal of a pause, of a resume, and of a request that would start a
  * turn while the project is paused: the code and the sentence every workflow refusal carries,
@@ -2432,6 +2689,28 @@ export const LegionProjectResumeRequest = z.strictObject({
   grantId: nonEmptyString,
 });
 
+/** `api.ProjectP0BoundRequest`, the controller's set of the P0 bound (the P0 start's contract entry): its grant,
+ * and exactly one of `bound`, a whole number from 1 to 2147483647, and `unbounded: true`, no bound
+ * whatever legion.yaml says, and `reason`, why. It names no project: the daemon changes its own.
+ * The daemon refuses a grant that is not a controller's (`CONTROLLER_REQUIRED`), a set that names
+ * neither, both or a bound below 1 or above 2147483647 (`INVALID_P0_BOUND`), a blank reason
+ * (`P0_BOUND_REASON_REQUIRED`) and a daemon with no workflow (`P0_BOUND_UNAVAILABLE`). */
+export const LegionProjectP0BoundRequest = z.union([
+  z.strictObject({
+    grantId: nonEmptyString,
+    bound: LegionP0BoundNumber,
+    reason: nonEmptyString,
+  }),
+  z.strictObject({ grantId: nonEmptyString, unbounded: z.literal(true), reason: nonEmptyString }),
+]);
+
+/** `api.ProjectP0BoundClearRequest`, the controller's clear of the P0 bound (the P0 start's contract entry), which
+ * returns the daemon to legion.yaml's `admission_p0_bound`: its grant and why. */
+export const LegionProjectP0BoundClearRequest = z.strictObject({
+  grantId: nonEmptyString,
+  reason: nonEmptyString,
+});
+
 /** The two forms of `api.IntakeSelection`, the give-ups a replay or a discard takes: `giveUp`, one
  * record by its id, or `consumer` with `throughSeq`, every open record of that consumer at or below
  * that stream sequence. The state's `intakeGiveUps` gives both: each listed record's id, and each
@@ -2471,6 +2750,17 @@ export type LegionIntakeDiscardRequestBody = z.output<typeof LegionIntakeDiscard
  * the operator's bearer): why the project is paused. The operator's resume sends no body, so it
  * has no schema here. The CLI sends both; the plugin never does. */
 export const LegionOperatorProjectPauseRequest = z.strictObject({
+  reason: nonEmptyString,
+});
+
+/** `api.OperatorP0BoundRequest` and `api.OperatorP0BoundClearRequest`, the operator's set and
+ * clear of the P0 bound (`legion project set-p0-bound` and `clear-p0-bound`, under the operator's
+ * bearer, the P0 start's contract entry). The CLI sends both; the plugin never does. */
+export const LegionOperatorProjectP0BoundRequest = z.union([
+  z.strictObject({ bound: LegionP0BoundNumber, reason: nonEmptyString }),
+  z.strictObject({ unbounded: z.literal(true), reason: nonEmptyString }),
+]);
+export const LegionOperatorProjectP0BoundClearRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
@@ -2654,7 +2944,6 @@ const ISSUE_RECORD_READS = [
   "slot",
   "slot.index",
   "slot.admittedAt",
-  "slot.lentTo",
 ] as const;
 
 /**
@@ -2727,6 +3016,20 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission.held[].issue",
     "admission.held[].reason",
     "admission.held[].heldBy",
+    // The summary's `P0` line names the P0 holders, the bound in force and the live value with who
+    // set it, when and why (the P0 start's contract entry). The summary reads `admission.p0Holders` and
+    // `admission.p0Bound` through the `admission` it destructures, which the census cannot follow,
+    // as it cannot the block's older fields, so neither is named; the bound's own fields are, read
+    // through the `p0Bound` the summary binds.
+    "admission.p0Bound.bound",
+    "admission.p0Bound.live",
+    "admission.p0Bound.live.bound",
+    "admission.p0Bound.live.setBy",
+    "admission.p0Bound.live.setBy|0.kind",
+    "admission.p0Bound.live.setBy|1.kind",
+    "admission.p0Bound.live.setBy|0.session",
+    "admission.p0Bound.live.setAt",
+    "admission.p0Bound.live.reason",
     "capabilities",
     "capabilities[].name",
     "capabilities[].status",
@@ -2795,7 +3098,8 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   LegionIssueRecordResponse: ISSUE_RECORD_READS,
   // The controller's boot check compares the daemon's project with its own LEGION_PROJECT.
   LegionHealthResponse: ["project"],
-  // `legion-claim-core.ts` records every field of the claim the registration issued.
+  // `legion-claim-core.ts` records every field of the claim the registration issued, and names
+  // `replaces` in the role claim.
   LegionRegisterResponse: [
     "claimToken",
     "tree",
@@ -2804,14 +3108,17 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "generation",
     "secret",
     "promptAgents",
+    "replaces",
   ],
   // `controller-session.ts` checks the controller's claim token, mints every controller grant
-  // with the secret, and sends the generation on `claims/ready`.
-  LegionControllerRegisterResponse: ["claimToken", "generation", "secret"],
+  // with the secret, names `replaces` in the role claim, and sends the generation on
+  // `claims/ready`.
+  LegionControllerRegisterResponse: ["claimToken", "generation", "secret", "replaces"],
   // Every write of the `legion` tool posts the grant id `mintClaimGrant` took.
   LegionGrantResponse: ["grantId"],
-  // `daemon-client.ts` reads both fields of a refusal: the code decides whether a 502 is a
-  // restarting daemon, and the sentence is what the role is shown.
+  // `daemon-client.ts` reads both fields of a refusal: the code is the refusal's stable name, which
+  // its message carries and the record read decides by, and the sentence is what the role is
+  // shown. A body in this shape is the daemon's answer, which the restart retry never waits out.
   LegionErrorResponse: ["error", "code"],
   // `read_release_records` counts the window's rows and measures the time between them. A wake
   // a project pause held carries `pause` and names no release, so the report keeps it under its
@@ -2848,6 +3155,20 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "pause.endedBy|0.kind",
     "pause.endedBy|1.kind",
     "pause.endedBy|0.session",
+  ],
+  // No plugin code reads the P0 bound's answer: the controller hands it to its agent whole. Its
+  // live value's fields are named all the same, because the census matches a read by the field's
+  // name under its parent, and reads the summary's `live.bound`, `live.setBy.kind` and the rest of
+  // the state's bound as reads of this answer's too.
+  LegionP0BoundResponse: [
+    "bound",
+    "live.bound",
+    "live.setBy",
+    "live.setBy|0.kind",
+    "live.setBy|1.kind",
+    "live.setBy|0.session",
+    "live.setAt",
+    "live.reason",
   ],
   LegionProjectResumeResponse: [
     "pause.by|0.kind",

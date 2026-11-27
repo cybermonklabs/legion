@@ -1059,16 +1059,18 @@ func (r *personHandoverRig) pendingRegistered(run basisRun, ask string, told boo
 
 // pendingBasisEndBound is how long pendingEnded waits for the daemon to end a step's wait on an
 // ancestor's request after the act that ends it, above which the act is taken never to have
-// reached the step. It is a ceiling on an event whose arrival this rig has measured, not a span
-// standing in for one: in the run this bound comes from, the daemon's cue and its verdict are 8 to
-// 30 ms apart in every case that ended (its own log, daemon-go-race (leg 3) job 140311446907 at
-// #5660's f1db1daf), so a minute is two thousand times the event's own time and no load this rig
-// meets comes near it. It exists because the binary's deadline is the wrong ceiling for this one
-// wait: in that run the daemon applied no Dispatch event at all for 29 minutes, the wait ran
-// 1,729.51 s to testwait's margin, and the binary's alarm then failed 47 other top-level tests
-// and 9 subtests that were still running. This bound makes that failure cost a minute and name
-// itself; it does not fix the cause, which is the open question of why the daemon applied no
-// event (the row in dispatch://INFRA-3904/artifact/found-rows-md).
+// reached the step. It is a ceiling on a quantity this rig has measured, not a span standing in
+// for an event. The quantity is the test-side wait itself, from the act to the state showing the
+// step's wait ended: 25 readings in one unforced head run gave a minimum of 11 ms, a median of 58
+// ms and a maximum of 221 ms, so a minute is 271 times the slowest. (The daemon's own log shows its
+// cue and its verdict 8 to 30 ms apart, in daemon-go-race (leg 3) job 140311446907 at #5660's
+// f1db1daf; that is the daemon's internal step, not the quantity this bounds.) It exists because
+// the binary's deadline is the wrong ceiling for this one wait: in that run the daemon applied no
+// Dispatch event at all for 29 minutes, the wait ran 1,729.51 s to testwait's margin, and the
+// binary's alarm then failed 47 other top-level tests and 9 subtests that were still running. This
+// bound makes that failure cost a minute and name itself; it does not fix the cause, which is the
+// open question of why the daemon applied no event (the row in
+// dispatch://INFRA-3904/artifact/found-rows-md).
 const pendingBasisEndBound = time.Minute
 
 // restingRegistration is the sentence of the resting-root notice that tells P's architect of the

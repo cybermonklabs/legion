@@ -186,8 +186,9 @@ type SecretDecision struct {
 	// "automatic", "approval" or "deny".
 	Decision string `json:"decision"`
 	Source   string `json:"-"`
-	// ProfileDigest is the fingerprint of the profile the name was served as when the request
-	// was decided (policy.Secret.ProfileDigest), "" for a stored secret served by its own name.
+	// ProfileDigest is the fingerprint of what the name was served as when the request was
+	// decided (policy.Secret.ProfileDigest): its profile's, or its own behind the proxy or under a
+	// scopes tag, and "" for a stored secret served by its own name with neither.
 	// The request records it in request_secrets.airlock_digest, and a release ends the grant once
 	// it differs from the one the policy holds then.
 	ProfileDigest string `json:"-"`
@@ -290,6 +291,12 @@ type Machine struct {
 	Policy     *policy.Current
 	Secrets    secrets.Reader
 	PendingTTL time.Duration
+	// SecretsPrefix is BROKER_SECRETS_PREFIX and SecondPrefix BROKER_SECRETS_SECOND_PREFIX, ""
+	// for none: the two the one rule of a grant's frozen source reads (sourceRule). With
+	// SecondPrefix set, a source frozen under it counts as the source the policy serves under
+	// SecretsPrefix for the same name and type, so a store move ends no grant; a release still
+	// reads the policy's source alone (readSource). Nothing else here reads either.
+	SecretsPrefix, SecondPrefix string
 	// Audience is BROKER_PUBLIC_URL: the aud a new request object is held to exactly (Create), and
 	// the origin a stored record's object is read back by (record.VerifyStoredRequestObject).
 	Audience string

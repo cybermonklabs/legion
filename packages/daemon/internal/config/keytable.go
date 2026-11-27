@@ -138,7 +138,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "postgres_dsn", Default: "`LEGION_POSTGRES_DSN` in the daemon's environment", RequiredBy: "when `LEGION_POSTGRES_DSN` is unset in the daemon's environment",
-			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names. A `default_query_exec_mode` of `exec` or `simple_protocol` is refused: in those modes pgx learns no parameter's type from the server, and the store needs that type to apply the text rule or the JSON rule to each value it writes.",
+			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names. A `default_query_exec_mode` of `exec` or `simple_protocol` is refused: in those modes pgx learns no parameter's type from the server, and the store needs that type to apply the text rule or the JSON rule to each value it writes. A URL holding an unencoded `@` after its user name and password (in the host, the database name or the query, a query value included) is refused by the key alone: that is where a password holding an `@` or a `/` leaves part of itself, which pgx reads as the host, the port, the database or a query and every connection error prints. Write each such `@` in a password, a user name or a query value as `%40` (pgx decodes it there, so `?user=sa%40project.iam` serves a Cloud SQL IAM user) and a `/` in a password as `%2F`; a database name holding an `@` is refused however it is written. So is a value that names the postgres scheme but is no lower-case `postgres://` or `postgresql://` URL with nothing before it; any other value with a key holding a character no keyword has (only ASCII letters, digits, `_`, `.` and, after the first, `$`: a misspelt scheme such as `postgress://` or `postgresql+psycopg2://`); and a DSN, keyword or URL, with a value other than a password that pgx or the server prints (its user, database, host or hostaddr, a URL's decoded from its user info, path or query) holding `://` anywhere, a user holding a `:`, a database holding an `@`, or a host or hostaddr holding an `@`, an `=`, or a `:` in an entry that is no IP address or socket directory: pgx sends such a key to the server, or names such a value in its error, password and all. A key of a URL's query no keyword's shape has is refused too, and so is a value of any key but a password holding `://` and then an `@` anywhere after it, a URL with a user name or a password: a password can hold a `/`, `?`, `#` or space, so a URL value with an `@` in its path is refused as well. A Cloud SQL socket such as `host=/cloudsql/acme-postgres:us-central1:db`, an IPv6 host, and a password or an `sslpassword` such as `Postgres:Admin1` are kept. A keyword DSN pgx cannot parse is named by the key alone, with none of pgx's text.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.PostgresDSN = v }),
 		},
 		{
@@ -172,6 +172,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
 		},
 		{
+			Name: "admission_p0_bound", Default: "no bound", RequiredBy: "no",
+			Description: "How many P0 issues may hold a slot at once, a whole number from 1 to 2147483647; a P0 issue, one Dispatch resolves to P0 (its own priority, else the nearest issue's above it that has one), starts outside `admission_cap` and counts against this bound alone, and with no bound every P0 issue that waits only for a slot starts. A person sets another bound, or none, while the daemon runs, with `legion project set-p0-bound` or through the controller (`set_p0_bound`) on the person's cited word; it takes effect at the next admission pass with no restart and stands until it is cleared.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionP0Bound = v }),
+		},
+		{
 			Name: "controller", Default: "`operator`", RequiredBy: "no",
 			Description: "Who runs the project's controller: `operator`, a person with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running (a pane of its own window under `runtime: tmux`), which needs `dispatch_url`.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.Controller = v }),
@@ -188,7 +193,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "provider_keys", Default: "the agents' Oh My Pi receives no provider credential", RequiredBy: "no",
-			Description: "The provider credentials every agent's Oh My Pi receives in its environment: each variable Oh My Pi reads mapped to the key of the providers Secret that holds it, or, under `runtime: tmux`, to a secretsd key or a `file:/abs/path` the daemon reads once at boot.",
+			Description: "The provider credentials every agent's Oh My Pi receives in its environment: each variable Oh My Pi reads, an upper-case environment variable name, mapped to the key of the providers Secret that holds it, or, under `runtime: tmux`, to a secretsd key or a `file:/abs/path` the daemon reads once at boot.",
 			Read:        reads(readProviderKeys, func(f *fileConfig, v []ProviderKey) { f.ProviderKeys = v }),
 		},
 		{
@@ -381,6 +386,16 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "controller_wake_interval_seconds", RequiredBy: "no",
 			Description: "How often the daemon wakes the project's controller, which is also the period of its status repair, so raising it to quiet the controller slows that repair with it.",
 			Positive:    &positiveKey{Value: 3600, Duration: func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
+		},
+		{
+			Name: "controller_turn_bound_minutes", Default: "`90`", RequiredBy: "no",
+			Description: "Under `controller: daemon`, how many minutes a turn of the project's controller may stay open, whether or not steps still arrive in it, before the daemon ends that launch as its stall backstop ends one and counts the end against the session; the next launch resumes the session, and, once the session has finished a turn, a second such end with no finished turn between starts a fresh session. Decimals allowed; `0` turns the rule off.",
+			Read:        reads(readMinutesOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerTurnBound = v }),
+		},
+		{
+			Name: "controller_session_max_age_hours", Default: "`72`", RequiredBy: "no",
+			Description: "Under `controller: daemon`, how many hours old, read from its session id, the project controller's session may grow before a launch the daemon makes of it starts a fresh session instead of resuming it: every launch of the controller that no operator's request raised, a death's, a launch failure's, a pod update's or displacement's, a stale-plugin refresh's, a turn ended past its bound, the keeper's retry or resume, and the boot relaunch of an unfinished launch among them. The daemon stops no live controller for it, and an operator's own resume, or a task an operator delivers to a suspended controller, keeps the session. The fresh session is told which session it replaces and why. Decimals allowed; `0` turns the rule off.",
+			Read:        reads(readHoursOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerSessionMaxAge = v }),
 		},
 		{
 			Name: "launch_failure_limit", RequiredBy: "no",
@@ -639,7 +654,7 @@ var nestedKeys = []memberGroup{
 		{Name: "plugins", Default: "a relaunch installs the pair the release workflow linked into this binary", RequiredBy: "no",
 			Description: "The exact pi-legion and pi-envoy pair a stale-plugin relaunch installs into a kept pod, in place of the image's own copies."},
 		{Name: "repository_cache", Default: "every cache runs on the daemon's own sizes and intervals", RequiredBy: "no",
-			Description: "The cache pod of each repository a live record names, which an issue pod's feed is filled from before GitHub is asked for the rest."},
+			Description: "The cache pod of each repository a live record names, which workspace-init uses to fill an issue pod's clone before GitHub supplies its delta."},
 		{Name: "setup", Default: "a role starts its Oh My Pi with nothing run first", RequiredBy: "no",
 			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0. It may install an Oh My Pi plugin marketplace from GitHub: such an install renames a directory in the role's home overlay, and gVisor's opaque mark on that directory stopped the pod's sandbox until legion-v19.18.1 mounted the overlay with `userxattr` (dispatch://INFRA-1262); a command that must stop no role skips the daemon-launched controller and exits 0 whatever step fails, as this short form does: `[/bin/sh, -c, '[ -z \"$LEGION_CONTROLLER\" ] || exit 0; cd ~ || exit 0; omp plugin marketplace remove <name> >/dev/null 2>&1; timeout 120 omp plugin marketplace add <owner>/<repo> && timeout 60 omp plugin install <plugin>@<name> --force && omp plugin enable <plugin>@<name> || echo \"skills install failed\" >&2; omp plugin marketplace remove <name> >/dev/null 2>&1; exit 0']` (docs/kubernetes.md, Configuration, gives the full example, which names the step that failed, and explains each step)."},
 		{Name: "skills_repository", Default: "", RequiredBy: "no",
@@ -700,6 +715,10 @@ var nestedKeys = []memberGroup{
 			Description: "How long a cache outlives the last live record that names its repository before the orphan sweep deletes it with its volume and its Secret, in whole hours; a live record or a launch that names the repository again before that keeps its cache."},
 		{Name: "resources", Default: "the cache's container takes the daemon's own reservation", RequiredBy: "no",
 			Description: "What the cache pod's one container reserves and is bounded by, in a pod reservation's own six fields."},
+		{Name: "bucket", Default: "no bucket: an issue pod's clone comes from the cache's `/tar` alone", RequiredBy: "when `service_account` is set",
+			Description: "The Cloud Storage bucket each cache keeps the packs it serves in, which an issue pod's provision downloads through the 15-minute signed addresses its cache gives it, falling back to `/tar`; set together with `service_account`, and both left out turn it off."},
+		{Name: "service_account", Default: "the cache pods run as `pod.service_account`, as every issue pod does", RequiredBy: "when `bucket` is set",
+			Description: "The Kubernetes ServiceAccount the cache pods alone run as, the one the bucket's grant goes to; it must differ from the account the issue pods run as (`pod.service_account`, or `default` while that is unset), so no issue pod holds a grant on the bucket, and from `pod.controller_service_account` where that is set, so the controller's pod holds none either."},
 	}},
 	{Path: kubernetesKey + ".repository_cache.resources", Members: []member{
 		{Name: "cpu", Default: "`1`", RequiredBy: "no",

@@ -200,7 +200,8 @@ type Options struct {
 	// at no variant; the empty list, which draws nothing, is a caller that declared none.
 	// ExperimentSource is the random source a `random` mode is drawn with; nil is
 	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
-	// from; nil is time.Now, and a test pins it.
+	// from, and the clock that spaces the state route's warning for a `view` other than exactly
+	// one `observed` (otherViewWarnings); nil is time.Now, and a test pins it.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	Now              func() time.Time
@@ -274,10 +275,11 @@ type Options struct {
 	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
 	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
 	// not the controller: for an issue of the daemon's own project, the daemon queues the
-	// publication of that issue's role sessions to Dispatch, which reads the live set from the
-	// store when it runs. The ready is what sends the claim its first task, so the publication is
-	// queued before any task goes. An error refuses the ready with 503: the machine has not taken
-	// it, no task goes, and the plugin tries the ready again. Nil queues nothing.
+	// publication of that issue's role sessions to Dispatch, which reads the set of sessions whose
+	// claims hold their roles from the store when it runs. The ready is what sends the claim its
+	// first task, so the publication is queued before any task goes. An error refuses the ready
+	// with 503: the machine has not taken it, no task goes, and the plugin tries the ready again.
+	// Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
@@ -297,6 +299,10 @@ type Options struct {
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
 	// it answers every pause and resume PAUSE_UNAVAILABLE and refuses no turn for one.
 	Pause PauseService
+	// P0BoundConfigured is legion.yaml's P0 bound (config.Config.AdmissionP0Bound), nil where the
+	// file gives none: the bound in force while no value set while the daemon runs stands, which
+	// the P0 bound routes answer beside the bound they leave in force (p0_bound.go).
+	P0BoundConfigured *int
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -406,6 +412,8 @@ type server struct {
 	gateRead func(ctx context.Context, issue string)
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
+	// p0BoundConfigured is Options.P0BoundConfigured.
+	p0BoundConfigured *int
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -414,6 +422,9 @@ type server struct {
 	drained   context.Context
 	decisions *RouteDecisions
 	log       *slog.Logger
+	// otherViews spaces the warning for a state request whose `view` is other than exactly one
+	// `observed` (otherViewWarnings).
+	otherViews otherViewWarnings
 	// beforeForgetSessionHandle is a seam a test runs code in just before a forget's decision of
 	// the machine — the concurrency regression tests post a suspension there — on the operator's
 	// forget-session route (after its preflight) and in the fresh session's forget
@@ -490,6 +501,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		claimActivity:      opts.ClaimActivity,
 		gateRead:           opts.GateRegistrationRead,
 		pause:              opts.Pause,
+		p0BoundConfigured:  opts.P0BoundConfigured,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -609,6 +621,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/intake/discard", s.intakeDiscard},
 		{"POST /legion/v1/project/pause", s.projectPause},
 		{"POST /legion/v1/project/resume", s.projectResume},
+		{"POST /legion/v1/project/p0-bound", s.projectP0Bound},
+		{"POST /legion/v1/project/p0-bound/clear", s.projectP0BoundClear},
 
 		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
 		{"GET /legion/v1/operator/claims", s.operator(s.list)},
@@ -625,6 +639,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/intake/discard", s.operator(s.operatorIntakeDiscard)},
 		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
 		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
+		{"POST /legion/v1/operator/project/p0-bound", s.operator(s.operatorProjectP0Bound)},
+		{"POST /legion/v1/operator/project/p0-bound/clear", s.operator(s.operatorProjectP0BoundClear)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
 		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
@@ -849,102 +865,6 @@ func (s *server) refusedForPause(w http.ResponseWriter, r *http.Request, request
 // the pause, which is the project's resume and no action on one agent, named as each
 // caller asks for it.
 const pauseLifts = "The pause lifts only at the project's resume: the controller's resume operation of its legion tool, which names no issue, or the operator's legion project resume. Ask again once the project runs"
-
-// projectState is the project's own value, as every route that reads it reads it: one
-// repeatable-read read-only snapshot, one read of the source, and the consumers' lag read after
-// that snapshot commits. It writes its own refusal and answers false where it wrote one, so the
-// two reading routes share the transaction, the read and the refusals and differ only in what
-// each answers from the value.
-//
-// The claims are the snapshot's own, which is what a caller's contract is read from
-// (writeAnswerFrom): a claim and the state it was projected into cannot come from two moments.
-//
-// The read runs under a bound of the daemon's own (stateReadBound, Options.StateReadBound).
-// Before INFRA-3169 the only thing that ended this read was the client giving up, so a read that
-// never finished held its connection as long as the client held its socket, and 32 of those are
-// the whole pool.
-//
-// The bound is laid twice over the same work, because the two ends it has to catch are different
-// ones. The context deadline ends the handler's own waiting — on the Go work between statements
-// and on anything that is not a statement — and statement_timeout ends a statement that runs
-// long inside the transaction, a lock wait included, which no context deadline reaches until the
-// driver's cancel lands. It is `set local`, so it holds for this transaction alone and never for
-// the pool: a migration legitimately runs long DDL in one statement (internal/store's apply),
-// and a statement bound on the pool would cut it. The pool carries the idle bound instead, which
-// is the one that is true of every transaction (internal/store's idleBound).
-//
-// http.TimeoutHandler is not the way to do this and must not be added: it buffers the whole
-// response into a buffer of its own before writing it, and the state's body is buffered once
-// already — writeAnswerFrom hands the body to json.Marshal, which materialises all of it before
-// a byte is written — so the handler would hold a second full copy of a body that measured
-// 4,055,424 bytes on the production deployment on 2026-11-12. One such copy per concurrent read
-// is a second resource failure inside the first one this bounds.
-func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []supervise.Claim, bool) {
-	if s.stateTransactions == nil {
-		s.log.Error("api: state transaction source is unset")
-		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
-	}
-	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
-	defer cancel()
-	var state State
-	var claims []supervise.Claim
-	// The step that failed names the log line, as each did before the read ran through
-	// store.TransactWith: the begin, until the body runs; the statement bound; the state source;
-	// and the commit, for a failure after a body that succeeded.
-	failed := "api: begin state transaction failed"
-	err := store.TransactWith(reading, s.stateTransactions, pgx.TxOptions{
-		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
-	}, func(ctx context.Context, tx pgx.Tx) error {
-		failed = "api: commit state transaction failed"
-		if _, err := tx.Exec(ctx, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
-			failed = "api: bound the state transaction's statements failed"
-			return err
-		}
-		var err error
-		state, claims, err = s.state.State(ctx, tx)
-		if err != nil {
-			failed = "api: state source failed"
-		}
-		return err
-	})
-	if err != nil {
-		s.logRequestFailure(r, err, failed)
-		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return State{}, nil, false
-	}
-	// The consumers' lag is read from NATS after the commit, so a slow or silent NATS server holds
-	// no snapshot open; what it does not answer is each consumer's `unavailable`, never a refusal.
-	if s.consumerLag != nil {
-		state.Consumers = ConsumerLagViewsOf(s.consumerLag(reading))
-	}
-	// The fleet's lowest plugin contract is read from the claims of the very snapshot the state
-	// was projected from, so the number the body reports and the shapes the body was served at
-	// are read from one moment (State.LowestPluginContract).
-	state.LowestPluginContract = lowestPluginContract(claims)
-	return state, claims, true
-}
-
-func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
-	state, claims, ok := s.projectState(w, r)
-	if !ok {
-		return
-	}
-	s.writeAnswerFrom(w, r, AnswerState, http.StatusOK, state, claims)
-}
-
-// statementBound is bound as PostgreSQL's statement_timeout takes it: whole milliseconds, and
-// never the 0 a bound under a millisecond truncates to. In PostgreSQL 0 is no statement timeout
-// at all, which is the opposite of what a caller that set a bound asked for, so a non-zero bound
-// renders as the one millisecond that is still a bound. No caller sets a sub-millisecond bound
-// today (stateReadBound is 60 s); this is what keeps one that did from switching the bound off.
-func statementBound(bound time.Duration) int64 {
-	milliseconds := bound.Milliseconds()
-	if milliseconds == 0 && bound != 0 {
-		return 1
-	}
-	return milliseconds
-}
 
 // recordNotFound is the code of the one refusal this route makes, and no other refusal of this
 // daemon uses it: a caller that reads one issue's record tells "this daemon holds no record for
