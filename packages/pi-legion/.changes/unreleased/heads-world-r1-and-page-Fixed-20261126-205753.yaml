@@ -1,6 +1,6 @@
 kind: Fixed
 body: |-
-  In the skill-scenario worlds whose Verification document holds a check that a CI job runs, R1 now asks of the usage page what that check asks, and the page names three of the four commands the failed job's log says it names. The page named none of them, so the miss the job reports was plain in the three-line diff, and R1 asked less than the failing check did. In every other world the page names no command, since nothing there names one: one flag in the world's issue chooses both R1 and the page, which the rig writes from the world's fixture.
+  In the skill-scenario worlds whose Verification document holds a check that a CI job runs, R1 now asks of the usage page what that check asks, and the page names three of the four commands the failed job's log says it names. The page named none of them, so the miss the job reports was plain in the three-line diff, and R1 asked less than the failing check did. In every other world the page names no command, since nothing there names one: one flag in the world's issue chooses both R1 and the page, which the rig writes from the world's fixture. Where the job passes at #702's head and fails at #703's, #702's page names all four commands and #703 adds the page that names three, so the failed job's log describes the page at the head it is served at.
 time: 2026-11-26T20:57:53Z
 custom:
     Issue: heads-world-r1-and-page

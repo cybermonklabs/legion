@@ -226,9 +226,10 @@ test("architect-pass-and-fail: k1 serves R1, its words are R1's, and its run mat
     writeFileSync(path.join(dir, "docs/usage.md"), text);
     return Bun.spawnSync(["bash", "-c", run], { cwd: dir }).stdout.toString().trim();
   };
-  // Both pages heads-issue gives #702 (rig.sh heads_fixture writes the fixture's), and a line that
+  // Each page heads-issue gives a head (rig.sh heads_fixture writes the fixture's), and a line that
   // names the CLI but not R1.
-  for (const page of [heads.USAGE_PAGE, heads.USAGE_PAGE_LISTED]) expect(grep(page)).toBe("1");
+  for (const page of [heads.USAGE_PAGE, heads.USAGE_PAGE_LISTED, heads.USAGE_PAGE_COMPLETE])
+    expect(grep(page)).toBe("1");
   expect(grep("# Usage\n\nThe widgets CLI has commands.\n")).toBe("0");
 });
 
@@ -430,11 +431,16 @@ test("the worlds that hold k2 or k3: R1 asks what that check asks of the page", 
 // every world with neither k2 nor k3, where nothing names a command; and a page that names none
 // where R1 asks for them and the failed job's log names them. One flag chooses R1 and the page, so
 // in every world of heads-scenarios.txt the page lists commands exactly where the document holds
-// k2 or k3 and R1 asks for the list.
+// k2 or k3 and R1 asks for the list; elsewhere it is the page that names none, and only the two
+// worlds of the other head give #703 a page.
 test("every heads world: the page lists commands exactly where R1 asks for them", async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
+  const log = RIG_WORLD.ciJobs["ci-check-fail"].log ?? "";
+  const commands = (/`widgets --help` lists \d+: ([^.]+)\./.exec(log)?.[1] ?? "").split(", ");
+  expect(commands).toEqual(["add", "export", "list", "remove"]);
   const listing: string[] = [];
+  const twoPages: string[] = [];
   const worlds: string[] = [];
   for (const scenarioName of HEADS_SCENARIOS)
     for (const which of headsCases(scenarioName)) {
@@ -447,14 +453,19 @@ test("every heads world: the page lists commands exactly where R1 asks for them"
       const content = String(calls.find((call) => call.path.endsWith("/artifacts"))?.body.content);
       const ciCheck = /:::check\{#k[23] /.test(content);
       const r1 = spec.split("\n").find((line) => line.startsWith("**R1.**")) ?? "";
-      const { page } = JSON.parse(readFileSync(file, "utf8")) as { page?: string };
-      expect({ scenario, page, asksForTheList: r1.includes("lists each command it lists") }).toEqual({
+      const { page = "", page703 } = JSON.parse(readFileSync(file, "utf8")) as {
+        page?: string;
+        page703?: string;
+      };
+      expect({
         scenario,
-        page: ciCheck ? heads.USAGE_PAGE_LISTED : heads.USAGE_PAGE,
-        asksForTheList: ciCheck,
-      });
+        namesCommands: commands.some((command) => page.includes(`\`${command}\``)),
+        asksForTheList: r1.includes("lists each command it lists"),
+      }).toEqual({ scenario, namesCommands: ciCheck, asksForTheList: ciCheck });
+      if (!ciCheck) expect({ scenario, page }).toEqual({ scenario, page: heads.USAGE_PAGE });
       worlds.push(scenario);
       if (ciCheck) listing.push(scenario);
+      if (page703 !== undefined) twoPages.push(scenario);
     }
   // The catalog's 19 worlds were read, and the six of k2 or k3 are the ones whose page lists.
   expect(worlds).toHaveLength(19);
@@ -465,6 +476,10 @@ test("every heads world: the page lists commands exactly where R1 asks for them"
     "ci-check-fail-other-head",
     "tester-reads-no-ci-ci-late",
     "tester-reads-no-ci-ci-red",
+  ]);
+  expect(twoPages.toSorted()).toEqual([
+    "architect-pass-and-fail-ci-check-fail-other-head",
+    "ci-check-fail-other-head",
   ]);
 });
 

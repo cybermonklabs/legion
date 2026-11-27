@@ -25,7 +25,7 @@ import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, workerPane } from "./daemon-pane";
 import { headsCases } from "./heads-scenarios";
-import { K1_RUN, USAGE_PAGE, USAGE_PAGE_LISTED } from "./heads-world";
+import { K1_RUN, USAGE_PAGE, USAGE_PAGE_COMPLETE, USAGE_PAGE_LISTED } from "./heads-world";
 import { RIG_WORLD } from "./rig-world";
 import {
   JUDGE_OMP,
@@ -2892,12 +2892,16 @@ describe("ci_job_results", () => {
 // and heads_fixture's two pull request branches of one issue on it. worker_fixture, the
 // tester-proof world, builds on the same fixture_repo, and keeps its world as it was.
 describe("heads_fixture", () => {
-  /** `fixture` run on a fresh run directory; heads_fixture's with the page seed.ts heads-issue
-   *  writes into $R/fixture.json, USAGE_PAGE (a world with neither k2 nor k3) unless `page` says. */
-  function build(fixture: "heads_fixture" | "worker_fixture", page = USAGE_PAGE) {
+  /** `fixture` run on a fresh run directory; heads_fixture's with the pages seed.ts heads-issue
+   *  writes into $R/fixture.json: `page` for #702, USAGE_PAGE (a world with neither k2 nor k3)
+   *  unless the test says, and `page703` for #703 where the test gives one. */
+  function build(fixture: "heads_fixture" | "worker_fixture", page = USAGE_PAGE, page703?: string) {
     const run = freshDir(`${fixture}-run`);
     if (fixture === "heads_fixture")
-      writeFileSync(path.join(run, "fixture.json"), JSON.stringify({ page }));
+      writeFileSync(
+        path.join(run, "fixture.json"),
+        JSON.stringify({ page, ...(page703 === undefined ? {} : { page703 }) })
+      );
     const result = bash(
       [
         "set -euo pipefail",
@@ -3811,6 +3815,36 @@ describe("heads_fixture", () => {
     expect(listed.length).toBeGreaterThan(0);
     expect(listed.filter((command) => shown.includes(`\`${command}\``))).toEqual([]);
     expect(shown).toBe(USAGE_PAGE);
+  }, 600_000);
+
+  // Catches: a log served at #703's head that describes a page #703 does not carry. In the worlds
+  // where k2's job passes at #702's head and fails at #703's, #703 adds the page the fixture names
+  // for it, the one that job's log describes, beside its README line, still in one docs-only commit;
+  // #702 carries the page its passing job read. Where the fixture names no page703, #703 adds none.
+  test("in the worlds of the other head, #703 adds the fixture's page703 and #702 the fixture's page", () => {
+    const show = (run: string, pr: string) => {
+      const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))[pr];
+      const shown = childSpawn({ ...VCS_COMMAND, part: "git show" }, [
+        "git",
+        "-C",
+        path.join(run, "remote.git"),
+        "show",
+        `${head}:docs/usage.md`,
+      ]);
+      return shown.exitCode === 0 ? shown.stdout.toString() : undefined;
+    };
+    const other = build("heads_fixture", USAGE_PAGE_COMPLETE, USAGE_PAGE_LISTED);
+    expect(other.code).toBe(0);
+    expect({ "702": show(other.run, "702"), "703": show(other.run, "703") }).toEqual({
+      "702": USAGE_PAGE_COMPLETE,
+      "703": USAGE_PAGE_LISTED,
+    });
+    const plain = build("heads_fixture", USAGE_PAGE);
+    expect(plain.code).toBe(0);
+    expect({ "702": show(plain.run, "702"), "703": show(plain.run, "703") }).toEqual({
+      "702": USAGE_PAGE,
+      "703": undefined,
+    });
   }, 600_000);
 });
 
