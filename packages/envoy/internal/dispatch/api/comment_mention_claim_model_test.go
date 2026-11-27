@@ -29,12 +29,12 @@ import (
 // sender is a step of its own, by construction, and the search tries every order of them against
 // each other and against the model's own steps; no seam is placed in the sender's code for it.
 // The search keys on the sender's maps, on each of its goroutines - in the order they started,
-// with where it waits, the comment of the send it last carried and what the model knows of that
-// send's try - and on the model's own state, every claim in it named by its order among the claims
-// in play and its age, which is all the code compares (model.DeliveryClaimSinceSQL,
-// model.DeliveryClaimFreeSQL), and each attempt's lost count by whether it moved since a re-read
-// in flight began, which is all the code compares of it. A lane goroutine is keyed with the lane
-// it serves and its park's pending timer.
+// with where it waits and, away from next, the send it carries and what the model knows of that
+// send's try (at next a lane goroutine holds no send) - and on the model's own state, every claim
+// in it named by its order among the claims in play and its age, which is all the code compares
+// (model.DeliveryClaimSinceSQL, model.DeliveryClaimFreeSQL), and each attempt's lost count by
+// whether it moved since a re-read in flight began, which is all the code compares of it. A lane
+// goroutine is keyed with the lane it serves and its park's pending timer.
 //
 // What the model holds:
 //   - comments A-1 and A-2 of issue T-1, each mentioning session s1 under attempt 1, which commits
@@ -316,12 +316,11 @@ type cmG struct {
 	lock    chan struct{}
 	site    string
 	running bool
-	// last is the comment of the send a lane goroutine last carried (-1 for none), done whether
-	// its last try ended not waiting, ended its last try when that try claimed the row for itself
-	// and waits, until its park records the claim, and givenUp whether its park left it no lane,
-	// the park's timer to start once it takes another (serve).
+	// last is the comment of the send a lane goroutine last carried (-1 for none), which the trace
+	// names it by and nothing else reads; ended its last try when that try claimed the row for
+	// itself and waits, until its park records the claim; and givenUp whether its park left it no
+	// lane, the park's timer to start once it takes another (serve).
 	last    int
-	done    bool
 	ended   *cmTry
 	givenUp bool
 	// lane is the lane a lane goroutine serves (serve's lane), and carried the send it carries
@@ -345,16 +344,25 @@ type cmSweep struct {
 	item mentionSend
 }
 
+// cmArrival is one of the sender's goroutines come to one of its statements: a try, the refresh's
+// statement, or a re-read.
 type cmArrival struct {
 	refresh bool
-	lock    chan struct{}
-	site    string
 	item    mentionSend
 	try     chan cmAnswer
 	queued  []mentionClaim
 	stmt    chan cmWritten
 	named   []mentionClaim
 	reread  chan cmReadAnswer
+}
+
+// cmLockArrival is one of the sender's goroutines come to the sender's lock at site, which grant
+// lets it take. It travels apart from cmArrival, which carries a send of about a kilobyte, so a
+// lock, the step the search takes most, copies no send into the channel and out of it.
+type cmLockArrival struct {
+	refresh bool
+	grant   chan struct{}
+	site    string
 }
 
 // cmLock is the sender's lock under the model: the mutex that guards the sender's state, taken
@@ -367,25 +375,39 @@ type cmArrival struct {
 type cmLock struct {
 	sync.Mutex
 	r *cmRun
+	// sections counts the sections locked through Lock: every one of the sender's, the only
+	// sections its state changes in (checkHeldReport).
+	sections uint64
 }
 
+// Lock's arrival goes into a buffer settle empties on every step, so it tries that send alone
+// first, which never waits there, before the one that also watches for the run's end.
 func (l *cmLock) Lock() {
 	switch site := cmCaller(1); {
 	case site.lane || site.refresh:
 		grant := make(chan struct{})
+		arrival := cmLockArrival{refresh: site.refresh, grant: grant, site: site.name}
 		select {
-		case l.r.arrivals <- cmArrival{refresh: site.refresh, lock: grant, site: site.name}:
+		case l.r.locks <- arrival:
+		default:
+			select {
+			case l.r.locks <- arrival:
+			case <-l.r.done:
+				grant = nil
+			}
+		}
+		if grant != nil {
 			select {
 			case <-grant:
 			case <-l.r.done:
 			}
-		case <-l.r.done:
 		}
 	case !site.model:
 		panic("the claim model: the sender takes its lock at " + site.name +
 			", which is neither a step of a lane goroutine or the refresh nor a call of the model's own (cmCaller)")
 	}
 	l.Mutex.Lock()
+	l.sections++
 }
 
 // cmSite is where a call came from: the function and line, and whose goroutine makes it - a lane
@@ -438,6 +460,7 @@ type cmRun struct {
 	stop     context.CancelFunc
 	done     chan struct{}
 	arrivals chan cmArrival
+	locks    chan cmLockArrival
 	// mu guards started, the park timers the sender started in the step being taken.
 	mu               sync.Mutex
 	started          []func()
@@ -473,4 +496,9 @@ type cmRun struct {
 	// or failing the model, and no other, since the text is only read then.
 	tracing bool
 	trace   []string
+	// k is the buffer the run's key is written into (key).
+	k cmKey
+	// reported is one past the count of the sender's locked sections (cmLock.sections) that
+	// checkHeldReport last read the sender's state at, and zero before it has.
+	reported uint64
 }

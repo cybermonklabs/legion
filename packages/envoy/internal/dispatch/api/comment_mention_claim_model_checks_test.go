@@ -14,9 +14,16 @@ import (
 // waited behind, and every queued send that waited, and has had no WARN, names a real earlier event
 // through what its late WARN would report (reportedWaitLocked): a send parked with no event to
 // wait behind - its claim could not be read - is no held copy, and a WARN of it would name event 0.
+// It reads the sender's state alone, which changes only in a section of the sender's lock
+// (cmLock.sections), so a step that locked none leaves it as the last check found it, and the
+// check reads it again only after one that did.
 func (r *cmRun) checkHeldReport() {
 	r.lock.Mutex.Lock()
 	defer r.lock.Mutex.Unlock()
+	if r.reported == r.lock.sections+1 {
+		return
+	}
+	r.reported = r.lock.sections + 1
 	for lane, wait := range r.sender.waits {
 		if wait.by.EventID == 0 {
 			r.fail("unnamed", "the held lane's wait (%v) names event 0, which does not exist", lane.held)
@@ -71,7 +78,7 @@ func (r *cmRun) checkClaims() {
 		if try := r.tries[c]; try != nil && try.took {
 			continue
 		}
-		if slices.ContainsFunc(r.gs, func(g *cmG) bool { return g.ended != nil && g.last == c }) {
+		if slices.ContainsFunc(r.gs, func(g *cmG) bool { return g.ended != nil && cmIndex(g.ended.item.comment.ID) == c }) {
 			continue
 		}
 		r.fail("stale", "the sender trusts %s's claim as %s while its row carries %s: no refresh writes that row again",

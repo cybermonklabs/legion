@@ -20,16 +20,22 @@ import (
 
 func newCmRun(v cmVariant, periods int, tracing bool) *cmRun {
 	lifetime, stop := context.WithCancel(context.Background())
-	// The arrivals channel holds two: a cmArrival is about a kilobyte, the search makes a run for
+	// Each arrivals channel holds two: a cmArrival is about a kilobyte, the search makes a run for
 	// every edge it walks, and a buffer of sixteen was the largest allocation of each. One
 	// arrival is all a step may make, and settle fails the model on more, so two is what that
 	// check needs to see; a third goroutine waits on the send, and the two the drain reads
 	// already end the run.
 	r := &cmRun{
 		v: v, slots: periods * cmSlots, stop: stop, done: make(chan struct{}), tracing: tracing,
-		arrivals: make(chan cmArrival, 2), tries: map[int]*cmTry{}, sweeps: map[int]*cmSweep{},
+		arrivals: make(chan cmArrival, 2), locks: make(chan cmLockArrival, 2), tries: map[int]*cmTry{},
+		sweeps: map[int]*cmSweep{},
 	}
 	arrive := func(a cmArrival) bool {
+		select {
+		case r.arrivals <- a:
+			return true
+		default:
+		}
 		select {
 		case r.arrivals <- a:
 			return true
@@ -394,38 +400,43 @@ func (r *cmRun) settle() {
 	synctest.Wait()
 	// At most one arrival is allowed, and more than one fails the model, so the drain counts them
 	// and keeps the first rather than growing a slice: settle runs on every step of every replay,
-	// and a cmArrival is about a kilobyte.
+	// and a cmArrival is about a kilobyte. Every goroutine of the bubble is blocked now, so a
+	// buffer's length is what is left to read of it: a receive that frees a place lets a blocked
+	// sender's arrival in, which the length then counts.
 	var first cmArrival
-	arrived := 0
-	for more := true; more; {
-		select {
-		case a := <-r.arrivals:
-			if arrived == 0 {
-				first = a
-			}
-			arrived++
-		default:
-			more = false
+	var lock cmLockArrival
+	arrived, locked := 0, 0
+	for ; len(r.arrivals) > 0; arrived++ {
+		if a := <-r.arrivals; arrived == 0 {
+			first = a
 		}
+	}
+	for ; len(r.locks) > 0; locked++ {
+		if a := <-r.locks; locked == 0 {
+			lock = a
+		}
+	}
+	if locked > 0 {
+		first.refresh = lock.refresh
 	}
 	g := r.released
 	r.released = nil
 	switch {
-	case arrived > 1:
-		r.failModel("%d of the sender's goroutines came somewhere in one step", arrived)
+	case arrived+locked > 1:
+		r.failModel("%d of the sender's goroutines came somewhere in one step", arrived+locked)
 		return
-	case arrived == 1 && g == nil:
+	case arrived+locked == 1 && g == nil:
 		g = r.start(first.refresh)
-	case arrived == 1 && g.refresh != first.refresh:
+	case arrived+locked == 1 && g.refresh != first.refresh:
 		r.failModel("the goroutine the step let go on came back as another")
 		return
 	}
-	if arrived == 1 {
+	if arrived+locked == 1 {
 		a := first
 		g.running = false
 		switch {
-		case a.lock != nil:
-			g.lock, g.site = a.lock, a.site
+		case locked == 1:
+			g.lock, g.site = lock.grant, lock.site
 		case a.try != nil:
 			c := cmIndex(a.item.comment.ID)
 			if r.tries[c] != nil || g.refresh {
@@ -433,7 +444,7 @@ func (r *cmRun) settle() {
 				return
 			}
 			r.tries[c] = &cmTry{g: g, began: r.slot, item: a.item, reply: a.try}
-			g.last, g.done, g.carried, g.tried = c, false, a.item, false
+			g.last, g.carried, g.tried = c, a.item, false
 			r.log("%s starts %s's try, carrying claim %s", r.gName(g), a.item.comment.ID, r.name(a.item.claimed))
 		case a.reread != nil && g.refresh:
 			r.refresh.read = r.newRead(a.named, a.reread)

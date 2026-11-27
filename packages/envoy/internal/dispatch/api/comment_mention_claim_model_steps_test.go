@@ -117,7 +117,7 @@ func (r *cmRun) apply(s cmStep) {
 	case cmTryAnswers:
 		try := r.tries[s.comment]
 		delete(r.tries, s.comment)
-		try.g.done, try.g.tried = !try.answer.waits, true
+		try.g.tried = true
 		try.g.ended = nil
 		if try.took && try.answer.waits {
 			try.g.ended = try
@@ -240,6 +240,12 @@ func (r *cmRun) refreshG() *cmG {
 	}
 	r.failModel("no refresh goroutine")
 	return &cmG{}
+}
+
+// atNext is whether g is a lane goroutine waiting for the lock in next, where serve holds no send:
+// next hands it the one it carries next.
+func (g *cmG) atNext() bool {
+	return !g.refresh && g.lock != nil && strings.HasPrefix(g.site, "next:")
 }
 
 // enabled is every step the run may take next. A statement - a try, a re-read's reading of the
