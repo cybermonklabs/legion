@@ -113,13 +113,13 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 // (intake.SerializeFacts): it deletes the row under the lease this attempt holds
 // (record.Store.FinishLeasedOutbox), reads the asked role's claim there, and hands the workflow
 // the row's payload, whether the row was delivered, told, the launch the delivery reached (0 for
-// a row that ends undelivered, and for a delivery the listener named no holder of), and the
-// claim's launch as read under the lock, 0 where the claim has failed or retired or the daemon
-// supervises none (workflow.MergeForwardAskEnded). A ready applied before the lock was taken is
-// one the claim read shows the launch of, since a launch's ready comes after the decision that
-// relaunched the claim published that launch (supervise.Machine.View); one applied after it finds
-// the row gone. The settle that follows finds the row finished. A lease another attempt took since
-// is record.ErrOutboxLeaseLost, and that attempt ends the row.
+// a row that ends undelivered), and the claim's launch as read under the lock, 0 where the claim
+// has failed or retired or the daemon supervises none (workflow.MergeForwardAskEnded). A ready
+// applied before the lock was taken is one the claim read shows the launch of, since a launch's
+// ready comes after the decision that relaunched the claim published that launch
+// (supervise.Machine.View); one applied after it finds the row gone. The settle that follows finds
+// the row finished. A lease another attempt took since is record.ErrOutboxLeaseLost, and that
+// attempt ends the row.
 func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage, token claim.Token, delivered bool, told uint64, attributes []any) error {
 	var launch uint64
 	var asked bool

@@ -582,24 +582,25 @@ func (e *Engine) askAtReopen(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // Where the record's ask is the row's own - of its head, naming its role, not landed - a delivered
 // row records on it (record.MergeForward.SentLaunch) the latest of the launch it names, told, and
 // the launch the row was sent at (record.MergeForwardMessage.SentLaunch), so the ready of told,
-// which can come after the delivery, sends nothing again, and a row the listener named no holder of
-// is still taken as told to the launch it was sent at, or the ask would be sent to that launch at
-// every end. A row that ends undelivered records nothing, a row a close of the pull request
-// refused among them: no launch is recorded before a row reaches it, so the record never names a
-// launch nothing told and an end has nothing to take back, and the row a reopen queues tells the
-// launch the refused row did not reach (askAtReopen). A newer ask, of another head or to another
-// role, is not the row's own and is left as it is; one of the same head and role takes the row's
-// delivery as its own, since the row tells the same merge of the same head.
+// which can come after the delivery, sends nothing again, and a delivered row whose end names no
+// launch told is still taken as told to the launch it was sent at, or the ask would be sent to
+// that launch at every end. A row that ends undelivered records nothing, a row a close of the pull
+// request refused among them: no launch is recorded before a row reaches it, so the record never
+// names a launch nothing told and an end has nothing to take back, and the row a reopen queues
+// tells the launch the refused row did not reach (askAtReopen). A newer ask, of another head or to
+// another role, is not the row's own and is left as it is; one of the same head and role takes the
+// row's delivery as its own, since the row tells the same merge of the same head.
 //
 // Then, delivered or not, the ask is sent again at launch (askAgain): a launch whose ready came
 // while the row was still queued sent nothing and left the ask to the row, which reached an earlier
 // launch or none. So each launch is told the ask once, whichever of the row's end and the launch's
-// ready comes first. told is a launch whose own session the listener stored the message for, read
-// before the publish, and 0 where the listener named no holder: the executor publishes the ask
-// only once the launch it reads has registered its session, and does not end the row as delivered
-// where the listener stored it for another session (the daemon's deliverHeld), so a copy an
-// earlier launch's session took credits no later launch, and a launch that came up and took the
-// publish between that read and the publish is told the ask again here. No launch is left untold.
+// ready comes first. told is the launch the executor read before the publish: the listener stored
+// the message for that launch's own session, or named no holder, which names no other session
+// either. The executor publishes the ask only once the launch it reads has registered its session,
+// and does not end the row as delivered where the listener stored it for another session (the
+// daemon's deliverHeld), so a copy an earlier launch's session took credits no later launch, and a
+// launch that came up and took the publish between that read and the publish is told the ask again
+// here. No launch is left untold.
 func MergeForwardAskEnded(ctx context.Context, store record.Store, tx pgx.Tx, key string, ask record.MergeForwardMessage, delivered bool, told, launch uint64, now time.Time) (bool, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {

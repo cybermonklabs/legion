@@ -1526,9 +1526,10 @@ type ConflictRead struct {
 // SentLaunch is the latest launch of the asked role's claim (intake.ClaimReady.Launch) a row of
 // the ask was delivered to, 0 while none was; it is recorded only at a delivered end (workflow's
 // MergeForwardAskEnded), and a delivery where the listener names no holder is credited to the
-// launch the row was sent at. The ask is sent again to a later launch of that role while the merge
-// of the head is still owed to it and no row of the ask is queued for it: at that launch's ready
-// (workflow's askAgainAtLaunch), and at the end of a row of the ask that did not reach it
+// launch the daemon published it to (the daemon's deliverHeld), and to the launch the row was sent
+// at. The ask is sent again to a later launch of that role while the merge of the head is still
+// owed to it and no row of the ask is queued for it: at that launch's ready (workflow's
+// askAgainAtLaunch), and at the end of a row of the ask that did not reach it
 // (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped or whose
 // agent reported its own exit takes no row of the ask queued after it ended. A row that ends
 // undelivered records nothing, a row a close of the pull request refused among them, so the ask

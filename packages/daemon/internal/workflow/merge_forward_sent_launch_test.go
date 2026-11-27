@@ -25,8 +25,7 @@ import (
 // askRowEnds is the daemon's executor ending the implementer's queued ask row: under the fact lock
 // (intake.SerializeFacts) the row leaves the outbox, and the workflow settles its end
 // (MergeForwardAskEnded) with delivered and told, the launch the delivery reached (0 for an
-// undelivered row, and for a delivery the listener named no holder of), and launch, the claim's
-// launch as the executor reads it at the end.
+// undelivered row), and launch, the claim's launch as the executor reads it at the end.
 func askRowEnds(t *testing.T, pool *pgxpool.Pool, engine *Engine, delivered bool, told, launch uint64) {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -86,11 +85,11 @@ func TestAnAskRowEndedUndeliveredLeavesItsLaunchToBeToldAgain(t *testing.T) {
 	}
 }
 
-// The row sent again at launch 2 is delivered while the listener names no holder, so the delivery
-// names no launch told. It is still taken as told to the launch it was sent at: the record's ask
-// names launch 2, and the end sends launch 2 nothing more. Recording nothing for it would send the
-// ask to launch 2 again at this end, and at the end of every such row after it.
-func TestASentAgainRowDeliveredWithNoHolderIsToldItsLaunch(t *testing.T) {
+// The row sent again at launch 2 is delivered and its end names no launch told. It is still taken
+// as told to the launch it was sent at: the record's ask names launch 2, and the end sends launch 2
+// nothing more. Recording nothing for it would send the ask to launch 2 again at this end, and at
+// the end of every such row after it.
+func TestASentAgainRowDeliveredWithNoLaunchToldIsToldItsLaunch(t *testing.T) {
 	t.Parallel()
 	pool := sentAgainAtLaunch2(t)
 	askRowEnds(t, pool, readsAfter(3*time.Minute), true, 0, 2)

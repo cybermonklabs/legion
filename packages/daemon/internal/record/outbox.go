@@ -2574,9 +2574,9 @@ func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool
 // which holds back no re-send, since a launch's claim only moves on to later launches, and keeps
 // the reopen's row from a live launch told before the close while it tells a launch the close kept
 // the ask from. A delivered row of it records the launch on the record's ask where that ask is
-// still the row's own, which a delivery the listener named no holder of needs, since it names no
-// launch told (workflow's MergeForwardAskEnded). No other row carries it, the act's ask (workflow's
-// mergeForward) among them. A release before the key refuses a row that carries it
+// still the row's own, which a delivered end that names no launch told needs (workflow's
+// MergeForwardAskEnded). No other row carries it, the act's ask (workflow's mergeForward) among
+// them. A release before the key refuses a row that carries it
 // (DecodeOutboxPayload, DisallowUnknownFields), so its rollback takes the key off such rows first,
 // leaving a plain ask (docs/kubernetes.md, "Rolling back the release that holds every worker while
 // a merge forward is owed").

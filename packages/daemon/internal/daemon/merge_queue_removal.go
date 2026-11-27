@@ -168,13 +168,14 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // of the role's current launch: it is published only once that launch has registered its session,
 // and it is delivered unless the listener names a session other than the one the claim records
 // (deliverHeld). end, where set, is the row's end itself, which deletes the row: end's delivered
-// argument says whether the row was delivered, and told is the launch whose session the listener
-// stored the message for, 0 for the end at a claim that failed or retired, and for a delivery
-// where the listener named no holder (a merge-forward ask's, endMergeForwardAsk). nil leaves the
-// row's end to its settle. toldThrough, where m has an end, is the launch of the claim at and
-// below which the message is told nothing (the launch before the one a merge-forward ask's row was
-// sent at, record.MergeForwardMessage.SentLaunch), 0 for none: the claim at such a launch is told
-// nothing, and the row ends undelivered, logging toldAlready.
+// argument says whether the row was delivered, and told is the launch the delivery reached, 0 for
+// the end at a claim that failed or retired: the launch whose session the listener stored the
+// message for, or the launch the publish went to where the listener named no holder (a
+// merge-forward ask's, endMergeForwardAsk). nil leaves the row's end to its settle. toldThrough,
+// where m has an end, is the launch of the claim at and below which the message is told nothing
+// (the launch before the one a merge-forward ask's row was sent at,
+// record.MergeForwardMessage.SentLaunch), 0 for none: the claim at such a launch is told nothing,
+// and the row ends undelivered, logging toldAlready.
 type heldMessage struct {
 	issue       record.Issue
 	token       claim.Token
@@ -228,13 +229,17 @@ type heldMessage struct {
 //
 // Where m has an end, both ends of the row are it: at a claim that failed or retired, undelivered,
 // before the line is logged, and after the publish, delivered, with told the launch read before
-// the publish where the listener stored the message for the session that launch registered, and 0
-// where it named no holder. A launch's session is fixed once it registered, and a later launch is
-// a later generation, so told is a launch whose session took the message. An end that fails fails
-// the attempt: undelivered, the row is read again at its retry; delivered, it is published again
-// and ends again, so a launch may be told twice and none is told nothing. A registered launch at or
-// below m.toldThrough, read where the publish would go, was told the message already: nothing is
-// published, and the row ends undelivered there (endUndelivered).
+// the publish, whose session the listener stored the message for, or which the listener named no
+// holder for. A launch's session is fixed once it registered, and a later launch is a later
+// generation, so told is a launch whose session took the message where the listener names one.
+// Where it names none, nothing names another session either: the publish waits until the launch
+// it reads has registered its session, and a second publish to the same role topic would go where
+// the first went, so that launch is taken as told, and a later launch is still told at the end
+// (workflow.MergeForwardAskEnded). An end that fails fails the attempt: undelivered, the row is
+// read again at its retry; delivered, it is published again and ends again, so a launch may be
+// told twice and none is told nothing. A registered launch at or below m.toldThrough, read where
+// the publish would go, was told the message already: nothing is published, and the row ends
+// undelivered there (endUndelivered).
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
 	if supervise.FailedOrRetired(held.State) {
@@ -288,7 +293,7 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		r.log.Info(m.delivered, m.attributes...)
 		if m.end != nil {
 			var told uint64
-			if holder != "" && launch.HoldsSession(holder) {
+			if holder == "" || launch.HoldsSession(holder) {
 				told = launch.Generation
 			}
 			return m.end(ctx, true, told)
