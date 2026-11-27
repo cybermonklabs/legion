@@ -219,9 +219,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
         .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
         .optional(),
       // A production check report's verdict alone. A phase completion carries none: Dispatch's
-      // check states at the tested head decide the testing phase, and executePhaseOp refuses a
-      // verdict once the record says the completion is a phase's, as the daemon does
-      // (VERDICT_NOT_TAKEN).
+      // check states at the tested head decide the testing phase, and completeHandoff refuses a
+      // verdict on a completion that names no check_opened_at before any call to the daemon, as
+      // the daemon refuses one (VERDICT_NOT_TAKEN).
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
@@ -648,8 +648,8 @@ export async function executePhaseOp(
       }
       // Only a tester's completion names the step its task returns to, which the check states'
       // fail of the testing step sends it back to, and the daemon refuses one on any other role's
-      // completion (RETURN_TO_NEEDS_FAIL), so it is refused here in the same words. The tester's
-      // completion carries no verdict, which is refused below once the record is read.
+      // completion (RETURN_TO_NEEDS_FAIL), so it is refused here in the same words. No phase
+      // completion carries a verdict, which completeHandoff refuses before any call to the daemon.
       if (args.return_to !== undefined && claim.role !== "tester") {
         throw new Error(
           "handoff_complete names return_to, and only a tester's completion names the step its task returns to when the check states fail the testing step; send it again without return_to"

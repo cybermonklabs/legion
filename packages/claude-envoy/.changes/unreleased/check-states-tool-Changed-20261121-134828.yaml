@@ -2,8 +2,8 @@ kind: Changed
 body: |-
   The plugin speaks the daemon API contract of the entry `20261125203834` check-states. The `legion` MCP tool's `handoff_complete` sends no
   verdict on a phase completion: Dispatch's check states at the tested head decide the testing
-  phase. A phase completion that names one is refused once the daemon's record shows it is a
-  phase's, before the handoff record is read or a grant minted, with `handoff_complete carries no
+  phase. A phase completion (one with no `check_opened_at`) that names a verdict is refused before
+  any call to the daemon, so no record is read and no grant minted, with `handoff_complete carries no
   verdict on a phase completion: Dispatch's check states decide the testing phase`. `verdict`
   (pass, pending or fail) belongs to a production check report alone, and the tool's description
   says so. The description's `HANDOFF_STALE_ENTRY` instruction names no verdict either: it ends
