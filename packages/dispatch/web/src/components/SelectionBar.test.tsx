@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { act, render, renderHook, screen } from "@testing-library/react";
+import { act, type RenderResult, render, renderHook, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
@@ -2349,5 +2349,212 @@ test("with no row marked and no row left, the bar gone with the focus hands it t
   } finally {
     moves.restore();
     view.unmount();
+  }
+});
+
+// Handed on: the page's own hand-off ends a landing that is owed, and the hand-off never takes the
+// focus back from a control that stays. While the press's rows are still listed and the focus is
+// parked on the mark of the row marked last, the page moves the focus with no act of the reader's,
+// as a dialog that opens moves it to its first control, and the commit that takes the rows away
+// leaves it there. The page's body and the list's own stop are no control that stays, so a focus
+// the page moves to either is still landed, on the row now at the rows' place.
+test.each([
+  ["a control outside the list", "Confirm"],
+  ["the page's body", "Select CORE-14"],
+  ["the list's own stop", "Select CORE-14"],
+] as const)("a landing owed while the page moves the focus to %s ends on %s once the rows have gone", (where, ends) => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const leaving = ["CORE-12", "CORE-13"];
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />
+  );
+  const dialog = render(<button aria-label="Confirm" type="button" />);
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(<PlacedList count={0} last="CORE-13" leaving={leaving} listed={PLACED_KEYS} />);
+    expect(focusedName()).toBe("Select CORE-13");
+    act(() => {
+      if (where === "a control outside the list") {
+        screen.getByRole("button", { name: "Confirm" }).focus();
+      } else if (where === "the page's body") {
+        rowBox("CORE-13").blur();
+      } else {
+        focusListStop(screen.getByRole("list", { name: "Rows" }));
+      }
+    });
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, ...leaving)} />
+    );
+    expect(focusedName()).toBe(ends);
+  } finally {
+    answered();
+    disarm();
+    dialog.unmount();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// Cancelled, where the row the reader's act left the focus in stays: `j` from the parked mark moves
+// the focus into another row the press names as leaving, so the landing is owed again. A row the
+// list names need not go - Take out of epic with no Epic filter keeps its rows listed - and the
+// act's end stands only once the hand-off knows that row stays: no row named leaving, and the row
+// still listed with the focus in it. The focus then stays where the act left it, and that row's
+// later going owes nothing. Where the act's row goes while another row is still named, the focus
+// falls with it, and the landing is made once no row is named, on the row now at the place.
+test.each([
+  ["the names end with the act's row still listed", "Select CORE-13"],
+  ["the act's row goes before the names end", "Select CORE-14"],
+] as const)("j from the parked mark into another leaving row, where %s, ends on %s", async (when, ends) => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const leaving = ["CORE-11", "CORE-12", "CORE-13"];
+  const view = render(
+    <PlacedList count={3} last="CORE-12" leaving={leaving} listed={PLACED_KEYS} />
+  );
+  const keys = stepKeys();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(<PlacedList count={0} last="CORE-12" leaving={leaving} listed={PLACED_KEYS} />);
+    expect(focusedName()).toBe("Select CORE-12");
+    await user.keyboard("j");
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-13");
+    if (when === "the names end with the act's row still listed") {
+      view.rerender(<PlacedList count={0} last="CORE-12" listed={PLACED_KEYS} />);
+      expect(focusedName()).toBe(ends);
+      // What the names' end settled stays settled: the act's row going later lands nothing.
+      view.rerender(
+        <PlacedList count={0} last="CORE-12" listed={without(PLACED_KEYS, "CORE-13")} />
+      );
+      expect(focusLanding()).toBe("the body");
+    } else {
+      // CORE-12 and CORE-13 go while CORE-11 is still named, and the focus falls with CORE-13.
+      const kept = without(PLACED_KEYS, "CORE-12", "CORE-13");
+      view.rerender(<PlacedList count={0} last="CORE-12" leaving={leaving} listed={kept} />);
+      view.rerender(<PlacedList count={0} last="CORE-12" listed={kept} />);
+      expect(focusedName()).toBe(ends);
+    }
+  } finally {
+    keys();
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+/** The rows Dismiss names as leaving in `untickWhileHeld`, CORE-13 the row marked last. */
+const UNTICK_PRESS = ["CORE-12", "CORE-13"];
+
+/** `PlacedList` with CORE-13 the row marked last, at `count` marks, holding `listed` and naming
+ *  `leaving` as leaving. */
+function untickList(
+  count: number,
+  listed: readonly string[],
+  leaving: readonly string[] = []
+): ReactNode {
+  return <PlacedList count={count} last="CORE-13" leaving={leaving} listed={listed} />;
+}
+
+/** Presses Dismiss over `untickList` with CORE-12 and CORE-13 marked, drawn in `view`, and holds
+ *  its writes, which name both rows as leaving while the bar stays up. Then the reader unticks
+ *  CORE-13 with a click, which leaves the focus on its checkbox, in a row the press names as
+ *  leaving, while CORE-12's mark keeps the bar up. Answers what ends the writes' hold. */
+async function untickWhileHeld(view: RenderResult): Promise<() => void> {
+  const user = userEvent.setup();
+  pressInBar("Dismiss");
+  const answered = holdHandOff();
+  view.rerender(untickList(2, PLACED_KEYS, UNTICK_PRESS));
+  await user.click(rowBox("CORE-13"));
+  view.rerender(untickList(1, PLACED_KEYS, UNTICK_PRESS));
+  expect(focusedName()).toBe("Select CORE-13");
+  expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
+  return answered;
+}
+
+// The bar's going owes the landing where the focus stands in a row the list names as leaving, and
+// that row can go in the very commit that takes the bar away: the reader unticked the row marked
+// last while another mark kept the bar up, and the press's writes then land and take both rows and
+// the bar away together, which drops the focus onto the body before the hand-off reads it. The
+// hand-off remembered the checkbox in its leaving row while the bar was drawn, so the bar's going
+// finds it gone from the page with its row, owes the landing, and lands on the row now at the
+// rows' place rather than leave the reader on the body.
+test("a click that unticks the row marked last while the press's writes are out lands on the row now at its place when the writes take its row and the bar away together", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(untickList(2, PLACED_KEYS));
+  let answered: () => void = () => undefined;
+  try {
+    answered = await untickWhileHeld(view);
+    view.rerender(untickList(0, without(PLACED_KEYS, ...UNTICK_PRESS)));
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(focusLanding()).toBe("Select CORE-14");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// The remembered control is the reader's place only while the focus stays with it, so a stale
+// memory owes nothing. As above, the reader unticked the row marked last with a click and the
+// focus stands on its checkbox in a leaving row; then the focus leaves it before the bar goes. The
+// page drops it onto the body with the checkbox still in the page, and the bar goes before the
+// rows; or the page moves it to a control outside the rows, as a dialog's first control takes it,
+// and then onto the body; or the reader's own click on a blank part of the page puts it there. The
+// bar's going, and the rows' going, move nothing.
+test.each([
+  "the page drops the focus onto the body and the bar goes before the rows",
+  "the page moves the focus to a control outside the rows and then onto the body",
+  "the reader clicks a blank part of the page",
+] as const)("after a click that unticks the row marked last while the press's writes are out, where %s, the bar's going moves nothing", async (then) => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(untickList(2, PLACED_KEYS));
+  const outside = render(<button aria-label="Confirm" type="button" />);
+  const barFirst =
+    then === "the page drops the focus onto the body and the bar goes before the rows";
+  let answered: () => void = () => undefined;
+  try {
+    answered = await untickWhileHeld(view);
+    if (barFirst) {
+      act(() => rowBox("CORE-13").blur());
+    } else if (
+      then === "the page moves the focus to a control outside the rows and then onto the body"
+    ) {
+      act(() => {
+        const control = screen.getByRole("button", { name: "Confirm" });
+        control.focus();
+        control.blur();
+      });
+    } else {
+      await user.click(document.body);
+    }
+    expect(focusLanding()).toBe("the body");
+    const moves = watchMoves();
+    try {
+      if (barFirst) {
+        view.rerender(untickList(0, PLACED_KEYS, UNTICK_PRESS));
+        expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+        expect(focusLanding()).toBe("the body");
+      }
+      view.rerender(untickList(0, without(PLACED_KEYS, ...UNTICK_PRESS)));
+      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      expect(focusLanding()).toBe("the body");
+      expect(moves.focused.map((move) => move.target.getAttribute("aria-label"))).toEqual([]);
+    } finally {
+      moves.restore();
+    }
+  } finally {
+    answered();
+    disarm();
+    outside.unmount();
+    view.unmount();
+    laidOut();
   }
 });
