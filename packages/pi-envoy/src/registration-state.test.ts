@@ -762,13 +762,16 @@ describe("the serial queues", () => {
       handle.actFor("ses_a");
       return {
         opened: await handle.subscribe("notifications.dispatch.issue.A-1"),
-        interest: (await handle.readInterest("ses_a"))?.session_id,
+        interest: await handle.readInterest("ses_a"),
         holder: await handle.readRoleHolder("alpha"),
       };
     });
     expect(read).toEqual({
       opened: true,
-      interest: "ses_a",
+      interest: {
+        known: true,
+        row: { session_id: "ses_a", machine_id: "machine-1", dir: "/w", topics: [] },
+      },
       holder: { known: true, holder: "ses_a" },
     });
     expect(subscribedTopics).toEqual(["notifications.dispatch.issue.A-1"]);
@@ -790,7 +793,7 @@ describe("the serial queues", () => {
         interest: await handle.readInterest("ses_a"),
       };
     });
-    expect(read).toEqual({ holder: { known: false }, interest: undefined });
+    expect(read).toEqual({ holder: { known: false }, interest: { known: false } });
   });
 
   // The listener's 404 for a role no live session holds names a lapsed holder where it knows one
@@ -1226,7 +1229,8 @@ describe("the deployment's role topics", () => {
       return handle.claimRole("alpha", { soft: true });
     });
     // Nothing ended and no refusal was latched, so the topics the resume opened stay open for
-    // the next pass's claim; the pass's own rule (`settleRoleTopics`) reads `refusalFor`.
+    // the next pass's claim. The pass closes them by the role it decided, which `settleRole`
+    // hands back; an own-id refusal leaves that role unsettled, so the next pass claims again.
     expect(harness.closedSubjects).toEqual([]);
     expect(topics.subjects()).toEqual([ALERTS, OWN]);
     expect(harness.state.refusalFor("ses_a")).toBeUndefined();

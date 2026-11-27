@@ -4269,10 +4269,13 @@ describe("envoy OMP extension", () => {
     const session = "ses_lane_only";
     const claims: string[] = [];
     const unregistered: string[][] = [];
+    // Set by the row to make the listener refuse the row read, as an outage does.
+    let rowReadFails = false;
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
       const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
       if (url.pathname === `/v1/interests/${session}`) {
+        if (rowReadFails) return Response.json({ error: "listener unavailable" }, { status: 503 });
         // The row names the role on its lane alone: no claim record, no launch role.
         return response({
           session_id: session,
@@ -4323,12 +4326,38 @@ describe("envoy OMP extension", () => {
       expect(await followedTopics(fixture.tools, context)).toContain(alerts);
       expect(unregistered).toEqual([]);
 
+      // The sentence `envoy_unsubscribe` answers while the claim is still refused: no role is
+      // held, so it names the role being claimed, which is the window this line runs in.
+      const unsubscribe = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
+      if (unsubscribe === undefined) throw new Error("envoy_unsubscribe was not registered");
+      const kept = await unsubscribe.execute("", { topics: [alerts] });
+      expect(JSON.stringify(kept.content)).toContain(
+        `Kept (they last while this session claims role ${role})`
+      );
+
       // The next pass reads the rows again and claims the same role, rather than leaving it to
       // nobody.
       await fixture.handlers.get("session_start")?.({}, context);
       expect(claims).toEqual([role, role]);
       expect(await followedTopics(fixture.tools, context)).toContain(alerts);
-      await fixture.handlers.get("session_shutdown")?.({}, context);
+
+      // A pass whose row read fails says nothing about the role: it must not read as "no role"
+      // and settle the session as wanting none, which would close the lane role's topics for
+      // good. They stay followed, and the pass after it reads the row again and claims.
+      rowReadFails = true;
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+      rowReadFails = false;
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(claims.length).toBeGreaterThan(2);
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+
+      // A pass for a session that holds no role and wants none closes what an earlier pass
+      // opened: the role each pass decided is that pass's alone, never the one before it.
+      const other = sessionContext("ses_lane_other");
+      await fixture.handlers.get("session_switch")?.({ reason: "new" }, other);
+      expect(await followedTopics(fixture.tools, other)).not.toContain(alerts);
+      await fixture.handlers.get("session_shutdown")?.({}, other);
     } finally {
       if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
       else process.env.ENVOY_ROLE_TOPICS = previous;

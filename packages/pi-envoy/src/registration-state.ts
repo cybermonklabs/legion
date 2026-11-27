@@ -13,7 +13,7 @@ import {
 } from "@legion/envoy-client/transport";
 import type { RoleRegainReason } from "@legion/pi-shared/role-claim-bridge";
 import { createHandBackLedger } from "./hand-back-ledger";
-import { createListenerReads } from "./listener-reads";
+import { createListenerReads, type InterestRead, type RoleHolderRead } from "./listener-reads";
 import type { RoleTopicFollows } from "./role-topics";
 import type { SessionInbound } from "./session-inbound";
 import { createQueue, type RunningTask, refuseStep, type TaskQueue } from "./task-queue";
@@ -263,17 +263,15 @@ export interface TaskHandle {
   readonly noteNoticesClosed: (role: string) => void;
 
   // — listener reads and writes —
-  /**
-   * The session the listener names as `role`'s holder. `known` is false where the read failed, so
-   * a caller tells "nobody holds it" from "nobody could be asked". A 404 that names a lapsed
-   * holder (one unresponsive or gone and not reaped) is a known answer naming that holder: it was
-   * shown what the stream stored for the role, so a resumed session must not read it again.
-   */
-  readonly readRoleHolder: (
-    role: string
-  ) => Promise<{ readonly known: boolean; readonly holder?: string }>;
-  /** The listener's registered interests for a session; `undefined` when the read failed. */
-  readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
+  /** The session the listener names as `role`'s holder (`RoleHolderRead`): a read that failed
+   *  knows nothing and names nobody, which a caller tells from "nobody holds it". A 404 that
+   *  names a lapsed holder (one unresponsive or gone and not reaped) is a known answer naming
+   *  that holder: it was shown what the stream stored for the role, so a resumed session must not
+   *  read it again. */
+  readonly readRoleHolder: (role: string) => Promise<RoleHolderRead>;
+  /** The listener's registered interests for a session, and whether the read answered at all
+   *  (`InterestRead`): a row that could not be read is not a session without one. */
+  readonly readInterest: (sessionID: string) => Promise<InterestRead>;
   /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned in the
    *  caller's own words and swallowed: the next pass reads
    *  the registry afresh. The warning is `busUnanswered` when the listener's message bus did not

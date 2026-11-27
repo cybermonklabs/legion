@@ -5,7 +5,20 @@ import {
   type Interest,
   isBusUnanswered,
 } from "@legion/envoy-client/transport";
-import type { RegistrationStateDeps } from "./registration-state";
+
+/**
+ * What an interest read answered. `known` is false where the read failed, so a caller tells "the
+ * session has no row" from "its row could not be read": a lane role read from a failed read as
+ * none would be settled as no role and lose its topics for good.
+ */
+export type InterestRead =
+  | { readonly known: false }
+  | { readonly known: true; readonly row: Interest | undefined };
+
+/** What this module writes: `logger` from the host satisfies it, as `RegistrationStateLog` does. */
+export interface ListenerReadsLog {
+  readonly warn: (message: string, fields?: Record<string, unknown>) => void;
+}
 
 /**
  * What a role lookup answered. A failed read is `{ known: false }` and names no holder, so a
@@ -27,7 +40,7 @@ export interface ListenerReadsDeps {
   /** The task's own gate: it throws where the task no longer decides, before any call goes out. */
   readonly guard: () => void;
   readonly client: () => EnvoyClient;
-  readonly log: RegistrationStateDeps["log"];
+  readonly log: ListenerReadsLog;
 }
 
 /**
@@ -37,7 +50,7 @@ export interface ListenerReadsDeps {
  */
 export function createListenerReads(deps: ListenerReadsDeps): {
   readonly readRoleHolder: (role: string) => Promise<RoleHolderRead>;
-  readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
+  readonly readInterest: (sessionID: string) => Promise<InterestRead>;
   readonly unregisterTopics: (
     sessionID: string,
     topics: readonly string[],
@@ -67,7 +80,10 @@ export function createListenerReads(deps: ListenerReadsDeps): {
       return deps
         .client()
         .getInterest(sessionID)
-        .catch(() => undefined);
+        .then(
+          (row): InterestRead => ({ known: true, row }),
+          (): InterestRead => ({ known: false })
+        );
     },
     unregisterTopics: async (sessionID, topics, warnings) => {
       deps.guard();
