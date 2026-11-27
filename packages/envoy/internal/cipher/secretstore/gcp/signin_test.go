@@ -70,8 +70,10 @@ func TestCheckSettingsKMSKeyName(t *testing.T) {
 // TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline: an expired gcloud token is
 // refreshed through gcloudToken.Token, which runs `gcloud auth print-access-token`. A gcloud that
 // never answers - here a script whose child holds its output open, as the real gcloud's Python does
-// under its shell wrapper - ends at the deadline on each store call (secretstore.CallDeadline), so a stalled
-// refresh cannot outlast the store call it serves; the error names the account and the deadline.
+// under its shell wrapper - ends at the deadline on each store call (secretstore.CallDeadline), so
+// a stalled refresh cannot outlast the store call it serves; the error names the account and the
+// deadline. The refresh is timed against that deadline, less the time this process was held up
+// (gcptest.EndsByItsDeadline).
 func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useCallDeadline(t, 300*time.Millisecond)
 	dir := t.TempDir()
@@ -82,17 +84,15 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 	expired := &oauth2.Token{AccessToken: "old", TokenType: "Bearer", Expiry: time.Now().Add(-time.Minute)}
 	source := oauth2.ReuseTokenSource(expired, gcp.GcloudTokenForTest(context.Background(), gcloud, gcptest.Run, "ada@example.com"))
 	done := make(chan error, 1)
+	meter := gcptest.StartStallMeter(t)
+	start := time.Now()
 	go func() {
 		_, err := source.Token()
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 300ms") {
-			t.Fatalf("Token() = %v; want a failure naming the account and the 300ms deadline", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the refresh of an expired token was still waiting on gcloud 10s on, past the 300ms deadline")
+	err := gcptest.EndsByItsDeadline(t, meter, "the refresh of an expired token whose gcloud never answers", start, 300*time.Millisecond, done)
+	if err == nil || !strings.Contains(err.Error(), "ada@example.com") || !strings.Contains(err.Error(), "did not answer within 300ms") {
+		t.Fatalf("Token() = %v; want a failure naming the account and the 300ms deadline", err)
 	}
 }
 

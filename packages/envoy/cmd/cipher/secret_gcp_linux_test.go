@@ -39,7 +39,7 @@ const gcloudSignInDeadline = "AGENT_SECRETS_GCLOUD_DEADLINE"
 // started its child, write its own pid beside the child's (gcloudPidName) and replace itself with
 // a process that never answers (exec), as gcloud's own script replaces itself with its Python:
 // nothing of that stub process then watches anything, so only its parent-death signal ends it
-// (gcloudProcAttr, TestGcloudEndsWhenAgentSecretsIsKilled).
+// (childProcAttr, TestGcloudEndsWhenAgentSecretsIsKilled).
 const gcloudExecs = "AGENT_SECRETS_GCLOUD_EXECS"
 
 // gcloudPidName is the file, beside the child's pid file, the stub of gcloudExecs writes its own pid to.
@@ -117,7 +117,7 @@ type signInHelper struct {
 // script does), at which agent-secrets rightly goes on running. A helper still running when t
 // ends is stopped (stop). Where this test process is itself killed and runs no cleanup, the
 // helper is killed with it (its parent-death signal), and its gcloud with the helper
-// (gcloudProcAttr), so nothing the row started outlives the test binary. The signal follows the
+// (childProcAttr), so nothing the row started outlives the test binary. The signal follows the
 // thread that started the helper, so one goroutine holds that thread from Start until the helper
 // has been waited for.
 func startSignInHelper(t *testing.T, child gcptest.GcloudChild, env ...string) *signInHelper {
@@ -223,7 +223,7 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 }
 
 // TestGcloudEndsWhenAgentSecretsIsKilled: a gcloud still running when agent-secrets ends by a
-// SIGKILL, which runs none of agent-secrets' code, ends with it (gcloudProcAttr's parent-death
+// SIGKILL, which runs none of agent-secrets' code, ends with it (childProcAttr's parent-death
 // signal), and is not left running in its group of its own until it ends by itself. The stub
 // gcloud replaces itself with a process that never answers (gcloudExecs), as gcloud's own script
 // replaces itself with its Python, so nothing of it watches agent-secrets: only that signal can

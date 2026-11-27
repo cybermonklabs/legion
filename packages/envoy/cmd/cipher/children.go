@@ -56,7 +56,7 @@ var onChildStep = func(step string) {}
 // while a process is left in it its id names no other group. It is the secretstore.RunChild every
 // writer this command opens is given.
 // It runs on one OS thread from before cmd starts until cmd has been waited for: where the
-// child's parent-death signal is set (gcloudProcAttr), the kernel sends it when the thread that
+// child's parent-death signal is set (childProcAttr), the kernel sends it when the thread that
 // started the child ends, not this process, and the Go runtime ends a thread only when a
 // goroutine locked to it returns locked.
 func runChild(cmd *exec.Cmd) error {
