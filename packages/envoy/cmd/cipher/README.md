@@ -356,6 +356,36 @@ which ends every enrollment under that login at once (the "Revoke a session" gui
 The docs site's "Secrets Broker" section, built from `docs/site/src/content/docs/broker/`, has the
 quickstart, the guides and the generated CLI reference.
 
+A CI job uses its own signed workflow identity instead of a session's secret request:
+
+```sh
+agent-secrets result-grant -- dispatch result --project ACME --check BUNDLE-c1 \
+  --verdict pass --commit "$GITHUB_SHA" --observed 'the command the job ran'
+```
+
+`result-grant` trades the job's GitHub identity at the broker's token endpoint for the proxy
+placeholder of a result grant (`requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`),
+proving the trade with a key it makes in memory and never writes. It needs
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions` (or a run's token in
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`), and runs nothing when the broker refuses the trade, and
+nothing when `DISPATCH_URL` names a host the grant does not bind, or is not `https` on port 443,
+since the command's writes would then go around the proxy with the placeholder in them: the
+child's `HTTPS_PROXY` covers https alone, and the proxy reads a bound host on 443 alone. In a GitHub job
+(`GITHUB_ACTIONS=true`) it first prints `::add-mask::<placeholder>`, so the job's log shows `***`
+for the proxy's password. The child receives only the `DISPATCH_RESULTS_TOKEN` placeholder, its
+proxy and certificate settings, and no `AGENT_SECRETS_MACHINE_IDENTITY`; the broker's airlock
+proxy holds the run's results token and the key it is bound to. No personal sign-in or secret
+approval is used. A refused, expired or lost grant never changes to a session's identity.
+
+The child's `NO_PROXY` keeps none of its fixed entries that covers a host the grant binds:
+Dispatch's tailnet name is under `.ts.net`, so with Dispatch bound `.ts.net` leaves the list
+and Dispatch's writes reach the proxy, while the broker's own name stays. The broker's own name
+is held to the bound hosts the same way: a broker host that is a bound host, a parent domain of
+one or a name under one is left out, so that bound host's writes still reach the proxy. An entry
+is compared without one trailing dot, its fully qualified spelling, so `dispatch.example.test.` is
+left out as `dispatch.example.test` is. See
+[`ci-results.md`](../../../envoy-client/docs/ci-results.md) for the job and broker settings.
+
 ## Install
 
 Each `legion-envoy-v*` release of this repository ships the client. The release tag names the Envoy

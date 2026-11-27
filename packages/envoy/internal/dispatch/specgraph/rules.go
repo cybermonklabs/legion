@@ -84,6 +84,18 @@ func Validate(t Tree, o Options) []Problem {
 	return v.problems
 }
 
+// Judge is the one reading of a set of spec files that each of their readers shares: the tree
+// Parse reads from files, and every problem of Parse and of Validate with o, in one list in
+// Validate's order. The tree is refused when the list holds any problem, and a refusal names the
+// first. spec-check and Dispatch's results route read the files through it, and a CI job that
+// reports results must too, so one tree has one answer.
+func Judge(files map[string][]byte, o Options) (Tree, []Problem) {
+	tree, problems := Parse(files)
+	problems = append(problems, Validate(tree, o)...)
+	SortProblems(problems)
+	return tree, problems
+}
+
 // validator is the state of one Validate: the kind and the first position of each id, the
 // relations the loop finder walks, each id that a check serves, that a statement names as its
 // parent and that another statement serves, read once so that a statement's rules read no list of

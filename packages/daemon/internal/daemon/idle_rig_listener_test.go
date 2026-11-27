@@ -77,16 +77,17 @@ func idleRigListenerContext(t *testing.T) context.Context {
 }
 
 // startIdleRigListener runs a listener of machine id against natsURL until t ends, and returns it
-// once /healthz answers healthy.
-func startIdleRigListener(t *testing.T, natsURL, machine string) *idleRigListener {
+// once /healthz answers healthy. env is each NAME=VALUE the listener is started with beside the
+// rig's own, such as the session windows a test shortens.
+func startIdleRigListener(t *testing.T, natsURL, machine string, env ...string) *idleRigListener {
 	t.Helper()
 	socket, port := heldSocket(t)
-	return startIdleRigListenerOn(t, natsURL, machine, socket, port)
+	return startIdleRigListenerOn(t, natsURL, machine, socket, port, env...)
 }
 
 // startIdleRigListenerOn is startIdleRigListener on the socket the test holds, listening on port,
 // so a listener restarted mid-test comes back where every URL already handed out reaches it.
-func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.File, port int) *idleRigListener {
+func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.File, port int, env ...string) *idleRigListener {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./cmd/listener")
 	// The listener's HOME is also where it runs, and the only path the test writes under it is
@@ -122,10 +123,12 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary)
 	cmd.Dir = home
-	cmd.Env = append(os.Environ(),
+	// What the caller names comes after the rig's own, so it takes the place of any of them it
+	// names again.
+	cmd.Env = append(append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_LISTEN_FD=3",
 		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL,
-		"ENVOY_UNPLACEABLE_RETRY_WINDOW="+idleRigAgentWait.String())
+		"ENVOY_UNPLACEABLE_RETRY_WINDOW="+idleRigAgentWait.String()), env...)
 	// ExtraFiles' first entry is the listener's descriptor 3. The test keeps its own descriptor of
 	// the socket open, so the port stays held while no listener runs.
 	cmd.ExtraFiles = []*os.File{socket}
@@ -187,8 +190,21 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 	return l
 }
 
+// publishesOf is each "listener publish" line of the listener's log so far whose message is
+// summary: the topic the publish named and the listener's answer, as the listener logged them
+// (requestRecord, packages/envoy/cmd/listener/request_record.go).
+func (l *idleRigListener) publishesOf(summary string) []string {
+	var lines []string
+	for _, line := range strings.Split(l.log(), "\n") {
+		if strings.Contains(line, "listener publish") && strings.Contains(line, summary) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // log is the listener's own output so far, which a test reads its request lines from
-// (idleRigNoSessionRefusals).
+// (idleRigNoSessionRefusals, publishesOf).
 func (l *idleRigListener) log() string {
 	read, err := os.ReadFile(l.logs)
 	if err != nil {
