@@ -56,13 +56,14 @@ test("a configuration with every required key loads", () => {
   expect(config.windowEnd).toBe("2026-11-20T00:00:00Z");
 });
 
-test.each(
-  Object.keys(SkillCutsConfig.shape).filter((key) => !Object.hasOwn(OPTIONAL, key))
-)("a configuration without %s is refused by name", (key) => {
-  const value = valid();
-  delete value[key];
-  expect(refusal(value)).toContain(`${key}: missing`);
-});
+test.each(Object.keys(SkillCutsConfig.shape).filter((key) => !Object.hasOwn(OPTIONAL, key)))(
+  "a configuration without %s is refused by name",
+  (key) => {
+    const value = valid();
+    delete value[key];
+    expect(refusal(value)).toContain(`${key}: missing`);
+  }
+);
 
 test("sessionPod accepts a deployment pin and two repository-relative Dockerfiles", () => {
   const sessionPod = {

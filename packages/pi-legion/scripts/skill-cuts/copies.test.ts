@@ -2626,19 +2626,20 @@ describe("the full run over the owners", () => {
     }
   });
 
-  test.each(
-    MANIFEST_KINDS.map((kind) => kind.kind)
-  )("the %s manifest kind is read and shown", (kind) => {
-    const example = KIND_EXAMPLES[kind];
-    const shown = r
-      .table("manifests.tsv")
-      .find((row) => row.repository === example.repository && row.path === example.path);
-    expect(shown?.kind).toBe(kind);
-    expect(shown?.error).toBe("");
-    expect(shown?.says ?? "").toContain(example.says);
-    if (example.row !== "")
-      expect(installerRows(r, example.repository, example.path)).toContain(example.row);
-  });
+  test.each(MANIFEST_KINDS.map((kind) => kind.kind))(
+    "the %s manifest kind is read and shown",
+    (kind) => {
+      const example = KIND_EXAMPLES[kind];
+      const shown = r
+        .table("manifests.tsv")
+        .find((row) => row.repository === example.repository && row.path === example.path);
+      expect(shown?.kind).toBe(kind);
+      expect(shown?.error).toBe("");
+      expect(shown?.says ?? "").toContain(example.says);
+      if (example.row !== "")
+        expect(installerRows(r, example.repository, example.path)).toContain(example.row);
+    }
+  );
 
   test("a Legion deployment's role setup, program and worker image are read as manifests: the catalog its roles install from, the plugins every role installs, and the skill the image installs from a release", () => {
     const kinds = new Map(
@@ -3245,15 +3246,18 @@ describe("a fork read against its parent", () => {
         }),
       "whole tree: the compare with acme/skills lists 300 files, the most GitHub lists, so its list may be cut",
     ],
-  ])("a fork the compare cannot answer whole is read from its whole tree: %s", async (_why, change, read) => {
-    const w = forkWorld();
-    change(w);
-    const r = await run(w, only);
-    expect(r.code).toBe(0);
-    expect(forkScan(r)).toMatchObject({ read, changed_files: null });
-    expect(loaderPaths(r)).toEqual(WHOLE);
-    expect(r.text("skill-copies.md")).toContain(`- the fork acme/old-skills (${read}): `);
-  });
+  ])(
+    "a fork the compare cannot answer whole is read from its whole tree: %s",
+    async (_why, change, read) => {
+      const w = forkWorld();
+      change(w);
+      const r = await run(w, only);
+      expect(r.code).toBe(0);
+      expect(forkScan(r)).toMatchObject({ read, changed_files: null });
+      expect(loaderPaths(r)).toEqual(WHOLE);
+      expect(r.text("skill-copies.md")).toContain(`- the fork acme/old-skills (${read}): `);
+    }
+  );
 
   test("a fork cached from a whole-tree read before the compare rule keeps it, says so, and its text files move apart", async () => {
     const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));

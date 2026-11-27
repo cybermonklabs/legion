@@ -71,24 +71,27 @@ describe("untilInstallationReset", () => {
       ],
     ],
     ["copies.ts's commit read", ["api", "repos/acme/x/commits?sha=main&per_page=1"]],
-  ])("%s, refused for the REST limit, waits until the reset of acme's installation, from the X-RateLimit-Reset header of gh api -i repos/acme/x, which gh prints on a refused answer too", async (_, args) => {
-    const reset = seconds(NOW) + 600;
-    const { io, calls, lines } = standIn((asked) =>
-      asked.join(" ") === "api -i --method GET repos/acme/x"
-        ? {
-            code: 1,
-            stdout: included("403 Forbidden", reset, {
-              message: "API rate limit exceeded for installation ID 1.",
-            }),
-          }
-        : undefined
-    );
-    expect(await untilInstallationReset(args, io)).toBe(601_000);
-    expect(calls).toEqual([["api", "-i", "--method", "GET", "repos/acme/x"]]);
-    expect(lines).toEqual([
-      `acme's REST rate limit resets at ${iso(reset * 1000)}; waiting 601 s, until ${iso(NOW + 601_000)}`,
-    ]);
-  });
+  ])(
+    "%s, refused for the REST limit, waits until the reset of acme's installation, from the X-RateLimit-Reset header of gh api -i repos/acme/x, which gh prints on a refused answer too",
+    async (_, args) => {
+      const reset = seconds(NOW) + 600;
+      const { io, calls, lines } = standIn((asked) =>
+        asked.join(" ") === "api -i --method GET repos/acme/x"
+          ? {
+              code: 1,
+              stdout: included("403 Forbidden", reset, {
+                message: "API rate limit exceeded for installation ID 1.",
+              }),
+            }
+          : undefined
+      );
+      expect(await untilInstallationReset(args, io)).toBe(601_000);
+      expect(calls).toEqual([["api", "-i", "--method", "GET", "repos/acme/x"]]);
+      expect(lines).toEqual([
+        `acme's REST rate limit resets at ${iso(reset * 1000)}; waiting 601 s, until ${iso(NOW + 601_000)}`,
+      ]);
+    }
+  );
 
   test("a call that names an owner alone (users/acme) reads the reset of acme's first repository's listing", async () => {
     const reset = seconds(NOW) + 120;

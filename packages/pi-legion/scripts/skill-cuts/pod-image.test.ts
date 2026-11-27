@@ -446,25 +446,28 @@ test.each([
     undefined,
     "Its org.opencontainers.image.revision names",
   ],
-] as const)("sessionPodImage reads a pod Dockerfile with %s as dockerfileStages reads it", async (_name, recipe, baseLabels, named) => {
-  const pinned = `registry.example.test/acme/pod@sha256:${"a".repeat(64)}`;
-  const base = `registry.example.test/acme/worker@sha256:${"b".repeat(64)}`;
-  const pod = await sessionPodImage(
-    podReads(pinText(`pods:image: ${pinned}`), base, pinned, undefined, {
-      recipe: recipe(base),
-      ...(baseLabels === undefined ? {} : { baseLabels }),
-    }),
-    POD,
-    "pod",
-    POD_AT
-  );
-  expect({ sha: pod.sha, directories: pod.directories }).toEqual({
-    sha: WORKER_COMMIT,
-    directories: ["/opt/worker/pi-worker", "/opt/pod/pi-pod"],
-  });
-  expect(pod.why).toContain(`pods/Dockerfile at that commit uses ${base};`);
-  expect(pod.why).toContain(`${named} ${WORKER_COMMIT}.`);
-});
+] as const)(
+  "sessionPodImage reads a pod Dockerfile with %s as dockerfileStages reads it",
+  async (_name, recipe, baseLabels, named) => {
+    const pinned = `registry.example.test/acme/pod@sha256:${"a".repeat(64)}`;
+    const base = `registry.example.test/acme/worker@sha256:${"b".repeat(64)}`;
+    const pod = await sessionPodImage(
+      podReads(pinText(`pods:image: ${pinned}`), base, pinned, undefined, {
+        recipe: recipe(base),
+        ...(baseLabels === undefined ? {} : { baseLabels }),
+      }),
+      POD,
+      "pod",
+      POD_AT
+    );
+    expect({ sha: pod.sha, directories: pod.directories }).toEqual({
+      sha: WORKER_COMMIT,
+      directories: ["/opt/worker/pi-worker", "/opt/pod/pi-pod"],
+    });
+    expect(pod.why).toContain(`pods/Dockerfile at that commit uses ${base};`);
+    expect(pod.why).toContain(`${named} ${WORKER_COMMIT}.`);
+  }
+);
 
 // Catches: a deployment's Dockerfile whose final stage COPYs the worker's packages from a stage
 // read as if its final stage were built on the worker image: the stage a COPY names, the image
