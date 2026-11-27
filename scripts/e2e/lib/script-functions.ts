@@ -39,28 +39,43 @@ export function scriptAssignments(path: string): (name: string) => string {
 
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
-// A library a script sources: `. "<word>"` or `source "<word>"` at the start of a line. The word
-// is a shell word, and a path holding `..` names a different file when it is read by its last
-// segments, so it is resolved whole. A word this file cannot resolve without running the shell is
-// no library it can read: `unreadableSources` names those lines, and a scan that walks what a
-// script sources fails on them rather than passing over a file it never read.
-const sourced = /^[ \t]*(?:\.|source)[ \t]+"([^"]+)"[ \t]*$/gm;
+// A library a script sources: `.` or `source`, then a word, at the start of a line. The word may
+// be quoted or not and the line may go on (`|| exit 1`, `; f`, a comment), so one matcher reads
+// every such line and both readers below use it: a line only one of them matched would be walked
+// and not refused, or neither, which is a file read by nobody and named by nobody.
+//
+// The word is a shell word, and a path holding `..` names a different file when it is read by its
+// last segments, so it is resolved whole. A word this file cannot resolve without running the
+// shell is no library it can read: `unreadableSources` names those lines, and a scan that walks
+// what a script sources fails on them rather than passing over a file it never read.
+// A quoted word runs to the last quote of its kind on the line, since the `$(dirname …)` forms
+// hold quotes of their own and shell nesting is not a thing a pattern can read; an unquoted word
+// runs to the first space, as the shell reads it. A line whose closing quote this misreads ends
+// as a word that resolves to nothing, which is refused rather than passed over.
+const sourceLine = /^[ \t]*(?:\.|source)[ \t]+(\S.*)$/;
+
+/** The word each `.` or `source` line of `text` names, with the line it is on (counting from 1)
+ *  and the line itself, in order. The word is unquoted where the line quoted it. */
+function sourceWords(text: string): { word: string; at: number; line: string }[] {
+  const found: { word: string; at: number; line: string }[] = [];
+  const lines = text.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    const match = sourceLine.exec(line);
+    if (match === null) continue;
+    const rest = match[1] ?? "";
+    const quote = rest.startsWith('"') ? '"' : rest.startsWith("'") ? "'" : "";
+    const word =
+      quote === ""
+        ? (/^\S+/.exec(rest)?.[0] ?? "")
+        : rest.slice(1, rest.lastIndexOf(quote) > 0 ? rest.lastIndexOf(quote) : undefined);
+    found.push({ word, at: index + 1, line });
+  }
+  return found;
+}
+
 /** The checkout, from this file in scripts/e2e/lib. */
 const checkout = join(import.meta.dir, "..", "..", "..");
-
-/** The file `written` names, as the script at `from` writes it. A path against `$root` is the
- *  checkout's. Any other variable names either the script's own directory or the checkout, and
- *  which one it is differs by script, so both are resolved, `..` and all, and the one that exists
- *  is the file; where neither does, the script's own directory's is kept, so the read that fails
- *  names a path the script could have meant. */
-function sourcedPath(from: string, written: string): string {
-  const against = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?\/(.+)$/.exec(written);
-  if (against === null) return isAbsolute(written) ? written : resolve(dirname(from), written);
-  const [, name, rest = ""] = against;
-  if (name === "root") return resolve(checkout, rest);
-  const beside = resolve(dirname(from), rest);
-  return existsSync(beside) ? beside : resolve(checkout, rest);
-}
 
 /** A path a script writes for its own directory: `$(dirname "$0")` and the `BASH_SOURCE` form
  *  beside it, which every script here uses for that and nothing else. */
@@ -90,17 +105,13 @@ function resolvedSource(from: string, written: string): string | undefined {
  *  `<path under the checkout>:<line>: <the line>`. A scan that walks what a script sources must
  *  fail on these: the file behind such a line is never read, so anything in it is unseen. */
 export function unreadableSources(path: string): string[] {
-  const lines = readFileSync(path, "utf8").split("\n");
   const found: string[] = [];
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index] ?? "";
-    const word = /^[ \t]*(?:\.|source)[ \t]+"?([^"\s]+)"?[ \t]*$/.exec(line);
-    if (word === null) continue;
+  for (const { word, at, line } of sourceWords(readFileSync(path, "utf8"))) {
     // A path that resolves but names no file of the tree is one the script makes as it runs, as
     // nats-callout-sessions.sh does with its drivers; the walk skips it and says so here only
     // where it cannot resolve the path at all, which is the shape that hides a library.
-    if (resolvedSource(path, word[1] ?? "") !== undefined) continue;
-    found.push(`${relative(checkout, path)}:${index + 1}: ${line.trim()}`);
+    if (resolvedSource(path, word) !== undefined) continue;
+    found.push(`${relative(checkout, path)}:${at}: ${line.trim()}`);
   }
   return found;
 }
@@ -116,10 +127,11 @@ export function sourcedLibraries(...paths: string[]): string[] {
   for (let path = pending.pop(); path !== undefined; path = pending.pop()) {
     if (read.has(path) || !existsSync(path)) continue;
     read.add(path);
-    for (const found of readFileSync(path, "utf8").matchAll(sourced)) {
-      const reaches = resolvedSource(path, found[1] ?? "");
-      // A line this reader cannot resolve, or whose file this tree does not hold, is named by
-      // unreadableSources; the walk goes on rather than ending on it.
+    for (const { word } of sourceWords(readFileSync(path, "utf8"))) {
+      const reaches = resolvedSource(path, word);
+      // A line this reader cannot resolve is named by unreadableSources, which reads the same
+      // lines this walk does, so no line falls between the two; the walk goes on rather than
+      // ending on it, and one whose file this tree does not hold is skipped at the top.
       if (reaches !== undefined) pending.push(reaches);
     }
   }

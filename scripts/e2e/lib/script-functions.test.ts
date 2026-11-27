@@ -8,6 +8,7 @@ import {
   nameMissingHelpers,
   scriptFunctions,
   sourcedLibraries,
+  unreadableSources,
 } from "./script-functions";
 
 const dir = temporaryDirectory("script-functions-test");
@@ -148,6 +149,17 @@ function sourcedBy(...lines: string[]): string[] {
   }
 }
 
+/** The source lines of a script holding `lines` that the reader refuses, each as it is written. */
+function refusedBy(...lines: string[]): string[] {
+  const script = join(checkout, "scripts", "e2e", "lib", `refused-path-control-${randomUUID()}.sh`);
+  try {
+    writeFileSync(script, `#!/usr/bin/env bash\n${lines.join("\n")}\n`);
+    return unreadableSources(script).map((found) => found.replace(/^[^:]*:\d+: /, ""));
+  } finally {
+    rmSync(script, { force: true });
+  }
+}
+
 // #4296's loopback-dsn.sh writes this line. Read by its last segments it names
 // scripts/e2e/lib/pg-url.sh, a file that does not exist; resolved, it names the one it sources.
 test("a sourced path that climbs out of its own directory names the file it reaches", () => {
@@ -172,4 +184,17 @@ test("a sourced path against the checkout names the file it reaches", () => {
 
 test("a sourced path against the script's own directory names the file beside it", () => {
   expect(sourcedBy('. "$lib/port-file.sh"')).toEqual(["scripts/e2e/lib/port-file.sh"]);
+});
+
+// Two shapes that fell between the walk's pattern and the refusal's, so each was read by one of
+// them and not the other, or by neither. One matcher now reads both.
+test("a sourced path written without quotes names the file it reaches", () => {
+  expect(sourcedBy(". $lib/port-file.sh")).toEqual(["scripts/e2e/lib/port-file.sh"]);
+});
+
+test("a source line that goes on past its path is read, and refused where the path is a variable", () => {
+  expect(sourcedBy('. "$root/packages/envoy/scripts/lib/exec-env.sh" || exit 1')).toEqual([
+    "packages/envoy/scripts/lib/exec-env.sh",
+  ]);
+  expect(refusedBy('. "$pg_url_lib" || exit 1')).toEqual(['. "$pg_url_lib" || exit 1']);
 });
