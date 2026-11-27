@@ -699,20 +699,23 @@ now_ms() {
 # directory of its own (its temporary_dir, holding its world), so no row reads a file another
 # file's rows wrote; what they print, how many passed, the process's exit and its milliseconds go to
 # files of its own under test_root. The process runs under set -e, as `each` runs an item: a
-# subshell an `||` tested would run with it off.
+# subshell an `||` tested would run with it off. A row file's rows set variables of any name at its
+# top level (test-rows-rbac.sh reads a `name` there), so the file the count goes to is named, and
+# made readonly, before they run.
 run_row_file() {
   local name="$1" started
   started=$(now_ms)
   set +e
   (
     set -e
+    readonly passed_file="$test_root/rows-$name.passed"
     temporary_dir="$test_root/rows-$name"
     world="$temporary_dir/world"
     rows=0
     mkdir "$temporary_dir"
     # shellcheck source=/dev/null # operator-token-minters/test-rows-NAME.sh, one of row_files
     . "$script_dir/operator-token-minters/test-rows-$name.sh"
-    echo "$rows" >"$test_root/rows-$name.passed"
+    echo "$rows" >"$passed_file"
   ) >"$test_root/rows-$name.out" 2>"$test_root/rows-$name.err"
   echo "$?" >"$test_root/rows-$name.status"
   echo "$(($(now_ms) - started))" >"$test_root/rows-$name.ms"
