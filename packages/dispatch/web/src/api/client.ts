@@ -1620,7 +1620,7 @@ export class DispatchApiClient {
    *  `400 INVALID_QUERY`. Each entry carries the trees of its body's texts (`field_trees`), but a
    *  first entry whose trees would pass the limit, which this page then reads itself. */
   getHandoffBodies(key: string, ids: readonly string[]) {
-    return this.read("/api/v1/issues/{key}/handoffs/bodies", { key }, { ids: ids.join(",") });
+    return this.read("/api/v1/issues/{key}/handoffs/bodies", { key }, { ids: [...ids].join(",") });
   }
 
   listArtifacts(key: string) {
