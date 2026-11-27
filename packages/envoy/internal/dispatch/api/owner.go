@@ -91,6 +91,7 @@ func (s *server) loadProject(ctx context.Context, q queryer, who model.Actor, ke
 		&project.DefaultRepo,
 		&project.ProvenSessions,
 		&project.CreatedAt,
+		&project.Visibility,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return model.Project{}, errProjectNotFound()

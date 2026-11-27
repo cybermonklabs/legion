@@ -483,6 +483,10 @@ type Project struct {
 	// present, so a reader never has to tell an absent setting from one that is off.
 	ProvenSessions bool      `json:"proven_sessions"`
 	CreatedAt      time.Time `json:"created_at"`
+	// Visibility is ProjectPrivate for a private project and absent for a public one, so a
+	// deployment where every project is public answers every project as it did before projects
+	// could be private.
+	Visibility string `json:"visibility,omitempty"`
 }
 
 // The two visibilities a project has (projects.visibility). Every full member sees a public

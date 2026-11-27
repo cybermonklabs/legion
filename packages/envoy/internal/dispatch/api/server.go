@@ -143,6 +143,24 @@ type Deps struct {
 	// not verify, is refused there as every route refuses it (401 NO_IDENTITY for none), and
 	// every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
+	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
+	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): their switch to private is
+	// the full switch (privateProjectProvisioned). With PrivateBeforeFullSwitch empty too, every
+	// switch to private is refused 409 PRIVATE_PROJECTS_OFF before anything is read, as every
+	// deployment before the settings did.
+	PrivateProjects []string
+	// PrivateBeforeFullSwitch are the keys of the projects this deployment makes private before
+	// their full switch, sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_BEFORE_FULL_SWITCH).
+	// Such a project's switch to private needs neither the provisioning PrivateProjects names nor
+	// the bus record (BusProjects), and still needs a complete store: Dispatch hides it as any
+	// private project, and its namespace, stores and bus gate come with its full switch. It shares
+	// no key with PrivateProjects: NewDeps refuses lists that do, and cmd/dispatch takes a key both
+	// settings name off this list, since that project takes its full switch.
+	PrivateBeforeFullSwitch []string
+	// BusProjects writes the private-projects record the listeners hold a private project's
+	// messages back by (K7). nil, which is what cmd/dispatch passes in this build, is a deployment
+	// with no writer: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
+	BusProjects BusProjects
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -318,9 +336,15 @@ type DepsInput struct {
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
-	App           *auth.AppConfig
-	GitHubAPIBase string
-	OIDC          ServiceTokenVerifier
+	App            *auth.AppConfig
+	GitHubAPIBase  string
+	OIDC           ServiceTokenVerifier
+	AccessAccounts []string
+	// PrivateProjects, PrivateBeforeFullSwitch and BusProjects are Deps.PrivateProjects,
+	// Deps.PrivateBeforeFullSwitch and Deps.BusProjects.
+	PrivateProjects         []string
+	PrivateBeforeFullSwitch []string
+	BusProjects             BusProjects
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -388,6 +412,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
+	for _, key := range input.PrivateBeforeFullSwitch {
+		if _, both := slices.BinarySearch(input.PrivateProjects, key); both {
+			return Deps{}, fmt.Errorf("DISPATCH_PRIVATE_PROJECTS and DISPATCH_PRIVATE_BEFORE_FULL_SWITCH both name %q: "+
+				"a project takes its full switch or is private before it, never both", key)
+		}
+	}
 	if input.Docs == nil {
 		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
 	}
@@ -415,10 +445,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 		envoyClient = envoy.New(envoyURL, options...)
 	}
 	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):
-	// GitHub budgets the App and each installation, not this process.
+	// GitHub budgets the App and each installation, not this process. While a project is private it
+	// holds every request that names a repository to that repository (githubapp.WithPrivateProjects).
 	var githubOptions []githubapp.Option
 	if input.Store != nil {
-		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
+		pool := input.Store.Pool
+		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(pool)),
+			githubapp.WithPrivateProjects(func(ctx context.Context) (bool, error) { return access.AnyProjectPrivate(ctx, pool) }))
 	}
 	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
 	if err != nil {
@@ -433,43 +466,47 @@ func NewDeps(input DepsInput) (Deps, error) {
 		heartbeat = defaultStreamHeartbeat
 	}
 	return Deps{
-		Store:                  input.Store,
-		Identity:               input.Identity,
-		AgentTokens:            input.AgentTokens,
-		NewIssueLabel:          newIssue.Label,
-		NewIssueSession:        newIssue.Session,
-		Origins:                origins,
-		Docs:                   input.Docs,
-		Embedder:               input.Embedder,
-		Answerer:               input.Answerer,
-		Envoy:                  envoyClient,
-		Events:                 input.Events,
-		GitHub:                 github,
-		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
-		Renames:                input.Renames,
-		Attributor:             delivery.NewAttributor(input.Renames),
-		OIDC:                   input.OIDC,
-		BrokerTokens:           input.BrokerTokens,
-		AgentStream:            input.AgentStream,
-		AgentPublisher:         input.AgentPublisher,
-		AgentSecrets:           agentSecretsClient,
-		LegionStatusScope:      input.LegionStatusScope,
-		Files:                  input.Files,
-		TestHooksEnabled:       input.TestHooksEnabled,
-		StreamHeartbeat:        heartbeat,
-		RouteRosterTTL:         input.RouteRosterTTL,
-		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
-		HorizonStallAfter:      input.HorizonStallAfter,
-		HorizonWarnEvery:       input.HorizonWarnEvery,
-		TestHookTimeout:        input.TestHookTimeout,
-		ListenerRosterUncached: input.ListenerRosterUncached,
-		OutboxPublishes:        input.OutboxPublishes,
-		Metrics:                input.Metrics,
-		AnswersLatency:         input.AnswersLatency,
-		DashboardEntry:         input.DashboardEntry,
-		BuildCommit:            input.BuildCommit,
-		Clock:                  input.Clock,
-		ParentStatusRule:       input.ParentStatusRule,
+		Store:                   input.Store,
+		Identity:                input.Identity,
+		AgentTokens:             input.AgentTokens,
+		NewIssueLabel:           newIssue.Label,
+		NewIssueSession:         newIssue.Session,
+		Origins:                 origins,
+		Docs:                    input.Docs,
+		Embedder:                input.Embedder,
+		Answerer:                input.Answerer,
+		Envoy:                   envoyClient,
+		Events:                  input.Events,
+		GitHub:                  github,
+		Architecture:            architecture.NewImporter(input.Store, github, input.Events),
+		Renames:                 input.Renames,
+		Attributor:              delivery.NewAttributor(input.Renames),
+		OIDC:                    input.OIDC,
+		AccessAccounts:          input.AccessAccounts,
+		PrivateProjects:         input.PrivateProjects,
+		PrivateBeforeFullSwitch: input.PrivateBeforeFullSwitch,
+		BusProjects:             input.BusProjects,
+		BrokerTokens:            input.BrokerTokens,
+		AgentStream:             input.AgentStream,
+		AgentPublisher:          input.AgentPublisher,
+		AgentSecrets:            agentSecretsClient,
+		LegionStatusScope:       input.LegionStatusScope,
+		Files:                   input.Files,
+		TestHooksEnabled:        input.TestHooksEnabled,
+		StreamHeartbeat:         heartbeat,
+		RouteRosterTTL:          input.RouteRosterTTL,
+		ListenerTakeoverWindow:  input.ListenerTakeoverWindow,
+		HorizonStallAfter:       input.HorizonStallAfter,
+		HorizonWarnEvery:        input.HorizonWarnEvery,
+		TestHookTimeout:         input.TestHookTimeout,
+		ListenerRosterUncached:  input.ListenerRosterUncached,
+		OutboxPublishes:         input.OutboxPublishes,
+		Metrics:                 input.Metrics,
+		AnswersLatency:          input.AnswersLatency,
+		DashboardEntry:          input.DashboardEntry,
+		BuildCommit:             input.BuildCommit,
+		Clock:                   input.Clock,
+		ParentStatusRule:        input.ParentStatusRule,
 	}, nil
 }
 

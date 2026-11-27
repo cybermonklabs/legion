@@ -21,7 +21,9 @@ import (
 // the plan test explains the statement the route runs.
 //
 // It lists only the projects the reader whose visibility argument is $1 sees
-// (access.ProjectClause).
+// (access.ProjectClause), and reads a project's visibility as "" for a public one, so the list
+// marks a private project alone and a deployment with no private project answers as it did
+// before a project could be private.
 var projectListQuery = projectListSelect + `
 		where ` + access.ProjectClause("p.key", "$1") + `
 		order by p.key
@@ -30,8 +32,9 @@ var projectListQuery = projectListSelect + `
 // projectListSelect is the list's statement up to its where clause: every project with its
 // open-ask count. projectListQuery holds it to the projects its reader sees, and projectRowQuery
 // to the one project its key names.
-const projectListSelect = `
-		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.proven_sessions, p.created_at
+var projectListSelect = `
+		select p.key, p.name, coalesce(open_asks.total, 0), p.gated_steps, p.default_repo, p.proven_sessions, p.created_at,
+		       case when p.visibility = '` + model.ProjectPrivate + `' then p.visibility else '' end
 		from projects p
 		left join (
 			select coalesce(i.project_key, ar.project_key) as project_key, count(*) as total
@@ -45,12 +48,12 @@ const projectListSelect = `
 
 // projectRowQuery reads one project as GET /api/v1/projects lists it (projectListQuery), so the
 // answer of the proven-sessions routes carries the open-ask count the list shows, not a zero.
-const projectRowQuery = `select * from (` + projectListSelect + `) listed where listed.key = $1`
+var projectRowQuery = `select * from (` + projectListSelect + `) listed where listed.key = $1`
 
 // scanListedProject reads one row of projectListQuery or projectRowQuery.
 func scanListedProject(row pgx.Row) (model.Project, error) {
 	var project model.Project
-	if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.ProvenSessions, &project.CreatedAt); err != nil {
+	if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.ProvenSessions, &project.CreatedAt, &project.Visibility); err != nil {
 		return model.Project{}, err
 	}
 	return project, nil

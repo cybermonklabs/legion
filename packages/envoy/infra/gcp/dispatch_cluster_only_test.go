@@ -189,6 +189,8 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchOidcAudience }},
 		{"oidcIssuer", func(a *gcp.DispatchArgs) { a.OidcIssuer = dispatchOidcIssuer }},
 		{"projectOwnerFallback", func(a *gcp.DispatchArgs) { a.ProjectOwnerFallback = "owner@example.com" }},
+		{"privateProjects", func(a *gcp.DispatchArgs) { a.PrivateProjects = []string{"PRIV"} }},
+		{"privateBeforeFullSwitch", func(a *gcp.DispatchArgs) { a.PrivateBeforeFullSwitch = []string{"PRIV"} }},
 		{"appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = "example-app-client-id" }},
 		{"appId", func(a *gcp.DispatchArgs) { a.AppId = "123456" }},
 		{"appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }},

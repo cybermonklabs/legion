@@ -146,6 +146,14 @@ type testServerOptions struct {
 	// oidc is the service-account token verifier; nil is the unconfigured
 	// deployment, whose bearer handling is untouched by that feature.
 	oidc ServiceTokenVerifier
+	// privateProjects, privateBeforeFullSwitch and busProjects are Deps.PrivateProjects,
+	// Deps.PrivateBeforeFullSwitch and Deps.BusProjects: the projects the deployment has
+	// provisioned as private, those it makes private before their full switch, and the
+	// private-projects record's writer. Nil, nil and nil are the deployment that names no private
+	// project.
+	privateProjects         []string
+	privateBeforeFullSwitch []string
+	busProjects             BusProjects
 	// brokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme. It is built from the test's own database, as the persistence seam below
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
@@ -424,26 +432,29 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// five and thirty seconds, as a cmd/dispatch test process's does, so a row's output names
 		// whoever holds the horizon while it waits; the wait itself reads no warning
 		// (horizontest.WaitInProcess).
-		HorizonStallAfter:      horizontest.StallWarning,
-		HorizonWarnEvery:       horizontest.StallWarning,
-		OIDC:                   options.oidc,
-		BrokerTokens:           brokerTokens,
-		AgentSecretsURL:        options.agentSecretsURL,
-		AgentSecretsTokenFile:  agentSecretsTokenFile,
-		AgentStream:            options.agentStream,
-		AgentPublisher:         agentPublisher,
-		Embedder:               options.embedder,
-		Answerer:               options.answerer,
-		Files:                  options.files,
-		DashboardEntry:         options.dashboardEntry,
-		BuildCommit:            options.buildCommit,
-		OutboxPublishes:        options.outboxPublishes,
-		Metrics:                options.metrics,
-		LegionStatusScope:      options.legionStatusScope,
-		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
-		ListenerRosterUncached: options.listenerRosterUncached,
-		RouteRosterTTL:         options.routeRosterTTL,
-		Clock:                  options.clock,
+		HorizonStallAfter:       horizontest.StallWarning,
+		HorizonWarnEvery:        horizontest.StallWarning,
+		OIDC:                    options.oidc,
+		BrokerTokens:            brokerTokens,
+		AgentSecretsURL:         options.agentSecretsURL,
+		AgentSecretsTokenFile:   agentSecretsTokenFile,
+		AgentStream:             options.agentStream,
+		AgentPublisher:          agentPublisher,
+		Embedder:                options.embedder,
+		Answerer:                options.answerer,
+		Files:                   options.files,
+		DashboardEntry:          options.dashboardEntry,
+		BuildCommit:             options.buildCommit,
+		OutboxPublishes:         options.outboxPublishes,
+		Metrics:                 options.metrics,
+		LegionStatusScope:       options.legionStatusScope,
+		ParentStatusRule:        ParentStatusRule{on: options.parentStatusRule},
+		ListenerRosterUncached:  options.listenerRosterUncached,
+		RouteRosterTTL:          options.routeRosterTTL,
+		Clock:                   options.clock,
+		PrivateProjects:         options.privateProjects,
+		PrivateBeforeFullSwitch: options.privateBeforeFullSwitch,
+		BusProjects:             options.busProjects,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

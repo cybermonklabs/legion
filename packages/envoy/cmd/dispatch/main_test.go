@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -945,6 +946,28 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	}
 	if len(health) != len(want) {
 		t.Fatalf("healthz = %#v, want exactly the fields %v", health, want)
+	}
+}
+
+// requireOnlyDegraded fails unless body, a /healthz answer, carries degraded as want, compared as
+// the literal a probe reads, and is otherwise without, the body of a handler with no read, field
+// for field: no key and no count beside the fixed reasons, so nothing in it changes with how many
+// projects are private, or which (R2).
+func requireOnlyDegraded(t *testing.T, body, without, want string) {
+	t.Helper()
+	var fields, withoutFields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
+		t.Fatalf("decode /healthz %s: %v", body, err)
+	}
+	if err := json.Unmarshal([]byte(without), &withoutFields); err != nil {
+		t.Fatalf("decode /healthz %s: %v", without, err)
+	}
+	if got := string(fields["degraded"]); got != want {
+		t.Fatalf("/healthz = %s: degraded %s, want %s", body, got, want)
+	}
+	delete(fields, "degraded")
+	if !maps.EqualFunc(fields, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
+		t.Errorf("/healthz = %s, want the body without the read plus degraded alone, %s", body, without)
 	}
 }
 

@@ -1,0 +1,5 @@
+kind: Added
+body: '`ProjectAccess` carries the optional `private_before_full_switch`, true while the project is private before its full switch and absent otherwise. Until its full switch, the project''s notifications on the hub reach any agent session that subscribes to them.'
+time: 2026-11-20T23:42:30.967472930Z
+custom:
+    Issue: pr4683

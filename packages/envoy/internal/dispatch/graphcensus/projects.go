@@ -268,15 +268,16 @@ var rowClass = `case
 
 // classedRows follows scopedRowsSQL: every row of scoped with its class against its node, null for
 // a complete one, and every node of an object kind at a state but gone that no row of scoped stands
-// behind, as orphaned, each with whether it is a row the store projects, whether its address is
-// past the store's bound, and whether the row names a party the store refuses (refusedPartySQL).
+// behind, as orphaned, each with the project of its row (row_project, null for an orphaned node,
+// which stands behind none), whether it is a row the store projects, whether its address is past
+// the store's bound, and whether the row names a party the store refuses (refusedPartySQL).
 var classedRows = `,
-	classed (kind, id, class, is_row, past_bound, refused) as (
-		select scoped.kind, scoped.id, ` + rowClass + `, not scoped.past_bound, scoped.past_bound, ` + refusedPartySQL("scoped.parties") + `
+	classed (kind, id, row_project, class, is_row, past_bound, refused) as (
+		select scoped.kind, scoped.id, scoped.project, ` + rowClass + `, not scoped.past_bound, scoped.past_bound, ` + refusedPartySQL("scoped.parties") + `
 		from scoped
 		left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id and not scoped.past_bound
 		union all
-		select n.kind, n.id, '` + classOrphaned + `', false, false, false
+		select n.kind, n.id, null::text, '` + classOrphaned + `', false, false, false
 		from graph_nodes n
 		where n.kind in (` + orphanKindList + `) and n.state <> '` + graphstore.StateGone + `'
 		  and not exists (select 1 from scoped where scoped.kind = n.kind and scoped.id = n.id)
@@ -378,6 +379,15 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 	return projectIncomplete(ctx, q, nil)
 }
 
+// ProjectCompleteFor is ProjectComplete restricted to the rows of project key: the rows whose node
+// the store does not hold, holds gone or holds for another row, or whose node names no project or
+// another than the row's, each with its cure. An orphaned node stands behind no row, so it is no
+// row of key's. A switch of key to private reads it in its own transaction, since a private
+// project's reads would answer such a row wrongly.
+func ProjectCompleteFor(ctx context.Context, q graphstore.Queryer, key string) ([]string, error) {
+	return incompleteLines(ctx, q, "row_project = $2", nil, key)
+}
+
 // The cures ProjectComplete ends its lines with.
 const (
 	backfillCure = "; run envoy-dispatch backfill-graph-store"
@@ -393,13 +403,20 @@ const (
 // not nil: the store census prints only its first lines (reportedDifferences), and a database an
 // earlier release left without nodes holds every row of it.
 func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([]string, error) {
+	return incompleteLines(ctx, q, "true", limit)
+}
+
+// incompleteLines is the read of ProjectComplete over the lines of classed that restriction
+// admits, of at most limit lines in its order when limit is not nil. limit is bound at $1, and
+// args, which restriction reads, from $2 on.
+func incompleteLines(ctx context.Context, q graphstore.Queryer, restriction string, limit *int, args ...any) ([]string, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
 		select kind, id, class, refused
 		from classed
-		where class is not null
+		where class is not null and `+restriction+`
 		order by kind, id
 		limit $1
-	`, limit)
+	`, append([]any{limit}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("read the rows whose node names no project: %w", err)
 	}

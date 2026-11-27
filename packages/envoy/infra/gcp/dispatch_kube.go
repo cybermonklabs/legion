@@ -806,6 +806,14 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if s.projectOwnerFallback != "" {
 		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_OWNER_FALLBACK", s.projectOwnerFallback))
 	}
+	// Only a non-empty list renders: unset and empty leave the pod as it always was, so a stack
+	// that provisions no private project renders no setting a binary that predates it would read.
+	if len(s.privateProjects) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_PROJECTS", strings.Join(s.privateProjects, ",")))
+	}
+	if len(s.privateBeforeFullSwitch) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_BEFORE_FULL_SWITCH", strings.Join(s.privateBeforeFullSwitch, ",")))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.
