@@ -25325,7 +25325,10 @@ console.log(JSON.stringify(args));
     control?.push(JSON.stringify({ type: "watch", v: 1 }));
     control?.push(JSON.stringify({ type: "replay", v: 1 }), inbox);
     const answered = () => natsState.published.filter((each) => each.subject === inbox);
-    await until(() => answered().length > 0, `the replay answer on ${inbox}`);
+    await until(
+      `the replay answer on ${inbox}`,
+      rowProbe(() => answered().length > 0)
+    );
     const answer = answered().at(-1);
     return z
       .object({ frames: z.array(z.record(z.string(), z.unknown())) })
