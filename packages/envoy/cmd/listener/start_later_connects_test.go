@@ -21,7 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
-// laterStepWatchdog bounds each wait of the tests below on a connect of the start.
+// laterStepWatchdog bounds each wait of the test below on a connect of the start, and, on the
+// start's clock (heldFinish), each connect of the held tests after the server admits it.
 const laterStepWatchdog = time.Minute
 
 // mainsTenTries is when main's connect ends on ten dials that all fail for another reason than a
@@ -163,7 +164,7 @@ func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) 
 		t.Fatalf("reload the server with the nkey admitted and its role-lane subscription refused: %v", err)
 	}
 	w.end()
-	got, _ := heldFinish(t, clock, returned, "the role lane's step")
+	got, _ := heldFinish(t, clock, returned, "the role lane's step", laterStepWatchdog)
 	if got.err == nil {
 		got.lane.stopWatch()
 		got.lane.client.Close()
@@ -187,8 +188,9 @@ func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) 
 
 // laterConnectRefusedFor is how long TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects
 // has the server refuse the nkey while a later connect of the start runs, on the start's clock
-// (heldStart): past the ten tries a second apart that a connect without the wait makes, about ten
-// seconds, so such a connect has ended with the refusal by then.
+// (heldStart): past the ten tries a second apart that a connect without the wait makes. Such a
+// connect makes them on the wall clock and returns the refusal before it asks the start's clock for
+// any wait, so the test sees it return while the server still refuses the nkey.
 const laterConnectRefusedFor = 15 * time.Second
 
 // TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects: the listener's start does not
@@ -241,10 +243,25 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 			cfg := config.Service{MachineID: "start-later-connects", NATSURLs: []string{uri}, NATSReplicas: 1}
 			start, clock := heldStart(t, seed)
 			base := serveStartRoutes(t, start)
-			client, err := connectListenerBus(cfg, nil, start)
-			if err != nil {
-				t.Fatalf("the start's main client did not connect while the server admitted its nkey: %v", err)
+			// The main client connects on a goroutine of its own: were it to ask the held clock for a
+			// wait, nothing on the test's goroutine would end it.
+			type connected struct {
+				client *bus.Client
+				err    error
 			}
+			mainClient := make(chan connected, 1)
+			go func() {
+				client, err := connectListenerBus(cfg, nil, start)
+				mainClient <- connected{client, err}
+			}()
+			held, opened, connectedFirst := heldNext(t, clock, mainClient, "the start's main client")
+			if !connectedFirst {
+				t.Fatalf("the start's main client asked for a wait of %s at %s on its clock while the server admitted its nkey, want it to connect at its first try", held.wait, held.at)
+			}
+			if opened.err != nil {
+				t.Fatalf("the start's main client did not connect while the server admitted its nkey: %v", opened.err)
+			}
+			client := opened.client
 			t.Cleanup(client.Close)
 
 			if err := server.Reload(t, nkeyAuthorization(fallback)); err != nil {
@@ -282,7 +299,7 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 				w.end()
 				break
 			}
-			got, _ := heldFinish(t, clock, returned, what)
+			got, _ := heldFinish(t, clock, returned, what, laterStepWatchdog)
 			if got.err != nil {
 				t.Fatalf("%s returned %v %s after it began on the start's clock, want it to connect once the server admits the nkey again", what, got.err, clock.since()-began)
 			}

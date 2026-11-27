@@ -377,10 +377,11 @@ func heldNext[T any](t *testing.T, clock *heldClock, returned <-chan T, what str
 }
 
 // heldFinish lets each further wait the start asks clock for end at once until returned receives,
-// and answers what it received and those waits. The start's own bound ends a start that never gets
-// in, as its clock moves on by each wait.
-func heldFinish[T any](t *testing.T, clock *heldClock, returned <-chan T, what string) (T, []time.Duration) {
+// and answers what it received and those waits. It fails the test, naming what it waited on, when
+// a wait would end past watchdog on the start's clock, counted from the moment it was called.
+func heldFinish[T any](t *testing.T, clock *heldClock, returned <-chan T, what string, watchdog time.Duration) (T, []time.Duration) {
 	t.Helper()
+	from := clock.since()
 	var waits []time.Duration
 	for {
 		w, got, done := heldNext(t, clock, returned, what)
@@ -388,21 +389,24 @@ func heldFinish[T any](t *testing.T, clock *heldClock, returned <-chan T, what s
 			return got, waits
 		}
 		waits = append(waits, w.wait)
+		if w.endsPast(from + watchdog) {
+			t.Fatalf("watchdog: %s had not returned %s on its clock after the test let it go on, having waited %v since", what, watchdog, waits)
+		}
 		w.end()
 	}
 }
 
 // heldStart is the listener's start as main makes it (newNATSStart, with listenerCredentialWait),
-// on a clock of the test's (heldClock), whose connects read their nkey seed, seed, from an
+// on a clock of the test's (heldClock), whose connects also read their nkey seed, seed, from an
 // environment of their own (testnats.SeedOnly, bus.WithEnvironment) and not from the process's,
-// which only a test that runs alone may change, and take options after those. A test of the start
-// so runs beside the others, and none of its waits takes time on the wall clock.
-func heldStart(t *testing.T, seed string, options ...bus.ConnectOption) (*natsStart, *heldClock) {
+// which only a test that runs alone may change. A test of the start so runs beside the others, and
+// none of its waits takes time on the wall clock.
+func heldStart(t *testing.T, seed string) (*natsStart, *heldClock) {
 	t.Helper()
 	clock := newHeldClock(t)
 	start := newNATSStart(listenerCredentialWait)
 	start.now = clock.now
-	start.extra = append([]bus.ConnectOption{bus.WithEnvironment(testnats.SeedOnly(seed)), bus.WithStartClock(clock.now, clock.sleep)}, options...)
+	start.extra = append(start.extra, bus.WithEnvironment(testnats.SeedOnly(seed)), bus.WithStartClock(clock.now, clock.sleep))
 	return start, clock
 }
 
@@ -610,10 +614,11 @@ func edgeStartRun(t *testing.T, uri string) (config.Service, *edgeGrant) {
 // (connectListenerBus). While the server refuses the nkey, /healthz answers 503 naming the refusal
 // and /livez 204, and the start waits 1, 2, 4 and 8 s between its first five tries, and the 10 s
 // cap after them, the server recording one try, closed, before each wait. The server reloads an
-// authorization that admits the nkey 20 s after the first try on the start's clock (heldStart), past
-// the ten tries a start without the wait makes; the start then connects and finds the stream
-// (edgeStreamPresent), and /healthz answers as on main. Without the wait the start ends with the
-// refusal after those ten tries, about ten seconds, and /healthz answers 200 "starting" throughout.
+// authorization that admits the nkey 20 s after the first try on the start's clock (heldStart); the
+// start then connects and finds the stream (edgeStreamPresent), and /healthz answers as on main.
+// Without the wait the start ends with the refusal after the ten tries, a second apart, that a
+// start without the wait makes on the wall clock, before it asks the start's clock for any wait,
+// and /healthz answers 200 "starting" throughout.
 func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	t.Parallel()
 	const (
@@ -669,9 +674,9 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 // startChildWait on the wall clock, exits 1 at the bound, its last line naming its nkey's public key
 // and the read's refusal. Without the wait over the read, the start ends at the first refusal,
 // milliseconds after its first try, and the child exits as soon. The third case holds the wait to
-// refusals: a stream the server does not hold ends the start at its first try, before any wait. The
-// fourth has the refusal reach the read as the connection's last error, an authorization violation,
-// rather than as the read's own error, and waits it out too.
+// refusals: a stream the server does not hold ends the start at its first try, before any wait.
+// TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConnectionsLastError has
+// the refusal reach the read as the connection's last error, and waits it out too.
 func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 	t.Parallel()
 	const watchdog = 60 * time.Second
@@ -752,65 +757,86 @@ func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
 		if w != nil {
 			t.Fatalf("the edge listener's start on a server with no stream asked for a wait of %s at %s on its clock, want it to end at its first try", w.wait, w.at)
 		}
+		took := got.at.Sub(run.began)
 		const want = "the server holds no " + bus.Stream + " stream"
 		if got.err == nil || !strings.Contains(got.err.Error(), want) {
-			t.Fatalf("the edge listener's start on a server with no stream returned %v after %s, want an error naming %q", got.err, got.at.Sub(run.began), want)
+			t.Fatalf("the edge listener's start on a server with no stream returned %v after %s, want an error naming %q", got.err, took, want)
+		}
+		// The connect's read of the deployed subjects can wait out its two seconds
+		// (firstStreamSubjectsRead) before the read of the stream; one more second tells that from a
+		// start that tried a second time.
+		if took > 3*time.Second {
+			t.Fatalf("the edge listener's start on a server with no stream ended %s after its first try, want at its first try: %v", took, got.err)
 		}
 	})
+}
 
-	// A refusal can reach the read as the connection's last error rather than as the read's own:
-	// the server takes the edge's user away while the read waits for an answer it will never get
-	// (the user may not subscribe to the edge's inboxes, so the server drops the reply), so the read
-	// ends on a connection the server refused, whose last error is the authorization violation.
-	// edgeStreamPresent wraps that error, so the start waits it out as it waits out a refusal of the
-	// connect, /healthz naming that error, and completes once the server admits the user again. With
-	// the last error formatted rather than wrapped, the start ended at that read.
-	t.Run("an authorization refusal the read meets as the connection's last error is waited out", func(t *testing.T) {
-		t.Parallel()
-		var records logtest.Recorder
-		run := newListenerStartRun(t)
-		inboxes := natsgrant.EdgeInboxPrefix(edgeStartMachine) + ".>"
-		rig := startEdgeStartServer(t, func(public, fallback string) string {
-			return nkeyAuthorization(fallback, fmt.Sprintf("{nkey: %q, permissions: {subscribe: {deny: [%q]}}}", public, inboxes))
-		})
-		cfg, edge := edgeStartRun(t, rig.uri)
-		// The start's clients write their lines to the test's own records (bus.WithLogger), not
-		// where the process's default logger points.
-		start, clock := heldStart(t, rig.seed, bus.WithLogger(slog.New(&records)))
-		base := serveStartRoutes(t, start)
-
-		run.begin(cfg, edge, start)
-		// The connect's read of the deployed subjects has waited out the answer the server dropped,
-		// so the start's read of the stream is next, and meets the same silence.
-		run.untilLogged(t, &records, clock, "the connect's read of the deployed subjects to end", func(record slog.Record) bool {
-			return record.Message == "envoy nats could not read the stream's subjects" && recordAttr(record, "name") == listenerTryName
-		})
-		if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback)); err != nil {
-			t.Fatalf("reload the server without the edge listener's user: %v", err)
-		}
-		w, got := run.next(t, clock)
-		if got != nil {
-			t.Fatalf("the edge listener's start returned %v %s after its first try, want it to wait out the read's refusal", got.err, got.at.Sub(run.began))
-		}
-		const lastError = "the connection's last error: nats: authorization violation"
-		status, fields := probe(t, base, "/healthz")
-		t.Logf("the start waits out: %v", fields["error"])
-		if status != http.StatusServiceUnavailable || !strings.Contains(strings.ToLower(fmt.Sprint(fields["error"])), lastError) {
-			t.Fatalf("/healthz answered %d %v while the start waited out a refusal, want 503 naming %q", status, fields, lastError)
-		}
-		if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
-			t.Fatalf("reload the server with the edge listener's user: %v", err)
-		}
-		w.end()
-
-		outcome, _ := run.finish(t, clock, watchdog)
-		if outcome.err != nil {
-			t.Fatalf("the edge listener's start returned %v %s after its first try on its clock, want it to complete once the server admits it again", outcome.err, outcome.took)
-		}
-		if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
-			t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
-		}
+// TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConnectionsLastError: a
+// refusal can reach an edge listener's read of the stream (edgeStreamPresent) as the connection's
+// last error rather than as the read's own: the server takes the edge's user away while the read
+// waits for an answer it will never get (the user may not subscribe to the edge's inboxes, so the
+// server drops the reply), so the read ends on a connection the server refused, whose last error
+// is the authorization violation. edgeStreamPresent wraps that error, so the start waits it out as
+// it waits out a refusal of the connect: it logs the refusal at WARN and asks its clock for a wait
+// (heldStart), and /healthz names that error meanwhile. It completes once the server admits the
+// user again. With the last error formatted rather than wrapped, the start ended at that read.
+func TestAnEdgeListenerStartWaitsOutAnAuthorizationRefusalItsReadMeetsAsTheConnectionsLastError(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault), where the bus writes the
+	// start's WARN of each refusal.
+	const watchdog = 60 * time.Second
+	var records logtest.Recorder
+	logtest.SetDefault(t, &records)
+	run := newListenerStartRun(t)
+	inboxes := natsgrant.EdgeInboxPrefix(edgeStartMachine) + ".>"
+	rig := startEdgeStartServer(t, func(public, fallback string) string {
+		return nkeyAuthorization(fallback, fmt.Sprintf("{nkey: %q, permissions: {subscribe: {deny: [%q]}}}", public, inboxes))
 	})
+	cfg, edge := edgeStartRun(t, rig.uri)
+	start, clock := heldStart(t, rig.seed)
+	base := serveStartRoutes(t, start)
+
+	run.begin(cfg, edge, start)
+	// The connect's read of the deployed subjects has waited out the answer the server dropped, so
+	// the start's read of the stream is next, and meets the same silence.
+	run.untilLogged(t, &records, clock, "the connect's read of the deployed subjects to end", func(record slog.Record) bool {
+		return record.Message == "envoy nats could not read the stream's subjects" && recordAttr(record, "name") == listenerTryName
+	})
+	if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback)); err != nil {
+		t.Fatalf("reload the server without the edge listener's user: %v", err)
+	}
+	w, got := run.next(t, clock)
+	if got != nil {
+		t.Fatalf("the edge listener's start returned %v %s after its first try, want it to wait out the read's refusal", got.err, got.at.Sub(run.began))
+	}
+	// The start logs each refusal, with the wait that follows it, before it waits: the line is
+	// there once the start has asked for the wait.
+	const lastError = "the connection's last error: nats: authorization violation"
+	refusal, logged := slog.Record{}, false
+	for _, record := range records.Records() {
+		if record.Message == "envoy nats credential refused at start; trying again" && strings.Contains(strings.ToLower(recordAttr(record, "error")), lastError) {
+			refusal, logged = record, true
+			break
+		}
+	}
+	if !logged {
+		t.Fatalf("the start asked for a wait of %s at %s on its clock, but no WARN line says it waits out a refusal naming %q", w.wait, w.at, lastError)
+	}
+	t.Logf("the start waits out: %s", recordAttr(refusal, "error"))
+	if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable || !strings.Contains(strings.ToLower(fmt.Sprint(fields["error"])), lastError) {
+		t.Fatalf("/healthz answered %d %v while the start waited out a refusal, want 503 naming %q", status, fields, lastError)
+	}
+	if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
+		t.Fatalf("reload the server with the edge listener's user: %v", err)
+	}
+	w.end()
+
+	outcome, _ := run.finish(t, clock, watchdog)
+	if outcome.err != nil {
+		t.Fatalf("the edge listener's start returned %v %s after its first try on its clock, want it to complete once the server admits it again", outcome.err, outcome.took)
+	}
+	if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
+		t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
+	}
 }
 
 // rotatingForwarder is the one address the listener is given in
