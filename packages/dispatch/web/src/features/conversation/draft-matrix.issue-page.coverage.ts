@@ -68,7 +68,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("IssuePage | IssueDetail | early return | if (route === undefined) return …", {
     reason: REASONS[5],
   }),
-  ...answers('IssuePage | IssueDetail | early return | if (route.kind === "threads") return …', {
+  ...answers("IssuePage | IssueDetail | early return | if (unknownToShell(pathname)) return …", {
     reason: REASONS[6],
   }),
   ...answers(

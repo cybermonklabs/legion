@@ -27,6 +27,7 @@ import {
   type IssueRoute,
   type IssueTab,
   parseIssuePath,
+  unknownToShell,
 } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
@@ -58,9 +59,9 @@ export function IssuePage(): ReactNode {
   if (route === undefined) {
     return <NotFoundPage />;
   }
-  // Threads' addresses are the new issue page's alone (dispatch://INFRA-5704 R18): today's page
-  // draws its not-found page for them, as it does on main.
-  if (route.kind === "threads") return <NotFoundPage />;
+  // Today's page draws its not-found page for each address of the new issue page alone, as it
+  // does on main (dispatch://INFRA-5704 R18); `unknownToShell` lists those addresses.
+  if (unknownToShell(pathname)) return <NotFoundPage />;
   // key={route.key}: switching to a different issue remounts IssueDetail
   // fresh (discarding any unsaved local drafts); switching tabs within the
   // same issue keeps route.key unchanged, so it only re-renders.
