@@ -176,7 +176,7 @@ Each item below names a script, then what it proves.
     A deployment whose admission lowers a CPU request that equals its limit gives the opt-out label of a timed run with `--label`, and the harness reads the cache container's request back from the admitted Job and refuses the run when it is not 1 CPU.
     `--repo` names another public repository than node's;
     `--dry-run` renders the manifest, validates it with `kubectl` (the namespace's admission where this pod may create a Job, else `kubectl`'s own schema), prints the cache container's CPU request as admitted, creates nothing, and exits.
-    Run it detached, as `docs/kubernetes.md`, "Running a workload in the cluster from a role", and the harness's own header set out (`flock "$log" setsid -f bash …`): it runs about ten minutes on the default repository, and its clean-up is a trap that a tool killing a long call does not let run.
+    Run it detached, as `docs/kubernetes.md`, "Running a workload in the cluster from a role", and the harness's own header set out (`flock "$log" setsid -f bash …`): it runs about twenty minutes on the default repository (its pod ran 19m17s and 20m31s in the two runs of 2026-11-26 and 2026-11-27), and its clean-up is a trap that a tool killing a long call does not let run.
     Exit statuses: 0 pass; 1 the Job ran and a check failed; 2 the harness could not run, or the run is void; 3 the Job reached no verdict inside its deadline.
 
   Legion pod only
@@ -533,7 +533,7 @@ Each item below names a script, then what it proves.
 
   each phase of an issue leaves a step record on its Dispatch issue, and a person reads the records back with the real `dispatch steps` command, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with one issue that walks planning to done with one failed review:
   with the Dispatch process stopped once the issue is in reviewing for the second time, the review, the acceptance, the retro and the merge walk it to done, `dispatch steps` fails naming the unreachable server, and once Dispatch is back the records of those steps reach it, each ended;
-  `dispatch steps --issue <KEY>`, run as a person with their personal token, prints `<KEY>: 10 steps in 1 tasks` and the ten runs, each ended with its result and an agent, each of kind `step` with its model, and reports the failed review missing once its record is deleted from Dispatch's database;
+  `dispatch steps --issue <KEY>`, run as a person with their personal token, prints `<KEY>: 10 steps in 1 tasks`, the line `task default needs …` of the default plan, which the check passes over, and the ten runs, each ended with its result and an agent, each of kind `step` with its model, and reports the failed review missing once its record is deleted from Dispatch's database;
   a step write that names another session is refused `403 STEP_WRITER`, and the same body as the daemon's own session is taken.
   No GitHub, no cluster
 
@@ -5728,7 +5728,7 @@ The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.t
 | :--- | :--- | :--- |
 | `walk-to-the-second-review-with-dispatch-up` | planning, implementing and testing, each completing with its handoff record; a person's review requesting changes on the pull request's head; implementing and testing again | the issue in `implementing` after the review, then in `reviewing` again; each of those completions reads its handoff record from Dispatch, which is why Dispatch is up for them (with it stopped, the completion is refused `502 DISPATCH_READ_FAILED`) |
 | `a-phase-moves-while-dispatch-is-down` | the Dispatch process stopped (SIGINT); the second review approving; the architect's sign-off; the retro's completion; GitHub's merge; Dispatch started again on the same database and port | the issue at `done`; control: `dispatch steps` exits non-zero with `Dispatch at <url> is unreachable`, and the daemon's outbox holds the issue's `step_record` rows unfinished; then, within the outbox's longest backoff and one lease (94 s), `dispatch steps` prints the review's second run, the acceptance, the retro and the merge, each ended `passed` |
-| `walk-to-done-with-one-failed-review` | `dispatch steps --issue <KEY>` as the person | the header `<KEY>: 10 steps in 1 tasks` and exactly ten lines: step 1; steps 2 and 3 attempts 1 and 2; step 4 attempt 1 `failed` and attempt 2 `passed`; step 5; the retro; the merge; each of task `default` with its role and type, an agent, a start, an end and its result, and each of kind `step` with the model `stand-in/model`; control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse of the same command reports `4 step reviewer review attempt 1 … failed` missing |
+| `walk-to-done-with-one-failed-review` | `dispatch steps --issue <KEY>` as the person | the header `<KEY>: 10 steps in 1 tasks`, the line of the plan's one task (`task default needs []: 1 planner passed, …`), which the parse passes over as no run, and exactly ten lines of runs: step 1; steps 2 and 3 attempts 1 and 2; step 4 attempt 1 `failed` and attempt 2 `passed`; step 5; the retro; the merge; each of task `default` with its role and type, an agent, a start, an end and its result, and each of kind `step` with the model `stand-in/model`; control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse of the same command reports `4 step reviewer review attempt 1 … failed` missing |
 | `a-write-that-names-another-session-is-refused` | a step write to a new id with the agent's bearer and the actor `ses_step_agent`; then the same body with the daemon's own credential (the token its `dispatch_token_file` holds) and the actor `legion-daemon:<PROJECT>` | `403 STEP_WRITER` and no record of that id; control: `200` and the record read back; what the check holds, and no more: a write that names another session is refused, while a credential that proves no session can still name the daemon's session, as it can for the daemon's status writes |
 
 What the proof stands in for lies outside the records:
@@ -5756,7 +5756,7 @@ It reads an issue that is done, so every step of it has ended.
 | :--- | :--- | :--- |
 | 0 | `PASS: <ISSUE>: <n> records; steps 1 to <m> of its plan (<steps>), …` | the read lists a record of each step of the plan, 1 to its last, in the role the plan names for it (the step's role, before any `:key`), and of the retro and of the merge; every record has ended; every record of kind `step` or `retro` names an agent; every record of kind `step` names the model that answered; a merge record with no agent passes with the line `the merge has no agent: no merger ran it: <line>`, since GitHub merged the pull request before a merger started and the record says so |
 | 1 | one `FAIL: …` line per fault | the read lists records and one does not hold: a place with no record (`no record of step 5 (acceptance:owner)`, `no record of the merge`), a step whose records name another role than the plan's (`…: its records name tester`), a record that never ended, a step or retro with no agent, a step with no model; each line names the record as the command printed it |
-| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), a command failed (its exit and what it printed), no `dispatch` is on PATH, an answer is no read of the issue or of its project (no header, a line that is no run, the `Experiment …` line anywhere but right after the header, a header whose count differs from the lines below it), or the plan read gives no plan to judge by: it lists no line of the issue, which is then not done, Dispatch holds no plan of it, or the plan has more than one task, of which `dispatch plans` names the first's steps alone; a usage error is exit 2 too, with the usage on stderr |
+| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), a command failed (its exit and what it printed), no `dispatch` is on PATH, an answer is no read of the issue or of its project (no header, a line that is neither a run nor the line of a task of the plan, `task <task> needs …`, which the read passes over, the `Experiment …` line anywhere but right after the header, or a header whose count differs from the lines of runs below it), or the plan read gives no plan to judge by: it lists no line of the issue, which is then not done, Dispatch holds no plan of it, or the plan has more than one task, of which `dispatch plans` names the first's steps alone; a usage error is exit 2 too, with the usage on stderr |
 
 `scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer of each command, the plan's as `dispatch plans` itself renders it: a whole answer passes with or without the `Experiment …` line right after the header, the merge record missing fails, the record of the plan's last step lost fails, an empty read is `UNKNOWN`, and each fault above has its row.
 
@@ -8353,6 +8353,56 @@ Each step prints one JSON line (`healthz`, `post` or `proxy` and `cli`, `comment
 a failed check prints `{"failed": "<why>"}` and exits 1, a usage error exits 2.
 The comment stays on the issue, so name a scratch one.
 `dispatch-keyed-comment.test.ts` (`bun test scripts/e2e/lib`) runs it against a stand-in Dispatch that keys comments, one that makes every POST, a `/healthz` without the field and a `503` with it, and with `--cli`.
+
+## lib/dispatch-thread-pages.ts
+
+The production check of an issue's thread pages, `order=activity` on `GET /api/v1/issues/{key}/comments`, `/messages` and `/asks`, and of a reply's quote: Verification's `c-production` runs it once production serves the merge.
+
+```sh
+bun scripts/e2e/lib/dispatch-thread-pages.ts --url https://<dispatch host> \
+  --bearer-file <token file> --issue <scratch issue key> \
+  --walk <issue key> [--walk <issue key>...] --weigh <issue key> [--weigh <issue key>...] \
+  --time-comments <issue key> --time-messages <issue key> --time-asks <issue key> [--session <id>]
+```
+
+The probe names no issue of its own: every key comes from a flag, since this repository is public.
+Every flag but `--session` is required, `--walk` and `--weigh` may each be given more than once, and every other flag is given once.
+It runs four steps in this order and stops at the first that fails.
+
+The walk reads, on each `--walk` issue, every page of `comments?order=activity&person=in`, `messages?order=activity&person=in`, `messages?order=activity&person=none` and `asks?order=activity&thread=1`, following each `before` until it is null.
+It requires the walk to hold the threads that R2, R4 and R5 select from the issue's lists read with no `order` (the ask list with `thread=1`), in their order, each with the `last_activity_at` R2 gives it: the newest `created_at` of its entries, and for an ask also the `at` of the answer and of the resolution it holds now, in UTC and cut to microseconds.
+It requires each page's `remaining` to be the number of threads the walk reads after that page, and 0 exactly on the page whose `before` is null.
+On the comment page, a thread is held where a person (an author of the kind `user`) wrote in it, where its first comment has an anchor, or where a reply in it shows `reply_block.quote`.
+A reply to a block of a post since deleted shows no `quote`, since every answer leaves it out (R8) while the page reads the stored one.
+So where such a reply, whose `reply_block.deleted_at` is set, is all that could put a thread on the comment page, the probe cannot tell, accepts the thread on the page or off it, and counts such threads as `either_way`.
+On the message pages, a thread whose root the issue's daemon wrote, `legion-daemon:` and the issue's project key, is on neither page.
+
+The weigh reads, on each `--weigh` issue, All's three first pages, `comments?order=activity&person=in`, `messages?order=activity&person=in` and `asks?order=activity&thread=1`, with `Dispatch-Trees: 1`.
+It requires each to hold `threads`, `before` and `remaining` and no other member, and each row to equal the row R2 builds for its thread from the lists read with the same header, but for `last_activity_at`.
+It prints each page's bytes, and their total against R7's 630,000 bytes as a measurement that fails nothing (`over_bound`), beside the bytes of `GET /api/v1/issues/{key}` and `GET /api/v1/issues/{key}/events?order=desc&limit=200` read with the same header.
+
+The walk and the weigh judge each read against the issue's lists read before the step's reads of that issue and again after them, and only where the two agree, since a busy issue gets writes while it is read.
+The two agree for a walk where they select the same threads, and for a page where they give its threads the same rows.
+A read whose lists differ is made again, up to three tries, the lists read after one try's reads being the lists read before the next try's, and a read with no try whose lists agree fails its step.
+
+The timing makes the seven first-page reads of R7, each with `Dispatch-Trees: 1`: All's three, Mine's three with `author=` a person's login, and Agents' `messages?order=activity&person=none`.
+The comment reads are of the `--time-comments` issue, the message reads of the `--time-messages` issue and the ask reads of the `--time-asks` issue.
+Mine's login is the person with the most entries on that issue's list of the route, or, where no person wrote on that one, on the first of its other lists, in the order comments, messages, asks, that a person wrote on, the smaller login at a tie;
+an issue no person wrote on fails the step.
+An ask's entries are R2's: the ask, each comment whose `ask_id` names it, and the answer and the resolution it holds now.
+Each read makes 5 warm-up reads and 30 timed ones, and the step fails where the nearest-rank 90th percentile of the time to the first byte is above 200 ms.
+That time includes the network from where the probe runs, so it is more than the time at the server.
+
+The quote step writes on `--issue`, as the bearer's session (`--session <id>`, `thread-pages-check-<uuid>` by default), a comment and an issue message whose one block holds the word `quokka` twice.
+It replies to each block with `quote` `quokka` and `occurrence` 1, and requires both values back in `reply_block` from `GET /api/v1/comments/{id}` and `GET /api/v1/issues/{key}/messages/{id}` of each reply.
+The four posts stay on the issue, so name a scratch one.
+
+Each step prints one JSON line per read it judges (`walk` per page, `weigh` per page and one total line per issue, `time` per read with its `p90_ms`, `quote` per read-back), then `{"ok":true}` and exit 0.
+A failed step prints `{"ok":false,"step":"<step>","read":"<method and path it read>","why":"<why>"}` and exits 1, and a usage error exits 2.
+A build before the pages answers the bare list to `order=activity`, so against it the probe prints `{"ok":false,"step":"walk","read":"GET /api/v1/issues/<key>/comments?order=activity&person=in",…}` at its first page read.
+A step fails where a read answers other than `200`, or `201` for a write, where a page read answers the bare list or no page, where a walk leaves out, adds, reorders or misdates a thread, and where a page's `remaining` is not the number of threads after it.
+It fails too where a page holds another member or a row the lists do not give, where no try's lists agree, where a timed read's percentile is above 200 ms, and where a reply's read-back holds no `quote` or another one.
+`dispatch-thread-pages.test.ts` (`bun test scripts/e2e/lib`) runs it against a stand-in Dispatch whose pages agree with its lists, one whose comment page leaves out the thread the lists cannot tell, one that answers the bare list, one whose page leaves out a thread, one whose page's `remaining` is one too many, one whose first comment list misses a reply, one whose first pages weigh over 630,000 bytes, one whose pages hold another member or another row, one whose Agents page answers late and one whose read-back holds no `quote`, and without each required flag.
 
 ## lib/stage4b-tools.jq
 

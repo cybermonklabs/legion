@@ -29,7 +29,10 @@ const idleRigStopLine = "the Envoy session of a role whose process is gone was s
 // back (store.TakePodWake).
 //
 // Steps 1 to 3 fail without stopping, so a run where the session still reads live says what each
-// sender met before the wait for a resume that never comes ends the subtest.
+// sender met before the wait for a resume that never comes ends the subtest. Step 1's wait gives
+// up 30 s before the test binary's deadline, as every wait does, and the sends of steps 2 and 3
+// are requests of the listener, which end only 15 s before it (idleRigListenerContext): they are
+// answered after step 1 gave up, and each says what its sender met.
 func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 	t.Helper()
 	agent, role, routed := rig.issue(idleRigJustReleasedAgent), rig.issue(idleRigJustReleasedRole), rig.issue(idleRigJustReleasedRouted)
@@ -46,7 +49,7 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 		session string
 	}{{agent, agentSession}, {role, roleSession}, {routed, routedSession}}
 	var stopped map[string]bool
-	testwait.Holds(testwait.Bounded(t, idleRigRecordWait, idleRigDeadlineMargin), idleRigPoll, func() bool {
+	testwait.Holds(testwait.Remaining(t), idleRigPoll, func() bool {
 		stopped = map[string]bool{}
 		for _, entry := range rig.loggedEntries(idleRigStopLine) {
 			stopped[fmt.Sprint(entry["session"])] = true
@@ -109,8 +112,8 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 	rig.publish(idleRigAgentSubjectPrefix+routedSession, "dispatch", "just-released-routed-1", routedMessage)
 
 	// 5. Each pod comes back for its own message, and its role's task names that wake. The
-	//    routed pod's wake comes after the listener's agent wait, which is well inside the pod
-	//    wait.
+	//    routed pod's wake comes after the listener's agent wait (idleRigAgentWait), and its
+	//    resume after the launch that follows the wake.
 	wakes := []struct {
 		issue        idleRigIssue
 		kind, detail string
@@ -167,7 +170,7 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	// 1. The release's stop of the process sent the clean stop of its session, and the listener
 	//    deleted the registration. The stop runs on a goroutine of its own once the machine's
 	//    decision is made (cleanSessionStop), so the line is waited for.
-	idleRigEventually(t, idleRigRecordWait, "the daemon's stop of "+issue.key+"'s session "+session, func() bool {
+	idleRigEventually(t, "the daemon's stop of "+issue.key+"'s session "+session, func() bool {
 		return rig.logged(idleRigStopLine, map[string]string{"session": session}) >= 1
 	})
 
@@ -187,11 +190,11 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	// 3. The woken process registers with the daemon and holds. Each publish meets a role no live
 	//    session holds, which the listener refuses, and both rows wait: the process holds until
 	//    the listener has refused each prompt twice, and both rows are still in the outbox then.
-	idleRigEventually(t, idleRigPodWait, "the woken process of "+issue.key+" registered with the daemon", func() bool {
+	idleRigEventually(t, "the woken process of "+issue.key+" registered with the daemon", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered > registered
 	})
 	for _, prompt := range []record.HookPrompt{hook, loop} {
-		idleRigEventually(t, idleRigRecordWait, "the listener refusing the "+prompt.Hook+" prompt to "+issue.key+" twice", func() bool {
+		idleRigEventually(t, "the listener refusing the "+prompt.Hook+" prompt to "+issue.key+" twice", func() bool {
 			return idleRigNoSessionRefusals(rig, "Legion hook "+prompt.Hook+" on "+issue.key+":") >= 2
 		})
 	}
@@ -199,7 +202,7 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 		t.Fatalf("after two refusals of each prompt, %d hook-prompt rows of %s are left, want both waiting for a session to hold the role", left, issue.key)
 	}
 	rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true})
-	idleRigEventually(t, idleRigRecordWait, "the two hook-prompt rows of "+issue.key+" finished", func() bool {
+	idleRigEventually(t, "the two hook-prompt rows of "+issue.key+" finished", func() bool {
 		return idleRigHookRows(t, rig, issue) == 0
 	})
 
