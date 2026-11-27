@@ -653,13 +653,16 @@ func planWithWalk(stored *record.StoredPlan, w Walk) *record.StoredPlan {
 }
 
 // derivedStanding is where an issue standing as issue stands for its tasks, the walk of each
-// (issuePhaseOfTasks), with the three readings of the issue's own standing kept over it: a root
+// (issuePhaseOfTasks), with the four readings of the issue's own standing kept over it: a root
 // that waits on a person before its first step stands in awaiting_person over admitted, a parent
 // that waits on its open Dispatch children stands in awaiting_children over the phase of the start
-// it holds where its tasks derive that phase and no hold (waitsHolding), and, where keepsHold says
+// it holds where its tasks derive that phase and no hold (waitsHolding), where keepsHold says
 // issue's hold is one the release before wrote on the issue alone beside its running task
 // (heldBefore, heldBeforeOver), that hold stands where the tasks derive none and put the issue in
-// the phase it is from.
+// the phase it is from, and an issue held for its pull requests (record.HoldForPullRequests,
+// dispatch://INFRA-5910 decision 9) stands held so where its tasks derive done: its close waits for
+// a pull request of its set over tasks that are all done, and only that close's judge ends the hold
+// (releaseHeldClose).
 func derivedStanding(issue record.Issue, tasks []Walk, keepsHold bool) (phase.Phase, *record.Hold) {
 	at, hold := issuePhaseOfTasks(tasks)
 	switch {
@@ -668,6 +671,8 @@ func derivedStanding(issue record.Issue, tasks []Walk, keepsHold bool) (phase.Ph
 	case hold == nil && waitsHolding(issue, at):
 		return issue.Phase, nil
 	case keepsHold && hold == nil && issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == at:
+		return issue.Phase, issue.Hold
+	case at == phase.Done && record.HeldFor(issue, record.HoldForPullRequests):
 		return issue.Phase, issue.Hold
 	}
 	return at, hold

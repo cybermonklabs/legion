@@ -420,8 +420,9 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, s *TaskScope, to phase
 // a write in which they disagree: a run with plan rows stands where its tasks put it, whatever the
 // plan's count of tasks (derivedStanding: issuePhaseOfTasks, a root that waits on a person before
 // its first step in awaiting_person over admitted, a parent that waits on its open Dispatch
-// children in awaiting_children over the phase of the start it holds, and a hold the release before
-// wrote on the issue alone, where a task runs and none is held or stopped, heldBeforeOver), a hold
+// children in awaiting_children over the phase of the start it holds, a hold the release before
+// wrote on the issue alone, where a task runs and none is held or stopped, heldBeforeOver, and the
+// hold for its pull requests over tasks that are all done, record.HoldForPullRequests), a hold
 // from the phase its tasks' hold is from. The refusal names the phase the write stands in (a hold
 // by the phase it is from, a wait on children by the start it holds) and the task whose standing
 // decides the issue's (standingOfTasks): its state, its place and the phase that place stands in.

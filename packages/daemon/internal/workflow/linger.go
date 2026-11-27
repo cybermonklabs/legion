@@ -47,14 +47,15 @@ import (
 //
 // A member's leave may be the last one a merged issue above it waited for: an issue whose task
 // stands at its merge with its pull request merged stands in merging while any issue beneath it is
-// in the workflow (closeMerged), and closes once the last of them leaves (closeAwaitingMerge). That
-// is the tree root for a member of its tree, and any parent between them for a member below it, so
-// the leave re-reads the wait of every merged ancestor the departing issue stood beneath. Every way
-// a member stops holding one runs this function — a status moving to backlog, icebox, triage or
-// done (dispatchIssue), a phase its tasks put in done (leaveByTasks), the architect's close_root,
-// and LeaveUnslotted — and the boot's sweep is the backstop. The child's check opens after that
-// close, so its start row follows the linger's suspends and resumes the checking role as a
-// root's own check does, rather than being stopped by them.
+// in the workflow (closeMerged), and its close is judged again at each change of what holds it
+// (judgeClose), which closes it once the last of them leaves and no pull request of its set holds
+// it. That is the tree root for a member of its tree, and any parent between them for a member
+// below it, so the leave judges again the close of every ancestor the departing issue stood
+// beneath. Every way a member stops holding one runs this function — a status moving to backlog,
+// icebox, triage or done (dispatchIssue), a phase its tasks put in done (leaveByTasks), the
+// architect's close_root, and LeaveUnslotted — and the boot's sweep is the backstop. The child's
+// check opens after that close, so its start row follows the linger's suspends and resumes the
+// checking role as a root's own check does, rather than being stopped by them.
 //
 // Whatever the departure, the held start goes with the phase it was held in: an issue that leaves
 // from awaiting_children stands at done holding nothing (record.Issue.ChildrenWait, the children
@@ -185,22 +186,17 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// only the tree root's: the wait reads the issues beneath an issue (record.OpenBeneath), so a
 	// child that merged before the grandchild under it stands in merging too, and nothing
 	// else would ever re-read it — it holds no slot, it is in neither part of the waiting line,
-	// and while it stands there its root can be neither accepted nor closed. Each ancestor's
-	// record is read again rather than taken from the snapshot above, because closing the
-	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
+	// and while it stands there its root can be neither accepted nor closed. So the close of each
+	// ancestor is judged again (judgeClose), which reads its record again rather than taking it
+	// from the snapshot above, because closing the nearest one leaves (transition's own leave)
+	// and may close the ones above it on the way, and which leaves an ancestor whose close a pull
+	// request of its set holds where it stands (closeMerged).
 	// The same departure may be the last one an ancestor held before its retro waited for, a
 	// parent whose last step is not the owner's acceptance (record.HoldForChildren): the fact's settle starts
 	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
 	// it.
 	for _, ancestor := range above {
-		current, err := e.store.Issue(ctx, tx, ancestor.Key)
-		if err != nil {
-			return err
-		}
-		if current == nil {
-			continue
-		}
-		if err := e.closeAwaitingMerge(ctx, tx, *current); err != nil {
+		if _, err := e.judgeClose(ctx, tx, ancestor.Key, nil, fmt.Sprintf("%s beneath it left the workflow", issue.Key)); err != nil {
 			return err
 		}
 	}
@@ -261,14 +257,16 @@ func (e *Engine) keptClaims(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // leaveByTasks is the one place where an issue whose tasks put it in done leaves the workflow:
 // written is the issue as its tasks put it there. Its callers are the doors from the tasks: a
 // transition that writes the issue done (transition: a task's last step, the merge that ends the
-// last task, the close of a merge that waited for the issues beneath, closeAwaitingMerge, and the
-// boot's sweep, sweepMerged, each through closeMerged), a version that leaves only done tasks
-// (leaveWhereDone), and the merge that ends the issue in a lingering tree (closeMerged). A person's
-// status, close_root and LeaveUnslotted are no door from the tasks and call leave themselves. In a
-// running tree it is the leave at done (leave). In a lingering tree it calls no leave, since the
-// linger suspended every claim and the tree's close retires them: a child tells the architect above
-// it child-closed, and the check of each merged pull request of the run that has none opens, each
-// first look a wake of the checking role's suspended claim.
+// last task, and the close of a merge in hand that a judge of the issue's close makes,
+// closeAwaitingMerge, from a child's leave, the boot's sweep and each change of the issue's set,
+// each through closeMerged), a version that leaves only done tasks (leaveWhereDone), the release of
+// an issue held for its pull requests where no merge was in hand (releaseHeldClose), and the merge
+// that ends the issue in a lingering tree (closeMerged). A person's status, close_root and
+// LeaveUnslotted are no door from the tasks and call leave themselves. In a running tree it is the
+// leave at done (leave). In a lingering tree it calls no leave, since the linger suspended every
+// claim and the tree's close retires them: a child tells the architect above it child-closed, and
+// the check of each merged pull request of the run that has none opens, each first look a wake of
+// the checking role's suspended claim.
 func (e *Engine) leaveByTasks(ctx context.Context, tx pgx.Tx, written record.Issue) error {
 	lingers, err := record.TreeLingers(ctx, e.store, tx, written.Tree)
 	if err != nil {
@@ -479,9 +477,10 @@ type awaitedMerge struct {
 // (awaitsMerge), in task id order, and for an issue with no plan rows its one row where the issue
 // itself awaits its merge. It is the one read of the merges an issue waits on, read on the issue as
 // the store holds it, with no copy for a task: whether the merging of an issue is finished
-// (PhaseFinished), the close of a merge that waited for the issues beneath it (closeAwaitingMerge),
-// the boot's sweep of merges GitHub reported (sweepMerged) and the hand-over of a member left at
-// its merge with its pull request open (unfinishedHandOvers) read it.
+// (PhaseFinished), the close of a merge in hand that a judge of the issue's close makes
+// (closeAwaitingMerge) and the hand-over of a member left at its merge with its pull request open
+// (unfinishedHandOvers) read it. An issue held for its pull requests (record.HoldForPullRequests)
+// awaits no merge of a task, since its tasks are all done.
 func mergesAwaited(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) ([]awaitedMerge, error) {
 	prs, err := store.MergePullRequests(ctx, tx, issue.Key)
 	if err != nil || len(prs) == 0 {
@@ -500,49 +499,174 @@ func mergesAwaited(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 	return awaited, nil
 }
 
-// closeAwaitingMerge closes merged when the merge of its task at its merge was waiting on the
-// issues beneath it: an issue whose task stands at its merge with its pull request merged stands
-// in merging (or held from it) while any issue beneath it is in the workflow (closeMerged), and
-// closes, as its merge would have, once the last of them leaves. Only the merge of the task that
-// ends the issue waits (lastToFinish), so that is the one task of mergesAwaited whose pull request
-// merged. The close is that task's, on the copy of merged read for it, as the merge's own close is
-// (merged). Which issues still hold it is closeMerged's to judge, so this runs on every merged
-// ancestor of an issue that leaves the workflow and changes nothing for any other. It tells nobody:
-// the architect heard the wait when the close entered it (merged), and this path is walked at every
-// departure.
-func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged record.Issue) error {
-	if !awaitsMerge(merged) {
-		return nil
+// judgedClose is what a judge of an issue's close found (judgeClose): whether the issue closed;
+// where it did not, the merge in hand whose close waits (nil for none) and why it waits
+// (closeWait). Both are empty where no close of a merge in hand was judged: an issue that awaits no
+// merge, or whose task's merge is not met.
+type judgedClose struct {
+	closed bool
+	merge  *record.PullRequest
+	wait   closeWait
+}
+
+// judgeClose is the one judge again of the close of the issue keyed key, at each fact that makes
+// what holds that close smaller (dispatch://INFRA-5910 decision 9), why naming the fact for the log
+// and merge the merge it follows, nil for none: the departure of an issue beneath it (leave), the
+// boot's sweep (sweepMerged), the merge of a pull request of its set that is no task's own, a
+// linked one among them (mergedNotOwn), or of a task's own that it links whose task stands at no
+// merge (merged), the close of the last open pull request of its set with no merge (closed), and a
+// change of its links (takeLinks, pullRequestLinkRead, refuseLinkOfAnotherIssue). It reads the
+// issue again, and does nothing where the issue awaits no merge (awaitsMerge). An issue held for
+// its pull requests where no merge was in hand (record.HoldForPullRequests) is released where no
+// link of its set holds the close any longer (releaseHeldClose). Any other closes each merge in
+// hand that awaits its close (closeAwaitingMerge), which owns every condition of the close
+// (closeMerged).
+//
+// No two facts judge at once: intake.SerializeFacts takes one advisory lock for every fact, so each
+// judge reads the issue as the fact before it left it. A close writes done, so the issue awaits no
+// merge at any later judge, and none closes twice; and each fact that frees the close judges it, so
+// none is lost.
+func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, key string, merge *record.PullRequest, why string) (judgedClose, error) {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil || !awaitsMerge(*issue) {
+		return judgedClose{}, err
 	}
+	if record.HeldFor(*issue, record.HoldForPullRequests) {
+		return e.releaseHeldClose(ctx, tx, *issue, merge, why)
+	}
+	return e.closeAwaitingMerge(ctx, tx, *issue, why)
+}
+
+// releaseHeldClose ends the hold of issue for its pull requests (record.HoldForPullRequests: held
+// from merging over tasks that are all done, where no merge was in hand, holdForPullRequests and
+// leaveWhereDone) once no link of its set holds its close any longer (setHolds), and the issue
+// closes: it is written where its tasks put it, done, with the Dispatch status done (putScope, on
+// the copy of a task, which stands in done), the stack's close of each open pull request of a task
+// that the issue does not link is queued with the comment that the issue is done, naming the last
+// merge of its set (queueDoneClose, lastMerge, decision 11), and it leaves the workflow through the
+// one place of a leave its tasks make (leaveByTasks), as leaveWhereDone leaves. While a link still
+// holds the close, the architect is told of each such link no notice named yet (tellHolds), and the
+// hold stands.
+func (e *Engine) releaseHeldClose(ctx context.Context, tx pgx.Tx, issue record.Issue, merge *record.PullRequest, why string) (judgedClose, error) {
+	holds, err := setHolds(ctx, e.store, tx, issue.Key)
+	if err != nil {
+		return judgedClose{}, err
+	}
+	if len(holds) > 0 {
+		return judgedClose{wait: closeWait{holds: holds}}, e.tellHolds(ctx, tx, issue, holds)
+	}
+	scopes, err := e.scopes(ctx, tx, issue)
+	if err != nil {
+		return judgedClose{}, err
+	}
+	last, err := e.lastMerge(ctx, tx, issue.Key, merge)
+	if err != nil {
+		return judgedClose{}, err
+	}
+	if err := e.queueDoneClose(ctx, tx, issue, last); err != nil {
+		return judgedClose{}, err
+	}
+	written, err := e.putScope(ctx, tx, &scopes[0])
+	if err != nil {
+		return judgedClose{}, err
+	}
+	e.logOnCommit(ctx, "workflow: no pull request of its set holds the close of an issue held for them any longer, and it leaves the workflow",
+		"issue", issue.Key, "tree", issue.Tree, "lastMerge", last, "why", why)
+	return judgedClose{closed: true}, e.leaveByTasks(ctx, tx, written)
+}
+
+// lastMerge is the last merge of the set of issue's pull requests as the close of an issue with no
+// merge in hand names it (releaseHeldClose, decision 11), as owner/name#number: merge, the merge the
+// judge follows, where one is given; else, since the record keeps no moment of a merge, the merged
+// pull request of the set (record.Store.PullRequestSetsOf) that GitHub changed last
+// (record.PullRequest.HeadUpdatedAt, a row with none the oldest), then the higher number; "" where
+// none merged.
+func (e *Engine) lastMerge(ctx context.Context, tx pgx.Tx, issue string, merge *record.PullRequest) (string, error) {
+	if merge != nil {
+		return prName(merge.Repo, merge.Number), nil
+	}
+	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue})
+	if err != nil {
+		return "", err
+	}
+	var last *record.PullRequest
+	for at, pr := range sets[issue] {
+		if pr.State != record.PullRequestMerged {
+			continue
+		}
+		if last == nil || pr.HeadUpdatedAt.After(last.HeadUpdatedAt) || pr.HeadUpdatedAt.Equal(last.HeadUpdatedAt) && pr.Number > last.Number {
+			last = &sets[issue][at]
+		}
+	}
+	if last == nil {
+		return "", nil
+	}
+	return prName(last.Repo, last.Number), nil
+}
+
+// closeAwaitingMerge closes each merge in hand of merged, each task of mergesAwaited whose pull
+// request merged, as that merge's own close would (closeMerged), on the copy of the issue read again
+// for that task (scope), since the close of the one before it may have moved the issue: the merge
+// of a task that is not the last moves that task to done and the issue goes on, and the merge of
+// the task whose end ends the issue (lastToFinish) closes it unless its close waits, for an issue
+// beneath it still in the workflow or a pull request of its set that holds it, which closeMerged
+// owns. A merge in hand of a task that is not the last is one only the boot's sweep finds, which
+// GitHub made while the daemon was down. It answers what it found (judgedClose): closed where the
+// issue stands done after, else the merge whose close waits and why. It tells nobody of a wait for
+// the issues beneath, which the architect heard as the close entered it (closeMergedTelling) and
+// which this path meets at every departure and every boot; closeMerged tells the pull requests
+// that hold it once each (tellHolds).
+func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged record.Issue, why string) (judgedClose, error) {
 	awaited, err := mergesAwaited(ctx, e.store, tx, merged)
 	if err != nil {
-		return err
+		return judgedClose{}, err
 	}
+	var judged judgedClose
 	for _, at := range awaited {
 		if at.pr.State != record.PullRequestMerged {
 			continue
 		}
-		waiting, err := e.closeMerged(ctx, tx, at.scope, &at.pr)
-		if err != nil || len(waiting) > 0 {
-			return err
+		pr := at.pr
+		current, err := e.store.Issue(ctx, tx, merged.Key)
+		if err != nil || current == nil {
+			return judgedClose{}, err
 		}
-		e.logOnCommit(ctx, "workflow: a merged issue closes once the last issue beneath it left the workflow", "issue", merged.Key,
-			"task", at.scope.Task(), "pullRequest", at.pr.Number)
-		return nil
+		s, ok, err := e.scope(ctx, tx, *current, at.scope.Task())
+		if err != nil {
+			return judgedClose{}, err
+		}
+		if !ok || !awaitsMerge(s.issue) {
+			continue
+		}
+		wait, err := e.closeMerged(ctx, tx, s, &pr)
+		if err != nil {
+			return judgedClose{}, err
+		}
+		if wait.waits() {
+			judged.merge, judged.wait = &pr, wait
+			continue
+		}
+		e.logOnCommit(ctx, "workflow: a merge in hand is closed where the close of its issue is judged again", "issue", merged.Key,
+			"task", s.Task(), "pullRequest", prName(pr.Repo, pr.Number), "why", why)
 	}
-	return nil
+	now, err := e.store.Issue(ctx, tx, merged.Key)
+	if err != nil {
+		return judgedClose{}, err
+	}
+	judged.closed = now == nil || now.Phase == phase.Done
+	return judged, nil
 }
 
 // awaitsMerge says whether issue awaits its merge: in merging, or held from merging (a failed
-// merger's claim, an escalation, a stopped task's, or the hold the upgrade's data move left an
-// issue that was held in production_check). The merge is what ends merging, so a merged pull
-// request there is a close still waiting on the rest of the tree rather than a merger still at
-// work. It asks the one predicate written over a hold
-// (record.StandsIn) of the one phase, and stays a question of its own rather than folding into
+// merger's claim, an escalation, a stopped task's, the hold the upgrade's data move left an issue
+// that was held in production_check, or the hold of an issue whose tasks are all done while a pull
+// request of its set holds its close, record.HoldForPullRequests). The merge is what ends merging,
+// so a merged pull request there is a close still waiting on the rest of the tree, or on a pull
+// request of its set, rather than a merger still at work. It asks the one predicate written over a
+// hold (record.StandsIn) of the one phase, and stays a question of its own rather than folding into
 // record.Accepted: a root in retro has been accepted and does not await its merge, and this is
-// what closes an issue at its merge (merged, closeMerged), what closes an issue on a merge already
-// recorded (closeAwaitingMerge) and what keeps that merge against a later pull request
-// (pullRequestOpened).
+// what closes an issue at its merge (merged, closeMerged), what judges the close of an issue again
+// (judgeClose) and what keeps that merge against a later pull request (pullRequestOpened).
 func awaitsMerge(issue record.Issue) bool {
 	return issue.Phase == phase.Merging || issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == phase.Merging
 }
@@ -619,11 +743,13 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // unfinishedHandOvers is every member the close of a root's linger hands to Legion as a root of
 // its own (handOver). A root that stayed done hands over every member it leaves in the workflow,
 // whatever phase that member stands in. A root that did not stay done hands over only a member
-// standing at phase.Merging with a task at its merge whose pull request is still open, and nothing
-// else. It is read before the close's own writes, because what the close hands over is also what it
-// does not warn about: a decision a person made on one of these members, or on an issue below one,
-// is owed to that member's architect once it is re-admitted, not left behind by this tree
-// (warnKeptDecisionsOfAClosedTree).
+// whose merge is still to land: one standing at phase.Merging with a task at its merge whose pull
+// request is still open, or whose close a pull request of its set holds (setHolds,
+// dispatch://INFRA-5910 decision 9), and one held for its pull requests where no merge was in hand
+// (record.HoldForPullRequests), and nothing else. It is read before the close's own writes, because
+// what the close hands over is also what it does not warn about: a decision a person made on one of
+// these members, or on an issue below one, is owed to that member's architect once it is
+// re-admitted, not left behind by this tree (warnKeptDecisionsOfAClosedTree).
 //
 // A reopen inside the linger resumes those members in the old tree instead: lingerExpired is
 // fenced on the root generation, and the durable hand-over record makes a late daemon PATCH a
@@ -659,12 +785,15 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // The one thing a re-admission cannot do is make the merge the park stopped: the merge is the
 // merger's own call, made in its own turn, and that turn ended with the park. So the member this
 // guard would otherwise strand is exactly the one holding an open pull request with no live tree
-// left to merge it — green and approved, with nothing in the workflow that would ever merge it.
-// Whether that pull request is open is the one fact here that record.Issue does not carry, so it
-// is read from the pull_requests row of each task of the member that stands at its merge
-// (mergesAwaited), and only for a member of a non-done root's tree that this clause could take —
-// one at phase.Merging that is in the workflow — so a tree of many members costs a handful of reads
-// at most.
+// left to merge it — green and approved, with nothing in the workflow that would ever merge it —
+// and the one whose close an open pull request of its set holds, whose merge in hand closed
+// nothing (closeMerged), or whose tasks are all done: left behind, the close of its tree would end
+// that merge with the pull request that holds it still open. Whether a pull request is open is the
+// one fact here that record.Issue does not carry, so it is read from the pull_requests row of each
+// task of the member that stands at its merge (mergesAwaited) and from the links of its set
+// (setHolds), and only for a member of a non-done root's tree that this clause could take — one in
+// the workflow at phase.Merging or held for its pull requests — so a tree of many members costs a
+// handful of reads at most.
 //
 // What the close does around the hand-over, for a member handed over under either rule: the same
 // expiry still queues a tree_close for each claim of every member — one for each stored claim, and
@@ -682,9 +811,11 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 //
 // The non-done clause reads the member's phase itself rather than a predicate written over a
 // hold, because the phase is the spec's own rule and a hold from the merge phase is a state no
-// live daemon writes: a hold is written only where the role that works issue.WorkingPhase() is
-// the role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
-// the issue held from merging with its claim failed rather than held from a phase nobody works.
+// live daemon writes for a merge still to make: a hold of a failure is written only where the role
+// that works issue.WorkingPhase() is the role whose claim died (claimFailed), and the merger holds
+// that phase, so its own death leaves the issue held from merging with its claim failed rather than
+// held from a phase nobody works. The one hold from merging it reads is the hold for its pull
+// requests, which stands over tasks that are all done and is no failure.
 func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue) ([]record.Issue, error) {
 	done := root.Status == "done"
 	var handed []record.Issue
@@ -693,7 +824,7 @@ func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record
 			continue
 		}
 		if !done {
-			if member.Phase != phase.Merging {
+			if member.Phase != phase.Merging && !record.HeldFor(member, record.HoldForPullRequests) {
 				continue
 			}
 			awaited, err := mergesAwaited(ctx, e.store, tx, member)
@@ -701,7 +832,19 @@ func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record
 				return nil, err
 			}
 			if !slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return at.pr.State == record.PullRequestOpen }) {
-				continue
+				// A merge in hand whose close a pull request of the set holds, or a hold for the
+				// pull requests with no merge in hand: either stands while setHolds is not empty.
+				inHand := slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return at.pr.State == record.PullRequestMerged })
+				if !inHand && !record.HeldFor(member, record.HoldForPullRequests) {
+					continue
+				}
+				holds, err := setHolds(ctx, e.store, tx, member.Key)
+				if err != nil {
+					return nil, err
+				}
+				if len(holds) == 0 {
+					continue
+				}
 			}
 		}
 		handed = append(handed, member)
@@ -725,7 +868,8 @@ func (e *Engine) handOver(ctx context.Context, tx pgx.Tx, root, child record.Iss
 // lingerExpired closes the tree whose root's linger elapsed at the generation the fact names: a
 // tree_close of every member's claims, the removal of every member's workspace, and the hand-over
 // of each member unfinishedHandOvers names — every member a root that stayed done left in the
-// workflow, or, under a root that did not, one left awaiting its merge with its pull request open.
+// workflow, or, under a root that did not, one left awaiting its merge with its pull request open,
+// or with its close held by an open pull request of its set.
 // The close waits while a member's production check is open: the check's looks run in the
 // tree's Sandbox, on its volume, which the close deletes, so the fact returns a wait naming the
 // moment the earliest open check is bound to have ended its last look (its bound plus the look

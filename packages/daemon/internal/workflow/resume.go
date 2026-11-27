@@ -14,11 +14,13 @@ import (
 // booted is the daemon's boot (intake.DaemonBooted). It does three things, in this order.
 //
 // First, the upgrade's sweep (sweepMerged): an issue of this project that awaits its merge on a
-// pull request already merged is one the migration moved out of production_check, and the merge
-// that would have closed it will never come again, so the boot closes it as the merge would have
-// (closeMerged) — unless an issue beneath it is still in the workflow, which leaves it where it
-// is to close when the last of them leaves (leave's closeAwaitingMerge), so the deploy suspends no
-// running child under a mass of lingers.
+// pull request already merged is one the migration moved out of production_check, or one whose
+// merge GitHub made while the daemon was down, and the merge that would have closed it will never
+// come again, so the boot judges its close again (judgeClose) and closes it as the merge would
+// have (closeMerged) — unless an issue beneath it is still in the workflow, which leaves it where
+// it is to close when the last of them leaves (leave's judgeClose), so the deploy suspends no
+// running child under a mass of lingers, or a pull request of its set holds the close, which leaves
+// it where it is to close when the last of them merges or goes.
 //
 // Second, the status repair (correctStatuses): every issue the daemon works whose recorded
 // Dispatch status is not the status of its phase gets the Dispatch status write that corrects it,
@@ -265,14 +267,21 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	return false, e.started(ctx, tx, owner.scope, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
-// sweepMerged closes every issue of the project that awaits a merge GitHub already reported
-// (booted): the merge of the pull request of a task that stands at its merge (mergesAwaited). Each
-// such pull request's issue is re-read before its close, for that task (issueOfPullRequest), so an
-// issue whose plan holds several tasks closes as that task's merge closes it: a child's close may
-// have closed the merged issues above it (closeAwaitingMerge), and a root's close lingers the tree
-// its children then close under. A root whose tree still runs is left where it stands by
-// closeMerged, which owns that rule, and the sweep tells nobody of the wait: a restart must not
-// repeat the architect's notice, and a root can now wait for days across many boots.
+// sweepMerged judges again the close of every issue of the project that awaits its merge
+// (booted, judgeClose): the merge GitHub already reported of the pull request of a task that
+// stands at its merge (mergesAwaited) closes its issue as that task's merge closes it, each such
+// pull request's issue read again before its close, for that task (closeAwaitingMerge), so an issue
+// whose plan holds several tasks closes as each task's merge closes it: a child's close may have
+// closed the merged issues above it (leave's judgeClose), and a root's close lingers the tree its
+// children then close under; and an issue held for its pull requests where no merge was in hand is
+// released where none holds it any longer (releaseHeldClose). A root whose tree still runs, and an
+// issue whose close a pull request of its set holds, is left where it stands by closeMerged, which
+// owns that rule, and the sweep tells nobody of a wait for the issues beneath: a restart must not
+// repeat the architect's notice, and a root can now wait for days across many boots. A pull
+// request that holds a close is told once for each link whatever the count of boots (tellHolds).
+// It judges each close on the links the record holds as it runs, so a link that went while the
+// daemon was down holds the close until the boot's read of the issue's links in Dispatch is
+// applied (dispatch://INFRA-5910 decision 9, which orders that read before this sweep).
 func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
@@ -282,32 +291,13 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		if !awaitsMerge(listed) {
 			continue
 		}
-		awaited, err := mergesAwaited(ctx, e.store, tx, listed)
+		judged, err := e.judgeClose(ctx, tx, listed.Key, nil, "the boot's sweep")
 		if err != nil {
 			return err
 		}
-		for _, at := range awaited {
-			if at.pr.State != record.PullRequestMerged {
-				continue
-			}
-			pr := at.pr
-			scope, err := e.issueOfPullRequest(ctx, tx, pr)
-			if err != nil {
-				return err
-			}
-			if scope == nil || !awaitsMerge(scope.issue) {
-				continue
-			}
-			issue := &scope.issue
-			waiting, err := e.closeMerged(ctx, tx, *scope, &pr)
-			if err != nil {
-				return err
-			}
-			if len(waiting) > 0 {
-				continue
-			}
-			e.logOnCommit(ctx, "workflow: the boot closes an issue whose pull request merged before the upgrade", "issue", issue.Key,
-				"tree", issue.Tree, "task", scope.Task(), "pullRequest", pr.Number, "phase", issue.Phase)
+		if judged.closed {
+			e.logOnCommit(ctx, "workflow: the boot closes an issue whose pull request merged before the upgrade", "issue", listed.Key,
+				"tree", listed.Tree, "phase", listed.Phase)
 		}
 	}
 	return nil

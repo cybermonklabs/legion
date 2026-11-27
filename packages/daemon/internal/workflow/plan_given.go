@@ -69,11 +69,16 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 // the Dispatch status done (putScope), and leaves the workflow with the status done through the one
 // place of that leave (leaveByTasks), as the close at a merge does: a root lingers its tree, and a
 // child tells the architect above it. Its leave opens the check of each merged pull request of its
-// run that has none, and a merge that opened its own check gets no second one. An issue that is
-// done already, or whose tasks put it anywhere else, is left as it stands.
+// run that has none, and a merge that opened its own check gets no second one. Where a link of the
+// issue's set holds its close (setHolds, dispatch://INFRA-5910 decision 9), no merge is in hand to
+// wait with: the issue is written held for its pull requests from merging, over its done tasks
+// (record.HoldForPullRequests, derivedStanding keeps it), before any status write, so Dispatch is
+// not told done, and the architect is told each link that holds it once (tellHolds); the merge or
+// the end of the last of them judges the close again (judgeClose). An issue that is done already,
+// held so already, or whose tasks put it anywhere else, is left as it stands.
 func (e *Engine) leaveWhereDone(ctx context.Context, tx pgx.Tx, key string) error {
 	issue, err := e.store.Issue(ctx, tx, key)
-	if err != nil || issue == nil || issue.Phase == phase.Done {
+	if err != nil || issue == nil || issue.Phase == phase.Done || record.HeldFor(*issue, record.HoldForPullRequests) {
 		return err
 	}
 	scopes, err := e.scopes(ctx, tx, *issue)
@@ -89,6 +94,21 @@ func (e *Engine) leaveWhereDone(ctx context.Context, tx pgx.Tx, key string) erro
 	}
 	if at, _ := issuePhaseOfTasks(walks); walks == nil || at != phase.Done {
 		return nil
+	}
+	holds, err := setHolds(ctx, e.store, tx, key)
+	if err != nil {
+		return err
+	}
+	if len(holds) > 0 {
+		held := &scopes[0]
+		held.issue.Phase, held.issue.Hold = phase.Held, &record.Hold{From: phase.Merging, Reason: record.HoldForPullRequests}
+		written, err := e.putScope(ctx, tx, held)
+		if err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: a version left only tasks that are done, and the issue is held for the pull requests of its set that hold its close",
+			"issue", key, "tree", written.Tree, "holds", len(holds))
+		return e.tellHolds(ctx, tx, written, holds)
 	}
 	written, err := e.putScope(ctx, tx, &scopes[0])
 	if err != nil {

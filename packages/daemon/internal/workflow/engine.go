@@ -542,9 +542,12 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// them whole wherever it names them at all (intake.DispatchIssue.LinksKnown), whatever its
 	// status does, so they are taken here, past the sequence fence and before the status fence: an
 	// edit of the links alone is the common case, and it moves no status (takeLinks). An event that
-	// names no links changes none of them, since links unknown are never links none.
+	// names no links changes none of them, since links unknown are never links none. Where the
+	// change of links closed the issue (judgeClose), it stands done out of the workflow, and the
+	// event's status moves nothing more of it from the record read before that close.
 	if fact.LinksKnown {
-		if err := e.takeLinks(ctx, tx, *issue, fact.Links); err != nil {
+		closed, err := e.takeLinks(ctx, tx, *issue, fact.Links)
+		if err != nil || closed {
 			return intake.Result{}, err
 		}
 	}
@@ -3395,6 +3398,20 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	if held.code != "" {
 		return e.holdBeforeRetro(ctx, tx, s, trigger, row.To, row.ToPlace, handoff, pr, reason, held)
 	}
+	// A move into done that ends the last task of a plan with no merge in hand — the end of the
+	// last step of a task that merges nothing; the merge's own close is closeMerged's — holds the
+	// issue for its pull requests while a link of its set holds its close (setHolds,
+	// holdForPullRequests). It is read before the move writes anything, since the move's arrival
+	// would post the status done.
+	if trigger != TriggerPullRequestMerged && w.Stored && row.To == phase.Done && arrivedPhase(s, row.To, row.ToPlace, record.TaskDone, nil) == phase.Done {
+		holds, err := setHolds(ctx, e.store, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		if len(holds) > 0 {
+			return e.holdForPullRequests(ctx, tx, s, trigger, row.To, row.ToPlace, handoff, pr, reason, holds)
+		}
+	}
 	from, written, err := e.arrive(ctx, tx, &s, trigger, row.To, row.ToPlace, nil, handoff, pr, reason)
 	if err != nil {
 		return err
@@ -3475,8 +3492,25 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// start begins: no merger runs it, so it starts here under the agent its step names
 	// (startStandingStep), and its close ends it. Every other move starts what a move into its
 	// phase starts (start): the phase's worker, and for accepting, whose role is the architect, a
-	// child's failed architect started again and the accepting step.
+	// child's failed architect started again and the accepting step. A last merge GitHub has made
+	// while a link of the issue's set holds its close (setHolds, dispatch://INFRA-5910 decision 9)
+	// starts the merger instead, as any move into merging does (startAgent names it then): its close
+	// waits for those pull requests (closeMerged), and the merger keeps working them.
+	standing := mergedAlready
 	if mergedAlready {
+		last, err := e.lastToFinish(ctx, tx, s)
+		if err != nil {
+			return err
+		}
+		if last {
+			holds, err := setHolds(ctx, e.store, tx, issue.Key)
+			if err != nil {
+				return err
+			}
+			standing = len(holds) == 0
+		}
+	}
+	if standing {
 		if err := e.startStandingStep(ctx, tx, s); err != nil {
 			return err
 		}
@@ -3537,9 +3571,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 // move with the issue's phase (moveTask), and the issue's write and its mark of movement. A hold,
 // where one is given, overlays the phase the task's new place derives, which its From names, and
 // holds the task too (record.Store.HoldTask), whose hold the issue's derivation reads, for every
-// run with plan rows. s's copy is left standing where its task now stands, and the issue is written
-// where its tasks put it (putScope). The status written is the one of the phase the issue arrives
-// in (arrivedPhase), carrying the move's reason, in one row, whatever the plan's count of tasks.
+// run with plan rows; the one hold that stands over tasks that are all done, the hold for the
+// issue's pull requests (record.HoldForPullRequests, holdForPullRequests), holds no task and keeps
+// the From it is given, merging, which the derivation keeps over done tasks (derivedStanding). s's
+// copy is left standing where its task now stands, and the issue is written where its tasks put it
+// (putScope). The status written is the one of the phase the issue arrives in (arrivedPhase),
+// carrying the move's reason, in one row, whatever the plan's count of tasks: none for a hold.
 func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, s *TaskScope, trigger TriggerKind, to phase.Phase, place record.TaskPlace,
 	hold *record.Hold, handoff record.PhaseRow, pr *record.PullRequest, reason string) (phase.Phase, record.Issue, error) {
 	issue, w := &s.issue, &s.walk
@@ -3561,14 +3598,16 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, s *TaskScope, trigger Tr
 	issue.Hold = nil
 	if hold != nil {
 		overlay := *hold
-		overlay.From = issue.Phase
-		issue.Phase, issue.Hold = phase.Held, &overlay
-		if w.Stored {
-			if err := e.store.HoldTask(ctx, tx, issue.Key, issue.Generation, w.Task, overlay.Reason); err != nil {
-				return "", record.Issue{}, err
+		if overlay.Reason != record.HoldForPullRequests {
+			overlay.From = issue.Phase
+			if w.Stored {
+				if err := e.store.HoldTask(ctx, tx, issue.Key, issue.Generation, w.Task, overlay.Reason); err != nil {
+					return "", record.Issue{}, err
+				}
+				w.State, w.HoldReason = record.TaskHeld, overlay.Reason
 			}
-			w.State, w.HoldReason = record.TaskHeld, overlay.Reason
 		}
+		issue.Phase, issue.Hold = phase.Held, &overlay
 	}
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
@@ -3656,6 +3695,33 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, s TaskScope, tr
 		return err
 	}
 	return e.tellRetroHeld(ctx, tx, s.issue, s.walk, held, trigger)
+}
+
+// holdForPullRequests is the move of s's task into done, to at place, by trigger, the end of the
+// last step of a task that merges nothing, where that end ends the issue's last task and a link of
+// its set holds its close (holds, setHolds, dispatch://INFRA-5910 decision 9): no merge is in hand
+// to wait with, so the task moves to done and the issue stands held for its pull requests from
+// merging over tasks that are all done (record.HoldForPullRequests, arrive), in place of the close.
+// The hold writes no status, since held has none, so Dispatch is not told done; it starts nothing,
+// since no merge step is left in any task's line to start a merger through (the plan's departure
+// 1), and the issue does not leave the workflow. The architect is told the move, as any move tells it
+// (noticeFor), and each link that holds the close, once (tellHolds). The merge or the end of the
+// last of those pull requests, or the removal of its link, judges the close again (judgeClose),
+// which releases the hold and closes the issue (releaseHeldClose).
+func (e *Engine) holdForPullRequests(ctx context.Context, tx pgx.Tx, s TaskScope, trigger TriggerKind, to phase.Phase, place record.TaskPlace,
+	handoff record.PhaseRow, pr *record.PullRequest, reason string, holds []heldLink) error {
+	issue, w := s.issue, s.walk
+	ended := w.endingRole(issue.Phase)
+	from, written, err := e.arrive(ctx, tx, &s, trigger, to, place, &record.Hold{From: phase.Merging, Reason: record.HoldForPullRequests}, handoff, pr, reason)
+	if err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: an issue whose tasks are all done is held for the pull requests of its set that hold its close", "issue", issue.Key,
+		"tree", issue.Tree, "task", w.Task, "holds", len(holds))
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason, ended)); err != nil {
+		return err
+	}
+	return e.tellHolds(ctx, tx, written, holds)
 }
 
 // queueMovedNews queues the reconcile of issue's tree's news of its approved design

@@ -456,15 +456,20 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, s TaskScope, rating r
 
 // planHold says whether issue is held by its plan rather than by a failure: its owner stopped its
 // task (record.HoldTaskStopped), or, as a parent whose last step is not the owner's acceptance, it
-// waits in place of its retro while a hold on its acceptance holds it (record.HoldForChildren). No
-// path that resumes the work of a held issue resumes such a hold: a later version of the plan or a
-// person's todo on a root ends a task's stop (startAtFirstStep, or waitForFirstStep for a task
-// stopped before its first step), and the parent's retro starts once nothing holds it
-// (StartHeldRetro). stored says whether the issue's run has plan rows: no plan holds a run that has
-// none, so a hold of either reason on such a run, which the roll-forward of a way back that left
-// its reason finds, is a plain hold that a retry releases.
+// waits in place of its retro while a hold on its acceptance holds it (record.HoldForChildren), or
+// its tasks are all done and a pull request of its set holds its close, with no merge in hand
+// (record.HoldForPullRequests, dispatch://INFRA-5910 decision 9). No path that resumes the work of
+// a held issue resumes such a hold: a later version of the plan or a person's todo on a root ends a
+// task's stop (startAtFirstStep, or waitForFirstStep for a task stopped before its first step), the
+// parent's retro starts once nothing holds it (StartHeldRetro), and the close's judge ends the hold
+// for the pull requests once none holds it (judgeClose). That last hold holds no task, whose copy
+// stands in done, so a release read for a held task (heldScope, releaseHeldRoot) finds none in it;
+// it stands here so that no reader of the hold itself retries its phase either. stored says
+// whether the issue's run has plan rows: no plan holds a run that has none, so a hold of any of
+// these reasons on such a run, which the roll-forward of a way back that left its reason finds, is
+// a plain hold that a retry releases.
 func planHold(issue record.Issue, stored bool) bool {
-	return stored && (record.HeldFor(issue, record.HoldTaskStopped) || record.HeldForChildren(issue))
+	return stored && (record.HeldFor(issue, record.HoldTaskStopped) || record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldForPullRequests))
 }
 
 // planHoldRefusal is the answer to a release of issue's hold — the architect's retry or
@@ -472,18 +477,24 @@ func planHold(issue record.Issue, stored bool) bool {
 // (planHold), and nil for any other hold. A retry would start the role of the phase the hold is
 // from and an escalation would overwrite the reason, so each is refused with what starts the work
 // again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
-// for its children why it still waits (heldParentWait's refusal).
+// for its children why it still waits (heldParentWait's refusal), and for an issue held for its
+// pull requests what ends that hold, with nothing restarted (PHASE_NOT_RESTARTED).
 func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, s TaskScope) (*intake.Refusal, error) {
 	issue, w := s.issue, s.walk
 	if issue.Phase != phase.Held || issue.Hold == nil || !planHold(issue, w.Stored) {
 		return nil, nil
 	}
-	if record.HeldForChildren(issue) {
+	switch {
+	case record.HeldForChildren(issue):
 		wait, err := e.heldParentWaitOf(ctx, tx, issue)
 		if err != nil {
 			return nil, err
 		}
 		return wait.refusal(), nil
+	case record.HeldFor(issue, record.HoldForPullRequests):
+		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the tasks of %s are all done, and its close waits for the pull requests of its set that hold it, "+
+			"so no phase of it is restarted: the merge or the close of each of them, or the removal of its link, ends the hold. This retry changed nothing.",
+			issue.Key)).Refusal, nil
 	}
 	return intake.RetryOfStoppedTask(issue.Key, w.Task, w.StoppedReason), nil
 }

@@ -3665,20 +3665,24 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // Three kinds are of an issue with several pull requests, its tasks' and the ones it links in
 // Dispatch (dispatch://INFRA-5910): `pr-closed-others-open`, `pr-holds-close` and
 // `pr-link-refused`, each told to the issue's architect, and each naming a pull request as
-// `owner/name#number`. The workflow writes `pr-link-refused`; the other two are decoded by this
-// release and written by the workflow's close of such an issue, which comes later.
+// `owner/name#number`. The workflow writes all three.
 //
 // `pr-closed-others-open` is a pull request of the issue closed without a merge while another of
-// its set is still open (D5): the close moves nothing, and the reason names each pull request of
-// the set still open. The workflow's close of a pull request (closed) will write it, in place of
-// `pr-closed-unmerged`, which it writes when none is open.
+// its set is still open (D5): the close moves nothing, and the reason names the closed one and each
+// pull request of the set still open, a link whose read is owed or that Legion cannot read among
+// them. The workflow's close of a pull request (closed) writes it, in place of
+// `pr-closed-unmerged`, which it writes where none is open and the close of the issue, judged again
+// at that close, neither happens nor waits for the issues beneath it.
 //
 // `pr-holds-close` is a pull request of the issue's set that holds the issue's close: a linked one
 // still open, one whose read is still owed, or one whose repository the daemon does not serve or
 // cannot read (dispatch://INFRA-5910 decisions 9 and 10). It is told once for each link
 // (PullRequestLink.ToldAt), with the way out: remove the link, or have the pull request merged. The
-// re-judge of an issue's close (judgeClose) and the close of a merge in hand (closeMerged) will
-// write it.
+// workflow writes it where it tells the links that hold a close that waits (tellHolds): the close of
+// a merge in hand (closeMerged), at the merge, at a child's leave and at each boot, and the hold of
+// an issue whose tasks are all done with no merge in hand and its judge (holdForPullRequests,
+// leaveWhereDone, judgeClose); and where it holds a link refused as unserved or unreadable
+// (refuseLink), with what Legion lacks or GitHub's answer.
 //
 // `pr-link-refused` is a link of the issue that the daemon took into no set (LinkRefusal): a
 // pull request whose head is in a fork, or that the record holds for another issue. It is told once

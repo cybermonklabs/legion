@@ -23,13 +23,15 @@ import (
 // worker's completion, so no worker of it is started or resumed for it. Merging's fact is the merge
 // of the pull request of each task that stands at its merge (mergesAwaited, read on issue as the
 // store holds it, with no copy for a task; for an issue with no plan rows its one pull request),
-// with at least one such task: the merger merges, the daemon merges nothing, and a merged root then
-// stands in merging until the rest of its tree leaves the workflow (closeMerged), which can be
-// days. Accepting's is the architect's sign-off, which moves the issue on in the transaction that
-// records it, so an issue standing in accepting is always still waiting for it; every other phase
-// ends with its worker's completion, which moves the issue too. A recorded completion answers
-// nothing here: the merger's is recorded and moves no issue. The start of one task's merge reads
-// its own task's pull request instead (startAgent).
+// with at least one such task, while no link of the issue's set holds its close (setHolds,
+// dispatch://INFRA-5910 decision 9): the merger merges, the daemon merges nothing, and a merged
+// root then stands in merging until the rest of its tree leaves the workflow (closeMerged), which
+// can be days; while an open pull request of the set holds the close, the merger still has it to
+// merge, and the phase is not over. Accepting's is the architect's sign-off, which moves the issue
+// on in the transaction that records it, so an issue standing in accepting is always still waiting
+// for it; every other phase ends with its worker's completion, which moves the issue too. A
+// recorded completion answers nothing here: the merger's is recorded and moves no issue. The start
+// of one task's merge reads its own task's pull request instead (startAgent).
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
@@ -38,7 +40,14 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 	if err != nil || len(awaited) == 0 {
 		return false, err
 	}
-	return !slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return !finishedBy(issue, &at.pr) }), nil
+	if slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return !finishedBy(issue, &at.pr) }) {
+		return false, nil
+	}
+	holds, err := setHolds(ctx, store, tx, issue.Key)
+	if err != nil {
+		return false, err
+	}
+	return len(holds) == 0, nil
 }
 
 // finishedBy is PhaseFinished's rule over one merge issue awaits, its pull request as its caller

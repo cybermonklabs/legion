@@ -370,7 +370,10 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, s TaskScope, at p
 // startAgent is the agent a start of the step s's copy stands in at names: for accepting, the
 // architect that owns the issue now (acceptingAgent), nobody for a merge GitHub has already made,
 // the pull request of s's own task merged (taskPullRequestRow, its row alone: its state is all
-// this reads), where no merger starts, and the agent of the step's place otherwise (placeToken).
+// this reads), where no merger starts, and the agent of the step's place otherwise (placeToken). The
+// one merge GitHub made that names its merger is the last merge (lastToFinish) whose close a link
+// of the issue's set holds (setHolds, dispatch://INFRA-5910 decision 9): the close waits for those
+// pull requests, and the merger keeps working them.
 func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, s TaskScope, at phase.Phase) (claim.Token, error) {
 	issue := s.issue
 	switch at {
@@ -378,8 +381,18 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, s TaskScope, at phas
 		return e.acceptingAgent(ctx, tx, issue)
 	case phase.Merging:
 		pr, err := e.taskPullRequestRow(ctx, tx, s)
-		if err != nil || pr != nil && pr.State == record.PullRequestMerged {
+		if err != nil {
 			return "", err
+		}
+		if pr != nil && pr.State == record.PullRequestMerged {
+			last, err := e.lastToFinish(ctx, tx, s)
+			if err != nil || !last {
+				return "", err
+			}
+			holds, err := setHolds(ctx, e.store, tx, issue.Key)
+			if err != nil || len(holds) == 0 {
+				return "", err
+			}
 		}
 	}
 	// The worker of the step the issue stands in at at: its running step there (record.Issue.RunningAt).
