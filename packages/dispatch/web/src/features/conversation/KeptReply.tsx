@@ -94,16 +94,6 @@ export function GoneReply({
   readonly waits?: boolean;
   readonly words?: GoneReplyWords;
 }): ReactNode {
-  if (words !== undefined && agentNames === "cache") {
-    const after = words.after[deleted ? "deleted" : "gone"];
-    return (
-      <>
-        {words.before[parentKind]}
-        <CachedAuthor actor={actor} />
-        {waits ? after.waits : after.now}
-      </>
-    );
-  }
   if (words !== undefined) {
     const after = words.after[deleted ? "deleted" : "gone"];
     return (
@@ -117,9 +107,13 @@ export function GoneReply({
   if (agentNames === "cache") {
     return (
       <>
-        The {parentKind} by <CachedAuthor actor={actor} /> that your reply answered{" "}
-        {deleted ? "was deleted, so it takes no reply" : "is no longer listed"}. Your reply is kept
-        here{waits ? ", to use in this field once it is empty" : ""}:
+        {GONE_REPLY_WORDS.before[parentKind]}
+        <CachedAuthor actor={actor} />
+        {GONE_REPLY_WORDS.answered}
+        {deleted ? GONE_REPLY_WORDS.became.deleted : GONE_REPLY_WORDS.became.gone}
+        {GONE_REPLY_WORDS.kept}
+        {waits ? GONE_REPLY_WORDS.waits : ""}
+        {GONE_REPLY_WORDS.end}
       </>
     );
   }
