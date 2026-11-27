@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -128,7 +129,7 @@ init)
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		warmCodegraphIndexOn(context.Background(), c, procgroup.NoReaper, dir, time.Now())
+		warmCodegraphIndexOn(context.Background(), c, procgroup.NoReaper, true, dir, time.Now())
 	}()
 	var standIn, sleeper, group int
 	t.Cleanup(func() {
@@ -247,6 +248,27 @@ index) env > '`+seen+`' ;;
 	}
 }
 
+// TestStopCodegraphGroupAnswersAGoneGroupAsDone: runCodegraph's Cancel ends a live build's group,
+// and answers a group already gone as os.ErrProcessDone, which exec does not report as the run's
+// error: a build that exited 0 just as its bound ended is not read as a build that could not run.
+func TestStopCodegraphGroupAnswersAGoneGroupAsDone(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	if err := stopCodegraphGroup(pid); err != nil {
+		t.Fatalf("stopCodegraphGroup of a live group = %v, want nil", err)
+	}
+	if err := cmd.Wait(); procgroup.Ended(err).Signal == "" {
+		t.Fatalf("the group's leader ended with %v, want the SIGTERM", err)
+	}
+	if err := stopCodegraphGroup(pid); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("stopCodegraphGroup of a reaped group = %v, want os.ErrProcessDone", err)
+	}
+}
+
 // recordedOutcomeStandIn is a stand-in CodeGraph whose `status` reports the workspace
 // uninitialized until an `init` has begun, and an index left `indexing` from then on, as a build
 // that died leaves it; initEnd is how its `init` ends once it has begun. Its `index` exits 0: a
@@ -344,7 +366,7 @@ func TestWarmCodegraphIndexRepairsAfterAStopThatReachedTheBuildFirst(t *testing.
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		warmCodegraphIndexOn(ctx, c, procgroup.NoReaper, dir, time.Now())
+		warmCodegraphIndexOn(ctx, c, procgroup.NoReaper, true, dir, time.Now())
 	}()
 	// The shim's SIGTERM lands once the build has ended on its own and the warm-up has read that
 	// end: its wait for the context armed, or, with no such wait, the warm-up already returned.
@@ -391,7 +413,7 @@ func TestWarmCodegraphIndexDoesNotRepairABuildThatTimedOut(t *testing.T) {
 		returned := make(chan struct{})
 		go func() {
 			defer close(returned)
-			warmCodegraphIndexOn(context.Background(), c, procgroup.NoReaper, dir, time.Now())
+			warmCodegraphIndexOn(context.Background(), c, procgroup.NoReaper, true, dir, time.Now())
 		}()
 		testwait.Eventually(t, "the stand-in init to have begun", func() bool {
 			_, err := os.Stat(filepath.Join(dir, ".codegraph", "begun"))
@@ -403,10 +425,95 @@ func TestWarmCodegraphIndexDoesNotRepairABuildThatTimedOut(t *testing.T) {
 	})
 }
 
-// TestWarmCodegraphIndexDoesNotRepairABuildThatExitedNonZero: a build that failed with a status
-// of its own is recorded `exit N`, and not built again on the same disk.
-func TestWarmCodegraphIndexDoesNotRepairABuildThatExitedNonZero(t *testing.T) {
-	warmUpTwiceAfterADeath(t, "echo 'no database could be created' >&2; exit 1", "exit 1", warmUpOnce)
+// TestWarmCodegraphIndexHoldsASecondNonZeroExit: a build that failed with a status of its own is
+// recorded `exit N` with its count, and allows one more build at the next warm-up, since an exit
+// can be one that does not repeat (`database is locked`); a second exit in a row holds every later
+// warm-up on the disk, and an exit 0 after the first removes the record (INFRA-5717 R2, spec v12).
+func TestWarmCodegraphIndexHoldsASecondNonZeroExit(t *testing.T) {
+	for _, tc := range []struct {
+		name, indexEnd string
+		wantCalls      []string
+		wantRecord     bool
+	}{
+		{"a second exit holds", "exit 1", []string{"status", "init", "status", "index", "status"}, true},
+		{"an exit 0 after the first removes the record", "exit 0", []string{"status", "init", "status", "index"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			callLog := filepath.Join(t.TempDir(), "calls.log")
+			fakeCodegraphBundle(t, callLog, "1.5.0", `status) if [ -e .codegraph/begun ]; then echo '{"initialized":true,"index":{"state":"indexing"}}'; else echo '{"initialized":false}'; fi ;;
+init) mkdir -p .codegraph; : > .codegraph/begun; echo 'database is locked' >&2; exit 1 ;;
+index) `+tc.indexEnd+` ;;
+`)
+			dir := t.TempDir()
+
+			warmUpOnce(dir)
+			rec, ok := readWarmBuildRecord(t, dir)
+			if !ok || rec.Subcommand != "init" || rec.Outcome != "exit 1" || rec.Exits != 1 {
+				t.Fatalf("the first warm-up left the record %+v (present: %v), want init ended \"exit 1\", the first exit in a row", rec, ok)
+			}
+			indexed.Delete(dir)
+			warmUpOnce(dir)
+			if tc.wantRecord {
+				rec, ok = readWarmBuildRecord(t, dir)
+				if !ok || rec.Subcommand != "index" || rec.Outcome != "exit 1" || rec.Exits != 2 {
+					t.Fatalf("the second warm-up left the record %+v (present: %v), want index ended \"exit 1\", the second exit in a row", rec, ok)
+				}
+				indexed.Delete(dir)
+				captured := captureStderr(t)
+				warmUpOnce(dir)
+				if stderr := captured(); !strings.Contains(stderr, "the last of 2 non-zero exits in a row") {
+					t.Errorf("the third warm-up's stderr lacks the line naming the two exits:\n%s", stderr)
+				}
+			} else if rec, ok := readWarmBuildRecord(t, dir); ok {
+				t.Fatalf("the index that exited 0 left the record %+v, want none", rec)
+			}
+			if calls := stubCalls(t, callLog); !slices.Equal(calls, tc.wantCalls) {
+				t.Fatalf("the calls across the warm-ups = %v, want %v", calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// TestWarmCodegraphIndexInBackgroundRunsAHostsBuildWithoutThePodsGuard: the daemon's warm-up of a
+// tmux host's workspace runs as it did before the cap (INFRA-5717 spec v12): its build stays in the
+// daemon's process group, CodeGraph picks its own parse pool, and a build that exited non-zero
+// leaves no record, so the next provisioning builds again. A host's workspace never gets the new
+// disk that would let a record go.
+func TestWarmCodegraphIndexInBackgroundRunsAHostsBuildWithoutThePodsGuard(t *testing.T) {
+	scratch := t.TempDir()
+	callLog, seen := filepath.Join(scratch, "calls.log"), filepath.Join(scratch, "init.env")
+	fakeCodegraphBundle(t, callLog, "1.6.4", `status) echo '{"initialized":false}' ;;
+init) { env; echo "PGRP=$(cut -d' ' -f5 /proc/$$/stat)"; } > '`+seen+`'; exit 1 ;;
+`)
+	dir := t.TempDir()
+	warmOnHost := func(want int) {
+		t.Helper()
+		WarmCodegraphIndexInBackground(procgroup.NoReaper, dir)
+		testwait.Eventually(t, "the host's warm-up to end", func() bool {
+			_, busy := warming.Load(dir)
+			return !busy && len(stubCalls(t, callLog)) == want
+		})
+	}
+
+	warmOnHost(2)
+	if rec, ok := readWarmBuildRecord(t, dir); ok {
+		t.Fatalf("the host's build that exited 1 left the record %+v, want none", rec)
+	}
+	listing, err := os.ReadFile(seen)
+	if err != nil {
+		t.Fatalf("the stand-in init recorded no environment: %v", err)
+	}
+	vars := envlisting.Vars(string(listing))
+	if got, set := vars["CODEGRAPH_PARSE_WORKERS"]; set {
+		t.Errorf("the host's build ran with CODEGRAPH_PARSE_WORKERS=%q, want CodeGraph's own pool", got)
+	}
+	if got, want := vars["PGRP"], strconv.Itoa(syscall.Getpgrp()); got != want {
+		t.Errorf("the host's build ran in process group %s, want the daemon's own, %s", got, want)
+	}
+	warmOnHost(4)
+	if calls := stubCalls(t, callLog); !slices.Equal(calls, []string{"status", "init", "status", "init"}) {
+		t.Fatalf("the calls across both host warm-ups = %v, want the second to build again", calls)
+	}
 }
 
 // TestWarmCodegraphIndexWritesItsRecordBeforeTheBuild: the record says `running` before the build

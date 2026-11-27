@@ -345,7 +345,7 @@ func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRea
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err := runCodegraph(context.Background(), clock.Real(), procgroup.NoReaper, codegraphPath, dir, "status", "--json")
+	status, err := runCodegraph(context.Background(), clock.Real(), procgroup.NoReaper, true, codegraphPath, dir, "status", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1165,7 +1165,7 @@ esac
 		if success.MatchString(stderr) {
 			t.Fatalf("a warm-up whose init failed logged a success line:\n%s", stderr)
 		}
-		if want := "[legion] codegraph init failed for " + dir + " (exit 1): no database could be created\n"; !strings.Contains(stderr, want) {
+		if want := "[legion] codegraph init failed for " + dir + " (exit 1; the next warm-up builds once more): no database could be created\n"; !strings.Contains(stderr, want) {
 			t.Fatalf("stderr lacks the failure line %q:\n%s", want, stderr)
 		}
 	})
@@ -1292,7 +1292,10 @@ func newBoundRow(t *testing.T, fake func(t *testing.T, callLog, cases string), s
 			r.reached("the stub's child to leave once released", "left")
 		}
 	})
-	go func() { defer close(r.done); warmCodegraphIndexOn(ctx, r.c, procgroup.NoReaper, r.dir, time.Now()) }()
+	go func() {
+		defer close(r.done)
+		warmCodegraphIndexOn(ctx, r.c, procgroup.NoReaper, true, r.dir, time.Now())
+	}()
 	return r
 }
 

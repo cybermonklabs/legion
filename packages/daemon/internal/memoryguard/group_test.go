@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -12,13 +13,15 @@ import (
 
 // holdInGroup starts a shell in a process group of its own that holds 32 MiB of anonymous memory
 // and, where sleeper is set, a sleep it started beside it in that group, and returns once the
-// memory is held.
+// memory is held and the sleep has run its exec: before the exec the forked child shares the
+// shell's pages, and copy-on-write pages read as Anonymous in both processes, so a read then would
+// count the 32 MiB twice.
 func holdInGroup(t *testing.T, sleeper bool) *exec.Cmd {
 	t.Helper()
 	ready := filepath.Join(t.TempDir(), "ready")
 	script := `held=$(head -c 33554432 /dev/zero | tr '\0' x); : > "$0"; sleep 60`
 	if sleeper {
-		script = `held=$(head -c 33554432 /dev/zero | tr '\0' x); sleep 60 & : > "$0"; wait`
+		script = `held=$(head -c 33554432 /dev/zero | tr '\0' x); sleep 60 & echo "$!" > "$0"; wait`
 	}
 	holder := exec.Command("sh", "-c", script, ready)
 	holder.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -30,8 +33,19 @@ func holdInGroup(t *testing.T, sleeper bool) *exec.Cmd {
 		_ = holder.Wait()
 	})
 	testwait.Eventually(t, "the shell to hold its 32 MiB", func() bool {
-		_, err := os.Stat(ready)
-		return err == nil
+		body, err := os.ReadFile(ready)
+		if err != nil {
+			return false
+		}
+		if !sleeper {
+			return true
+		}
+		pid := strings.TrimSpace(string(body))
+		if pid == "" {
+			return false
+		}
+		comm, err := os.ReadFile(filepath.Join("/proc", pid, "comm"))
+		return err == nil && strings.TrimSpace(string(comm)) == "sleep"
 	})
 	return holder
 }

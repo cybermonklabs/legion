@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -47,13 +48,21 @@ const warmBuildName = "legion-warm.build"
 
 // The outcomes a build record holds. A build that exited 0 leaves no record, and neither does one
 // whose warm-up's own context ended it, nor one that never started. Every other outcome is a
-// build that would end the same way again, and "exit N" names a non-zero status.
+// build that would end the same way again, and "exit N" names a non-zero status: the build ended
+// itself under the cap and took nothing down, and the one exit this repository knows not to repeat
+// (CodeGraph 1.6.4's `database is locked` when a role's `status` meets a whole-repository build,
+// docs/kubernetes.md) is one of them, so an exit holds only once warmExitsHeld came in a row.
 const (
 	warmOutcomeRunning   = "running"
 	warmOutcomeKilled    = "killed"
 	warmOutcomeMemoryCap = "memory cap"
 	warmOutcomeTimedOut  = "timed out"
 )
+
+// warmExitsHeld is how many non-zero exits in a row, under one CodeGraph and one cap in one
+// workspace, hold the next warm-up (INFRA-5717 R2, spec v12): the first allows one more build, and
+// the second holds. A deterministic failure costs one more build, which the cap bounds.
+const warmExitsHeld = 2
 
 // warmBuildRecordLimit bounds how much of the record a warm-up reads: one line of a few hundred
 // bytes. A file an agent made larger is no record of a build.
@@ -63,7 +72,9 @@ const warmBuildRecordLimit = 4096
 // started, how it ended, and the CodeGraph and the cap it ran under. A warm-up writes it
 // `running` before the build starts and rewrites it with the build's end, so a record still
 // `running` while a warm-up holds the lease is a build that died unseen: a pod that ended, the
-// kernel's out-of-memory kill, a shim killed at its stop grace.
+// kernel's out-of-memory kill, a shim killed at its stop grace. Exits counts the non-zero exits in
+// a row under that CodeGraph and cap, this build's own included where it ended `exit N`; a
+// `running` record carries the count of the exits before it, so that the build's own exit adds one.
 type warmBuild struct {
 	Subcommand string    `json:"subcommand"`
 	Started    time.Time `json:"started"`
@@ -71,18 +82,32 @@ type warmBuild struct {
 	CodeGraph  string    `json:"codegraph"`
 	Cap        uint64    `json:"cap_bytes"`
 	Peak       uint64    `json:"peak_bytes,omitempty"`
+	Exits      int       `json:"exits,omitempty"`
 }
 
-// holds is whether the record holds a warm-up from building again: the image's CodeGraph
-// (version) and the cap are the ones the recorded build ran under, and the workspace is the one it
-// ran in, which its creation record (created, createdOK: Created) tells where provisioning kept
-// one. A workspace created after the recorded build started is a new one. Another CodeGraph, an
-// unread one included, or another cap allows one new attempt, whose own end is recorded in turn.
-func (rec warmBuild) holds(version string, capBytes uint64, created time.Time, createdOK bool) bool {
+// sameRun is whether the record speaks of a build under the image's CodeGraph (version) and the
+// cap, in the workspace it ran in, which its creation record (created, createdOK: Created) tells
+// where provisioning kept one. A workspace created after the recorded build started is a new one.
+// Another CodeGraph, an unread one included, or another cap allows one new attempt, whose own end
+// is recorded in turn.
+func (rec warmBuild) sameRun(version string, capBytes uint64, created time.Time, createdOK bool) bool {
 	if createdOK && created.After(rec.Started) {
 		return false
 	}
 	return rec.CodeGraph == version && rec.Cap == capBytes
+}
+
+// exited is whether the recorded build ended on a non-zero status of its own.
+func (rec warmBuild) exited() bool { return strings.HasPrefix(rec.Outcome, "exit ") }
+
+// holds is whether the record holds a warm-up from building again: it is of the same run
+// (sameRun), and its build ended in a way that ends so again. Every outcome but a non-zero exit
+// holds at once; an exit holds once warmExitsHeld of them came in a row.
+func (rec warmBuild) holds(version string, capBytes uint64, created time.Time, createdOK bool) bool {
+	if !rec.sameRun(version, capBytes, created, createdOK) {
+		return false
+	}
+	return !rec.exited() || rec.Exits >= warmExitsHeld
 }
 
 // describe is the record as one line names it: the build, its start and how it ended.
@@ -130,29 +155,43 @@ func readWarmBuild(path string) (rec warmBuild, found bool, err error) {
 
 // writeWarmBuild writes rec as the record at path, one JSON line, and syncs it before it returns:
 // the record `running` must be on the disk before the build starts, since the build's death can
-// take the pod with it. It replaces a file at path, never follows a link there.
+// take the pod with it. It writes and syncs a temporary file beside path, then renames it over
+// path, so the record at path is the old one until the new one is whole: a shim killed mid-write,
+// or a write that fails on a full disk (one a sync's log filled, say), leaves the record it
+// found, and a build that died stays held. The temporary file is an exclusive create
+// (os.CreateTemp), and the rename replaces whatever is at path, a link included, without following
+// it. The directory's own sync, which makes the rename durable, is best effort: were its failure
+// an error, a filesystem that cannot sync a directory would stop every warm-up, which builds nothing
+// it could not record. A killed shim can leave a temporary file `.legion-warm.build.*` behind,
+// which no reader takes for the record.
 func writeWarmBuild(path string, rec warmBuild) error {
 	rec.Started = rec.Started.UTC()
 	line, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|unix.O_NOFOLLOW, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		_ = f.Close()
-		return err
+	_, err = tmp.Write(append(line, '\n'))
+	if err == nil {
+		err = tmp.Sync()
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
 	}
-	return f.Close()
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		return errors.Join(err, os.Remove(tmp.Name()))
+	}
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }
 
 // removeWarmBuild removes the record at path, which a build that exited 0, an orderly stop, a
