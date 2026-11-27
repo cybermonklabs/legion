@@ -11,13 +11,15 @@
 #
 # The cases are those of the merge-group retry: a test that fails once and then passes, one that
 # fails twice, a data race, a -timeout panic, 11 failures, a build failure, a line on go test's
-# own standard error (and the compiler's -gcflags=-m output, which is none), three ordered
-# subtests rerun whole, a test database-skips.sh runs and one backend-count.sh runs that each fail
-# once, a TestMain that fails a rerun that runs no test, race_memory.py over its limit with every
-# test passing, and no retry on a pull_request event or where a step turns it off. Beside each,
-# where the retry or the read decides it, a copy of the script with that part taken out runs the
-# same case and must fail it. Then the split of the command's words: a flag's
-# value is no package, `go -C <dir>` runs from that directory, and what the script refuses.
+# own standard error (and the compiler's -gcflags=-m output, which is none), the cleanup
+# detector's GODEBUG on the test binary alone (-exec 'env GODEBUG=…', which prints none) against
+# on the go command (which prints many), three ordered subtests rerun whole, a test
+# database-skips.sh runs and one backend-count.sh runs that each fail once, a TestMain that fails
+# a rerun that runs no test, race_memory.py over its limit with every test passing, and no retry
+# on a pull_request event or where a step turns it off. Beside each, where the retry or the read
+# decides it, a copy of the script with that part taken out runs the same case and must fail it.
+# Then the split of the command's words: a flag's value is no package, `go -C <dir>` runs from
+# that directory, and what the script refuses.
 #
 # With GO_TEST_CAPTURE set to a directory, it copies the jsonfiles and rerun reports of the
 # once-then-pass, the twice and the TestMain cases there: .github/scripts/testdata/ci-ok-retries/
@@ -224,6 +226,27 @@ check "ran the test that fails once only once" "$(is "$(attempts stderr once)" 1
 run_case gcflags merge_group "$go_test" go test -count=1 -gcflags=-m ./once/
 check "the compiler's -gcflags=-m output blocks no retry: the step passes" "$(is "$status" 0)"
 check "and gotestsum's summary shows no === Errors section" "$(is "$(contains "$out" '^=== Errors')" false)"
+
+echo "case: the cleanup detector on the test binary alone (-exec) leaves go's standard error empty"
+# The rule above is why the cleanup detector (ci_job_reads.py's CLEANUP_DETECTOR) is go test's
+# `-exec 'env GODEBUG=checkfinalizers=1'`. With GODEBUG=checkfinalizers=1 on the go command itself
+# the go tool runs the detector too and prints a `checkfinalizers: queue: …` line to its own
+# standard error at each collection, so the summary lists them under === Errors and a failed
+# test is not run again; run 45878794448 of the CI workflow showed that in three jobs.
+run_case exec merge_group "$go_test" go test -count=1 -exec 'env GODEBUG=checkfinalizers=1' ./once/
+check "passes its step, the test that fails once having run again" "$(is "$status" 0)"
+check "hands gotestsum the -exec flag with its value as one word" \
+  "$(contains "$out" '--packages ./once/ -- -count=1 -exec env GODEBUG=checkfinalizers=1$')"
+check "gotestsum's summary has no === Errors section" "$(is "$(contains "$out" '^=== Errors')" false)"
+check "and no checkfinalizers line" "$(is "$(contains "$out" 'checkfinalizers:')" false)"
+check "ran the test that fails once twice" "$(is "$(attempts exec once)" 2)"
+run_case exec-whole merge_group env GODEBUG=checkfinalizers=1 "$go_test" go test -count=1 ./once/
+check "the same run with GODEBUG on the go command fails its step" "$(is "$status" 1)"
+check "gotestsum's summary shows an === Errors section" "$(contains "$out" '^=== Errors')"
+check "the section holds the go tool's own checkfinalizers lines" \
+  "$(contains "${out#*=== Errors}" '^checkfinalizers: queue: ')"
+check "says the errors aborted the rerun" "$(contains "$out" 'rerun aborted because previous run had errors')"
+check "ran the test that fails once only once" "$(is "$(attempts exec-whole once)" 1)"
 
 echo "case: three ordered subtests whose second fails once pass on a rerun of the root test"
 run_case ordered merge_group "$go_test" go test -count=1 ./ordered/

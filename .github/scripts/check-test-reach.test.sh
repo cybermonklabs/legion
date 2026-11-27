@@ -978,7 +978,7 @@ go_test_file "$root/packages/envoy/unit/sampled_test.go" unit sampledtag TestOnl
 required_job "$root" sampled '    runs-on: ubuntu-24.04
     steps:
       - name: Race-test under the sampler
-        run: GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -tags sampledtag ./unit/
+        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -exec "env GODEBUG=checkfinalizers=1" -tags sampledtag ./unit/
         working-directory: packages/envoy'
 run_check "$root"
 passes "race-memory: the go test behind race_memory.py is read, its -tags among it"

@@ -2892,6 +2892,13 @@ bounds and the full-size render-reuse storms in envoy-go-race-impossible's step 
 race build cannot run at all or at full size", and the xid window tests, whose gap bound only a
 plain build judges, in envoy-go-alone's step "Test the xid window rows, the API's issue-list
 bound and the auth service's storm, alone", on a runner nothing else loads.
+The detector goes to the test binary alone, as go test's -exec 'env GODEBUG=checkfinalizers=1'
+on each of these three lines (ci_job_reads.py's CLEANUP_DETECTOR). GODEBUG on the go command
+itself makes the go tool run the detector too, and it prints `checkfinalizers: queue: 0
+finalizers + 0 cleanups` lines of its own to its standard error: gotestsum lists them under
+`=== Errors` in its summary, and go-test.sh reads a line there as a reason to refuse a merge
+group's retry. Run 45878794448 showed them in the race-docs legs (job 140112941182),
+envoy-go-race-impossible (job 140112941400) and envoy-go-alone (job 140112941494).
 
 ## The real-process memory tests, and why they are a job of their own
 

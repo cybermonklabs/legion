@@ -751,12 +751,17 @@ AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # tree.go), so every run of its tests runs under it: envoy-go-race-docs' race run below, and the
 # plain run of what the race build cannot run (race_impossible_script), and no job runs the
 # package a third time for the detector alone.
-CLEANUP_DETECTOR = "GODEBUG=checkfinalizers=1"
+# The detector goes to the test binary alone, as go test's -exec: `-exec 'env GODEBUG=...'` runs each
+# test binary under env. GODEBUG on the go command itself makes the go tool run the detector too,
+# and it prints its own `checkfinalizers: queue: ...` lines to its standard error, which gotestsum
+# lists under `=== Errors` and .github/scripts/go-test.sh reads as a reason not to retry a failed
+# test (go-test.test.sh's case "a line on go test's own standard error blocks the retry").
+CLEANUP_DETECTOR = "-exec 'env GODEBUG=checkfinalizers=1'"
 CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # The document service's race step runs under .github/scripts/go-test.sh --race-memory, whose
 # race_memory.py fails it with a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
-# ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is shell
-# assignments and a script, not a go command the simple form reduces. GODEBUG is a GO* name,
+# ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is a pipe
+# into xargs and `env`, not a go command the simple form reduces, and the step is pinned whole.
 # ---------------------------------------------------------------- a job whose steps run in legs
 # .github/go-legs.yaml lists the packages each leg of a Go job runs, and, for a package too long
 # for one leg, the group of its tests each leg runs; .github/scripts/go_legs.py prints them for
@@ -789,16 +794,16 @@ def legs_script(module, job, command):
             f"| xargs -r {command}")
 
 
-# which is outside ENV_ALLOWED wherever it is set, so the step is pinned whole.
 RACE_DOCS_STEP = "Race-test the document service"
 # The document service's legs: as the API's, with the memory sampler and the cleanup detector the
-# one job carried. xargs runs a program and not a shell, so `env` is what carries the two
-# variables to the runner and its sampler.
+# one job carried. xargs runs a program and not a shell, so `env` is what carries RACE_MEM_LIMIT_KB
+# to the runner and its sampler; the detector is not an `env` of the go command but go test's
+# -exec, which hands it to the test binary alone (CLEANUP_DETECTOR says why).
 RACE_DOCS_LEGS_JOB = "envoy-go-race-docs-legs"
 RACE_DOCS_SCRIPT = legs_script(ENVOY, "envoy-go-race-docs",
-                               f"env {CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 "
+                               "env RACE_MEM_LIMIT_KB=8388608 "
                                "../../.github/scripts/go-test.sh --race-memory "
-                               "go test -race -count=1 -timeout 60m")
+                               f"go test -race -count=1 {CLEANUP_DETECTOR} -timeout 60m")
 # Every lane whose tests start a Dispatch process checks its Postgres service's max_connections in
 # its CEILING_STEP, which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's
 # run: line, not what the script runs, so each such gate declares the script, and the go run on the
@@ -2244,15 +2249,16 @@ def race_impossible_script(workdir, packages) -> str:
     """A plain run of the tests the detector makes impossible, from the module at `workdir`: one
     `go test` per package of `packages` (race_impossible_tests) under .github/scripts/go-test.sh,
     each naming that package's own tests, anchored and sorted, in its -run, under a 10-minute
-    timeout. A package of CLEANUP_DETECTOR_PACKAGES runs under the cleanup detector. gotestsum's
+    timeout. A package of CLEANUP_DETECTOR_PACKAGES runs its test binary under the cleanup detector,
+    through go test's -exec (CLEANUP_DETECTOR says why). gotestsum's
     standard-verbose format prints a passing package's own output, and the document service's is
     evidence - its TestMain's count of services left alive, and the xid window rig's logs of which
     branch a load test reached (xid_window_load_linux_test.go, xid_window_ownps_linux_test.go) -
     which the job that ran the package plain under the detector alone printed with -v for the same
     reason."""
-    return "\n".join(f"{CLEANUP_DETECTOR + ' ' if under in CLEANUP_DETECTOR_PACKAGES else ''}"
-                     + under_runner(workdir, f"go test -count=1 -timeout 10m "
-                                             f"-run '^({'|'.join(sorted(names))})$' ./{under}")
+    return "\n".join(under_runner(workdir, f"go test -count=1 "
+                                           f"{CLEANUP_DETECTOR + ' ' if under in CLEANUP_DETECTOR_PACKAGES else ''}"
+                                           f"-timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}")
                      for under, names in packages.items())
 
 

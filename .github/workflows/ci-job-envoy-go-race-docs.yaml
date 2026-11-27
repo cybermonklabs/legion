@@ -122,13 +122,18 @@ jobs:
       # Under Go's cleanup detector too, GODEBUG=checkfinalizers=1: at each collection the runtime
       # reports a cleanup or a finalizer whose closure or argument reaches the object it is
       # attached to, a cycle that keeps that object alive for the life of the process, which is the
-      # defect that held this package's memory (dispatch://INFRA-1085). This is the only package of
-      # the repository that registers a cleanup. The detector is the runtime's own bookkeeping and
-      # runs beside the race detector in this one run, so no job runs the package again plain for
-      # the detector alone. What this run cannot judge, or judges only at a smaller size, envoy-go
-      # runs plain, under the cleanup detector as well: the room-memory bounds and the two
-      # render-reuse storms, which run in both at two sizes, in envoy-go-race-impossible's step
-      # "Test what the race build cannot run at all or at full size", and the xid window rows in
+      # defect that held this package's memory (dispatch://INFRA-1085). It goes to the test binary
+      # alone, as go test's -exec 'env GODEBUG=checkfinalizers=1': set on the go command itself,
+      # GODEBUG makes the go tool run the detector too, and the `checkfinalizers: queue:` lines it
+      # prints to its own standard error are what gotestsum lists under `=== Errors` and
+      # .github/scripts/go-test.sh reads as a reason to refuse a merge group's retry.
+      # This is the only package of the repository that registers a cleanup. The detector is the
+      # runtime's own bookkeeping and runs beside the race detector in this one run, so no job runs
+      # the package again plain for the detector alone. What this run cannot judge, or judges only
+      # at a smaller size, envoy-go runs plain, under the cleanup detector as well: the room-memory
+      # bounds and the two render-reuse storms, which run in both at two sizes, in
+      # envoy-go-race-impossible's step "Test what the race build cannot run at all or at full
+      # size", and the xid window rows in
       # envoy-go-alone's step "Test the xid window rows, the API's issue-list bound and the auth
       # service's storm, alone".
       # Each leg runs the group of this package's tests .github/go-legs.yaml gives its number,
@@ -137,12 +142,12 @@ jobs:
       # one leg only, and each test's subtests run with it. go_legs.py lists the package's tests
       # under this step's own -race first: a test in two groups fails the step, and a test in none
       # is placed with a warning. `set -o pipefail` fails the step when go_legs.py refuses, and
-      # `xargs -r` runs nothing on the empty output that leaves. `env` carries the two variables
+      # `xargs -r` runs nothing on the empty output that leaves. `env` carries RACE_MEM_LIMIT_KB
       # through xargs, which runs a program and not a shell.
       - name: Race-test the document service
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r env GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory go test -race -count=1 -timeout 60m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-docs ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r env RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory go test -race -count=1 -exec 'env GODEBUG=checkfinalizers=1' -timeout 60m
         working-directory: packages/envoy
 
       - name: Upload this leg's gotestsum reports

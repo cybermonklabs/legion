@@ -103,10 +103,11 @@ How it reads a step:
     listing reuses the first's build, so it costs the test binaries' own run and no compile;
   * `go list … | grep -Ev '…' | xargs go test …` is run as written, in the step's own directory,
     and the packages it prints are the command's packages;
-  * a line that sets variables before its command (`GODEBUG=checkfinalizers=1 go test …`) or runs
-    it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
-    behind them: neither changes which test functions run. A value holding `$` and a wrapper that
-    tuple does not name are refused rather than guessed at;
+  * a line that sets variables before its command (`NAME=value go test …`) or runs it under one of
+    the wrappers GO_WRAPPERS names (`go-test.sh --race-memory go test …`) is the go command behind
+    them: neither changes which test functions run, nor does an `-exec 'env GODEBUG=…'` among the
+    go test flags, which hands a variable to the test binary alone. A value holding `$` and a
+    wrapper that tuple does not name are refused rather than guessed at;
   * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
     the job's matrix, each with the row's value written in, since each row is a job of its own:
     a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
@@ -374,8 +375,9 @@ ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 # table names (the API's legs: `xargs scripts/database-skips.sh …`), then read as any other line
 # is (go_command below), and refused unless what is left is a go test. So a step that pipes a
 # lister into a go test under `env`, variables and a wrapper (the document service's legs:
-# `xargs env GODEBUG=… RACE_MEM_LIMIT_KB=… race_memory.py go test …`) is read as that go test,
-# and `xargs timeout 60 go test`, `xargs env -C dir go test` or `xargs go vet` are refused.
+# `xargs env RACE_MEM_LIMIT_KB=… go-test.sh --race-memory go test … -exec 'env GODEBUG=…' …`) is
+# read as that go test, and `xargs timeout 60 go test`, `xargs env -C dir go test` or
+# `xargs go vet` are refused.
 # `xargs -r` (`--no-run-if-empty`) runs nothing on empty input, which changes no test the command
 # runs when it runs, so it is read past.
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:(?:-r|--no-run-if-empty)\s+)?(?P<test>\S.*)$")
@@ -396,7 +398,8 @@ TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 # steps stay unread here, as they were before the table moved.
 NOT_LISTED = ("packages/envoy/scripts/forced-order.sh", "packages/envoy/scripts/forced-order.test.sh")
 AUDITED_SCRIPTS = {path: entry for path, entry in go_test_steps.AUDITED_SCRIPTS.items() if path not in NOT_LISTED}
-# A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
+# A variable a step sets before its command, as the steps write it: RACE_MEM_LIMIT_KB=8388608
+# behind `xargs env`.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
 # The wrappers a step runs a go command under, and the options a wrapper takes before the command:
@@ -726,8 +729,8 @@ def go_command(line: str) -> tuple[list[str], str]:
     """The command a line runs, with the variables it sets before it and the wrapper it runs it
     under dropped: its words, and its text with those words removed.
 
-    A step writes `GODEBUG=checkfinalizers=1 go test …` and
-    `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test …`. Neither the
+    A step writes `env RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory
+    go test … -exec 'env GODEBUG=checkfinalizers=1' …` behind an xargs. Neither the
     variables nor the wrapper changes which test functions the command runs, which is all this
     script reads, so both are dropped and what is left is the go command. A value holding `$`,
     and a wrapper GO_WRAPPERS does not name, are left where they are, so the caller refuses the

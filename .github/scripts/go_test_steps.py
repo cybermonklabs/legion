@@ -72,8 +72,8 @@ ASSIGNMENT = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)="?\$\((.+)\)"?$')
 # (`--no-run-if-empty`) runs nothing when its lister prints nothing, and with something printed
 # runs the command plain xargs runs, so the reader reads it as plain xargs. The command may be
 # `env NAME=value …` and a GO_WRAPPERS wrapper before its `go test` (envoy-go-race-docs' legs run
-# `env GODEBUG=… RACE_MEM_LIMIT_KB=… race_memory.py go test …`); read_block reads it through
-# go_command, as it reads the same command written on a line of its own.
+# `env RACE_MEM_LIMIT_KB=… go-test.sh --race-memory go test … -exec 'env GODEBUG=…' …`);
+# read_block reads it through go_command, as it reads the same command written on a line of its own.
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:(?:-r|--no-run-if-empty)\s+)?(?P<command>.+)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 # The script that prints what one leg of a legs job runs, from LEGS_FILE: given `<module> <job>
@@ -317,7 +317,8 @@ AUDITED_SCRIPTS = {
         sha256="7a00345dc6c667859f24c158b0ad58e58e7f6d58eb0b34fa4b23f6ea3b19abc1",
     ),
 }
-# A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
+# A variable a step sets before its command, as the steps write it: RACE_MEM_LIMIT_KB=8388608
+# behind `xargs env`.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
 # go commands that run no test, so a step may hold one and the reader need not read it.
@@ -379,7 +380,7 @@ class GoTest:
     skip: str = ""  # the pattern as the step writes it; skip_names reads the names out of it
     resolved: list[str] = field(default_factory=list)  # import paths
     # The variables the command's own line sets before it, and those a `-exec 'env NAME=value'`
-    # hands the test binary: GODEBUG=checkfinalizers=1 either way.
+    # hands the test binary, which is how the steps give it GODEBUG=checkfinalizers=1.
     env: dict[str, str] = field(default_factory=dict)
 
 
@@ -866,14 +867,14 @@ def go_command(line: str) -> tuple[list[str], str]:
     """The command a line runs, with the variables it sets before it and the wrapper it runs it
     under dropped: its words, and its text with those words removed.
 
-    A step writes `GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608
-    ../../.github/scripts/race_memory.py go test …`. Neither the variables nor the wrapper changes
-    which test functions the command runs, which is all the reader reads, so both are dropped and
-    what is left is the go command, or the gotestsum command that runs it. A value holding `$`, and
-    a wrapper GO_WRAPPERS does not name, are left where they are, so the caller refuses the line
-    rather than guessing. The text is cut word by word off the line itself, so the quoting of what
-    is left - a `-run` pattern above all - is the line's own. The variables themselves are
-    line_env's.
+    A step writes `env RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory
+    go test … -exec 'env GODEBUG=checkfinalizers=1' …` behind an xargs. Neither the variables nor
+    the wrapper changes which test functions the command runs, which is all the reader reads, so
+    both are dropped and what is left is the go command, or the gotestsum command that runs it. A
+    value holding `$`, and a wrapper GO_WRAPPERS does not name, are left where they are, so the
+    caller refuses the line rather than guessing. The text is cut word by word off the line
+    itself, so the quoting of what is left - a `-run` pattern above all - is the line's own. The
+    variables themselves are line_env's.
     """
     rest = line.strip()
     while True:

@@ -15,8 +15,8 @@
 # no pair list at all - so the rule answered nothing about any pair while
 # `RACE_MEM_LIMIT_KB=… race_memory.py go test …` stood in ci-job-envoy-go-race-docs.yaml and
 # ci-job-envoy-go-docs-finalizers.yaml, a job since deleted, held
-# `GODEBUG=checkfinalizers=1 go test …`; both now stand on the race-docs line, which the case
-# below reads.
+# `GODEBUG=checkfinalizers=1 go test …`; the detector now stands on the race-docs line as go
+# test's `-exec 'env GODEBUG=checkfinalizers=1'`, which the case below reads.
 #
 # The module is imported from the directory it lives in, the way check-ci-filters.sh imports its
 # own (PYTHONPATH, no bytecode), so the code under test is the file a person runs. It needs a
@@ -60,14 +60,24 @@ line='go test -count=1 ./internal/dispatch/docs/'
 check "its words are the command's" "$(is "$(command_of "$line")" "go test -count=1 ./internal/dispatch/docs/")"
 check "its text is the line" "$(is "$(text_of "$line")" "$line")"
 
-echo "case: a variable set before the command (the cleanup detector)"
-line='GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 29m ./internal/dispatch/docs/'
+echo "case: a variable set before the command"
+line='GO_TEST_RETRY=off go test -v -count=1 -timeout 29m ./internal/dispatch/docs/'
 check "the variable is dropped" "$(is "$(command_of "$line")" "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/")"
 check "the text begins at go" "$(is "$(text_of "$line")" "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/")"
 
-echo "case: two variables and the memory wrapper (the race-docs lane, under the cleanup detector)"
-line='GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/'
-check "all three are dropped" "$(is "$(command_of "$line")" "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")"
+echo "case: the cleanup detector rides on -exec, and its value is no package"
+line="go test -count=1 -exec 'env GODEBUG=checkfinalizers=1' -timeout 10m -run '^(TestOne|TestTwo)\$' ./internal/dispatch/docs"
+check "the line is the command, with nothing dropped" "$(is "$(text_of "$line")" "$line")"
+check "the -exec value is no package, and -run and the package are read past it" \
+  "$(is "$(py 'step = ex.Step(workflow="(a test case)", job="(a job)", name="(a step)", workdir="packages/envoy", script="")
+command = ex.parse_go_test(step, sys.argv[1], [])
+print(" ".join(command.packages), command.run)' "$line")" \
+    "./internal/dispatch/docs ^(TestOne|TestTwo)\$")"
+
+echo "case: the variable and the memory wrapper before the command, and the detector on -exec (the race-docs lane)"
+line="env RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory go test -race -count=1 -exec 'env GODEBUG=checkfinalizers=1' -timeout 60m"
+check "the env, the variable, the wrapper and its option are dropped" \
+  "$(is "$(command_of "$line")" "go test -race -count=1 -exec 'env GODEBUG=checkfinalizers=1' -timeout 60m")"
 
 echo "case: more than one variable before the command"
 check "each is dropped" "$(is "$(command_of 'A=1 B=2 go test ./pkg')" "go test ./pkg")"
@@ -77,7 +87,7 @@ check "a deeper relative path is still the wrapper" \
   "$(is "$(command_of '../../../.github/scripts/race_memory.py go test ./pkg')" "go test ./pkg")"
 
 echo "case: a -run pattern keeps its quoting"
-line="GODEBUG=checkfinalizers=1 go test -run '^(TestOne|TestTwo)\$' ./pkg"
+line="GO_TEST_RETRY=off go test -run '^(TestOne|TestTwo)\$' ./pkg"
 check "the text keeps the quotes the line wrote" \
   "$(is "$(text_of "$line")" "go test -run '^(TestOne|TestTwo)\$' ./pkg")"
 
