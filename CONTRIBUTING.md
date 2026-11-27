@@ -8,7 +8,10 @@ The `AGENTS.md` at the root and beside most packages holds the rules for working
 - Write the pull request's title as a conventional commit subject:
   `main` takes squash merges through GitHub's merge queue, and the title becomes the commit's subject.
 
-- Add the label `full-ci` (every slow suite, which a pull request otherwise leaves to the merge queue) only before the approval of a change to `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, to check a fix for a slow-suite failure that took the pull request out of the queue, while a `ci_check` of the issue names a held-back job, or when a person asks; a `lane:<output>` label runs one slow suite instead, and `.github/ci-notes/ci.md` says when to take either off.
+- A pull request runs the fast checks, and the merge queue runs every slow suite before the change lands.
+  Add a `lane:<output>` label, which runs that one slow suite on the pull request, only for a need the pull request's body names: a `ci_check` of the issue names its job, a test only that suite runs is the change's proof, or the change fixes that suite's failure that took the pull request out of the queue.
+  Add `full-ci` (every slow suite) only before the approval of a change to `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, or when a person asks.
+  `.github/ci-notes/ci.md` says when to take either off.
 
 - A pull request labelled `priority` merges first: the `priority-conflicts` check fails any other pull request, and any merge group, that would conflict with one that is approved or in the merge queue.
   When it names one, wait for that pull request to merge, then merge `main` and resolve the conflict.
