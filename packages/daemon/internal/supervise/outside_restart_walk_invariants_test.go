@@ -61,7 +61,7 @@ func (w *outsideWalk) check() {
 	w.t.Helper()
 	h := w.h
 	c, stored := h.claim(), h.store.load(h.token)
-	budgets, storedBudgets := c.Budgets, stored.Budgets
+	budgets, storedBudgets := beyond(c.Budgets, w.base), beyond(stored.Budgets, w.base)
 	if w.reads > 0 {
 		budgets.PromptFailures, storedBudgets.PromptFailures = 0, 0
 	}
@@ -85,7 +85,7 @@ func (w *outsideWalk) check() {
 		w.fail("the claim carries budgets %+v, want no prompt failure charged while no read found its process running", c.Budgets)
 	case c.ProcessGone && h.armed(TimerTurn):
 		w.fail("TimerTurn is armed over a process reported gone, want it disarmed")
-	case !w.lost && !w.diedFirst && (c.Budgets != Budgets{} || stored.Budgets != Budgets{}):
+	case !w.lost && !w.diedFirst && (budgets != Budgets{} || storedBudgets != Budgets{}):
 		w.fail("the claim carries budgets %+v (%+v stored), want nothing charged for an end from outside the pod or a displacement that no restart lost the record of",
 			c.Budgets, stored.Budgets)
 	case !atMostDeaths(budgets, w.judged) || !atMostDeaths(storedBudgets, w.judged):
@@ -93,7 +93,7 @@ func (w *outsideWalk) check() {
 			c.Budgets, stored.Budgets, w.judged)
 	case e.Tells() && (e.Turn || e.TaskTurn) && !w.cutAts[e.At.UnixNano()]:
 		w.fail("the claim's record %+v tells a turn cut off, want none told where no end cut one off", e)
-	case e.Generation == w.generation && w.judgedCause != "" && e.Cause != "" && e.Cause != w.judgedCause:
+	case e.Generation == w.generation && w.judgedCause != "" && e.Cause != "" && e.Cause != w.judgedCause && e.Cause != w.earlierCause:
 		w.fail("the claim's record %+v holds the cause %q, want the cause of the end that first judged the launch, %q",
 			e, e.Cause, w.judgedCause)
 	case c.Generation == w.generation && c.Locator != nil &&
@@ -101,17 +101,38 @@ func (w *outsideWalk) check() {
 		w.fail("the claim's record %+v is not typed as the judgement that first judged the launch, %q", e, w.judgedCause)
 	case w.judgedAfterRead && e.Generation == w.generation && e.Told && e.ToldBy == "":
 		w.fail("the claim's record %+v of the end judged after a read is told by no delivery, want it told to the relaunched role", e)
-	case w.alive && (e.Tells() || stored.EndedWork.Tells()):
+	case w.alive && (e.Tells() && e.Generation == w.generation || stored.EndedWork.Tells() && stored.EndedWork.Generation == w.generation):
 		w.fail("the claim's record %+v (%+v stored) tells while the process a read found running lives, want no end told that did not happen",
 			e, stored.EndedWork)
 	}
+	// The earlier launch's record is told where a confirmation told it, and untold again where a
+	// let-go takes that telling back, so a death's record joins it and keeps it (EndedWork.Earlier,
+	// untellInFlight). A record of another end that replaced it told leaves it told.
+	switch {
+	case w.earlierCause == "":
+	case e.Cause == w.earlierCause:
+		w.earlierTold = e.Told && e.ToldBy != ""
+	case e.Earlier != nil && e.Earlier.Cause == w.earlierCause:
+		w.earlierTold = false
+	}
 	prompts := h.prompts()
 	for _, p := range prompts[min(w.seen, len(prompts)):] {
+		// A prompt may tell the earlier launch's end, which is real, and no other. The task
+		// the death took back goes behind that end's task instruction and the sent-again
+		// sentence. The earlier end in this walk did not interrupt the task.
+		earlier := w.earlierCause != "" && strings.Contains(p.Message, w.earlierCause) && !strings.Contains(p.Message, diedWords)
+		behind := earlier && strings.HasSuffix(p.Message, "Then continue the task.\n\n"+sentAgainTask+owedTask)
+		if w.alive && p.DeliveryID == w.sentAgain && behind {
+			w.earlierSentAgain++
+		}
 		switch {
 		case !w.alive:
-		case tellsEnd(p.Message):
+		case w.earlierCause != "" && !w.earlierTold && !earlier:
+			w.fail("the process a read found running was sent %q, want the earlier launch's end it was never told told first: a false death erases nothing",
+				p.Message)
+		case tellsEnd(p.Message) && !earlier:
 			w.fail("the process a read found running was sent %q, want no end told to a process that has not ended", p.Message)
-		case p.DeliveryID == w.sentAgain && p.Message != sentAgainTask+owedTask:
+		case p.DeliveryID == w.sentAgain && p.Message != sentAgainTask+owedTask && !behind:
 			w.fail("the task the death took back went again to the process a read found running as %q, want it behind the one sentence of a task sent again",
 				p.Message)
 		case p.DeliveryID != w.sentAgain && strings.Contains(p.Message, sentAgainTask):
@@ -134,6 +155,13 @@ func (w *outsideWalk) check() {
 func tellsEnd(message string) bool {
 	return strings.Contains(message, "ended because") || strings.Contains(message, "interrupted") ||
 		strings.Contains(message, outOfMemoryGuidance)
+}
+
+// beyond is b less base, each count apart: what the walk charged beyond the death of an earlier
+// launch the claim stood over (standEarlier).
+func beyond(b, base Budgets) Budgets {
+	return Budgets{LaunchFailures: b.LaunchFailures - base.LaunchFailures, Deaths: b.Deaths - base.Deaths,
+		PromptFailures: b.PromptFailures - base.PromptFailures, PromptRetires: b.PromptRetires - base.PromptRetires}
 }
 
 // deathStands holds invariant 5's second half: once the claim holds a death of the ended launch

@@ -299,9 +299,14 @@ type sentences struct{ abandoned, ended bool }
 //     after a read found it running (EndedWork.SentAgain), says in one sentence that it is sent
 //     again because the daemon read the process wrongly as ended, and nothing of an end, a cause
 //     or a turn cut off (sentAgainTask): the process never ended, and the record of that death is
-//     told already, by no delivery (reportedProcess). It is that task's alone, and only while the
-//     record names the claim's launch: a task of another id never carries it, and the task's
-//     confirmation ends its sends under that id, so the next prompt carries none.
+//     told already, by no delivery, or gone (reportedProcess). Where the read put back an earlier
+//     launch's end that no prompt had carried yet (EndedWork.Earlier), that end's sentence and its
+//     out-of-memory note lead, exactly as they would have had the false death never happened, and
+//     the sentence of the task sent again follows them, since both are true: the earlier process
+//     ended, and this one did not. It is that task's alone, and only while the process it went to
+//     again lives: a task of another id never carries it, the task's confirmation ends its sends
+//     under that id, and every let-go of the process ends the mark (recordEnd), so the next prompt
+//     carries none.
 //
 // Composing a prompt tells nothing (confirmCarrying).
 //
@@ -347,11 +352,12 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if !relaunch && !d.RoundNamed && c.Role == claim.RoleReviewer {
 		text += reviewround.Sentences("", 0)
 	}
+	again := !relaunch && c.sentAgain(d)
 	var prefix string
 	if c.Abandoned.Tells() {
 		// The task's instruction ends the last sentence before the task, so the abandoned
 		// session's carries it only where no record's sentence follows it.
-		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells() && !c.sentAgain(d)), true
+		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells() && !again), true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
@@ -360,15 +366,16 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	switch {
 	case relaunch:
 		// Its text is the record's sentence already.
-	case c.sentAgain(d):
-		prefix += sentAgainTask
 	case c.EndedWork.Tells():
 		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork.inFrontOf(d), true)+"\n\n", true
-	case d.Interrupted && !oldTurn:
+	case d.Interrupted && !oldTurn && !again:
 		prefix += interruptedTask(c.EndedWork.Cause)
 	}
-	if d.Interrupted && d.OutOfMemory && !oldTurn {
+	if d.Interrupted && d.OutOfMemory && !oldTurn && (!again || carried.ended) {
 		prefix += outOfMemoryNote(c.EndedWork)
+	}
+	if again {
+		prefix += sentAgainTask
 	}
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
@@ -1975,10 +1982,11 @@ const sentAgainTask = "This task is sent to you again because the daemon wrongly
 
 // sentAgain is whether d is the task a death the daemon judged of the claim's process took back,
 // sent again to that process, which a read found running (EndedWork.SentAgain): the record names
-// d's id and the claim's launch. A task of another id, and the task once its confirmation ended
-// its sends, are not.
+// d's id. A task of another id, the task once its confirmation ended its sends, and the task once
+// the process is let go (recordEnd clears the mark) are not. The record can be an earlier
+// launch's end that the read put back (EndedWork.Earlier), so its launch says nothing here.
 func (c Claim) sentAgain(d Delivery) bool {
-	return c.EndedWork.SentAgain != "" && d.ID == c.EndedWork.SentAgain && c.EndedWork.Generation == c.Generation
+	return c.EndedWork.SentAgain != "" && d.ID == c.EndedWork.SentAgain
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
@@ -2165,12 +2173,21 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	doubt := m.confirmationInDoubt()
 	untold := m.untellInFlight()
 	stored := m.stored()
+	// Store the new id and the earlier task's marks with the new delivery so a restart
+	// can undo the take-back.
+	e := &stored.EndedWork
+	joinedDeath := e.Died && e.Generation == m.claim.Generation && e.Earlier != nil
+	if joinedDeath {
+		e.TookBack = next.ID
+		e.TookBackEarlierTask = e.Earlier.TaskTurn && p.Interrupted
+		e.TookBackEarlierOutOfMemory = e.TookBackEarlierTask && p.OutOfMemory
+	}
 	var handshakeMoved bool
 	if doubt {
 		stored.Handshake, handshakeMoved = m.claim.Handshake.unconfirmed(*p)
 	}
 	var err error
-	if untold || handshakeMoved {
+	if untold || handshakeMoved || joinedDeath {
 		err = m.putClaimAndDelivery(ctx, stored, next)
 	} else {
 		err = m.putDelivery(ctx, next)
@@ -2179,7 +2196,9 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		return err
 	}
 	*p = next
-	m.claim.Handshake = stored.Handshake
+	m.claim.Handshake, m.claim.EndedWork.TookBack = stored.Handshake, stored.EndedWork.TookBack
+	m.claim.EndedWork.TookBackEarlierTask = stored.EndedWork.TookBackEarlierTask
+	m.claim.EndedWork.TookBackEarlierOutOfMemory = stored.EndedWork.TookBackEarlierOutOfMemory
 	m.forgetOutstanding()
 	m.cutTurnOf = next.ID
 	return nil

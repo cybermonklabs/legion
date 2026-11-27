@@ -63,23 +63,33 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 	})
 
 	// Each judgement of a launch's end types its record (supervise.EndedWork's FromOutside, Died,
-	// Displaced and Outlived, with SentAgain, the task a running read sends again), and the
-	// judgement a later report or a restarted daemon routes by is that type: so the cause the role
-	// is told and the type the launch was judged under go into the column with the rest of the
-	// record and come back from it as they went in.
+	// Displaced and Outlived, with SentAgain, the task a running read sends again, TookBack, the
+	// id the take-back of a death whose record joined an earlier launch's gave the task, and
+	// Earlier, that earlier launch's record, still untold, which a running read puts back), and
+	// the judgement a later report or a restarted daemon routes by is that type: so the cause the
+	// role is told and the type the launch was judged under go into the column with the rest of
+	// the record and come back from it as they went in.
+	const memory = "the pod's roles container, which runs every role of this issue, was killed because it used " +
+		`more than its 8 GiB memory limit. The runtime's detail: "gone: OOMKilled"`
 	for _, row := range []struct {
 		name  string
 		ended supervise.EndedWork
 	}{
 		{"an end from outside the pod", supervise.EndedWork{At: at(6), Cause: "its pod was ended from outside it",
 			FromOutside: true, Generation: 3, Turn: true, TaskTurn: true, Reported: true}},
-		{"a death died judged", supervise.EndedWork{At: at(7), Cause: "the pod's roles container, which runs every role of this issue, was killed because it used " +
-			`more than its 8 GiB memory limit. The runtime's detail: "gone: OOMKilled"`,
+		{"a death died judged", supervise.EndedWork{At: at(7), Cause: memory,
 			Death: runtime.DeathMemoryLimit, Died: true, Generation: 3, TaskTurn: true, Reported: true}},
 		{"a displacement, told already by no delivery", supervise.EndedWork{At: at(8), Cause: "its pod was replaced",
 			Displaced: true, Generation: 3, Told: true}},
 		{"a death a running read ended, its task sent again", supervise.EndedWork{At: at(9), Cause: `the process died: "not_recorded_process"`,
 			Outlived: true, SentAgain: "delivery-2", Generation: 3, Told: true}},
+		{"a death joined over an earlier launch's untold record", supervise.EndedWork{At: at(10), Cause: `the process died: "gone"`,
+			Died: true, TookBack: "delivery-3", TookBackEarlierTask: true, TookBackEarlierOutOfMemory: true,
+			Generation: 3, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"},
+			Earlier: &supervise.EndedWork{At: at(4), Cause: memory, Death: runtime.DeathMemoryLimit, Died: true,
+				Generation: 2, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true}}},
+		{"an earlier launch's untold record a running read put back, its task sent again", supervise.EndedWork{At: at(4), Cause: memory,
+			Death: runtime.DeathMemoryLimit, Died: true, SentAgain: "delivery-3", Generation: 2, TaskTurn: true, Reported: true}},
 	} {
 		t.Run("the record of "+row.name+" round-trips with its judgement's type", func(t *testing.T) {
 			ctx := context.Background()
@@ -93,7 +103,10 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 			sameClaim(t, got, want)
 			if e := got.EndedWork; e.Cause != row.ended.Cause || e.FromOutside != row.ended.FromOutside || e.Died != row.ended.Died ||
 				e.Displaced != row.ended.Displaced || e.Outlived != row.ended.Outlived || e.SentAgain != row.ended.SentAgain ||
-				e.Told != row.ended.Told || e.Generation != row.ended.Generation {
+				e.TookBack != row.ended.TookBack || e.Told != row.ended.Told || e.Generation != row.ended.Generation ||
+				(e.Earlier == nil) != (row.ended.Earlier == nil) ||
+				e.Earlier != nil && (e.Earlier.Cause != row.ended.Earlier.Cause || e.Earlier.Death != row.ended.Earlier.Death ||
+					e.Earlier.Generation != row.ended.Earlier.Generation || !e.Earlier.At.Equal(row.ended.Earlier.At)) {
 				t.Fatalf("the claim read back records %+v, want %+v: its cause and its judgement's type as written", e, row.ended)
 			}
 		})

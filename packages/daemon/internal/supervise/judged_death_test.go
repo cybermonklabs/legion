@@ -6,6 +6,7 @@ package supervise
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -678,5 +679,150 @@ func TestARunningReadTellsNothingOfTheDeathItEnded(t *testing.T) {
 			sends(t, h, next, StreamTurnStart{Claim: h.token}, StreamTurnEnd{Claim: h.token}, RequestDeliver{Claim: h.token, Task: next})
 			told(t, h)
 		})
+	}
+}
+
+// A false death erases nothing. An OOM kill cuts off launch G-1's task turn, with or without a
+// recorded memory limit. The relaunch G is sent the task behind that record's sentence. Before
+// the telling is certain, G is wrongly judged dead with a turn cut off, so that death's record
+// joins the earlier one (joined), which it keeps whole (EndedWork.Earlier), in the claim, in the
+// store and in a copy of the claim handed out of the machine (copyClaim); its relaunch is
+// refused, and a read finds G running, on the daemon that judged the death or after a restart.
+// The read puts the earlier record back, untold, and the death goes with all it added
+// (reportedProcess). In the first row the turn is the agent's own, which its busy answer to the
+// task said it was in (recordBusyTurn), so the task was never confirmed and the death took
+// nothing back: the turn's end sends G the task again behind G-1's end, told in its own words as
+// the end that interrupted the task's turn, and the note of the pod's memory, the marks G-1's
+// take-back left on the task. In the second the turn is the task's own, whose confirmation of the
+// prompt that carried the sentence the death takes back with the task (untellInFlight,
+// interrupted), naming the id it gives the task (EndedWork.TookBack). The read restores the
+// task's earlier interruption and memory marks, so that prompt reads the same as in the first
+// row, with the sent-again sentence after the memory guidance. In both, the turn that confirms
+// that prompt tells the record, and the next task goes as its text alone.
+//
+// Marking the joined record told whole fails every row: the prompt no longer carries G-1's
+// record. Reading a joined record's take-back by its turn and the task's marks fails the
+// busy-turn rows: a task the false death never took back gets the sent-again sentence.
+// Skipping the restoration of the earlier marks fails the task-turn rows: the prompt loses
+// its task-specific interruption and memory guidance. Restoring the memory mark from the death
+// kind instead of the task fails the rows with no recorded memory limit.
+func TestAFalseDeathErasesNoEarlierEndStillUntold(t *testing.T) {
+	const next = "the next task"
+	const oomDetail = "the pod's roles container was OOMKilled"
+	const memory = "the pod's roles container, which runs every role of this issue, was killed because it used more than its " +
+		`8 GiB memory limit. The runtime's detail: "gone: ` + oomDetail + `"`
+	const noLimit = `the process died: "gone: ` + oomDetail + `"`
+	const cut = "Your tool calls in flight were never answered. The daemon has no report of the background work of that turn. " +
+		"So the subagents and background jobs of that turn are gone. " +
+		"Every other subagent and background job that you started in that process is gone too. " +
+		"No result of that work will come to you. Your transcript does not say so. "
+	const interrupted = "Your previous turn on this task was interrupted. Your process ended because "
+	const instruction = "Before you do any of that work again, check what it already did. Then continue the task.\n\n"
+	const afterEarlierEnd = interrupted + memory + ". " + cut + instruction + outOfMemoryGuidance
+	taskTurn := func(h *harness, _ fake.Prompt) { h.must(StreamTurnStart{Claim: h.token}) }
+	for _, row := range []struct {
+		name string
+		// turn puts G in a turn over the ready's prompt, which is its to answer.
+		turn func(h *harness, ready fake.Prompt)
+		// tookBack is whether the false death takes the task back, and want the whole text the
+		// task goes to G in after the read.
+		noLimit  bool
+		tookBack bool
+		want     string
+	}{
+		{name: "a turn the agent was in when its task came",
+			turn: func(h *harness, ready fake.Prompt) {
+				h.must(StreamPromptResult{Claim: h.token, DeliveryID: ready.DeliveryID, AgentInvoked: false, Error: busyAnswer})
+				h.must(StreamTurnStart{Claim: h.token})
+			},
+			want: afterEarlierEnd + owedTask},
+		{name: "the task's own turn, its prompt's result still to come", tookBack: true,
+			turn: taskTurn,
+			want: afterEarlierEnd + sentAgainTask + owedTask},
+		{name: "the task's own turn after an OOM kill with no recorded limit", tookBack: true, noLimit: true,
+			turn: taskTurn,
+			want: interrupted + noLimit + ". " + cut + instruction + outOfMemoryTask + sentAgainTask + owedTask},
+	} {
+		for _, restart := range []bool{false, true} {
+			name := row.name
+			if restart {
+				name += "; a restart before the read"
+			}
+			t.Run(name, func(t *testing.T) {
+				h := pacedHarness(t, wakeRate)
+				h.reach(StateWorking)
+				cause := runtime.DeathCause{Kind: runtime.DeathMemoryLimit, Limit: 8 << 30}
+				wantCause := memory
+				if row.noLimit {
+					cause, wantCause = runtime.DeathCause{}, noLimit
+				}
+				h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+					Detail: oomDetail, OutOfMemory: true, Cause: cause}})
+				earlier := h.claim().EndedWork
+				if !earlier.Tells() || earlier.Cause != wantCause || earlier.Death != cause.Kind {
+					t.Fatalf("G-1's death left %+v, want cause %q and kind %q", earlier, wantCause, cause.Kind)
+				}
+				h.advanceToTurn(h.m)
+				sent := len(h.prompts())
+				h.relaunched()
+				ready := h.wantPrompts(sent + 1)[sent]
+				row.turn(h, ready)
+
+				store := &unansweredCheckLaunchStore{memStore: h.store}
+				h.m.deps.Store = store
+				h.observe(runtime.Gone)
+				waiting := h.wantWaitingWake(WakeLaunch)
+				store.failing = true
+				h.advance(waiting.At.Sub(h.clock.Now()))
+				store.failing = false
+				handed := h.claim()
+				for whose, c := range map[string]Claim{"the claim": handed, "the store": h.store.load(h.token)} {
+					if e := c.EndedWork; !e.Died || e.Generation != c.Generation || !e.Turn || !e.Tells() || e.Earlier == nil ||
+						!reflect.DeepEqual(*e.Earlier, earlier) || (e.TookBack == c.Pending.ID) != row.tookBack ||
+						e.TookBackEarlierTask != row.tookBack || e.TookBackEarlierOutOfMemory != row.tookBack {
+						t.Fatalf("%s holds the record %+v over the task %+v after the false death, want it joined over G-1's, which it keeps whole, naming the task where it took it back",
+							whose, e, *c.Pending)
+					}
+				}
+				handed.EndedWork.Earlier.Cause = "a copy's"
+				if kept := h.claim().EndedWork.Earlier; kept.Cause != wantCause {
+					t.Fatalf("a copy of the claim shares G-1's record with the machine, which now holds %+v", *kept)
+				}
+				if restart {
+					h.restart()
+				}
+
+				readRunning(t, h)
+				sent = len(h.prompts())
+				h.must(StreamTurnEnd{Claim: h.token})
+				got := h.wantPrompts(sent + 1)[sent]
+				if got.Message != row.want {
+					t.Fatalf("after the read G was sent\n%q\nwant\n%q", got.Message, row.want)
+				}
+				for whose, c := range map[string]Claim{"the claim": h.claim(), "the store": h.store.load(h.token)} {
+					want := earlier
+					if row.tookBack {
+						want.SentAgain = got.DeliveryID
+					}
+					if !reflect.DeepEqual(c.EndedWork, want) {
+						t.Fatalf("%s holds the record %+v after the read, want G-1's put back, untold: %+v", whose, c.EndedWork, want)
+					}
+					if p := c.Pending; p == nil || !p.Interrupted || !p.OutOfMemory {
+						t.Fatalf("%s holds task %+v, want G-1's interruption and memory marks", whose, p)
+					}
+				}
+
+				h.must(StreamTurnStart{Claim: h.token})
+				if e := h.claim().EndedWork; e.Tells() || e.ToldBy != got.DeliveryID {
+					t.Fatalf("the turn of the task left the record %+v, want it told by %s", e, got.DeliveryID)
+				}
+				sent = len(h.prompts())
+				h.must(StreamTurnEnd{Claim: h.token})
+				h.must(RequestDeliver{Claim: h.token, Task: next})
+				if again := h.wantPrompts(sent + 1)[sent].Message; again != next {
+					t.Fatalf("G's next task went as %q, want its text alone", again)
+				}
+			})
+		}
 	}
 }
