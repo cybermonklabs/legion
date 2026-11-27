@@ -26,16 +26,18 @@ source "$script_dir/test-lib.sh"
 # ci_citations.py refuses wherever it stands under .github.
 colon=':'
 
-# fixture <name>: a tree with the check linked in and a ci.yaml whose one job calls ci-job-unit.yaml,
-# the file each case writes its job into. Echoes its root.
+# fixture <name>: a tree with the check linked in, a copy of the repository's upload action (which
+# rule 8 reads), and a ci.yaml whose one job calls ci-job-unit.yaml, the file each case writes its
+# job into. Echoes its root.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
     echo "  FAIL: the fixture name '$1' is already taken by an earlier case" >&2
     return 1
   fi
-  mkdir -p "$root/.github/scripts" "$root/.github/workflows"
+  mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/actions/go-test-events-upload"
   ln -s "$check_script" "$root/.github/scripts/check-workflow-files.sh"
+  cp "$script_dir/../actions/go-test-events-upload/action.yml" "$root/.github/actions/go-test-events-upload/"
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
 name: CI
 on: pull_request
@@ -388,6 +390,17 @@ cond_job() {
   cond_job one-unconditional 'always()' '' 'matrix.leg == 3'
   cond_job status-checks 'always()' 'success()' "\${{ !cancelled() }}"
   cond_job narrower "always() && inputs.unit == 'true' && inputs.slow == 'true'" "inputs.unit == 'true'"
+  # A status check joined to a condition of the step's own: success() and !cancelled() hold when
+  # the step starts and may not once it has failed or the run was cancelled, so the upload drops
+  # them; failure() stays true once it holds, so the upload keeps it.
+  cond_job success-and "always() && success() && inputs.x == 'true'" "success() && inputs.x == 'true'"
+  cond_job success-and-kept "always() && inputs.x == 'true'" "success() && inputs.x == 'true'"
+  cond_job success-after-kept "always() && inputs.x == 'true'" "inputs.x == 'true' && success()"
+  cond_job not-cancelled-and "\${{ always() && !cancelled() && inputs.x == 'true' }}" "\${{ !cancelled() && inputs.x == 'true' }}"
+  cond_job not-cancelled-and-kept "always() && inputs.x == 'true'" "\${{ !cancelled() && inputs.x == 'true' }}"
+  cond_job failure-and-kept "always() && failure() && inputs.x == 'true'" "failure() && inputs.x == 'true'"
+  cond_job status-or 'always()' "success() || inputs.x == 'true'"
+  cond_job status-nested 'always()' "inputs.x == 'true' && (success() || failure())"
 } > "$root/.github/workflows/ci-job-unit.yaml"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
@@ -399,12 +412,41 @@ check "refuses a shared condition holding || joined without parentheses, which &
   "$(contains "$out" "job either-input runs go test .* with \`if: always() && (inputs.a == 'true' || inputs.b == 'true')\`")"
 check "refuses an upload narrower than its go test step, which a run that ran it could skip" \
   "$(contains "$out" "job narrower runs go test .* with \`if: always() && inputs.unit == 'true'\`")"
-check "control: passes the condition it names, bare, parenthesized or in \${{ }}, always() beside an unconditional step, and status checks as unconditional" \
+check "refuses an upload that keeps the step's success(), which skips it when the go test step failed" \
+  "$(contains "$out" "job success-and runs go test .* with \`if: always() && inputs.x == 'true'\`")"
+check "and one that keeps the step's !cancelled(), which skips it when the run was cancelled" \
+  "$(contains "$out" "job not-cancelled-and runs go test .* with \`if: always() && inputs.x == 'true'\`")"
+check "refuses a go test step whose if: holds a status check outside a term of its own, naming the term" \
+  "$(contains "$out" "step 1 of job status-or (Tests 1) runs go test, and its \`if: success() || inputs.x == 'true'\` holds a status check in a term rule 8 cannot read (\`success() || inputs.x == 'true'\`)")"
+check "  and one nested in a term" \
+  "$(contains "$out" "step 1 of job status-nested (Tests 1) runs go test, and its \`if: inputs.x == 'true' && (success() || failure())\` holds a status check in a term rule 8 cannot read (\`(success() || failure())\`)")"
+check "control: passes the condition it names, bare, parenthesized or in \${{ }}, always() beside an unconditional step, status checks as unconditional, success() or !cancelled() dropped, before or after, and failure() kept" \
   "$(is "$(contains "$out" 'job [a-z-]*-kept\|job only-conditional-parenthesized\|job one-unconditional\|job status-checks')" false)"
-check "refuses those four and nothing else" "$(contains "$out" '^4 problem(s) across the 2 workflow file(s) under .github/workflows$')"
-action="$script_dir/../actions/go-test-events-upload/action.yml"
-check "and the action's own upload runs under always() and fails on no file, so a run whose go test ran and kept none is red" \
-  "$( { grep -q '^      if: always()$' "$action" && grep -q '^        if-no-files-found: error$' "$action"; } && echo true || echo false)"
+check "refuses those eight and nothing else" "$(contains "$out" '^8 problem(s) across the 2 workflow file(s) under .github/workflows$')"
+
+# The upload action's own step runs under the action's always(), since a step of a composite action
+# with no status check runs under success() and would be skipped exactly when a go test step of the
+# job had failed; and it fails on no file, so a run whose go test ran and kept none is red.
+echo "case: the action every go test job's upload runs is held to always() and if-no-files-found: error"
+root=$(fixture events-upload-action)
+unit_job "$root" <<YAML
+    steps:
+      - name: Unit tests
+        id: unit
+        run: .github/scripts/go_test_events.py go test -count=1 ./a
+$upload_step
+YAML
+run_check "$root"
+check "control: the repository's own action passes" "$(is "$status" 0)"
+action="$root/.github/actions/go-test-events-upload/action.yml"
+python3 -c 'import sys, pathlib; p = pathlib.Path(sys.argv[1]); s = p.read_text(); assert s.count("      if: always()\n") == 1 and s.count("        if-no-files-found: error\n") == 1
+p.write_text(s.replace("      if: always()\n", "").replace("        if-no-files-found: error\n", "        if-no-files-found: warn\n"))' "$action"
+run_check "$root"
+check "an action whose upload step has no if: runs it under success(), and is refused" \
+  "$(contains "$out" "go-test-events-upload/action.yml${colon}[0-9]*: the action.s upload step runs under \`success()\`, not \`always()\`")"
+check "and so is one that only warns on no file" \
+  "$(contains "$out" "the action.s upload step has \`if-no-files-found: warn\`, and rule 8 holds it to \`if-no-files-found: error\`")"
+check "refuses those two and nothing else" "$(contains "$out" '^2 problem(s) across the 2 workflow file(s) under .github/workflows$')"
 
 echo "case: control: go test run by a shell's heredoc, quoted, by source, with no suffix, from the workflow's directory, with -c=false, or with no upload, is refused"
 root=$(fixture events-bare-more)
@@ -905,9 +947,9 @@ wrapper_case sudo sudo \
   'sudo --chdir /tmp -- go test -count=1 ./c'
 wrapper_case xargs xargs \
   'go list ./... | xargs -n1 go test -count=1' \
-  'go list ./... | xargs -n 1 -P 4 go test -count=1' \
+  'go list ./... | xargs -n 1 -P 1 go test -count=1' \
   'go list ./... | xargs -0 -r -I {} go test -count=1 {}' \
-  'go list ./... | xargs --max-args=1 --max-procs 4 -t go test -count=1' \
+  'go list ./... | xargs --max-args=1 --max-procs 1 -t go test -count=1' \
   'go list ./... | xargs -i go test -count=1 {}'
 wrapper_case kept-places "env, find's -exec, a stack of wrappers, and nohup and setsid" \
   'env -u GOFLAGS GOWORK=off go test -count=1 ./d' \
@@ -958,7 +1000,11 @@ mkdir -p "$root/scripts" && printf '%s\n' '#!/usr/bin/env bash' 'go test -count=
 wrapped_job "$root" "" \
   'stdbuf -oL .github/scripts/go_test_events.py go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./a' \
   "eval 'go test -count=1 ./a'" 'python3 -c "import os, sys; os.execvp(sys.argv[1], sys.argv[1:])" go test -count=1 ./a' \
-  'stdbuf -oL scripts/unit.sh' 'stdbuf -oL make lint' 'eval "$(printf true)"'
+  'stdbuf -oL scripts/unit.sh' 'stdbuf -oL make lint' 'eval "$(printf true)"' \
+  '/usr/bin/python3 -c "import os, sys; os.execvp(sys.argv[1], sys.argv[1:])" go test -count=1 ./a' \
+  'python3 -X dev -c "import os, sys; os.execvp(sys.argv[1], sys.argv[1:])" go test -count=1 ./a' \
+  'python3.12 -c "import os, sys; os.execvp(sys.argv[1], sys.argv[1:])" go test -count=1 ./a' \
+  'python3 -m json.tool -c go test -count=1 ./a'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "refuses a go test behind stdbuf, the writer before it or not" \
@@ -967,7 +1013,52 @@ check "and one in the string eval runs" "$(contains "$out" 'step 2 of job unit (
 check "and one python3 -c runs" "$(contains "$out" 'step 3 of job unit (Step 3) runs `python3 -c` on a line that names go test')"
 check "and a script that runs go test, behind stdbuf" "$(contains "$out" 'step 4 of job unit (Step 4) runs `stdbuf` on a line that names go test or a script that runs one (`stdbuf -oL scripts/unit.sh`)')"
 check "control: stdbuf and eval on a line that names no go test are no fault" "$(is "$(contains "$out" 'step [56] of job unit')" false)"
-check "refuses those four and nothing else" "$(contains "$out" '^4 problem(s) across the 2 workflow file(s) under .github/workflows$')"
+check "and python -c named by a path" "$(contains "$out" 'step 7 of job unit (Step 7) runs `/usr/bin/python3 -c` on a line that names go test')"
+check "after an option that takes a value" "$(contains "$out" 'step 8 of job unit (Step 8) runs `python3 -X dev -c` on a line that names go test')"
+check "and under a minor version's name" "$(contains "$out" 'step 9 of job unit (Step 9) runs `python3.12 -c` on a line that names go test')"
+check "refuses those seven, and the -c a module run by -m takes is the module's" \
+  "$(contains "$out" '^7 problem(s) across the 2 workflow file(s) under .github/workflows$')"
+
+# A go test that can run while another go test of its step does, or as itself: every go test of a
+# step appends to the step's one events file, and a writer whose write fails cuts the file back to
+# what it held before its own run, which would take another run's events with it.
+echo "case: a go test that can run at the same time as another go test of its step, or as itself, is refused"
+root=$(fixture events-crowded)
+mkdir -p "$root/scripts" && printf '%s\n' '#!/usr/bin/env bash' '.github/scripts/go_test_events.py go test -count=1 ./k' > "$root/scripts/unit.sh"
+w=.github/scripts/go_test_events.py
+wrapped_job "$root" "" \
+  "$w go test -count=1 ./a & pid=\$!; $w go test -count=1 ./b; wait \"\$pid\"" \
+  "go list ./... | xargs -P 4 $w go test -count=1" \
+  "go list ./... | xargs --max-procs=4 $w go test -count=1" \
+  ".github/scripts/harness-pool.sh start unit $w go test -count=1 ./c; .github/scripts/harness-pool.sh start other $w go test -count=1 ./d" \
+  "scripts/unit.sh & pid=\$!; $w go test -count=1 ./e; wait \"\$pid\"" \
+  "$w go test -count=1 ./f & wait \$!" \
+  "go list ./... | xargs -P 1 $w go test -count=1" \
+  "$w go test -count=1 ./g; $w go test -count=1 ./h" \
+  ".github/scripts/harness-pool.sh start unit $w go test -count=1 ./i" \
+  "bash -c '$w go test -count=1 ./j' & pid=\$!; $w go test -count=1 ./l; wait \"\$pid\"" \
+  "go list ./... | xargs -P 4 bash -c '$w go test -count=1 \"\$@\"' _"
+printf '      - name: Wait for the pool\n        if: ${{ !cancelled() }}\n        run: exec .github/scripts/harness-pool.sh wait\n' \
+  > "$root/wait-step"
+python3 -c 'import sys, pathlib; p = pathlib.Path(sys.argv[1]); s = p.read_text(); marker = "      - name: Upload the "; assert s.count(marker) == 1
+p.write_text(s.replace(marker, pathlib.Path(sys.argv[2]).read_text() + marker))' "$root/.github/workflows/ci-job-unit.yaml" "$root/wait-step"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses a backgrounded go test beside another, though it is waited for" \
+  "$(contains "$out" "step 1 of job unit (Step 1) runs \`[^\`]* ./a\` where it can run at the same time as another go test of the step")"
+check "and a go test xargs -P runs many times at once" "$(contains "$out" "step 2 of job unit (Step 2) runs \`[^\`]*go test -count=1\` where it can run at the same time")"
+check "  and --max-procs" "$(contains "$out" "step 3 of job unit (Step 3) runs \`[^\`]*go test -count=1\` where it can run at the same time")"
+check "and two go tests the harness pool queues in one step" \
+  "$(contains "$out" "step 4 of job unit (Step 4) runs \`[^\`]* ./c\`, \`[^\`]* ./d\` where it can run at the same time")"
+check "and a script that runs one, in the background beside another" \
+  "$(contains "$out" "step 5 of job unit (Step 5) runs scripts/unit.sh, which runs \`[^\`]* ./k\` (scripts/unit.sh:2) where it can run at the same time")"
+check "and a go test a bash -c string runs in the background beside another" \
+  "$(contains "$out" "step 10 of job unit (Step 10) runs \`[^\`]* ./j\` where it can run at the same time")"
+check "and one a bash -c string runs that xargs -P runs many times at once" \
+  "$(contains "$out" "step 11 of job unit (Step 11) runs \`[^\`]*go test -count=1 \"\$@\"\` where it can run at the same time")"
+check "control: one backgrounded go test waited for, xargs -P 1, two go tests one after the other and one pooled go test are no fault" \
+  "$(is "$(contains "$out" 'step [6789] of job unit')" false)"
+check "refuses those seven and nothing else" "$(contains "$out" '^7 problem(s) across the 2 workflow file(s) under .github/workflows$')"
 
 echo "case: control: a wrapper's name as another command's argument, a wrapper's --help or --version, and sudo -l run nothing"
 root=$(fixture events-wrapper-words)
@@ -1029,7 +1120,7 @@ check "and so does a CI_FILTERS_FILE that is not there" "$(contains "$out" "UNKN
 printf 'ci_filters:\n  added|modified:\n    - ".github/workflows/**"\n    - "packages/envoy/**"\n    - "packages/*/scripts/**"\n' \
   > "$root/change-type.yaml"
 run_check "$root" "$root/change-type.yaml"
-check "a filter written in the change-type form holds its patterns, as the filter engine's flatten reads them" \
+check "a filter written in the change-type form holds its patterns, as workflow_paths.flatten reads them" \
   "$(contains "$out" 'run, and each of the 3 script(s) it read is one the ci_filters filter selects$')"
 printf 'ci_filters:\n  added|modified:\n    - ".github/workflows/**"\n    - "packages/envoy/**"\n' > "$root/change-type-narrow.yaml"
 run_check "$root" "$root/change-type-narrow.yaml"
@@ -1140,6 +1231,12 @@ control opaque go_test_steps.py '    runner = opaque(line)' '    runner = ""' '*
 check "control: reading no line behind a runner it cannot read, it fails, and no row excuses it" "$(is "$status" 1)"
 check "naming the bare form behind stdbuf" \
   "$(contains "$out" '^UNLISTED run/stdbuf/go (bare): bare, step(s) 1 not refused as behind a runner rule 8 cannot read')"
+control python-spellings go_test_shell.py 'python(?:3(?:\.\d+)?)?(?:\s+{PYTHON_OPTION})*' 'python3?' '*/python3-c-[mo]*/go'
+check "control: reading python -c under its plain name alone, it fails" "$(is "$status" 1)"
+check "naming the form under a minor version's name" \
+  "$(contains "$out" '^UNLISTED run/python3-c-minor/go (bare): bare, step(s) 1 not refused as behind a runner rule 8 cannot read')"
+check "and the form after an option that takes a value" \
+  "$(contains "$out" '^UNLISTED run/python3-c-option/go (bare): bare, step(s) 1 not refused as behind a runner rule 8 cannot read')"
 # oracle_control <name> <text> <replacement> <forms>: a copy of the generator whose own <text> is
 # replaced once, over <forms>, read by this tree's rule 8: a control of what the generator measures.
 oracle_control() {

@@ -941,6 +941,26 @@ check "and whose appended reads the new file carries" "$(contains "$out" '^tail 
 check "a rename over a file main left alone moves it" "$(contains "$out" '^deleted .github/ci-gates/k.f1.py, a gate the branch renamed$')"
 check "  and the old file is gone" "$(contains "$out" '^k.f1 gone$')"
 
+# write_excluded, which main() runs under --all, and in a merge for an excluded filter the branch
+# added, after convert_rows and write_gates have written their files: it reads the old filters
+# file's patterns with workflow_paths.flatten, the change-type form among them.
+echo "case: the converter writes an excluded filter's gate file from the old filters file"
+root=$(fixture convert-write-excluded)
+rm "$root/.github/ci-gates/image.py"
+out=$(convert "$root" "
+import pathlib
+report = []
+cv.write_excluded({'excluded': {'image': 'an image build another check proves'}},
+                  'image:\n  added|modified:\n    - docs/**\n  deleted: fixtures/**\n', report)
+print('\n'.join(report))
+print(pathlib.Path('.github/ci-gates/image.py').read_text())
+")
+check "writes the job's file" "$(contains "$out" '^wrote .github/ci-gates/image.py$')"
+check "with each of the old file's patterns, the change-type form flattened" \
+  "$(is "$(grep -c "^    'docs/\*\*',$\|^    'fixtures/\*\*',$" <<<"$out")" 2)"
+check "under the filter's own name and reason" \
+  "$(contains "$out" "^EXCLUDED = excluded('image', 'an image build another check proves', \[$")"
+
 echo "case: the converter keeps a deleted gate's file that main changed"
 root=$(fixture convert-delete)
 out=$(convert "$root" "
@@ -5369,12 +5389,8 @@ def json_reads(root):
 filters = yaml.load(Path(sys.argv[1]).read_text(), Loader=wp.UniqueKeyLoader)
 
 
-def flat(entry):
-    return [entry] if isinstance(entry, str) else [p for x in entry for p in flat(x)]
-
-
 def covers(name, path):
-    return wp.Filter(flat(filters[name])).covers(path)
+    return wp.Filter(wp.flatten(filters[name])).covers(path)
 
 
 root = Path(sys.argv[2])
@@ -5413,10 +5429,9 @@ echo "case: a change to a script alone that a step reaches starts the ci-filters
 script_selects() {
   (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c '
 import sys, yaml
-from workflow_paths import PathsFilter
-flat = lambda v: [v] if isinstance(v, str) else [p for i in v for p in flat(i)] if isinstance(v, list) else []
+from workflow_paths import PathsFilter, flatten
 drop = set(sys.argv[2].split()) if sys.argv[2] != "-" else set()
-chosen = PathsFilter([p for p in flat(yaml.safe_load(open(sys.argv[1]))["ci_filters"]) if p not in drop], "some-with-excludes")
+chosen = PathsFilter([p for p in flatten(yaml.safe_load(open(sys.argv[1]))["ci_filters"]) if p not in drop], "some-with-excludes")
 print(" ".join("yes" if chosen.covers(path) else "no" for path in sys.argv[3:]))
 ' "$real_filters" "$@")
 }

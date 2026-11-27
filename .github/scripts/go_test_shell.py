@@ -12,13 +12,7 @@ from __future__ import annotations
 
 import re
 
-from workflow_paths import EVENTS_WRITER, EVENTS_WRITER_WORD
-
-# The writer is named as every reader of a go test step names it (workflow_paths.EVENTS_WRITER_WORD:
-# its repository path at the end of the word, whatever directory a step puts before it, `../../`
-# or a variable's `"$envoy/../../"`), quoted or not; race_memory.py may stand between it and the go
-# test it samples, since it appends what it reads to the file the writer names.
-WRITER = EVENTS_WRITER
+from workflow_paths import EVENTS_WRITER_WORD
 
 # Where a shell word stands as the command it runs, the one grammar of this rule (COMMAND_PLACE):
 # a command's start, then any run of the reserved words a command may stand after (RESERVED), then
@@ -112,7 +106,10 @@ EVENTS_PLACE = COMMAND_PLACE + POOLED + rf"(?:(?:{ASSIGNMENT}|{REDIRECT}|{PREFIX
 DIRNAME = r"\$\(dirname\b(?:[^()\"'`]|\"[^\"]*\"|'[^']*')*\)"
 WORD = rf"(?P<arg>[\"']?(?P<word>(?:{DIRNAME}|[^\s\"';&|()`])+)[\"']?)"
 # The writer, run as a command or by python3, with race_memory.py (which runs the command it is
-# handed and appends what it reads to the writer's file) after it or not.
+# handed and appends what it reads to the writer's file) after it or not. The writer is named as
+# every reader of a go test step names it (workflow_paths.EVENTS_WRITER_WORD: its repository path at
+# the end of the word, whatever directory a step puts before it, `../../` or a variable's
+# `"$envoy/../../"`), quoted or not.
 PATH_WORD = r"[\"']?[^\s\"';&|()]*"
 SAMPLER = rf"(?:{PATH_WORD}race_memory\.py[\"']?\s+)?"
 WRAPPER = rf"(?:python3?\s+)?[\"']?{EVENTS_WRITER_WORD}[\"']?\s+{SAMPLER}"
@@ -185,16 +182,20 @@ VARIABLE = re.compile(r"\"?\$\{?(?P<name>[A-Za-z_]\w*)(?:\[@\])?\}?\"?")
 NAMED = re.compile(r"(?<![\w${!#])[A-Za-z_]\w*(?![\w=+\[])")
 # The runners whose command no reading of the step can follow (opaque): eval, which runs a string
 # the shell builds; coproc; flock, stdbuf, ionice and taskset, which run the command after options
-# this reading does not read; python3 -c, a program in another language; and a shell that reads its
-# script from a here-string (`bash <<<`) or a pipe (`| bash`, PIPED_SHELL). A line that runs one at a
-# command's place and names a go test anywhere in its text (NAMED_GO_TEST, quoted or not), or names
-# a script that runs one in a word of its own (line_words), is refused by go_test_steps.py: whether
-# that go test keeps its events is no reading's to say. A go test such a runner takes from what the
-# line does not spell out (`eval "$cmd"`, cmd set on another line) is not seen, and
-# .github/go-test-step-misses.tsv says so of each.
+# this reading does not read; python -c, a program in another language, its interpreter named
+# `python`, `python3` or `python3.<minor>` with a directory before it or not, and after any of its
+# options (a cluster of the letters that take no value, `-W` or `-X` and its value, or
+# `--check-hash-based-pycs` and its value; `-m` runs a module and ends them, as `-c` does); and a
+# shell that reads its script from a here-string (`bash <<<`) or a pipe (`| bash`, PIPED_SHELL). A
+# line that runs one at a command's place and names a go test anywhere in its text (NAMED_GO_TEST,
+# quoted or not), or names a script that runs one in a word of its own (line_words), is refused by
+# go_test_steps.py: whether that go test keeps its events is no reading's to say. A go test such a
+# runner takes from what the line does not spell out (`eval "$cmd"`, cmd set on another line) is
+# not seen, and .github/go-test-step-misses.tsv says so of each.
+PYTHON_OPTION = r"(?:-[bBdEhiIOPqsSuvVx]+|-[WX]\s*[^\s;&|()`]+|--check-hash-based-pycs\s+\S+)"
 OPAQUE = re.compile(COMMAND_PLACE + rf"(?P<runner>(?:eval|coproc)(?![\w-])"
                     rf"|(?:[^\s\"';&|()`]*/)?(?:flock|stdbuf|ionice|taskset)(?![\w-])"
-                    rf"|python3?(?:\s+-[A-Za-z]+)*?\s+-[A-Za-z]*c(?=\s)"
+                    rf"|(?:[^\s\"';&|()`]*/)?python(?:3(?:\.\d+)?)?(?:\s+{PYTHON_OPTION})*\s+-[bBdEhiIOPqsSuvVx]*c(?=\s)"
                     rf"|(?:[^\s\"';&|()`]*/)?{SHELLS}(?:\s+{SHELL_OPTION})*\s*<<<)")
 PIPED_SHELL = re.compile(rf"\|&?\s*(?P<runner>(?:[^\s\"';&|()`]*/)?{SHELLS}(?:\s+{SHELL_OPTION})*)\s*(?=$|[;&|)])")
 NAMED_GO_TEST = re.compile(r"(?:^|(?<=[\s\"'`;&|()=]))(?:\"?\$\{?[A-Za-z_]\w*(?:\[@\])?\}?\"?|[^\s\"'`;&|()=]*/go[\"']?"
@@ -231,17 +232,21 @@ class Shell:
 class Line(str):
     """A logical line, and what tells whether a command on it runs detached: the Shell that runs
     it, whether that whole shell runs detached, the frames open at the line's start and those the
-    line opens, branches and closes (`events`, which frames_at() replays)."""
+    line opens, branches and closes (`events`, which frames_at() replays). `beside`: the shell that
+    runs the line runs beside the other commands of its step (a `bash -c` put in the background,
+    waited for or not); `many`: it runs many times at once (behind xargs -P other than 1)."""
 
     shell: Shell
     detached: bool
+    beside: bool
+    many: bool
     frames: tuple
     events: list
 
 
-def line_of(text: str, shell: Shell, detached: bool) -> Line:
+def line_of(text: str, shell: Shell, detached: bool, beside: bool = False, many: bool = False) -> Line:
     line = Line(text)
-    line.shell, line.detached, line.frames, line.events = shell, detached, (), []
+    line.shell, line.detached, line.beside, line.many, line.frames, line.events = shell, detached, beside, many, (), []
     return line
 
 
@@ -288,9 +293,9 @@ def detached_lines(lines: list[tuple[int, Line]], expands: bool, keep_parts: boo
         if expands:
             if keep_parts:
                 found += [(at, part) for found_part in SUBSTITUTION.findall(inner) + BACKQUOTED.findall(inner)
-                          for _, part in logical_lines(found_part, at - 1)]
+                          for _, part in logical_lines(found_part, at - 1, False, inner.beside, inner.many)]
             text = BACKQUOTED.sub(" ", SUBSTITUTION.sub(" ", inner))
-        found.append((at, line_of(text, inner.shell, True)))
+        found.append((at, line_of(text, inner.shell, True, inner.beside, inner.many)))
     return found
 
 
@@ -307,7 +312,8 @@ def continues(line: str) -> bool:
     return bool(match) and unquoted(text)[match.start()]
 
 
-def logical_lines(text: str, offset: int = 0, detached: bool = False) -> list[tuple[int, Line]]:
+def logical_lines(text: str, offset: int = 0, detached: bool = False, beside: bool = False,
+                  many: bool = False) -> list[tuple[int, Line]]:
     """A script's lines as the shell reads them: each with the backslash continuations after it
     joined on, the lines after it while a quoted string it opens is open, and the line after one
     whose list goes on with it (continues), comments and blank lines aside, with the number of its
@@ -317,7 +323,8 @@ def logical_lines(text: str, offset: int = 0, detached: bool = False) -> list[tu
     not at all when it is text (`cat <<'EOF'`). The script a shell takes as a string, env -S's
     string and a heredoc a shell takes follow the line that holds them, as lines of a shell of
     their own (expansions); a shell whose options let it run none (shell_runs) hands none.
-    `detached`: the shell that runs the text runs detached."""
+    `detached`: the shell that runs the text runs detached; `beside` and `many`: it runs beside the
+    other commands of its step, or many times at once (Line)."""
     shell, top, pending, first, heredoc, body = Shell(), [], "", 0, None, []
     for number, raw in enumerate(text.splitlines(), start=offset + 1):
         if heredoc is not None:
@@ -341,7 +348,7 @@ def logical_lines(text: str, offset: int = 0, detached: bool = False) -> list[tu
         pending = ""
         if not joined:
             continue
-        line = line_of(joined, shell, detached)
+        line = line_of(joined, shell, detached, beside, many)
         entry = [first, line, None]
         top.append(entry)
         opened = HEREDOC.search(line.replace("<<<", "   "))
@@ -351,7 +358,7 @@ def logical_lines(text: str, offset: int = 0, detached: bool = False) -> list[tu
             mode = "script" if runner else "text" if opened.group("quote") else "substitutions"
             heredoc = (opened.group("delimiter"), entry, mode, number, not opened.group("quote"), opened.start(), runner)
     if pending.strip():
-        top.append([first, line_of(pending.strip(), shell, detached), None])
+        top.append([first, line_of(pending.strip(), shell, detached, beside, many), None])
     scan_frames([line for _, line, _ in top])
     found = []
     for index, (number, line, here) in enumerate(top):
@@ -382,9 +389,10 @@ def expansions(number: int, line: Line, here: tuple | None, later: list[tuple[in
             found += nested(line, runner.start(), runner.start("shell"), body, start, expands, later, True)
         elif mode == "substitutions":
             background = line.detached or background_unwaited(line, opened, later)
+            alongside = runs_beside(line, opened)
             for at, raw in enumerate(body.split("\n"), start=start + 1):
                 for part in SUBSTITUTION.findall(raw) + BACKQUOTED.findall(raw):
-                    found += logical_lines(part, at - 1, background)
+                    found += logical_lines(part, at - 1, background, alongside, line.many)
     return found
 
 
@@ -393,10 +401,13 @@ def nested(line: Line, place: int, command: int, script: str, offset: int, expan
     """The lines of a script the command at `command` of the line hands a shell (or env -S), the
     command's prefixes starting at `place`: all detached when the line's shell runs detached or the
     command runs in the background with no wait for it, and when `setsid -f` runs it, all but the
-    substitutions the caller expands first (detached_lines)."""
+    substitutions the caller expands first (detached_lines); all beside the step's other commands
+    when the command runs beside them (runs_beside), and many times at once when the line's shell
+    does or xargs runs the command with a -P other than 1 (procs_many)."""
+    alongside, many = runs_beside(line, command), line.many or procs_many(line[place:command])
     if line.detached or background_unwaited(line, command, later):
-        return logical_lines(script, offset, True)
-    inner = logical_lines(script, offset)
+        return logical_lines(script, offset, True, alongside, many)
+    inner = logical_lines(script, offset, False, alongside, many)
     return detached_lines(inner, expands, keep_parts) if forked(line[place:command]) else inner
 
 
@@ -849,6 +860,35 @@ def detached_at(match: re.Match, line: Line, group: str, later: list[tuple[int, 
     if line.detached or forked(line[match.start():match.start(group)]):
         return True
     return background_unwaited(line, match.start(group), list(later))
+
+
+# xargs's -P (--max-procs): with a value other than 1 it runs the command that many times at once.
+XARGS_PROCS = re.compile(r"(?:^|[\s/])xargs\b(?:\s+\S+)*?\s+(?:-[0oprtx]*P\s*(?P<short>[^\s;&|()`]+)"
+                         r"|--max-procs(?:=|\s+)(?P<long>[^\s;&|()`]+))")
+
+
+def runs_beside(line: Line, position: int) -> bool:
+    """Whether the command at a position of the line runs beside the other commands of its step:
+    its line's shell does (Line.beside), or it stands in a process substitution, or it is put in the
+    background (`&`), with its own list or as part of a compound it stands in, waited for or not."""
+    frames = frames_at(line, position)
+    spot, _ = list_end(line, position)
+    return line.beside or spot is not None or any(frame.procsub or frame.group.background for frame in frames)
+
+
+def procs_many(place: str) -> bool:
+    """Whether the words before a command run it many times at once: xargs with a -P other than 1."""
+    return any((found.group("short") or found.group("long")).strip("\"'") != "1" for found in XARGS_PROCS.finditer(place))
+
+
+def beside(match: re.Match, line: Line, group: str) -> tuple[bool, bool]:
+    """Whether the command a match found can run beside another command of its step, and whether
+    it can run beside itself. Beside another: it is queued in the harness pool (`harness-pool.sh
+    start`), or runs beside them (runs_beside), in the shell of a `bash -c` string put in the
+    background among them. Beside itself: xargs runs it, or the shell of its line, with a -P other
+    than 1."""
+    background = bool(match.groupdict().get("pooled")) or runs_beside(line, match.start(group))
+    return background, line.many or procs_many(line[match.start():match.start(group)])
 
 
 def runs_script(match: re.Match) -> bool:

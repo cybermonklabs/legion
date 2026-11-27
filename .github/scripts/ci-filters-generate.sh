@@ -178,20 +178,15 @@ else
   fi
 fi
 
-python3 - "$computed" "$scratch/base.yaml" "$out" "${GITHUB_STEP_SUMMARY:-}" <<'PY' || force_every_filter "the computed filters could not be compared with the base tree's"
+# A filter's patterns are read as every reader of a filters file reads them (workflow_paths.flatten,
+# the change-type form among them), from this tree's .github/scripts.
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$head_root/.github/scripts" python3 - "$computed" "$scratch/base.yaml" "$out" "${GITHUB_STEP_SUMMARY:-}" <<'PY' || force_every_filter "the computed filters could not be compared with the base tree's"
 import sys
 
 import yaml
+from workflow_paths import flatten
 
 computed_path, base_path, out_path, summary_path = sys.argv[1:5]
-
-
-def flatten(value):
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return [p for item in value for p in flatten(item)]
-    return []
 
 
 head = {str(k): flatten(v) for k, v in (yaml.safe_load(open(computed_path)) or {}).items()}

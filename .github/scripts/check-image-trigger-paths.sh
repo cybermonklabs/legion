@@ -205,15 +205,13 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns,
-                            unread_patterns, walk)
+from workflow_paths import (FAIL_OPEN_HEAD, Filter, PathsFilter, UniqueKeyLoader, events, glob_regex,
+                            unread_filter_patterns, unread_patterns, walk)
 
 WORKFLOWS = Path(".github/workflows")
 # What ci.yaml's changes job hands its one dorny/paths-filter step: the file it computes its
 # filters into when it runs, which this check reads from CI_FILTERS_FILE (generated_filters).
 GENERATED_INPUT = "${{ runner.temp }}/ci-filters.yaml"
-# The first line of a filters file written because the filters could not be computed.
-FAIL_OPEN_HEAD = "# FAIL-OPEN:"
 # The directory whose files the changes job's filters are computed from.
 GATES_DIR = ".github/ci-gates/"
 # A gate file's declaration of the filter it is for: `excluded("<name>", ...)` or `gate("<name>", ...)`.

@@ -72,10 +72,20 @@
 #      under the condition that runs it whenever one of those steps ran and never when none was
 #      due: `if: always()` when one of them runs whenever the job does (no `if:`, success(),
 #      always() or !cancelled()), else `always() && ` the one condition they share, or `always() &&
-#      (A || B)` for the conditions they carry. That action uploads
+#      (A || B)` for the conditions they carry, each less its success(), always() and !cancelled()
+#      terms, which hold when the step starts and may not once it has failed or the run was
+#      cancelled (failure() and cancelled() it keeps, which stay true once they hold); a go test
+#      step whose `if:` holds a status check anywhere but in a term of its own, joined with `&&`, is
+#      refused. That action uploads
 #      `${{ runner.temp }}/go-test-events/` as the artifact `go-test-events-<the job's check run
 #      id>`, with `if-no-files-found: error`, so a run whose go test ran and kept no file fails, and
-#      the condition keeps that error off a run whose go test steps were rightly skipped. A go test's
+#      the condition keeps that error off a run whose go test steps were rightly skipped; the
+#      action's own upload step is held to `if: always()`, since a step of a composite action runs
+#      under success() unless it says otherwise, and to that error. A go test that can run at the
+#      same time as another go test of its step (in the background, the harness pool or a process
+#      substitution) or as itself (behind xargs -P other than 1) is refused: every go test of a
+#      step writes the step's one events file, and a writer whose write fails cuts the file back to
+#      what it held before its own run. A go test's
 #      flags are read as the shell splits its words. A command stands where bash runs it: at a
 #      line's start or after an operator, behind `!`, `{`, a case pattern's `)`, a function's
 #      `name()` or a keyword (if, while, until, then, do, else), after a redirection
@@ -101,7 +111,8 @@
 #      names it. A go test inside quotes or a heredoc of text runs nothing; a heredoc a shell takes
 #      is a script, and an unquoted one's `$(...)` runs. A line that runs, at a command's place, a
 #      runner whose command rule 8 cannot read - eval, coproc, flock, a shell that reads its script
-#      from a pipe (`| bash`) or a here-string (`<<<`), python3 -c, stdbuf, ionice or taskset - and
+#      from a pipe (`| bash`) or a here-string (`<<<`), python -c (python, python3 or python3.N, a
+#      directory before it or not, after any of its options), stdbuf, ionice or taskset - and
 #      names a go test, or a script that runs one, in its own words is refused, kept or not; a go
 #      test such a runner takes from what the line does not spell out is not seen. A go test no run
 #      reaches (`if false`, an uncalled function), or whose variable go word the step assigns no go
@@ -154,7 +165,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from go_test_steps import check_go_test_events, hold_scripts_to_filter, total
+from go_test_steps import check_go_test_events, check_upload_action, hold_scripts_to_filter, total
 from workflow_paths import mapping_get, repeated_keys, scalar
 
 WORKFLOWS = Path(".github/workflows")
@@ -613,6 +624,9 @@ for path in targets:
         )
 
 census = total(CENSUSES)
+# The action every go test job's upload runs, read once when a job of the run must upload.
+if census.uploads:
+    check_upload_action(problem)
 selected = hold_scripts_to_filter(census.scripts, problem) if SCOPE else ""
 
 if problems:

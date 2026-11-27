@@ -45,10 +45,17 @@ run: this script goes on reading go test's output and printing its log, waits fo
 file back to the bytes it held before this run, so no event of the run is left to read as a
 complete record of it, and fails the step, naming the error. A line of the log it cannot print (a
 stdout that is gone, a fault of its own rendering) stops the log the same way: every event is still
-kept, go test is still waited for, and the step fails, naming the error. So the file never holds
-part of a run, and nothing is lost without the step saying so. One run of this script appends to a
-file no other run appends to at the same time: a step's go tests run one after another, and rule 8
-refuses a go test the step leaves running.
+kept, go test is still waited for, and the step fails, naming the error. So in the first form the
+file never holds part of a run, and nothing is lost without the step saying so. In the second form
+the script's own tee writes the events, so a write that fails there leaves the events written
+before it in the file; the step fails, since the scripts run that pipeline under pipefail, and
+tee's error names the file, but nothing in the file marks the run as cut short. One run of this
+script appends to a file no other run appends to at the same time: rule 8 refuses a go test that
+can run beside another go test of its step (in the background, the harness pool or a process
+substitution) or beside itself (behind xargs -P), so its cut-back takes no other run's events.
+Each event is written to the file unbuffered as it is read, so a run that is killed rather than
+signalled (SIGKILL, as a runner kills a step's process tree) keeps every event read before it; a
+SIGINT or SIGTERM this script receives goes on to go test (forward_signals).
 
 The log is the one go test prints without -json, rebuilt from the events. go test prints a test
 binary's output as the binary writes it: what a test prints to stdout, where it prints it; a failed

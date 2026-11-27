@@ -777,4 +777,62 @@ cancel term-unforwarded "$work/unforwarded/go_test_events.py"
 check "control: a writer that does not hand go test the signal returns before go test has ended" "$(is "$waited" false)"
 check "and keeps no line go test wrote after it" "$(is "$(jq -r 'select(.Test == "TestRunning") | .Action' "$events/term-unforwarded.jsonl" | paste -sd, -)" 'run')"
 
+# A run ended by a kill rather than a signal the writer can pass on, as a runner that kills the
+# step's process tree ends it: the writer and go test die at once. What the writer had read is in
+# the file all the same: it writes each event unbuffered as it reads it. The control is a copy of
+# the writer whose events file is buffered, which loses them.
+echo "case: a go test step killed with its process tree keeps every event the writer had read before the kill"
+mkdir -p "$work/buffered"
+python3 -c 'import sys, pathlib; s = pathlib.Path(sys.argv[1]).read_text(); old = "open(path, \"ab\", buffering=0)"; assert s.count(old) == 1; pathlib.Path(sys.argv[2]).write_text(s.replace(old, "open(path, \"ab\")"))' \
+  "$writer" "$work/buffered/go_test_events.py"
+# killed <name> <writer>: the writer over the stand-in, its whole process group sent SIGKILL once
+# the stand-in has written its events and waits.
+killed() {
+  set +e
+  env RUNNER_TEMP="$runner" TEST_EVENTS_FILE="$events/$1.jsonl" PATH="$term_stub:$PATH" STUB_READY="$work/$1.ready" \
+    STUB_DONE="$work/$1.done" setsid python3 "$2" go test -count=1 ./pass/ >"$work/$1.out" 2>"$work/$1.err" &
+  local pid=$!
+  for _ in $(seq 300); do [ -e "$work/$1.ready" ] && break; sleep 0.1; done
+  sleep 0.5
+  kill -KILL -- "-$pid"
+  wait "$pid"
+  killed_status=$?
+  set -e
+}
+killed killed "$writer"
+check "the step ends as SIGKILL ends it (137)" "$(is "$killed_status" 137)"
+check "the pass the stand-in wrote before the kill is kept" "$(is "$(pass_of "$events/killed.jsonl" TestDone)" 1)"
+check "and the start of the test the kill cut short, with no pass or fail" \
+  "$(is "$(jq -r 'select(.Test == "TestRunning") | .Action' "$events/killed.jsonl" | paste -sd, -)" 'run')"
+killed killed-buffered "$work/buffered/go_test_events.py"
+check "control: a writer whose events file is buffered keeps none of them" "$(is "$(wc -c <"$events/killed-buffered.jsonl" | tr -d ' ')" 0)"
+
+# The second form leaves the writing to the script, whose own line tees each event into the file:
+# a write that fails there is tee's, so the events written before it stay in the file, and the step
+# fails, the script running its pipeline under pipefail. A file size limit fails a write the way a
+# full disk does, with an error, only where SIGXFSZ is ignored; the writer hands its command the
+# default action (subprocess's restore_signals), so a shell between the writer and the counter
+# ignores it again, and the counter's tee inherits that.
+echo "case: in the second form a write to the events file that fails leaves part of the run in the file, and the step fails"
+tee_stub="$work/tee-stub"
+mkdir -p "$tee_stub"
+cat >"$tee_stub/go" <<'SH'
+#!/bin/sh
+i=0
+while [ "$i" -lt 200 ]; do
+  printf '{"Action":"pass","Package":"example.com/probe","Test":"TestProbe/aws","Elapsed":0}\n'
+  i=$((i + 1))
+done
+SH
+chmod +x "$tee_stub/go"
+set +e
+(ulimit -f 4 && exec env RUNNER_TEMP="$runner" TEST_EVENTS_FILE="$events/tee-full.jsonl" PATH="$tee_stub:$PATH" \
+  "$writer" bash -c 'trap "" XFSZ; exec "$0" "$@"' "$counter" ./cmd/cipher/ -- TestProbe) >"$work/tee-full.out" 2>"$work/tee-full.err"
+tee_status=$?
+set -e
+check "the step fails" "$([ "$tee_status" -ne 0 ] && echo true || echo false)"
+check "tee names the write that failed" "$(contains "$(cat "$work/tee-full.err")" 'tee: .*tee-full.jsonl: File too large')"
+check "and the file keeps the part of the run written before it" \
+  "$(kept=$(grep -c '"Action":"pass"' "$events/tee-full.jsonl"); [ "$kept" -gt 0 ] && [ "$kept" -lt 200 ] && echo true || echo false)"
+
 summary "go_test_events.py"

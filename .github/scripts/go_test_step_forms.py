@@ -170,6 +170,9 @@ def sq(text: str) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
 
+# A minor version's name for python3, which main() links to the python3 on PATH in the stand-in's
+# directory, so the python3-c contexts name an interpreter by that spelling on any machine.
+PYTHON_MINOR = "python3.99"
 KEEPS, DETACHED, LOSES, OPAQUE = "keeps", "detached", "loses", "opaque"
 # Each context: how it places the command `x`, and what the writer before x does for its events and
 # for go test's status. KEEPS: they are all written before the step ends, and the step's status
@@ -305,6 +308,13 @@ CONTEXTS = {
     "pipe-to-bash": (lambda x: f"printf '%s\\n' {sq(x)} | bash", OPAQUE),
     "here-string": (lambda x: f"bash <<< {sq(x)}", OPAQUE),
     "python3-c": (lambda x: f"python3 -c 'import os, sys; os.execvp(sys.argv[1], sys.argv[1:])' {x}", OPAQUE),
+    # The interpreter named by a path, under a minor version's name (PYTHON_MINOR, which the runner
+    # links to this one), and after an option that takes a value.
+    "python3-c-path": (lambda x: f"$GOROOT/bin/{PYTHON_MINOR} -c 'import os, sys; os.execvp(sys.argv[1], sys.argv[1:])' {x}",
+                       OPAQUE),
+    "python3-c-minor": (lambda x: f"{PYTHON_MINOR} -c 'import os, sys; os.execvp(sys.argv[1], sys.argv[1:])' {x}", OPAQUE),
+    "python3-c-option": (lambda x: f"python3 -X dev -W ignore -c 'import os, sys; os.execvp(sys.argv[1], sys.argv[1:])' {x}",
+                         OPAQUE),
     "stdbuf": (lambda x: f"stdbuf -oL {x}", OPAQUE),
     "ionice": (lambda x: f"ionice -c 3 {x}", OPAQUE),
     "taskset": (lambda x: f"taskset -c 0 {x}", OPAQUE),
@@ -509,14 +519,14 @@ def ran_test(lines: list[str]) -> bool:
                for words in (line.split() for line in lines))
 
 
-def gated(variant: str, texts: list[str]) -> bool:
+def gated(variant: str, keeps: str, texts: list[str]) -> bool:
     """Whether a step's go test waits at the gate for the runner (runs()): a kept step whose run: or
     a script of its form holds what can put a command in the background (CAN_DETACH). The test is on
     the form's text and not its label, so a label that calls a backgrounding form keeps, or one that
-    cannot detach detached, is measured all the same, and MISLABELLED names it. An OPAQUE form is
-    gated too: its label is not held to the boundary, but its verdict reads the boundary, and an
-    ungated one raced, flipping between two verdicts from one run to the next."""
-    return variant == "kept" and any(CAN_DETACH.search(text) for text in texts)
+    cannot detach detached, is measured all the same, and MISLABELLED names it. An OPAQUE form is not
+    gated: rule 8 refuses it by its runner, so neither its verdict nor its label reads the boundary
+    or the status, and it is left out of the counts of both."""
+    return variant == "kept" and keeps != OPAQUE and any(CAN_DETACH.search(text) for text in texts)
 
 
 def pipe_ends(pid: int, fds: tuple) -> set:
@@ -896,6 +906,9 @@ def main() -> int:
         stand_in = goroot / "bin" / "go"
         stand_in.write_text(STAND_IN)
         stand_in.chmod(0o755)
+        # A python3 under a minor version's name, which the python3-c contexts run: the interpreter
+        # itself, not a shim on PATH, which would read the name it was called by.
+        (goroot / "bin" / PYTHON_MINOR).symlink_to(Path(sys.executable).resolve())
         tree = work / "tree"
         (tree / Path(EVENTS_WRITER).parent).mkdir(parents=True)
         shutil.copy(HERE / Path(EVENTS_WRITER).name, tree / EVENTS_WRITER)
@@ -918,7 +931,7 @@ def main() -> int:
         env.update(PATH=path, GO=str(stand_in), GOROOT=str(goroot))
         units = [(form, variant, index, text) for form, variants in generated.items()
                  for variant, (_, steps) in variants.items() for index, text in enumerate(steps)]
-        gates = {(form, variant): gated(variant, steps + list(scripts.values()))
+        gates = {(form, variant): gated(variant, classes[form], steps + list(scripts.values()))
                  for form, variants in generated.items() for variant, (scripts, steps) in variants.items()}
         with ThreadPoolExecutor(max_workers=len(os.sched_getaffinity(0))) as pool:
             measured_runs = list(pool.map(lambda unit: runs(tree, env, unit[3], unit[1], work / "runs" / str(unit[4]),
@@ -993,15 +1006,16 @@ def main() -> int:
     variants = sum(len(v) for v in generated.values())
     negatives = sum(1 for form in generated if classes[form] == "negative")
     # The kept forms bash returned from with their events written and a status that does not follow
-    # go test's, where their foreground form's would (status_masked).
-    lost = sum(1 for (form, variant), gate in gates.items()
-               if gate and not depends[(form, variant)] and not boundary[(form, variant)] and not status_masked(form))
+    # go test's: those measured() calls LOSES, the rule each verdict reads.
+    lost = sum(1 for form, variant in gates if classes[form] != OPAQUE and measured(
+        boundary[(form, variant)], gates[(form, variant)], depends[(form, variant)], status_masked(form)) == LOSES)
+    late = sum(1 for (form, variant), was in boundary.items() if was and classes[form] != OPAQUE)
     print(f"go_test_step_forms: {len(generated)} forms ({len(CONTEXTS)} contexts, {len(SPELLINGS)} go spellings, "
           f"{len(INDIRECTIONS)} indirections, {len(OUTERS)} outers, {len(NEGATIVES)} negatives"
           f"{'' if only == '*' else f', those --only {only} matches'}), {negatives} of them negative: {variants} "
           f"form variants, {len(units)} steps, {sum(1 for form, variant, _, _ in units if gates[(form, variant)])} "
           f"of them holding their go test at the gate; bash runs {len(units) - len(not_run)} of them as "
-          f"their variant asks and leaves {sum(1 for key in boundary if boundary[key])} kept form(s) detached at its "
+          f"their variant asks and leaves {late} kept form(s) detached at its "
           f"return and {lost} with a status that does not follow go test's, which {len(mislabelled)} form(s) are "
           f"labelled against; rule 8 of {module} misses "
           f"{len(listed) + len(unlisted)} form variant(s), {len(listed)} listed in {MISSES.name} and {len(unlisted)} "

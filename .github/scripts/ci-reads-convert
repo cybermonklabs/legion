@@ -710,7 +710,7 @@ def write_excluded(branch: dict, filters_text: str, report: list, names=None) ->
     """A file of .github/ci-gates for each EXCLUDED filter of the old table (each of `names`, where
     given), its patterns the old filters file's."""
     import yaml
-    from ci_filter_coverage import flatten
+    from workflow_paths import flatten
     filters = yaml.safe_load(filters_text) or {}
     document = yaml.safe_load((ROOT / ".github/workflows/ci.yaml").read_text())
     for name, why in sorted(branch["excluded"].items()):

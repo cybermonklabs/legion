@@ -26,7 +26,7 @@ from typing import Callable, NamedTuple
 
 import yaml
 from go_test_events import ENV_FILE, TRUE, GoArgs
-from go_test_shell import (ASSIGNS, POOL_WAIT, RUNS, TEES, commands, detached_at, flag_words, go_test_parts,
+from go_test_shell import (ASSIGNS, POOL_WAIT, RUNS, TEES, beside, commands, detached_at, flag_words, go_test_parts,
                            go_tests, line_words, logical_lines, names_go_test, opaque, runs_script, unquoted)
 from workflow_paths import (EVENTS_WRITER, FAIL_OPEN_HEAD, PathsFilter, flatten, mapping_get, names_events_writer,
                             scalar)
@@ -134,8 +134,10 @@ class Keep(Enum):
 class GoTest(NamedTuple):
     """A go test command a script runs: its file, its line, the command, how it keeps its events,
     whether it runs detached, whether the writer runs it under a go word it does not take
-    (misspelled_go), and the runner, if any, whose command no reading can follow (go_test_shell's
-    opaque) on a line that names it: such a go test is `unread`, and its command is that line."""
+    (misspelled_go), the runner, if any, whose command no reading can follow (go_test_shell's
+    opaque) on a line that names it (such a go test is `unread`, and its command is that line), and
+    whether it can run beside another command of its step or beside itself (go_test_shell's
+    beside)."""
     file: Path
     line: int
     command: str
@@ -143,6 +145,8 @@ class GoTest(NamedTuple):
     detached: bool = False
     misspelled: bool = False
     unread: str = ""
+    alongside: bool = False
+    many: bool = False
 
 
 class Unparsable(NamedTuple):
@@ -294,11 +298,14 @@ def keeps_of(match: re.Match, line: str) -> Keep:
     return Keep.TEES if tee and unquoted(line)[end + tee.start()] else Keep.NONE
 
 
-def run_under(reached: ScriptRead, detached: bool, writer: bool) -> tuple[GoTest, ...]:
+def run_under(reached: ScriptRead, detached: bool, writer: bool, alongside: bool = False,
+              many: bool = False) -> tuple[GoTest, ...]:
     """The go tests a script reaches, as the command that runs the script keeps them: every one
-    detached when that command is, and under the writer each one that tees its events on its own
-    line kept by that writer, since it sets their file."""
-    return tuple(test._replace(detached=test.detached or detached,
+    detached when that command is, beside another command or itself when that command is, and
+    under the writer each one that tees its events on its own line kept by that writer, since it
+    sets their file."""
+    return tuple(test._replace(detached=test.detached or detached, alongside=test.alongside or alongside,
+                               many=test.many or many,
                                keep=Keep.SELF if writer and test.keep is Keep.TEES else test.keep)
                  for test in reached.tests)
 
@@ -356,13 +363,14 @@ def script_tests(script: Path, cache: dict, seen: frozenset = frozenset()) -> Sc
             command, rest, _ = go_test_parts(match, line)
             if not compile_only(rest):
                 tests.append(GoTest(script, number, command, keeps_of(match, line), detached_at(match, line, "cmd", later),
-                                    misspelled_go(match, line)))
+                                    misspelled_go(match, line), "", *beside(match, line, "cmd")))
         for match in commands(RUNS, line, "arg"):
             inner = resolve(match.group("word"), [script.parent, script.parent.parent, Path(".")])
             if inner is None or not runs_script(match):
                 continue
             reached = script_tests(inner, cache, seen | {script})
-            tests += run_under(reached, detached_at(match, line, "arg", later), bool(match.group("wrapper")))
+            tests += run_under(reached, detached_at(match, line, "arg", later), bool(match.group("wrapper")),
+                               *beside(match, line, "arg"))
             unparsable += reached.unparsable
             scripts += [path for path in reached.scripts if path not in scripts]
             cut |= reached.cut
@@ -383,15 +391,17 @@ class StepScan(NamedTuple):
     names: those it runs other than through the writer (`bare`), those of a script it runs under
     the writer that keep nothing (`leaky`), those that run detached, those the writer runs under a
     go word it does not take (`misspelled`), the lines that run a go test behind a runner no
-    reading can follow (`unread`), and the Python scripts it reaches that do not parse; whether it
-    sets TEST_EVENTS_FILE itself, queues a go test in the harness pool, or waits for the pool; and
-    every script it read."""
+    reading can follow (`unread`), those that can run at the same time as another go test of the
+    step or as themselves (`crowded`), and the Python scripts it reaches that do not parse; whether
+    it sets TEST_EVENTS_FILE itself, queues a go test in the harness pool, or waits for the pool;
+    and every script it read."""
     kept: int
     bare: list[str]
     leaky: list[str]
     detached: list[str]
     misspelled: list[str]
     unread: list[str]
+    crowded: list[str]
     unparsable: list[str]
     assigns: bool
     pooled: bool
@@ -403,8 +413,12 @@ UNREAD = "on a line that names go test or a script that runs one"
 
 
 def scan_step(run: str, workdir: Path, cache: dict) -> StepScan:
-    """Read one step's run: for rule 8, run from `workdir`."""
+    """Read one step's run: for rule 8, run from `workdir`. Every go test of the step writes the
+    step's one events file, so one that can run while another does (in the background or the pool
+    beside another go test of the step, or many times at once behind xargs -P) is `crowded`."""
     kept, bare, leaky, detached, misspelled, unread, unparsable, scripts = 0, [], [], [], [], [], [], []
+    # Each go test of the step: what names it, whether it can run beside another, beside itself.
+    runs: list[tuple[str, bool, bool]] = []
     assigns = pooled = pool_wait = False
     lines = logical_lines(run)
     for at, (_, text) in enumerate(lines):
@@ -422,6 +436,7 @@ def scan_step(run: str, workdir: Path, cache: dict) -> StepScan:
             if compile_only(rest):
                 continue
             pooled = pooled or bool(match.group("pooled"))
+            runs.append((f"`{command}`", *beside(match, text, "cmd")))
             if detached_at(match, text, "cmd", later):
                 detached.append(f"`{command}`")
             if not match.group("wrapper"):
@@ -445,7 +460,16 @@ def scan_step(run: str, workdir: Path, cache: dict) -> StepScan:
                 continue
             pooled = pooled or bool(match.group("pooled"))
             writer = bool(match.group("wrapper"))
-            reached = run_under(read, detached_at(match, text, "arg", later), writer)
+            reached = run_under(read, detached_at(match, text, "arg", later), writer, *beside(match, text, "arg"))
+            # A script read through a cycle can list one of its go tests twice (the read of a script
+            # it runs, kept whole, holds it again): one line of a script is one go test of this run,
+            # beside another or itself where either reading says so.
+            once: dict[tuple, list[bool]] = {}
+            for test in reached:
+                flags = once.setdefault((test.file, test.line, test.command), [False, False])
+                flags[0], flags[1] = flags[0] or test.alongside, flags[1] or test.many
+            runs += [(f"{script}, which runs `{command}` ({file}:{number})", alongside, many)
+                     for (file, number, command), (alongside, many) in once.items()]
             detached += [f"{script}, which runs `{test.command}` ({test.file}:{test.line})"
                          for test in reached if test.detached]
             misspelled += [f"{script}, which runs `{test.command}` ({test.file}:{test.line})"
@@ -460,7 +484,8 @@ def scan_step(run: str, workdir: Path, cache: dict) -> StepScan:
                 bare.append(f"{script}, which runs `{unkept[0].command}` ({unkept[0].file}:{unkept[0].line})")
             elif not any(test.misspelled for test in reached):
                 kept += 1
-    return StepScan(kept, bare, leaky, detached, misspelled, unread, unparsable, assigns, pooled, pool_wait,
+    crowded = [label for label, alongside, many in runs if many or (alongside and len(runs) > 1)]
+    return StepScan(kept, bare, leaky, detached, misspelled, unread, crowded, unparsable, assigns, pooled, pool_wait,
                     tuple(scripts))
 
 
@@ -501,16 +526,68 @@ def with_shared(bases: set[str], conditions: set[str]) -> set[str]:
     return out
 
 
-# The `if:` under which a go test step runs whenever its job runs as far as it: none, which GitHub
-# reads as success(), and the status checks that run it after a failed step too.
-UNCONDITIONAL = frozenset({"success()", "always()", "!cancelled()"})
+# GitHub's status check functions (expression syntax, "Status check functions"). A step's `if:` that
+# holds none of them runs as `success() && <if:>`.
+STATUS_CALL = re.compile(r"\b(?:success|always|failure|cancelled)\s*\(\s*\)", re.IGNORECASE)
+# A status term of a go test step's `if:` that the upload's condition drops, since the upload must
+# run whenever that step ran, after the step itself failed or the run was cancelled: success() and
+# !cancelled(), which hold when the step starts and may not once it has ended, and always(). A
+# failure() or cancelled() term is kept: once true it stays true for the rest of the job, so the
+# upload's copy of it holds whenever the step's did.
+DROPPED_STATUS = frozenset({"success()", "always()", "!cancelled()"})
+KEPT_STATUS = frozenset({"failure()", "cancelled()"})
 
 
-def due_when(step: object) -> str:
-    """A go test step's condition as its job's upload reads it: "" for one that runs whenever the
-    job runs as far as it (UNCONDITIONAL), else its `if:` (step_if)."""
+def top_level(text: str, operator: str) -> list[str]:
+    """An expression's terms between its `operator`s (`&&` or `||`) outside every parenthesis and
+    quoted string, each stripped."""
+    terms, depth, quote, start, at = [], 0, "", 0, 0
+    while at < len(text):
+        char = text[at]
+        if quote:
+            quote = "" if char == quote else quote
+        elif char == "'":
+            quote = char
+        elif char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif depth == 0 and text.startswith(operator, at):
+            terms.append(text[start:at].strip())
+            start = at = at + len(operator)
+            continue
+        at += 1
+    return terms + [text[start:].strip()]
+
+
+def due_when(step: object) -> tuple[str, str]:
+    """A go test step's condition as its job's upload reads it, and why rule 8 cannot read one: ""
+    for a step that runs whenever the job runs as far as it; else its `if:` (step_if) less every
+    term of DROPPED_STATUS, read as GitHub reads it: an `if:` with no status call is the step's own
+    condition, and one with status calls must be a conjunction (`&&`) of terms, each a status call
+    of DROPPED_STATUS or KEPT_STATUS alone, or one that holds none. Any other `if:` that holds a
+    status call (`success() || x`, `x && !(failure())`) is refused: the upload's condition cannot
+    be read off it, and a copy of it whole would skip the upload where the step had run, as
+    `always() && success() && x` does when the go test step fails."""
     when = step_if(step)
-    return "" if when in UNCONDITIONAL else when
+    if not STATUS_CALL.search(when):
+        return when, ""
+    kept = []
+    for term in top_level(when, "&&"):
+        bare = "".join(term.split()).lower()
+        while bare.startswith("(") and bare.endswith(")") and len(top_level(bare[1:-1], "&&")) == 1 \
+                and len(top_level(bare[1:-1], "||")) == 1:
+            bare = bare[1:-1]
+        if bare in DROPPED_STATUS:
+            continue
+        if bare in KEPT_STATUS or not STATUS_CALL.search(term):
+            kept.append(term)
+            continue
+        return "", (f"its `if: {when}` holds a status check in a term rule 8 cannot read (`{term}`), so the job's "
+                    f"upload cannot be given the condition that runs it whenever this step ran: write the status "
+                    f"check as a term of its own, joined to the rest with `&&` (success(), always(), !cancelled(), "
+                    f"failure() or cancelled()), or leave it out")
+    return " && ".join(kept), ""
 
 
 def upload_when(conditions: list[str]) -> str:
@@ -545,12 +622,13 @@ class StepRef(NamedTuple):
 
 class Census(NamedTuple):
     """What rule 8 read of one workflow file, or of several (total): the go test commands it
-    keeps, the steps and jobs that run them, and every script their steps reached, each with the
-    first step that reached it."""
+    keeps, the steps and jobs that run them, every script their steps reached, each with the first
+    step that reached it, and the jobs that must upload go test events."""
     commands: int
     steps: int
     jobs: int
     scripts: dict
+    uploads: int = 0
 
 
 def total(censuses: list[Census]) -> Census:
@@ -560,7 +638,51 @@ def total(censuses: list[Census]) -> Census:
         for script, step in census.scripts.items():
             scripts.setdefault(script, step)
     return Census(sum(c.commands for c in censuses), sum(c.steps for c in censuses),
-                  sum(c.jobs for c in censuses), scripts)
+                  sum(c.jobs for c in censuses), scripts, sum(c.uploads for c in censuses))
+
+
+# The upload action's own step, as rule 8 holds it: the one actions/upload-artifact step of
+# UPLOAD_ACTION's composite action, under `if: always()`, since a composite action's step with no
+# status check runs under success() and so would skip the upload exactly when a go test step of the
+# job had failed; failing on no file; and sending the go-test-events directory under the name a
+# reader asks for.
+UPLOAD_ACTION_FILE = Path(UPLOAD_ACTION.removeprefix("./")) / "action.yml"
+ACTION_UPLOAD_WITH = {"name": "go-test-events-${{ inputs.check-run-id }}", "path": "${{ runner.temp }}/go-test-events/",
+                      "if-no-files-found": "error"}
+
+
+def check_upload_action(problem: Problem) -> None:
+    """Rule 8 over UPLOAD_ACTION's own upload step (ACTION_UPLOAD_WITH), once for the run of the
+    check, when a job of ci.yaml's run must upload go test events."""
+    try:
+        root = yaml.compose(UPLOAD_ACTION_FILE.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        problem(UPLOAD_ACTION_FILE, f"{UPLOAD_ACTION_FILE} cannot be read ({type(error).__name__}), so whether the "
+                                    f"upload every go test job ends with runs after a failed step is UNKNOWN.")
+        return
+    steps = mapping_get(mapping_get(root, "runs"), "steps")
+    found = [step for step in (steps.value if isinstance(steps, yaml.SequenceNode) else [])
+             if (scalar(mapping_get(step, "uses")) or "").startswith("actions/upload-artifact@")]
+    if len(found) != 1:
+        problem(UPLOAD_ACTION_FILE, f"{UPLOAD_ACTION_FILE} runs {len(found)} actions/upload-artifact steps, and rule 8 "
+                                    f"holds it to one, which sends the go test events.")
+        return
+    (step,) = found
+    line = step.start_mark.line + 1
+    when = step_if(step)
+    if when != "always()":
+        problem(UPLOAD_ACTION_FILE, f"{UPLOAD_ACTION_FILE}:{line}: the action's upload step runs under "
+                                    f"`{when or 'success()'}`, not `always()`: a step of a composite action with no "
+                                    f"status check runs under success(), so the upload would be skipped exactly when a "
+                                    f"go test step of the job had failed. Give it `if: always()`; the job's own "
+                                    f"condition on the step that uses the action decides when it runs.", line=line)
+    for key, value in ACTION_UPLOAD_WITH.items():
+        given = scalar(mapping_get(mapping_get(step, "with"), key))
+        if given != value:
+            problem(UPLOAD_ACTION_FILE, f"{UPLOAD_ACTION_FILE}:{line}: the action's upload step has `{key}: "
+                                        f"{given}`, and rule 8 holds it to `{key}: {value}`, so a run whose go test "
+                                        f"kept no file fails and a reader finds the events by the job's id.",
+                    line=line)
 
 
 def check_go_test_events(path: Path, root: object, problem: Problem, cache: dict | None = None) -> Census:
@@ -646,6 +768,14 @@ def check_job(path: Path, job_id: str, root: object, job: object, steps: yaml.Se
                           f"a command that tees its own events, which go test does not, so the step keeps no "
                           f"event and fails. Write `go` right after the writer (`<path to {WRITER}> go test "
                           f"...`), with the go to run first on PATH.", line=line)
+        if scan.crowded:
+            problem(path, f"{where} runs {', '.join(scan.crowded)} where it can run at the same time as another go "
+                          f"test of the step, or as itself: in the harness pool (`harness-pool.sh start`), in a "
+                          f"process substitution or in the background (`&`) beside another go test of the step, or "
+                          f"behind xargs with a -P other than 1. Every go test of a step appends to the step's one "
+                          f"events file (<id>.jsonl), and a writer whose write fails cuts the file back to what it "
+                          f"held before its own run, which would cut away the events another run wrote meanwhile. "
+                          f"Give each such go test a step of its own, or run them one after the other.", line=line)
         if not scan.kept and not scan.bare and not scan.misspelled and not scan.unread:
             continue
         if scan.kept:
@@ -654,7 +784,11 @@ def check_job(path: Path, job_id: str, root: object, job: object, steps: yaml.Se
         last_step = StepRef(index, name, line)
         if scan.pooled:
             last_pooled = StepRef(index, name, line)
-        step_conditions.append(due_when(step))
+        due, unreadable = due_when(step)
+        if unreadable:
+            problem(path, f"{where} runs go test, and {unreadable}.", line=line)
+        # An `if:` rule 8 cannot read gives the upload `always()`, which runs it whenever this step ran.
+        step_conditions.append(due)
         step_id = scalar(mapping_get(step, "id")) or ""
         if not step_id or step_id.startswith("__"):
             through = "" if scan.bare or scan.unread else f" through {WRITER}"
@@ -664,7 +798,7 @@ def check_job(path: Path, job_id: str, root: object, job: object, steps: yaml.Se
                           f"refuses it. Give the step an id:.", line=line)
     if last_step is not None:
         check_upload(path, job_id, last_step, last_pooled, step_conditions, uploads, waits, problem)
-    return Census(commands, kept_steps, int(kept_steps > 0), scripts)
+    return Census(commands, kept_steps, int(kept_steps > 0), scripts, int(last_step is not None))
 
 
 def check_upload(path: Path, job_id: str, last_step: StepRef, last_pooled: StepRef | None, step_conditions: list[str],

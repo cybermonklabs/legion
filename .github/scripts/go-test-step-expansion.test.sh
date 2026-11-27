@@ -115,7 +115,7 @@ check "the text keeps the quotes the line wrote" \
 echo "case: what it leaves for the caller to refuse"
 check "a value needing the shell is left in place" \
   "$(is "$(command_of 'GOFLAGS=$EXTRA go test ./pkg')" 'GOFLAGS=$EXTRA go test ./pkg')"
-check "a wrapper GO_WRAPPERS does not name is left in place" \
+check "a wrapper go_wrapper does not name is left in place" \
   "$(is "$(command_of 'timeout 60 go test ./pkg')" "timeout 60 go test ./pkg")"
 check "a wrapper with no go command behind it is left in place" \
   "$(is "$(command_of '../../.github/scripts/race_memory.py --help')" "../../.github/scripts/race_memory.py --help")"
