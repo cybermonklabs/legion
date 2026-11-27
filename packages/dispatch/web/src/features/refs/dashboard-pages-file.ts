@@ -14,8 +14,8 @@
  * - `document_pages`: for each kind of document, every page the issue page, a project's page or
  *   an agent's page draws it on, `{key}`, `{project}`, `{session}` and `{slug}` standing for its
  *   owner and its slug;
- * - `references`: one href of each tab and each document segment, with the reference the
- *   dashboard reads it as, the rows every reader is held to.
+ * - `references`: one href of each tab and each document segment, with the reference it names
+ *   (a tab's own, `tabs`), the rows every reader is held to.
  *
  * `bun web/src/features/refs/dashboard-pages-file.ts --write` (from `packages/dispatch`) writes it,
  * and `bun run gen:go` (from `packages/contracts`) then writes the server's copy;
@@ -29,10 +29,12 @@ import {
   buildDispatchReference,
   buildProjectPath,
   buildReferencePath,
+  type DispatchReferenceRoute,
   ISSUE_DOCUMENT_SEGMENTS,
   ISSUE_TABS,
   type IssueRoute,
   type IssueTab,
+  parseDispatchReference,
   parseIssuePath,
   referencedArtifact,
   referenceRouteFromHref,
@@ -108,6 +110,21 @@ function referenceOf(href: string): string {
   return buildDispatchReference(route);
 }
 
+/** The segment of the tab's own `dispatch://` reference: the one the dashboard's reader of a
+ *  reference (`parseDispatchReference`) reads back as the tab's route, `log` (the conversation's
+ *  name in a reference, which agents write) or else the tab's own name. The route table writes the
+ *  reference of a tab as its issue's (`buildDispatchReference`), as text cites it, and the server
+ *  reads both as the issue; the agent client writes the tab's own, so that a tool that acts on a
+ *  document can tell a tab from the issue's spec. */
+function tabReference(tab: IssueTab, route: DispatchReferenceRoute): string {
+  for (const segment of ["log", tab]) {
+    if (parseDispatchReference(`dispatch://${key}/${segment}`)?.kind === route.kind) {
+      return segment;
+    }
+  }
+  throw new Error(`the dashboard reads no reference of the tab ${tab} back as its page`);
+}
+
 /** The file's content, as the route table reads it today. */
 export function renderDashboardPages(): string {
   const tabs = ISSUE_TABS.flatMap((tab) => {
@@ -120,7 +137,7 @@ export function renderDashboardPages(): string {
     if (route.kind === "spec" || referencedArtifact(route) !== undefined) {
       return [];
     }
-    return [{ page: tab, reference: referenceOf(href).slice(`dispatch://${key}/`.length) }];
+    return [{ page: tab, reference: tabReference(tab, route) }];
   });
   const documentPages: Record<string, string[]> = {};
   for (const document of documents) {
@@ -142,12 +159,15 @@ export function renderDashboardPages(): string {
       .replace(/notes-md$/, "{slug}"),
   ];
   const references = [
-    ...tabs.map(({ page }) => `/issues/${key}/${page}`),
+    ...tabs.map(({ page, reference }) => ({
+      href: `/issues/${key}/${page}`,
+      ref: `dispatch://${key}/${reference}`,
+    })),
     ...ISSUE_DOCUMENT_SEGMENTS.flatMap((segment) => [
       `/issues/${key}/${segment}/notes-md`,
       `/issues/${key}/${segment}/notes-md?v=2`,
-    ]),
-  ].map((href) => ({ href, ref: referenceOf(href) }));
+    ]).map((href) => ({ href, ref: referenceOf(href) })),
+  ];
   const file = {
     about:
       "Generated from the dashboard's route table by packages/dispatch/web/src/features/refs/dashboard-pages-file.ts; do not edit.",
