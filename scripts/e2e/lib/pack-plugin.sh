@@ -67,7 +67,10 @@ fi
 src=$root/packages/$package
 manifest=$src/package.json
 work=$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")
-trap 'rm -rf "$work"' EXIT
+# `|| true`: the trap runs under `set -e`, so a stage it cannot remove (a copied directory with no
+# owner write, say) would otherwise make a good pack exit non-zero, which every caller reads as a
+# failed pack. Such a stage stays in the temp directory and the run's status is the pack's own.
+trap 'rm -rf "$work" || true' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM

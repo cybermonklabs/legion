@@ -100,9 +100,9 @@ describe("the dispatch CLI the package ships", () => {
     for (const metafile of metafiles) expect(notices).toContain(`"${metafile}"`);
   });
 
-  // One pack for both rows below: each `bun pm pack` runs the prepack's two bundles, in a staged
-  // copy of the package (pack-plugin.sh), never in this checkout. The tarball and the tree it
-  // unpacks to are the same for both.
+  // One pack for the three rows below: each `bun pm pack` runs the prepack's two bundles, in a
+  // staged copy of the package (pack-plugin.sh), never in this checkout. They share its tarball and
+  // the tree it unpacks to.
   describe("the packed tarball", () => {
     // Packed the way the release packs (scripts/e2e/lib/pack-plugin.sh), so this is the tarball an
     // installed plugin unpacks.
