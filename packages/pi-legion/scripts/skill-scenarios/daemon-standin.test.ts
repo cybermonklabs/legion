@@ -1,4 +1,4 @@
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -638,6 +638,84 @@ test("a pending before the last look ends the look, and the next look is due whe
   expect(floored).toBeLessThan(Date.parse("2030-01-08T12:02:00Z"));
 });
 
+// The case's now moves on from the launch instant rig.sh records in clock-real.txt, as outcome.ts
+// and lane D's replay place the run's records, so the setup between the stand-in's start and the
+// launch moves no wake. The process's clock stands still (setSystemTime), so the floor is exact.
+// While that file is missing or holds no time, a pending report is refused and moves nothing, so
+// the same report is taken once the file holds the launch.
+test("a pending's floor counts from the launch instant the case records, however long the setup took, and a launch instant the stand-in cannot read moves nothing", async () => {
+  const started = Date.parse("2026-11-27T09:00:00Z");
+  // The setup takes an hour, and the role reports five seconds after its launch.
+  const launched = started + 3_600_000;
+  const launchFile = path.join(work, "late-setup-clock-real.txt");
+  setSystemTime(new Date(started));
+  try {
+    const daemon = boot({
+      world: worldOf("P10"),
+      phase: "done",
+      issue: "ACME-21",
+      tree: "ACME-21",
+      role: "tester",
+      clockReal: launchFile,
+    });
+    setSystemTime(new Date(launched + 5_000));
+    const { grantId } = await daemon.grant();
+    // A wake already past on the case's clock, which stands at 12:00:00 at the launch.
+    const pending = {
+      grantId,
+      summary: "not in production yet",
+      verdict: "pending",
+      checkOpenedAt: "2030-01-08T11:58:00Z",
+      wakeAt: "2030-01-08T11:59:00Z",
+    };
+    const unmoved = { check: { looks: 1, lookOpen: true, nextWakeAt: "2030-01-09T12:00:00Z" } };
+    for (const content of [undefined, "not a time\n"]) {
+      if (content !== undefined) writeFileSync(launchFile, content);
+      expect(await daemon.call("POST", COMPLETE, pending)).toMatchObject({
+        status: 500,
+        body: { code: "CASE_CLOCK_UNREADABLE" },
+      });
+      expect((await daemon.call("GET", RECORD("ACME-21"))).body).toMatchObject(unmoved);
+    }
+    // As rig.sh's `date -u +%FT%T.%NZ` writes it: here 250 µs past the millisecond.
+    writeFileSync(launchFile, `${new Date(launched).toISOString().replace("Z", "250000Z")}\n`);
+    expect(await daemon.call("POST", COMPLETE, pending)).toMatchObject({ status: 200, body: {} });
+    // 12:00:00 moved on by the 4.99975 s since the launch, then the minute of the floor.
+    expect((await daemon.call("GET", RECORD("ACME-21"))).body).toMatchObject({
+      check: { lookOpen: false, nextWakeAt: "2030-01-08T12:01:04.99975Z" },
+    });
+  } finally {
+    setSystemTime();
+  }
+});
+
+// The daemon takes a report whose checkOpenedAt is the instant its check opened, to the
+// nanosecond and in any offset (`check.OpenedAt.Equal`): a time one nanosecond later names no
+// check it has open, though a JavaScript Date reads both times as one millisecond.
+test("a look report's checkOpenedAt is held to the instant its check opened, to the nanosecond, in any offset", async () => {
+  const daemon = boot({
+    world: worldOf("P10"),
+    phase: "done",
+    issue: "ACME-21",
+    tree: "ACME-21",
+    role: "tester",
+  });
+  const { grantId } = await daemon.grant();
+  const pass = { grantId, summary: "driven in production", verdict: "pass" };
+  const late = "2030-01-08T11:58:00.000000001Z";
+  expect(await daemon.call("POST", COMPLETE, { ...pass, checkOpenedAt: late })).toMatchObject({
+    status: 409,
+    body: { code: "CHECK_NOT_OPEN", error: expect.stringContaining(`did not open at ${late}`) },
+  });
+  expect((await daemon.call("GET", RECORD("ACME-21"))).body).toMatchObject({
+    check: { lookOpen: true },
+  });
+  expect(
+    await daemon.call("POST", COMPLETE, { ...pass, checkOpenedAt: "2030-01-08T12:58:00.000+01:00" })
+  ).toMatchObject({ status: 200, body: {} });
+  expect((await daemon.call("GET", RECORD("ACME-21"))).body).not.toHaveProperty("check");
+});
+
 // The two production-check answers of testdata/daemon-answers.json (F3) are the real daemon's to
 // the P10 look before any report: the stand-in, given no answers file, answers the same requests
 // with the same status and body. Given that file, it still answers each look report from the check
@@ -893,11 +971,11 @@ test("a match holds at its dot path, null where the request has no value, and an
   expect(() => readAnswers(file)).toThrow("is no daemon-answers.json");
 });
 
-// The stand-in as a run starts it: a process of its own, given the world and the answers files by
-// flag. The phase and the handoff words are the daemon's own, asked of daemon-pane.go, which
-// `go run` compiles.
+// The stand-in as a run starts it: a process of its own, given the world, the launch instant file
+// and the answers files by flag. The phase and the handoff words are the daemon's own, asked of
+// daemon-pane.go, which `go run` compiles.
 test.skipIf(skipGo)(
-  "starts as a process with a world, answers files and the run's gh calls, and prints the port it listens on",
+  "starts as a process with a world, a launch instant file, answers files and the run's gh calls, and prints the port it listens on",
   async () => {
     const dir = path.join(work, "process");
     mkdirSync(dir);
@@ -937,6 +1015,8 @@ test.skipIf(skipGo)(
         "main",
         "--world",
         worldFile,
+        "--clock-real",
+        path.join(dir, "clock-real.txt"),
         "--answers",
         path.join(dir, "shared.json"),
         "--case-answers",

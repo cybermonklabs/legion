@@ -2718,9 +2718,11 @@ case_legion_pane() {
   if [ -n "${SKILL_SCENARIOS_CASE_ANSWERS:-}" ]; then
     answers+=(--case-answers "$SKILL_SCENARIOS_CASE_ANSWERS")
   fi
+  # The stand-in's case clock moves on from the launch instant run_case writes to clock-real.txt,
+  # which outcome.ts and lane D's replay count from, and not from the stand-in's own start.
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$R/state/secrets/boot" \
     "$project" "$issue" "$claim" "$repo" "$branch" --world "$R/launch-world.json" \
-    --tree "$tree" --gh-calls "$R/calls.jsonl" "${answers[@]}"
+    --clock-real "$R/clock-real.txt" --tree "$tree" --gh-calls "$R/calls.jsonl" "${answers[@]}"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   bun "$here/case-world.ts" pane "$R" "$co" "$port" "$profile" "$project" "$claim" "$issue" "$tree"

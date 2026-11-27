@@ -101,9 +101,9 @@
  *   session id or secret. Either line carries the record a completion named.
  *
  * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>
- * <repository> <default branch> [<phase>] [--tree <root>] [--world <file>] [--answers <file>]
- * [--case-answers <file>] [--gh-calls <file>] [--issues <file>] [--label <checkout>]
- * [--dispatch <url> <token file>]`
+ * <repository> <default branch> [<phase>] [--tree <root>] [--world <file>] [--clock-real <file>]
+ * [--answers <file>] [--case-answers <file>] [--gh-calls <file>] [--issues <file>]
+ * [--label <checkout>] [--dispatch <url> <token file>]`
  *
  * - `<role>` is a Legion role or `controller`. The claim is `<role>` of `<issue>` in the tree of
  *   `<root>`, `<issue>` itself without `--tree` (the issue is a root).
@@ -120,6 +120,14 @@
  *   bound and its merge commit; the tester works it). `daemon.task` is the text of the worker's
  *   task, which the daemon sends and its state does not carry, so the rig writes it into the
  *   prompt. `--gh-calls` is the run's `calls.jsonl`, which gh-standin.ts writes.
+ * - `--clock-real` names the file of the launch's wall-clock instant, the case's clock-real.txt,
+ *   which rig.sh writes after the stand-in starts and before the role launches. The case's now is
+ *   then the world's clock moved on by the time since that instant, as outcome.ts and lane D's
+ *   replay put each record of the run on the case's timeline, so the setup before the launch moves
+ *   no wake. The stand-in reads the file when a look report needs the case's now. While the file
+ *   cannot be read or holds no RFC 3339 time, it answers that report 500 CASE_CLOCK_UNREADABLE and
+ *   records nothing. Without `--clock-real`, the case's now moves on from the stand-in's start.
+ *   `--clock-real` is refused without `--world`.
  * - `--issues` names the world's issues, `{key, tree, phase, status}` (`StandinIssues`), which the
  *   state and the record route answer beside the claim's. An issue in no phase is one the daemon
  *   records nothing of, so neither names it. A file that gives the claim's issue another tree or
@@ -371,6 +379,10 @@ export interface StandinOptions {
    * (daemon-pane.go `handoff-words`). */
   readonly handoffWords: Readonly<Record<string, string>>;
   readonly world?: World;
+  /** The file of the launch's wall-clock instant (`--clock-real`, the case's clock-real.txt), which
+   * the case's now moves on from. It needs `world`. Unset, the case's now moves on from the
+   * stand-in's start. */
+  readonly clockReal?: string;
   /** The recorded answers, the case's before the shared file's. */
   readonly answers?: readonly AnswerEntry[];
   /** The run's `calls.jsonl`, which says which pull requests the run opened and closed. */
@@ -644,15 +656,40 @@ async function runEntry(label: string, request: PlanRequest): Promise<Reply> {
 
 /** Starts the stand-in daemon for one run. */
 export function startDaemonStandin(options: StandinOptions): Standin {
-  const { project, issue, tree, role, repository, defaultBranch, world, scored } = options;
+  const { project, issue, tree, role, repository, defaultBranch, world, clockReal, scored } =
+    options;
   const answers = options.answers ?? [];
   const startedAt = new Date().toISOString();
-  /** The case's clock now: the world's clock, moved on by the time since the stand-in started, as
-   * lane D's daemon's clock starts at the run's start. */
-  const startedMs = Date.now();
-  const clockAt = world === undefined ? undefined : parseInstant(world.clock);
-  const caseNow = () =>
-    (clockAt ?? BigInt(startedMs) * 1_000_000n) + BigInt(Date.now() - startedMs) * 1_000_000n;
+  const startedNs = BigInt(Date.now()) * 1_000_000n;
+  /** The case's clock at the instant it starts to move on from: the world's, else the stand-in's
+   * start. */
+  const clockAt = (world === undefined ? undefined : parseInstant(world.clock)) ?? startedNs;
+  if (clockReal !== undefined && world === undefined) {
+    throw new Error(
+      `--clock-real ${clockReal} names the launch instant a case's clock moves on from, and this start has no case world (--world)`
+    );
+  }
+  /** The case's clock now, or why it is unknown. With `clockReal`, it is the world's clock moved on
+   * by the time since the launch instant that file holds, as outcome.ts and lane D's replay put
+   * each record of the run on the case's timeline (clock.txt plus the time since clock-real.txt).
+   * rig.sh writes that file after the stand-in starts, so the file is read at each call, and the
+   * stand-in's start never takes its place. Without `clockReal`, the time since the stand-in
+   * started moves the clock on. */
+  const caseNow = (): bigint | string => {
+    const now = BigInt(Date.now()) * 1_000_000n;
+    if (clockReal === undefined) return clockAt + now - startedNs;
+    let text: string;
+    try {
+      text = readFileSync(clockReal, "utf8").trim();
+    } catch (error) {
+      return `the launch instant file ${clockReal} cannot be read: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    const launched = parseInstant(text);
+    if (launched === undefined) {
+      return `the launch instant file ${clockReal} holds ${JSON.stringify(text)}, which is no RFC 3339 time`;
+    }
+    return clockAt + now - launched;
+  };
   /** Encoded exactly as the daemon encodes it (`legion-<project>-<key>-<role>`, lower-cased),
    * since the worker claims this token on the real Envoy and Envoy rejects uppercase. */
   const roleTokenValue =
@@ -876,7 +913,10 @@ export function startDaemonStandin(options: StandinOptions): Standin {
         `${issue} has no open production check opened at ${opened}; this completion changed nothing`
       );
     }
-    if (Date.parse(opened) !== Date.parse(check.openedAt)) {
+    // The daemon compares the two instants to the nanosecond, in any offset
+    // (`check.OpenedAt.Equal`), and a JavaScript Date reads milliseconds alone.
+    const openedAt = parseInstant(opened);
+    if (openedAt === undefined || openedAt !== parseInstant(check.openedAt)) {
       return failure(
         409,
         "CHECK_NOT_OPEN",
@@ -950,12 +990,20 @@ export function startDaemonStandin(options: StandinOptions): Standin {
         `the ${verdict} report on look ${check.look} of ${issue}'s production check was already received; this call changed nothing`
       );
     }
+    // The case's now is read before the report moves anything, so a launch instant the stand-in
+    // cannot read leaves the check as it stood.
+    const now = verdict !== "pending" || check.last ? undefined : caseNow();
+    if (typeof now === "string") {
+      const reason = `${now}. The case's now is unknown, so this report changed nothing.`;
+      console.error(`daemon-standin: handoff/complete answered 500: ${reason}`);
+      return failure(500, "CASE_CLOCK_UNREADABLE", reason);
+    }
     held.reported.add(reported);
-    if (verdict !== "pending" || check.last) held.checkOpen = false;
+    if (now === undefined) held.checkOpen = false;
     else {
       held.lookOpen = false;
       const bound = parseInstant(check.boundAt) ?? 0n;
-      const floor = caseNow() + 60_000_000_000n;
+      const floor = now + 60_000_000_000n;
       const named = parseInstant(request.wakeAt ?? "") ?? floor;
       const wake = named < floor ? floor : named;
       held.nextWakeAt = wake >= bound ? check.boundAt : rfc3339(wake - (wake % 1000n));
@@ -1343,7 +1391,7 @@ export function startDaemonStandin(options: StandinOptions): Standin {
 }
 
 const USAGE =
-  "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> <repository> <default branch> [<phase>] [--tree <root>] [--world <file>] [--answers <file>] [--case-answers <file>] [--gh-calls <file>] [--issues <file>] [--label <checkout>] [--dispatch <url> <token file>]";
+  "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> <repository> <default branch> [<phase>] [--tree <root>] [--world <file>] [--clock-real <file>] [--answers <file>] [--case-answers <file>] [--gh-calls <file>] [--issues <file>] [--label <checkout>] [--dispatch <url> <token file>]";
 
 function refuse(message: string): never {
   console.error(message);
@@ -1405,6 +1453,7 @@ if (import.meta.main) {
   const values: {
     tree?: string;
     world?: string;
+    clockReal?: string;
     answers?: string;
     caseAnswers?: string;
     ghCalls?: string;
@@ -1427,6 +1476,9 @@ if (import.meta.main) {
         break;
       case "--world":
         values.world = take(option);
+        break;
+      case "--clock-real":
+        values.clockReal = take(option);
         break;
       case "--answers":
         values.answers = take(option);
@@ -1501,6 +1553,7 @@ if (import.meta.main) {
       phase,
       handoffWords,
       world,
+      clockReal: values.clockReal,
       answers: [
         ...(values.caseAnswers === undefined ? [] : readAnswers(values.caseAnswers)),
         ...(values.answers === undefined ? [] : readAnswers(values.answers)),
