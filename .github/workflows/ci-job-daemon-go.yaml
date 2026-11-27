@@ -243,7 +243,7 @@ jobs:
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The shape gate of internal/api again, stamped with HEAD's contract entries in main's merge
@@ -549,7 +549,7 @@ jobs:
       - name: Test the concurrent packages under the race detector
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
         working-directory: packages/daemon
 
       - name: Report the service's peak connections

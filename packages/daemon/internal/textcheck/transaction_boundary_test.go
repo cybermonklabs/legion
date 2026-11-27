@@ -91,6 +91,10 @@ var allowances = []allowance{
 	// string the server runs as one implicit transaction. No transaction of Transact's can hold a
 	// lock across a CREATE DATABASE, and the connection is the one *pgx.Conn above.
 	{"internal/replay", "replayTemplate", "R3", 5},
+	// That connection also turns JIT off on each database it just made, a run's own and the
+	// template's build (docs/testing.md, "A database a Go test creates"): one ALTER DATABASE, which
+	// must be set before any pool opens on the database, as synchronous_commit above.
+	{"internal/replay", "(replayDatabase).WithoutJIT", "R3", 1},
 }
 
 // excludedPackages are the packages the guard does not walk, each with its reason.

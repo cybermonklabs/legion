@@ -591,6 +591,7 @@ Each run makes a database of its own there and drops it at the end.
 The run copies its database from a template that holds the daemon's migrations and the replay's own tables, `legion_replay_template_<key>`.
 The key is a hash of those migrations and tables, so a `legion` binary with other migrations uses a template of its own.
 The first run on a server makes the template from `template1`, and every later run copies it.
+The template and each run's database run with PostgreSQL's JIT compilation off, as the daemon's store on Cloud SQL runs.
 `run --keep-db` keeps the database of its run.
 No run writes to the database that `--pg-dsn` names.
 Use a test server.

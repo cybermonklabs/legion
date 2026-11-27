@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/httpoutage"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -241,12 +242,13 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 	return nil
 }
 
-// catchUpWithRetries catches up one root, reading Dispatch again for an error it may stop giving,
-// and returns only what makes the boot's attempt fail: the boot's own end, Dispatch not answering
-// at all, which the boot waits out, or a TLS failure of Dispatch's transport
-// (dispatch.TransportRefusal), which stops the start, even beside a read of the root Dispatch did
-// not answer, as it does at every other boot probe of Dispatch. Every other error is logged, and
-// the root is released as it stands.
+// catchUpWithRetries catches up one root, reading Dispatch again for an error it may stop giving
+// on its own, an outage (httpoutage.Is: a 5xx, a 408 or a 429), and returns only what makes the
+// boot's attempt fail: the boot's own end, Dispatch not answering at all, which the boot waits
+// out, or a TLS failure of Dispatch's transport (dispatch.TransportRefusal), which stops the
+// start, even beside a read of the root Dispatch did not answer, as it does at every other boot
+// probe of Dispatch. Every other error is logged, and the root is released as it stands: a
+// credential refusal (401, 403) waits on an operator, and a coded 4xx on nothing at all.
 func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRoot) error {
 	bound := w.catchUpRootTimeout
 	if bound == 0 {
@@ -268,7 +270,7 @@ func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRo
 			return nil
 		case dispatch.TransportRefusal(err):
 			return err
-		case answered && retriable(refusal) && attempt < catchUpAttempts:
+		case answered && httpoutage.Is(refusal.Status) && attempt < catchUpAttempts:
 			w.log.Warn("boot catch-up reads a root again after Dispatch refused it", "issue", root.issue.Key, "attempt", attempt, "error", err)
 			select {
 			case <-ctx.Done():
@@ -299,12 +301,6 @@ func dispatchAnswered(err error) (*dispatch.Error, bool) {
 		return nil, false
 	}
 	return refusal, true
-}
-
-// retriable says whether Dispatch may stop giving refusal on its own: a 5xx, 408 or 429. A
-// credential refusal (401, 403) waits on an operator, and a coded 4xx on nothing at all.
-func retriable(refusal *dispatch.Error) bool {
-	return refusal.Status >= 500 || refusal.Status == http.StatusRequestTimeout || refusal.Status == http.StatusTooManyRequests
 }
 
 // catchUpRoot catches up one root: it reads the issue's latest sequence on Dispatch, mirrors the

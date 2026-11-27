@@ -172,6 +172,46 @@ test("a 5xx at claims/register is logged and rejects without stopping; a request
   expect(unreachable.lines).toEqual([]);
 });
 
+// An outage (`@legion/contracts/http-status`: a 5xx, a 408 or a 429) is no answer about the
+// registration or the ready. The daemon writes no 408 and no 429, so a proxy between the session
+// and the daemon sends either; the stand-in answers each as the daemon client's caller sees it.
+const OUTAGES = [408, 429, 500, 501, 503] as const;
+
+for (const status of OUTAGES) {
+  test(`a ${status} at claims/register is logged and rejects without stopping`, async () => {
+    const { host, steps, lines } = claimHost({
+      register: () => Response.json({ error: "register failed" }, { status }),
+    });
+    await expect(bootLegionClaim(host)).rejects.toThrow(
+      `POST /legion/v1/claims/register failed with ${status}: register failed`
+    );
+    expect(steps).toEqual([`claims/register ${JSON.stringify(registration)}`]);
+    expect(lines).toEqual([`claims/register registration failed (${status}): register failed`]);
+  });
+
+  test(`a ${status} at claims/ready is sent again, and the boot goes on to the claim once ready answers`, async () => {
+    let readies = 0;
+    const { host, steps, firstTurn } = claimHost({
+      ready: () =>
+        ++readies === 1
+          ? Response.json({ error: "ready failed" }, { status })
+          : new Response(null, { status: 204 }),
+    });
+    const booted = await bootLegionClaim(host);
+    firstTurn()?.();
+    await booted.claimed;
+    expect(steps).toEqual([
+      `claims/register ${JSON.stringify(registration)}`,
+      "onFirstTurn",
+      "setCapability",
+      `claims/ready ${readyBody()}`,
+      `claims/ready ${readyBody()}`,
+      "onRoleRegained",
+      `claimRole ${claimToken}`,
+    ]);
+  });
+}
+
 test("a claim the listener refuses is logged naming the claim token and what stop does, then stops the agent — after the daemon has been told ready", async () => {
   const { host, steps, lines, firstTurn } = claimHost({
     overrides: {
