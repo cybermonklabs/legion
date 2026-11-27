@@ -122,6 +122,54 @@ func TestAWaitRoundTripsAndOnlyItsOwnWritersMoveTheSequences(t *testing.T) {
 	})
 }
 
+// The document the act that answered a wait was of, the step whose row held it and the version
+// of the review are recorded beside the answer as one (Awaiting.AnsweredDocument) and read back as
+// written. A daemon of an earlier release names none of their columns, so its write of a later
+// answer leaves the old version, document and step beside a moment that is no longer the
+// answer's, and that answer reads as one with no document rather than with the review before it.
+// An answer that is of no document records none.
+func TestAnAnswersReviewedVersionIsReadOnlyBesideTheAnswerItWasWrittenWith(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 13, 9, 0, 0, 123456789, time.UTC)
+	inTx(t, st, func(tx pgx.Tx) {
+		putRoot(t, ctx, records, tx, "LEGION-1")
+		stored, err := records.Issue(ctx, tx, "LEGION-1")
+		must(t, err)
+		waiting := *stored
+		waiting.Phase = phase.AwaitingPerson
+		reviewed := AnsweredDocument{Version: 3, Artifact: "artifact-1", Step: DesignStepCriteria}
+		waiting.Awaiting = &Awaiting{Ask: "ask-q", AnsweredAt: &at, AnsweredBy: AnsweredByChanges, AnsweredDetail: `version 3: "say more"`,
+			AnsweredDocument: &reviewed, Since: EventMark{Seq: 11, At: at}}
+		must(t, records.PutIssue(ctx, tx, waiting))
+		read, err := records.Issue(ctx, tx, "LEGION-1")
+		must(t, err)
+		if read.Awaiting == nil || read.Awaiting.AnsweredDocument == nil || *read.Awaiting.AnsweredDocument != reviewed {
+			t.Fatalf("awaiting = %+v, want the reviewed version 3 of artifact-1 on the criteria step read back", read.Awaiting)
+		}
+
+		// The earlier release's write of a later answer: every awaiting column it names, and
+		// none of the version's, the document's and the step's.
+		_, err = tx.Exec(ctx, `update issues set awaiting_answered_at = $2, awaiting_answered_detail = 'version 5: "again"' where key = $1`,
+			"LEGION-1", at.Add(time.Hour))
+		must(t, err)
+		read, err = records.Issue(ctx, tx, "LEGION-1")
+		must(t, err)
+		if read.Awaiting == nil || read.Awaiting.AnsweredDocument != nil {
+			t.Fatalf("awaiting after an earlier release's answer = %+v, want no document: the stored one is the answer before it", read.Awaiting)
+		}
+
+		waiting.Awaiting = &Awaiting{Ask: "ask-q", AnsweredAt: &at, AnsweredBy: AnsweredByAsk, AnsweredDetail: "ask-q", Since: EventMark{Seq: 11, At: at}}
+		must(t, records.PutIssue(ctx, tx, waiting))
+		read, err = records.Issue(ctx, tx, "LEGION-1")
+		must(t, err)
+		if read.Awaiting == nil || read.Awaiting.AnsweredDocument != nil {
+			t.Fatalf("awaiting answered by an ask = %+v, want no document", read.Awaiting)
+		}
+	})
+}
+
 // A hand-back with no sequence cannot be placed, and is refused rather than recorded.
 func TestDeclareRefusesAHandBackWithNoSequence(t *testing.T) {
 	ctx := context.Background()

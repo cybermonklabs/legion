@@ -44,6 +44,10 @@
 # control's operation demonstrably happened after the baseline, and that the daemon's own side was
 # unaffected by it.
 #
+# `negative repo-edit` has a precondition: LEGION_E2E_REPO_X is a repository Legion does not serve
+# for the project, because a GitHub App is not installed on it. When both Apps are installed on X,
+# the daemon moves the record onto X, and the control fails.
+#
 # Required inputs (every one an operator input; the script refuses to start without any of
 # them, naming the first missing one, and never carries a literal of its own):
 #   LEGION_E2E_REPO_T       the toolchain repository, owner/name
@@ -195,8 +199,11 @@ rm -f "$healthz_file"
 # contract grows, so the check reads `.status` alone and not the whole body. `jq -e` exits non-zero
 # for a body that is not JSON, for an object that holds no `status`, and for any `status` but `ok`,
 # so a URL that answers something which is not a health body still fails the run.
-[ "$healthz_status" = 200 ] && printf '%s' "$healthz_body" | jq -e '.status == "ok"' >/dev/null 2>&1 ||
+if [ "$healthz_status" = 200 ] && printf '%s' "$healthz_body" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+  :
+else
   fail "LEGION_E2E_DAEMON_URL $LEGION_E2E_DAEMON_URL is not a Legion daemon: GET /healthz answered $healthz_status $healthz_body"
+fi
 
 dispatch_token=$(cat "$DISPATCH_TOKEN_FILE") || fail "could not read DISPATCH_TOKEN_FILE"
 [ -n "$dispatch_token" ] || fail "DISPATCH_TOKEN_FILE is empty"
@@ -654,13 +661,11 @@ $push_t_body
 }
 
 # cache <issue KEY> <pod> [container]: the named pod's legion.dev/issue label matches the issue,
-# its fetch container's log carries the producer's exact, anchored cache-stream-with-delta success
-# line (packages/daemon/cmd/legion/workspace_fetch.go:83, the form workspace_fetch_test.go:572
-# pins, with the duration fields permissive enough for Go's own minute-and-above format, 1m2.345s),
-# and the daemon's state shows that issue's repository's cache ready.
-cache_success_re='^workspace-init fetch: [0-9,]+ bytes from the repository cache .+ in [0-9a-zµ.]+, its history verified in [0-9a-zµ.]+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs?\)$'
+# its `workspace-init` log carries the producer's exact, anchored cache-stream-with-delta success
+# line, and the daemon's state shows that issue's repository cache ready.
+cache_success_re='^workspace-init: [0-9,]+ bytes from the repository cache .+ in [0-9a-zµ.]+, its history verified in [0-9a-zµ.]+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs?\)$'
 cache_check() {
-  local key=$1 pod=$2 container=${3:-workspace-fetch} repo ready logs_file ok=1
+  local key=$1 pod=$2 container=${3:-workspace-init} repo ready logs_file ok=1
   command -v kubectl >/dev/null || fail "cache: kubectl is required and is not on PATH"
   require_pod_for_issue "$pod" "$key"
   logs_file="$MULTIREPO_EVIDENCE_DIR/cache-logs-$key.raw"
@@ -844,8 +849,8 @@ $(cat "$prs_file")
 # (.resolved_repo is null), and the latest repository note among the messages claiming the
 # daemon's actor (actor {kind:"session", id:"legion-daemon:<PROJECT>"}; the id is caller-named, see
 # the header) is the exact no-repository admission refusal, word for word, with the daemon's outbox
-# marker (internal/workflow/repository.go:76, internal/record/outbox.go:71-73,104-106: body =
-# note + "\n\n<!-- legion-outbox:<id> -->").
+# marker (RefuseRecording, in internal/workflow/repository.go; messageSeparator, messageMarkerOpen
+# and messageMarkerClose, in internal/record/outbox.go: body = note + "\n\n<!-- legion-outbox:<id> -->").
 negative_no_repo() {
   local key=$1 ok=1 has
   local state_file
@@ -885,14 +890,19 @@ latest daemon repository note is the none-note: $latest_is_none
 # the edit really happened there — (3) an `issue.updated` event's `.seq` is above the baseline's
 # own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a
 # wall-clock comparison, and never merely "any issue.updated", which the daemon's own routine
-# status writes also emit), and (4) the daemon's own exact kept-repository message
-# (internal/workflow/repository.go:94) appears among its messages, word for word, with the
-# baseline's own repository spelling and Dispatch's own resolved spelling of X substituted in —
-# never the operator's own LEGION_E2E_REPO_X spelling, which may differ only in case from what
-# Dispatch actually resolved and wrote — with the daemon's claimed actor id and outbox marker. A
-# rerun needs no second message: `noteOnce` posts the kept-repository note once per resolution
-# (internal/workflow/repository.go:101-113), so check (3) is this protocol's primary proof and (4)
-# is the format checked, not required fresh.
+# status writes also emit), and (4) the daemon's own message about the repository it keeps
+# (noteRepositoryChangeWaits, in internal/workflow/repository.go) appears among its messages,
+# with the daemon's claimed actor id and outbox marker. That message names why X is not served and
+# what a person can do, which differs with the refusal (the App or Apps not installed on X), and
+# ends with when Legion moves the issue itself. So the check matches, word for word, the opening
+# every variant shares, "Legion did not move this issue off <repo>: ", with the baseline's own
+# repository spelling, and, just before the outbox marker, the closing sentence "Legion moves the
+# issue at its next event or at Legion's next boot, once both Legion Apps are installed on <X>.",
+# whose <X> is matched against LEGION_E2E_REPO_X case-insensitively, since the daemon writes
+# Dispatch's spelling of it. Since dispatch://INFRA-4401 (#4493) the daemon reads no repository
+# mapping, so a mapped X is told the same closing as any other. A rerun needs no second message:
+# `noteOnce` posts that note once per resolution (noteOnce, in the same file), so check (3) is this
+# protocol's primary proof and (4) is the format checked, not required fresh.
 negative_repo_edit() {
   local phase=$1
   if [ "$phase" = before ]; then
@@ -937,22 +947,26 @@ negative_repo_edit() {
     '[.[] | select(.type=="issue.updated" and .seq > $since and ((.payload.repo // "") | ascii_downcase) == $x)] | length' "$events_file")
   { [ -n "${edit_after:-}" ] && [ "$edit_after" -gt 0 ]; } 2>/dev/null || ok=0
 
-  local project daemon_actor note has_note
+  local project daemon_actor opening lead has_note
   project=$(issue_project "$child")
   daemon_actor="legion-daemon:$project"
-  # The note's own repository names are Dispatch's own spellings (the baseline's kept repository,
-  # $dispatch_repo_now for the one it refused), never the operator's LEGION_E2E_REPO_X, which the
-  # case-insensitive comparisons above tolerate differing from but a literal quote must not.
-  note="Legion keeps $b_repo as this issue's repository; the change to $dispatch_repo_now in Dispatch is not applied — an issue's repository is fixed when Legion records it. Create a new issue for $dispatch_repo_now instead."
+  # The daemon's own words for a change it cannot apply yet (noteRepositoryChangeWaits, in
+  # internal/workflow/repository.go): the opening every variant shares, with the baseline's own
+  # spelling of the kept repository, and the closing sentence. What lies between names the
+  # refusal, which depends on why the deployment does not serve X. The closing is `lead`, X and a
+  # full stop, where X is Dispatch's spelling, so only X is compared case-insensitively.
+  opening="Legion did not move this issue off $b_repo: "
+  lead=" Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on "
   # lib/multi-repo-kept-note.jq: the daemon posted the note, and a message its author deleted is no
   # note.
-  has_note=$(jq --arg actor "$daemon_actor" --arg note "$note" -f "$script_dir/lib/multi-repo-kept-note.jq" "$events_file")
+  has_note=$(jq --arg actor "$daemon_actor" --arg opening "$opening" --arg lead "$lead" --arg x "$repo_x" \
+    -f "$script_dir/lib/multi-repo-kept-note.jq" "$events_file")
   [ "$has_note" = "true" ] || ok=0
 
   summary "negative-repo-edit-$child" "baseline: repo=$b_repo last_seq=$b_last_seq
 now: daemon repo=$now_repo, Dispatch repo=$dispatch_repo_now
 issue.updated events with seq above baseline naming X: $edit_after
-daemon's exact kept-repository message present: $has_note
+daemon's kept-repository message present: $has_note
 " >/dev/null
   check "negative-repo-edit-$child" "$ok"
 }

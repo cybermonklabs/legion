@@ -19,6 +19,7 @@ const dropControllerWakesVersion = 20261115121838
 // release still writes, and an architect's notice, stand untouched after the migration, so the
 // delete takes the two unrunnable kinds and nothing else.
 func TestTheControllerNoticesNoReleaseWritesAreGoneAfter20261115121838(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, dropControllerWakesVersion-1)

@@ -1,6 +1,6 @@
 package contracts
 
-//ci:reads packages/contracts/fixtures/subject-project.json the shared subject-project cases, read through ../../../contracts
+//ci:reads packages/contracts/fixtures/subject-project.json readSubjectProjectFixture reads the shared cases the generated subject builders and readers are held to
 
 import (
 	"encoding/json"
@@ -112,6 +112,7 @@ func TestTheGeneratedBuildersWriteTheSharedFixturesNames(t *testing.T) {
 		"legacyAgentSubject":   func(args []string) string { return LegacyAgentSubject(args[0]) },
 		"roleSubject":          func(args []string) string { return RoleSubject(args[0], args[1]) },
 		"legionWakeSubject":    func(args []string) string { return LegionWakeSubject(args[0]) },
+		"legionStateSubject":   func(args []string) string { return LegionStateSubject(args[0]) },
 	}
 	for _, row := range readSubjectProjectFixture(t).Builders {
 		build, ok := builders[row.Fn]

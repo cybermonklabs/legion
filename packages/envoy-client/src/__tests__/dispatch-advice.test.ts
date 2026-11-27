@@ -772,11 +772,14 @@ describe("the related-item check", () => {
       { related: [] },
       "No related-item check was made: the server did not say whether it searched. Search before you rely on this being new: dispatch search --project DSP --query 'Created issue'",
     ],
-  ] as const)("an older server's %s reads as one of the forms", async (_shape, suggestions, form) => {
-    const result = await createIssue(suggestions as Suggestions | undefined);
+  ] as const)(
+    "an older server's %s reads as one of the forms",
+    async (_shape, suggestions, form) => {
+      const result = await createIssue(suggestions as Suggestions | undefined);
 
-    expect(result.text).toBe([createdLine, form].join("\n"));
-  });
+      expect(result.text).toBe([createdLine, form].join("\n"));
+    }
+  );
 
   test("dispatch_issue naming an external issue Dispatch already holds does not say it created one", async () => {
     // Dispatch answers an external reference it already holds with 200 (a new issue is 201), the
@@ -835,55 +838,58 @@ describe("the related-item check", () => {
   test.each([
     ["ada@example.com", "; assigned to ada@example.com"],
     [null, "; unassigned"],
-  ] as const)("an external issue Dispatch already holds (assignee %p) says nothing was created and prints no related-item check", async (assignee, said) => {
-    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const target = new URL(String(url));
-      const method = init?.method ?? "GET";
-      if (target.pathname === "/api/v1/issues" && method === "POST") {
-        return response({
-          key: "DSP-42",
-          title: "External issue",
-          project: "DSP",
-          assignee,
-          components: {
-            mode: "inherit",
-            ids: [],
-            unknown: [],
-            reason: null,
-            inherited_from: null,
-          },
-          advice: advice({
-            suggestions: {
-              outcome: "not_made",
-              related: [],
-              missing: "Dispatch already holds this issue; nothing was created",
+  ] as const)(
+    "an external issue Dispatch already holds (assignee %p) says nothing was created and prints no related-item check",
+    async (assignee, said) => {
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const target = new URL(String(url));
+        const method = init?.method ?? "GET";
+        if (target.pathname === "/api/v1/issues" && method === "POST") {
+          return response({
+            key: "DSP-42",
+            title: "External issue",
+            project: "DSP",
+            assignee,
+            components: {
+              mode: "inherit",
+              ids: [],
+              unknown: [],
+              reason: null,
+              inherited_from: null,
             },
-          }),
-        });
-      }
-      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
-        return response([]);
-      }
-      throw new Error(`unexpected request: ${method} ${target.pathname}`);
-    };
+            advice: advice({
+              suggestions: {
+                outcome: "not_made",
+                related: [],
+                missing: "Dispatch already holds this issue; nothing was created",
+              },
+            }),
+          });
+        }
+        if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+          return response([]);
+        }
+        throw new Error(`unexpected request: ${method} ${target.pathname}`);
+      };
 
-    const result = await executeDispatchTool({
-      tool: "dispatch_issue",
-      args: { project: "DSP", title: "External issue", external: "owner/repo#7" },
-      cwd: "/workspace",
-      host: "omp",
-      sessionId: "session-1",
-      config,
-      env: {},
-      exec: repoExec(),
-      fetchImpl: fetchImpl as typeof fetch,
-      subscriptions: async () => [],
-    });
+      const result = await executeDispatchTool({
+        tool: "dispatch_issue",
+        args: { project: "DSP", title: "External issue", external: "owner/repo#7" },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec(),
+        fetchImpl: fetchImpl as typeof fetch,
+        subscriptions: async () => [],
+      });
 
-    expect(result.text).toBe(
-      `Dispatch already holds DSP-42: External issue → http://dispatch.test/issues/DSP-42; nothing was created${said} ${issueSuffix}`
-    );
-  });
+      expect(result.text).toBe(
+        `Dispatch already holds DSP-42: External issue → http://dispatch.test/issues/DSP-42; nothing was created${said} ${issueSuffix}`
+      );
+    }
+  );
 
   test("an ask item says where the ask stands", async () => {
     const answer = (selected: string[], text: string | null) => ({
@@ -1409,84 +1415,87 @@ describe("a document write that superseded a person's approval", () => {
     ],
     ["dispatch_artifact", "a person", planUpload, "alice", "person"],
     ["dispatch_doc_edit", "a person", planEdit, "alice", "person"],
-  ])("%s on a plan %s approved names dispatch plan-approve, not dispatch request-approval", async (tool, _approver, args, approvedBy, kind) => {
-    const plan = {
-      id: "artifact-43",
-      issue_key: "DSP-42",
-      project: "DSP",
-      name: "plan.md",
-      slug: "plan-md",
-      role: "plan",
-      primary: false,
-    };
-    const superseded = { approved_version: 1, version: 2, approved_by: approvedBy, kind };
-    const staled = advice({ superseded_approval: superseded });
-    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const target = new URL(String(url));
-      const method = init?.method ?? "GET";
-      const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
-      if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
-        return response({
-          key: "DSP-42",
-          title: "Original title",
-          status: "in_progress",
-          labels: [],
-          route: null,
-          parent: null,
-          external_links: [],
-          primary_artifact_id: "artifact-42",
-          artifacts: [
-            {
-              id: "artifact-42",
-              issue_key: "DSP-42",
-              project: "DSP",
-              name: "spec.md",
-              slug: "spec",
-              primary: true,
-            },
-            plan,
-          ],
-        });
-      }
-      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
-        return response([plan]);
-      }
-      if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
-        return response({ markdown: body.markdown });
-      }
-      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "POST") {
-        return response(withAdvice({ artifact: plan, version: { number: 2 } }, staled));
-      }
-      if (target.pathname === "/api/v1/artifacts/artifact-43/edits" && method === "POST") {
-        return response(
-          withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
-        );
-      }
-      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
-        return new Response("[]", { headers: { "Content-Type": "application/json" } });
-      }
-      throw new Error(`unexpected request: ${method} ${target.pathname}`);
-    };
+  ])(
+    "%s on a plan %s approved names dispatch plan-approve, not dispatch request-approval",
+    async (tool, _approver, args, approvedBy, kind) => {
+      const plan = {
+        id: "artifact-43",
+        issue_key: "DSP-42",
+        project: "DSP",
+        name: "plan.md",
+        slug: "plan-md",
+        role: "plan",
+        primary: false,
+      };
+      const superseded = { approved_version: 1, version: 2, approved_by: approvedBy, kind };
+      const staled = advice({ superseded_approval: superseded });
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const target = new URL(String(url));
+        const method = init?.method ?? "GET";
+        const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+        if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
+          return response({
+            key: "DSP-42",
+            title: "Original title",
+            status: "in_progress",
+            labels: [],
+            route: null,
+            parent: null,
+            external_links: [],
+            primary_artifact_id: "artifact-42",
+            artifacts: [
+              {
+                id: "artifact-42",
+                issue_key: "DSP-42",
+                project: "DSP",
+                name: "spec.md",
+                slug: "spec",
+                primary: true,
+              },
+              plan,
+            ],
+          });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+          return response([plan]);
+        }
+        if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+          return response({ markdown: body.markdown });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "POST") {
+          return response(withAdvice({ artifact: plan, version: { number: 2 } }, staled));
+        }
+        if (target.pathname === "/api/v1/artifacts/artifact-43/edits" && method === "POST") {
+          return response(
+            withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
+          );
+        }
+        if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+          return new Response("[]", { headers: { "Content-Type": "application/json" } });
+        }
+        throw new Error(`unexpected request: ${method} ${target.pathname}`);
+      };
 
-    const result = await executeDispatchTool({
-      tool,
-      args,
-      cwd: "/workspace",
-      host: "omp",
-      sessionId: "session-1",
-      config,
-      env: {},
-      exec: repoExec(),
-      fetchImpl: fetchImpl as typeof fetch,
-      subscriptions: async () => [],
-    });
+      const result = await executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec(),
+        fetchImpl: fetchImpl as typeof fetch,
+        subscriptions: async () => [],
+      });
 
-    expect(result.text).toContain(
-      `Stored version 2, superseding version 1, which ${approvedBy} approved.`
-    );
-    expect(result.text).toContain("dispatch plan-approve");
-    expect(result.text).not.toContain("dispatch request-approval");
-  });
+      expect(result.text).toContain(
+        `Stored version 2, superseding version 1, which ${approvedBy} approved.`
+      );
+      expect(result.text).toContain("dispatch plan-approve");
+      expect(result.text).not.toContain("dispatch request-approval");
+    }
+  );
 
   // A role belongs to an issue's documents alone, and the slug fallback that names a role-less
   // `plan-md` a plan exists for an issue document whose role column a rolling deploy left null
@@ -1532,95 +1541,100 @@ describe("a document write that superseded a person's approval", () => {
       projectPlan,
       false,
     ],
-  ])("%s on %s a person approved names the command that restores it", async (tool, _which, args, document, isPlan) => {
-    const superseded = { approved_version: 1, version: 2, approved_by: "alice" };
-    const staled =
-      document.issue_key === null
-        ? { decision_blocks: 0, decision_blocks_added: 0, superseded_approval: superseded }
-        : advice({ superseded_approval: superseded });
-    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const target = new URL(String(url));
-      const method = init?.method ?? "GET";
-      const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
-      if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
-        return response({
-          key: "DSP-42",
-          title: "Original title",
-          status: "in_progress",
-          labels: [],
-          route: null,
-          parent: null,
-          external_links: [],
-          primary_artifact_id: "artifact-42",
-          artifacts: [
-            {
-              id: "artifact-42",
-              issue_key: "DSP-42",
-              project: "DSP",
-              name: "spec.md",
-              slug: "spec",
-              primary: true,
-            },
-            roleLessPlan,
-          ],
-        });
-      }
-      if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
-        return response([roleLessPlan]);
-      }
-      if (target.pathname === "/api/v1/projects/DSP/artifacts" && method === "GET") {
-        return response([projectPlan]);
-      }
-      if (
-        (target.pathname === "/api/v1/projects/DSP/artifacts/plan-md" ||
-          target.pathname === "/api/v1/projects/DSP/artifacts/plan.md") &&
-        method === "GET"
-      ) {
-        return response(projectPlan);
-      }
-      if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
-        return response({ markdown: body.markdown });
-      }
-      if (
-        (target.pathname === "/api/v1/issues/DSP-42/artifacts" ||
-          target.pathname === "/api/v1/projects/DSP/artifacts") &&
-        method === "POST"
-      ) {
-        return response(withAdvice({ artifact: document, version: { number: 2 } }, staled));
-      }
-      if (target.pathname === `/api/v1/artifacts/${document.id}/edits` && method === "POST") {
-        return response(
-          withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
-        );
-      }
-      if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
-        return new Response("[]", { headers: { "Content-Type": "application/json" } });
-      }
-      throw new Error(`unexpected request: ${method} ${target.pathname}`);
-    };
+  ])(
+    "%s on %s a person approved names the command that restores it",
+    async (tool, _which, args, document, isPlan) => {
+      const superseded = { approved_version: 1, version: 2, approved_by: "alice" };
+      const staled =
+        document.issue_key === null
+          ? { decision_blocks: 0, decision_blocks_added: 0, superseded_approval: superseded }
+          : advice({ superseded_approval: superseded });
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const target = new URL(String(url));
+        const method = init?.method ?? "GET";
+        const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+        if (target.pathname === "/api/v1/issues/DSP-42" && method === "GET") {
+          return response({
+            key: "DSP-42",
+            title: "Original title",
+            status: "in_progress",
+            labels: [],
+            route: null,
+            parent: null,
+            external_links: [],
+            primary_artifact_id: "artifact-42",
+            artifacts: [
+              {
+                id: "artifact-42",
+                issue_key: "DSP-42",
+                project: "DSP",
+                name: "spec.md",
+                slug: "spec",
+                primary: true,
+              },
+              roleLessPlan,
+            ],
+          });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/artifacts" && method === "GET") {
+          return response([roleLessPlan]);
+        }
+        if (target.pathname === "/api/v1/projects/DSP/artifacts" && method === "GET") {
+          return response([projectPlan]);
+        }
+        if (
+          (target.pathname === "/api/v1/projects/DSP/artifacts/plan-md" ||
+            target.pathname === "/api/v1/projects/DSP/artifacts/plan.md") &&
+          method === "GET"
+        ) {
+          return response(projectPlan);
+        }
+        if (target.pathname === "/api/v1/markdown/round-trip" && method === "POST") {
+          return response({ markdown: body.markdown });
+        }
+        if (
+          (target.pathname === "/api/v1/issues/DSP-42/artifacts" ||
+            target.pathname === "/api/v1/projects/DSP/artifacts") &&
+          method === "POST"
+        ) {
+          return response(withAdvice({ artifact: document, version: { number: 2 } }, staled));
+        }
+        if (target.pathname === `/api/v1/artifacts/${document.id}/edits` && method === "POST") {
+          return response(
+            withAdvice({ applied: 1, version: { number: 2 }, token: "sha256:edited" }, staled)
+          );
+        }
+        if (target.pathname === "/api/v1/projects/DSP/architecture-sources" && method === "GET") {
+          return new Response("[]", { headers: { "Content-Type": "application/json" } });
+        }
+        throw new Error(`unexpected request: ${method} ${target.pathname}`);
+      };
 
-    const result = await executeDispatchTool({
-      tool,
-      args,
-      cwd: "/workspace",
-      host: "omp",
-      sessionId: "session-1",
-      config,
-      env: {},
-      exec: repoExec(),
-      fetchImpl: fetchImpl as typeof fetch,
-      subscriptions: async () => [],
-    });
+      const result = await executeDispatchTool({
+        tool,
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec(),
+        fetchImpl: fetchImpl as typeof fetch,
+        subscriptions: async () => [],
+      });
 
-    expect(result.text).toContain("Stored version 2, superseding version 1, which alice approved.");
-    if (isPlan) {
-      expect(result.text).toContain("`dispatch plan-approve --issue DSP-42 --version 2`");
-      expect(result.text).not.toContain("dispatch request-approval");
-    } else {
-      expect(result.text).toContain("Request approval with `dispatch request-approval`");
-      expect(result.text).not.toContain("plan-approve");
+      expect(result.text).toContain(
+        "Stored version 2, superseding version 1, which alice approved."
+      );
+      if (isPlan) {
+        expect(result.text).toContain("`dispatch plan-approve --issue DSP-42 --version 2`");
+        expect(result.text).not.toContain("dispatch request-approval");
+      } else {
+        expect(result.text).toContain("Request approval with `dispatch request-approval`");
+        expect(result.text).not.toContain("plan-approve");
+      }
     }
-  });
+  );
 });
 
 // The server sends `moved_approval_request` only on a write whose version took an open approval
@@ -1768,13 +1782,16 @@ describe("a document write that moved an open approval request", () => {
       "dispatch request-approval --project DSP --artifact artifact-91 " +
         "--summary '<what changed since version 3>'",
     ],
-  ])("a request whose first document is %s names it that way in the call", async (_case, tool, args, rawAdvice, command) => {
-    const result = await executeWrite(tool, args, rawAdvice);
+  ])(
+    "a request whose first document is %s names it that way in the call",
+    async (_case, tool, args, rawAdvice, command) => {
+      const result = await executeWrite(tool, args, rawAdvice);
 
-    expect(adviceLines(result.text)[0]).toEndWith(
-      `hand the same request back: ${command}. Not yours to hand back? Tell the issue's architect.`
-    );
-  });
+      expect(adviceLines(result.text)[0]).toEndWith(
+        `hand the same request back: ${command}. Not yours to hand back? Tell the issue's architect.`
+      );
+    }
+  );
 
   // `--include-verification` asks for an issue's spec and that issue's Verification document in
   // one card, and the approval route refuses it on every other document. A request over the
@@ -2224,7 +2241,8 @@ describe("the answered questions of other projects", () => {
 });
 
 // A notice that cites a skill section sends the agent to read it, so each cited section must be a
-// `## ` heading of that skill's SKILL.md, read as dispatch-tools.test.ts reads the Dispatch skill's.
+// `## ` heading of that skill's SKILL.md: the case reads every `## ` line of the file and holds
+// each cited section to them.
 test("every skill section a notice cites is a heading of that skill", () => {
   const repoRoot = path.resolve(import.meta.dir, "../../../..");
   // The dispatcher's entry and every module of its commands: a notice's text sits with the

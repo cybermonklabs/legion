@@ -206,6 +206,7 @@ type busyPane struct {
 // recall, a turn of the agent's own, a newer task in a late turn, a worker in no turn, and the
 // three relaunches.
 func TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newBusyRelaunchLive(t)
 	r.run("busy-late-turn", r.busyLateTurn)
@@ -286,7 +287,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	for _, pane := range r.panes {
 		r.awaitReady(pane.token)
 	}
@@ -957,8 +958,7 @@ func (r *busyRelaunchLive) busyDeliveries(token claim.Token, from int) []string 
 
 // busyRefusal matches the daemon's lines for Oh My Pi's busy answer to a send of the claim's task:
 // supervise's refused, lateRefused and promptResulted, at the base and at this head alike, and
-// this head's waitedOutAnswer, which reads such an answer to a prompt whose wait for its turn had
-// already run out and names Oh My Pi's own words in its why.
+// this head's waitedOutAnswer, which logs the typed outcome when an answer follows a wait timeout.
 func busyRefusal(token claim.Token) func(loggedRecord) bool {
 	return func(record loggedRecord) bool {
 		if record.Attrs["claim"] != string(token) || !strings.HasPrefix(record.Message, "supervise: ") {
@@ -967,7 +967,7 @@ func busyRefusal(token claim.Token) func(loggedRecord) bool {
 		return strings.Contains(record.Message, "it is in a turn of its own") ||
 			strings.Contains(record.Message, "it is busy with the turn of an earlier prompt of this task") ||
 			(strings.HasPrefix(record.Message, "supervise: a prompt whose wait for its turn ran out was answered with no turn") &&
-				strings.Contains(fmt.Sprint(record.Attrs["why"]), "Agent is already processing"))
+				loggedOutcome(record, "agent_busy", "Agent is already processing"))
 	}
 }
 
@@ -1001,8 +1001,17 @@ func promptCharged(token claim.Token) func(loggedRecord) bool {
 // (supervise's noTurn).
 func promptWaitRanOut(token claim.Token) func(loggedRecord) bool {
 	return func(record loggedRecord) bool {
-		return promptCharged(token)(record) && strings.HasPrefix(fmt.Sprint(record.Attrs["why"]), "acknowledged, and no turn started within")
+		return promptCharged(token)(record) && loggedOutcome(record, "no_turn_started", "acknowledged, and no turn started within")
 	}
+}
+
+// The negative-control binary predates the outcome field. Read its old reason only when the
+// field is absent. A typed answer at this head must not match on its words.
+func loggedOutcome(record loggedRecord, outcome, oldReason string) bool {
+	if got, present := record.Attrs["outcome"]; present {
+		return got == outcome
+	}
+	return strings.Contains(fmt.Sprint(record.Attrs["why"]), oldReason)
 }
 
 // recordAttrs is each record's attributes, for a failure that names what the daemon wrote.

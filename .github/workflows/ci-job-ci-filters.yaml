@@ -48,6 +48,16 @@ jobs:
       - name: Check every CI filter matches every file its job reads
         run: .github/scripts/check-ci-filters.sh
 
+      # testcontainers-go's package init reads every process on the machine at each start of a
+      # binary that links it, so no command and no test binary that starts itself may link it
+      # (the script's header says which binaries those are and why). Here because this job runs
+      # on every change to Go code or a module file and already lists both modules. Unlike the
+      # check above it lists with the module cache go fills as it needs, since a chain through a
+      # third-party package is part of what it reads.
+      - name: Check no command or self-starting test binary links testcontainers-go
+        if: ${{ !cancelled() }}
+        run: .github/scripts/testcontainers_links.py
+
       # Each read a Go legs test makes outside its package, held to a //ci: line that names it: a
       # read no line names is a change to that file which selects no package of the legs
       # (.github/scripts/go_legs_select.py, "--check-reads"). Its go list runs GOPROXY=off over an

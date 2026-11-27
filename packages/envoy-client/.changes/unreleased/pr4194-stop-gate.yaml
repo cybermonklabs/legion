@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  `createEnvoyClient` takes the host's reading that its session's stop has begun (`stopping`).
+  Once that reading is true, the client's stop gate sends no registration, removal of topics,
+  interest read, role claim or role read. Such a call none of whose attempts was sent throws
+  `EnvoyStoppingError`, which names the call in `call`, an `EnvoyCall` (new: a method name of
+  `EnvoyClient`, or `handBack`). The client reads the stop before each attempt, a retry's
+  included. An attempt already sent is answered as before. A retry the gate refuses after an
+  earlier attempt was sent ends the call with that attempt's own error, as a call whose retries
+  ran out ends, because that attempt may have landed. The stop's own DELETE still goes, and so
+  does the role hand-back of a host whose stop hands its roles back: the new
+  `stopHandBack(client)` returns that hand-back, the removal of one role hold's topic that the
+  gate lets through. A send and a publish still go too. A listener relay socket that is given
+  `stopping` opens no socket again once the stop has begun.
+time: 2026-11-22T01:16:48Z
+custom:
+    Issue: pr4194

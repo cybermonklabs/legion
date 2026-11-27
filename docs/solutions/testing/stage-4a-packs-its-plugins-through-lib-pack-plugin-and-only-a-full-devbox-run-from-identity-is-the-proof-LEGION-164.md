@@ -24,11 +24,11 @@ Extends docs/solutions/testing/proof-rig-loads-the-production-plugin-tree.md.
   `scripts/e2e/lib/pack-plugin.sh <pi-envoy|pi-legion> <out dir>` and reads its one stdout line,
   the tarball's path. Never parse `npm pack --json` or `bun pm pack` stdout: the prepack's
   `bun build` writes its bundle report there ahead of the JSON (`Bundled 196 modules in 96ms`), so
-  `jq -r '.[0].filename'` dies on column 8 on an operator's npm 10. The helper rewrites
-  `omp.extensions` to the dist bundle as the release does, packs with the report on stderr, and
-  restores the committed manifest on every exit; it needs `bun install --frozen-lockfile` at the
-  root first, and `jq`, which the worker image lacks (prove the step in a pod with a stand-in on
-  PATH, and say so).
+  `jq -r '.[0].filename'` dies on column 8 on an operator's npm 10. The helper rewrites a staged
+  copy's `omp.extensions` to the dist bundle as the release does, packs that copy with the report
+  on stderr, and leaves the checkout's manifest untouched; it needs `bun install
+  --frozen-lockfile` at the root first, and `jq`, which the worker image lacks (prove the step in
+  a pod with a stand-in on PATH, and say so).
 - An operator ask for a stage 4a checkpoint asks for the full run: `STAGE4A_FROM=<checkpoint>`
   (the script's variable — not `LEGION_E2E_FROM`, which it sets for the Go test itself) is "a
   development run, never the proof" by the script's own line, and a reviewer discounts it. Read

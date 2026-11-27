@@ -491,7 +491,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), from, movedBack, false)
+	entry, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), from, movedBack, nil)
 	if err != nil {
 		return err
 	}
@@ -665,23 +665,31 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // row whose work is sent and the rows are read once (admit's owedEntryRoles).
 //
 // The row's EntryTask is that work: the text the transition composed and wrote in the same
-// transaction as the number it raised (enter), so it is sent as it stands.
+// transaction as the number it raised (enter), so it is sent as it stands, but for its working
+// copy line, which every send of a worker's task writes again for the repository the process it
+// goes to works (WorkingCopyAtSend).
 //
 // A row carrying no task is sent the phase's resume task instead (ResumeTask), which says to
 // carry the work on rather than beginning it. Two rows are in that state: one the upgrade to the
 // entry left with no task, since the release before it recorded none, and one a re-admission
-// reset (record.Store.ClearGeneration).
+// reset (Engine.ClearGeneration).
 //
 // It is exported for admission, which repairs a slot whose worker has no task with it
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
 // back into a phase is a transition with a task of its own. Its start carries no mark, which is
-// what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry.
+// what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry. The
+// worker another role's open merge holds is held with the work (holdSentWorker), as a worker a
+// move starts is; the ready of a launch holds it itself and sends through sendOwedEntry.
 func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) error {
-	return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{})
+	if err := e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{}); err != nil {
+		return err
+	}
+	return e.holdSentWorker(ctx, tx, issue, role)
 }
 
-// sendOwedEntry is the body SendOwedEntry, the builder of the boot's resume by rule and of the
-// cutover's repair of a merger the `awaiting_merge` cutover left released (resume.go's
+// sendOwedEntry is the send SendOwedEntry makes before its hold, and the one the ready of a launch
+// (readyWorkerTask), which holds the worker itself, the builder of the boot's resume by rule and of
+// the cutover's repair of a merger the `awaiting_merge` cutover left released (resume.go's
 // startSuspendedOwner) and the silence repair (silence.go's repairSilence) share, with the marks
 // of the door the start comes through (startMarks). A mark names that door and not the task's
 // text, so what a claim behind its entry is sent is composed in one place however the start is
@@ -756,7 +764,7 @@ func entryWork(issue record.Issue, row record.PhaseRow, at Standing) string {
 //
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
-// the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
+// the rest of the generation (Engine.ClearTreeGeneration), so the entry the record now
 // holds names work nothing would send. The start is marked a resume task, so the outbox still
 // hands no second prompt to a claim that holds its phase's task
 // (record.SuperviseRequest.ResumeTask), and it sends the task enter stored (startMarks.stored).
@@ -779,7 +787,7 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if held, err := e.holdPromotedStart(ctx, tx, issue, w, role, task, carriedSlot); err != nil || held {
 		return held, err
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, &w, role, task, "", false, false)
+	entry, sent, err := e.enter(ctx, tx, issue, &w, role, task, "", false, nil)
 	if err != nil {
 		return false, err
 	}
@@ -1117,9 +1125,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // leave a parent whose entry a role's move back raised out of retro or merging where it stands
 // (record.PhaseRow.EntryFrom, StopForChildren).
 //
-// verbatim is whether the sweep's send of a root architect's entry again sends that task as
-// written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
-// raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
+// awaiting is the wait a person answered, where the resume of that answer raises a root
+// architect's entry, and nil for every other raise (record.PhaseRow.EntryAwaiting): it is what
+// the sweep's send of such an entry again renders the resume from at its send. Every raise writes
+// it, so a raise that names no wait clears the one an earlier entry's resume left.
 //
 // It also takes the baseline of what the issue's holder knows of the approved design: an issue
 // with no holder row (record.DesignTold) is starting its first working phase of its generation —
@@ -1147,14 +1156,14 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // task. w is the walk of issue's run as the caller read it, which only a phase worker's raise
 // reads; EnterArchitect gives none.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, work string, from phase.Phase,
-	movedBack, verbatim bool,
+	movedBack bool, awaiting *record.Awaiting,
 ) (int64, string, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, "", err
 	}
 	row.Entry++
-	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack, row.EntryFrom = verbatim, e.now(), movedBack, from
+	row.EntryAwaiting, row.EntryRaisedAt, row.EntryMovedBack, row.EntryFrom = awaiting, e.now(), movedBack, from
 	sent := work
 	worker := role != claim.RoleArchitect
 	if worker {
@@ -1199,8 +1208,8 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the
-// work of that entry, whether the sweep sends it again as written (verbatim, enter) and the
-// moment it was raised, and answers the number for the start that hands it
+// work of that entry, the wait a person answered where a resume raises it (awaiting, enter) and
+// the moment it was raised, and answers the number for the start that hands it
 // (record.SuperviseRequest.Entry). A root's architect holds a row of the phases record exactly as
 // every phase worker does, so what it was handed, what that work is and how long it has stood are
 // read from the record rather than from the outbox row that carried it.
@@ -1208,16 +1217,17 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 // It is the one way a root architect's entry is raised, and two starts that hand the architect
 // work it was not on make it. StartArchitect does, for admission's promotion of a queued root
 // (admit's LineQueuedRoot branch) and for the sweep's raise for an architect whose row names no
-// entry, with the derivation's task, which the sweep derives again. ResumeAwaitedRoot does, for
-// the resume of a root a person answered, with the task that names the answer, which the sweep
-// sends as written. Each composes the architect's task itself and enqueues its start itself,
-// because an architect's start waits for no admission slot, so neither writes through start or
-// started, both of which are a phase worker's. The rule it is held to is enter's own, which is
-// why it is one call and not a second implementation: it is made in the transaction that writes
-// that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
-// one reader is the completion route's entry fence, and the architect completes nothing there.
-func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
-	entry, _, err := e.enter(ctx, tx, root, nil, claim.RoleArchitect, task, "", false, verbatim)
+// entry, with the derivation's task and no wait, and the sweep derives that task again.
+// ResumeAwaitedRoot does, for the resume of a root a person answered, with the task that names
+// the answer and the wait it answers, from which the sweep renders that task again at its send.
+// Each composes the architect's task itself and enqueues its start itself, because an
+// architect's start waits for no admission slot, so neither writes through start or started, both
+// of which are a phase worker's. The rule it is held to is enter's own, which is why it is one
+// call and not a second implementation: it is made in the transaction that writes that start. The
+// entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's one reader is the
+// completion route's entry fence, and the architect completes nothing there.
+func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, awaiting *record.Awaiting) (int64, error) {
+	entry, _, err := e.enter(ctx, tx, root, nil, claim.RoleArchitect, task, "", false, awaiting)
 	return entry, err
 }
 
@@ -1242,13 +1252,19 @@ const (
 // task is what a started worker is told. It names the phase the worker starts, which the issue
 // record already holds: one role runs several phases (the implementer runs implementing and
 // retro), and a resumed session cannot otherwise tell a new phase from its last. at is where the
-// worker's work stands (standingPart): its lines are placed right after that line, and the text
-// of its task's block, which the owner of the issue wrote, last of all (Standing.owners).
-// The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
-// its phase word and version with the command that reads that version, the record the daemon
-// accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
-// whenever the completion reported one: the head the planner's, the implementer's, the tester's or
-// the reviewer's record names, and the commit retro and the merger stand on.
+// worker's work stands (standingPart): its working copy line opens the task, on a line of its own
+// before the continue line and the Dispatch title it holds, so no words a person wrote stand
+// before it (workingCopyLine); its lines are placed right after the continue line, and the text of
+// its task's block, which the owner of the issue wrote, last of all (Standing.owners).
+// The handoff a phase ended with is a Dispatch handoff record on the issue. The line names it by
+// its phase word and the version the daemon accepted, with the command that reads that version,
+// because `Handoff commit:` and the verdict are that version's. It also names the command that
+// reads the phase's newest version, because a writer may record a correction after the daemon
+// accepted its record, and a reader given only the pinned command would never read it
+// (dispatch://INFRA-2980); where a commit is named too, the line says that head stands whatever a
+// later version names. A commit is named, as `Handoff commit:`, whenever the completion reported
+// one: the head the planner's, the implementer's, the tester's or the reviewer's record names, and
+// the commit retro and the merger stand on.
 // A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
@@ -1270,13 +1286,16 @@ const (
 // task a held start keeps, this task built for the held phase (holdForChildren, retryPhase), carry
 // none of them.
 func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
-	text := continueLine(issue) + at.lines
+	text := taskOpening(issue, at) + at.lines
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
-		text += fmt.Sprintf(" %s: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", handoffLabel, word, handoff.HandoffVersion, issue.Key, word, handoff.HandoffVersion)
+		text += fmt.Sprintf(" %[4]s: %[1]s version %[2]d (dispatch handoff-read --issue %[3]s --phase %[1]s --version %[2]d); the newest version of that record: dispatch handoff-read --issue %[3]s --phase %[1]s. A version above %[2]d is a correction its writer recorded after the daemon accepted version %[2]d, so read it too.", word, handoff.HandoffVersion, issue.Key, handoffLabel)
 	}
 	if handoff.HandoffCommit != "" {
 		text += " Handoff commit: " + handoff.HandoffCommit + "."
+		if handoff.HandoffRecord != "" {
+			text += " Where a later version names another head, the head this task names is still " + handoff.HandoffCommit + "."
+		}
 	}
 	if handoff.Verdict != "" {
 		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
@@ -1304,15 +1323,40 @@ func sentence(s string) string {
 	return s + "."
 }
 
-// continueLine opens every phase task: the issue, its key and the phase the worker starts, and,
-// for an issue whose spec is a view on an ancestor's requirements, the sentence that says so
-// (viewSentence).
+// taskOpening is how every task of a phase worker opens (task, resumeText): the working copy line
+// of at, where the work stands (Standing.workingCopy), then workingCopyEnd, which ends the line,
+// and the continue line. Every standing holds that line (WorkingCopy writes the branch alone where
+// it names no directory). The working copy line comes first, so the Dispatch title, the one part
+// of the opening a person wrote, stands after it and can neither move it nor be read in its place
+// when a send writes it again (workingCopyLine).
+func taskOpening(issue record.Issue, at Standing) string {
+	return at.workingCopy + workingCopyEnd + continueLine(issue)
+}
+
+// continueOpening is how the continue line begins (continueLine), and so how a task an earlier
+// release composed begins, which opened with that line (earlierWorkingCopy).
+const continueOpening = "Continue "
+
+// continueLine is the line of a phase worker's task that follows its working copy line
+// (taskOpening): the issue's Dispatch title, then its key and the phase the worker starts in
+// (continueEnding), and, for an issue whose spec is a view on an ancestor's requirements, the
+// sentence that says so (viewSentence).
 func continueLine(issue record.Issue) string {
-	text := fmt.Sprintf("Continue %s. Issue: %s. %s: %s.", issue.Title, issue.Key, phaseLabel, issue.Phase)
+	text := continueOpening + issue.Title + continueEnding(issue.Key) + string(issue.Phase) + "."
 	if view := viewSentence(issue); view != "" {
 		text += " " + view
 	}
 	return text
+}
+
+// continueEnding is what the continue line of the issue key holds between its title and its
+// phase. The title is the one part of that line a person wrote, so the first place these words
+// stand in a task is where its title ends, unless the title holds them too. This release's tasks
+// put the working copy line before the continue line, so no search for these words finds it; a
+// task an earlier release composed, which held that line after them, is read from their first
+// place (earlierWorkingCopy), and a title that holds them hides the line in such a task alone.
+func continueEnding(key string) string {
+	return ". Issue: " + key + ". " + phaseLabel + ": "
 }
 
 // viewSentence is the one sentence each task of a phase worker of issue carries when its spec is
@@ -1352,11 +1396,12 @@ func handoffWord(role claim.Role) string {
 // resumeText is what a worker started for a phase already under way is told, at the standing at.
 // No handoff begins that phase — the run that did is over — so the task names the phase and says
 // to carry the work on, which is what a resumed session needs to tell this phase from its last.
-// The standing's lines stand right after the continue line and the text of its task's block
-// last, as a start's task places them (task): a worker resumed in a fresh session has no earlier
-// task to read them from.
+// It opens as a start's task does (taskOpening), with the standing's working copy line and then,
+// after a line break, the continue line; the standing's lines stand right after the continue line
+// and the text of its task's block last, as a start's task places them (task): a worker resumed in
+// a fresh session has no earlier task to read them from.
 func resumeText(issue record.Issue, at Standing) string {
-	return continueLine(issue) + at.lines + " Resume the existing phase work." + at.owners
+	return taskOpening(issue, at) + at.lines + " Resume the existing phase work." + at.owners
 }
 
 // ResumeTask is the resume task of the worker of issue's phase, standing where the record holds

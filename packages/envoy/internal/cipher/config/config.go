@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
@@ -77,7 +78,8 @@ type Config struct {
 	// refused too, since the system trust store holds no RDS CA. Any other URL, one carrying its own
 	// password or a passwordless one to a local Postgres that trusts its clients, connects as given.
 	// Nothing is substituted into it: a URL naming the removed ${BROKER_DATABASE_PASSWORD}
-	// placeholder is refused, as BROKER_DATABASE_PASSWORD itself is.
+	// placeholder is refused, as BROKER_DATABASE_PASSWORD itself is. A URL holding an "@" after its
+	// user name and password is refused by the store, naming this variable alone (store.Open).
 	DatabaseURL string
 	// DatabaseIAM is whether the broker signs in to DatabaseURL with RDS IAM auth tokens: the URL
 	// names a user and an RDS endpoint host, pgx finds no password for it, and it verifies that
@@ -277,6 +279,22 @@ type Config struct {
 	// it that carries an owner and a tier tag (Secret Manager: annotation) and is encrypted with
 	// the agent-secrets key, and rereads them every five minutes.
 	SecretsPrefix string
+	// BROKER_SECRETS_SECOND_PREFIX: a second Secret Manager prefix, read only with
+	// gcp-secret-manager, for a deployment that moves its store to another prefix: a grant whose
+	// request froze a secret's source under it counts as one of the source the broker serves the
+	// same name from under BROKER_SECRETS_PREFIX, the same remainder after the prefix and the same
+	// type, so that grant is released, reused and connected through the airlock, and not ended as a
+	// grant of another secret. A release still reads the value from BROKER_SECRETS_PREFIX's secret
+	// alone, which the broker listed and checked; nothing of the broker lists, reads, serves,
+	// freezes or writes under the second prefix. Empty (the default) is a broker that counts a frozen
+	// source only when it is the one served. It is projects/<project number>/secrets/<secret-id
+	// prefix>-, as BROKER_SECRETS_PREFIX is, and neither may start with the other; the broker
+	// refuses to start on any value under aws-secrets-manager, whose source is an ARN a move to
+	// another name always changes. A deployment sets it to the new store's prefix before the move,
+	// swaps the two at the move, rewrites the frozen sources of its live grants and pending
+	// requests to the new prefix once no pod of the earlier setting serves, and removes it once its
+	// database holds no such source under the old prefix.
+	SecretsSecondPrefix string
 	// BROKER_SECRETS_KMS_KEY_ARN, BROKER_SECRETS_KMS_KEY_NAME: the agent-secrets key every agent
 	// secret is encrypted with, one variable per store, each required with its store and refused
 	// with the other. With aws-secrets-manager, BROKER_SECRETS_KMS_KEY_ARN, the AWS KMS key's ARN;
@@ -1045,19 +1063,22 @@ type Config struct {
 	// connection its configuration lists no static user for, and which answers each with a NATS
 	// user of that connection's own, and the NATS writer hold it decides by. BROKER_NATS_URLS is
 	// the hub's servers, comma separated, each refused at start, by its place in the list and
-	// never its text, when it carries user info or is no URL: the service connects as its seed's
-	// user, and the URLs are written to its log; BROKER_NATS_SEED_FILE the service's own NATS user
-	// seed, a user the hub lists as an auth user; BROKER_NATS_ISSUER_SEED_FILE the account seed the
-	// hub names as its auth_callout issuer, which signs every user the service admits;
-	// BROKER_NATS_XKEY_SEED_FILE the curve seed the hub seals each request to. Each file is read at
-	// start and refused unless it holds a seed of its kind (a user, an account, a curve key),
-	// naming the variable and never the value. BROKER_NATS_SERVICES lists the services admitted by
-	// platform identity, as whitespace-separated <kind>/<machine id or ->/<* or ->=<account>
-	// entries (dispatch, listener, edge-listener, daemon or measure; operator, the deployment's one
-	// operator identity, whose grant is the writer hold's phase's and whose token alone writes the
-	// hold through /v1/nats-hold; or probe, the hold's one probe; * for the kind's whole grant, -
-	// for the projects the account's exchange entry lists, which operator and probe refuse, as they
-	// refuse a machine id and a second entry of their kind), each account written as
+	// never its text, when it carries user info, an "@" after its host, a query or a fragment, or
+	// is no URL: the service connects as its seed's user, and the URLs are written to its log;
+	// BROKER_NATS_SEED_FILE the service's own NATS user seed, a user the hub lists as an auth
+	// user; BROKER_NATS_ISSUER_SEED_FILE the account seed the hub names as its auth_callout
+	// issuer, which signs every user the service admits; BROKER_NATS_XKEY_SEED_FILE the curve
+	// seed the hub seals each request to. Each file is read at start and refused unless it holds
+	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
+	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
+	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
+	// listener, webhook-listener, edge-listener, daemon or measure; webhook-listener is the
+	// listener that receives GitHub's webhook, the one listener whose grant publishes GitHub's
+	// lane; operator, the deployment's one operator identity, whose grant is the writer hold's
+	// phase's and whose token alone writes the hold through /v1/nats-hold; or probe, the hold's
+	// one probe; * for the kind's whole grant, - for the projects the account's exchange entry
+	// lists, which operator and probe refuse, as they refuse a machine id and a second entry of
+	// their kind), each account written as
 	// BROKER_API_ACCOUNTS writes one, every entry read once at load (ParseNATSServices). An edge
 	// listener's entry, edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or
 	// - the projects its grant is built for and GET /v1/project-repositories answers that account
@@ -2823,6 +2844,33 @@ func databaseIAM(databaseURL string) (bool, error) {
 	return true, nil
 }
 
+// secondPrefixRefusal refuses BROKER_SECRETS_SECOND_PREFIX, second, beside the store store and
+// BROKER_SECRETS_PREFIX, prefix, which Load has already held to its store's form, naming the
+// setting and the rule it breaks, and answers nil for an empty one, the default. A value is read
+// only with gcp-secret-manager, since an AWS Secrets Manager source is an ARN whose random suffix
+// a move to another name always changes, so no prefix could carry a grant across one; it is a
+// Secret Manager prefix (secrets.ValidGCPPrefix); it is not prefix itself, since a move goes
+// between two prefixes; and neither of the two starts with the other, since a secret under the
+// longer one is under both, so its source would count under either.
+func secondPrefixRefusal(store, prefix, second string) error {
+	switch {
+	case second == "":
+		return nil
+	case store != secrets.StoreGCP:
+		return fmt.Errorf("BROKER_SECRETS_SECOND_PREFIX is read only with BROKER_SECRETS_STORE=%s, and this broker's store is %s: an AWS Secrets Manager source is an ARN whose random suffix a move to another name always changes, so no second prefix carries a grant across one; unset it", secrets.StoreGCP, store)
+	}
+	if err := secrets.ValidGCPPrefix(second); err != nil {
+		return fmt.Errorf("BROKER_SECRETS_SECOND_PREFIX: %w", err)
+	}
+	switch {
+	case second == prefix:
+		return fmt.Errorf("BROKER_SECRETS_SECOND_PREFIX is BROKER_SECRETS_PREFIX itself, %q: it is the other prefix of a store move, the one the move leaves or reaches, so name that one, or unset it", second)
+	case strings.HasPrefix(second, prefix) || strings.HasPrefix(prefix, second):
+		return fmt.Errorf("BROKER_SECRETS_SECOND_PREFIX %q and BROKER_SECRETS_PREFIX %q nest, as one starts with the other: a secret under the longer one is under both, so its source would count under either; choose two prefixes neither of which starts with the other", second, prefix)
+	}
+	return nil
+}
+
 // httpURLSetting refuses a setting whose value is no absolute http or https URL, naming the
 // setting and quoting the value with its own credentials and query taken out (redact.URL). The
 // settings held to this form are a page a machine opens in a browser, a proxy a command dials,
@@ -2874,6 +2922,7 @@ func Load(getenv func(string) string) (Config, error) {
 		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
 		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
 		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
+		SecretsSecondPrefix:       getenv("BROKER_SECRETS_SECOND_PREFIX"),
 		ProfilesFile:              getenv("BROKER_PROFILES_FILE"),
 		AirlockListenAddr:         orDefault(getenv("BROKER_AIRLOCK_LISTEN_ADDR"), "127.0.0.1:13381"),
 		AirlockProxyURL:           strings.TrimSpace(getenv("BROKER_AIRLOCK_PROXY_URL")),
@@ -3138,6 +3187,9 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("BROKER_SECRETS_KMS_KEY_NAME: %w", err)
 		}
 	}
+	if err := secondPrefixRefusal(cfg.SecretsStore, cfg.SecretsPrefix, cfg.SecretsSecondPrefix); err != nil {
+		return Config{}, err
+	}
 	services, err := parseServiceAccounts("BROKER_SERVICES", getenv("BROKER_SERVICES"))
 	if err != nil {
 		return Config{}, err
@@ -3291,6 +3343,10 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.K8sOIDCIssuer, cfg.K8sOIDCAudience = issuer, audience
 	if len(cfg.ServiceLogins) > 0 && cfg.K8sOIDCIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its accounts log in with")
+	}
+	// BROKER_GOOGLE_OIDC_ISSUER is Google's unless a dev stack names its own.
+	if err := oidc.IssuerRefusal("BROKER_GOOGLE_OIDC_ISSUER", cfg.GoogleOIDCIssuer); err != nil {
+		return Config{}, err
 	}
 	callers, err := parseAPIAccounts("BROKER_API_ACCOUNTS", getenv("BROKER_API_ACCOUNTS"))
 	if err != nil {
@@ -3606,8 +3662,12 @@ func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (app
 	if len(missing) > 0 {
 		return approval.SignIn{}, fmt.Errorf("the broker's approval page needs %s; missing %s", strings.Join(SignInSettings, ", "), strings.Join(missing, ", "))
 	}
+	if err := oidc.IssuerRefusal(signInIssuerSetting, signIn.Issuer); err != nil {
+		return approval.SignIn{}, err
+	}
+	// The value is not quoted: a token or a URL with a password pasted here would print.
 	if !signInIssuerOK(signIn.Issuer) {
-		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host, got %q", signInIssuerSetting, signIn.Issuer)
+		return approval.SignIn{}, fmt.Errorf("%s must be an absolute https URL, or http to a loopback host", signInIssuerSetting)
 	}
 	var err error
 	if signIn.ClientSecret, err = secretFile(signInClientSecretSetting, secretPath); err != nil {
@@ -3645,15 +3705,16 @@ func secretValue(getenv func(string) string, name string) (string, error) {
 }
 
 // secretFile reads the trimmed contents of path, the file the variable setting names; an
-// unreadable or blank file is an error naming setting and path, never what the file holds.
+// unreadable or blank file is an error naming setting and why (fileerr.Class), never the path,
+// which can be a credential pasted where it goes, nor what the file holds.
 func secretFile(setting, path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", setting, path, err)
+		return "", fmt.Errorf("%s names a file that cannot be read: %s", setting, fileerr.Class(err))
 	}
 	value := strings.TrimSpace(string(data))
 	if value == "" {
-		return "", fmt.Errorf("%s names %s, which is empty", setting, path)
+		return "", fmt.Errorf("%s names a file that is empty", setting)
 	}
 	return value, nil
 }

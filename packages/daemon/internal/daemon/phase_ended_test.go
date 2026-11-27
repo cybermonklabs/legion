@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // endedByTheWait is the phase-ended message the admission pass queues when it stops a parent's
@@ -26,6 +27,7 @@ var endedByTheWait = record.PhaseEnded{Role: claim.RoleTester, From: phase.Testi
 // the message would meet the no-holder answer and the row would end with it kept nowhere, and the
 // stopped worker would go on with the phase the wait ended.
 func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
+	t.Parallel()
 	keptAcrossTheWake(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
@@ -35,6 +37,7 @@ func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T)
 // publishes nothing while the park holds, and the attempt after the turn has launched the resume
 // publishes the message with keep, once, and ends the row.
 func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
+	t.Parallel()
 	keptAfterTheParkedWake(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
@@ -44,6 +47,7 @@ func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
 // message with keep, once, at its next attempt, and ends, as a hook prompt does
 // (TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound).
 func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
+	t.Parallel()
 	keptAfterAnOperatorsResume(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
@@ -52,6 +56,7 @@ func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound
 // session can take a publish now, so the row's first attempt publishes the message to the
 // stopped worker's topic and ends.
 func TestAPhaseEndedMessageToARelaunchParkedOverALiveProcessPublishesAtOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &holderPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
@@ -76,13 +81,16 @@ func TestAPhaseEndedMessageToARelaunchParkedOverALiveProcessPublishesAtOnce(t *t
 // a holder that did not confirm the message in time can take it on the next attempt, a holder that
 // does not advertise the delivery mode can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
-// Only a role with no live holder ends the row.
-func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
+// A role with no live holder is a wait while the hour after the row was made runs
+// (publishKeptToRole), since a listener that refuses to keep a publish naming no source session
+// keeps nothing for it.
+func TestAPhaseEndedMessageRetriesEveryFailureAndWaitsOutNoHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", endedByTheWait, time.Now())
-	row.ID = 61
+	row.ID, row.CreatedAt = 61, time.Now()
 	publisher := &outboxPublisher{}
-	runner := &outbox{project: "legion", notices: publisher, log: quietLogger()}
+	runner := &outbox{project: "legion", notices: publisher, log: quietLogger(), now: time.Now}
 	const denial = `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_t"`
 	for _, tc := range []struct {
 		name string
@@ -101,7 +109,7 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 		})
 	}
 	publisher.err = fmt.Errorf("publish notice to the tester's topic: %w: no holder", notify.ErrNoHolder)
-	if err := runner.execute(ctx, row); err != nil {
-		t.Fatalf("the phase-ended message no session holds = %v, want the row finished", err)
+	if err := runner.execute(ctx, row); !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) {
+		t.Fatalf("the phase-ended message no session holds, inside the hour = %v, want a wait on the no-holder answer", err)
 	}
 }

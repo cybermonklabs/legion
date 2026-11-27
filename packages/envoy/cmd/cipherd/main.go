@@ -219,7 +219,10 @@ func main() {
 	// with no "value" is one created without a value, which the broker refuses as no-current-value;
 	// one with a "deleted_at" (RFC 3339) is scheduled for deletion, which the broker no longer lists.
 	// Its "kms_key_id" names the agent-secrets key as the selected store configures it:
-	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager.
+	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager. Under
+	// gcp-secret-manager each secret's "name" is its resource name, projects/<number>/secrets/<id>,
+	// and is the source a request freezes, as Secret Manager answers it; under aws-secrets-manager
+	// the source is the ARN the file's stand-in gives the name.
 	fakeSecrets := os.Getenv("BROKER_FAKE_SECRETS_FILE")
 	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, fakeSecrets))
 	fatal(refuseHTTPEdgeURLsInProduction(cfg.EdgeURL, cfg.EdgeMachineLoginURL, fakeSecrets))
@@ -339,7 +342,7 @@ func main() {
 	if cfg.SignInOff {
 		slog.Info("approval sign-in off", "detail", "BROKER_SIGNIN=off: no approval page is served, and a request a person would approve is denied at once")
 	} else {
-		slog.Info("approval sign-in on", "issuer", cfg.SignIn.Issuer, "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
+		slog.Info("approval sign-in on", "issuer", redact.URL(cfg.SignIn.Issuer), "client_id", cfg.SignIn.ClientID, "domain", cfg.SignIn.Domain)
 	}
 	// The database, and with it the AWS config loaded once when anything needs it: an IAM-form
 	// BROKER_DATABASE_URL, whose connections sign in with RDS IAM tokens minted from it, and the
@@ -368,9 +371,15 @@ func main() {
 		fatal(err)
 		// The file's kms_key_id names the agent-secrets key as the selected store configures it.
 		// Under gcp-secret-manager this is still the AWS store over the file, holding the Cloud KMS
-		// key name where it would hold an ARN: names follow Secrets Manager's rules and a source
-		// is a local ARN, which only a local run sees.
+		// key name where it would hold an ARN, and names follow Secrets Manager's rules; but a
+		// source is the secret's resource name, as Secret Manager answers it (secrets.ResourceNamed),
+		// so what a request freezes, and what BROKER_SECRETS_SECOND_PREFIX compares, has the form
+		// it has on Secret Manager. Under aws-secrets-manager a source is a local ARN, which only a
+		// local run sees.
 		secretStore, credentials = secrets.AWS{Client: local, KMS: local, KeyARN: cfg.SecretsKMSKey}, "fake secrets file"
+		if cfg.SecretsStore == secrets.StoreGCP {
+			secretStore = secrets.ResourceNamed(secretStore)
+		}
 	case cfg.SecretsStore == secrets.StoreGCP:
 		client, err := secrets.NewGCPClient(ctx)
 		fatal(err)
@@ -523,8 +532,7 @@ func main() {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
 	if started.EdgeListener != nil {
-		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
-			"verification_uri", cfg.EdgeMachineLoginURL, "workspace_domains", cfg.WorkspaceDomains())
+		logEdgeListening(started.EdgeListener.Addr().String(), &cfg)
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
@@ -613,7 +621,7 @@ func main() {
 		// (store.SignInTrade.EndUnrecorded); unset, such a sign-in goes on as before.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
 		exchangeConfig.PersonSignIns = enroll.PersonSignIns(endUnrecordedSignIns(projectAccess))
-		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
+		slog.Info("google person sign-in", "issuer", redact.URL(cfg.GoogleOIDCIssuer), "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
 		// The GitHub issuer has no second reader, so it keeps a key source of its own, read here
@@ -685,7 +693,7 @@ func main() {
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
-		slog.Info("machine login device grant", "state", "on", "verification_uri", cfg.MachineLoginURL)
+		slog.Info("machine login device grant", "state", "on", "verification_uri", redact.URL(cfg.MachineLoginURL))
 	} else {
 		slog.Info("machine login device grant", "state", "off", "detail", "BROKER_MACHINE_LOGIN_URL is unset, so no person types a code and POST /v1/oauth/device_authorization is not served")
 	}
@@ -711,7 +719,7 @@ func main() {
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
-		w := wake.Envoy{URL: cfg.EnvoyURL, Account: ciphertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
+		w := wake.Envoy{URL: cfg.EnvoyURL, Account: ciphertoken.NewAccountToken("BROKER_ENVOY_ACCOUNT_TOKEN_FILE", cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's
 			if sid == "" {
@@ -1513,6 +1521,9 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
+		// The grant re-checks read both prefixes, the second one a store move leaves or reaches
+		// (BROKER_SECRETS_SECOND_PREFIX), and nothing else of the broker reads the second.
+		SecretsPrefix: cfg.SecretsPrefix, SecondPrefix: cfg.SecretsSecondPrefix,
 		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
@@ -1609,7 +1620,7 @@ func projectAccessClients(baseURL, tokenFile string) (*projectaccess.Client, api
 	if baseURL == "" {
 		return nil, nil
 	}
-	account := ciphertoken.NewAccountToken(tokenFile)
+	account := ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", tokenFile)
 	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
 }
 
@@ -1703,7 +1714,7 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 	}
 	return &judge.Dispatch{
 		BaseURL: cfg.JudgeDispatchURL,
-		Account: ciphertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+		Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", cfg.JudgeDispatchTokenFile),
 		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
 	}
 }
@@ -1768,7 +1779,7 @@ func wireJudge(ctx context.Context, cfg config.Config, m *requests.Machine, disp
 	m.Judge = runner.Consider
 	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
-		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
+		"dispatch", redact.URL(cfg.JudgeDispatchURL), "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // logPodRegistrars logs, once at boot, what POST /v1/oauth/exchange/pod-sessions admits: how
@@ -1867,7 +1878,7 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		return verifiers{}, err
 	}
 	services := slices.Sorted(maps.Values(cfg.VMServicesByAccount))
-	slog.Info("google machine identity", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.GoogleOIDCAudience,
+	slog.Info("google machine identity", "issuer", redact.URL(cfg.GoogleOIDCIssuer), "audience", cfg.GoogleOIDCAudience,
 		"services", strings.Join(slices.Compact(services), ","), "fleets", len(cfg.ExchangeGoogleAccounts))
 	found.GoogleKeys = googleKeys
 	// One verifier on that key set, for a listed caller that holds a Google identity rather
@@ -1982,10 +1993,10 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 	switch {
 	case check == oidc.ClientCheckReady && logged.notReady != "":
-		slog.Info(clientCheckReadyMessage, "issuer", signIn.Issuer, "was", logged.notReady)
+		slog.Info(clientCheckReadyMessage, "issuer", redact.URL(signIn.Issuer), "was", logged.notReady)
 		logged.notReady = ""
 	case check != oidc.ClientCheckReady && check != logged.notReady:
-		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", signIn.Issuer, "error", err)
+		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", redact.URL(signIn.Issuer), "error", redact.Error(err, signIn.Issuer))
 		logged.notReady = check
 	}
 	err = st.RecordClientCheck(ctx, string(check), time.Now())
@@ -2040,6 +2051,14 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s, and broker with no argument serves\n",
 		args[0], endSessionsCommand, versionsCommand, profilesCheckForm)
 	return 2
+}
+
+// logEdgeListening logs the edge's bind, BROKER_EDGE_URL and BROKER_EDGE_MACHINE_LOGIN_URL, each URL
+// through redact.URL, as the machine login line prints BROKER_MACHINE_LOGIN_URL: neither loader
+// refuses a user name, a password or a query, so a credential written into either is not printed.
+func logEdgeListening(addr string, cfg *config.Config) {
+	slog.Info("broker edge listening", "addr", addr, "url", redact.URL(cfg.EdgeURL),
+		"verification_uri", redact.URL(cfg.EdgeMachineLoginURL), "workspace_domains", cfg.WorkspaceDomains())
 }
 
 // versions prints what broker_schema_migrations records of each version against the migrations

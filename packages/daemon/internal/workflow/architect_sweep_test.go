@@ -38,7 +38,7 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 		issue.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 10}}
 		return issue
 	}
-	resume := record.PhaseEntry{Entry: 3, Verbatim: true}
+	resume := record.PhaseEntry{Entry: 3, Resumed: true}
 	derived := record.PhaseEntry{Entry: 3}
 	for _, tc := range []struct {
 		name string
@@ -276,34 +276,38 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 // already stands for, and it waits for no admission slot, since a root architect's start takes
 // none, whether its root holds its row or not.
 //
-// What it carries turns on what the row says raised the entry (record.PhaseRow.EntryVerbatim),
+// What it carries turns on what the row says raised the entry (record.PhaseRow.EntryAwaiting),
 // and on nothing in the task's text. A task the derivation wrote is derived again from the record
 // as it stands (ArchitectStartTask) rather than read off the row, since a text composed once and
 // sent again can name a kept decision another telling has already claimed. That is so of the
 // derivation's every task: the one that ends in a shape's closing sentence, the one it writes for
 // a root past admitted under its own power, which is what a person decided and no closing sentence
-// (its second rule), and no task at all, which the upgrade leaves on the rows it fills. A task the
-// resume of a person's answer wrote names the answer and no kept decision, and the answer is the
-// work that entry owes, so it is sent as written and claims nothing, whatever its text ends in.
+// (its second rule), and no task at all, which the upgrade leaves on the rows it fills. An entry
+// the resume of a person's answer raised is sent the start that resume wrote, built from the wait
+// the row keeps: that wait and no text, claiming nothing, whatever the stored text ends in. Its
+// send renders the task from the record as it stands then (ResumeAwaitedRootTask), so a review the
+// person's approval answered since is not told as standing.
 func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 	t.Parallel()
 	const resumed = "A person answered your ask ask-q on LEGION-208, or replied in its thread; read it. Continue."
+	answered := &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5}, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	for _, tc := range []struct {
-		name     string
-		stored   string
-		verbatim bool
+		name   string
+		stored string
+		// awaiting is the wait the row keeps, set where a resume raised the entry.
+		awaiting *record.Awaiting
 		// tail is whether the stored text ends in the closing sentence of the shape the derivation
-		// writes for this root (freshClosing), which the cases cover both ways for each mark, so
-		// the send is shown to read the mark alone.
+		// writes for this root (freshClosing), which the cases cover both ways for each kind of
+		// entry, so the send is shown to read the row's wait alone.
 		tail bool
 	}{
 		{name: "an entry the derivation raised", stored: seededArchitectTask + freshClosing, tail: true},
 		{name: "an entry the derivation raised for a root past admitted, what was decided alone",
 			stored: ArchitectStartTask(ArchitectStart{Root: rootAt(phase.Planning), Decided: decidedOnTheTree})},
 		{name: "an entry the upgrade gave no task", stored: ""},
-		{name: "an entry a resume raised", stored: resumed, verbatim: true},
+		{name: "an entry a resume raised", stored: resumed, awaiting: answered},
 		{name: "an entry a resume raised whose text ends as the derivation's does", stored: resumed + freshClosing,
-			verbatim: true, tail: true},
+			awaiting: answered, tail: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if strings.HasSuffix(tc.stored, freshClosing) != tc.tail {
@@ -313,7 +317,7 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 			root := architectEntryRoot()
 			seedIssue(t, pool, root)
 			row := record.PhaseRow{Issue: entryIssue, Role: claim.RoleArchitect, Claim: wakeToken(t, claim.RoleArchitect),
-				Entry: seededEntry, EntryTask: tc.stored, EntryVerbatim: tc.verbatim, EntryRaisedAt: seededRaisedAt}
+				Entry: seededEntry, EntryTask: tc.stored, EntryAwaiting: tc.awaiting, EntryRaisedAt: seededRaisedAt}
 			seedPhase(t, pool, row)
 			engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -322,25 +326,28 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 			})
 
 			start := architectStartOf(t, pool, entryIssue)
-			want := ArchitectStartTask(ArchitectStart{Root: root, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
-			if tc.verbatim {
-				want = tc.stored
-			}
-			if start.Task != want {
-				t.Fatalf("the task the sweep sends for a row whose task is %q, sent as written %t, = %q; want %q",
-					tc.stored, tc.verbatim, start.Task, want)
-			}
-			if tc.verbatim && start.Kept != nil {
-				t.Fatalf("the resume's task sent again claims %+v, want no kept decision: it names none", start.Kept)
+			if tc.awaiting != nil {
+				if start.Task != "" || start.Kept != nil || !sameWait(start.Awaiting, *tc.awaiting) {
+					t.Fatalf("the start the sweep sends for an entry a resume raised = task %q, kept %+v, answering %+v; want no text, no kept "+
+						"decision and the wait %+v the row keeps: the resume's own start, rendered at its send", start.Task, start.Kept, start.Awaiting, *tc.awaiting)
+				}
+				if sent := renderedResume(t, pool, entryIssue, *start.Awaiting); !strings.Contains(sent, "ask-q") {
+					t.Fatalf("the start the sweep sends, rendered as its send renders it, = %q; it does not name the ask the person answered", sent)
+				}
+			} else if want := ArchitectStartTask(ArchitectStart{Root: root, Gate: record.TreeGate{Steps: engine.GatedSteps()}}); start.Task != want ||
+				start.Awaiting != nil {
+				t.Fatalf("the start the sweep sends for a row whose task is %q and that keeps no wait = task %q answering %+v; want %q and no wait",
+					tc.stored, start.Task, start.Awaiting, want)
 			}
 			if start.Entry != seededEntry || start.Phase != "" || start.NeedsSlot {
 				t.Fatalf("the start = entry %d, phase %q, needs slot %t; want entry %d, no phase and no wait for a slot: a root architect's start is none of the cap's",
 					start.Entry, start.Phase, start.NeedsSlot, seededEntry)
 			}
 			got := entryRow(t, pool, claim.RoleArchitect)
-			if got.Entry != seededEntry || got.EntryTask != tc.stored || got.EntryVerbatim != tc.verbatim {
-				t.Fatalf("after the sweep's re-send the architect's row = entry %d, task %q, sent as written %t; want the entry %d, task %q and mark %t it stood at",
-					got.Entry, got.EntryTask, got.EntryVerbatim, seededEntry, tc.stored, tc.verbatim)
+			if got.Entry != seededEntry || got.EntryTask != tc.stored || (got.EntryAwaiting == nil) != (tc.awaiting == nil) ||
+				tc.awaiting != nil && !sameWait(got.EntryAwaiting, *tc.awaiting) {
+				t.Fatalf("after the sweep's re-send the architect's row = entry %d, task %q, wait %+v; want the entry %d, task %q and wait %+v it stood at",
+					got.Entry, got.EntryTask, got.EntryAwaiting, seededEntry, tc.stored, tc.awaiting)
 			}
 		})
 	}

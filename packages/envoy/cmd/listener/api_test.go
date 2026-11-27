@@ -527,7 +527,7 @@ func TestMessageHandlersRejectInvalidEnums(t *testing.T) {
 		{
 			name:  "publish expects reply",
 			path:  "/v1/messages/publish",
-			body:  `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"hello","expects_reply":"soon"}`,
+			body:  `{"topic":"notifications.team.example-team","message":"hello","expects_reply":"soon"}`,
 			want:  "expects_reply must be one of false, optional, required",
 			field: "expects_reply",
 		},
@@ -593,7 +593,7 @@ func TestMessageHandlersRejectBlankMessage(t *testing.T) {
 		{
 			name: "publish",
 			path: "/v1/messages/publish",
-			body: `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"   "}`,
+			body: `{"topic":"notifications.team.example-team","message":"   "}`,
 		},
 	}
 	for _, tc := range cases {
@@ -673,7 +673,7 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 				return httptest.NewRequest(
 					http.MethodPost,
 					"/v1/messages/publish",
-					strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`),
+					strings.NewReader(`{"topic":"notifications.role.reviewer","source_session":"ses_role_state_sender","message":"please review"}`),
 				)
 			},
 			handler: func(d *listenerDeps) http.Handler {
@@ -1179,6 +1179,8 @@ func (discardingCache) CompleteRead(kvwatch.Read)         {}
 // timeout): a lookup and a soft claim answer 503, a role delivery reports delivery_failed, and the
 // reaper keeps the claim.
 func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
+	// Not parallel: it requires each answer within its 5 s bound, and the soft claim's stalled
+	// session reads end only at sendRequestBudget (3.5 s).
 	const bound = 5 * time.Second
 	holderOf := func(t *testing.T, d *listenerDeps, role string) string {
 		t.Helper()
@@ -1313,7 +1315,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		}
 
 		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.role.unheld","message":"please review"}`))
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.role.unheld","source_session":"ses_holder_only_sender","message":"please review"}`))
 		handler.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusAccepted {
 			t.Fatalf("status = %d, want 202 for a kept message; body = %s", recorder.Code, recorder.Body.String())
@@ -1372,7 +1374,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		handler.ServeHTTP(publishRecorder, httptest.NewRequest(
 			http.MethodPost,
 			"/v1/messages/publish",
-			strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`),
+			strings.NewReader(`{"topic":"notifications.role.reviewer","source_session":"ses_holder_only_sender","message":"please review"}`),
 		))
 		// A claim whose holder is not live is kept for, as a role nobody claims is: the copy
 		// waits on the role's kept lane for the next session that holds the role live, and the
@@ -1616,7 +1618,7 @@ func TestRoleSetHandlerSoftClaim(t *testing.T) {
 	})
 
 	t.Run("dead holder is superseded", func(t *testing.T) {
-		// ses_live's session entry ages out (5m TTL in production); here it is
+		// ses_live's session entry ages out at the session bucket's maximum age; here it is
 		// deleted, which is what the listener observes either way.
 		if err := sessions.Delete(context.Background(), "ses_live"); err != nil {
 			t.Fatalf("expire holder session: %v", err)
@@ -1709,12 +1711,17 @@ func registerInstance(t *testing.T, sessions *session.SessionRegistry, sessionID
 	}
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: a 503 inside 5 s from reads the route bounds at its 3.5 s budget.
+//
 // A soft claim that names a predecessor asks which client instance that predecessor belongs to -
 // one Oh My Pi Envoy extension instance, one Claude Code channel-server process - and takes the
 // role from it only when the predecessor has no live entry, when its entry carries the claimant's
 // own instance id, or when either side carries no instance id at all. A predecessor still live
 // inside another instance keeps the role: knowing its session id is not enough to take it.
 func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
+	// Not parallel: it requires the soft claim whose predecessor cannot be read to answer within
+	// 5 s, and its stalled session reads end only at sendRequestBudget (3.5 s).
 	const (
 		claimantInstance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 		otherInstance    = "9b8a7c6d5e4f3a2b9b8a7c6d5e4f3a2b"
@@ -1766,7 +1773,7 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 
 	t.Run("a predecessor with no registry entry gives up the role", func(t *testing.T) {
 		// The predecessor's process is gone: its entry has left the session bucket (aged out at
-		// the 5m TTL in production, deleted here), and its role is the resumed session's to take
+		// the bucket's maximum age, deleted here), and its role is the resumed session's to take
 		// whatever instance that predecessor ran in.
 		registry, sessions, _, post := setup(t)
 		registerInstance(t, sessions, "ses_pred", otherInstance)
@@ -2622,7 +2629,7 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 			name:    "publish",
 			handler: func(d *listenerDeps) http.HandlerFunc { return publishHandler(d, logging.New("test")) },
 			path:    "/v1/messages/publish",
-			body:    map[string]any{"topic": "notifications.github.example-org.example-repo.pr.2", "source": "agent", "source_session": sender, "message": "who sent this?"},
+			body:    map[string]any{"topic": "notifications.team.example-team", "source": "agent", "source_session": sender, "message": "who sent this?"},
 		},
 	} {
 		t.Run(route.name, func(t *testing.T) {
@@ -2703,7 +2710,7 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 			handler: func(d *listenerDeps) http.HandlerFunc { return publishHandler(d, logging.New("test")) },
 			path:    "/v1/messages/publish",
 			body: func(source string) map[string]any {
-				return map[string]any{"topic": "notifications.github.example-org.example-repo.pr.3", "source": "agent", "source_session": source, "message": "who sent this?"}
+				return map[string]any{"topic": "notifications.team.example-team", "source": "agent", "source_session": source, "message": "who sent this?"}
 			},
 		},
 	} {
@@ -2762,7 +2769,7 @@ func TestPublishHandler_SuppliedPayloadWins(t *testing.T) {
 	state := &listenerDeps{client: client}
 	payload := `{"kind":"structured"}`
 	requestBody, err := json.Marshal(map[string]string{
-		"topic":   "notifications.github.example-org.example-repo.pr.1",
+		"topic":   "notifications.team.example-team",
 		"message": "first line\nsecond line",
 		"payload": payload,
 	})
@@ -2794,7 +2801,7 @@ func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
 		http.MethodPost,
 		"/v1/messages/publish",
 		strings.NewReader(`{
-			"topic":"notifications.github.example-org.example-repo.pr.1",
+			"topic":"notifications.team.example-team",
 			"message":"first paragraph\n\nsecond paragraph",
 			"in_reply_to":"evt_parent",
 			"supersedes":"evt_old",
@@ -2834,7 +2841,7 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
-	const topic = "notifications.github.example-org.example-repo.expects-reply-dialect"
+	const topic = "notifications.team.example-team.expects-reply-dialect"
 	for _, tc := range []struct {
 		// wantAnswer and wantBus are the expects_reply bytes the answer and the envelope on the
 		// bus carry, and the empty string is neither word nor literal: it is the field absent.
@@ -2980,7 +2987,7 @@ func TestMessageHandlersAnswerAMessageNATSCannotTakeWholeWith413(t *testing.T) {
 		body    map[string]string
 	}{
 		{"/v1/messages/publish", publishHandler(state, logging.New("test")), map[string]string{
-			"topic": "notifications.github.example-org.example-repo.pr.1", "message": message,
+			"topic": "notifications.team.example-team", "message": message,
 		}},
 		{"/v1/messages/send", sendHandler(state, logging.New("test")), map[string]string{"target_session": "ses_target", "message": message}},
 	} {
@@ -3086,7 +3093,7 @@ func TestPublishHandler_DedupeKeySelection(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
-	const topic = "notifications.github.example-org.example-repo.dedupe-key"
+	const topic = "notifications.team.example-team.dedupe-key"
 	probe, err := client.Conn.SubscribeSync(topic)
 	if err != nil {
 		t.Fatalf("subscribe topic probe: %v", err)
@@ -3139,7 +3146,7 @@ func TestPublishHandler_RejectsDedupeKeyWithIdempotencyKey(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
-	const topic = "notifications.github.example-org.example-repo.dedupe-key-conflict"
+	const topic = "notifications.team.example-team.dedupe-key-conflict"
 	probe, err := client.Conn.SubscribeSync(topic)
 	if err != nil {
 		t.Fatalf("subscribe topic probe: %v", err)
@@ -3175,7 +3182,7 @@ func TestPublishHandler_RejectsReservedDedupeKeyPrefix(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 	for _, topic := range []string{
-		"notifications.github.example-org.example-repo.reserved-prefix",
+		"notifications.team.example-team.reserved-prefix",
 		contracts.RoleTopicPrefix + "reserved-prefix-unheld",
 	} {
 		t.Run(topic, func(t *testing.T) {
@@ -3254,12 +3261,14 @@ func TestPublishHandlerRefusesAnUncapturedNotificationTopicByName(t *testing.T) 
 
 // A dispatch envelope's dedupe key is recognised by every host as the Dispatch event it names, and
 // Dispatch's outbox numbers its keys in sequence, so a key a caller chose there would make a host
-// drop the real event when it arrives. The key is still the caller's on any other source.
+// drop the real event when it arrives. The key is still the caller's on any other source. The
+// route refuses Dispatch's own lane by name (TestThePublishRouteRefusesDispatchAndGitHubLanes), so
+// the envelope here goes to a team topic, which any source may publish.
 func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
 	state := &listenerDeps{client: client}
-	const topic = "notifications.dispatch.issue.SQUAT-1.comment.created"
+	const topic = "notifications.team.squat-1"
 	probe, err := client.Conn.SubscribeSync(topic)
 	if err != nil {
 		t.Fatalf("subscribe topic probe: %v", err)
@@ -3449,8 +3458,8 @@ func TestMessageHandlersRejectPresentEmptyOptionalFields(t *testing.T) {
 	}{
 		{"/v1/messages/send", `{"target_session":"ses_target","message":"hello","in_reply_to":""}`, "in_reply_to"},
 		{"/v1/messages/send", `{"target_session":"ses_target","message":"hello","supersedes":""}`, "supersedes"},
-		{"/v1/messages/publish", `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"hello","urgency":""}`, "urgency"},
-		{"/v1/messages/publish", `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"hello","expects_reply":""}`, "expects_reply"},
+		{"/v1/messages/publish", `{"topic":"notifications.team.example-team","message":"hello","urgency":""}`, "urgency"},
+		{"/v1/messages/publish", `{"topic":"notifications.team.example-team","message":"hello","expects_reply":""}`, "expects_reply"},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			rr := httptest.NewRecorder()
@@ -3476,7 +3485,7 @@ func TestMessageHandlersUseFirstNonEmptyLine(t *testing.T) {
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 	for _, tc := range []struct{ path, body string }{
 		{"/v1/messages/send", `{"target_session":"ses_target","message":"\n  \nFirst paragraph.\n\nSecond paragraph."}`},
-		{"/v1/messages/publish", `{"topic":"notifications.github.example-org.example-repo.pr.1","message":"\n  \nFirst paragraph.\n\nSecond paragraph."}`},
+		{"/v1/messages/publish", `{"topic":"notifications.team.example-team","message":"\n  \nFirst paragraph.\n\nSecond paragraph."}`},
 	} {
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
@@ -4231,6 +4240,8 @@ func TestSessionEntryRouteAnswers404OnlyForAGoneRecord(t *testing.T) {
 // under the listener's 10 s HTTP write timeout), and never in the words a caller takes for a
 // session that has ended.
 func TestSessionEntryRouteAnswersServiceUnavailableWhenTheStoreReadDoesNotAnswer(t *testing.T) {
+	// Not parallel: it requires the 503 within 5 s, and the stalled session read it answers ends
+	// only at roleHolderReadTimeout (2 s).
 	const bound = 5 * time.Second
 	claimant, observer := trailingListeners(t)
 	if err := claimant.sessions.Put("ses_unread", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {

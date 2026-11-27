@@ -13,6 +13,9 @@ GATE = gate("ci_filters", "ci-filters", runs=[
 ], reads=reads(
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
     (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+    # Its go list closures, every command's and every self-starting test binary's of the
+    # daemon and envoy modules, are inside the daemon and envoy runs above.
+    (".github/scripts/testcontainers_links.py", at("ci-filters", TC_LINKS_STEP)),
     (".github/ci-gates/**", f"{at('ci-filters', CHECK_STEP)} reads every gate from them, which every filter is "
                             f"computed from"),
     (".github/scripts/ci_filter_sources.py", "ci_job_reads.py reads the gate files and the //ci: lines through it"),

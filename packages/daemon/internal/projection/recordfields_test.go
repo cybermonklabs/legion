@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -192,6 +193,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 
 	root, held := "LEGION-500", "LEGION-501"
 	lingerUntil := projectedAt.Add(90 * time.Minute)
+	// When the daemon applied the correction of this issue's repository, which `repoCorrectedAt`
+	// carries beside the repository it left.
+	correctedAt := projectedAt.Add(-3 * time.Hour)
 	answeredAt := projectedAt.Add(-time.Minute)
 	declaredAt := projectedAt.Add(-2 * time.Hour)
 	parent := "LEGION-400"
@@ -207,7 +211,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Ancestry: []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
+		RepoCorrection: &record.RepositoryCorrection{Before: "acme/gadgets", At: correctedAt},
+		RepoChange:     &record.RepositoryChange{Pending: "zeta/tools", Reason: "zeta/tools is not mapped to project OTHER in Dispatch"},
+		Ancestry:       []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
 		Awaiting: &record.Awaiting{
 			Ask: "9a8fd348-55d5-4d72-a793-3cd037f75f13", Since: record.EventMark{Seq: 12, At: projectedAt.Add(-time.Hour)},
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
@@ -236,6 +242,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	failedAt := projectedAt.Add(-10 * time.Minute)
 	queuedAt := projectedAt.Add(-30 * time.Minute)
 	openedAt := projectedAt.Add(-20 * time.Minute)
+	working := ghrepo.MustParse("acme/widgets")
 	// The claim record with every field set, on the root rather than on the child, so the child's
 	// view carries no worker of its own and the two documents are read apart.
 	current := supervise.Claim{
@@ -246,11 +253,12 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
-		Locator:    locator,
-		Enrollment: &supervise.Enrollment{ID: "enr_42", Incarnation: podUID + "/5"},
-		State:      supervise.StateFailed,
-		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
-		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
+		Locator:           locator,
+		WorkingRepository: &working,
+		Enrollment:        &supervise.Enrollment{ID: "enr_42", Incarnation: podUID + "/5"},
+		State:             supervise.StateFailed,
+		Budgets:           supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
+		Failure:           "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
 		PendingCause:   supervise.CauseDied,
 		LeakCheckCause: "the shared public leak check could not be installed: the tarball of example-org/deployment at leak-check-v3 holds no leak-check directory",
 		Pending: &supervise.Delivery{
@@ -265,7 +273,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
 		PluginContract: api.DaemonAPIVersion(), PluginRelaunchFor: api.DaemonAPIVersion() - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
-		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
+		UpdateRepository: ghrepo.MustParse("acme/widgets"),
+		UpdateOpenedAt:   &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 		UpdateToldAt:       &answeredAt,
 		UpdateLeftRound:    "pod:older",
@@ -392,6 +401,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"lingerUntil": issue.LingerUntil,
 			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
+			"repoBefore": issue.RepoCorrection.Before, "repoCorrectedAt": issue.RepoCorrection.At,
+			"repoChangePending": issue.RepoChange.Pending, "repoChangeReason": issue.RepoChange.Reason,
 			"ancestry": issue.Ancestry,
 			// The record's P1 as the wire spells a Dispatch priority: its number, 0 for P0.
 			"priority": 1,

@@ -2178,8 +2178,7 @@ block_account() {
 # (lib/stage4b-pods.jq reservation_problems); the launcher dialing the worker stream the daemon
 # served when the pod was created, at advertise_host; each role's gh files in a volume of its own
 # under its directory of the roles directory, read-only; no Secret value in a container's
-# environment, command or args; and split provisioning (only workspace-fetch reaches the
-# provisioning credential).
+# environment, command or args; and provisioning credentials mounted only in `workspace-init`.
 # shape_problems prints each way the pod object on stdin departs from that shape, or nothing. It
 # judges the object alone, so a pod the watch recorded is judged after it is gone, and it reads the
 # streams the run's daemons served from record_stream's record each time, so the shape watcher,
@@ -2199,6 +2198,7 @@ shape_problems() {
         or ([$s.volumes[] | select(.projected) | .projected.sources[] | select(.serviceAccountToken) | .serviceAccountToken.audience] != [$audience])
         then "the projected token source of the operator pod is not the one token for LEGION_E2E_MODEL_GATEWAY_AUDIENCE" else empty end),
       (if ($s.containers | map(.name)) != ["roles"] then "pod containers \($s.containers | map(.name)), want only [\"roles\"]" else empty end),
+      (if (($s.initContainers // []) | map(.name)) != ["workspace-init"] then "pod init containers \((($s.initContainers // []) | map(.name))), want only [\"workspace-init\"]" else empty end),
       # The operator mounts models.yml at the image home; the roles container holds every mount
       # under the home at the same path under the home mounts directory instead (homeMountsView),
       # and the namespaces of each role bind it back.
@@ -2222,9 +2222,8 @@ shape_problems() {
         | if $stream == null then "the launcher dials \(launcher_connect // "nothing"), but no worker stream was served when the pod was created (\(.metadata.creationTimestamp))"
           elif launcher_connect != $stream then "the launcher dials \(launcher_connect // "nothing (no --connect)"), not advertise_host at \($stream)"
           else empty end),
-      ([$s.initContainers[]? | select(.name != "workspace-fetch") | .volumeMounts[]? | select(.mountPath == "/var/run/legion/provision")] | if length > 0 then "the provision volume is mounted outside workspace-fetch" else empty end),
+      ([$s.initContainers[]? | select(.name != "workspace-init") | .volumeMounts[]? | select(.mountPath == "/var/run/legion/provision")] | if length > 0 then "the provision volume is mounted outside workspace-init" else empty end),
       ([$c.volumeMounts[]? | select(.mountPath == "/var/run/legion/provision")] | if length > 0 then "the roles container mounts the provision volume" else empty end),
-      ([$s.initContainers[]? | select(.name == "workspace-init") | .volumeMounts[]? | select(.name == "feed" and .readOnly != true)] | if length > 0 then "workspace-init mounts the feed writable" else empty end),
       # Each role holds its GitHub App tokens in a gh volume of its own (LEGION-631): gh-<role>
       # projects the two gh keys of each owner in that role Secret as <owner>/hosts.yml and
       # <owner>/config.yml, and the one renames key of the bundle as renames.txt in the root, which
@@ -2778,17 +2777,18 @@ fixture_markers() {
 }
 # completion_verdict reads a phase worker's session (JSONL on stdin) and prints, for every
 # assignment (the daemon's task, a user message) its worker answered with the legion tool's
-# handoff_complete, the calls that got no result, how many results succeeded, and whether the phase
-# stall recorded `closed` after the call that succeeded (the extension records it inside the call,
-# before Oh My Pi writes the result); and how many phase reminders came after the session's
-# last successful completion. It is the 4b.13b acceptance's stall check
-# (stage3-4b13b-acceptance.sh, phase-stall-follow-up) for a pod's session: a worker
-# stopped while its handoff_complete call runs leaves that call with no result and no `closed`
-# (LEGION-283), and a worker resumed from such a session may report the phase again. The reminder
-# comes at the end of every turn a phase stays open through, and none at all once it is closed,
-# which is what the count after the last success reads.
+# handoff_complete, the calls that got no result, how many results succeeded, and how many phase
+# reminders came after the result that succeeded and before the next assignment; and how many
+# phase reminders came after the session's last successful completion. It is the 4b.13b
+# acceptance's stall check (stage3-4b13b-acceptance.sh, phase-stall-follow-up) for a pod's session:
+# a worker stopped while its handoff_complete call runs leaves that call with no result (LEGION-283),
+# and a worker resumed from such a session may report the phase again. The reminder comes at the
+# end of every turn for as long as the daemon answers that the claim owes work, and none at all once
+# the daemon has the completion, which is what the counts after a success read. The reminder is
+# found by a sentence that both of its texts carry (owedReminder and UNREAD_REMINDER in
+# packages/pi-shared/src/phase-stall.ts).
 completion_verdict() {
-  jq -R -s -c --arg followup "Your turn ended with your Legion phase still open" '
+  jq -R -s -c --arg followup "This reminder repeats at the end of every turn" '
     [split("\n")[] | fromjson?] | to_entries
     | [.[] | .key as $i | .value as $e
         | if $e.type == "message" and $e.message.role == "user" then {i: $i, kind: "assignment"}
@@ -2797,7 +2797,6 @@ completion_verdict() {
             | if ($ids | length) > 0 then {i: $i, kind: "call", ids: $ids} else empty end
           elif $e.type == "message" and $e.message.role == "toolResult" and $e.message.toolName == "legion" then
             {i: $i, kind: "result", id: $e.message.toolCallId, ok: ($e.message.isError != true)}
-          elif $e.type == "custom" and $e.customType == "legion-phase-stall" then {i: $i, kind: "stall", state: $e.data.state}
           elif (($e | tostring) | contains($followup)) then {i: $i, kind: "followup"}
           else empty end] as $t
     | [$t[] | select(.kind == "assignment") | .i] as $starts
@@ -2807,21 +2806,20 @@ completion_verdict() {
         | select(($calls | length) > 0)
         | [$seg[] | select(.kind == "result") | select(.id as $id | $calls | index($id) != null)] as $results
         | [$results[] | select(.ok)] as $ok
-        | ([$seg[] | select(.kind == "call" and ($ok[0].id as $id | .ids | index($id) != null)) | .i] | first) as $okcall
         | {assignment: $from, calls: ($calls | length),
            unanswered: [$calls[] | select(. as $id | [$results[].id] | index($id) == null)],
            succeeded: ($ok | length),
-           closed: (($ok | length) == 1 and $okcall != null and any($seg[]; .kind == "stall" and .state == "closed" and .i > $okcall))}] as $segments
+           followups_after_success: (if ($ok | length) == 1 then [$seg[] | select(.kind == "followup" and .i > $ok[0].i)] | length else null end)}] as $segments
     | ([$t[] | select(.kind == "result" and .ok) | .i] | last) as $last
     | {segments: $segments,
        followups_after: (if $last == null then null else [$t[] | select(.kind == "followup" and .i > $last)] | length end)}'
 }
 # completions_answered FILE: every assignment its worker answered with handoff_complete got a
-# result for each call, exactly one success (the report, made once), and `closed` after the call
-# that succeeded, and no phase reminder came after the last success.
+# result for each call, exactly one success (the report, made once), and no phase reminder after
+# that success before the next assignment, and no phase reminder came after the last success.
 completions_answered() {
   completion_verdict <"$1" | jq -e '(.segments | length) > 0
-    and all(.segments[]; (.unanswered | length) == 0 and .succeeded == 1 and .closed)
+    and all(.segments[]; (.unanswered | length) == 0 and .succeeded == 1 and .followups_after_success == 0)
     and .followups_after == 0' >/dev/null
 }
 # cut_at_completion_call FILE prints FILE's session up to and including its last assistant entry that
@@ -3584,7 +3582,8 @@ starts its tree from the task its start carries and the daemon's `catch-up` noti
 says: it writes the spec in the issue's own primary document and registers the gate, then waits.
 Apart from that, do not act until
 a targeted human Dispatch message gives the next exact proof operation. A phase worker's first
-message is the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
+message is the daemon's task line (`Working copy: branch legion/<key>, directory <dir>.` on a line
+of its own, then `Continue <title>. Issue: <key>. Phase: <phase>.` on the next): it names your
 phase and is not that message. Read what your role says to read, then reply WAITING and wait for
 the targeted message. An implementer, on the daemon's task line and on a new task for the same
 phase (one that says its previous process was ended), runs `sleep 300` as one bash call (its
@@ -5183,9 +5182,10 @@ begin completion-closed
 # from inside its turn ends its assignment, not its process: the turn runs to its end and the worker
 # goes idle in the pod and on the session it first registered with, where it stays until tree 1
 # closes. Its live session answers every handoff_complete call, reports each assignment once, and
-# records the phase stall `closed` after the call that succeeded: the 4b.13b acceptance's stall
-# check (completion_verdict), which a stop inside the call fails. The implementer, handed retro in
-# that same session, is where a session holding an unanswered report would report again.
+# is not reminded again after the call that succeeded, since the daemon then answers that the
+# claim owes nothing: the 4b.13b acceptance's stall check (completion_verdict), which a stop inside
+# the call fails. The implementer, handed retro in that same session, is where a session holding an
+# unanswered report would report again.
 for role in planner implementer tester reviewer; do
   resident_kept "$tree1" "$role" || fail "$role on $tree1 did not stay live in the pod and session it first registered with after its phase: $(resident_lost "$tree1" "$role")"
   on_tree "$tree1" until_true 300 "$role on $tree1 to go idle in the pod and session it first registered with" resident_idle "$tree1" "$role"
@@ -5193,8 +5193,8 @@ for role in planner implementer tester reviewer; do
   claim_session_text "$tree1" "$role" >"$session_copy" || fail "$role on $tree1 has no readable session"
   completion_verdict <"$session_copy" >"$evidence/completion-$role-verdict.json"
   completions_answered "$session_copy" ||
-    fail "$role on $tree1 left a phase completion unanswered, unclosed or repeated: $(cat "$evidence/completion-$role-verdict.json")"
-  note "$role on $tree1, idle in its first pod $(cat "$work/resident-$tree1-$role.json"): $(jq -c '[.segments[] | {calls, succeeded, closed}]' "$evidence/completion-$role-verdict.json")"
+    fail "$role on $tree1 left a phase completion unanswered, reminded after it or repeated: $(cat "$evidence/completion-$role-verdict.json")"
+  note "$role on $tree1, idle in its first pod $(cat "$work/resident-$tree1-$role.json"): $(jq -c '[.segments[] | {calls, succeeded, followups_after_success}]' "$evidence/completion-$role-verdict.json")"
 done
 # The control: the planner's session cut at its handoff_complete call, the transcript a stop inside
 # the call leaves, is refused.
@@ -7002,8 +7002,8 @@ expect_failure pod-shape-unrecorded-pod test -z "$(stream_missing "$evidence/pod
 mv "$work/driver-actions.saved" "$evidence/driver-actions.txt"
 unames=$(cat "$evidence"/pods/*.txt 2>/dev/null | sed -n 's/^uname=//p' | sort -u | tr '\n' ' ')
 note "$(wc -l <"$evidence/pods-checked.txt") of them also read live by the shape watcher (gVisor uname -r: $unames)"
-grep -h '"init"' "$evidence"/pods/*.txt | jq -s -c 'map({role, init: [.init[] | select(.name == "workspace-fetch") | {started, finished}]})' >"$evidence/workspace-fetch.json"
-note "workspace-fetch per pod (started, finished) and node ephemeral-storage use: $evidence/workspace-fetch.json, $evidence/pods/"
+grep -h '"init"' "$evidence"/pods/*.txt | jq -s -c 'map({role, init: [.init[] | select(.name == "workspace-init") | {started, finished}]})' >"$evidence/workspace-init.json"
+note "workspace-init per pod (started, finished) and node ephemeral-storage use: $evidence/workspace-init.json, $evidence/pods/"
 pass
 
 begin pod-watch-verdict

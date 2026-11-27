@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -20,12 +19,13 @@ import (
 // not answer for zeta/tools, which woke the pass, and the pass's listing is held with the issue at
 // sequence 1. The edit to orbit/gadgets, at sequence 2, applies while GitHub does not answer for
 // orbit/gadgets either, so it records nothing. Then GitHub answers for zeta/tools and the pass goes
-// on. The listing is older than an event the daemon applied, so it records nothing: the issue stays
-// unrecorded while GitHub does not answer for orbit/gadgets, and once it does, a later listing
-// records the issue on orbit/gadgets at sequence 2. Nothing is said on the issue, since Legion
-// never held another repository for it. Before, the pass admitted the issue on zeta/tools at
-// sequence 1 from its listing, the edit reached no record, and no note said that Legion keeps
-// zeta/tools.
+// on. The pass took its set while GitHub had not answered for zeta/tools, so it defers the issue
+// its listing shows there and records nothing (deferUnreadIssues): the issue stays unrecorded
+// while GitHub does not answer for orbit/gadgets, and once it does, a later listing records the
+// issue on orbit/gadgets at sequence 2. Nothing is said on the issue, since Legion never held
+// another repository for it. Before, the pass admitted the issue on zeta/tools at sequence 1 from
+// its listing, and the edit, applied while the issue had no record, reached none: nothing moved
+// the record onto orbit/gadgets or said anything on the issue.
 func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing.T) {
 	t.Parallel()
 	const key = "LEGION-1800"
@@ -33,8 +33,8 @@ func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing
 	h.edit(t, key, "orbit/gadgets", 2)
 	h.letGo(t)
 	if got := recordedIssue(t, h.w, key); got != nil {
-		t.Fatalf("%s is %s once the held recovery ended, want it unrecorded: the recovery's listing showed it at sequence 1, "+
-			"older than the edit to orbit/gadgets at sequence 2 the daemon had applied, and GitHub does not answer for orbit/gadgets",
+		t.Fatalf("%s is %s once the held recovery ended, want it unrecorded: the recovery's listing showed it on zeta/tools at sequence 1, "+
+			"and its pass took its set while GitHub had not answered for zeta/tools, so it deferred the issue (deferUnreadIssues)",
 			key, recordedAs(t, h.w, key))
 	}
 	listed := h.client.listingCount()
@@ -53,10 +53,12 @@ func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing
 // Two edits of the repository of an issue the daemon has not recorded yet land while a recovery
 // pass holds a listing read before both (as above): the first to orbit/gadgets at sequence 2, the
 // second back to zeta/tools at sequence 3, each applied while GitHub does not answer for its
-// repository. The held listing names the repository the second edit names again, so only the
-// sequence tells it is old: it records nothing, and a later listing, which shows the second edit,
-// records the issue on zeta/tools at sequence 3, with nothing said on it. Before, the held listing
-// recorded the issue at sequence 1, behind both edits.
+// repository. The held listing names the repository the second edit names again, so its
+// repository does not tell it is old, but its pass took its set while GitHub had not answered for
+// zeta/tools, so the pass defers the issue and records nothing (deferUnreadIssues), and a later
+// listing, which shows the second edit, records the issue on zeta/tools at sequence 3, with
+// nothing said on it. Before, the held listing recorded the issue at sequence 1, behind both
+// edits.
 func TestTwoEditsOfAnUnrecordedIssuesRepositoryDuringARecoveryRecordItAtTheNewer(t *testing.T) {
 	t.Parallel()
 	const key = "LEGION-1802"
@@ -71,9 +73,11 @@ func TestTwoEditsOfAnUnrecordedIssuesRepositoryDuringARecoveryRecordItAtTheNewer
 }
 
 // The control order of the edit above: the edit lands after the recovery recorded the issue on
-// zeta/tools. The record keeps zeta/tools, takes the edit's sequence, and the daemon says on the
-// issue that Legion keeps zeta/tools and does not apply the change to orbit/gadgets.
-func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
+// zeta/tools. The record follows Dispatch (workflow.Engine.ApplyRepositoryChange): while GitHub
+// does not answer for orbit/gadgets it keeps zeta/tools, takes the edit's sequence and says
+// nothing on the issue, and once GitHub answers, the follow the edit's preparation asked for
+// (requestFollowOf) moves it onto orbit/gadgets, with nothing said on the issue either.
+func TestAnEditOfARecoveredIssuesRepositoryIsFollowedOnceGitHubAnswers(t *testing.T) {
 	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
@@ -85,11 +89,66 @@ func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
 		t.Fatalf("%s is %s, want it recovered on zeta/tools at sequence 1", key, recordedAs(t, w, key))
 	}
 	deliver(t, w, client, issue(key, "orbit/gadgets", "todo", true, "", 2))
-	note := repoNoteOf(t, w, key)
-	const kept = "Legion keeps zeta/tools as this issue's repository; the change to orbit/gadgets in Dispatch is not applied"
-	if got := recordedIssue(t, w, key); got.Repo != "zeta/tools" || got.LastDispatchSeq != 2 || note == nil ||
-		note.ResolvedRepo != "orbit/gadgets" || !strings.HasPrefix(note.Note, kept) {
-		t.Fatalf("%s is %s, want it on zeta/tools at sequence 2 with the note %q…", key, recordedAs(t, w, key), kept)
+	if got := recordedIssue(t, w, key); got.Repo != "zeta/tools" || got.LastDispatchSeq != 2 || repoNoteOf(t, w, key) != nil {
+		t.Fatalf("%s is %s, want it on zeta/tools at sequence 2 with no repository note while GitHub does not answer for orbit/gadgets",
+			key, recordedAs(t, w, key))
+	}
+	installs.setFailing(nil, "implement orbit/gadgets")
+	testwait.Eventually(t, key+" on orbit/gadgets once GitHub answers for it", func() bool {
+		got := recordedIssue(t, w, key)
+		return got != nil && got.Repo == "orbit/gadgets"
+	})
+	if got := recordedIssue(t, w, key); got.LastDispatchSeq != 2 || repoNoteOf(t, w, key) != nil {
+		t.Fatalf("%s is %s, want it on orbit/gadgets at sequence 2, the edit, with no repository note", key, recordedAs(t, w, key))
+	}
+}
+
+// The order between the two above: the edit's event is prepared while the issue has no record,
+// and a recovery's listing, read before the edit, records the issue on zeta/tools before that
+// event applies. The held recovery's listing is not that one: it shows the issue at sequence 1
+// while GitHub had not answered for zeta/tools as its pass took its set, so the pass defers the
+// issue, records nothing and reads GitHub for zeta/tools (deferUnreadIssues). That answer wakes
+// the next pass, whose listing, read after that answer and before the edit, is held too and
+// shows the issue at sequence 1; the edit is prepared while it waits, and once that listing
+// answers, it records the issue on zeta/tools. A preparation of an issue with no record reads
+// GitHub for no correction and stamps no record (intake.DispatchIssue.PreparedAgainst), so when
+// the event applies, its change onto orbit/gadgets writes nothing (workflow.Resolution.Unread),
+// and the engine asks a follow of the issue at the event's commit, which reads Dispatch's listing
+// and GitHub and moves the record onto orbit/gadgets, with no further event of the issue, no boot
+// and nothing said on it. Before, that event asked no follow, and the record stayed on zeta/tools
+// until the issue's next event or the next boot.
+func TestAnEditPreparedBeforeARecoveryRecordedTheIssueIsFollowed(t *testing.T) {
+	t.Parallel()
+	const key = "LEGION-1803"
+	h := newHeldEditRecovery(t, key)
+	releaseNext := h.client.holdListing()
+	t.Cleanup(releaseNext)
+	h.installs.setFailing(nil, "implement zeta/tools")
+	h.release()
+	testwait.Eventually(t, "the next recovery's listing held", func() bool { return h.client.heldListingCount() == 2 })
+	if got := recordedIssue(t, h.w, key); got != nil {
+		t.Fatalf("%s is %s once the held recovery ended, want it unrecorded: its listing showed it on zeta/tools while GitHub "+
+			"had not answered for zeta/tools as the pass took its set, so the pass deferred it", key, recordedAs(t, h.w, key))
+	}
+	h.installs.setFailing(nil, "implement orbit/gadgets")
+	edit := issue(key, "orbit/gadgets", "todo", true, "", 2)
+	prepared := prepareEvent(t, h.w, h.client, edit)
+	if prepared.PreparedAgainst != "" || prepared.RepositoryRead != nil {
+		t.Fatalf("the edit prepared while %s had no record = %+v, want no stamp of a record and no read for a correction", key, prepared)
+	}
+	releaseNext()
+	testwait.Eventually(t, key+" recorded by the next recovery's listing", func() bool { return recordedIssue(t, h.w, key) != nil })
+	if got := recordedIssue(t, h.w, key); got.Repo != "zeta/tools" || got.LastDispatchSeq != 1 {
+		t.Fatalf("%s is %s, want the next recovery's listing, read before the edit, to record it on zeta/tools at sequence 1",
+			key, recordedAs(t, h.w, key))
+	}
+	applyEvent(t, h.w, edit, prepared)
+	testwait.Eventually(t, key+" on orbit/gadgets with no further event of it and no boot", func() bool {
+		got := recordedIssue(t, h.w, key)
+		return got != nil && got.Repo == "orbit/gadgets"
+	})
+	if got := recordedIssue(t, h.w, key); got.LastDispatchSeq != 2 || repoNoteOf(t, h.w, key) != nil {
+		t.Fatalf("%s is %s, want it on orbit/gadgets at sequence 2, the edit, with no repository note", key, recordedAs(t, h.w, key))
 	}
 }
 
@@ -102,13 +161,16 @@ func TestAnEditOfARecoveredIssuesRepositoryIsNotedAndNotApplied(t *testing.T) {
 // child; the recovery keeps the child in the scope of its next pass and zeta/tools among the
 // repositories to recover, and that next pass's listing, at 2, records the child under its
 // parent. Before, the pass let zeta/tools go with the child unrecorded, and no later pass listed
-// it.
+// it. The check reads what the held pass left while the next pass waits on its own listing: run
+// free, the next pass recorded the child and let zeta/tools go between the check's two reads,
+// which read as the held pass letting zeta/tools go with the child unrecorded. Both listings stay
+// held until the row lets them go (heldUntilLetGo).
 func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testing.T) {
 	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	refresher := &heldRefresher{gate: make(chan struct{})}
-	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, refresher.hold)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, refresher.hold, heldUntilLetGo(t))
 	const root, parent, child = "LEGION-1809", "LEGION-1810", "LEGION-1811"
 	liveRoot(t, w, client, root)
 	deliver(t, w, client, issue(child, "zeta/tools", "todo", false, parent, 1))
@@ -133,6 +195,12 @@ func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testi
 	if got := recordedIssue(t, w, child); got != nil {
 		t.Fatalf("%s is %s after its event at 2, applied while its parent was unrecorded, want it unrecorded", child, recordedAs(t, w, child))
 	}
+	// The next pass's listing is held as well. That pass asks for its listing only once the held
+	// pass has returned, since the refresher runs one pass at a time, and before its listing
+	// answers it records nothing and lets no repository go, so while it waits the check reads
+	// what the held pass left and nothing else.
+	releaseNext := client.holdListing()
+	t.Cleanup(releaseNext)
 	release()
 	testwait.Eventually(t, "the held recovery ended", func() bool {
 		return len(w.recoveringReasons()) == 0 || client.listingCount() > listed
@@ -145,6 +213,7 @@ func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testi
 	if len(w.recoveringReasons()) == 0 && recordedIssue(t, w, child) == nil {
 		t.Fatalf("the held recovery let zeta/tools go with %s unrecorded: its listing, at 1, was older than the child's event at 2, and no later pass lists it", child)
 	}
+	releaseNext()
 	testwait.Eventually(t, child+" recorded by a later recovery", func() bool { return recordedIssue(t, w, child) != nil })
 	if got := recordedIssue(t, w, child); got.Repo != "zeta/tools" || got.Tree != root || got.LastDispatchSeq != 2 {
 		t.Fatalf("%s is %s in tree %s, want it recorded on zeta/tools in %s's tree at sequence 2", child, recordedAs(t, w, child), got.Tree, root)
@@ -166,7 +235,7 @@ func newHeldEditRecovery(t *testing.T, key string) heldEditRecovery {
 	t.Helper()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
-	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, heldUntilLetGo(t))
 	// No repository is unread before the event's preparation leaves zeta/tools so, which is what
 	// wakes the recovery, and deliver shows the issue before it prepares the event: the held listing
 	// is the first, and shows the issue at sequence 1.
@@ -178,6 +247,19 @@ func newHeldEditRecovery(t *testing.T, key string) heldEditRecovery {
 	}
 	testwait.Eventually(t, "the recovery's listing held", func() bool { return client.heldListingCount() == 1 })
 	return heldEditRecovery{w: w, client: client, installs: installs, release: release}
+}
+
+// heldUntilLetGo is a rig option for a row that holds a recovery pass's listing (holdListing): the
+// bound on each attempt of a call the daemon makes (appCallBounds.attempt), the listing among them,
+// is what is left of the test binary's deadline (testwait.Remaining) rather than the daemon's
+// 15 s, so a held listing answers only once the row lets it go, however slow the machine. Under
+// 15 s, a row held up that long had its listing end on its own: that pass failed, and a later
+// pass listed with nothing held while the row still read what it took for the held pass's doing.
+func heldUntilLetGo(t *testing.T) func(*workflowRuntime) {
+	t.Helper()
+	calls := productionAppCalls()
+	calls.attempt = testwait.Remaining(t)
+	return func(w *workflowRuntime) { w.appCalls = &calls }
 }
 
 // edit delivers a person's edit of key's own repository to repo, at seq: Dispatch sends an event

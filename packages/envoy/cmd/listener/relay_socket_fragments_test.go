@@ -14,6 +14,7 @@ import (
 // whole; the write of one fragment and a byte reaches the writer as one piece past the fragment,
 // and the row names it.
 func TestFragmentsHandsItsWriterPiecesOfAtMostOneFragment(t *testing.T) {
+	t.Parallel()
 	if got := newRelaySockets(nil, nil, nil).upgrader.WriteBufferSize; got != relaySocketWriteFragment {
 		t.Fatalf("the upgrader's write buffer is %d bytes, want relaySocketWriteFragment (%d), the size of the pieces write hands gorilla", got, relaySocketWriteFragment)
 	}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -176,7 +177,7 @@ func bunInstallArgs(t *testing.T, plugins *runtime.PluginInstall) []string {
 	dir := t.TempDir()
 	recorded := filepath.Join(dir, "bun-args")
 	stub := filepath.Join(dir, "bun")
-	if err := os.WriteFile(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+recorded+"\nexit 1\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+recorded+"\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	script := startScript(filepath.Join(dir, "state"), 3, plugins, "", installLockWait(2*time.Second, 3))
@@ -397,7 +398,7 @@ func runClaudeStart(t *testing.T, npmBody string, seedCache ...func(t *testing.T
 	npmLog, agentLog := filepath.Join(dir, "npm.log"), filepath.Join(dir, "agent.log")
 	npm := filepath.Join(dir, "npm")
 	stub := "#!/bin/sh\n{ pwd; printf '%s\\n' \"$@\"; } >" + shellQuote(npmLog) + "\n" + npmBody
-	if err := os.WriteFile(npm, []byte(stub), 0o700); err != nil {
+	if err := execfile.Write(npm, []byte(stub), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	script := startScript(run.stateHome, 3, nil, run.configDir, installLockWait(2*time.Second, 3))
@@ -597,7 +598,7 @@ func installLockProbe(t *testing.T, unlock bool) []string {
 		"sleep 0.3\n" +
 		"printf 'end %s\\n' \"$LEGION_TEST_ID\" >> \"$LEGION_TEST_LOG\"\n" +
 		"exit 0\n"
-	if err := os.WriteFile(stub, []byte(body), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -746,7 +747,7 @@ const (
 func TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
-	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
+	body := "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -999,7 +1000,7 @@ func TestAnInstallRunsBeforeTheSetupCommandAndLeavesTheStartDirectory(t *testing
 	order := filepath.Join(dir, "order")
 	stub := "#!/bin/sh\necho \"$(basename \"$0\") $(pwd)\" >>" + shellQuote(order) + "\n"
 	for _, name := range []string{"bun", "node"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(stub), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(dir, name), []byte(stub), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1050,7 +1051,7 @@ func TestAFailingInstallNeverRunsTheSetupCommandOrTheAgent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			for file, body := range map[string]string{"bun": tc.bun, "node": "#!/bin/sh\nexit 0\n"} {
-				if err := os.WriteFile(filepath.Join(dir, file), []byte(body), 0o700); err != nil {
+				if err := execfile.Write(filepath.Join(dir, file), []byte(body), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1143,7 +1144,7 @@ func TestAnInstallRemakesAPoisonedCacheAndSparesARealOne(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			for _, file := range []string{"bun", "node"} {
-				if err := os.WriteFile(filepath.Join(dir, file), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+				if err := execfile.Write(filepath.Join(dir, file), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}

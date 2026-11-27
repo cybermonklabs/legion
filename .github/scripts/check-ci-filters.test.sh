@@ -46,6 +46,8 @@
 # EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
 # workflows, generate's output and its .inputs file), fails naming each, as one does that cannot
 # read the tree through git, and the header's run recipe runs the check, or says why it stops.
+# The tie entry that go-test-reads.sh writes for each read (tie_entry) holds every path that the
+# read's glob selects.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, the gate of that job and two excluded
@@ -2797,6 +2799,29 @@ for pair in refs/heads/main=true refs/heads/Main=false refs/heads/MAIN=false ref
   check "$ref: writes is_main=$want" "$(is "$(cat "$work/ref-output")" "is_main=$want")"
 done
 
+echo "case: the tie entry of a read holds every path that the read's glob selects"
+# go-test-reads.sh writes each read of a test's closure as a tie entry (tie_entry): a glob with no
+# wildcard as it is, and otherwise the directory before its first wildcard part, with * for the
+# files directly in it when that part is the last one and holds no ** and no [ class, and ** for
+# its whole tree else. workflow_paths reads ** as any run of characters, / included, and copies a
+# [ class into its regex, where a class such as [^x] matches / too. So a last part that holds **
+# or a class beside other text (a/b**, a/**.go, a/b[^x]c) selects files below a's subdirectories
+# too, and its entry is a/**. A glob whose first part holds a wildcard has no directory before it,
+# and no entry.
+entries=$(cd "$script_dir" && PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import sys
+
+import ci_filter_coverage as c
+
+for glob in sys.argv[1:]:
+    print(f"{glob} -> {c.tie_entry(glob)}")
+' a/b.go 'a/*' 'a/**' 'a/*.go' 'a/b?.go' 'a/b**' 'a/**.go' 'a/b[^x]c' 'a/*/c.go' 'a/b*/c' 'a/b/**/c' '*.go' '**/x.go' 2>&1) ||
+  entries="the engine gives no tie entries: $entries"
+for pair in 'a/b.go -> a/b.go' 'a/* -> a/*' 'a/** -> a/**' 'a/*.go -> a/*' 'a/b?.go -> a/*' 'a/b** -> a/**' \
+  'a/**.go -> a/**' 'a/b[^x]c -> a/**' 'a/*/c.go -> a/**' 'a/b*/c -> a/**' 'a/b/**/c -> a/b/**' '*.go -> None' '**/x.go -> None'; do
+  check "${pair% -> *}: its entry is ${pair#* -> }" "$(is "$(grep -cxF -- "$pair" <<<"$entries" || true)" 1)"
+done
+
 echo "case: a job named for a required check holding the re-run term"
 root=$(fixture pr-title-rerun-guard)
 replace "$root/.github/workflows/ci.yaml" \
@@ -3217,6 +3242,70 @@ check "a package outside the gated caller's filter still fails" "$(is "$status" 
 check "naming the gated caller" \
   "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Build the app" runs `go build ./cmd/app ./other`')"
 check "and not the EXCLUDED one" "$(is "$(contains "$out" 'which job preview calls')" false)"
+
+# ci.yaml's dispatch-references runs only where the run's full lane does not
+# (.github/ci-notes/ci.md#the-reference-rows-preview-job): its if: also tests the gated caller's
+# output for not being 'true'. That term holds the job back where the other filter selected its
+# own job; it reads none of that filter's paths, so it gates the job on no filter of its own and
+# the EXCLUDED caller still hands its skip to the jobs it runs. Read as a gate, the term would make
+# the check ask the preview for a Run of every go command of the called file.
+# preview_not_true <name> <term>: a fixture whose suite job calls suite.yaml, as calls_workflow
+# writes it, beside a `preview` job that CI_OK_EXEMPT names and whose if: gates on the EXCLUDED
+# image filter and also holds <term>; echoes the fixture root.
+preview_not_true() {
+  local root
+  root=$(fixture "$1")
+  calls_workflow "$root"
+  replace "$root/.github/workflows/suite.yaml" "        if: always()" "        if: always() && inputs.ci-ok-changes != ''"
+  replace "$root/.github/workflows/ci.yaml" "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" \
+    "CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\", \"preview\"]'"
+  cat >> "$root/.github/workflows/ci.yaml" <<YAML
+  preview:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.image == 'true' && $2 && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/suite.yaml
+YAML
+  echo "$root"
+}
+
+echo "case: an EXCLUDED caller's if: that tests the gated caller's output for not being 'true' is still read under the gated caller alone"
+root=$(preview_not_true called-workflow-excluded-caller-not-true "needs.changes.outputs.suite != 'true'")
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the EXCLUDED caller for no Run" "$(is "$(contains "$out" 'which job preview calls')" false)"
+replace "$root/.github/workflows/suite.yaml" "        run: go build ./cmd/app" "        run: go build ./cmd/app ./other"
+run_check "$root"
+check "a package outside the gated caller's filter still fails" "$(is "$status" 1)"
+check "naming the gated caller" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Build the app" runs `go build ./cmd/app ./other`')"
+check "and not the EXCLUDED one" "$(is "$(contains "$out" 'which job preview calls')" false)"
+
+echo "case: a test for not being 'true' of a name the changes job writes no output for is refused"
+# needs.changes.outputs of a name the job does not write is empty on every run, so `!= 'true'`
+# always holds and the term holds nothing back; a misspelt name would read as a term that works.
+root=$(preview_not_true called-workflow-excluded-caller-not-true-misspelt "needs.changes.outputs.suitx != 'true'")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the output and why the term holds nothing back" \
+  "$(contains "$out" "job preview tests needs.changes.outputs.suitx for not being 'true', and the changes job has no output suitx, so needs.changes.outputs.suitx is empty on every run and the test always holds")"
+
+echo "case: a test for not being 'true' of an output that carries no filter, ref_is_main, passes"
+# ref_is_main is an output of the changes job that no file of .github/ci-gates declares: the term
+# reads a real value, so it is no term that always holds.
+root=$(preview_not_true called-workflow-excluded-caller-not-true-ref "needs.changes.outputs.ref_is_main != 'true'")
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "refuses no term" "$(is "$(contains "$out" 'for not being')" false)"
+
+echo "case: a test for not being 'true' of a declared filter the changes job hands on no output for is refused"
+# Declaring a filter in .github/ci-gates does not make the changes job write it: the fixture's site
+# filter, its output taken away, is declared and still empty on every run.
+root=$(preview_not_true called-workflow-excluded-caller-not-true-declared "needs.changes.outputs.site != 'true'")
+replace "$root/.github/workflows/ci.yaml" "$(every_job_output site)"$'\n' ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the declared filter as an output the changes job does not write" \
+  "$(contains "$out" "job preview tests needs.changes.outputs.site for not being 'true', and the changes job has no output site")"
 
 # The rule of .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # for a step's `env:` rests on this: the called file's env: and shell: reach the gate's go commands,

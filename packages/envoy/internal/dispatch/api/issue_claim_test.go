@@ -497,6 +497,7 @@ func TestClaimAnswersWhoOwnsTheIssuesStatus(t *testing.T) {
 // succeeded. A claim is what stops two sessions working one issue; the advisory answer is not.
 // The failure is forced by pointing legionManagedStatusSQL at a statement Postgres refuses.
 func TestClaimSurvivesAFailingLegionLabelWalk(t *testing.T) {
+	// Not parallel: it writes the package variable legionManagedStatusSQL.
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, _, _ := claimHandler(t, live)
@@ -548,6 +549,7 @@ func TestClaimSurvivesAFailingLegionLabelWalk(t *testing.T) {
 // sleeps ten times the bound, so what ends it is the bound; nothing in this test races a Go
 // timer against the database, and nothing asserts on elapsed time.
 func TestClaimSurvivesAHangingLegionLabelWalk(t *testing.T) {
+	// Not parallel: it writes the package variable legionManagedStatusSQL.
 	live := &liveRegistry{}
 	live.set("session-one")
 	handler, _, _ := claimHandler(t, live)

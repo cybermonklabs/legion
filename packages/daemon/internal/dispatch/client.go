@@ -14,10 +14,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 const requestTimeout = 10 * time.Second
+
+// dispatchServer is how a request's error names Dispatch when its address does not parse
+// (redact.RequestError).
+const dispatchServer = "Dispatch"
 
 // HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
 // transport it was made with (New). Every write names as its actor the session actor answers.
@@ -253,10 +258,11 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 
 // PutRoleHolders publishes the session of each Legion role of the issue through PUT
 // /api/v1/issues/{key}/role-holders, as the daemon's own session: the route takes a Legion
-// daemon's session alone. The write replaces the issue's whole set, appends no event and notifies
-// nobody. The list is always sent, empty for an issue where no session holds a role: Dispatch
-// refuses a body that names no list, and the empty list is the publication that removes every
-// holder. Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404
+// daemon's session alone. The write replaces the issue's whole set. A change to its (role,
+// session) pairs appends quiet issue.role_holders_changed; a publication of the same pairs appends
+// no event and notifies nobody. The list is always sent, empty for an issue where no session holds
+// a role: Dispatch refuses a body that names no list, and the empty list is the publication that
+// removes every holder. Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404
 // ISSUE_NOT_FOUND for an issue it does not know; a Dispatch older than the route answers its
 // router's 404 (NoRoute), which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
@@ -801,23 +807,28 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 			return fmt.Errorf("encode Dispatch %s %s: %w", method, path, err)
 		}
 	}
-	request, err := http.NewRequestWithContext(bounded, method, c.baseURL+path, bytes.NewReader(encoded))
+	route := c.baseURL + path
+	request, err := http.NewRequestWithContext(bounded, method, route, bytes.NewReader(encoded))
 	if err != nil {
-		return fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
+		return fmt.Errorf("create Dispatch %s %s: %w", method, path, redact.RequestError(dispatchServer, route, err))
 	}
 	request.Header.Set("Accept", "application/json")
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
 
+	// A request that got no answer is named through redact.RequestError, before transportFailure
+	// reads its class: dispatch_url can carry a user name and a password, and a dial's or a
+	// resolver's error names the host, which is a password's tail when it holds an unencoded "@".
+	// The error unwraps to the request's own, so TransportRefusal and TransientError read it.
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
+		return fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(redact.RequestError(dispatchServer, route, err)))
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
-		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
+		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(redact.RequestError(dispatchServer, route, err)))
 	}
 	if response.StatusCode/100 != 2 {
 		return dispatchError(response.StatusCode, response.Status, payload)

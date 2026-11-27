@@ -22,6 +22,7 @@ import (
 // holds a task of that phase again — the worker that comes up is sent nothing of the stopped
 // phase, and only the return's own start reaches it.
 func TestTheMovesRetirementLeavesNoTaskOfTheStoppedPhase(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

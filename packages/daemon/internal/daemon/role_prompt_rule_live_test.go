@@ -1,44 +1,44 @@
 //go:build e2e
 
-// The live proof that a role process is launched with the rules its own system prompt carries:
-// the pod memory rule, in the paragraph every phase worker is given
-// (packages/daemon/internal/prompts/roles/mechanics/headless.md, "What you run in the pod") and
-// the paragraph every architect is given
-// (packages/daemon/internal/prompts/go/architect-common.md); the planner's own rule that its
-// completion reports work already done, in the paragraph that names the `head` its handoff
-// carries, what the daemon does with it, and the order that records the handoff before the
-// completion is reported
-// (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff"); and the prompt of a
-// child's own architect, a sub-architect, whose role part is the sub-architect's
-// (packages/daemon/internal/prompts/roles/architect.md, `# Legion Sub-Architect`) and whose
-// addressing line names the architect above it (addressingFragment, in specs.go).
-// scripts/e2e/role-prompt-rule.sh builds this driver with `-tags e2e` and owns the nats-server
-// and the PostgreSQL it runs against.
+// The live proof that a role process is launched with the role prompt the daemon composed for its
+// role. Three roles of one tree each run a real pane: the tree's root architect, the planner of the
+// same issue, and the architect of a child of the root, a sub-architect. The prompt each pane's own
+// Oh My Pi was started with is the bytes of every part the composer gives that role, in the
+// composer's order, followed by a blank line and the addressing the launch carried, and nothing
+// after it (runtime.ComposePrompt, given no deployment or variant instructions by this rig). The
+// sub-architect's addressing names the root's architect as the architect above it
+// (addressingFragment, in specs.go). scripts/e2e/role-prompt-rule.sh builds this driver with
+// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
-// What this proof reads, and why it reads it there. The prompts package's unit tests hold which
-// parts each role's prompt is composed of (packages/daemon/internal/prompts/prompts_test.go's
-// composition table and common_part_test.go's planted markers).
-// None of them starts anything, so none says that a role process was ever launched with that
-// text. This driver reads the text from what the process itself was started with: the Oh My Pi
-// process's own command line, /proc/<pid>/cmdline, and the file its one `--append-system-prompt`
-// word names. The pid the claim's locator carries is the
-// `legion worker-shim`'s (parseLocalIncarnation, over the incarnation localruntime_live_test.go's
-// launch mints), and the shim starts Oh My Pi as a child
-// rather than exec'ing into it (internal/shim/shim.go's exec.Command), so the proof walks /proc
-// for the child of that shim whose argv[0] is LEGION_OMP_PATH and reads that child. Reading the
-// shim's own argv would pass a shim that dropped or rewrote the prompt, which is not what this
-// proof claims. The argv is NUL-separated, and the word after `--append-system-prompt` is the
-// path of the file that holds the whole prompt the agent runs under: Oh My Pi reads a value with
-// no newline as a path and appends the file's contents, and the launch writes that file before
-// the process starts and never while it runs (runtime.WriteSystemPrompt).
+// Where this proof reads the prompt, and why it reads it there. It reads the prompt from what the
+// process itself was started with: the Oh My Pi process's own command line, /proc/<pid>/cmdline,
+// and the file its one `--append-system-prompt` word names. The pid the claim's locator carries is
+// the `legion worker-shim`'s (parseLocalIncarnation, over the incarnation
+// localruntime_live_test.go's launch mints), and the shim starts Oh My Pi as a child rather than
+// exec'ing into it (internal/shim/shim.go's exec.Command), so the proof walks /proc for the child
+// of that shim whose argv[0] is LEGION_OMP_PATH and reads that child. Reading the shim's own argv
+// would pass a shim that dropped or rewrote the prompt, which is not what this proof claims. The
+// argv is NUL-separated, and the word after `--append-system-prompt` is the path of the file that
+// holds the whole prompt the agent runs under: Oh My Pi reads a value with no newline as a path
+// and appends the file's contents, and the launch writes that file before the process starts and
+// never while it runs (runtime.WriteSystemPrompt).
 //
-// It reads the prompt from nowhere else on purpose. The composer, the role prompt files below the
-// state directory and the SpawnSpec the runtime recorded each hold the text before a process ever
-// took it, so a proof that read any of the three would prove again what the unit tests prove.
-// Only the kernel's copy of the argv says which file the agent was started with.
+// What it holds that prompt against, and why. It holds no word of any prompt, so a sentence or a
+// heading of a part may change and the proof still passes. It holds each role's composition: the
+// parts of the composer's snapshot that prompts.Composer.Compose gives that role, in that order,
+// named by their paths below the state directory's prompts/ (composedParts, in
+// live_proof_test.go; at boot prompts.New writes shared/ from the role prompts the daemon embeds,
+// and go/ from the daemon's own parts). It reads the bytes of those parts from the snapshot once
+// the panes run. A part left out of a role's composition, or one added to it, fails the proof for
+// that role. A marker planted in the snapshot would need a write between the boot's New and the
+// launch's read of the parts, and this rig has no such moment: New rewrites every snapshot file
+// that does not hold its embedded bytes, and the boot relaunches the three seeded claims at once.
+// The unit tests of internal/prompts compose each role's parts (prompts_test.go's composition
+// table and common_part_test.go's planted markers), but none of them starts a process, so none
+// says a role process was ever launched with them, and that is what this proof is for.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go).
+// own whole-daemon harness (startDaemonLogging) over the live-proof fixture (live_proof_test.go).
 // Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by
 // localruntime_live_test.go, since a Legion pod on a worker image from before
 // dispatch://INFRA-3257 carries no tmux, with this checkout's `@sjawhar/pi-envoy` and
@@ -83,6 +83,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -93,8 +94,9 @@ import (
 // builds). Oh My Pi applies the last occurrence alone, so a launch carries exactly one.
 const promptWord = "--append-system-prompt"
 
-// argvWordShown is how much of one argv word a failure prints before it cuts it. A role prompt is
-// tens of kilobytes, and a failure that printed it whole would bury the words around it.
+// argvWordShown is how much of one argv word, or of a prompt, a failure prints before it cuts it. A
+// role prompt is tens of kilobytes, and a failure that printed it whole would bury the words around
+// it.
 const argvWordShown = 80
 
 // The three panes, by the provider name each one's stand-in is given in the run's models.yml.
@@ -104,70 +106,11 @@ const (
 	ruleSubArchitectProvider = "subarchitectpane"
 )
 
-// The three sentences every reader is given word for word. Each is a literal of this file, so a
-// reworded rule fails this proof rather than passing on a text the driver derived from the same
-// files it is reading.
-const (
-	ruleSandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
-	ruleEveryRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
-	ruleCIsWork                 = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
-)
-
-// podRuleForPhaseWorker is the pod memory rule as a phase worker's prompt carries it
-// (packages/daemon/internal/prompts/roles/mechanics/headless.md), sentence by sentence.
-var podRuleForPhaseWorker = []string{
-	"In an issue pod every role of this issue runs in one container and shares its memory limit",
-	ruleSandboxEndsTheContainer,
-	ruleEveryRolesTurn,
-	ruleCIsWork,
-	"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
-	"Every other heavy run goes where your deployment's instructions say",
-	"instructions that name no such route are a gap you report to the architect that owns your issue",
-	"Each subagent you start runs its commands in this pod, so put these facts in its context",
-}
-
-// podRuleForArchitect is the same rule as every architect's prompt carries it, a root's and a
-// child's alike (packages/daemon/internal/prompts/go/architect-common.md, which the composer adds
-// to either architect's own part), written for the subagents an architect starts rather than for
-// the architect's own commands.
-var podRuleForArchitect = []string{
-	"Your subagents run their commands in your own issue pod",
-	ruleSandboxEndsTheContainer,
-	ruleEveryRolesTurn,
-	ruleCIsWork,
-	"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-	"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
-}
-
-// What a child's architect is launched with and a root architect is not. The heading opens the
-// sub-architect's own part (packages/daemon/internal/prompts/roles/architect.md), which the
-// composer gives an architect whose issue is not its tree's root (prompts.Composer.Compose), where
-// a root architect's opens with the root's heading instead (roles/architect-root.md). The clause
-// is the one its addressing line names the architect above it with (addressingFragment, in
-// specs.go), which the proof reads followed by that architect's role topic.
-const (
-	subArchitectHeading  = "# Legion Sub-Architect"
-	rootArchitectHeading = "# Legion Root Architect"
-	architectAboveYou    = "the architect above you is `"
-)
-
-// completionAfterWorkForPlanner is the rule the planner's own part carries about its completion
-// (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff"): the completion reports
-// work already done, at a named head. Three needles hold it. The first two are the `head` field as
-// the handoff body names it, with the one thing its value is, and the clause that carries that
-// head to the daemon, which names the planner's own phase word. The third is the paragraph's order
-// sentence, copied from planner.md byte for byte: the record written with `dispatch handoff-write` under
-// the planner's own phase word `plan`, then the completion, which is what makes the completion a
-// report of work already recorded rather than of work still to come. The three are short and sit
-// inside the paragraph, so a rewording of the prose around them stands, and the field's removal
-// or an order sentence that no longer puts the record before the completion is what fails them.
-// A planner's composed prompt carries no other role's part (prompts_test.go's composition table),
-// so the first needle is this role's own field and no other's.
-var completionAfterWorkForPlanner = []string{
-	"`head` (the 40-character lower-case commit",
-	"to the daemon, which takes a completion of an earlier `plan` entry only at the head the record holds",
-	"Record it with `dispatch handoff-write --issue <issue> --phase plan --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, then report completion",
-}
+// architectAboveYou is the clause a sub-architect's addressing names the architect above it with,
+// which the proof reads followed by that architect's role topic. It is the daemon's own Go text
+// (addressingFragment, in specs.go) and no prompt part's, so holding it tests the code that
+// writes it.
+const architectAboveYou = "the architect above you is `"
 
 // rolePromptRuleLive is one run of the proof: the booted daemon, the one tree it seeds, and the
 // three claims whose own command lines it reads.
@@ -191,11 +134,17 @@ type rolePromptRuleLive struct {
 }
 
 // ruleRole is one of the proof's three claims as the seed and the profile name it: the issue it
-// is on, the role, and the provider name of the stand-in that role's pane talks to.
+// is on, the role, the provider name of the stand-in that role's pane talks to, and the name a
+// step gives it; and its composition.
 type ruleRole struct {
 	issue    string
 	role     claim.Role
 	provider string
+	name     string
+	// parts is the role's composition (composedParts): each part of the composer's snapshot that
+	// prompts.Composer.Compose gives the role, in its order, as a path below the state
+	// directory's prompts/ (snapshotDir).
+	parts []string
 }
 
 // launchedPrompt is one agent process's own system prompt, with the pid it was read from and the
@@ -207,21 +156,20 @@ type launchedPrompt struct {
 }
 
 // TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive boots the daemon over three real
-// panes, reads the command line each of those three processes was launched with, and holds in
-// each the rules that role's own prompt carries: the pod memory rule, the phase worker's eight
-// sentences and every architect's six; in the planner's, the three needles of the rule that its
-// completion reports work already done at a named head: the `head` field, the clause that carries
-// it to the daemon, and the order sentence that records the `plan` handoff before the completion
-// is reported; and in the child's architect's, the sub-architect's own heading in place of the
-// root's, and the addressing clause that names the root's architect as the architect above it.
+// panes, reads the prompt each of those three processes was launched with, and holds that it is
+// the prompt the daemon composed for that role, so that every rule the role's prompt carries
+// reached the process. The planner's, the root architect's and the child's architect's prompts
+// are each the bytes of their own composition's parts, in order, followed by the addressing their
+// launch carried and nothing after it. The child's architect's addressing names the root's
+// architect as the architect above it.
 func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newRolePromptRuleLive(t)
 	r.step("step1-every-role-of-the-tree-runs-a-pane-whose-own-argv-carries-a-system-prompt", r.everyPaneIsReady)
-	r.step("step2-the-phase-worker-was-launched-with-the-pod-memory-rule", r.phaseWorkerCarriesTheRule)
-	r.step("step3-the-root-architect-was-launched-with-the-pod-memory-rule", r.rootArchitectCarriesTheRule)
-	r.step("step4-the-planner-was-launched-with-the-completion-after-work-rule", r.plannerCarriesTheCompletionRule)
-	r.step("step5-the-childs-architect-was-launched-with-the-sub-architect-prompt-and-the-pod-memory-rule", r.subArchitectCarriesItsPrompt)
+	r.step("step2-the-planner-was-launched-with-the-prompt-composed-for-the-planner", r.plannerCarriesItsComposition)
+	r.step("step3-the-root-architect-was-launched-with-the-prompt-composed-for-a-root-architect", r.rootArchitectCarriesItsComposition)
+	r.step("step4-the-childs-architect-was-launched-with-the-prompt-composed-for-a-sub-architect-under-the-root-architect", r.subArchitectCarriesItsComposition)
 }
 
 // newRolePromptRuleLive readies everything a pane needs before the daemon boots: the `legion`
@@ -246,8 +194,7 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
 	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.note("Oh My Pi %s at %s, the build %s names", strings.TrimSpace(string(version)), omp, liveOmpPathEnv)
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()
@@ -267,22 +214,35 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	return r
 }
 
-// seededRoles is the three claims of the one tree that run a real pane. The issue is its own
-// tree's root, so its architect claim is the root architect's, which is the claim that carries
-// architect-root.md and architect-common.md; the issue stands in planning, so the phase worker of
-// that phase is the planner, which is the claim that carries mechanics/headless.md. The child's
-// issue is not its tree's root, so its architect claim is a sub-architect's, which carries
-// architect.md and architect-common.md.
+// seededRoles is the three claims of the one tree that run a real pane, each with its
+// composition (composedParts). The issue is its own tree's root, so its architect claim is the
+// root architect's. The issue stands in planning, so the phase worker of that phase is the
+// planner. The child's issue is not its tree's root, so its architect claim is a sub-architect's.
 func (r *rolePromptRuleLive) seededRoles() []ruleRole {
 	return []ruleRole{
-		{r.issue, claim.RoleArchitect, ruleArchitectProvider},
-		{r.issue, claim.RolePlanner, rulePlannerProvider},
-		{r.child, claim.RoleArchitect, ruleSubArchitectProvider},
+		{issue: r.issue, role: claim.RoleArchitect, provider: ruleArchitectProvider, name: "root architect",
+			parts: composedParts[composedRole{claim.RoleArchitect, true}]},
+		{issue: r.issue, role: claim.RolePlanner, provider: rulePlannerProvider, name: "planner",
+			parts: composedParts[composedRole{claim.RolePlanner, false}]},
+		{issue: r.child, role: claim.RoleArchitect, provider: ruleSubArchitectProvider, name: "sub-architect",
+			parts: composedParts[composedRole{claim.RoleArchitect, false}]},
 	}
+}
+
+// seeded is the seeded role of role on issue.
+func (r *rolePromptRuleLive) seeded(issue string, role claim.Role) ruleRole {
+	r.t.Helper()
+	for _, seeded := range r.seededRoles() {
+		if seeded.issue == issue && seeded.role == role {
+			return seeded
+		}
+	}
+	r.t.Fatalf("the proof seeds no %s on %s", role, issue)
+	return ruleRole{}
 }
 
 // token is the claim token of role on issue, as the daemon spells it.
@@ -377,7 +337,7 @@ func (r *rolePromptRuleLive) seed() {
 
 // everyPaneIsReady waits for each claim's real pane to start Oh My Pi, register and report ready,
 // and then reads the prompt file that Oh My Pi's own command line names, which is what the later
-// steps hold each rule in.
+// steps hold each role's composition against.
 func (r *rolePromptRuleLive) everyPaneIsReady() {
 	for _, seeded := range r.seededRoles() {
 		token := r.token(seeded.issue, seeded.role)
@@ -389,85 +349,147 @@ func (r *rolePromptRuleLive) everyPaneIsReady() {
 	}
 }
 
-// phaseWorkerCarriesTheRule holds the eight sentences of the pod memory rule in the planner's own
-// command line.
-func (r *rolePromptRuleLive) phaseWorkerCarriesTheRule() {
-	r.carriesTheRule("phase worker", "pod memory rule", r.token(r.issue, claim.RolePlanner), podRuleForPhaseWorker)
+// plannerCarriesItsComposition holds the planner's composition in the prompt the planner's own Oh
+// My Pi was launched with.
+func (r *rolePromptRuleLive) plannerCarriesItsComposition() {
+	r.carriesItsComposition(r.seeded(r.issue, claim.RolePlanner))
 }
 
-// rootArchitectCarriesTheRule holds the six sentences of the architect's own wording of the rule
-// in the root architect's own command line.
-func (r *rolePromptRuleLive) rootArchitectCarriesTheRule() {
-	r.carriesTheRule("root architect", "pod memory rule", r.token(r.issue, claim.RoleArchitect), podRuleForArchitect)
+// rootArchitectCarriesItsComposition holds the root architect's composition in the prompt the root
+// architect's own Oh My Pi was launched with.
+func (r *rolePromptRuleLive) rootArchitectCarriesItsComposition() {
+	r.carriesItsComposition(r.seeded(r.issue, claim.RoleArchitect))
 }
 
-// plannerCarriesTheCompletionRule holds the three parts of the rule the planner's own part carries
-// about its completion — the `head` the handoff body names, the clause that carries that head to
-// the daemon, and the sentence that records the `plan` handoff with `dispatch handoff-write` and
-// then reports completion — in the planner's own command line. The root architect is held to no
-// part of it: an architect writes no handoff record, and its prompt carries no such paragraph.
-func (r *rolePromptRuleLive) plannerCarriesTheCompletionRule() {
-	r.carriesTheRule("planner", "completion-after-work rule", r.token(r.issue, claim.RolePlanner), completionAfterWorkForPlanner)
-}
-
-// subArchitectCarriesItsPrompt holds, in the prompt the child's architect's own Oh My Pi was
-// launched with, what a sub-architect is launched with: the heading of its own part, and not the
-// root's; the addressing clause that names the root's architect, by its role topic, as the
-// architect above it; and every architect's six sentences of the pod memory rule. The root
-// architect's own prompt carries the root's heading and not the sub-architect's, so the two
-// architects were composed apart.
-func (r *rolePromptRuleLive) subArchitectCarriesItsPrompt() {
+// subArchitectCarriesItsComposition holds the sub-architect's composition in the prompt the
+// child's architect's own Oh My Pi was launched with, and in that prompt's addressing the clause
+// that names the root's architect, by its role topic, as the architect above it.
+func (r *rolePromptRuleLive) subArchitectCarriesItsComposition() {
 	t := r.t
 	t.Helper()
+	seeded := r.seeded(r.child, claim.RoleArchitect)
+	at := r.carriesItsComposition(seeded)
 	sub, root := r.token(r.child, claim.RoleArchitect), r.token(r.issue, claim.RoleArchitect)
+	read := r.launched[sub]
 	above := architectAboveYou + notify.RoleTopicPrefix + string(root) + "`"
-	r.carriesTheRule("sub-architect", "sub-architect prompt", sub, []string{subArchitectHeading, above})
-	for _, wrong := range []struct {
-		token   claim.Token
-		heading string
-	}{{sub, rootArchitectHeading}, {root, subArchitectHeading}} {
-		read := r.launched[wrong.token]
-		if at := strings.Index(read.prompt, wrong.heading); at >= 0 {
-			t.Fatalf("%s ran Oh My Pi as pid %d, launched with a prompt that carries %q at byte %d, the other architect's heading",
-				wrong.token, read.pid, wrong.heading, at)
-		}
+	found := strings.Index(read.prompt[at:], above)
+	if found < 0 {
+		t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt whose addressing, from byte %d, does not name the root's architect as the architect above it: %q",
+			seeded.name, sub, read.pid, at, above)
 	}
-	r.note("the sub-architect's own Oh My Pi prompt carries no %q, and the root architect's carries no %q",
-		rootArchitectHeading, subArchitectHeading)
-	r.carriesTheRule("sub-architect", "pod memory rule", sub, podRuleForArchitect)
+	r.note("the %s's addressing names the root's architect as the architect above it at byte %d: %q", seeded.name, at+found, above)
 }
 
-// carriesTheRule holds every part of the role's own wording of the named rule in the prompt that
-// role's process was launched with, and prints where each one was found. A part it cannot find
-// ends the proof naming the role, its pid and that part's own text, since that line is the whole
-// evidence of a negative control's run.
+// carriesItsComposition holds that the prompt the role's own Oh My Pi was launched with is the
+// role prompt the daemon composed for that role (runtime.ComposePrompt): from byte 0, the bytes
+// of each part of the role's composition as the composer's snapshot holds them, one after the
+// other in that order, the last with its trailing newlines dropped; then a blank line and the
+// addressing the role's launch carried, and nothing after it. It prints where each part stands,
+// and answers the byte at which the addressing begins.
 //
-// The match is of the prompt file's own bytes, where the composed-prompt unit test folds
-// whitespace first (prompts_test.go's foldWhitespace). That is the stronger claim and the one this
-// proof is for: the text stands in the launched prompt word for word. The cost is that a reflow of
-// one of those paragraphs across a line break would fail here while the unit test stayed green,
-// and the reader of that failure is told the text it could not find.
-func (r *rolePromptRuleLive) carriesTheRule(what, rule string, token claim.Token, parts []string) {
+// ComposePrompt puts only two things after the addressing: the launch's deployment instructions
+// and the instructions of each experiment arm it runs in. This rig gives a launch neither, so the
+// prompt's end is held exactly, and a launch that names either ends the proof naming the role and
+// the files it named.
+//
+// A part that is not where the composition puts it ends the proof naming the role, its pid, the
+// part, the byte it was looked for at, where its bytes stand instead, and the parts the launch
+// named, since that line is the whole evidence of a negative control's run.
+func (r *rolePromptRuleLive) carriesItsComposition(seeded ruleRole) int {
 	t := r.t
 	t.Helper()
+	token := r.token(seeded.issue, seeded.role)
 	read, ok := r.launched[token]
 	if !ok {
-		t.Fatalf("step 1 read no command line for the %s (%s)", what, token)
+		t.Fatalf("step 1 read no command line for the %s (%s)", seeded.name, token)
 	}
-	for i, part := range parts {
-		at := strings.Index(read.prompt, part)
-		if at < 0 {
-			t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt of %d bytes that does not carry part %d of %d of the %s: %q",
-				what, token, read.pid, len(read.prompt), i+1, len(parts), rule, part)
+	launch := r.launchOf(token)
+	if launch.Prompt.DeploymentInstructionsPath != "" || len(launch.Prompt.VariantInstructionsPaths) > 0 {
+		t.Fatalf("the %s %s was launched with deployment instructions %q and variant instructions %v, which this rig gives no launch, so the end of its prompt is not the addressing this proof holds it to",
+			seeded.name, token, launch.Prompt.DeploymentInstructionsPath, launch.Prompt.VariantInstructionsPaths)
+	}
+	at := 0
+	for i, part := range seeded.parts {
+		body := r.snapshotPart(part)
+		if i == len(seeded.parts)-1 {
+			body = strings.TrimRight(body, "\n")
 		}
-		r.note("part %d of %d of the %s is at byte %d of the %s %s's own Oh My Pi prompt: %q",
-			i+1, len(parts), rule, at, what, token, part)
+		if !strings.HasPrefix(read.prompt[at:], body) {
+			elsewhere := "its bytes stand nowhere in that prompt"
+			if found := strings.Index(read.prompt, body); found >= 0 {
+				elsewhere = fmt.Sprintf("its bytes stand at byte %d instead", found)
+			}
+			t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt of %d bytes that does not hold part %d of %d of its composition, %s (%d bytes), at byte %d, where the parts before it end; %s; its launch named %v",
+				seeded.name, token, read.pid, len(read.prompt), i+1, len(seeded.parts), part, len(body), at, elsewhere,
+				r.snapshotNames(launch.Prompt.RolePromptPaths))
+		}
+		r.note("part %d of %d of the %s's composition, %s, is bytes %d to %d of the prompt %s's own Oh My Pi (pid %d) was launched with",
+			i+1, len(seeded.parts), seeded.name, part, at, at+len(body), token, read.pid)
+		at += len(body)
 	}
-	r.note("all %d parts of the %s are in the command line Oh My Pi pid %d was launched with",
-		len(parts), rule, read.pid)
+	end := "\n\n" + launch.Prompt.Addressing
+	if tail := read.prompt[at:]; tail != end {
+		if strings.HasPrefix(tail, end) {
+			t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt whose addressing, the one its launch carried, ends at byte %d and is followed by %d bytes its launch named no file for: %s",
+				seeded.name, token, read.pid, at+len(end), len(tail)-len(end), promptShown(tail[len(end):]))
+		}
+		t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt whose composition ends at byte %d and is not followed by a blank line and the addressing its launch carried; there it holds %s",
+			seeded.name, token, read.pid, at, promptShown(tail))
+	}
+	r.note("the %s's composition, %d parts and %d bytes, is followed by a blank line and the %d bytes of addressing its launch carried, which end the prompt",
+		seeded.name, len(seeded.parts), at, len(launch.Prompt.Addressing))
+	return at + len("\n\n")
 }
 
 // ---- what a step reads --------------------------------------------------------------------------
+
+// snapshotDir is the composer's snapshot below the daemon's state directory: prompts.New writes
+// shared/ from the role prompts the daemon embeds and go/ from the daemon's own parts at boot, and
+// a launch's composition names files of it (prompts.Composer.Compose).
+func (r *rolePromptRuleLive) snapshotDir() string {
+	return filepath.Join(r.cfg.StateDir, "prompts")
+}
+
+// snapshotPart is the bytes of one part of the composer's snapshot, named by its path below
+// snapshotDir. A part that cannot be read, and an empty one, end the proof: an empty part stands
+// in every prompt, so finding it would show nothing.
+func (r *rolePromptRuleLive) snapshotPart(part string) string {
+	t := r.t
+	t.Helper()
+	path := filepath.Join(r.snapshotDir(), part)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the composer's %s, the part the proof holds a composition to: %v", path, err)
+	}
+	if len(body) == 0 {
+		t.Fatalf("the composer's %s is empty, so finding it in a prompt would show nothing", path)
+	}
+	return string(body)
+}
+
+// snapshotNames is each path as a failure names it: below snapshotDir when it is there, else
+// whole.
+func (r *rolePromptRuleLive) snapshotNames(paths []string) []string {
+	names := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if rel, err := filepath.Rel(r.snapshotDir(), path); err == nil && !strings.HasPrefix(rel, "..") {
+			path = rel
+		}
+		names = append(names, path)
+	}
+	return names
+}
+
+// launchOf is the spec of the claim's latest launch, the one its live pane was started from: the
+// addressing it carried, and the role prompt files it named, which a failure prints.
+func (r *rolePromptRuleLive) launchOf(token claim.Token) runtime.SpawnSpec {
+	r.t.Helper()
+	launches := r.rt.LaunchesOf(token)
+	if len(launches) == 0 {
+		r.t.Fatalf("the proof's runtime records no launch of %s", token)
+	}
+	return launches[len(launches)-1]
+}
 
 // launchedPromptOf is the prompt the claim's own Oh My Pi was launched with: the contents of the
 // file the `--append-system-prompt` word of that process's /proc/<pid>/cmdline names, the
@@ -584,19 +606,23 @@ func parentOf(status string) int {
 	return 0
 }
 
-// argvSummary is an argv as a failure names it: every word, each quoted, with a word longer than
-// argvWordShown cut to its first runes and its length given. The cut is of runes rather than
-// bytes, since a role prompt carries `—` and `…` and half a rune reads as an escape.
+// argvSummary is an argv as a failure names it: every word, each quoted and cut (promptShown).
 func argvSummary(argv []string) string {
 	words := make([]string, 0, len(argv))
 	for _, word := range argv {
-		shown := word
-		if runes := []rune(word); len(runes) > argvWordShown {
-			shown = fmt.Sprintf("%s… (%d bytes)", string(runes[:argvWordShown]), len(word))
-		}
-		words = append(words, strconv.Quote(shown))
+		words = append(words, promptShown(word))
 	}
 	return "[" + strings.Join(words, " ") + "]"
+}
+
+// promptShown is a word or a prompt as a failure prints it: quoted, and when it is longer than
+// argvWordShown, cut to its first runes with its length given. The cut is of runes rather than
+// bytes, since a role prompt carries `—` and `…` and half a rune reads as an escape.
+func promptShown(text string) string {
+	if runes := []rune(text); len(runes) > argvWordShown {
+		text = fmt.Sprintf("%s… (%d bytes)", string(runes[:argvWordShown]), len(text))
+	}
+	return strconv.Quote(text)
 }
 
 // ---- the Oh My Pi profile and the overlays -----------------------------------------------------------

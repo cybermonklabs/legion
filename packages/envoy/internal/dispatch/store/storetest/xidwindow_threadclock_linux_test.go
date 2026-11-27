@@ -624,7 +624,8 @@ func xidNodesText(mask [16]uint64) string {
 // xidNUMABalancingFromFiles reads whether the kernel balances memory across NUMA nodes apart from
 // the rig's detector (xidNUMABalancing): kernel.numa_balancing set to anything but 0, and more than
 // one node directory under /sys/devices/system/node, counted rather than read off the online list
-// as the detector reads it. A variable, so that a forced run can read balancing as on.
+// as the detector reads it. It is a variable so that a scratch forcing can read balancing as on, as
+// this change's controls did on their own branches; no code in this tree replaces it.
 var xidNUMABalancingFromFiles = func() bool {
 	setting, err := os.ReadFile("/proc/sys/kernel/numa_balancing")
 	if err != nil || strings.TrimSpace(string(setting)) == "0" {
@@ -658,7 +659,10 @@ func xidRequireBalancingDetector(t *testing.T) {
 // get_mempolicy then set_mempolicy, the latter putting back the mode the former read, so the
 // calling thread's policy is left as it was. A refusal is EPERM, as a seccomp profile answers
 // without CAP_SYS_NICE, or ENOSYS, as a kernel built without NUMA answers; any other answer is
-// not one. answer names what the kernel answered.
+// not one. answer names what the kernel answered. The same test of a refusal is written out at
+// each of this file's other reads of one: the restore subtest's two calls, xidLocalPolicy,
+// threadMempolicy, the memory test's own mbind and mappingMempolicy, as the memory hold writes it
+// at its mbind; a change of what counts as a refusal changes every one of them.
 func xidMempolicyRefusal() (refused bool, answer string) {
 	isRefusal := func(errno unix.Errno) bool { return errno == unix.EPERM || errno == unix.ENOSYS }
 	policy, errno := xidGetPolicy(nil, 0)
@@ -742,7 +746,11 @@ func TestHoldingTheMemoryKeepsNUMABalancingOffItsMappings(t *testing.T) {
 
 // mappingMempolicy is the memory policy of the mapping address lies in (MPOL_F_ADDR). A kernel
 // that refuses the read (EPERM, ENOSYS) refuses the thread hold's get_mempolicy too, so the rig
-// judges no gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment).
+// judges no gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment). On the
+// profiles in use that branch is not reached: a container runtime's default profile, without
+// CAP_SYS_NICE, refuses get_mempolicy, set_mempolicy and mbind together, so the memory test has
+// stopped at the hold's refused mbind, or at xidLocalPolicy's refused read, before it asks a
+// mapping's policy; gVisor refuses none of them.
 func mappingMempolicy(t *testing.T, address unsafe.Pointer) xidPolicy {
 	t.Helper()
 	const byAddress = 1 << 1

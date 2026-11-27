@@ -47,6 +47,9 @@ import (
 // and a topic under it is one the deployed stream captures and this build does not store. Each
 // step reports its own result, so a step that fails does not hide the steps after it.
 func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing.T) {
+	// Not parallel: it requires the listener's client to read a narrowing of the stream within 2 s,
+	// inside the 5 s a fenced filter write has (sessionConsumerCallTimeout), and holds a 500 ms
+	// quiet window after each consumer's wanted messages in which no other may arrive (delivered).
 	const (
 		teamT      = "notifications.team.t"
 		teamU      = "notifications.team.u"
@@ -202,7 +205,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		rig.deps.consumers.afterStoredRowRead = func() { reads++ }
 		defer func() { rig.deps.consumers.afterStoredRowRead = nil }()
 
-		if _, outcome := rig.deps.consumers.storedFilterStep(ctx, registry, sesA, "narrowed test"); outcome != filterWriteLanded || reads != 1 {
+		if _, outcome, _ := rig.deps.consumers.storedFilterStep(ctx, registry, sesA, "narrowed test"); outcome != filterWriteLanded || reads != 1 {
 			t.Errorf("storedFilterStep read the row %d times and answered %v, want one read and a write that landed", reads, outcome)
 		}
 		filterHolds(t, "storedFilterStep", sesA, teamT, newerX)
@@ -317,7 +320,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if _, outcome := rig.deps.consumers.storedFilterStep(ctx, registry, sesD, "narrowed test"); outcome != filterWriteLanded {
+		if _, outcome, _ := rig.deps.consumers.storedFilterStep(ctx, registry, sesD, "narrowed test"); outcome != filterWriteLanded {
 			t.Errorf("storedFilterStep for %s answered %v, want a write that landed", sesD, outcome)
 		}
 		filters := rig.filters(t, sesD)
