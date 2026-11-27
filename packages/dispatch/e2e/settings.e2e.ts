@@ -129,11 +129,12 @@ test("a person sets a project's default repository in Settings, a new issue of t
       resolved_repo: "acme/gadgets",
     });
     await page.goto(`/issues/${inheriting.key}`);
-    // The issue page's Repository list, in the header's Details, names the default after its
-    // label, as the repository the issue inherits.
     await openIssueDetails(page);
-    await expect(page.getByLabel(`Repository of ${inheriting.key}`)).toHaveAccessibleName(
-      `Repository of ${inheriting.key} acme/widgets, inherited or the project's default`
+    const repository = page.getByLabel(`Repository of ${inheriting.key}`, { exact: true });
+    await expect(repository).toHaveValue("");
+    await expect(repository).toHaveAttribute("placeholder", "acme/widgets");
+    await expect(repository).toHaveAccessibleDescription(
+      "acme/widgets, inherited or the project's default"
     );
 
     // The page read again from the server holds the default. Clear sends null: the box is empty
