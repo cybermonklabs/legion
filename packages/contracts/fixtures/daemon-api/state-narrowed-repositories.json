@@ -287,8 +287,7 @@
         "number": 1247,
         "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
         "state": "open",
-        "mergeState": "blocked",
-        "reviewDecision": "changes_requested"
+        "mergeState": "blocked"
       },
       "designGate": {
         "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
@@ -986,7 +985,18 @@
             "session": "ses_checker_241",
             "state": "failed",
             "pluginContract": 0,
-            "updateState": "none"
+            "updateState": "none",
+            "failure": {
+              "cause": "died",
+              "detail": "launch failures ran out",
+              "at": "2126-09-22T09:04:39Z",
+              "attempts": {
+                "launchFailures": 4,
+                "deaths": 1,
+                "promptFailures": 0,
+                "promptRetires": 0
+              }
+            }
           },
           "pass": 0,
           "rounds": 0

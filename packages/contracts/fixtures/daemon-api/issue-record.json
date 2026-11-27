@@ -146,8 +146,7 @@
     "number": 1247,
     "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
     "state": "open",
-    "mergeState": "blocked",
-    "reviewDecision": "changes_requested"
+    "mergeState": "blocked"
   },
   "designGate": {
     "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
@@ -212,8 +211,7 @@
         "number": 1247,
         "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
         "state": "open",
-        "mergeState": "blocked",
-        "reviewDecision": "changes_requested"
+        "mergeState": "blocked"
       },
       "counts": {
         "pass": 3,
@@ -232,7 +230,7 @@
       "agent": "reviewer",
       "pullRequest": {
         "repo": "acme/widgets",
-        "number": 1251,
+        "number": 1253,
         "head": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
         "state": "open",
         "mergeState": "blocked",
@@ -241,8 +239,8 @@
       "mergeWait": {
         "waitsOn": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
         "mergeState": "blocked",
-        "stateReadAt": "2026-09-22T09:16:12Z",
-        "headUpdatedAt": "2026-09-22T08:58:40Z",
+        "stateReadAt": "2126-09-22T09:16:12Z",
+        "headUpdatedAt": "2126-09-22T09:00:12Z",
         "checkRuns": 2
       },
       "counts": {
