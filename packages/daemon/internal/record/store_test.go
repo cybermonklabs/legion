@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -2276,6 +2277,171 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	if left != 0 || claimedBy != 0 {
 		t.Fatalf("after the drop %d of the catch-up and its copy are in the outbox and %s is claimed by row %d; want both gone and the "+
 			"decision unclaimed, for the fresh catch-up to name", left, ref, claimedBy)
+	}
+}
+
+// catchUpDrop is the catch-ups of LEGION-1, the root that keeps one decision, as a drop of them
+// meets them: each row a case queues is written at claimedAt, and each claim it takes is taken
+// then, for lease.
+type catchUpDrop struct {
+	t         *testing.T
+	st        *store.Store
+	records   *Postgres
+	kept      KeptDecisions
+	claimedAt time.Time
+	lease     time.Duration
+}
+
+// catchUp queues a catch-up of LEGION-1 and answers its row: one that names the kept decision and
+// claims it when kept is true, one that names none otherwise, and, when copies is not 0, a re-held
+// copy of row copies, which claims nothing itself (moveClaims carries the original's claims onto
+// it).
+func (r *catchUpDrop) catchUp(kept bool, copies int64) int64 {
+	r.t.Helper()
+	ctx := context.Background()
+	catchUp := &CatchUp{Generation: 1, Launch: 1}
+	if kept {
+		catchUp.Decided, catchUp.Kept = r.kept.Decisions[0].Ref, &r.kept
+	}
+	notice := Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1", CatchUp: catchUp}
+	if copies != 0 {
+		notice.Resends, notice.ResendOf = 1, copies
+	}
+	var id int64
+	inTx(r.t, r.st, func(tx pgx.Tx) {
+		row, err := NewOutboxRow("LEGION-1", notice, r.claimedAt)
+		must(r.t, err)
+		id, err = r.records.EnqueueID(ctx, tx, row)
+		must(r.t, err)
+		if kept && copies == 0 {
+			must(r.t, r.records.ClaimKeptDecisions(ctx, tx, "LEGION-1", r.kept, id))
+		}
+	})
+	return id
+}
+
+// claim takes row id's claim as a lane does before it runs the row (ClaimRow).
+func (r *catchUpDrop) claim(id int64) OutboxRow {
+	r.t.Helper()
+	var leased OutboxRow
+	inTx(r.t, r.st, func(tx pgx.Tx) {
+		var ok bool
+		var err error
+		if leased, ok, err = r.records.ClaimRow(context.Background(), tx, id, r.claimedAt, r.lease); err != nil || !ok {
+			r.t.Fatalf("the lane's claim of the catch-up %d = %v, %v; want it leased", id, ok, err)
+		}
+	})
+	return leased
+}
+
+// retry records the claimed row's run as retried (RetryOutbox), which clears its claim.
+func (r *catchUpDrop) retry(row OutboxRow) {
+	r.t.Helper()
+	inTx(r.t, r.st, func(tx pgx.Tx) {
+		must(r.t, r.records.RetryOutbox(context.Background(), tx, row.ID, row.LeaseToken, r.claimedAt, "the listener did not answer"))
+	})
+}
+
+// moveClaims carries the claims of row from onto row to, as a re-hold does for the copy it queues.
+func (r *catchUpDrop) moveClaims(from, to int64) {
+	r.t.Helper()
+	inTx(r.t, r.st, func(tx pgx.Tx) {
+		must(r.t, r.records.MoveKeptClaims(context.Background(), tx, from, to))
+	})
+}
+
+// told marks row id's telling told, as a publish of it does (KeptToldSource, under its key).
+func (r *catchUpDrop) told(id int64) {
+	r.t.Helper()
+	inTx(r.t, r.st, func(tx pgx.Tx) {
+		_, err := r.records.MarkProcessed(context.Background(), tx, KeptToldSource, OutboxKey(id))
+		must(r.t, err)
+	})
+}
+
+// A drop of the root's queued catch-ups (DropCatchUps) keeps a catch-up that carries kept decisions
+// while any row of its telling — itself, the row it copies, or a copy of either — holds a claim,
+// whatever the clock says: a lane runs the row it claimed to its settle, past its lease or not, and
+// what that row tells is its to settle, so a drop after the lapse that deleted it would release the
+// decisions to the fresh catch-up the drop's transaction writes, which would tell them again. A
+// copy a re-hold queued and moved the claims onto (MoveKeptClaims) is kept beside its claimed
+// original. A catch-up on which no row of its telling holds a claim is dropped as before, and its
+// decisions released: its run was retried (RetryOutbox clears the claim), it was never claimed, or
+// it carries no kept decision. A telling already told is kept by its told mark. Every case drops at
+// a moment past the lease of each claim it took.
+func TestDroppingCatchUpsKeepsATellingWhileARowOfItHoldsAClaim(t *testing.T) {
+	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	ref := "dispatch://LEGION-1/ask/ask-1"
+	for _, tc := range []struct {
+		name string
+		// queue writes the case's catch-ups and claims, and answers the catch-ups the drop keeps,
+		// oldest first, and the row that still claims the decision after it (0 for none).
+		queue func(r *catchUpDrop) (keeps []int64, claimedBy int64)
+	}{
+		{name: "its own row claimed and lapsed: kept", queue: func(r *catchUpDrop) ([]int64, int64) {
+			row := r.catchUp(true, 0)
+			r.claim(row)
+			return []int64{row}, row
+		}},
+		{name: "an unclaimed copy beside its claimed and lapsed original: both kept", queue: func(r *catchUpDrop) ([]int64, int64) {
+			original := r.catchUp(true, 0)
+			r.claim(original)
+			copied := r.catchUp(true, original)
+			r.moveClaims(original, copied)
+			return []int64{original, copied}, copied
+		}},
+		{name: "its row retried: dropped", queue: func(r *catchUpDrop) ([]int64, int64) {
+			r.retry(r.claim(r.catchUp(true, 0)))
+			return nil, 0
+		}},
+		{name: "claimed and lapsed with no kept decisions: dropped", queue: func(r *catchUpDrop) ([]int64, int64) {
+			r.claim(r.catchUp(false, 0))
+			return nil, 0
+		}},
+		{name: "unclaimed, with no claim on any row of its telling: dropped", queue: func(r *catchUpDrop) ([]int64, int64) {
+			r.catchUp(true, 0)
+			return nil, 0
+		}},
+		{name: "told: kept", queue: func(r *catchUpDrop) ([]int64, int64) {
+			row := r.catchUp(true, 0)
+			r.told(row)
+			return []int64{row}, row
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := migratedStore(t)
+			records := NewStore()
+			r := &catchUpDrop{t: t, st: st, records: records, kept: KeptDecisions{Decisions: []DecisionMark{{Ref: ref, At: at, Issue: "LEGION-1"}}},
+				claimedAt: time.Now().UTC().Truncate(time.Microsecond), lease: time.Minute}
+			inTx(t, st, func(tx pgx.Tx) {
+				putRoot(t, ctx, records, tx, "LEGION-1")
+				must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
+					Actor: "user:alice", At: at}))
+			})
+			keeps, claimedBy := tc.queue(r)
+
+			dropAt := r.claimedAt.Add(r.lease + time.Second)
+			inTx(t, st, func(tx pgx.Tx) {
+				_, err := records.DropCatchUps(ctx, tx, "LEGION-1", dropAt)
+				must(t, err)
+			})
+
+			var left []int64
+			var claimed int64
+			inTx(t, st, func(tx pgx.Tx) {
+				rows, err := tx.Query(ctx, "select id from outbox where kind = 'notice' and issue = 'LEGION-1' order by id")
+				must(t, err)
+				left, err = pgx.CollectRows(rows, pgx.RowTo[int64])
+				must(t, err)
+				must(t, tx.QueryRow(ctx, "select coalesce(claimed_by, 0) from parked_decisions where issue = 'LEGION-1' and ref = $1", ref).Scan(&claimed))
+			})
+			if !slices.Equal(left, keeps) || claimed != claimedBy {
+				t.Fatalf("after a drop at %s, past the lease of each claim taken at %s, the catch-ups %v are in the outbox and %s is "+
+					"claimed by row %d; want %v kept and the decision claimed by row %d", dropAt.Format(time.RFC3339Nano),
+					r.claimedAt.Format(time.RFC3339Nano), left, ref, claimed, keeps, claimedBy)
+			}
+		})
 	}
 }
 
