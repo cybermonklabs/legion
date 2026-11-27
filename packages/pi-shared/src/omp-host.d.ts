@@ -133,8 +133,8 @@ declare module "@oh-my-pi/pi-coding-agent/config/model-settings" {
 }
 
 declare module "@oh-my-pi/pi-coding-agent/config/model-resolver" {
-  import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
   import type { Model } from "@oh-my-pi/pi-ai";
+  import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
   export interface ModelLookupRegistry {
     getAvailable(): Model[];
   }
@@ -156,8 +156,8 @@ declare module "@oh-my-pi/pi-coding-agent/session/settings" {
 
 /** The host's model fallback chains (`retry.fallbackChains`), resolved as a turn's recovery resolves them. */
 declare module "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains" {
-  import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
   import type { Model } from "@oh-my-pi/pi-ai";
+  import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
   export interface RetryFallbackModelLookup {
     find(provider: string, id: string): Model | undefined;
     hasProvider(provider: string): boolean;

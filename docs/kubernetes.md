@@ -10017,8 +10017,8 @@ The Go coordinator's pods (`packages/daemon`) provision with one init container:
   fetches its narrow delta from GitHub with `--no-tags`.
   With no cache it builds the clone from that GitHub fetch alone.
   It writes the clone in a temporary sibling, configures its default-branch and issue-branch
-  refspecs, disables Git's automatic maintenance, runs the colocated jj setup, then renames the
-  completed clone into place.
+  refspecs, runs the colocated jj setup, then renames the completed clone into place and disables
+  Git's automatic maintenance in it.
   A retry finds an existing clone and fetches its delta instead.
 
   The container reads the provisioning token for its GitHub transfer, and the gh refresher updates each live pod's provisioning Secret to the current lease.
@@ -10033,7 +10033,7 @@ The Go coordinator's pods (`packages/daemon`) provision with one init container:
   — `RPC failed; …` for a request of the transfer, `unable to access '…': …` for the first request
   — naming 408, 429 or a 5xx, or a connection that could not be made or broke (connect, DNS, reset, timeout, empty reply, a transfer cut short, an HTTP/2 stream reset, a TLS session closed);
   or, with no cause line, a pack stream that ended early.
-  Each retry logs the attempt's error on stdout as one line, a URL's query removed, a URL whose authority carries userinfo shown as its scheme and `[a URL with credentials]`, and the token anywhere else replaced by `***`, removes whatever a failed attempt left in the clone's temporary sibling, and waits 5 s, 15 s, 30 s, then a minute:
+  Each retry logs the attempt's error on stdout as one line, a URL's query removed, a URL whose authority carries userinfo shown as its scheme and `[a URL with credentials]`, and the token anywhere else replaced by `***`, and waits 5 s, 15 s, 30 s, then a minute:
   four retries at most, so a transfer still failing after the fourth fails the fetch.
   No retry starts past the bound.
   Any other failure — a token refused, a repository not found or not granted, a certificate that does not verify, a curl error the list does not name

@@ -487,26 +487,27 @@ const firstOpenAfterFailure = [
   ["an online event", () => window.dispatchEvent(new Event("online"))],
 ] as const;
 
-test.each(
-  firstOpenAfterFailure
-)("the open after a first handshake that failed refreshes everything (%s)", async (_reopen, reopen) => {
-  const random = spyOn(Math, "random").mockReturnValue(0);
-  const queryClient = newClient();
-  const wholeCache = countWholeCacheRefreshes(queryClient);
-  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
-  try {
-    // What a network change does to a handshake: it fails before the socket opens.
-    act(() => sockets.latest().fail());
-    act(() => reopen());
-    await waitFor(() => expect(sockets.sockets).toHaveLength(2));
-    openFeed();
-    await waitFor(() => expect(wholeCache.count()).toBe(1));
-  } finally {
-    hook.unmount();
-    random.mockRestore();
-    wholeCache.restore();
+test.each(firstOpenAfterFailure)(
+  "the open after a first handshake that failed refreshes everything (%s)",
+  async (_reopen, reopen) => {
+    const random = spyOn(Math, "random").mockReturnValue(0);
+    const queryClient = newClient();
+    const wholeCache = countWholeCacheRefreshes(queryClient);
+    const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    try {
+      // What a network change does to a handshake: it fails before the socket opens.
+      act(() => sockets.latest().fail());
+      act(() => reopen());
+      await waitFor(() => expect(sockets.sockets).toHaveLength(2));
+      openFeed();
+      await waitFor(() => expect(wholeCache.count()).toBe(1));
+    } finally {
+      hook.unmount();
+      random.mockRestore();
+      wholeCache.restore();
+    }
   }
-});
+);
 
 test("the first subscription resumes from the sign-in check's event head", async () => {
   jest.useFakeTimers();

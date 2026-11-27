@@ -30,6 +30,7 @@ const keptDecisionsRelease = "the release that renames the kept decisions"
 // The seeds and the reads of the release before are in its own names, since they are what it
 // wrote and what it reads.
 func TestTheKeptDecisionsTakeTheirNamesAndTheirWayBackGivesTheOldOnesAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, keptDecisionsVersion-1)
