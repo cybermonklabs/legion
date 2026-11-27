@@ -4,7 +4,8 @@
 #
 #   .github/scripts/postgres-service-address.sh <container id>
 #
-# It prints `address=<ip>:5432`, the line a step writes to $GITHUB_OUTPUT, and nothing else. It
+# It prints `address=<ip>`, the line a step writes to $GITHUB_OUTPUT, and nothing else; the caller
+# adds the port (ci-job-dispatch-memory.yaml's URL ends `:5432`). It
 # fails, naming the container, when docker reports no address or more than one: a job that cannot
 # read one address fails here rather than running its tests against a URL with no host in it.
 #
