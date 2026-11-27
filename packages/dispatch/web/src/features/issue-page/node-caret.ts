@@ -823,6 +823,8 @@ function lineHeightOf(element: Element): number {
 
 /** `blockId`'s block of the editor in `root`, or null where it draws none. */
 function blockIn(root: HTMLElement, blockId: string | undefined): HTMLElement | null {
+  // A kept single-block editor's editable is the block, not an ancestor of it.
+  if (blockId !== undefined && root.getAttribute(BLOCK_ID_ATTRIBUTE) === blockId) return root;
   return blockId === undefined
     ? null
     : root.querySelector<HTMLElement>(`[${BLOCK_ID_ATTRIBUTE}="${CSS.escape(blockId)}"]`);

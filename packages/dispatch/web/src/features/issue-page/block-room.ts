@@ -1,5 +1,13 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import {
+  createContext,
+  createElement,
+  type ReactNode,
+  type RefObject,
+  useContext,
+  useEffect,
+  useRef,
+} from "react";
 import type { Awareness } from "y-protocols/awareness";
 import type { Doc, XmlElement } from "yjs";
 
@@ -7,12 +15,17 @@ import { primarySpec } from "../../api/issue-cache";
 import { issueTreeKey, whoAmIQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { type ConnectionCallbacks, colorForLogin, loadDocumentTransport } from "../doc/connection";
-import { createBlockEditor } from "../doc/editor";
+import { createBlockEditor, type EditorHandle } from "../doc/editor";
+import { composerKindFor } from "../doc/marks";
+import type { PendingState } from "../doc/pending-sync";
+import { createPendingWaiter } from "../doc/pending-waiter";
 import { fragmentOf } from "../doc/roots";
 import { compiledBlockSchema, compiledSchemaCreatable, editorBlockSchema } from "../doc/schema";
+import { useMargin } from "../margin/margin-context";
 import { watchPicturePath } from "../refs/reference-target";
 import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { importWhenOnline } from "../shell/DeploymentResilience";
+import { useReportAdmission } from "./document-admission";
 import { askForTask } from "./drawn-in-slices";
 import { useOwnedIssueTree } from "./issue-tree-owner";
 import {
@@ -53,6 +66,10 @@ interface BindTarget<Editor> {
   readonly connection: RoomConnection;
   readonly editor: Editor;
   readonly hidden: HTMLElement;
+  readonly scratch: XmlElement;
+  watchAdmission(listener: (readOnly: boolean) => void): () => void;
+  watchPending(listener: (state: PendingState) => void): () => void;
+  whenSent(timeoutMs: number): Promise<void>;
 }
 
 interface BindRequest<Editor> {
@@ -62,7 +79,7 @@ interface BindRequest<Editor> {
 
 export interface BlockRoom<Editor extends KeptEditor> {
   start(): void;
-  requestBind(artifact: RoomArtifact, request: BindRequest<Editor>): void;
+  requestBind(artifact: RoomArtifact, request: BindRequest<Editor>): () => void;
   destroy(): void;
 }
 
@@ -86,9 +103,13 @@ interface RoomOptions<Editor extends KeptEditor> {
   readonly mark?: (name: string) => void;
   readonly measure?: (name: string, start: number) => void;
   readonly report?: (words: string) => void;
+  readonly onAdmission?: (artifactId: string, readOnly: boolean) => void;
 }
 
 interface Session {
+  readonly artifactId: string;
+  readonly admissions: Set<(readOnly: boolean) => void>;
+  readonly pending: Set<(state: PendingState) => void>;
   connection?: RoomConnection;
   readOnly: boolean;
   synced: boolean;
@@ -132,13 +153,16 @@ export function createBlockRoom<Editor extends KeptEditor>({
   mark = (name) => performance.mark(name),
   measure = (name, start) => performance.measure(name, { start, end: performance.now() }),
   report,
+  onAdmission,
 }: RoomOptions<Editor>): BlockRoom<Editor> {
   const sessions = new Map<string, Session>();
   const waiting: Waiting<Editor>[] = [];
+  const pendingWaiter = createPendingWaiter();
   let alive = true;
   let started = false;
   let box: HTMLElement | undefined;
   let scratch: Doc | undefined;
+  let scratchBlock: XmlElement | undefined;
   let editor: Editor | undefined;
   let building = false;
   let currentArtifact: RoomArtifact | undefined;
@@ -189,13 +213,29 @@ export function createBlockRoom<Editor extends KeptEditor>({
         !session.synced ||
         session.connection === undefined ||
         editor === undefined ||
-        box === undefined
+        box === undefined ||
+        scratchBlock === undefined
       ) {
         return;
       }
       waiting.shift();
       currentArtifact = artifact;
-      request.onBind({ artifact, connection: session.connection, editor, hidden: box });
+      request.onBind({
+        artifact,
+        connection: session.connection,
+        editor,
+        hidden: box,
+        scratch: scratchBlock,
+        watchAdmission(listener) {
+          session.admissions.add(listener);
+          return () => session.admissions.delete(listener);
+        },
+        watchPending(listener) {
+          session.pending.add(listener);
+          return () => session.pending.delete(listener);
+        },
+        whenSent: (timeoutMs) => pendingWaiter.whenSent(session.artifactId, timeoutMs),
+      });
     }
   }
 
@@ -224,6 +264,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
               root: hidden,
             }),
             hidden,
+            paragraph,
           };
         } catch (error) {
           hidden.remove();
@@ -239,6 +280,7 @@ export function createBlockRoom<Editor extends KeptEditor>({
       }
       if (!made.hidden.contains(made.handle.view.dom)) made.hidden.append(made.handle.view.dom);
       scratch = made.doc;
+      scratchBlock = made.paragraph;
       editor = made.handle;
       mark(READY_MARK);
     } catch (error) {
@@ -281,11 +323,17 @@ export function createBlockRoom<Editor extends KeptEditor>({
           onAdmission(readOnly) {
             if (!active()) return;
             session.readOnly = readOnly;
+            onAdmission?.(artifact.id, readOnly);
+            for (const listener of session.admissions) listener(readOnly);
             if (readOnly) refuse((bind) => bind.session === session);
             drainBinds();
           },
           onOutsideSchema: () => failed(true),
-          onPending() {},
+          onPending(state) {
+            if (!active()) return;
+            pendingWaiter.report(artifact.id, state);
+            for (const listener of session.pending) listener(state);
+          },
           onStatus(status) {
             if (status === "failed") failed(true);
           },
@@ -308,7 +356,13 @@ export function createBlockRoom<Editor extends KeptEditor>({
   function sessionFor(artifact: RoomArtifact): Session {
     const existing = sessions.get(artifact.id);
     if (existing !== undefined) return existing;
-    const session: Session = { readOnly: false, synced: false };
+    const session: Session = {
+      artifactId: artifact.id,
+      admissions: new Set(),
+      pending: new Set(),
+      readOnly: false,
+      synced: false,
+    };
     sessions.set(artifact.id, session);
     void open(artifact, session);
     return session;
@@ -327,12 +381,21 @@ export function createBlockRoom<Editor extends KeptEditor>({
       sessionFor(spec);
     },
     requestBind(artifact, request) {
-      if (!alive) return;
+      if (!alive) {
+        request.onBindRefused(KEY_REPORTS.editor_closed);
+        return () => {};
+      }
       begin();
       const shared = typeof converted === "function" ? converted() : converted;
       const session = sessionFor(shared ? spec : artifact);
-      waiting.push({ artifact, request, session });
+      const bind = { artifact, request, session };
+      waiting.push(bind);
       drainBinds();
+      return () => {
+        const at = waiting.indexOf(bind);
+        if (at !== -1) waiting.splice(at, 1);
+        drainBinds();
+      };
     },
     destroy() {
       if (!alive) return;
@@ -362,10 +425,27 @@ function heldTree(queryClient: QueryClient, issueKey: string): TreeAnswer | unde
   return newest;
 }
 
+const IssueRoom = createContext<RefObject<BlockRoom<EditorHandle> | null> | undefined>(undefined);
+
+export function useIssueBlockRoom(): RefObject<BlockRoom<EditorHandle> | null> | undefined {
+  return useContext(IssueRoom);
+}
+
 /** Mount under the keyed issue page, not under a view that comes and goes. */
-export function IssueBlockRoom({ issue }: { readonly issue: IssueDetails }): null {
+export function IssueBlockRoom({
+  children,
+  issue,
+}: {
+  readonly children: ReactNode;
+  readonly issue: IssueDetails;
+}): ReactNode {
   const queryClient = useQueryClient();
   const tree = useOwnedIssueTree(issue);
+  const roomRef = useRef<BlockRoom<EditorHandle> | null>(null);
+  const margin = useMargin();
+  const marginRef = useRef(margin);
+  marginRef.current = margin;
+  const reportAdmission = useReportAdmission();
   const latest = useRef({ issue, root: tree.root });
   latest.current = { issue, root: tree.root };
   const { key } = issue;
@@ -387,6 +467,16 @@ export function IssueBlockRoom({ issue }: { readonly issue: IssueDetails }): nul
       converted: () => heldTree(queryClient, key)?.converted === true,
       queryClient,
       host: document.body,
+      onAdmission(artifactId, readOnly) {
+        if (latest.current.issue.closed_at !== null) return;
+        if (heldTree(queryClient, key)?.converted === true) {
+          for (const artifact of latest.current.issue.artifacts ?? []) {
+            reportAdmission(artifact.id, readOnly);
+          }
+        } else {
+          reportAdmission(artifactId, readOnly);
+        }
+      },
       rowWidth: () =>
         document
           .querySelector("[data-issue-page] [data-node-row] [data-node-words]")
@@ -419,6 +509,23 @@ export function IssueBlockRoom({ issue }: { readonly issue: IssueDetails }): nul
               (node) => node.type === "ask" && node.id === nodeId
             )?.state;
           },
+          onMarkAction(action) {
+            const artifact = boundArtifact()?.id;
+            if (artifact === undefined) return;
+            if (action.kind === "comment" || action.kind === "ask" || action.kind === "suggest") {
+              return marginRef.current.composeForMark({
+                anchor: {
+                  artifact,
+                  mark_id: action.markId,
+                  placement: action.placement ?? undefined,
+                  quote: action.quote,
+                },
+                kind: composerKindFor(action.kind),
+              });
+            }
+          },
+          onMarkClick: (id) => marginRef.current.focusItemForMark(id),
+          onMarkHover: (id) => marginRef.current.hoverItemForMark(id),
           blockSchema: editorBlockSchema(heldTree(client, key)?.view_of),
           documentRef,
           element,
@@ -428,6 +535,7 @@ export function IssueBlockRoom({ issue }: { readonly issue: IssueDetails }): nul
       },
       mark,
     });
+    roomRef.current = room;
     const load = watchLoadEnd({
       queryClient,
       ready: rowsAndFontsReady,
@@ -438,9 +546,10 @@ export function IssueBlockRoom({ issue }: { readonly issue: IssueDetails }): nul
       start: room.start,
     });
     return () => {
+      roomRef.current = null;
       load.destroy();
       room.destroy();
     };
-  }, [documentRef, key, queryClient, specFragment, specId]);
-  return null;
+  }, [documentRef, key, queryClient, reportAdmission, specFragment, specId]);
+  return createElement(IssueRoom.Provider, { value: roomRef }, children);
 }

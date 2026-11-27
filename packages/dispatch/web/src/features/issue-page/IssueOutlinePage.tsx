@@ -139,21 +139,22 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   return (
     <ProvidersSlot {...props}>
       <IssueTreeOwnerProvider issue={issue.data}>
-        <IssueBlockRoom issue={issue.data} />
-        <HeaderSlot {...props} />
-        <ViewRowSlot {...props} />
-        <div className="flex min-w-0 items-start">
-          <IssueContentsPane {...props} />
-          <div
-            className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
-            data-testid="issue-column"
-            {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
-          >
-            <StageSlot {...props} />
-            <FootSlot {...props} />
+        <IssueBlockRoom issue={issue.data}>
+          <HeaderSlot {...props} />
+          <ViewRowSlot {...props} />
+          <div className="flex min-w-0 items-start">
+            <IssueContentsPane {...props} />
+            <div
+              className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
+              data-testid="issue-column"
+              {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
+            >
+              <StageSlot {...props} />
+              <FootSlot {...props} />
+            </div>
           </div>
-        </div>
-        <DetailsSlot {...props} />
+          <DetailsSlot {...props} />
+        </IssueBlockRoom>
       </IssueTreeOwnerProvider>
     </ProvidersSlot>
   );
