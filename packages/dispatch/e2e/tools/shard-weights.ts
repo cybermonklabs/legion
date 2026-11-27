@@ -160,7 +160,7 @@ function gh(args: readonly string[]): Buffer {
 
 /** An artifact as GitHub's API lists it, in the fields the tool reads; the API documents its
  *  `workflow_run` as nullable. */
-export type Artifact = {
+type Artifact = {
   readonly id: number;
   readonly expired: boolean;
   readonly workflow_run?: {
@@ -176,7 +176,7 @@ export type Artifact = {
 const pagesAtMost = 10;
 
 /** A run's merged report artifact: its id, the run that uploaded it and the commit that run ran. */
-export type RunArtifact = { readonly commit: string; readonly id: number; readonly run: number };
+type RunArtifact = { readonly commit: string; readonly id: number; readonly run: number };
 
 /** The artifacts of the newest `count` merged reports of main's full-lane runs. */
 function mainArtifacts(count: number): RunArtifact[] {
@@ -234,7 +234,6 @@ export function namedArtifactOf(
   if (artifact.workflow_run) {
     return { commit: artifact.workflow_run.head_sha, id: artifact.id, run };
   }
-  // The API's `workflow_run` of an artifact is nullable: the run itself names its commit too.
   return { commit: runAnswer().head_sha, id: artifact.id, run };
 }
 
