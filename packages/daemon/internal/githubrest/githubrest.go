@@ -165,6 +165,26 @@ func spent(headers http.Header, body []byte) Budget {
 	return BudgetCore
 }
 
+// Page is one page of the JSON list GitHub answers at a path (GetPage): its items, and the next
+// page's URL its Link header names, "" on the last page. A redirect GitHub answered instead is
+// Redirect, the URL it names, with no items: the page is the GET of that URL, which the caller
+// sends as a request of its own. GetPage takes Next and Redirect as its path, as they are.
+type Page[T any] struct {
+	Items    []T
+	Next     string
+	Redirect string
+}
+
+// GetPage reads one page of the JSON array GitHub answers at path, a hundred items to a page: a
+// path under the client's REST base, or a Next or Redirect an earlier page named.
+func GetPage[T any](ctx context.Context, c Client, path string) (Page[T], error) {
+	items, err := getPages[T](ctx, c, path, "")
+	if err != nil {
+		return Page[T]{}, err
+	}
+	return Page[T]{Items: items}, nil
+}
+
 // GetPages reads every page of the JSON array GitHub answers at path, a hundred items to a page,
 // following the Link header's rel="next" until GitHub names none.
 func GetPages[T any](ctx context.Context, c Client, path string) ([]T, error) {
