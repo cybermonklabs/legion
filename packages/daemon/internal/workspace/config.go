@@ -270,6 +270,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, command.Timeout)
 	defer cancel()
+	// PLANT (never merged, W-ws7/W-ws9 no-timeout): Run applies no Command.Timeout of its own and
+	// bounds the command by its caller's context alone.
+	bounded = ctx
 
 	executable, ok := r.tools[command.Argv[0]]
 	if !ok {
