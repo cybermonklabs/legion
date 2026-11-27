@@ -64,11 +64,18 @@ function GroupCard({
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
-  // The reader's rename draft, kept while the group changes under it (a member added, a rename
-  // from another tab): null while the reader has typed nothing, so the field shows the group's
-  // name as it now stands, and back to null once the group's name is the draft as Rename sends it.
+  // The reader's rename draft, kept as they typed it while the group changes under it (a member
+  // added, a rename from another tab): null while the reader has typed nothing, so the field
+  // shows the group's name as it now stands, and back to null once the group's name is the draft.
+  // `sent` is the draft this card's Rename sent, until the reader types again: once the group's
+  // name is that draft as Rename sends it, trimmed, the draft goes too. A draft that is the name
+  // only once trimmed - a space typed before the next word - otherwise stays as typed.
   const [draft, setDraft] = useState<string | null>(null);
-  if (draft !== null && draft.trim() === group.name) setDraft(null);
+  const [sent, setSent] = useState<string | null>(null);
+  if (draft !== null && (draft === group.name || (draft === sent && draft.trim() === group.name))) {
+    setDraft(null);
+    setSent(null);
+  }
   const name = draft ?? group.name;
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   return (
@@ -80,21 +87,25 @@ function GroupCard({
         <input
           className={fieldClass}
           id={`${id}-name`}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setSent(null);
+          }}
           value={name}
         />
         <button
           className={secondaryButtonCompact}
           disabled={pending || name.trim() === "" || name.trim() === group.name}
-          onClick={() =>
+          onClick={() => {
+            setSent(draft);
             write({
               group,
               method: "PATCH",
               run: (bounds) =>
                 api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
               what: `the rename of the group ${group.name}`,
-            })
-          }
+            });
+          }}
           type="button"
         >
           Rename

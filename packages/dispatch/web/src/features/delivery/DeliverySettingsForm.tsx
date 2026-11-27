@@ -107,8 +107,8 @@ function savedForm(field: keyof Draft, text: string): string {
 }
 
 /** The fields of `next` that differ from `stored`: what the reader has changed. `form` reads each
- *  side before they are compared: as typed while the reader types, and in its saved form once
- *  the record changes (`DeliverySettingsFields`). */
+ *  side before they are compared: as typed, or in its saved form for a field this tab's Save sent
+ *  once the record changes (`DeliverySettingsFields`). */
 function changedFields(
   next: Draft,
   stored: Draft,
@@ -119,6 +119,16 @@ function changedFields(
     if (form(field, next[field]) !== form(field, stored[field])) changed[field] = next[field];
   }
   return changed;
+}
+
+/** The entries of `sent` that `edited` still holds as sent: the fields this tab's Save sent that
+ *  the reader has not typed in since. */
+function stillSent(sent: Partial<Draft>, edited: Partial<Draft>): Partial<Draft> {
+  const kept: Partial<Draft> = {};
+  for (const field of Object.keys(sent) as (keyof Draft)[]) {
+    if (edited[field] === sent[field]) kept[field] = sent[field];
+  }
+  return kept;
 }
 
 /** The three optional job names the Pipeline page follows, in the order the form lists them. */
@@ -166,7 +176,8 @@ interface DeliverySettingsFormProps {
  * and Save; a refusal shows under them. A one-line value longer than its field ends in an ellipsis
  * with the whole value as its title; a list wraps inside its own box. The fields the reader has
  * changed stay as they typed them when the record changes under them - anyone's save - and the
- * rest follow the record.
+ * rest follow the record, as does a changed field once the record holds it as this tab's Save
+ * sent it.
  */
 export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): ReactNode {
   const settings = useQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
@@ -204,24 +215,35 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
   const id = useId();
   const submitGuard = useSubmitGuard();
   // What the reader has changed, over the record as the server now holds it: a save from anywhere
-  // refreshes the fields the reader has not touched and keeps the ones they have. When the record
-  // changes - a save from anywhere, the reader's own among them - a changed field whose saved form
-  // the record now holds follows the record again, so a list typed with a trailing line break or
-  // with commas, which Save rewrites, is not kept over the next writer's change. While the record
-  // stays, the fields compare as typed, so the reader's own line break stays as they type it.
+  // refreshes the fields the reader has not touched and keeps the ones they have as they typed
+  // them, so a line break typed to start the next entry stays, and the caret after it. `sent`
+  // holds the changed fields this tab's Save sent, as typed, until the reader types in one again.
+  // When the record changes, such a field whose saved form the record now holds follows the record
+  // again, so a list typed with a trailing line break or with commas, which Save rewrites, is not
+  // kept over the next writer's change.
   const stored = recordDraft(record);
   const version = record?.updated_at ?? "unset";
   const [edited, setEdited] = useState<Partial<Draft>>({});
+  const [sent, setSent] = useState<Partial<Draft>>({});
   const [seenVersion, setSeenVersion] = useState(version);
   if (seenVersion !== version) {
     setSeenVersion(version);
-    setEdited(changedFields({ ...stored, ...edited }, stored, savedForm));
+    const ownSave = stillSent(sent, edited);
+    const kept = changedFields({ ...stored, ...edited }, stored, (field, text) =>
+      ownSave[field] === undefined ? text : savedForm(field, text)
+    );
+    setEdited(kept);
+    setSent(stillSent(sent, kept));
   } else {
     const pending = changedFields({ ...stored, ...edited }, stored);
     if (Object.keys(pending).length !== Object.keys(edited).length) setEdited(pending);
   }
   const draft: Draft = { ...stored, ...edited };
-  const setDraft = (next: Draft) => setEdited(changedFields(next, stored));
+  const setDraft = (next: Draft) => {
+    const changed = changedFields(next, stored);
+    setEdited(changed);
+    setSent(stillSent(sent, changed));
+  };
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
     method: "PUT",
@@ -241,7 +263,8 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    submitGuard.guard(() =>
+    submitGuard.guard(() => {
+      setSent(edited);
       save.mutate({
         deploy_repo: draft.deploy_repo,
         deploy_workflow_path: draft.deploy_workflow_path.trim(),
@@ -253,8 +276,8 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
         pr_checks_rollup_job_name: textOrNull(draft.pr_checks_rollup_job_name),
         staging_apply_job_name: textOrNull(draft.staging_apply_job_name),
         staging_e2e_job_name: textOrNull(draft.staging_e2e_job_name),
-      })
-    );
+      });
+    });
   };
 
   return (

@@ -88,7 +88,6 @@ export type LayoutBreachKind = LayoutBreach["kind"] | "group-missing";
  *  first width (`WIDE_LAYOUT_MIN_PX` in `e2e/review-routes.ts`), a laptop and a desktop. The rule
  *  holds at every width from 360 to 1920 px; these are the widths the test samples. */
 export const LAYOUT_WIDTHS = [360, 900, 1280, 1440, 1920] as const;
-export type LayoutWidth = (typeof LAYOUT_WIDTHS)[number];
 
 export interface LayoutReading {
   /** The width of the viewport the page was read at, in CSS pixels. */

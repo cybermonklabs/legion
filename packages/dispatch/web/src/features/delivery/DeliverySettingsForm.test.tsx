@@ -337,10 +337,10 @@ test("another writer's save keeps the fields the reader changed and refreshes th
   }
 });
 
-// A list typed with a line break after its last entry is saved without it, so the record the save
-// lands holds the list in another form than the reader typed. The field then follows the record,
-// and a later writer's change to that list shows, rather than the reader's old text staying over
-// it and going back to the server with the next save.
+// A list typed with a line break after its last entry is saved without it, so the record this
+// tab's save lands holds the list in another form than the reader typed. The field then follows
+// the record, and a later writer's change to that list shows, rather than the reader's old text
+// staying over it and going back to the server with the next save.
 test("a list saved with a trailing line break follows the record, and shows a later writer's change", async () => {
   const user = userEvent.setup();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -349,15 +349,19 @@ test("a list saved with a trailing line break follows the record, and shows a la
       <DeliverySettingsForm initial={initial} />
     </QueryClientProvider>
   );
+  const saved = {
+    ...record,
+    population_authors: ["alice", "bob"],
+    updated_at: "2026-10-08T12:00:00Z",
+  };
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
   const view = render(form(record));
   try {
     await replace(user, "Population authors", "alice\nbob\n");
-    // The reader's own save lands: the record holds the list as Save sent it.
-    const saved = {
-      ...record,
-      population_authors: ["alice", "bob"],
-      updated_at: "2026-10-08T12:00:00Z",
-    };
+    // The reader saves, and their save lands: the record holds the list as Save sent it.
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
     view.rerender(form(saved));
     expect(field("Population authors").value).toBe("alice\nbob");
     // Another writer adds carol.
@@ -371,6 +375,78 @@ test("a list saved with a trailing line break follows the record, and shows a la
     expect(field("Population authors").value).toBe("alice\nbob\ncarol");
   } finally {
     cleanup();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// A reader adding a third author types a line break after the second, and the field then holds
+// the list the record holds in another form, with no save of this tab out. Another writer's save
+// of another field landing keeps the line break as the reader typed it, and the caret after it,
+// so the name they type next is an entry of its own and Save sends three entries, not a second
+// entry run into the third.
+test("another writer's save keeps the line break a reader typed after a list's last entry", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const form = (initial: DeliverySettings) => (
+    <QueryClientProvider client={queryClient}>
+      <DeliverySettingsForm initial={initial} />
+    </QueryClientProvider>
+  );
+  const stored = { ...record, population_authors: ["alice", "bob"] };
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(stored);
+  const view = render(form(stored));
+  try {
+    await user.type(field("Population authors"), "{Enter}");
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    view.rerender(
+      form({ ...stored, deploy_repo: "acme/gadgets", updated_at: "2026-10-08T12:00:00Z" })
+    );
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    await user.keyboard("carol");
+    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    expect(putDeliverySettings.mock.calls[0]?.[0]).toMatchObject({
+      deploy_repo: "acme/gadgets",
+      population_authors: ["alice", "bob", "carol"],
+    });
+  } finally {
+    cleanup();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// The field this tab's save sent follows the record only as Save sent it: text the reader types
+// after the save went - here a name typed and taken back, which leaves the very text the save
+// sent - stays as typed when that save's record arrives, with the caret where the reader left it.
+test("text a reader types after their save went stays as typed when that save's record arrives", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const form = (initial: DeliverySettings) => (
+    <QueryClientProvider client={queryClient}>
+      <DeliverySettingsForm initial={initial} />
+    </QueryClientProvider>
+  );
+  const saved = {
+    ...record,
+    population_authors: ["alice", "bob"],
+    updated_at: "2026-10-08T12:00:00Z",
+  };
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
+  const view = render(form(record));
+  try {
+    await replace(user, "Population authors", "alice\nbob\n");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await user.type(field("Population authors"), "c{Backspace}");
+    view.rerender(form(saved));
+    expect(field("Population authors").value).toBe("alice\nbob\n");
+    await user.keyboard("carol");
+    expect(field("Population authors").value).toBe("alice\nbob\ncarol");
+  } finally {
+    cleanup();
+    putDeliverySettings.mockRestore();
   }
 });
 

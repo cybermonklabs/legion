@@ -342,6 +342,60 @@ test("a group's rename draft survives a change to the group, and with no draft t
   }
 });
 
+// A space typed after a group's name, to start its next word, stays as the reader typed it, and
+// the caret after it, so the next word is a word of its own rather than run into the name.
+test("a space typed after a group's name stays, so the next word is a word of its own", async () => {
+  const user = userEvent.setup();
+  renderEditor([{ ...crew, name: "Ship" }]);
+  try {
+    const name = within(screen.getByRole("group", { name: "Ship" })).getByRole<HTMLInputElement>(
+      "textbox",
+      { name: "Name" }
+    );
+    await user.type(name, " ");
+    await user.keyboard("crew");
+    expect(name.value).toBe("Ship crew");
+  } finally {
+    cleanup();
+  }
+});
+
+// A rename sent with a space after its last word is saved without it. Once the group's name is
+// the one this card's Rename sent, the field follows the group's name again, and so shows a later
+// rename from another tab, rather than keep the reader's old text with Rename live over it.
+test("a rename sent with a trailing space follows the group's name once it lands, and then another tab's rename", async () => {
+  const user = userEvent.setup();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue({
+    ...crew,
+    name: "Ship crew",
+  });
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }]);
+    expect(nameOf("Ship crew").value).toBe("Ship crew");
+    editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-13T00:00:00Z" }]);
+    expect(nameOf("Day crew").value).toBe("Day crew");
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
 test("a refusal shows as the server wrote it", async () => {
   const user = userEvent.setup();
   const create = spyOn(api, "createDeliverySessionGroup").mockRejectedValue(
