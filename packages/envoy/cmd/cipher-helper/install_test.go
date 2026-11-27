@@ -80,7 +80,9 @@ func newInstallRig(t *testing.T) *installRig {
 	}
 	// The first line is the call's start record (systemctlStart): /proc/uptime as it runs, its own
 	// /proc/<pid>/stat line whole, which says when the kernel started it, and its arguments, by tabs.
-	script := "#!/bin/sh\nread -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; printf '%s\\t%s\\t%s\\n' \"$up\" \"$stat\" \"$*\" >> " + r.calls + ".starts\n" +
+	// CONTROL ONLY: every stand-in run stalls 2 s before it does anything, its start record included,
+	// where the rig's stall file exists.
+	script := "#!/bin/sh\n[ ! -e " + filepath.Join(dir, "stall") + " ] || /bin/sleep 2\nread -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; printf '%s\\t%s\\t%s\\n' \"$up\" \"$stat\" \"$*\" >> " + r.calls + ".starts\n" +
 		"if [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
@@ -703,6 +705,10 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// CONTROL ONLY: every stand-in run of this rig stalls.
+	if err := os.WriteFile(filepath.Join(r.dir, "stall"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	ops := r.fakeHelper(t, nil)
 	released := r.releaseRestartAtGiveUp(t)
 	started := time.Now()
@@ -772,6 +778,12 @@ func TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued(t *testing.T) {
 		r := newInstallRig(t)
 		if err := os.WriteFile(r.calls+".slow-restart", nil, 0o644); err != nil {
 			t.Fatal(err)
+		}
+		// CONTROL ONLY: the first run's stand-ins stall, so its restart is killed before it queues.
+		if runs == 1 {
+			if err := os.WriteFile(filepath.Join(r.dir, "stall"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
 		ops := r.fakeHelper(t, nil)
 		released := r.releaseRestartAtGiveUp(t)

@@ -208,6 +208,8 @@ func startCopyIssuer(t *testing.T, subjects ...string) (string, minted) {
 			}
 			go func() {
 				defer conn.Close()
+				// CONTROL ONLY: each connection's serve.sh starts 8 s late.
+				time.Sleep(8 * time.Second)
 				cmd := exec.Command("sh", filepath.Join(dir, "serve.sh"))
 				cmd.Stdin, cmd.Stdout, cmd.Stderr = conn, conn, os.Stderr
 				cmd.WaitDelay = time.Second
