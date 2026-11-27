@@ -99,12 +99,14 @@ function Facet({
  *  facet per list (repository, parent agent, session, Dispatch issue, priority, component,
  *  author), each counted by the server with every other facet applied and its own ignored. All
  *  combinable; the caller keeps them in the URL. Under Parent agent, **Edit groups** opens the
- *  session-groups editor. */
+ *  session-groups editor, whose saves refresh `project`'s Evals tab. */
 export function FacetPanel({
+  project,
   data,
   filters,
   onChange,
 }: {
+  project: string;
   data: Pick<
     DeliveryTimelineWithMeasures,
     | "facet_counts"
@@ -223,6 +225,7 @@ export function FacetPanel({
           counts={data.session_pr_counts ?? {}}
           groups={data.session_groups ?? []}
           onClose={() => setEditingGroups(false)}
+          project={project}
           titles={data.session_titles ?? {}}
         />
       ) : null}

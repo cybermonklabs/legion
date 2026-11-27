@@ -432,36 +432,34 @@ function drawnValues(root: Element): string[] {
 test.each([
   ["tiles and sections", TILES, "Where the proofs stand", 2],
   ["the headline and the numbers beside it", HEADLINE, "Statements proved", 1],
-] as [
-  string,
-  DeclaredSpec,
-  string,
-  number,
-][])("the table holds every number the drawing prints: %s", async (_name, spec, title, intervals) => {
-  const user = userEvent.setup();
-  render(createElement(EvalChart, { model: model(spec), renderer: numberKind.renderer }));
-  const figure = screen.getByRole("figure", { name: title });
-  const graph = drawnValues(figure);
-  // Each value, total, interval and count, and each compare value and change beside a value.
-  expect(figure.querySelectorAll('[data-statistic="ci_low"][data-range="window"]')).toHaveLength(
-    intervals
-  );
-  expect(
-    figure.querySelectorAll('[data-statistic="value"][data-range="compare"][data-value]').length
-  ).toBeGreaterThanOrEqual(3);
-  expect(
-    figure.querySelectorAll('[data-statistic="value"][data-range="change"]').length
-  ).toBeGreaterThanOrEqual(3);
+] as [string, DeclaredSpec, string, number][])(
+  "the table holds every number the drawing prints: %s",
+  async (_name, spec, title, intervals) => {
+    const user = userEvent.setup();
+    render(createElement(EvalChart, { model: model(spec), renderer: numberKind.renderer }));
+    const figure = screen.getByRole("figure", { name: title });
+    const graph = drawnValues(figure);
+    // Each value, total, interval and count, and each compare value and change beside a value.
+    expect(figure.querySelectorAll('[data-statistic="ci_low"][data-range="window"]')).toHaveLength(
+      intervals
+    );
+    expect(
+      figure.querySelectorAll('[data-statistic="value"][data-range="compare"][data-value]').length
+    ).toBeGreaterThanOrEqual(3);
+    expect(
+      figure.querySelectorAll('[data-statistic="value"][data-range="change"]').length
+    ).toBeGreaterThanOrEqual(3);
 
-  await user.click(within(figure).getByRole("button", { name: "Table" }));
-  const table = within(figure).getByRole("table");
-  const tabled = drawnValues(table);
-  expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
-  // One row for each small number.
-  expect(table.querySelectorAll("[data-row]")).toHaveLength(
-    model(spec).series[0]?.points.length ?? 0
-  );
-});
+    await user.click(within(figure).getByRole("button", { name: "Table" }));
+    const table = within(figure).getByRole("table");
+    const tabled = drawnValues(table);
+    expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
+    // One row for each small number.
+    expect(table.querySelectorAll("[data-row]")).toHaveLength(
+      model(spec).series[0]?.points.length ?? 0
+    );
+  }
+);
 
 test("the drawing: a tile's value in its state's colour, a count's dot in its row's colour, each section after its chart, the compare beside each value", () => {
   render(createElement(EvalChart, { model: model(TILES), renderer: numberKind.renderer }));

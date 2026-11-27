@@ -480,6 +480,7 @@ function OpenTimeline({
             data={data}
             filters={url.filters}
             onChange={(filters) => setUrl({ ...url, filters })}
+            project={project}
           />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-2">

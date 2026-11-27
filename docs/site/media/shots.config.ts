@@ -51,6 +51,19 @@ async function specReady(page: Page, seeded: DispatchWorkspace): Promise<void> {
 
 const spec = (seeded: DispatchWorkspace) => `/issues/${seeded.issues.workflow}/spec`;
 
+/** The Evals tab's custom window over the seeded delivery fixtures, as whole UTC days: the
+ *  measures fixture's (2026-08-30 to 09-27) and the Pipeline rows' (to 2026-10-02), from
+ *  `e2e/delivery-seed.ts`. */
+const EVALS_WINDOW = "from=2026-08-30T00%3A00%3A00Z&to=2026-10-03T00%3A00%3A00Z";
+
+/** The Evals tab's section `id` (`data-section`) once every view it reads has answered. */
+async function paintedSection(page: Page, id: string): Promise<Locator> {
+  await expect(page.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
+  const section = page.locator(`[data-section="${id}"]`);
+  await expect(section).toHaveAttribute("data-state", "painted");
+  return section;
+}
+
 const dispatch: ShotSet<DispatchWorkspace> = {
   set: "dispatch",
   seed: seedDispatchWorkspace,
@@ -255,30 +268,33 @@ const dispatch: ShotSet<DispatchWorkspace> = {
       },
     },
     {
-      id: "delivery-measures",
-      alt: "The Delivery page's measures panel: six target cards over a strip of headline numbers.",
-      route: "/delivery?mode=list&from=2026-08-30T00%3A00%3A00Z&to=2026-09-27T20%3A00%3A00Z",
+      id: "evals-cards",
+      alt: "A project's Evals tab: the target cards, each eval's number over the window judged against its target.",
+      route: `/projects/ACME/evals?${EVALS_WINDOW}`,
       viewport: "desktop",
       theme: "light",
       ready: async (page) => {
-        const kpis = page.getByLabel("KPI targets");
-        await expect(kpis).toBeVisible();
-        await expect(kpis.locator('[data-kpi="Deploys a day"]')).toContainText("5 deploys");
+        const cards = await paintedSection(page, "cards");
+        await expect(cards.locator('[data-card="deploy-frequency"]')).toBeVisible();
       },
-      element: (page) => page.getByLabel("KPI targets").locator(".."),
+      element: (page) => page.locator('[data-section="cards"]'),
     },
     {
-      id: "pipeline",
-      alt: "The Pipeline page: six timing cards over the slowest-jobs and failing-jobs tables.",
-      // The e2e seed's pinned day (e2e/delivery-seed.ts PIPELINE_AT), so the fixture's runs are
-      // the seven days shown.
-      route: "/pipeline?at=2026-10-02T12%3A00%3A00Z",
+      id: "evals-ci",
+      alt: "A project's Evals tab: the CI health section, each step's timing card over the slowest-jobs and failing-jobs lists.",
+      route: `/projects/ACME/evals?${EVALS_WINDOW}`,
       viewport: "desktop",
       theme: "light",
       ready: async (page) => {
-        await expect(page.locator('[data-metric="staging_e2e"]')).toContainText("55m");
-        await expect(page.locator('[data-failing-job="build / unit"]')).toBeVisible();
+        const ci = await paintedSection(page, "ci");
+        // Each job list reads its own items view after the section paints: wait for both answers.
+        for (const list of ["slowest-jobs", "failing-jobs"]) {
+          const jobs = ci.locator(`[data-job-list="${list}"]`);
+          await expect(jobs).toBeVisible();
+          await expect(jobs.getByRole("status")).toHaveCount(0);
+        }
       },
+      element: (page) => page.locator('[data-section="ci"]'),
     },
   ],
 };

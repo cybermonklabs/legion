@@ -350,6 +350,28 @@ test("the Evals tab shows on a project with no source, and /evals selects it", a
   }
 });
 
+// Five tabs (Architecture, Issues, Documents, Evals, Settings) are 396 px in one row, wider than a
+// 360 px phone (e2e/layout-rule.stub.e2e.ts). The strip's box is capped at the header's width, so
+// it never pushes the page sideways, and the tab list inside it may shrink and wraps its tabs.
+test("the five tabs wrap inside the header's width rather than widening the page", async () => {
+  const page = renderPage("/projects/CORE/issues", undefined, "alice", [], [coreSource]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    const tablist = screen.getByRole("tablist", { name: "Project" });
+    expect(
+      within(tablist)
+        .getAllByRole("tab")
+        .map((tab) => tab.textContent)
+    ).toEqual(["Architecture", "Issues", "Documents", "Evals", "Settings"]);
+    expect(tablist).toHaveClass("flex-wrap", "min-w-0");
+    const strip = tablist.closest("header > *");
+    expect(strip?.parentElement?.tagName).toBe("HEADER");
+    expect(strip).toHaveClass("max-w-full");
+  } finally {
+    page.restore();
+  }
+});
+
 test("/settings selects the Settings tab, which holds the project's delivery settings", async () => {
   const user = userEvent.setup();
   const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(

@@ -1,19 +1,24 @@
 ---
 title: Delivery
-description: Each project's delivery settings, the record of its deploys and failed changes, the Delivery page's timeline and measures, the Pipeline page's step timings, what each figure counts, the targets, and the routes an agent reads.
+description: Each project's delivery settings, the record of its deploys and failed changes, the Evals tab's target cards, deploys and lead time, CI health and merge timeline, what each figure counts, the targets, and the routes an agent reads.
 sidebar:
   order: 7
 ---
 
-The **Delivery** page shows how work reaches production.
-A timeline of every merge, deploy and failed run sits under a panel of delivery measures.
-Both follow the same window and filters, and both read the facts Dispatch stores from GitHub for every project that has delivery on, each repository's runs judged by the rule of the deploy source that reads that repository.
+Each project's **Evals** tab, `/projects/<KEY>/evals`, shows how work reaches production, as one page of numbers under one header.
+From the top, it shows the target cards, the Legion measures, CI health, deploys and lead time, the merge timeline, and the evals the project's agents and jobs log.
+The Legion measures show only where the project has a Legion daemon, and CI health and deploys and lead time only where it has delivery on.
+Every number follows the header's window, and reads the facts Dispatch stores from GitHub for each project that has delivery on, each repository's runs judged by the rule of the deploy source that reads that repository.
 The three failure measures among them read the record of deploys and failed changes instead (below).
-The **Pipeline** page beside it shows how long each step of CI and the deploy takes, day by day.
 Each project turns delivery on, and names its deploy sources, on its own **Settings** tab.
-While no project has delivery on, the routes of both pages answer `404 DELIVERY_NOT_CONFIGURED`, and the message names `PUT /api/v1/projects/{key}/settings/delivery`.
+A project with no delivery settings shows **Delivery: not set up** at the top of its tab, linked to that tab, and no delivery or CI section.
+A project with no Legion daemon and delivery off shows one line that links to both settings.
 
-![The Delivery page's measures panel: six target cards over a strip of headline numbers](/legion/media/dispatch/delivery-measures.png)
+The Delivery page and the Pipeline page are gone.
+Their addresses, `/delivery` and `/pipeline`, now open the Evals tab of the first project, in the sidebar's order, that has a Legion daemon or delivery on, or of the first project where none has.
+The window and filters in the old address are kept, so an old link shows the same days.
+
+![A project's Evals tab: the target cards, each eval's number over the window judged against its target.](/legion/media/dispatch/evals-cards.png)
 
 ## Delivery settings
 
@@ -83,39 +88,46 @@ The deployment-wide delivery record of the release before this one, `GET` and `P
 
 ## The window and filters
 
-The page opens on the last 28 days.
-**Window**, in the page header, sets it: the last 7, 14, 28 or 84 days, or a custom range of whole days in UTC, both ends included.
+The tab opens on the last 28 days.
+**Window**, in the tab's header, sets it: the last 7, 14, 28 or 84 days, or a custom range of whole days in UTC, both ends included.
 A preset rolls, so a link to the last 7 days always shows the latest 7; a custom range keeps its dates.
-The page reads at most 84 days, and refuses a longer custom range, saying so.
+The tab reads at most 84 days, and refuses a longer custom range, saying so.
 Changing the window clears a dragged stretch.
 
-The window, the search box and every filter (Repository, Parent agent, Session, Dispatch issue, Priority, Component, Author, rework, and whether a pull request has deployed) are written into the address, so a link shows the same figures to whoever opens it.
-Dragging across the timeline narrows the measures to the stretch you dragged over; the timeline itself keeps the whole window.
-**clear brush window** puts the measures back.
+**Compare with**, beside it, sets the range each number is compared with: the days before the window, as many as it holds (the default), nothing, or a custom range of whole UTC days of at most 84 days.
+**Repository** names the repositories every number reads in place of the project's own, each `owner/name`; with none named, a number reads the project's own rows.
+The header then names the UTC days every number counts, and the freshness of the project's sources.
+
+The merge timeline is closed when the tab opens; **Show the merge timeline** opens it.
+Its Repository filter is the header's **Repository**.
+Its search box and its other filters (Parent agent, Session, Dispatch issue, Priority, Component, Author, rework, and whether a pull request has deployed) narrow the pull-request numbers of the target cards and of the deploys and lead time section; the Legion measures and CI health follow the window and the repositories alone, and say so while a filter is set.
+The window, the compare range, the repositories, the search box and every filter are written into the address, so a link shows the same figures to whoever opens it.
+Dragging across the timeline sets the target cards to the whole UTC days of the stretch you dragged over, and the cards name those days; the timeline itself keeps the whole window.
+**clear brush window** puts the cards back.
 
 ## Live updates
 
-An open Delivery or Pipeline page keeps itself current over one connection to Dispatch.
+An open Evals tab keeps itself current over one connection to Dispatch.
 A merge or a deploy appears within seconds, without a reload.
-Nothing reads again on a timer: Dispatch sends the page an update only when something it shows has changed, and each update carries only what changed, such as the pull requests and runs that moved, the counts beside the filters and the measures' new numbers.
-A preset window keeps its end at the present, so a pull request or run leaves the page at the moment it ages out of the window.
+Nothing reads again on a timer: Dispatch sends the tab an update only when something it shows has changed, and each update carries only what changed, such as the pull requests and runs that moved, the counts beside the filters and the evals' new numbers.
+A preset window keeps its end at the present, so a pull request or run leaves the tab at the moment it ages out of the window.
 A deploy shows once its production job finishes, without waiting for the rest of its run.
 
-Each page's freshness row says **Live** while the connection is open, with how long ago the last change arrived.
+The header's freshness line says **Live** while the connection is open, with how long ago the last change arrived.
 A source Dispatch reports as stale, or a failed reconcile, still shows in red with its age and error.
-While the connection is lost the row reads **Reconnecting** in red, with how long it has been lost; the page reconnects by itself and is sent only what changed while it was away.
-A page away for more than a day reads its window once, whole.
-The whole verdict follows a reconnect — which sources are stale, the last reconcile and its error, and how many pull requests Dispatch can no longer fetch — so a failure that cleared or appeared while the page was away shows at once rather than at its next full read.
+While the connection is lost the line reads **Reconnecting** in red, with how long it has been lost; the tab reconnects by itself and is sent only what changed while it was away.
+A tab away for more than a day reads its window once, whole.
+The whole verdict follows a reconnect — which sources are stale, the last reconcile and its error, and how many pull requests Dispatch can no longer fetch — so a failure that cleared or appeared while the tab was away shows at once rather than at its next full read.
 
 ## Grouping sessions
 
 A pull request's **Parent agent** is the first agent session that wrote it, shown by the session's title.
-One agent often runs as several sessions (it restarted, or it was resumed), and a session group puts them back together: every pull request a member wrote first counts under the group's name, in the Parent agent filter, the colours, the lanes, the list, the details and the measures.
+One agent often runs as several sessions (it restarted, or it was resumed), and a session group puts them back together: every pull request a member wrote first counts under the group's name, in the Parent agent filter, the colours, the lanes, the list, the details and the numbers that filter narrows.
 The Session filter still lists each session on its own.
 
-**Edit groups**, under the Parent agent filter, lists the window's sessions with their titles and how many pull requests each wrote first.
+**Edit groups**, under the merge timeline's Parent agent filter, lists the window's sessions with their titles and how many pull requests each wrote first.
 Select sessions and name them to make a group, and rename a group, add the selected sessions to it, remove a member, or delete it.
-Groups are shared: everyone who opens the page sees the same ones.
+Groups are shared: everyone who opens any project's Evals tab sees the same ones.
 A session can be in one group only, and two groups cannot share a name.
 A group may take a session's title as its name only when it holds every session with that title, so one name never means two things.
 A session that later takes a group's name as its title, without joining it, shows with its id beside the title.
@@ -126,9 +138,10 @@ With none chosen, the colours and lanes are as usual.
 
 ## The measures
 
-Six cards across the top each judge one figure against its target: **met**, **missed**, or **no data** when the window holds nothing to measure.
-Below them, one line carries the headline numbers.
-**Definitions & alternatives** opens the other definitions of each figure and a per-day table, newest day first; a day the window only partly covers is marked partial.
+The target cards, at the top of the tab, each judge one figure against its target: **met**, **missed**, or **no data** when the window holds nothing to measure.
+Each card shows its figures over the window with their change against the compare range; the cards of the Legion evals show only where the project has a Legion daemon.
+The **Deploys and lead time** section below draws the delivery evals as charts, each with a **Graph** and a **Table** view and each eval's method under its chart.
+A card's or a chart's title opens that number's panel, with the rows behind it.
 
 - **Deploy**: a run of a deploy source's workflow on `main` whose production job succeeded: a job that the source names among its production jobs (a renamed job lists its old and new names) and, where the source names a production apply step, one whose step of that name succeeded too, so a run that stood down without applying is no deploy.
   A run counts on the day it started.
@@ -138,34 +151,34 @@ Below them, one line carries the headline numbers.
 
 - **Lead time**: from a pull request's merge to the first successful production deploy that contains it: the earliest to finish of the deploys whose run GitHub created after the merge.
   A merge queue writes its merge commit before GitHub records the merge, so the run's creation, not its commit's time, says which deploy holds a pull request.
-  The cards show the median and the longest; the fold adds the 90th percentile and the time from the first commit and from opening the pull request.
+  The cards show the median and the longest; the charts add the 90th percentile and the time from the first commit and from opening the pull request.
 
 - **Pull request open → merge**: the median and 90th percentile, over every pull request merged in the window.
 
 - **Change failure rate**: the deploys with a counted failure over the deploys, per deploy (The failure measures, below).
   Where the window holds no stored row of it, the card says so and shows no rate and no verdict: a rate that measured nothing is not zero.
 
-- **Failed deployment recovery time** (**Recovery time** in the line of headline numbers): the median time from a failed deploy to the failure's restore, over the failures restored in the window, beside how many are not restored yet.
+- **Failed deployment recovery time** (the **Failed deploy recovery** card): the median time from a failed deploy to the failure's restore, over the failures restored in the window, beside how many are not restored yet.
 
-- **Deployment rework rate** (**Deploy rework**): the deploys that restored a failure over the deploys.
+- **Deployment rework rate**: the deploys that restored a failure over the deploys.
 
 - **Rework share**: pull requests whose title starts with `fix`, `revert` or `hotfix`, over all pull requests merged in the window.
 
 - **Deploy runs reaching production**: runs that reached the production job, over runs that concluded success or failure.
   A cancelled run is not an attempt, and the card counts it apart.
 
-- **P0 issues with no owner**: open issues of priority P0 with neither a claim nor a route, in every project.
-  It follows neither the window nor the filters, and each issue on the card links to it.
+- **P0 issues with no owner**: the project's open issues of priority P0 with neither a claim nor a route.
+  Pressing its count opens the project's issue list with those issues alone.
 
-The filters narrow every figure drawn from pull requests: lead time and rework share.
-Deploys and runs follow the window alone, and a deploy counts as one that shipped a pull request when it is, for at least one pull request, the first production deploy that contains it, whenever that pull request merged and whatever the filters.
+The merge timeline's search and filters narrow every figure drawn from pull requests: lead time and rework share.
+Deploys and runs follow the window and the repositories alone, and a deploy counts as one that shipped a pull request when it is, for at least one pull request, the first production deploy that contains it, whenever that pull request merged and whatever the filters.
 The three failure measures follow the UTC days the window touches, and no filter.
 
 ## The targets
 
-Each target is the target of an eval of the project whose deploy sources read every deploy repository the page reads, so a change to that eval's target, to whether the target itself counts as met, or to the statistics it judges moves the card's verdict and its label.
+Each card judges the eval of the project whose tab it is on, so a change to that eval's target, to whether the target itself counts as met, or to the statistics it judges moves the card's verdict and its label.
 A project sets the targets of its delivery evals on its settings tab (Delivery settings, above).
-Each project's evals start with these targets, and these targets stand in where two or more projects own the deploy repositories, where no repository is read, and where that project has no such eval yet:
+Each project's evals start with these targets, and `GET /api/v1/delivery/measures` (For agents, below) takes them too where two or more projects own the deploy repositories, where no repository is read, and where that project has no such eval yet:
 
 | Figure | Eval | Target |
 | --- | --- | --- |
@@ -285,7 +298,7 @@ A source move, a repository's source moved to another project, or delivery turne
 
 `GET /api/v1/projects/{key}/evals/{slug}/items` of each of the three lists the rows of the record behind its numbers, `deploy` and `failure` rows, each with its `relation` to the numbers: `failed`, `restoring`, `deployed` or `blamed` for a deploy, and `counted`, `restored` or `not_restored` for a failure.
 
-The Delivery page and `GET /api/v1/delivery/measures` show the three for the UTC days the window touches, from the stored rows of the one project that has delivery on.
+`GET /api/v1/delivery/measures` shows the three for the UTC days the window touches, from the stored rows of the one project that has delivery on; the Evals tab shows each project's own.
 Where two or more projects have delivery on, or that project's failure measures are off, the three read "no data" there, since a deploy that counts for two projects would count twice in a sum of theirs; each project's own evals still answer.
 A window that starts before that project's `failures_measured_since` reads "no data" there too, as its evals read it.
 
@@ -315,7 +328,10 @@ Each series of an eval read carries `via_repository`: how many of the rows its w
 
 ## For agents
 
-`GET /api/v1/delivery/measures?from=<RFC 3339>&to=<RFC 3339>` answers the same figures, the targets, whether each is met, and the unowned P0 issues.
+The Evals tab reads `GET /api/v1/projects/{key}/evals` (the project's evals, their numbers and their verdicts), `GET /api/v1/projects/{key}/evals/{slug}/items` (the rows behind a number), `GET /api/v1/projects/{key}/timeline` (the merge timeline) and `GET /api/v1/projects/{key}/deploy-runs/{id}` (a run's details), the first three through the live views `evals`, `items` and `project-timeline`, and an agent reads the same routes.
+The routes the Delivery and Pipeline pages read, `GET /api/v1/delivery/measures`, `GET /api/v1/delivery/timeline`, `GET /api/v1/delivery/pipeline` and `GET /api/v1/delivery/runs/{id}`, still answer for one release, for the pages of the release before this one that are still open; no page of this release reads them, and the next release removes them.
+
+`GET /api/v1/delivery/measures?from=<RFC 3339>&to=<RFC 3339>` answers the delivery figures, the targets, whether each is met, and the unowned P0 issues.
 Each target is `{"value", "inclusive", "direction", "judges"}`, or null when the eval's target is off: `inclusive` says whether the value itself is met, `direction` is the eval's, `higher_better` or `lower_better`, and `judges` lists the statistics the verdict judges, each `<series>.<stat>`, in the order they are judged (the eval's `target_judges`, or its primary series' headline statistic when it names none).
 Each verdict under `status` is true, false, or null when there is no target or nothing to judge.
 The verdicts are the eval's own, judged by the same code as `GET /api/v1/projects/{key}/evals`.
@@ -324,7 +340,7 @@ The route takes the timeline's parameters: `from` and `to` (the last seven days 
 `from`, `to` and `q`, and the Pipeline route's `at`, take one value each, and a query naming one of them twice is `400 INVALID_QUERY`, as it is on the eval routes.
 Any signed-in person or agent token reads it.
 `GET /api/v1/delivery/timeline` carries the same answer as its `measures` for its own window and filters, so an agent reading both needs only the timeline.
-The routes and the page's live updates compute from the same stored facts with the same code, so they agree.
+The routes and the live views compute from the same stored facts with the same code, so they agree.
 The three failure measures are `change_failure_rate` (`{failed, total, rate}`), `failed_deployment_recovery` (`{n, median_minutes, not_restored}`) and `deployment_rework_rate` (`{restoring, total, rate}`).
 Where no stored day row of a measure's eval holds a part of the window, it reads "no data" with no verdict (The failure measures, above): `failed_deployment_recovery` and `deployment_rework_rate` are null, and `change_failure_rate` is still an object, with `failed`, `total` and `rate` null.
 While a release rolls, the Delivery page of the release before this one is still served, and it reads three members of `measures` with no null guard.
@@ -430,52 +446,42 @@ Any signed-in person or agent token may write them.
 A session another group holds is `409 SESSION_IN_GROUP`, a name another group has `409 SESSION_GROUP_NAME_TAKEN`, and a name that is the title of a session outside the group `409 SESSION_GROUP_NAME_IS_SESSION_TITLE`, each naming what it refers to.
 The [HTTP API reference](/legion/dispatch/reference/api/) lists them with every other route.
 
-## Pipeline
+## CI health
 
-The **Pipeline** page (`/pipeline`, **Pipeline** in the sidebar under **Delivery**) shows how long each step between a pull request and production takes, and how often it succeeds, over the last seven UTC days.
-Today is the last day, drawn faded because it is not over.
-The page follows neither the Delivery page's window nor its filters.
-It updates itself live, as the Delivery page does, and a deploy card moves as soon as the deploy job it times finishes.
-A pull request's CI run reaches the **PR CI** card and its two tables only when the five-minute reconcile records it, since Envoy relays no event for a workflow run of a pull request.
+The **CI health** section of the Evals tab shows how long each step between a pull request and production takes, and how often it succeeds, day by day over the header's window.
+It replaces the Pipeline page, whose address, `/pipeline`, opens the Evals tab (above).
+It follows the window and the repositories, and no filter of the merge timeline, and says so while one is set.
+It updates itself live, as the rest of the tab does, and a deploy step's chart moves as soon as the deploy job it times finishes.
+A pull request's CI run reaches the **PR CI** chart and its two lists only when the five-minute reconcile records it, since Envoy relays no event for a workflow run of a pull request.
 
-![The Pipeline page: six timing cards over the slowest-jobs and failing-jobs tables](/legion/media/dispatch/pipeline.png)
+![A project's Evals tab: the CI health section, each step's timing card over the slowest-jobs and failing-jobs lists.](/legion/media/dispatch/evals-ci.png)
 
 Each run counts on the day it started, and each job on its run's day.
 Only a result that ended in success or failure is timed; a timed-out result is a failure.
 A cancelled run or job is counted beside the timed ones and kept out of the success rate, and anything else (skipped, still running) is not counted at all.
 Success is success over success plus failure.
-Times are wall clock; a step's median and 90th percentile are rounded to a tenth of a minute.
+Times are wall clock.
 
 - **PR CI**: runs of each source's pull-request checks workflow on a pull request (GitHub's `pull_request` event; merge-queue runs are not counted), from the run's start to its completion.
 
 - **Staging end-to-end gate**, **Deploy to staging** and **Deploy to production**: the jobs each deploy source names in its deploy workflow, in that workflow's push runs on `main`.
-  The production card follows every listed production job name.
+  The production chart follows every listed production job name.
   A run started by hand, or on another branch, is not counted.
-  The first two are optional fields of a source; a pipeline whose sources name neither has no such card.
+  The first two are optional fields of a source; a project whose sources name neither has no such chart.
 
-- **Merge to production**: the delivery lead time, by the day each pull request merged.
-  A pull request still waiting has none yet.
-  It is met or missed as the `merge-to-production` eval judges it, on the seven days' longest change and their median until someone changes that: under 45 minutes for every change.
+The two lead times the Pipeline page showed beside these, merge to production and pull request open to merge, are target cards and charts of their own (The measures, above).
 
-- **PR open to merge**: every merged pull request, deployed or not, by the day it merged.
-  It is met or missed as the `pr-open-to-merge` eval judges it, on the seven days' median until someone changes that: a median under 60 minutes.
-
-The verdict on these two cards is the eval's own, judged by the same code as `GET /api/v1/projects/{key}/evals`.
-Each card names the statistics its eval's target judges and shows today's and the seven days' value of each, leaving out one that another implies (merge to production shows its longest change, which under the target puts the median under it), so a card whose eval someone set to judge the 90th percentile reads "P90" where it read "Median".
-Each figure on these cards, and each day's median bar and 90th-percentile bar, is green or red only when the eval's target judges the statistic it shows, by its own value, the target's own value included where the eval counts it as met; today's figures and the bars are a day's, so under a target of the count of pull requests only the seven days' count takes a colour.
-The dashed line marks the target exactly where a bar can take a colour.
-A coloured figure, and the value a coloured bar writes in its hover title, takes more decimals where its usual ones would put it on the other side of the target from its own value (on the target where the value is not, or past it), so it always reads on the side its colour says (59.9m under 60 minutes, never 60m, while a median of exactly 60 minutes keeps 60m), and the card writes its target exactly as it was set.
-
-**PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first, and shows five.
-A job needs a number of timed results in the seven days to be ranked, so a rarely run job cannot top the table on a handful of results: the `min_n` of the `job:*` series of the `pr-ci` eval of the project whose deploy sources read every deploy repository, which is 50 until someone changes it, and 50 where two or more projects own the deploy repositories, where no repository is read, or where that project has no `pr-ci` eval yet.
-The page says the number it ranked by.
+**PR CI: slowest jobs** ranks the checks workflow's jobs by their median over the window, slowest first, and shows five.
+A job needs a number of timed results in the window to be ranked, so a rarely run job cannot top the list on a handful of results: the `min_n` of the `job:*` series of the project's `pr-ci` eval, which is 50 until someone changes it.
+The list says the number it ranked by.
 The `pr-ci` eval's items sorted by median list every job ranked the same way.
 Only jobs of runs that ended in success or failure are counted.
 
-**PR CI: jobs that failed in the last 24 hours** lists every job that failed in a run completed in the last day, most failures first, with how many of its results there failed and a link to the run of its latest failure.
+**PR CI: jobs that failed in the last 24 hours** lists every job that failed in a run completed in the 24 hours before the window ends, most failures first, with how many of its results there failed and a link to the run of its latest failure.
 A cancelled run's jobs are not counted, and neither is the roll-up job a deploy source names, which only reports the other jobs' result and fails whenever any of them does, nor a notification or guard step.
 
-For agents, `GET /api/v1/delivery/pipeline` answers the same numbers.
+For agents, each chart is the eval of its slug (`pr-ci`, `staging-e2e`, `staging-deploy`, `production-deploy`) in `GET /api/v1/projects/{key}/evals?kind=ci`, and the two lists are `GET /api/v1/projects/{key}/evals/pr-ci/items` with `sort=median` and `sort=failures`.
+`GET /api/v1/delivery/pipeline`, the Pipeline page's route, still answers the seven days' numbers for one release (For agents, above).
 Its optional `at` (RFC 3339) names the day the seven days end on and the moment the failing jobs look back from; left out, it is now.
-`pr_checks.slowest_min_results` is the number of timed results a job needed to be ranked among the slowest, `targets` holds the same targets as the measures route, and `status` the verdicts of the two lead-time cards.
+`pr_checks.slowest_min_results` is the number of timed results a job needed to be ranked among the slowest, `targets` holds the same targets as the measures route, and `status` the verdicts of its two lead-time cards.
 Any signed-in person or agent token reads it.

@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
+import { seedEvalsReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -35,8 +35,8 @@ const crew: DeliverySessionGroup = {
 const titles = { s1: "Planner one", s2: "Planner two", s3: "Reviewer" };
 const counts = { s1: 3, s2: 2, s3: 1 };
 
-/** The editor over `groups`; `regroup` draws it again over other groups, over the same client, as
- *  the Delivery page does when Dispatch's delta changes them. */
+/** The editor over `groups`, as ACME's Evals tab opens it; `regroup` draws it again over other
+ *  groups, over the same client, as the tab does when Dispatch's delta changes them. */
 function renderEditor(
   groups: readonly DeliverySessionGroup[] = [],
   values: {
@@ -56,6 +56,7 @@ function renderEditor(
             counts={values.counts ?? counts}
             groups={shown}
             onClose={() => {}}
+            project="ACME"
             titles={values.titles ?? titles}
           />
         </KeymapProvider>
@@ -138,7 +139,7 @@ test("create: two selected sessions and a name become a group; the live views he
   const user = userEvent.setup();
   const create = spyOn(api, "createDeliverySessionGroup").mockResolvedValue(crew);
   const { queryClient } = renderEditor();
-  const reads = seedDeliveryReads(queryClient);
+  const reads = seedEvalsReads(queryClient, "ACME");
   try {
     await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
     await user.click(screen.getByRole("checkbox", { name: "Reviewer" }));
@@ -151,8 +152,10 @@ test("create: two selected sessions and a name become a group; the live views he
         keyedAttempt
       )
     );
-    await waitFor(() => expect(queryClient.getQueryState(reads.run)?.isInvalidated).toBe(true));
-    expect(queryClient.getQueryState(reads.live)?.isInvalidated).toBe(false);
+    await waitFor(() => expect(queryClient.getQueryState(reads.detail)?.isInvalidated).toBe(true));
+    for (const view of reads.live) {
+      expect(queryClient.getQueryState(view)?.isInvalidated).toBe(false);
+    }
   } finally {
     cleanup();
     create.mockRestore();
@@ -191,6 +194,40 @@ test("rename, add, remove and delete each write their one change", async () => {
   } finally {
     cleanup();
     update.mockRestore();
+    remove.mockRestore();
+  }
+});
+
+// A group's save moves the parent agents ACME's Evals tab draws: its merge timeline's lanes and
+// labels, and the numbers its Parent agent facet narrows. The tab's live views (evals, items and
+// timeline) hear of it from Dispatch, as a delta, so the save refreshes the tab's reads of ACME
+// that are not live (an eval's detail) and leaves the views; another project's reads and the
+// cross-project read, which no open tab of ACME draws, it leaves too.
+test("a save invalidates the Evals tab's views", async () => {
+  const user = userEvent.setup();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
+  const { queryClient } = renderEditor([crew]);
+  const tab = seedEvalsReads(queryClient, "ACME");
+  const other = seedEvalsReads(queryClient, "BETA");
+  const invalidate = spyOn(queryClient, "invalidateQueries");
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    await user.click(within(group).getByRole("button", { name: "Delete group" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(crew.id, keyedAttempt));
+    await waitFor(() =>
+      expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+        ["evals", "ACME"],
+      ])
+    );
+    expect(queryClient.getQueryState(tab.detail)?.isInvalidated).toBe(true);
+    for (const view of tab.live) {
+      expect(queryClient.getQueryState(view)?.isInvalidated).toBe(false);
+    }
+    expect(queryClient.getQueryState(other.detail)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(tab.across)?.isInvalidated).toBe(false);
+  } finally {
+    cleanup();
+    invalidate.mockRestore();
     remove.mockRestore();
   }
 });
@@ -342,7 +379,7 @@ test("a group made with its answer lost clears the form and says so, and a secon
     new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
   );
   const { queryClient } = renderEditor();
-  const reads = seedDeliveryReads(queryClient);
+  const reads = seedEvalsReads(queryClient, "ACME");
   try {
     await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
     await user.click(screen.getByLabelText("New group name"));
@@ -360,7 +397,7 @@ test("a group made with its answer lost clears the form and says so, and a secon
     expect(
       (screen.getByRole("button", { name: "Create group" }) as HTMLButtonElement).disabled
     ).toBe(true);
-    await waitFor(() => expect(queryClient.getQueryState(reads.run)?.isInvalidated).toBe(true));
+    await waitFor(() => expect(queryClient.getQueryState(reads.detail)?.isInvalidated).toBe(true));
     expect(create).toHaveBeenCalledTimes(1);
   } finally {
     cleanup();

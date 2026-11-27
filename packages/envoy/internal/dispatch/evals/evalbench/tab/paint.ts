@@ -61,7 +61,8 @@ const cases: Record<string, { query: string; budgetDbMs: number; narrowed: boole
   "84d-author": { query: "window=84d", budgetDbMs: 150, narrowed: true },
 };
 const chosen = cases[which];
-if (chosen === undefined) throw new Error(`--case is one of ${Object.keys(cases).join(", ")}, not ${which}`);
+if (chosen === undefined)
+  throw new Error(`--case is one of ${Object.keys(cases).join(", ")}, not ${which}`);
 
 const db = database(need(given, "database"), 2);
 await db.unsafe(`${OWN} create extension if not exists pg_stat_statements`);
@@ -74,7 +75,8 @@ if (chosen.narrowed) {
      group by author order by count(*) desc, author limit 1`
   )) as { author: string }[];
   const author = named ?? rows[0]?.author;
-  if (author === undefined) throw new Error("the window holds no pull request, so no author facet can be set");
+  if (author === undefined)
+    throw new Error("the window holds no pull request, so no author facet can be set");
   query += `&author=${encodeURIComponent(author)}`;
 }
 const path = `/projects/${encodeURIComponent(project)}/evals?${query}`;
@@ -115,7 +117,9 @@ try {
   await page.waitForFunction(painted(expected), undefined, { polling: 25, timeout: timeoutMs });
   paintedAt = Date.now();
 } catch (error) {
-  fail(`tab paint case=${which} rate=${rate}: the sections did not all paint within ${timeoutMs} ms: ${String(error).slice(0, 200)}`);
+  fail(
+    `tab paint case=${which} rate=${rate}: the sections did not all paint within ${timeoutMs} ms: ${String(error).slice(0, 200)}`
+  );
 }
 const atPaint = await counted(db);
 let atNarrowed: Counted[] | null = null;
@@ -128,7 +132,9 @@ if (chosen.narrowed && paintedAt > 0) {
     );
     atNarrowed = await counted(db);
   } catch (error) {
-    fail(`tab paint case=${which} rate=${rate}: the narrowed cards did not draw within ${timeoutMs} ms of the first paint: ${String(error).slice(0, 200)}`);
+    fail(
+      `tab paint case=${which} rate=${rate}: the narrowed cards did not draw within ${timeoutMs} ms of the first paint: ${String(error).slice(0, 200)}`
+    );
   }
 }
 const record: Instrumented = await readInstrument(page);
@@ -139,19 +145,34 @@ const timelineState = await page.evaluate<string | null>(
 // Times from the navigation's start (performance.timeOrigin) to each presentation.
 const since = (at: number | undefined) => (at === undefined ? null : at - record.start);
 const sectionTimes = sections.map((id) => [id, since(record.sections[id]?.painted)] as const);
-const listTimes = Object.entries(record.jobLists).map(([id, one]) => [id, since(one.painted), one.failed] as const);
+const listTimes = Object.entries(record.jobLists).map(
+  ([id, one]) => [id, since(one.painted), one.failed] as const
+);
 const times = [...sectionTimes.map(([, at]) => at), ...listTimes.map(([, at]) => at)];
 const firstPaint = times.some((at) => at === null) ? null : Math.max(...(times as number[]));
-const failedSections = Object.entries(record.sections).filter(([, one]) => one.state === "failed").map(([id]) => id);
+const failedSections = Object.entries(record.sections)
+  .filter(([, one]) => one.state === "failed")
+  .map(([id]) => id);
 
 // The first payload: the first snapshot of each of the tab's unnarrowed evals views and of the
 // CI section's two items views (pr-ci's job lists), heard before the paint was complete. A
 // snapshot of another view heard by then (the narrowed delivery view, a declared eval's items
 // view) is counted beside it, outside the budget.
-const FACET_KEYS = ["parent_agent", "session", "issue", "priority", "component", "author", "rework", "deployed", "q"];
+const FACET_KEYS = [
+  "parent_agent",
+  "session",
+  "issue",
+  "priority",
+  "component",
+  "author",
+  "rework",
+  "deployed",
+  "q",
+];
 const classOf = (view: { kind: string; [field: string]: unknown }): string => {
   const viewQuery = new URLSearchParams(typeof view.query === "string" ? view.query : "");
-  if (view.kind === "evals") return FACET_KEYS.some((key) => viewQuery.has(key)) ? "narrowed" : "evals";
+  if (view.kind === "evals")
+    return FACET_KEYS.some((key) => viewQuery.has(key)) ? "narrowed" : "evals";
   if (view.kind === "items") return view.slug === "pr-ci" ? "items" : "other-items";
   return "other";
 };
@@ -178,10 +199,18 @@ const raw = budgeted.reduce((n, one) => n + (one?.raw ?? 0), 0);
 const own = (rows: Counted[]) => rows.filter((one) => !catalog.has(one.queryid));
 const total = (rows: Counted[]) => rows.reduce((n, one) => n + one.ms, 0);
 const dbMs = total(own(atPaint));
-const apiRequests = requests.filter((one) => paintedAt > 0 && one.at <= paintedAt && new URL(one.url).pathname.startsWith("/api/"));
-const detailReads = apiRequests.filter((one) =>
-  new RegExp(`^/api/v1/projects/${project}/evals/[^/]+$`).test(new URL(one.url).pathname)
+const apiRequests = requests.filter(
+  (one) => paintedAt > 0 && one.at <= paintedAt && new URL(one.url).pathname.startsWith("/api/")
 );
+const detailPrefix = `/api/v1/projects/${project}/evals/`;
+const detailReads = apiRequests.filter((one) => {
+  const p = new URL(one.url).pathname;
+  return (
+    p.startsWith(detailPrefix) &&
+    p.length > detailPrefix.length &&
+    !p.slice(detailPrefix.length).includes("/")
+  );
+});
 result(
   `tab paint case=${which} rate=${rate} path=${path} first_paint_ms=${ms(firstPaint)} budget_ms=${BUDGET_PAINT_MS} ` +
     `navigation_called_before_start_ms=${ms(record.start - called)} ` +
@@ -190,7 +219,9 @@ result(
 );
 result(
   `tab paint case=${which} rate=${rate} payload_gzip_bytes=${gzip} payload_raw_bytes=${raw} budget_gzip_bytes=${BUDGET_GZIP} ` +
-    `payload_frames=[${Object.entries(payload).map(([kind, one]) => `${kind}:${one.frames}:${one.gzip}`).join(" ")}] ` +
+    `payload_frames=[${Object.entries(payload)
+      .map(([kind, one]) => `${kind}:${one.frames}:${one.gzip}`)
+      .join(" ")}] ` +
     `live_frames_before_paint=${live.frames.filter((frame) => paintedAt > 0 && frame.heard <= paintedAt).length}`
 );
 result(
@@ -198,13 +229,18 @@ result(
     `statements=${own(atPaint).length} catalogued_statements_set_aside=${atPaint.length - own(atPaint).length} ` +
     `api_requests=${apiRequests.length} eval_detail_reads=${detailReads.length}`
 );
-for (const one of own(atPaint).sort((a, b) => b.ms - a.ms).slice(0, 12)) {
-  mark(`paint case=${which} statement ms=${ms(one.ms)} calls=${one.calls} ${one.query.replace(/\s+/g, " ").slice(0, 220)}`);
+for (const one of own(atPaint)
+  .sort((a, b) => b.ms - a.ms)
+  .slice(0, 12)) {
+  mark(
+    `paint case=${which} statement ms=${ms(one.ms)} calls=${one.calls} ${one.query.replace(/\s+/g, " ").slice(0, 220)}`
+  );
 }
 if (chosen.narrowed) {
   const narrowedAt = since(record.narrowing.narrowed?.painted);
   const cardsAt = since(record.sections.cards?.painted);
-  const after = (from: number | null) => (narrowedAt === null || from === null ? null : narrowedAt - from);
+  const after = (from: number | null) =>
+    narrowedAt === null || from === null ? null : narrowedAt - from;
   // A negative delay is a narrowed view that landed before that paint: the cards then drew their
   // narrowed values before the last section of the first paint.
   result(
@@ -216,19 +252,31 @@ if (chosen.narrowed) {
 }
 
 if (firstPaint === null || firstPaint > BUDGET_PAINT_MS) {
-  fail(`tab paint case=${which} rate=${rate}: the first paint took ${ms(firstPaint)} ms, over its ${BUDGET_PAINT_MS} ms`);
+  fail(
+    `tab paint case=${which} rate=${rate}: the first paint took ${ms(firstPaint)} ms, over its ${BUDGET_PAINT_MS} ms`
+  );
 }
 if (gzip > BUDGET_GZIP || gzip === 0) {
-  fail(`tab paint case=${which} rate=${rate}: the first payload is ${gzip} bytes compressed, over its ${BUDGET_GZIP} (or none was heard)`);
+  fail(
+    `tab paint case=${which} rate=${rate}: the first payload is ${gzip} bytes compressed, over its ${BUDGET_GZIP} (or none was heard)`
+  );
 }
 if (dbMs > chosen.budgetDbMs) {
-  fail(`tab paint case=${which} rate=${rate}: the first paint took ${ms(dbMs)} ms of database time, over its ${chosen.budgetDbMs} ms`);
+  fail(
+    `tab paint case=${which} rate=${rate}: the first paint took ${ms(dbMs)} ms of database time, over its ${chosen.budgetDbMs} ms`
+  );
 }
 if ((payload.evals?.frames ?? 0) < 4 || (payload.items?.frames ?? 0) < 2) {
-  fail(`tab paint case=${which} rate=${rate}: the first payload holds ${payload.evals?.frames ?? 0} evals and ${payload.items?.frames ?? 0} items snapshots, not the four and the two`);
+  fail(
+    `tab paint case=${which} rate=${rate}: the first payload holds ${payload.evals?.frames ?? 0} evals and ${payload.items?.frames ?? 0} items snapshots, not the four and the two`
+  );
 }
-if (failedSections.length > 0) fail(`tab paint case=${which} rate=${rate}: sections refused: ${failedSections.join(", ")}`);
-if (timelineState !== "closed") fail(`tab paint case=${which} rate=${rate}: the merge timeline is ${timelineState}, not closed, on the first paint`);
+if (failedSections.length > 0)
+  fail(`tab paint case=${which} rate=${rate}: sections refused: ${failedSections.join(", ")}`);
+if (timelineState !== "closed")
+  fail(
+    `tab paint case=${which} rate=${rate}: the merge timeline is ${timelineState}, not closed, on the first paint`
+  );
 
 await browser.close();
 await db.close();

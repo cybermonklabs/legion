@@ -199,7 +199,10 @@ export function ProjectPage(): ReactNode {
           viewer={viewer}
         />
         <div aria-hidden className="order-4 basis-full md:hidden" />
-        <div className="order-5 shrink-0 md:order-3">
+        {/* No wider than the header: five tabs (Architecture, Issues, Documents, Evals,
+            Settings) are wider than a 360 px phone, and a box that kept their one row would
+            push the page sideways. Capped, the tab list wraps its tabs onto a second row. */}
+        <div className="order-5 max-w-full shrink-0 md:order-3">
           <Tabs
             activeTab={activeTab}
             ariaLabel="Project"

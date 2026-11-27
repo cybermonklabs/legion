@@ -22,6 +22,7 @@
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
       "!!packages/envoy/internal/dispatch/api/testdata/golden_delivery",
+      "!!packages/envoy/internal/dispatch/evals/charts/testdata",
       "!!packages/envoy/internal/dispatch/legion/metrics/testdata",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
       "!!packages/envoy/infra/scripts/testdata",

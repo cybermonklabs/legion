@@ -439,15 +439,11 @@ export function DeliverySettingsSection({
         queryClient.setQueryData(settingsKey, answer);
       }
       void queryClient.invalidateQueries({ queryKey: settingsKey });
-      // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
-      // had none (DELIVERY_NOT_CONFIGURED) is answered once a project has delivery on.
-      void queryClient.invalidateQueries({
-        queryKey: ["delivery"],
-        predicate: (query) => !isLiveQuery(query),
-      });
       // Each target the save changed is a new version of the project's eval, which the Evals
-      // tab's reads and the cross-project read hold; the tab's live views learn of it from
-      // Dispatch, as a delta.
+      // tab's reads and the cross-project read hold. The tab's live views learn of the save from
+      // Dispatch, as a delta, or as the snapshot a view that had none (DELIVERY_NOT_CONFIGURED) is
+      // answered once a project has delivery on; an open run's drill-down is read again when the
+      // timeline's delta changes its run.
       void queryClient.invalidateQueries({
         queryKey: evalsProjectKey(project),
         predicate: (query) => !isLiveQuery(query),

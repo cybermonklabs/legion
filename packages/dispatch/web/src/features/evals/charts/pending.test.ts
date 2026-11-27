@@ -209,42 +209,43 @@ function drawnValues(root: Element): string[] {
 test.each([
   ["a line", LINE, "Packages with a proof", 5],
   ["bars", BARS, "Statements a day", 3],
-] as [
-  string,
-  DeclaredSpec,
-  string,
-  number,
-][])("%s: the mock-up draws under a hatched MOCK-UP with no compare control, and the table holds every number", async (_name, spec, title, count) => {
-  const user = userEvent.setup();
-  render(
-    createElement(EvalChart, { model: pendingModel(spec, input()), renderer: pendingKind.renderer })
-  );
-  const figure = screen.getByRole("figure", { name: title });
-  // A pending chart takes no compare, though the header names a compare range.
-  expect(within(figure).queryByRole("checkbox", { name: "Compare" })).toBeNull();
-  expect(figure.querySelector("[data-compare-legend]")).toBeNull();
-  expect(figure.querySelector("[data-mockup]")?.textContent).toBe("MOCK-UP");
-  expect(figure.querySelector("[data-plot]")?.getAttribute("data-builder")).toBe(BUILDER);
-  expect(figure.textContent).not.toContain(BUILDER);
-  // Its axes carry their titles and no tick value.
-  expect(
-    [...figure.querySelectorAll("svg text[data-axis]")].map((text) => text.textContent)
-  ).toEqual(
-    spec === LINE
-      ? ["Week (mock-up, no scale)", "Packages (packages) (mock-up, no scale)"]
-      : ["Day (mock-up, no scale)", "Count (mock-up, no scale)"]
-  );
-  expect(figure.querySelectorAll("svg text")).toHaveLength(3);
-  expect(
-    [...within(figure).getByRole("list", { name: "Key" }).querySelectorAll("li")].map(
-      (item) => item.textContent
-    )
-  ).toEqual(spec === LINE ? ["proved", "open"] : ["curl", "tls"]);
-  const graph = drawnValues(figure);
-  expect(graph).toHaveLength(count);
-  expect(graph.every((value) => value.includes(" window "))).toBe(true);
+] as [string, DeclaredSpec, string, number][])(
+  "%s: the mock-up draws under a hatched MOCK-UP with no compare control, and the table holds every number",
+  async (_name, spec, title, count) => {
+    const user = userEvent.setup();
+    render(
+      createElement(EvalChart, {
+        model: pendingModel(spec, input()),
+        renderer: pendingKind.renderer,
+      })
+    );
+    const figure = screen.getByRole("figure", { name: title });
+    // A pending chart takes no compare, though the header names a compare range.
+    expect(within(figure).queryByRole("checkbox", { name: "Compare" })).toBeNull();
+    expect(figure.querySelector("[data-compare-legend]")).toBeNull();
+    expect(figure.querySelector("[data-mockup]")?.textContent).toBe("MOCK-UP");
+    expect(figure.querySelector("[data-plot]")?.getAttribute("data-builder")).toBe(BUILDER);
+    expect(figure.textContent).not.toContain(BUILDER);
+    // Its axes carry their titles and no tick value.
+    expect(
+      [...figure.querySelectorAll("svg text[data-axis]")].map((text) => text.textContent)
+    ).toEqual(
+      spec === LINE
+        ? ["Week (mock-up, no scale)", "Packages (packages) (mock-up, no scale)"]
+        : ["Day (mock-up, no scale)", "Count (mock-up, no scale)"]
+    );
+    expect(figure.querySelectorAll("svg text")).toHaveLength(3);
+    expect(
+      [...within(figure).getByRole("list", { name: "Key" }).querySelectorAll("li")].map(
+        (item) => item.textContent
+      )
+    ).toEqual(spec === LINE ? ["proved", "open"] : ["curl", "tls"]);
+    const graph = drawnValues(figure);
+    expect(graph).toHaveLength(count);
+    expect(graph.every((value) => value.includes(" window "))).toBe(true);
 
-  await user.click(within(figure).getByRole("button", { name: "Table" }));
-  const tabled = drawnValues(within(figure).getByRole("table"));
-  expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
-});
+    await user.click(within(figure).getByRole("button", { name: "Table" }));
+    const tabled = drawnValues(within(figure).getByRole("table"));
+    expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
+  }
+);

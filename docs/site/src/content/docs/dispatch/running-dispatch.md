@@ -326,11 +326,12 @@ Sign in, then open **Settings**:
   [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the rest.
 
 Delivery is set on each project's own **Settings** tab (`/projects/<KEY>/settings`), not on this page.
-There a project turns delivery on and names its deploy sources: each the deploy workflow of one repository, with the jobs whose success is a production deploy, the pull-request checks workflow, and the optional staging and roll-up jobs that feed the [Pipeline](/legion/dispatch/delivery/#pipeline) page, or the deploys a system posts to Dispatch.
+There a project turns delivery on and names its deploy sources: each the deploy workflow of one repository, with the jobs whose success is a production deploy, the pull-request checks workflow, and the optional staging and roll-up jobs that feed the [CI health](/legion/dispatch/delivery/#ci-health) section of its Evals tab, or the deploys a system posts to Dispatch.
 It also names whose merged pull requests count, the failure sources its failure measures count, and the targets of its delivery evals; [Delivery settings](/legion/dispatch/delivery/#delivery-settings) says what each field does.
 With delivery on, saving checks that the GitHub App can read each source's repository.
 A save that changes a source's repository or rule starts that repository's import over, and the next five-minute pass lists its last 28 days from GitHub again.
-Until a project has delivery on, the [Delivery](/legion/dispatch/delivery/) and Pipeline pages have nothing to show.
+Until a project has delivery on, its [Evals tab](/legion/dispatch/delivery/) shows no delivery or CI section, and a project that has never saved its delivery settings says **Delivery: not set up** there.
+The old Delivery and Pipeline pages are gone: `/delivery` and `/pipeline` open the Evals tab of the first project that has a Legion daemon or delivery on.
 
 ## Health check
 
@@ -381,8 +382,8 @@ period. `github` holds one entry for each loop, in this order:
 - `webhook_redelivery`: the sweep that asks GitHub to redeliver the webhook deliveries that
   failed, every 2 minutes.
 - `architecture_import`: the import of every enabled architecture source, every 5 minutes.
-- `delivery_reconcile`: the read of the pull requests and workflow runs that the
-  [Delivery](/legion/dispatch/delivery/) page shows, and of the pull request heads that results
+- `delivery_reconcile`: the read of the pull requests and workflow runs that each project's
+  [Evals tab](/legion/dispatch/delivery/) counts, and of the pull request heads that results
   are compared with, every 5 minutes.
 - `ci_reconcile`: the read of each open pull request's checks, and of its head's commit statuses
   where the App's token for the repository holds Commit statuses, every 5 minutes.

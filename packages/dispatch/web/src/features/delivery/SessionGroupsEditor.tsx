@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
+import { evalsProjectKey } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -154,20 +155,24 @@ function GroupCard({
   );
 }
 
-/** The Delivery page's session-groups editor, opened from the Parent agent facet: the window's
- *  sessions with their titles, pull request counts and groups, to select and name as a new group,
- *  and every group, to rename, add the selected sessions to, remove members from, or delete. Every
- *  session is an `AgentName`; a member no pull request of the window names has no stored title, so
- *  it reads by its registry title, else its short id. A save reaches the page's live views as
- *  Dispatch's own delta, so it refreshes only the `["delivery"]` reads that are not live (an open
- *  run's drill-down), and a refusal shows as the server wrote it, after the change it refused. A
+/** The Evals tab's session-groups editor, opened from its merge timeline's Parent agent facet: the
+ *  window's sessions with their titles, pull request counts and groups, to select and name as a
+ *  new group, and every group, to rename, add the selected sessions to, remove members from, or
+ *  delete. Every session is an `AgentName`; a member no pull request of the window names has no
+ *  stored title, so it reads by its registry title, else its short id. A save moves the parent
+ *  agents the tab draws: it reaches the tab's live views (its evals, items and timeline views) as
+ *  Dispatch's own delta, so it refreshes only the tab's reads of `project` that are not live
+ *  (`evalsProjectKey`), and a refusal shows as the server wrote it, after the change it refused. A
  *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted. */
 export function SessionGroupsEditor({
+  project,
   onClose,
   groups,
   titles,
   counts,
 }: {
+  /** The project whose Evals tab opened the editor. */
+  project: string;
   onClose: () => void;
   groups: readonly DeliverySessionGroup[];
   titles: Readonly<Record<string, string>>;
@@ -186,7 +191,7 @@ export function SessionGroupsEditor({
     onSuccess: () => {
       setSelected([]);
       void queryClient.invalidateQueries({
-        queryKey: ["delivery"],
+        queryKey: evalsProjectKey(project),
         predicate: (query) => !isLiveQuery(query),
       });
     },

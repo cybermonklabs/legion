@@ -436,26 +436,30 @@ test.each([
   ["horizontal against totals", HORIZONTAL],
   ["a dot chart with columns", DOTS],
   ["a facet table", FACET],
-] as [
-  string,
-  DeclaredSpec,
-][])("the table holds every number the graph draws: %s", async (_name, spec) => {
-  const user = userEvent.setup();
-  const drawn = model(spec);
-  render(createElement(EvalChart, { model: drawn, renderer: barKind.renderer }));
-  const figure = screen.getByRole("figure", { name: drawn.title });
-  const graph = drawnValues(figure);
-  expect(graph.length).toBeGreaterThan(0);
-  if (spec !== DOTS) {
-    // Each category's compare value, and its change printed beside its value.
-    expect(figure.querySelectorAll('[data-value][data-range="compare"]').length).toBeGreaterThan(0);
-    expect(figure.querySelectorAll('[data-value][data-range="change"]').length).toBeGreaterThan(0);
-  }
+] as [string, DeclaredSpec][])(
+  "the table holds every number the graph draws: %s",
+  async (_name, spec) => {
+    const user = userEvent.setup();
+    const drawn = model(spec);
+    render(createElement(EvalChart, { model: drawn, renderer: barKind.renderer }));
+    const figure = screen.getByRole("figure", { name: drawn.title });
+    const graph = drawnValues(figure);
+    expect(graph.length).toBeGreaterThan(0);
+    if (spec !== DOTS) {
+      // Each category's compare value, and its change printed beside its value.
+      expect(figure.querySelectorAll('[data-value][data-range="compare"]').length).toBeGreaterThan(
+        0
+      );
+      expect(figure.querySelectorAll('[data-value][data-range="change"]').length).toBeGreaterThan(
+        0
+      );
+    }
 
-  await user.click(within(figure).getByRole("button", { name: "Table" }));
-  const tabled = drawnValues(within(figure).getByRole("table"));
-  expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
-});
+    await user.click(within(figure).getByRole("button", { name: "Table" }));
+    const tabled = drawnValues(within(figure).getByRole("table"));
+    expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
+  }
+);
 
 test("the compare range draws each category's newest value as a tick across its bar, its change over the value", () => {
   render(createElement(EvalChart, { model: model(BY_ROW), renderer: barKind.renderer }));

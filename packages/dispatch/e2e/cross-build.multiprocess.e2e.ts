@@ -44,12 +44,15 @@ import { signIn } from "./users";
  * a comment, answers an ask, opens the issue's document - where that server admits the page
  * writable it types and sees the edit saved and shown in a context of the other build's page, and
  * where it admits the page read-only the page says so and the stored document is untouched
- * (`pageWritable`) - and opens the Delivery page, whose live socket subscribes to the timeline and
- * is answered a snapshot, after which it reads what the page rendered of the answer's measures
- * with "Definitions & alternatives" open (`measuresPanelOf`): this tree's page writes no data for
- * the failure measures a previous server does not answer, and a previous page reads, from this
- * tree's server, the retired members it still reads, each explicitly null. Where this tree's
- * server answers, the live snapshot and `GET /api/v1/delivery/measures` hold every one of those
+ * (`pageWritable`) - and opens the fixture's delivery numbers. A page with the Evals tab
+ * (`buildHasEvalsTab`) opens the fixture's project's tab, whose evals views a server with the tab
+ * answers, painting the target cards, and a server before it refuses, each section saying the
+ * server does not serve the tab's views. A page before the tab opens the Delivery page, whose live
+ * socket subscribes to the timeline and is answered a snapshot, after which it reads what the page
+ * rendered of the answer's measures with "Definitions & alternatives" open (`measuresPanelOf`): a
+ * previous page reads, from this tree's server, the retired members it still reads, each
+ * explicitly null. Where this tree's server answers, the live snapshot and
+ * `GET /api/v1/delivery/measures` hold every one of those
  * members as the JSON literal null (`nullMeasureMembers`). Every selector is one both builds' own
  * browser suites use. Each direction then reads the entry chunk its page loaded and holds it to
  * the one that build's own `index.html` names (`entryChunkOf`), so a direction whose server is the
@@ -166,6 +169,23 @@ function measuresPanelOf(process: DispatchProcess): MeasuresPanel {
     return "current";
   }
   return bundle.includes("No failure source yet:") ? "guarded-legacy" : "legacy";
+}
+
+/** Whether a process's build has the Evals tab (dispatch://INFRA-2918): its page opens a project's
+ *  tab and its server answers the tab's live views, where a build before it has the Delivery page
+ *  and refuses those views as frames it cannot read. This tree has it, and so does either process
+ *  of a run with no previous build; a previous build is told by its bundle, read from the dist
+ *  beside its binary (`webDistOf`), which holds the tab's merge timeline control. */
+function buildHasEvalsTab(process: DispatchProcess): boolean {
+  if (process === "a" || binaryB === undefined) {
+    return true;
+  }
+  const assets = resolve(webDistOf(process), "assets");
+  return readdirSync(assets)
+    .filter((file) => file.endsWith(".js"))
+    .some((file) =>
+      readFileSync(resolve(assets, file), "utf8").includes("Show the merge timeline")
+    );
 }
 
 /** Every member of a measures answer's `measures` that this tree's server writes as the JSON
@@ -431,96 +451,142 @@ for (const pageProcess of dispatchProcesses) {
         }
       }
 
-      // The Delivery page on the fixture's day: the page's live socket subscribes to the timeline
-      // view, the other build's server answers that subscription with a snapshot, and the page
-      // renders the answer's measures.
-      await page.goto(`/delivery?${deliveryWindow}`);
-      await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
-      await expect
-        .poll(() =>
-          live.sent.flatMap((frame) => (frame.type === "subscribe" ? [frame.view.kind] : []))
-        )
-        .toContain("timeline");
-      await expect
-        .poll(() => {
-          const timeline = live.sent.flatMap((frame) =>
+      // The delivery numbers on the fixture's day. A page of a build with the Evals tab opens the
+      // tab of the fixture's project, whose live socket subscribes the tab's evals views: a server
+      // with the tab answers them, and the target cards paint; a server of a build before the tab
+      // refuses them as frames it cannot read, and each section says so rather than load forever
+      // (`UnservedViews`). A page of a build before the tab has the Delivery page, which a server
+      // of this tree still answers (the two-build rule).
+      if (buildHasEvalsTab(pageProcess)) {
+        await page.goto(`/projects/ACME/evals?${deliveryWindow}`);
+        await expect(page.getByRole("tab", { name: "Evals" })).toHaveAttribute(
+          "aria-selected",
+          "true"
+        );
+        const cards = page.locator('[data-section="cards"]');
+        await expect
+          .poll(() =>
+            live.sent.flatMap((frame) => (frame.type === "subscribe" ? [frame.view.kind] : []))
+          )
+          .toContain("evals");
+        if (buildHasEvalsTab(server)) {
+          await expect(cards).toHaveAttribute("data-state", "painted");
+          await expect(cards.locator('[data-card="deploy-frequency"]')).toBeVisible();
+          await expect
+            .poll(() => {
+              const evals = live.sent.flatMap((frame) =>
+                frame.type === "subscribe" && frame.view.kind === "evals" ? [frame.sub] : []
+              );
+              return live.received.some(
+                (frame) => frame.type === "snapshot" && evals.includes(frame.sub)
+              );
+            })
+            .toBe(true);
+        } else {
+          await expect(cards.locator("[data-unserved]")).toHaveText(
+            "Target cards: the server does not serve the Evals tab's views yet."
+          );
+        }
+      } else {
+        // The Delivery page on the fixture's day: the page's live socket subscribes to the timeline
+        // view, the other build's server answers that subscription with a snapshot, and the page
+        // renders the answer's measures.
+        await page.goto(`/delivery?${deliveryWindow}`);
+        await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
+        await expect
+          .poll(() =>
+            live.sent.flatMap((frame) => (frame.type === "subscribe" ? [frame.view.kind] : []))
+          )
+          .toContain("timeline");
+        await expect
+          .poll(() => {
+            const timeline = live.sent.flatMap((frame) =>
+              frame.type === "subscribe" && frame.view.kind === "timeline" ? [frame.sub] : []
+            );
+            return live.received.some(
+              (frame) => frame.type === "snapshot" && timeline.includes(frame.sub)
+            );
+          })
+          .toBe(true);
+
+        // What the page rendered of that snapshot. The fixture's day holds one deploy and two merged
+        // pull requests, one of them rework, so a page that rendered this answer, and no shell
+        // before it, writes "1 deploys" and a rework share of 50.0%; and no failure source is on,
+        // so every failure measure is no data.
+        const measuresPanel = measuresPanelOf(pageProcess);
+        const kpis = page.getByLabel("KPI targets");
+        const failureCard = kpis.locator('[data-kpi="Change failure rate"]');
+        await expect(kpis.locator('[data-kpi="Deploys a day"]')).toContainText("1 deploys");
+        const stat = (label: string) =>
+          page.getByTestId("measures-strip").getByText(label, { exact: true }).locator("..");
+        await expect(stat("Rework share")).toContainText("50.0%");
+        if (measuresPanel === "current") {
+          // This tree's page, whether the server answers no data (this tree's) or only the retired
+          // members (a previous build's): each failure measure reads no data, and no retired
+          // placeholder is shown as a figure.
+          await expect(failureCard).toContainText("No data for this window");
+          for (const label of ["CFR (per deploy)", "Recovery time", "Deploy rework"]) {
+            await expect(stat(label)).toHaveText(`n/a${label}`);
+          }
+        } else {
+          // A previous page, which reads the retired members this tree's server writes as null:
+          // the median of time_to_restore, and the per-PR rate of the change failure rate.
+          await expect(stat("Time to restore")).toHaveText("n/aTime to restore");
+          if (measuresPanel === "guarded-legacy") {
+            await expect(stat("CFR (per PR)")).toHaveText("n/aCFR (per PR)");
+            await expect(failureCard).toContainText("Flags arrive with flag confirmation");
+          } else {
+            await expect(stat("CFR (per PR)")).toBeVisible();
+          }
+        }
+
+        // "Definitions & alternatives": the fold's cards read the nested members only once it opens.
+        await page.getByRole("button", { name: "Definitions & alternatives" }).click();
+        const definition = (title: string) =>
+          page.locator("div.uppercase").filter({ hasText: title }).locator("..");
+        await expect(definition("Rework share")).toContainText("50.0%");
+        if (measuresPanel === "current") {
+          for (const title of [
+            "Change failure rate (per deploy)",
+            "Failed deployment recovery time",
+            "Deployment rework rate",
+          ]) {
+            await expect(definition(title)).toHaveText(`${title}n/aNo data for this window`);
+          }
+        } else {
+          await expect(definition("Time to restore")).toContainText("n/a");
+          for (const title of [
+            "Change failure rate (per PR)",
+            "Change failure rate (per deploy)",
+          ]) {
+            await expect(definition(title)).toBeVisible();
+          }
+          if (measuresPanel === "guarded-legacy") {
+            await expect(definition("Change failure rate (per PR)")).toContainText(
+              "No failure source yet"
+            );
+          }
+        }
+
+        // The wire, where this tree's server answers: the live snapshot and the measures route each
+        // hold every retired and every modern failure member as an explicit null.
+        if (server === "a" || binaryB === undefined) {
+          const timelineSubs = live.sent.flatMap((frame) =>
             frame.type === "subscribe" && frame.view.kind === "timeline" ? [frame.sub] : []
           );
-          return live.received.some(
-            (frame) => frame.type === "snapshot" && timeline.includes(frame.sub)
+          const snapshot = live.received.find(
+            (frame) => frame.type === "snapshot" && timelineSubs.includes(frame.sub)
           );
-        })
-        .toBe(true);
-
-      // What the page rendered of that snapshot. The fixture's day holds one deploy and two merged
-      // pull requests, one of them rework, so a page that rendered this answer, and no shell
-      // before it, writes "1 deploys" and a rework share of 50.0%; and no failure source is on,
-      // so every failure measure is no data.
-      const measuresPanel = measuresPanelOf(pageProcess);
-      const kpis = page.getByLabel("KPI targets");
-      const failureCard = kpis.locator('[data-kpi="Change failure rate"]');
-      await expect(kpis.locator('[data-kpi="Deploys a day"]')).toContainText("1 deploys");
-      const stat = (label: string) =>
-        page.getByTestId("measures-strip").getByText(label, { exact: true }).locator("..");
-      await expect(stat("Rework share")).toContainText("50.0%");
-      if (measuresPanel === "current") {
-        // This tree's page, whether the server answers no data (this tree's) or only the retired
-        // members (a previous build's): each failure measure reads no data, and no retired
-        // placeholder is shown as a figure.
-        await expect(failureCard).toContainText("No data for this window");
-        for (const label of ["CFR (per deploy)", "Recovery time", "Deploy rework"]) {
-          await expect(stat(label)).toHaveText(`n/a${label}`);
-        }
-      } else {
-        // A previous page, which reads the retired members this tree's server writes as null:
-        // the median of time_to_restore, and the per-PR rate of the change failure rate.
-        await expect(stat("Time to restore")).toHaveText("n/aTime to restore");
-        if (measuresPanel === "guarded-legacy") {
-          await expect(stat("CFR (per PR)")).toHaveText("n/aCFR (per PR)");
-          await expect(failureCard).toContainText("Flags arrive with flag confirmation");
-        } else {
-          await expect(stat("CFR (per PR)")).toBeVisible();
+          const liveMeasures = memberAt(snapshot, ["body", "measures", "measures"]);
+          expect(liveMeasures.held, "the live snapshot carries measures.measures").toBe(true);
+          expectNullMeasureMembers(liveMeasures.value, "the live timeline snapshot");
         }
       }
 
-      // "Definitions & alternatives": the fold's cards read the nested members only once it opens.
-      await page.getByRole("button", { name: "Definitions & alternatives" }).click();
-      const definition = (title: string) =>
-        page.locator("div.uppercase").filter({ hasText: title }).locator("..");
-      await expect(definition("Rework share")).toContainText("50.0%");
-      if (measuresPanel === "current") {
-        for (const title of [
-          "Change failure rate (per deploy)",
-          "Failed deployment recovery time",
-          "Deployment rework rate",
-        ]) {
-          await expect(definition(title)).toHaveText(`${title}n/aNo data for this window`);
-        }
-      } else {
-        await expect(definition("Time to restore")).toContainText("n/a");
-        for (const title of ["Change failure rate (per PR)", "Change failure rate (per deploy)"]) {
-          await expect(definition(title)).toBeVisible();
-        }
-        if (measuresPanel === "guarded-legacy") {
-          await expect(definition("Change failure rate (per PR)")).toContainText(
-            "No failure source yet"
-          );
-        }
-      }
-
-      // The wire, where this tree's server answers: the live snapshot and the measures route each
-      // hold every retired and every modern failure member as an explicit null.
+      // The measures route, where this tree's server answers: it still answers the Delivery page
+      // of the release before, and holds every retired and every modern failure member as an
+      // explicit null.
       if (server === "a" || binaryB === undefined) {
-        const timelineSubs = live.sent.flatMap((frame) =>
-          frame.type === "subscribe" && frame.view.kind === "timeline" ? [frame.sub] : []
-        );
-        const snapshot = live.received.find(
-          (frame) => frame.type === "snapshot" && timelineSubs.includes(frame.sub)
-        );
-        const liveMeasures = memberAt(snapshot, ["body", "measures", "measures"]);
-        expect(liveMeasures.held, "the live snapshot carries measures.measures").toBe(true);
-        expectNullMeasureMembers(liveMeasures.value, "the live timeline snapshot");
-
         const answered = await fetch(
           new URL(`/api/v1/delivery/measures?${deliveryWindow}`, baseUrl),
           { headers: { Authorization: `Bearer ${e2eAgentToken}`, ...pinnedTo(server) } }
