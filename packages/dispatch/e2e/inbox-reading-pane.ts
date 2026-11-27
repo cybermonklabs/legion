@@ -18,10 +18,10 @@ import {
   createProject,
   createProjectDocument,
   editArtifact,
-  getArtifact,
-  getArtifactVersion,
+  getArtifactText,
   getInbox,
   handAskOn,
+  latestVersion,
   listMyReplies,
   patchIssue,
   requestApproval,
@@ -151,6 +151,7 @@ export interface Seed {
   decisionAskId: string;
   decisionIssueKey: string;
   documentAskId: string;
+  firstApprovalArtifactId: string;
   firstApprovalAskId: string;
   plainAskId: string;
 }
@@ -262,13 +263,16 @@ export async function seedInbox(): Promise<Seed> {
           title: "Lease handover",
         });
         await patchIssue(issue.key, { priority: 2 });
-        return withOpenedAsk(
-          await requestApproval(
-            issue.primary_artifact_id,
-            { summary: "The first handover draft." },
-            session
-          )
-        );
+        return {
+          ...withOpenedAsk(
+            await requestApproval(
+              issue.primary_artifact_id,
+              { summary: "The first handover draft." },
+              session
+            )
+          ),
+          artifactId: issue.primary_artifact_id,
+        };
       })(),
       (async () => {
         const anchoredIssue = await createIssue({
@@ -308,6 +312,7 @@ export async function seedInbox(): Promise<Seed> {
     decisionAskId: decision.row.id,
     decisionIssueKey: decision.issueKey,
     documentAskId: documentDecision.id,
+    firstApprovalArtifactId: firstApproval.artifactId,
     firstApprovalAskId: firstApproval.ask.id,
     plainAskId: plain.id,
   };
@@ -440,10 +445,12 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
     indexedRow((row) => row.block_id === OPEN_ANSWERED),
   ]);
 
-  // Question 8's answer puts `state="answered"` on its block's opening line, and the document's
-  // settlement then writes the version that stores it. The live text serves no server-owned
-  // attribute, so the newest version's stored markdown is where the state shows.
-  // kept for one release: stored-ask-state
+  // Question 8's answer writes its block's state in the answer's own transaction, and the
+  // settlement that write arms saves it as a new version of `talk.md` once the settle delay has
+  // passed (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`). The live text's markdown holds no
+  // ask's state, so the seed waits until the text answers the ask answered in its `asks`, read
+  // from the ask, and until a version past the newest one before the answer is saved.
+  const beforeAnswer = await latestVersion(talk.id);
   await answerAsk(
     answered.id,
     { expected_edited_at: null, selected: [ANSWERED_OPTIONS[0]] },
@@ -451,13 +458,11 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
   );
   await expect
     .poll(async () => {
-      const newest = Math.max(
-        ...((await getArtifact(talk.id)).versions ?? []).map((v) => v.number)
-      );
-      const { markdown } = await getArtifactVersion(talk.id, newest);
-      return markdown.split("\n").find((line) => line.includes(`#${OPEN_ANSWERED}`)) ?? "";
+      const { asks } = await getArtifactText(talk.id);
+      return asks?.find((entry) => entry.block_id === OPEN_ANSWERED)?.state;
     }, INDEX_PROBE)
-    .toContain('state="answered"');
+    .toBe("answered");
+  await expect.poll(() => latestVersion(talk.id), INDEX_PROBE).toBeGreaterThan(beforeAnswer);
 
   const quoted = await createAsk(
     issue.key,

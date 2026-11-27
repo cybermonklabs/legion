@@ -30,7 +30,7 @@ func holdGone(t *testing.T, rig reasoningRig, name string, target stateTarget, p
 	if err != nil {
 		t.Fatalf("read the gone's time: %v", err)
 	}
-	if _, _, err := writeNodeState(ctx, tx, nodeStateWrite{
+	if _, _, _, err := writeNodeState(ctx, tx, nodeStateWrite{
 		issue: rig.issue, target: target,
 		state: graphstore.StateGone, who: held.MadeBy, at: at,
 		allowed: func(graphstore.Node) error { return nil },

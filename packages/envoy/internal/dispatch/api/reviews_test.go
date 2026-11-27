@@ -78,6 +78,10 @@ func askEventCounts(t *testing.T, handler http.Handler, issueKey, askID string) 
 	return counts
 }
 
+// An approval request opens an ask whose answer pins a review to the spec's version; a version
+// that changes what the approval covers stales it, and a review from the header pins the new one.
+// The spec holds a requirement and the revision rewords it: R14's approval covers the Spec query's
+// record, so a revision of a spec of prose alone would leave the approval standing.
 func TestApprovalRequestOpensAnAskWhoseAnswerPinsAReviewToTheDocumentVersion(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
@@ -86,7 +90,7 @@ func TestApprovalRequestOpensAnAskWhoseAnswerPinsAReviewToTheDocumentVersion(t *
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
-	issue := createInteractionIssue(t, handler, "TEST", "Approve me", "A spec")
+	issue := createInteractionIssue(t, handler, "TEST", "Approve me", ":::requirement{#r1}\nA spec\n:::\n")
 	if got := readApproval(t, handler, issue.PrimaryArtifactID); got.Approval == nil || got.Approval.State != "draft" || got.Approval.LatestVersion != 1 {
 		t.Fatalf("fresh document approval = %#v, want draft at version 1", got.Approval)
 	}
@@ -168,8 +172,8 @@ func TestApprovalRequestOpensAnAskWhoseAnswerPinsAReviewToTheDocumentVersion(t *
 		t.Fatalf("approval after a satisfied request = %#v, want still approved", got.Approval)
 	}
 
-	// A new version makes the approval stale; nothing is emitted for that.
-	if _, err := replaceDocumentText(database, documentService, issue.PrimaryArtifactID, "A revised spec", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	// A version that rewords the requirement makes the approval stale; nothing is emitted for that.
+	if _, err := replaceDocumentText(database, documentService, issue.PrimaryArtifactID, ":::requirement{#r1}\nA revised spec\n:::\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("revise document: %v", err)
 	}
 	if named := dispatchRequest(t, handler, http.MethodPost,
@@ -411,6 +415,10 @@ func TestAVersionMoveKeepsTheLongestAcceptedSummaryWithinTheAskBound(t *testing.
 	}
 }
 
+// An approval of a document's text reads stale once an edit changes a table cell whose pipe the
+// release before stored unescaped. The table is in a document no query covers
+// (uncoveredDocument), whose approval covers its stored markdown: R14 leaves the approval of a
+// spec of prose alone standing across the same edit.
 func TestEditedLegacyTableCellPipeDocumentStalesApproval(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
@@ -419,29 +427,31 @@ func TestEditedLegacyTableCellPipeDocumentStalesApproval(t *testing.T) {
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
-	issue := createInteractionIssue(t, handler, "TEST", "Approved table", "| header |\n| :--- |\n| `one\\|two` |\n")
-	approved := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/reviews", map[string]string{"state": "approved"}, "alice")
+	issue := createInteractionIssue(t, handler, "TEST", "Approved table", "A spec\n")
+	notes := uncoveredDocument(t, handler, issue.Key, "| header |\n| :--- |\n| `one\\|two` |\n")
+	approved := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/reviews", map[string]string{"state": "approved"}, "alice")
 	if approved.Code != http.StatusCreated {
 		t.Fatalf("approve document: status=%d body=%s", approved.Code, approved.Body.String())
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update artifact_versions set markdown = $2 where artifact_id = $1 and number = 1
-	`, issue.PrimaryArtifactID, "| header |\n| :--- |\n| `one|two` |\n"); err != nil {
+	`, notes, "| header |\n| :--- |\n| `one|two` |\n"); err != nil {
 		t.Fatalf("seed legacy canonical markdown: %v", err)
 	}
-	if _, err := replaceDocumentText(database, documentService, issue.PrimaryArtifactID, "| header |\n| :--- |\n| `one\\|three` |\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	if _, err := replaceDocumentText(database, documentService, notes, "| header |\n| :--- |\n| `one\\|three` |\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("edit legacy document: %v", err)
 	}
 	if named := dispatchRequest(t, handler, http.MethodPost,
-		"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions",
+		"/api/v1/artifacts/"+notes+"/versions",
 		map[string]string{"summary": "human edit"}, "alice"); named.Code != http.StatusCreated {
 		t.Fatalf("record human version: status=%d body=%s", named.Code, named.Body.String())
 	}
-	got := readApproval(t, handler, issue.PrimaryArtifactID)
+	got := readApproval(t, handler, notes)
 	if got.Approval == nil || got.Approval.State != "stale" || got.Approval.LatestVersion != 2 || got.Approval.Version == nil || *got.Approval.Version != 1 {
 		t.Fatalf("approval after editing legacy table = %#v, want stale review v1 at latest v2", got.Approval)
 	}
 }
+
 func TestHeaderChangesRequestedAnswersTheOpenApprovalAskAndNeedsAReason(t *testing.T) {
 	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)

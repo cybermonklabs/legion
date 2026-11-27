@@ -195,15 +195,7 @@ var daemonThreadPlacementsStatement = `
 // the queries of each issue its batch marked, and publishes what each drain appended.
 func (s *DaemonThreadStep) replaceBatch(ctx context.Context, read []refs.DaemonThreadParent) ([]refs.DaemonThreadParent, error) {
 	pool := s.documents.store.Pool
-	var issues []string
-	for _, parent := range read {
-		for _, issue := range []string{parent.Holder, parent.Issue} {
-			if !slices.Contains(issues, issue) {
-				issues = append(issues, issue)
-			}
-		}
-	}
-	slices.Sort(issues)
+	issues := threadIssues(read)
 	rows, err := pool.Query(ctx, daemonThreadRoomsStatement, issues)
 	if err != nil {
 		return nil, fmt.Errorf("read the rooms of %v: %w", issues, err)
@@ -298,7 +290,6 @@ func (s *DaemonThreadStep) replaceBatch(ctx context.Context, read []refs.DaemonT
 // under its issue.
 func queueDaemonThreadMoves(b *store.WriteBatch, moved []refs.DaemonThreadParent, at time.Time, marked map[string]*bool) {
 	tuples := make([]graphstore.Tuple, 0, 2*len(moved))
-	var issues []string
 	for _, parent := range moved {
 		placed := graphstore.Tuple{
 			FromKind: refs.BlockNodeKind, FromID: parent.Node, Kind: graphstore.TuplePartOf,
@@ -308,18 +299,24 @@ func queueDaemonThreadMoves(b *store.WriteBatch, moved []refs.DaemonThreadParent
 		retracted.ToKind, retracted.ToID = parent.Parent.Kind, parent.Parent.ID
 		asserted.ToKind, asserted.ToID, asserted.Asserted = graphstore.KindIssue, parent.Issue, true
 		tuples = append(tuples, retracted, asserted)
-		for _, issue := range []string{parent.Holder, parent.Issue} {
-			if !slices.Contains(issues, issue) {
-				issues = append(issues, issue)
-			}
-		}
 	}
 	graphstore.QueueWrite(b, nil, tuples)
-	slices.Sort(issues)
+	issues := threadIssues(moved)
 	for _, issue := range issues {
 		took := false
 		marked[issue] = &took
 		QueueQueryMark(b, issue, graphstore.NoEvent, &took)
 	}
 	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+}
+
+// threadIssues is the issues of parents, the one that holds each message (Holder) and the one each
+// block is re-placed under (Issue), each once, in ascending key.
+func threadIssues(parents []refs.DaemonThreadParent) []string {
+	issues := make([]string, 0, 2*len(parents))
+	for _, parent := range parents {
+		issues = append(issues, parent.Holder, parent.Issue)
+	}
+	slices.Sort(issues)
+	return slices.Compact(issues)
 }

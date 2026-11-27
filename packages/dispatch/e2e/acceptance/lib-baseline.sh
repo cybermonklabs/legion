@@ -238,12 +238,14 @@ baseline_fail() {
 
 # baseline_psql URL ARGS…: psql against URL, stopping on the first error. PGHOSTADDR is dropped:
 # libpq reads it as the address to connect to and it would replace the host the URL names, while a
-# server, which never reads it, connects to the host this harness admitted.
+# server, which never reads it, connects to the host this harness admitted. PGSERVICE and
+# PGSERVICEFILE are dropped too, as lib.sh's query drops them: their service entry can carry a
+# hostaddr of its own, which libpq takes where the URL names none and connects to instead.
 baseline_psql() {
   local url="$1"
   shift
   (
-    unset PGHOSTADDR
+    unset PGHOSTADDR PGSERVICE PGSERVICEFILE
     exec psql "$url" -X -v ON_ERROR_STOP=1 "$@"
   )
 }

@@ -205,8 +205,8 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 // that node too. So the read of a block that moved lists the citations of its old address and the
 // links into the block where it stands now, and the read of a block of a document converted into
 // its issue's room, at the document's own address, lists the mentions written at that address and
-// the links the block index wrote at the room's node, which is where it writes a pointer's (T17 of
-// this branch's plan). Each list is in the read's order, newest first, and the two are merged by
+// the links the block index wrote at the room's node, which is where it writes a pointer's
+// (graphstore.MovedTo). Each list is in the read's order, newest first, and the two are merged by
 // time, a tie taking the address's edge first.
 func referenceEdges(ctx context.Context, q refs.Queryer, who model.Actor, query refs.Query, node model.GraphNode) ([]model.GraphEdge, error) {
 	read := func(query refs.Query) ([]model.GraphEdge, error) {

@@ -221,6 +221,10 @@ type IssueSummary struct {
 	// Priority is the issue's own priority as Dispatch serves it: 0 for P0 to 3 for P3, nil for
 	// none. The workflow record keeps it as record.Priority (intake's ListedIssue).
 	Priority *int
+	// Resolved is the priority Dispatch resolves the issue to and the issue it comes from
+	// (`resolved_priority` and `priority_from`, J1 of dispatch://INFRA-5793), nil where the read
+	// carries no `resolved_priority` at all, as a Dispatch release before INFRA-5793 serves none.
+	Resolved *ResolvedPriority
 	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
 	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
 	// a release reads from the summary), and no decision reads them: a decision reads HandedOver.
@@ -253,7 +257,7 @@ func (s IssueSummary) Issue() Issue {
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
 		claim = &Claim{Kind: kind, ID: id}
 	}
-	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Labels: s.Labels, HandedOver: s.HandedOver,
+	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Priority: s.Priority, Resolved: s.Resolved, Labels: s.Labels, HandedOver: s.HandedOver,
 		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
 }
 
@@ -276,6 +280,8 @@ type Issue struct {
 	LastSeq                int64
 	// Priority is IssueSummary.Priority.
 	Priority *int
+	// Resolved is IssueSummary.Resolved.
+	Resolved *ResolvedPriority
 	// ResolvedRepo is IssueSummary.ResolvedRepo.
 	ResolvedRepo string
 	// BlockedBy is IssueSummary.BlockedBy.
@@ -283,6 +289,14 @@ type Issue struct {
 	// Claim is the issue's claim Dispatch shows, nil for none; ClaimUnread is IssueSummary's.
 	Claim       *Claim
 	ClaimUnread bool
+}
+
+// ResolvedPriority is a resolved priority as a Dispatch read serves it: Priority its level, 0 for P0
+// to 3 for P3 and nil for a present null, which is no priority; From the key of the issue it comes
+// from, empty where it is the issue's own or none.
+type ResolvedPriority struct {
+	Priority *int
+	From     string
 }
 
 // Claim is the actor Dispatch records as an issue's holder: a session or a person.
@@ -598,9 +612,10 @@ func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" &&
 
 // Caller is who Dispatch takes a credential for, as GET /api/v1/whoami answers a credential that is
 // not a person's browser session (its whoamiAgent): Session is the session the credential proved,
-// Project the one project it lets its holder write, and Owner the person it acts for, each nil
-// where Dispatch names none. A broker token Dispatch serves every write of the daemon's for names
-// the daemon's session (DaemonSession), its project and a person.
+// Project the project its token names, and Owner the person it acts for, each nil where Dispatch
+// names none. The daemon's own broker token names the session of the daemon's project
+// (DaemonSession), that project and a person, and the boot refuses any other (internal/daemon's
+// checkDaemonCaller).
 type Caller struct {
 	Session *string `json:"session"`
 	Project *string `json:"project"`

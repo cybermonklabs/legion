@@ -122,7 +122,7 @@ type followResult struct {
 // which says the ask node's followed_by to the session is the record of this row: on a new row,
 // and on a row a process of the release before wrote with none, which this follow makes the
 // store's. graph_edges' tuple arm answers a marked row from that relation, and its old arm answers
-// an unmarked one (20261116094101). A row is marked only where the ask's node is there to name -
+// an unmarked one (20261125163553). A row is marked only where the ask's node is there to name -
 // an ask a process of the release before created has none until the boot step's backfill writes it
 // - and the session is a node the store can key. A follow that marks the row states followed_by,
 // dated by the row's own `since`, as the old arm dates the edge; one that finds the row marked
@@ -189,8 +189,10 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 	return held, nil
 }
 
-// followedBy is the ask node's followed_by to a session, asserted or retracted.
-func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
+// FollowedBy is the ask node's followed_by to a session, asserted or retracted, made by who at at
+// under event: the one build of that tuple, which every follow, unfollow and catch-up of a follow
+// states, and the boot step's backfill of a follower row written before this release (R3).
+func FollowedBy(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
 	return graphstore.Tuple{
 		FromKind: graphstore.KindAsk, FromID: askID, Kind: graphstore.TupleFollowedBy,
 		ToKind: graphstore.KindSession, ToID: sessionID,
@@ -198,12 +200,12 @@ func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time
 	}
 }
 
-// followChange is followedBy marked as changing the ask's node (graphstore.Tuple's Changes): the
+// followChange is FollowedBy marked as changing the ask's node (graphstore.Tuple's Changes): the
 // relation a follow or an unfollow states, which a write made for a run names the ask's node
 // changed by. CatchUpFollower states what another build's follow or unfollow did, which no run
-// made, through followedBy alone.
+// made, through FollowedBy alone.
 func followChange(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
-	relation := followedBy(askID, sessionID, asserted, who, at, event)
+	relation := FollowedBy(askID, sessionID, asserted, who, at, event)
 	relation.Changes = true
 	return relation
 }
@@ -389,7 +391,7 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 			return false, fmt.Errorf("mark the follow of ask %q by %q: %w", askID, sessionID, err)
 		}
 		nodes := []graphstore.Node{graphstore.SessionNode(sessionID, who, since, event)}
-		relation := followedBy(askID, sessionID, true, who, since, event)
+		relation := FollowedBy(askID, sessionID, true, who, since, event)
 		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 			graphstore.QueueWrite(b, nodes, []graphstore.Tuple{relation})
 			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
@@ -412,7 +414,7 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 	if !gone || !asserted {
 		return false, nil
 	}
-	retraction := followedBy(askID, sessionID, false, who, at, event)
+	retraction := FollowedBy(askID, sessionID, false, who, at, event)
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction})
 		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction}))

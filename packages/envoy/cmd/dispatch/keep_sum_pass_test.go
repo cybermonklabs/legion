@@ -3,12 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -120,21 +117,12 @@ func shapedSumOf(t *testing.T, markdown, block string) string {
 // may refuse a database this small for kinds it holds no row of, so its exit code is not read.
 func keepSumCensus(t *testing.T, databaseURL string) int64 {
 	t.Helper()
-	home := t.TempDir()
-	cmd := exec.Command(cmdtest.Build(t, "envoy-dispatch"), "census", "--store")
-	cmd.Dir = home
-	cmd.Env = []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,
-		"DATABASE_URL=" + databaseURL, "DISPATCH_NATS_DISABLED=1"}
-	sort.Strings(cmd.Env)
-	out, err := cmd.CombinedOutput()
-	if exit := (*exec.ExitError)(nil); err != nil && !errors.As(err, &exit) {
-		t.Fatalf("run the store census: %v\n%s", err, out)
-	}
-	owed := regexp.MustCompile(`(?m)^census: store kind=keep_shaped_sum owed_rows=([0-9,]+) `).FindSubmatch(out)
+	_, out := runDispatchCommand(t, cmdtest.Build(t, "envoy-dispatch"), databaseURL, "census", "--store")
+	owed := regexp.MustCompile(`(?m)^census: store kind=keep_shaped_sum owed_rows=([0-9,]+) `).FindStringSubmatch(out)
 	if owed == nil {
 		t.Fatalf("the store census printed no owed_rows of kind keep_shaped_sum:\n%s", out)
 	}
-	count, err := strconv.ParseInt(strings.ReplaceAll(string(owed[1]), ",", ""), 10, 64)
+	count, err := strconv.ParseInt(strings.ReplaceAll(owed[1], ",", ""), 10, 64)
 	if err != nil {
 		t.Fatalf("read the census's count %q: %v", owed[1], err)
 	}
@@ -171,18 +159,9 @@ func TestTheBootBackfillRecomputesTheKeepSumsOfShapedDecisions(t *testing.T) {
 		p.waitHealthy(t)
 		return p
 	}
-	stop := func(p *dispatchProcess) {
-		t.Helper()
-		p.Terminate(t)
-		p.WaitExit(t, "SIGTERM")
-	}
 	backfilled := func(p *dispatchProcess) int {
 		t.Helper()
-		for deadline := time.Now().Add(300 * time.Second); !p.logged(bootBackfillDoneMatch); time.Sleep(2 * time.Second) {
-			if time.Now().After(deadline) {
-				t.Fatalf("the boot backfill logged no done line within 300 s:\n%s", p.Output.String())
-			}
-		}
+		p.waitForLog(t, 300*time.Second, bootBackfillDoneMatch)
 		lines := p.logLines(keepSumPassMatch)
 		if len(lines) == 0 {
 			t.Fatalf("the boot backfill logged no line of the Keep pass:\n%s", p.Output.String())
@@ -230,7 +209,7 @@ func TestTheBootBackfillRecomputesTheKeepSumsOfShapedDecisions(t *testing.T) {
 	if d1.Node.ID == "" || d2.Node.ID == "" || d1.TextSHA256 == d1Old {
 		t.Fatalf("the Decisions read answers D1 %+v and D2 %+v, and D1's words with shaped sum to %s: this case proves nothing", d1, d2, d1Old)
 	}
-	stop(first)
+	stopProcess(t, first)
 
 	// The release before's Keeps, each over the words with shaped.
 	for _, kept := range []struct {
@@ -290,7 +269,7 @@ func TestTheBootBackfillRecomputesTheKeepSumsOfShapedDecisions(t *testing.T) {
 	if !entries["d2"].WaitingReview {
 		t.Errorf("%s reads waiting_review false after the boot backfill, want true: its Keep did not match", d2.Node.ID)
 	}
-	stop(second)
+	stopProcess(t, second)
 	if owed := keepSumCensus(t, databaseURL); owed != 0 {
 		t.Errorf("census kind keep_shaped_sum reads %d, want %d", owed, 0)
 	}
@@ -299,7 +278,7 @@ func TestTheBootBackfillRecomputesTheKeepSumsOfShapedDecisions(t *testing.T) {
 	if rewrote := backfilled(third); rewrote != 0 {
 		t.Errorf("the Keep pass rewrote %d Keeps, want %d", rewrote, 0)
 	}
-	stop(third)
+	stopProcess(t, third)
 	for _, kept := range []struct{ block, node, row, value string }{
 		{"d1", d1.Node.ID, d1Row, d1Value}, {"d2", d2.Node.ID, d2Row, d2Value},
 	} {

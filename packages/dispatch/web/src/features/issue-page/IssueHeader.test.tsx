@@ -54,17 +54,8 @@ import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
-import {
-  markedCommentNode,
-  skipWithoutTreeNodeMarks,
-  treeAnswer,
-  treeNode,
-  treeTuple,
-} from "./tree-read/tree-fixtures";
+import { markedCommentNode, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import { viewKey } from "./tree-read/tree-read";
-
-/** Skips the cases that need the tree read to answer a post's marks on its node. */
-const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -681,11 +672,11 @@ test("the header counts a waiting question from the outline's asks read and send
   }
 });
 
-// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// With the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
 // `deleted_by`): a decision whose only Change the read answers deleted waits on the reader again,
 // and one whose Change stands waits on its agent, so of two decisions of the review list the count
 // draws one, read from Conversation's answer alone, with no comments list.
-test.skipIf(withoutTreeNodeMarks)(
+test(
   "the header counts a decision whose only Change the tree read answers deleted, and not one whose Change stands",
   async () => {
     const spec = { artifact_id: issue.primary_artifact_id, slug: "spec" };

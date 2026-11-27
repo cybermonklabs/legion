@@ -58,9 +58,8 @@ var blockProjections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + blockPlacedLinks(kindIn("t.kind", blockPlacementKinds)) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
-	owed: `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	pastBound: blockRowsPastBound,
+	owed:      `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
 	// kept for one release: deferred-typed-rows
 	rowOwed: typedRowOwed,
 }, {
@@ -135,11 +134,10 @@ var blockProjections = []projection{{
 		select n.id, md5(n.id || '|' || coalesce(left(` + currentValue(refs.AttributeRank) + `, 1), ''))
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	pastBound:   blockRowsPastBound,
 	emptyAgrees: true,
 }, {
-	name:     "block_type",
+	name:     blockTypeKind,
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_blocks",
 	note: "the type of every block of a document that owes no block index, which its node's supertag holds" +
@@ -158,8 +156,7 @@ var blockProjections = []projection{{
 		select n.id, md5(n.id || '|' || n.supertag)
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	pastBound:   blockRowsPastBound,
 	emptyAgrees: true,
 }, {
 	name:     "block_text",
@@ -193,8 +190,7 @@ var blockProjections = []projection{{
 		  and not exists (
 			select 1 from artifacts document
 			where document.ref_key = split_part(n.id, '#', 1) and ` + unconvertedUnstated("document") + `)`,
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	pastBound: blockRowsPastBound,
 	unstated: `
 		select count(*) from document_blocks d
 		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id") + `
@@ -219,8 +215,7 @@ var blockProjections = []projection{{
 		select n.id, md5(n.id || '|' || coalesce(` + currentValue(refs.AttributePlanSize) + `, ''))
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	pastBound:   blockRowsPastBound,
 	emptyAgrees: true,
 }, {
 	name:     "room_block",
@@ -240,7 +235,7 @@ var blockProjections = []projection{{
 	// tuple no row projects. The tuple side reads the block nodes whose id starts with a tree
 	// artifact's ref_key, the part of a block node's id before its first '#'. A row of a block
 	// whose id is past text.MaxBlockIDBytes, which the room's index records with no document_blocks
-	// row (refs' reconcileRoomBlocks), projects no node, so it is counted past the bound with a row
+	// row (refs' planRoomBlocks), projects no node, so it is counted past the bound with a row
 	// whose address is.
 	rows: `
 		select 'room_block ' || tree.ref_key || '#' || r.block_id, d.node_kind, d.node_address,
@@ -273,6 +268,11 @@ var blockProjections = []projection{{
 // as a statement spells it, written into the text as addressBound is.
 var blockIDBound = strconv.Itoa(text.MaxBlockIDBytes)
 
+// blockRowsPastBound counts the document_blocks rows whose node's address is past the store's
+// bound, the class every kind of the blocks' rows counts past it.
+var blockRowsPastBound = `
+		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound
+
 // outsideArtifact starts the part_of link the block kind reads an authored node's place by where
 // that place is no block of the node's own artifact, followed by that artifact's ref_key: the
 // rule document_blocks.parent_block_id projects an authored node's part_of by (refs'
@@ -281,13 +281,20 @@ var blockIDBound = strconv.Itoa(text.MaxBlockIDBytes)
 // so a null column tells only that the parent is none of the artifact's blocks.
 const outsideArtifact = "outside:"
 
-// blockPlacedLinks is placedLinks of a block node n, but where n is an authored node - its
-// placement value refs.PlacementAuthored - or a block a move of the node route placed - its
-// placement value refs.PlacementStored - a part_of whose far end is no block of n's own artifact
-// is written outside:<that artifact's ref_key>, which is what its row's null parent_block_id
-// states (outsideArtifact), and a part_of to an ask's node is read as that far end too, never as
-// the ask's block, which only a reading's row names. A ref_key holds no '#', so n's artifact is
-// the part of its id before the first one.
+// blockPlacedLinks is currentLinks of a block node n under kinds, but a part_of whose far end is an
+// ask's node is written as the block of n's own document that holds that ask (askBlockID): the
+// ask's own block in the document its row names, and a copy's block, the one n stands in, in any
+// other document of its owner. A reading in an answered ask hangs on the ask's node, while its
+// row's parent_block_id keeps the id of the ask block holding it, which is that tuple's projection
+// (refs' planBlockParents), so both read as one link to that block. An ask no marked row names, or
+// whose row names no block, keeps its own address, which no row states.
+//
+// Where n is an authored node - its placement value refs.PlacementAuthored - or a block a move of
+// the node route placed - its placement value refs.PlacementStored - a part_of whose far end is no
+// block of n's own artifact is written outside:<that artifact's ref_key>, which is what its row's
+// null parent_block_id states (outsideArtifact), and a part_of to an ask's node is read as that far
+// end too, never as the ask's block, which only a reading's row names. A ref_key holds no '#', so
+// n's artifact is the part of its id before the first one.
 func blockPlacedLinks(kinds string) string {
 	return `(select coalesce(string_agg(placed.link, ',' order by placed.link), '')
 	 from (
@@ -315,10 +322,8 @@ func blockPlacedLinks(kinds string) string {
 // through the row's node address. Such a row's null parent_block_id states a part_of to no block of
 // its artifact, as an authored node's does (blockPlacedLinks).
 func storedRow(alias string) string {
-	return `coalesce((select case when t.asserted then t.to_id end from graph_tuples t
-		where t.from_kind = ` + alias + `.node_kind and t.from_id = ` + alias + `.node_address and t.kind = '` + refs.AttributePlacement + `'
-		  and t.to_kind = '` + graphstore.KindValue + `'
-		order by t.seq desc limit 1) = '` + refs.PlacementStored + `', false)`
+	return `coalesce(` + currentValueOf(alias+`.node_kind`, alias+`.node_address`, refs.AttributePlacement) + ` = '` +
+		refs.PlacementStored + `', false)`
 }
 
 // settledAsk is the far end, written kind:id as statedLinks reads a link, of the part_of the

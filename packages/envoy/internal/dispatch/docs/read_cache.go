@@ -21,7 +21,7 @@ import (
 )
 
 // DocumentStamp names one stored state of a document: Version is the head Load folds the stored
-// updates through (PgVersioned.head: a pending prune's ceiling, else the newest update's version,
+// updates through (roomHead: a pending prune's ceiling, else the newest update's version,
 // else 0, a document with no stored update), and Row is the id of the transaction that wrote the
 // update row at that version, Postgres's xmin ("" where no row stands there).
 //

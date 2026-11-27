@@ -10,6 +10,7 @@
 import { expect, test } from "bun:test";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { newDpopKey } from "../dpop";
+import { REFUSAL_TEXT_WITHHELD } from "../refusal-text";
 import { BrokerTokenClient } from "../token-client";
 import { BrokerRefusedError, isFinalRefusal, TradeRetryingError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
@@ -18,6 +19,12 @@ import { accepted, refusalOf, stubBroker } from "./stub";
 /** The broker's description of its `membership_held` refusal, with the person's login in it. */
 const HELD =
   "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again";
+
+/** The same refusal from an Identity-Aware Proxy deployment's broker
+ *  (`BROKER_HOLD_REQUIRES_DEADLINE`), where the Workspace Directory's next active answer, not a
+ *  sign-in, ends the hold (`hold.Gate.HeldWords`). */
+const DIRECTORY_HELD =
+  "Google's Workspace Directory no longer confirms ada@example.com; their credentials work again once it does";
 
 /** The retry loop's waits, which end when the row says, so it trades again only then. */
 function gatedSleep() {
@@ -138,4 +145,32 @@ test("membership_held answers the token in hand while it is live", async () => {
     client.close();
     broker.stop();
   }
+});
+
+test("each wording of membership_held prints whole for the person the trade names", () => {
+  for (const description of [HELD, DIRECTORY_HELD]) {
+    const refused = new BrokerRefusedError(
+      400,
+      "membership_held",
+      description,
+      "ada@example.com's sign-in",
+      {
+        person: "ada@example.com",
+      }
+    );
+    expect(refused.said, "a known wording of membership_held was withheld").toBe(description);
+    expect(refused.message).toContain(`HTTP 400 membership_held: ${description}`);
+    expect(refused.permanent).toBe(false);
+  }
+  // Another person's name in the slot is not the trade's: the text is withheld.
+  const other = new BrokerRefusedError(
+    400,
+    "membership_held",
+    DIRECTORY_HELD,
+    "bob@example.com's sign-in",
+    {
+      person: "bob@example.com",
+    }
+  );
+  expect(other.said).toBe(REFUSAL_TEXT_WITHHELD);
 });

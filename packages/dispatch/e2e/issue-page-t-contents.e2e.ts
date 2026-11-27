@@ -143,6 +143,9 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
     for (const view of PAGE_VIEWS) {
       const name = PRESET_NAMES[view];
       const traffic = await openView(page, seeded.key, view);
+      // The one control the view row is at 390 px names the view the address opened, Conversation
+      // and Graph by their word alone, since neither draws a signal.
+      await expectActivePreset(page, name);
       await expect(contentsPane(page), `at 390 px, ${name} draws the Contents pane`).toHaveCount(0);
       await expect(
         threeThings(page),

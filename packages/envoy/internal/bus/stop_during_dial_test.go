@@ -63,6 +63,8 @@ func TestARecoveryDiallingALostServerEndsAtTheStop(t *testing.T) {
 	testwait.Receive(t, "the recovery to dial", proxy.held)
 	client.Close()
 
+	// The bound under test, not a wait: a recovery that ends at the stop logs its cancellation at
+	// once, and one that dials on makes its ten attempts, a second apart, first.
 	deadline := time.Now().Add(3 * time.Second)
 	for !strings.Contains(logs.String(), "envoy nats recovery cancelled") {
 		if time.Now().After(deadline) {

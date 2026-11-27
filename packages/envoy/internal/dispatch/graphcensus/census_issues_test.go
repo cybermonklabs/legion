@@ -27,7 +27,7 @@ func TestTheIssueLinkBatchTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	seedLockProject(t, database)
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the two issues", func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.IssueNode("LOCK-1", "LOCK", alice, now), graphstore.IssueNode("LOCK-2", "LOCK", alice, now),
@@ -40,9 +40,7 @@ func TestTheIssueLinkBatchTakesTheStoreLockOrder(t *testing.T) {
 				('LOCK-2', 'LOCK', 2, 'Waited on', '{"kind":"user","id":"alice"}', 'V', 'issue', 'LOCK-2')
 		`)
 		return err
-	}); err != nil {
-		t.Fatalf("seed the two issues: %v", err)
-	}
+	})
 	var createdAt time.Time
 	if err := database.Pool.QueryRow(ctx, `
 		insert into issue_links (issue_key, kind, target_key, created_at)
@@ -96,7 +94,7 @@ func TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited(t *testing.T) {
 	ctx := context.Background()
 	seedLockProject(t, database)
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the issues", func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.IssueNode("LOCK-1", "LOCK", alice, now), graphstore.IssueNode("LOCK-2", "LOCK", alice, now),
@@ -112,9 +110,7 @@ func TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited(t *testing.T) {
 				('LOCK-4', 'LOCK', 4, 'Moved in place before the pass', '{"kind":"user","id":"alice"}', 'X', 'LOCK-2', 'issue', 'LOCK-4')
 		`)
 		return err
-	}); err != nil {
-		t.Fatalf("seed the issues: %v", err)
-	}
+	})
 	// A process of the release before, registered as that release registers: no
 	// owner_lock_protocol, so the column's default 0, which keeps it in the owner lock's fleet.
 	if _, err := database.Pool.Exec(ctx, `

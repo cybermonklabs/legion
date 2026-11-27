@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -21,6 +22,35 @@ import (
 // declinedResolution is the SQL predicate, on a resolution the events carry, that holds for an
 // ask a person declined to answer (model.AskResolutionDeclined).
 const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclined + `'`
+
+// nodeAnswer is the answer of the ask a as every read of an answer shows it (R3), as
+// model.AskAnswer's JSON without its act: where the row names its node (asks.node_kind), the answer
+// the node holds on an ask it holds answered - its words, its selection, its time and its person,
+// each fact that stands read through the one reading of the node's answer in SQL
+// (asks.NodeAnswerTuples), as asks.NodeAnswerColumn reads them - and null on an ask it holds
+// otherwise; and the row's own answer where the row names no node, its answer's one record until
+// the boot step's backfill marks it. The node holds no act, so scan lays the row's on it where the
+// node holds the row's answer (asks.NodeAnswer.Gave), as asks.NodeAnswer.ApplyTo does.
+//
+// It decodes the node's facts in SQL rather than through the decoder every reader in Go shares
+// (asks.NodeAnswer): the one statement of List reads the answers of every ask that reached the
+// session at once, and holds them to the window and orders them among the comments, messages and
+// declines by the answer's own time (query's answer arm, `(n.answer->>'at')::timestamptz`), so the
+// time must be read in the statement. Its cast refuses a node's answered_at that is no time, which
+// fails the read as the decoder fails it.
+var nodeAnswer = `case when a.node_kind is null then a.answer else (
+		select case when f.state = '` + asks.StateAnswered + `' then jsonb_build_object(
+			'user', f.answered_by, 'selected', coalesce(f.selected::jsonb, '[]'::jsonb), 'text', f.answer, 'at', f.answered_at) end
+		from (
+			select max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswerState + `') as state,
+			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnswer + `') as answer,
+			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleSelected + `') as selected,
+			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredAt + `') as answered_at,
+			       max(n.to_id) filter (where n.kind = '` + graphstore.TupleAnsweredBy + `') as answered_by
+			from (` + asks.NodeAnswerTuples(`a.id::text`) + `) n
+			where n.asserted
+		) f
+	) end`
 
 // ownsAsk is the SQL predicate, on the ask that the alias a names, that holds when the session $1
 // owns that ask: it wrote the ask (asks.author) or follows it, read through ask_followers' primary
@@ -66,16 +96,12 @@ const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is tr
 //
 // Each source names a row by its id, and each kind's ids are a set, so an item reached several ways
 // is one row. Every row is then read at its current words: an ask's current answer, as its node
-// holds it (asks.NodeAnswerJSONOf), when its own time is in the window, a comment's current body, a
-// message's body, each with the time of its edit and the mark of its delete, so a reader meets a
-// post its author withdrew as deleted and not as an empty line. A decline is read from its
-// ask.resolved event instead, since that event is where the read already keeps the rows whose
-// published_destinations hold the session's topic, which is what makes "each session the delivery
-// reached" the set this lists; the asks row gives it only the ask's question, the issue or
-// document the ask is on, and whether the session owns the ask. A comment or message an agent or
-// the system wrote is left out by its author; an answer is a person's by construction. The ids are
-// compared as text, through the asks_id_text, comments_id_text and messages_id_text indexes, so a
-// payload id that is not a uuid cannot fail the read.
+// holds it (nodeAnswer), when that answer's own time is in the window; a comment or message's
+// current body, with its edit time and deletion mark. A decline is read from its ask.resolved
+// event, whose published_destinations hold the session's topic. The asks row supplies the
+// question, owner and whether the session owns the ask. The read excludes agent and system posts.
+// IDs are compared as text through the asks_id_text, comments_id_text and messages_id_text
+// indexes, so an event with a non-UUID payload ID cannot fail the read.
 //
 // owns, on the three arms that name an ask, says whether the session owns that ask (ownsAsk): the
 // answer's ask, the decline's ask, and the ask whose thread a comment is in (none outside one).
@@ -150,7 +176,7 @@ var query = `
 	       ` + ownsAsk + ` as owns
 	from answer_ids x
 	join asks a on a.id::text = x.id
-	cross join lateral (select ` + asks.NodeAnswerJSONOf("a") + ` as answer) n
+	cross join lateral (select ` + nodeAnswer + ` as answer) n
 	left join issues i on i.key = a.issue_key
 	left join artifacts ar on ar.id = a.artifact_id
 	where n.answer is not null and (n.answer->>'at')::timestamptz >= $2
@@ -265,14 +291,14 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 		if err := json.Unmarshal(answer, &current); err != nil {
 			return model.SessionAnswer{}, fmt.Errorf("decode ask %s answer: %w", item.ID, err)
 		}
-		// The node holds no act: the answer carries the row's where the row holds the node's own
-		// answer, the same person's at the same time, as asks.NodeAnswer.ApplyTo lays it.
+		// The node holds no act: the answer carries the row's where the node holds the row's answer
+		// (asks.NodeAnswer.Gave), the one test asks.NodeAnswer.ApplyTo lays the act by.
 		if current.Act == nil && len(rowAnswer) > 0 {
 			var row model.AskAnswer
 			if err := json.Unmarshal(rowAnswer, &row); err != nil {
 				return model.SessionAnswer{}, fmt.Errorf("decode ask %s row answer: %w", item.ID, err)
 			}
-			if row.At.Equal(current.At) && model.CanonicalLogin(row.User) == current.User {
+			if (asks.NodeAnswer{AnsweredAt: &current.At, AnsweredBy: current.User}).Gave(row) {
 				current.Act = row.Act
 			}
 		}

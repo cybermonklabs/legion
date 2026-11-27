@@ -85,7 +85,6 @@ import {
   treeAnswer as fixtureAnswer,
   markedCommentNode,
   pagedAnswer,
-  skipWithoutTreeNodeMarks,
   type TreeNodeExtra,
   treeNode,
   treeTuple,
@@ -105,9 +104,6 @@ import {
 } from "./tree-read/tree-read";
 import { ViewReadProvider } from "./tree-read/view-read";
 import { useIssueTree } from "./useIssueTree";
-
-/** Skips the cases that need the tree read to answer a post's marks on its node. */
-const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
 
 /** The name the page published for `reference`, as a surface under the store reads it, or
  *  `undefined` where it published none. */
@@ -8186,73 +8182,68 @@ test("the outline reads its comments and Changes from Conversation's answer with
   }
 });
 
-// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// With the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
 // `deleted_by`): a deleted comment node draws the deleted line with no body, an edited one carries
 // its edit mark, and a decision whose only Change the read answers deleted waits for review again,
 // all from Conversation's answer alone, with no comments list.
-test.skipIf(withoutTreeNodeMarks)(
-  "the outline draws a deleted post, an edited post and a deleted Change from the tree read's node marks",
-  async () => {
-    const deleted: Comment = {
-      ...comment,
-      body: "Old words.",
-      deleted_at: "2026-11-06T01:00:00Z",
-      deleted_by: { id: "alice", kind: "user" },
-      id: "c-deleted",
-    };
-    const edited: Comment = {
-      ...comment,
-      body: "Reworded.",
-      edited_at: "2026-11-06T02:00:00Z",
-      id: "c-edited",
-    };
-    const droppedChange: Comment = {
-      ...comment,
-      created_at: "2026-11-06T00:00:00Z",
-      deleted_at: "2026-11-06T03:00:00Z",
-      deleted_by: { id: "alice", kind: "user" },
-      id: "c-dropped-change",
-    };
-    const tree = treeAnswer([], {
-      nodes: [
-        markedCommentNode(deleted, KEY),
-        markedCommentNode(edited, KEY),
-        answerNode("d1", "decision", {
-          decision: { changed_at: "2026-11-05T00:00:00Z", waiting_review: true },
-        }),
-        markedCommentNode(droppedChange, "d1"),
-      ],
-    });
-    const stubs = stubTreeReads(async (refs) => namedTargets(refs), { tree });
-    const listComments = spyOn(api, "listComments");
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <RoutedQueries client={client}>{children}</RoutedQueries>
+test("the outline draws a deleted post, an edited post and a deleted Change from the tree read's node marks", async () => {
+  const deleted: Comment = {
+    ...comment,
+    body: "Old words.",
+    deleted_at: "2026-11-06T01:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+    id: "c-deleted",
+  };
+  const edited: Comment = {
+    ...comment,
+    body: "Reworded.",
+    edited_at: "2026-11-06T02:00:00Z",
+    id: "c-edited",
+  };
+  const droppedChange: Comment = {
+    ...comment,
+    created_at: "2026-11-06T00:00:00Z",
+    deleted_at: "2026-11-06T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+    id: "c-dropped-change",
+  };
+  const tree = treeAnswer([], {
+    nodes: [
+      markedCommentNode(deleted, KEY),
+      markedCommentNode(edited, KEY),
+      answerNode("d1", "decision", {
+        decision: { changed_at: "2026-11-05T00:00:00Z", waiting_review: true },
+      }),
+      markedCommentNode(droppedChange, "d1"),
+    ],
+  });
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { tree });
+  const listComments = spyOn(api, "listComments");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <RoutedQueries client={client}>{children}</RoutedQueries>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() =>
+      expect(nodesInOrder(view.result.current).find((node) => node.id === deleted.id)).toBeDefined()
     );
-    try {
-      const view = renderHook(() => useIssueTree(issue).root, { wrapper });
-      await waitFor(() =>
-        expect(
-          nodesInOrder(view.result.current).find((node) => node.id === deleted.id)
-        ).toBeDefined()
-      );
-      const byId = (id: string) => nodesInOrder(view.result.current).find((node) => node.id === id);
-      expect(byId(deleted.id)).toMatchObject({
-        deletedAt: deleted.deleted_at,
-        text: `Deleted by alice · ${deleted.deleted_at}`,
-      });
-      expect(byId(edited.id)).toMatchObject({ editedAt: edited.edited_at, text: edited.body });
-      expect(byId("d1")?.state).toBe("waiting_review");
-      expect(listComments, "the outline read the issue's comments").not.toHaveBeenCalled();
-      expect(
-        client.getQueryCache().find({ exact: true, queryKey: ["comments", KEY] }),
-        "the outline observes the issue's comments list"
-      ).toBeUndefined();
-      view.unmount();
-    } finally {
-      listComments.mockRestore();
-      for (const stub of stubs) stub.mockRestore();
-      client.clear();
-    }
+    const byId = (id: string) => nodesInOrder(view.result.current).find((node) => node.id === id);
+    expect(byId(deleted.id)).toMatchObject({
+      deletedAt: deleted.deleted_at,
+      text: `Deleted by alice · ${deleted.deleted_at}`,
+    });
+    expect(byId(edited.id)).toMatchObject({ editedAt: edited.edited_at, text: edited.body });
+    expect(byId("d1")?.state).toBe("waiting_review");
+    expect(listComments, "the outline read the issue's comments").not.toHaveBeenCalled();
+    expect(
+      client.getQueryCache().find({ exact: true, queryKey: ["comments", KEY] }),
+      "the outline observes the issue's comments list"
+    ).toBeUndefined();
+    view.unmount();
+  } finally {
+    listComments.mockRestore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
   }
-);
+});

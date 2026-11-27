@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -122,22 +121,18 @@ func TestReferenceTargetsResolveABatchInOneRequest(t *testing.T) {
 }
 
 // An issue is born converted: its spec is a fragment of the issue's room, and the room's block
-// index keys the spec's blocks under the room's tree artifact (T12a of this branch's plan). A
-// reference names such a block at the spec's own address, which every reader of a reference
-// resolves as block_moved_to does - the address's moved_to tuples first, then the same block in
-// its document's room, then the address itself (T17 of this branch's plan) - so the batched read
-// answers `<KEY>/spec#b-<id>` of a converted spec with the block's name and, for a caller that
-// sent `Dispatch-Trees: 1`, the tree of its text, as it answers a block of a document that is its
-// own room.
+// index keys the spec's blocks under the room's tree artifact. A reference names such a block at
+// the spec's own address, which every reader of a reference resolves as block_moved_to does - the
+// address's moved_to tuples first, then the same block in its document's room, then the address
+// itself - so the batched read answers `<KEY>/spec#b-<id>` of a converted spec with the block's
+// name and, for a caller that sent `Dispatch-Trees: 1`, the tree of its text, as it answers a
+// block of a document that is its own room.
 func TestReferenceTargetsReadAConvertedSpecsBlockThroughItsRoom(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n")
-	var room string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select coalesce((select room::text from document_rooms where artifact_id = $1::uuid), '')
-	`, issue.PrimaryArtifactID).Scan(&room); err != nil || room == "" || room == issue.PrimaryArtifactID {
-		t.Fatalf("the spec of %s is edited in the room %q (%v), want the issue's tree: the issue was not born converted", issue.Key, room, err)
+	if room, _ := documentRoomOf(t, database.Pool, issue.PrimaryArtifactID); room == issue.PrimaryArtifactID {
+		t.Fatalf("the spec of %s is edited in the room %q, want the issue's tree: the issue was not born converted", issue.Key, room)
 	}
 	id := blockIDsByText(t, handler, issue.PrimaryArtifactID)["First paragraph."]
 	if id == "" {

@@ -11,16 +11,18 @@ import (
 	"testing"
 )
 
-// reviewOrderIndex is the index migration 0120 adds in docs.ReviewOrder's own order.
+// reviewOrderIndex is the index migration 0120 adds in model.ReviewOrder's own order.
 const reviewOrderIndex = "artifact_reviews_by_artifact_event_seq"
 
 // The newest-review reads take one row in ReviewOrder: the approval an approval request names, a
 // carry candidate's latest review, read at every request and every version that holds an
-// answered block, and the document's own newest review, read by every document write that stored
-// a version (api.supersededApprovalAdvice). Each must read that row from the index in
-// ReviewOrder's order, the first entry of the document's range, rather than read every review of
-// the document and sort them, which artifact_reviews_by_artifact (created_at desc, id desc)
-// alone would make it do. newestReviewQueries names them all, and
+// answered block, the document's own newest review, read by every document write that stored
+// a version (api.supersededApprovalAdvice), and that newest review with what a gate compares of it
+// (newestReviewStand), read for each document an approval request names that the caller has not
+// judged (NamedDocumentsApproved). Each must read that row from the index in ReviewOrder's order,
+// the first entry of the document's range, rather than read every review of the document and sort
+// them, which artifact_reviews_by_artifact (created_at desc, id desc) alone would make it do; the
+// gate's join runs for the one row the limit keeps. newestReviewQueries names them all, and
 // TestEveryNewestReviewQueryIsPlanned fails when this file gains one this test does not explain.
 var newestReviewQueries = []struct {
 	name     string
@@ -31,6 +33,7 @@ var newestReviewQueries = []struct {
 	{"the latest approval", "latestApprovedReviewQuery", latestApprovedReviewQuery, []any{reviewPlanDocument}},
 	{"a person's latest review", "latestReviewByQuery", latestReviewByQuery, []any{reviewPlanDocument, "alice@example.com"}},
 	{"the newest review", "newestReviewQuery", newestReviewQuery, []any{reviewPlanDocument}},
+	{"the newest review with what a gate compares", "newestReviewStandQuery", newestReviewStandQuery, []any{reviewPlanDocument}},
 }
 
 // reviewPlanDocument stands for a document in every planned read.
@@ -75,7 +78,7 @@ func TestNewestReviewReadsTakeTheReviewOrderIndex(t *testing.T) {
 	}
 }
 
-// The plan test above proves only the reads it names, so a fourth newest-review query added to
+// The plan test above proves only the reads it names, so a newest-review query added to
 // approval_review.go and left out of newestReviewQueries would be unplanned and could read
 // artifact_reviews_by_artifact, which sorts every review of the document. Every package-level
 // query constant of that file that reads one row of artifact_reviews is therefore required to be

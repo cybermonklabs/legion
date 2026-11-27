@@ -297,15 +297,11 @@ type liveTarget struct {
 // read and a lookup of its write by the document's id finds the room's (Ledger.liveWriteFor): a
 // document_rooms row, once written, is never moved or removed.
 func (s *Service) targetOf(ctx context.Context, artifactID string) (liveTarget, error) {
-	ledger := ledgerFrom(ctx)
-	room, held := ledger.roomOf(artifactID)
-	if !held {
-		var err error
-		if room, err = roomOf(ctx, s.queryFrom(ctx), artifactID); err != nil {
-			return liveTarget{}, err
-		}
-		ledger.noteRoom(artifactID, room)
+	room, err := roomOf(ctx, s.queryFrom(ctx), artifactID)
+	if err != nil {
+		return liveTarget{}, err
 	}
+	ledgerFrom(ctx).noteRoom(artifactID, room)
 	return liveTarget{document: artifactID, room: room, fragment: fragmentOf(room, artifactID)}, nil
 }
 
@@ -313,12 +309,6 @@ func (s *Service) targetOf(ctx context.Context, artifactID string) (liveTarget, 
 // alone: every room entry point treats such a document as it treated every document before the
 // issue room.
 func (t liveTarget) ownRoom() bool { return t.document == t.room }
-
-// roomTarget is the target of artifactID read as a room of its own, its own fragment: a writer
-// that works on one room whose name it holds (a rebuild) addresses it so, resolving nothing.
-func roomTarget(artifactID string) liveTarget {
-	return liveTarget{document: artifactID, room: artifactID, fragment: fragmentName}
-}
 
 // liveDoc is the fork an operation changes (liveOperation), with the name of its fragment that
 // holds the document the operation addresses (liveTarget.fragment): the room's own fragment for a
@@ -390,11 +380,11 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, target live
 }
 
 // refuseRetiredFragment refuses a live write into target's document where that document is a
-// fragment of an issue room and is retired (RetireDocument): a RetiredDocumentError naming the
-// document, not the room, and the document's latest saved version (savedVersionNumber), logged as
-// joinLiveWrite logs a retired room's. The issue's room reloads without a retired document's
-// fragment (roomLayoutSQL), so text written into it would be stored where no version and no index
-// reads it.
+// fragment of an issue room and is retired (RetireDocument), as joinLiveWrite refuses a write into
+// a retired room (retiredWriteRefusal): a RetiredDocumentError naming the document, not the room,
+// with the document's latest saved version, logged at Info. The issue's room reloads without a
+// retired document's fragment (roomLayoutSQL), so text written into it would be stored where no
+// version and no index reads it.
 //
 // It reads the document's own artifacts.retired_at under the owner lock joinLiveWrite took for the
 // transaction's write to the room (lockArtifactOwner on the room), which is the lock
@@ -411,21 +401,15 @@ func refuseRetiredFragment(ctx context.Context, tx pgx.Tx, target liveTarget) er
 	if target.ownRoom() {
 		return nil
 	}
-	var name, slug string
-	var issueKey *string
-	err := tx.QueryRow(ctx, `select name, slug, issue_key from artifacts where id = $1 and retired_at is not null`, target.document).Scan(&name, &slug, &issueKey)
+	owner := artifactOwner{Retired: true}
+	err := tx.QueryRow(ctx, `select name, slug, issue_key from artifacts where id = $1 and retired_at is not null`, target.document).Scan(&owner.Name, &owner.Slug, &owner.IssueKey)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil
 	case err != nil:
 		return fmt.Errorf("read whether the document is retired: %w", err)
 	}
-	latest, err := savedVersionNumber(ctx, tx, target.document)
-	if err != nil {
-		return err
-	}
-	slog.Warn("dispatch: refuse a write into a retired document", "document", target.document, "room", target.room)
-	return &RetiredDocumentError{ID: target.document, Name: name, Slug: slug, IssueKey: issueKey, LatestVersion: latest}
+	return retiredWriteRefusal(ctx, tx, target.document, owner)
 }
 
 // openLiveWrite takes artifactID's writer slot for the transaction, first waiting for the

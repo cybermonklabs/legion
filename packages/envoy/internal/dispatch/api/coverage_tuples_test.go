@@ -15,18 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// coverageOf is the requirement of coverage whose block id is block.
-func coverageOf(t *testing.T, coverage model.IssueCoverage, block string) model.RequirementCoverage {
-	t.Helper()
-	for _, requirement := range coverage.Requirements {
-		if requirement.BlockID == block {
-			return requirement
-		}
-	}
-	t.Fatalf("the coverage of %s lists no requirement %s: %+v", coverage.Issue, block, coverage.Requirements)
-	return model.RequirementCoverage{}
-}
-
 // TestTheCoverageReadOverTheTuplesHoldsTheFourStatesApart: the coverage read over the tuples reads
 // a requirement no check serves as a gap; one whose check holds no result, one whose check's newest
 // result is a fail and one whose check passed against words it no longer holds as unproven, each
@@ -72,7 +60,6 @@ func TestTheCoverageReadOverTheTuplesHoldsTheFourStatesApart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: read the coverage of %s over the tuples: %v", what, issue.Key, err)
 		}
-		t.Logf("%s: %+v", what, coverage)
 		return coverage
 	}
 	coverage := read("before the retraction")
@@ -88,7 +75,7 @@ func TestTheCoverageReadOverTheTuplesHoldsTheFourStatesApart(t *testing.T) {
 		{"ro", "closed", "", []string{}},
 		{"rq", graphstore.StateProposed, "", []string{}},
 	} {
-		requirement := coverageOf(t, coverage, want.block)
+		requirement := requirementOf(t, coverage, want.block)
 		if requirement.Coverage != want.coverage || !slices.Equal(requirement.Gaps, want.gaps) {
 			t.Errorf("%s reads %s with the gaps %q, want %s with %q", want.block, requirement.Coverage, requirement.Gaps, want.coverage, want.gaps)
 		}
@@ -102,7 +89,7 @@ func TestTheCoverageReadOverTheTuplesHoldsTheFourStatesApart(t *testing.T) {
 	if response := retractAsPerson(t, handler, passed.ID, "The run named the wrong commit."); response.Code != http.StatusCreated {
 		t.Fatalf("retract the pass of cp: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if requirement := coverageOf(t, read("after the retraction"), "rp"); requirement.Coverage != "unproven" ||
+	if requirement := requirementOf(t, read("after the retraction"), "rp"); requirement.Coverage != "unproven" ||
 		len(requirement.Proof) != 1 || requirement.Proof[0].Proves != provesNone {
 		t.Errorf("after its one pass was retracted rp reads %s with %+v, want unproven, its check holding no result that stands", requirement.Coverage, requirement.Proof)
 	}
@@ -136,8 +123,8 @@ func TestTheCoverageAndResultsReadsAnswerFromTheTuples(t *testing.T) {
 	for _, unconverted := range []bool{true, false} {
 		key := seed(unconverted)
 		coverage := readCoverage(t, handler, key)
-		if !coverage.HasPlan || coverageOf(t, coverage, "r1").Checks != 2 || coverageOf(t, coverage, "r1").PlanTasks != 1 ||
-			coverageOf(t, coverage, "r2").Checks != 1 || coverageOf(t, coverage, "r2").PlanTasks != 0 {
+		if !coverage.HasPlan || requirementOf(t, coverage, "r1").Checks != 2 || requirementOf(t, coverage, "r1").PlanTasks != 1 ||
+			requirementOf(t, coverage, "r2").Checks != 1 || requirementOf(t, coverage, "r2").PlanTasks != 0 {
 			t.Errorf("the coverage of %s (unconverted %t) is %+v: want c2 listed once under each requirement it serves", key, unconverted, coverage)
 		}
 		if want := []string{"r2 " + noPlanTaskReason}; !slices.Equal(coverage.Gaps, want) {
@@ -154,23 +141,15 @@ func TestTheCoverageAndResultsReadsAnswerFromTheTuples(t *testing.T) {
 	key := seed(false)
 	checks := readDecisionDocument(t, database, key, "verification-md")
 	requirements := readDecisionDocument(t, database, key, "spec")
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
+	if err := graphstoreWrite(ctx, database, graphstore.Tuple{
 		FromKind: refs.BlockNodeKind, FromID: checks.address("c1"), Kind: servesTupleKind,
 		ToKind: refs.BlockNodeKind, ToID: requirements.address("r2"),
 		At: time.Now().UTC(), Who: alice, SourceEvent: graphstore.NoEvent, Asserted: true,
-	}}); err != nil {
+	}); err != nil {
 		t.Fatalf("write the planted serves tuple: %v", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the planted serves tuple: %v", err)
-	}
-	if coverage := readCoverage(t, handler, key); coverageOf(t, coverage, "r2").Checks != 2 {
-		t.Errorf("with a serves tuple only the store holds, r2 of %s has %d checks, want 2", key, coverageOf(t, coverage, "r2").Checks)
+	if coverage := readCoverage(t, handler, key); requirementOf(t, coverage, "r2").Checks != 2 {
+		t.Errorf("with a serves tuple only the store holds, r2 of %s has %d checks, want 2", key, requirementOf(t, coverage, "r2").Checks)
 	}
 }
 
@@ -222,15 +201,11 @@ func TestARequirementPastedIntoAViewIsAGapOfItsOwnKind(t *testing.T) {
 	if slices.Contains(listed, block) {
 		t.Errorf("the coverage of %s counts the pasted requirement %s as a requirement of the view", child.Key, block)
 	}
-	if !slices.Equal(listed, []string{"r1"}) || coverageOf(t, coverage, "r1").Checks != 1 {
+	if !slices.Equal(listed, []string{"r1"}) || requirementOf(t, coverage, "r1").Checks != 1 {
 		t.Errorf("the coverage of %s lists the requirements %q, want the parent's r1 alone, served by the child's check", child.Key, listed)
 	}
 	if read.ViewOf == nil || *read.ViewOf != parent.Key {
-		value := "null"
-		if read.ViewOf != nil {
-			value = *read.ViewOf
-		}
-		t.Errorf("the tree read of %s answers view_of %s after the paste, want %s", child.Key, value, parent.Key)
+		t.Errorf("the tree read of %s answers view_of %s after the paste, want %s", child.Key, viewOfValue(read.ViewOf), parent.Key)
 	}
 	if response := insertRequirement(t, handler, child.PrimaryArtifactID, "cr9", "The child's own work."); response.Code != http.StatusConflict ||
 		!strings.Contains(response.Body.String(), codeRequirementBelongsToAncestor) || !strings.Contains(response.Body.String(), parent.Key) {

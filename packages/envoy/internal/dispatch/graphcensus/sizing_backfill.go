@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// StoreBackfill is one backfill pass of this branch the sizing counts the rows of: the rows its
+// StoreBackfill is one backfill pass the sizing counts the rows of: the rows its
 // next run writes once, which the database's history holds now and no steady rate counts. Owed is
 // how many projection rows still lack what the pass writes, and Nodes and Tuples what it writes
 // for each.
@@ -18,6 +18,12 @@ type StoreBackfill struct {
 	Name, MovedBy, Driver string
 	Nodes, Tuples         int
 	Owed                  int64
+}
+
+// writes is how many nodes and how many tuples the pass's next run writes: what it writes for
+// each row it owes, times those rows.
+func (b StoreBackfill) writes() (nodes, tuples int64) {
+	return b.Owed * int64(b.Nodes), b.Owed * int64(b.Tuples)
 }
 
 // versionBackfillOwed counts the versions the version backfill writes a node for (backfillVersions):
@@ -42,11 +48,14 @@ func versionBackfillOwed(ctx context.Context, tx pgx.Tx) (int64, error) {
 
 // unstatedBlocksOwed counts the blocks the backfill's marking (markStaleDocuments) owes the store
 // the values of, once: values, every document_blocks row inside the address bound of a document
-// the marking would mark - its document_block_versions row holds no mark, and no pass of this
-// build's rule has stated it at its version (refs.UnstatedBlockIndexSQL) - each of which takes its
-// rank, its text and its placement from the reconciliation's pass over the document; and tops,
-// those of them at the top of an issue's spec, Verification or plan document, each of which takes
-// the retraction of its part_of to its document and its part_of to the issue. A database the
+// whose document_block_versions row holds no mark at all and that no pass of this build's rule has
+// stated at its version (refs.UnstatedBlockIndexSQL) - each of which takes its rank, its text and
+// its placement from the reconciliation's pass over the document; and tops, those of them at the
+// top of an issue's spec, Verification or plan document, each of which takes the retraction of its
+// part_of to its document and its part_of to the issue. A document that holds a mark already, of
+// this build's rule or a lower one, is owed that pass by its mark, which the reconciliation of this
+// build lists either way (refs.OwedMarkListed): the marking raises a lower rule's mark to this
+// build's rule (refs.OwedMarkAbsent) and owes the store nothing more for it. A database the
 // migration that adds the stated record (20261120130000) has not reached, which the sizing takes
 // its readings on too, records no pass of this rule on any row, so every row of it is owed, and one
 // that holds no parent_block_id column, from before the store, says nothing of which rows are at

@@ -41,12 +41,8 @@ func documentOf(parts []part) (string, []model.ArtifactBlock) {
 func storedAddress(t *testing.T, q Queryer, artifactID string) DocumentAddress {
 	t.Helper()
 	var address DocumentAddress
-	var issue *string
-	if err := q.QueryRow(context.Background(), `select coalesce(ref_key, ''), issue_key from artifacts where id = $1::uuid`, artifactID).Scan(&address.RefKey, &issue); err != nil {
+	if err := q.QueryRow(context.Background(), `select coalesce(ref_key, ''), coalesce(issue_key, '') from artifacts where id = $1::uuid`, artifactID).Scan(&address.RefKey, &address.IssueKey); err != nil {
 		t.Fatalf("read the address of document %s: %v", artifactID, err)
-	}
-	if issue != nil {
-		address.IssueKey = *issue
 	}
 	return address
 }

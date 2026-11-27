@@ -27,32 +27,11 @@ const mentionsServer = "https://dispatch.example"
 // mentionsAuthor is the author of every version and row the test writes.
 var mentionsAuthor = model.Actor{Kind: "user", ID: "alice"}
 
-// statedMention is one mentions tuple out of a document's node, as the log holds it.
-type statedMention struct {
-	toKind, toID string
-	asserted     bool
-	at           time.Time
-	legacy       *int64
-	cause        int64
-	who          model.Actor
-}
-
-// mentionsOf is every mentions tuple out of the node at refKey, in the order the log holds them.
-func mentionsOf(t *testing.T, database *store.Store, refKey string) []statedMention {
+// mentionsOf is every mentions tuple out of the node at refKey, in the order the log holds them
+// (graphstore.History).
+func mentionsOf(t *testing.T, database *store.Store, refKey string) []graphstore.Tuple {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `
-		select to_kind, to_id, asserted, at, legacy_source_seq, source_event, who from graph_tuples
-		where from_kind = 'artifact' and from_id = $1 and kind = 'mentions'
-		order by seq
-	`, refKey)
-	if err != nil {
-		t.Fatalf("read the mentions of %s: %v", refKey, err)
-	}
-	stated, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (statedMention, error) {
-		var mention statedMention
-		err := row.Scan(&mention.toKind, &mention.toID, &mention.asserted, &mention.at, &mention.legacy, &mention.cause, &mention.who)
-		return mention, err
-	})
+	stated, err := graphstore.History(context.Background(), database.Pool, graphstore.KindArtifact, refKey, graphstore.TupleMentions)
 	if err != nil {
 		t.Fatalf("read the mentions of %s: %v", refKey, err)
 	}
@@ -275,8 +254,8 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 	}
 	for index, target := range []string{"ACME-2", "ACME-3"} {
 		mention := stated[index]
-		if mention.toKind != "issue" || mention.toID != target || !mention.asserted || !mention.at.Equal(first) ||
-			mention.legacy == nil || *mention.legacy != firstEvent || mention.cause != firstEvent || mention.who != mentionsAuthor {
+		if mention.ToKind != "issue" || mention.ToID != target || !mention.Asserted || !mention.At.Equal(first) ||
+			mention.LegacySourceSeq == nil || *mention.LegacySourceSeq != firstEvent || mention.SourceEvent != firstEvent || mention.Who != mentionsAuthor {
 			t.Errorf("version 1 states %+v, want %s asserted at the version's time %s, caused by and carrying its event %d, signed by its author",
 				mention, target, first, firstEvent)
 		}
@@ -290,12 +269,12 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 	if len(stated) != 4 {
 		t.Fatalf("after version 2 the log holds %d mentions %+v, want version 1's two, then ACME-2's retraction and ACME-4's assertion", len(stated), stated)
 	}
-	if retracted := stated[2]; retracted.toID != "ACME-2" || retracted.asserted || !retracted.at.Equal(second) || retracted.legacy != nil || retracted.cause != secondEvent {
+	if retracted := stated[2]; retracted.ToID != "ACME-2" || retracted.Asserted || !retracted.At.Equal(second) || retracted.LegacySourceSeq != nil || retracted.SourceEvent != secondEvent {
 		t.Errorf("version 2 states %+v first, want ACME-2 retracted at the version's time %s, caused by its event %d and carrying no source_seq",
 			retracted, second, secondEvent)
 	}
-	if asserted := stated[3]; asserted.toID != "ACME-4" || !asserted.asserted || !asserted.at.Equal(second) ||
-		asserted.legacy == nil || *asserted.legacy != secondEvent || asserted.cause != secondEvent {
+	if asserted := stated[3]; asserted.ToID != "ACME-4" || !asserted.Asserted || !asserted.At.Equal(second) ||
+		asserted.LegacySourceSeq == nil || *asserted.LegacySourceSeq != secondEvent || asserted.SourceEvent != secondEvent {
 		t.Errorf("version 2 states %+v second, want ACME-4 asserted at the version's time %s, caused by and carrying its event %d",
 			asserted, second, secondEvent)
 	}
@@ -320,7 +299,7 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		`, remark).Scan(&comment); err != nil {
 			return err
 		}
-		reader := refs.NewReader(ctx, tx, model.Actor{Kind: "user", ID: "alice"}, graphstore.KindComment, comment, mentionsServer)
+		reader := refs.NewReader(ctx, tx, mentionsAuthor, graphstore.KindComment, comment, mentionsServer)
 		replacement, err := refs.PlanReplace(ctx, tx, graphstore.KindComment, comment, text.Refs(reader.Mentions(remark)), nil)
 		if err != nil {
 			return err
@@ -384,8 +363,8 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		t.Errorf("the backfill reports %#v for the references, want nothing owed: the object pass that names the document states its one row's mention", done)
 	}
 	backfilled := mentionsOf(t, database, notesRef)
-	if len(backfilled) != 1 || backfilled[0].toID != "ACME-5" || !backfilled[0].asserted || !backfilled[0].at.Equal(cited) ||
-		backfilled[0].legacy == nil || *backfilled[0].legacy != firstEvent || backfilled[0].cause != graphstore.NoEvent {
+	if len(backfilled) != 1 || backfilled[0].ToID != "ACME-5" || !backfilled[0].Asserted || !backfilled[0].At.Equal(cited) ||
+		backfilled[0].LegacySourceSeq == nil || *backfilled[0].LegacySourceSeq != firstEvent || backfilled[0].SourceEvent != graphstore.NoEvent {
 		t.Errorf("the backfilled document states %+v, want one mention of ACME-5 at its row's created_at %s carrying its source_seq %d, at the sentinel",
 			backfilled, cited, firstEvent)
 	}
@@ -441,8 +420,8 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		t.Errorf("the backfill over the mention whose row is gone reports %#v, want it retracted", done)
 	}
 	stated = mentionsOf(t, database, specRef)
-	if retracted := stated[len(stated)-1]; retracted.toID != "ACME-4" || retracted.asserted || retracted.at.Before(ran) ||
-		retracted.at.After(time.Now().UTC()) || retracted.cause != graphstore.NoEvent {
+	if retracted := stated[len(stated)-1]; retracted.ToID != "ACME-4" || retracted.Asserted || retracted.At.Before(ran) ||
+		retracted.At.After(time.Now().UTC()) || retracted.SourceEvent != graphstore.NoEvent {
 		t.Errorf("the backfill states %+v last, want ACME-4 retracted at the run's time, after %s, at the sentinel", retracted, ran)
 	}
 	if rows, _, _ := mentionsEdge(t, database, spec, "issue", "ACME-4"); rows != 0 {
@@ -473,7 +452,7 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 	`, plan).Scan(&rebuilt, &rebuiltSeq); err != nil || rebuiltSeq != nil {
 		t.Fatalf("the rebuild's row of the plan carries source_seq %s (%v), want none", seqText(rebuiltSeq), err)
 	}
-	if stated := mentionsOf(t, database, planRef); len(stated) != 1 || !stated[0].asserted || stated[0].legacy != nil || !stated[0].at.Equal(rebuilt) {
+	if stated := mentionsOf(t, database, planRef); len(stated) != 1 || !stated[0].Asserted || stated[0].LegacySourceSeq != nil || !stated[0].At.Equal(rebuilt) {
 		t.Fatalf("the rebuild states the plan's mentions %+v, want ACME-5 asserted at its row's created_at %s with no source_seq", stated, rebuilt)
 	}
 	requireMentionsEdge(t, "the rebuild's row", database, plan, "issue", "ACME-5", rebuilt, nil)
@@ -552,11 +531,11 @@ func TestARebuildOfADocumentsReferencesTakesTheStoreLockOrder(t *testing.T) {
 	if len(stated) != 3 {
 		t.Fatalf("after the rebuild the document states the mentions %+v, want the seeded ACME-3, its retraction and ACME-2's", stated)
 	}
-	if retracted := stated[1]; retracted.toID != "ACME-3" || retracted.asserted || !retracted.at.Equal(rebuilt) || retracted.cause != graphstore.NoEvent {
+	if retracted := stated[1]; retracted.ToID != "ACME-3" || retracted.Asserted || !retracted.At.Equal(rebuilt) || retracted.SourceEvent != graphstore.NoEvent {
 		t.Errorf("the rebuild states %+v first, want ACME-3 retracted at the rebuild's time %s, at the sentinel", retracted, rebuilt)
 	}
-	if asserted := stated[2]; asserted.toID != "ACME-2" || !asserted.asserted || !asserted.at.Equal(rebuilt) || asserted.legacy != nil ||
-		asserted.cause != graphstore.NoEvent || asserted.who != mentionsAuthor {
+	if asserted := stated[2]; asserted.ToID != "ACME-2" || !asserted.Asserted || !asserted.At.Equal(rebuilt) || asserted.LegacySourceSeq != nil ||
+		asserted.SourceEvent != graphstore.NoEvent || asserted.Who != mentionsAuthor {
 		t.Errorf("the rebuild states %+v second, want ACME-2 asserted at its row's created_at %s, carrying no source_seq, at the sentinel, signed by the version's author",
 			asserted, rebuilt)
 	}

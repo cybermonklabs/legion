@@ -1,6 +1,6 @@
 package api
 
-//ci:builds packages/envoy ./cmd/dispatch searchKeyConvert builds envoy-dispatch, whose convert-issues TestSearchFollowsABlockThatChangesOwner runs as the conversion of this issue's spec R6
+//ci:builds packages/envoy ./cmd/dispatch convertIssues builds envoy-dispatch, whose convert-issues TestSearchFollowsABlockThatChangesOwner runs as the conversion of R6 of the issue-tree spec
 //ci:reads packages/envoy/internal/dispatch/store/migrations/*_issue_tree_*.up.sql searchKeyMigrationSet, which TestSearchFollowsABlockThatChangesOwner reads through pgmigrate.TouchedTables
 
 import (
@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -20,64 +19,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/cmdtest"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
-
-// searchKeyCommit is the commit the test stamps the envoy-dispatch it converts with, and names in
-// the server_build_announcements row it writes, so the fleet gate of this issue's spec R6 passes.
-const searchKeyCommit = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
-
-// searchKeyConvert runs `envoy-dispatch convert-issues --project <project>` over database, the
-// conversion of this issue's spec R6 by hand, which the checks take as its entry point: with
-// dryRun, `--dry-run`, which writes as a real run does and rolls each issue's transaction back. It
-// fails t unless the command exits 0, and answers what it printed.
-func searchKeyConvert(t *testing.T, database *store.Store, project string, dryRun bool) string {
-	t.Helper()
-	binary := cmdtest.BuildCommand(t, cmdtest.Command{
-		Name: "envoy-dispatch", Dir: "../../../cmd/dispatch",
-		Flags: []string{"-ldflags", "-X main.buildCommit=" + searchKeyCommit},
-	})
-	args := []string{"convert-issues", "--project", project}
-	if dryRun {
-		args = append(args, "--dry-run")
-	}
-	home := t.TempDir()
-	command := exec.Command(binary, args...)
-	command.Dir = home
-	command.Env = []string{
-		"HOME=" + home, "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,
-		"DATABASE_URL=" + database.Pool.Config().ConnString(), "DISPATCH_NATS_DISABLED=1",
-	}
-	out, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("envoy-dispatch %s: %v\n%s", strings.Join(args, " "), err, out)
-	}
-	t.Logf("envoy-dispatch %s printed:\n%s", strings.Join(args, " "), out)
-	return string(out)
-}
-
-// searchKeyOpenTheFleet takes away the live process holdIssuesUnconverted added, which lists no
-// issue room, and writes the announcement of the build the conversion runs as (searchKeyCommit),
-// so the conversion's fleet gate passes: no live process serves another build, and the newest
-// announcement names the commit the conversion runs against.
-func searchKeyOpenTheFleet(t *testing.T, database *store.Store) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `delete from server_processes where heartbeat_at > now() + interval '1 hour'`); err != nil {
-		t.Fatalf("take away the live process that lists no issue room: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, `insert into server_build_announcements (commit) values ($1)`, searchKeyCommit); err != nil {
-		t.Fatalf("announce the build the conversion runs as: %v", err)
-	}
-}
 
 // searchKeyWindows is the id of every window of kind refs.DocumentWindowKind that ownerKey owns,
 // with no window arm run first: what the store holds now.
@@ -112,19 +60,6 @@ func searchKeyHits(response model.SearchResponse) []searchKeyHit {
 	return hits
 }
 
-// searchKeyBlockAuthors is the block_author kind of report: who wrote each block whose node
-// records its authors, a block of an issue room among them, held triple by triple.
-func searchKeyBlockAuthors(t *testing.T, report *graphcensus.StoreReport) graphcensus.KindReport {
-	t.Helper()
-	for _, kind := range report.Kinds {
-		if kind.Kind == "block_author" {
-			return kind
-		}
-	}
-	t.Fatal("the store census reads no kind block_author")
-	return graphcensus.KindReport{}
-}
-
 // searchKeyMigrationSet is every migration of this issue's tree (store's issueTreeMigrationName,
 // <timestamp>_issue_tree_<what>.up.sql), by file name, with its text.
 func searchKeyMigrationSet(t *testing.T) map[string]string {
@@ -151,7 +86,7 @@ var searchKeyEmbeddingKinds = []string{
 	"ask", "ask_part", "comment", "comment_block", "document", "document_block", "issue", "message", "message_block",
 }
 
-// Search follows a block that changes owner (this issue's spec R17). A window's id is
+// Search follows a block that changes owner (R17 of the issue-tree spec). A window's id is
 // `<owner key>#<first block>`, and the owner key of a document's blocks becomes the issue's tree
 // node once the conversion moves them there: the windows are then written under the tree, the old
 // owner's rows stay for one release, which a rollback's search by meaning reads, and this build's
@@ -159,11 +94,11 @@ var searchKeyEmbeddingKinds = []string{
 // lexical search reads node_search, one row per node that holds text, and answers the node that
 // matched, while the artifact_versions_document_search trigger, its function and document_search
 // stay for a process of the release before, which reads that table alone. The conversion carries
-// each moved block's authors to its node in the room (this issue's spec R22, T19b of its plan):
-// alice's, who wrote the spec's one version before the move. The store census holds each node to
-// her, read off the spec's own record of the block, never off the room's first version of the
-// spec, which the conversion wrote, nor off the node it checks: once the authored_by tuples the
-// conversion carried are taken off, it reads a row no tuple states at each block.
+// each moved block's authors to its node in the room (R22 of the issue-tree spec): alice's, who
+// wrote the spec's one version before the move. The store census holds each node to her, read off
+// the spec's own record of the block, never off the room's first version of the spec, which the
+// conversion wrote, nor off the node it checks: once the authored_by tuples the conversion
+// carried are taken off, it reads a row no tuple states at each block.
 func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	t.Parallel()
 	const project = "SKEY"
@@ -196,8 +131,8 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 
 	// The conversion's transaction rolled back (--dry-run) leaves the old owner's windows and
 	// writes none under the issue's tree node.
-	searchKeyOpenTheFleet(t, database)
-	searchKeyConvert(t, database, project, true)
+	openTheConversionFleet(t, database)
+	convertIssues(t, database, project, true)
 	if after := searchKeyWindows(t, database, issue.PrimaryArtifactID); !slices.Equal(after, oldWindows) {
 		t.Errorf("the conversion rolled back left the old owner's windows %v, want %v as they were", after, oldWindows)
 	}
@@ -210,7 +145,7 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	}
 
 	// The conversion committed moves the blocks into the issue's tree.
-	searchKeyConvert(t, database, project, false)
+	convertIssues(t, database, project, false)
 	spec := readDecisionDocument(t, database, issue.Key, "spec")
 	tree, err := issueTreeOf(ctx, database.Pool, issue.Key)
 	if err != nil {
@@ -237,10 +172,7 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	}
 
 	// The census counts the old owner's windows once, as the class the root's pull request deletes.
-	report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
-	if err != nil {
-		t.Fatalf("take the store census: %v", err)
-	}
+	report := storeCensus(t, database)
 	var census bytes.Buffer
 	report.Write(&census)
 	t.Logf("the store census after the move:\n%s", census.String())
@@ -265,7 +197,7 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 			t.Errorf("after the move the block %s states the authored_by %+v, want alice's alone, who wrote the spec's first version", address, held)
 		}
 	}
-	if authors := searchKeyBlockAuthors(t, report); authors.Rows != 2 || authors.Nodes != 2 ||
+	if authors := censusKindOf(t, report, "block_author"); authors.Rows != 2 || authors.Nodes != 2 ||
 		authors.RowDifferences != 0 || authors.NodeDifferences != 0 {
 		t.Errorf("after the move the store census reads block_author rows=%d tuples=%d with the differences %+v and %+v, want the authored_by to alice of each of the two moved blocks on both sides and none",
 			authors.Rows, authors.Nodes, authors.ReportedRows, authors.ReportedNodes)
@@ -387,17 +319,7 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 		t.Fatalf("node_search holds %d whole-document rows matching the version vector of %s and %d block rows, want 1 and %d",
 			whole, spec.refKey, blocksBeside, len(roomBlocks))
 	}
-	searchCensus, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
-	if err != nil {
-		t.Fatalf("take the search row census: %v", err)
-	}
-	at := slices.IndexFunc(searchCensus.Kinds, func(kind graphcensus.KindReport) bool {
-		return kind.Kind == "document_search_node"
-	})
-	if at < 0 {
-		t.Fatal("the store census did not check document_search_node")
-	}
-	if kind := searchCensus.Kinds[at]; kind.Rows == 0 || kind.Nodes == 0 ||
+	if kind := censusKindOf(t, storeCensus(t, database), "document_search_node"); kind.Rows == 0 || kind.Nodes == 0 ||
 		kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
 		t.Fatalf("document_search_node census: %+v; want document rows and zero differences", kind)
 	}
@@ -452,15 +374,13 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 		refs.BlockNodeKind, roomBlocks, graphstore.TupleAuthoredBy); err != nil || removed.RowsAffected() == 0 {
 		t.Fatalf("take the authored_by the conversion carried off the blocks %v: %d rows, %v", roomBlocks, removed.RowsAffected(), err)
 	}
-	if report, err = graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined); err != nil {
-		t.Fatalf("take the store census with the carried authors taken off: %v", err)
-	}
+	report = storeCensus(t, database)
 	var want, read []string
 	for _, address := range roomBlocks {
 		want = append(want, "a row no tuple states: block_author "+address+" "+graphstore.KindPerson+":alice "+
 			graphstore.TupleAuthoredBy+" -> "+graphstore.KindPerson+" alice")
 	}
-	authors := searchKeyBlockAuthors(t, report)
+	authors := censusKindOf(t, report, "block_author")
 	for _, difference := range authors.ReportedRows {
 		read = append(read, difference.Cause+": "+difference.At)
 	}

@@ -42,7 +42,7 @@ func renderTypedVersion(t *testing.T, markdown string) typedVersion {
 }
 
 // renderTypedTree renders tree as a version write renders it (pmdoc.RenderWithBlockOffsets), and
-// reads its pointers off the tree, as docs.blockPointers does.
+// reads its pointers off the tree (PointersOf), as docs.blockPointers does.
 func renderTypedTree(t *testing.T, tree *pmdoc.Node) typedVersion {
 	t.Helper()
 	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
@@ -53,9 +53,7 @@ func renderTypedTree(t *testing.T, tree *pmdoc.Node) typedVersion {
 	for _, offset := range offsets {
 		version.blocks = append(version.blocks, model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To})
 	}
-	for _, pointer := range pmdoc.BlockPointers(tree) {
-		version.pointers = append(version.pointers, Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets})
-	}
+	version.pointers = PointersOf(tree)
 	return version
 }
 

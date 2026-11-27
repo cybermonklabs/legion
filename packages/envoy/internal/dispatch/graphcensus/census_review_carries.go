@@ -72,7 +72,7 @@ const reviewCarryAfterUnsequenced = reviewCarryPageRead + `
 
 const reviewCarryIDsAfter = `
 	select review_id::text from artifact_review_carries
-	where review_id >= coalesce($1::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+	where review_id >= coalesce($1::uuid, '` + zeroUUID + `'::uuid)
 	  and review_id is distinct from $1::uuid
 	order by artifact_review_carries.review_id limit $2`
 

@@ -19,9 +19,8 @@
 // fails when the after median is above the before median times 1.10 plus 0.505 ms rather than
 // when it is not below it: it is the pair of a statement whose change keys its reads rather than
 // making it faster, where a slower after text is a regression and a faster one is not required.
-// PairMovedRead holds a moved read to the root spec's R22 rule: the after median is at most two
-// times the before median, or at most 1 ms more than the before median where the after median is
-// under 2 ms, and logs both medians and their ratio on one line.
+// PairMovedRead holds a moved read to the root spec's R22 rule, as its own comment states it, and
+// logs both medians and their ratio on one line.
 //
 // A before text is the text the caller measures against, which each package holds as its
 // equality oracle and reads from there rather than copying it again. For every pair of api and
@@ -246,9 +245,8 @@ func withinBound(before time.Duration) time.Duration {
 	return before + before/10 + withinSpread
 }
 
-// requireMovedRead is the rule of PairMovedRead (root R22): the after median is at most two times
-// the before median, or at most movedReadFastSlack (1 ms) above the before median where the after
-// median is under movedReadFastCeiling (2 ms). It always logs both medians and their ratio.
+// requireMovedRead is the rule of PairMovedRead (root R22), read by movedReadWithinBound. It
+// always logs both medians and their ratio.
 func requireMovedRead(t *testing.T, name string, before, after time.Duration) {
 	t.Helper()
 	ratio := movedReadRatio(before, after)
@@ -259,8 +257,8 @@ func requireMovedRead(t *testing.T, name string, before, after time.Duration) {
 	}
 }
 
-// movedReadWithinBound reports whether after satisfies root R22 against before: at most 2 times
-// before, or at most movedReadFastSlack more than before where after is under movedReadFastCeiling.
+// movedReadWithinBound reports whether after keeps to PairMovedRead's rule (root R22) against
+// before, with the bounds movedReadFastCeiling and movedReadFastSlack.
 func movedReadWithinBound(before, after time.Duration) bool {
 	if after <= 2*before {
 		return true

@@ -39,12 +39,12 @@ func requireUnresolved(t *testing.T, database *store.Store, when string, want ..
 }
 
 // The store census's `unresolved_citations n=<n>` line counts every block citation whose address
-// resolves to no node, directly or through a moved_to tuple (this issue's spec R13): a node that
-// cites an address from its text and from one of its blocks counts once, a citation of a block a
-// document holds counts not at all, and a prose citation of a block no version holds counts. A
-// citation of a block of a document that owes its block index, by store_owed_at or by a null
-// version, is left out until the index stands, and so is one of a block of an issue room one of
-// whose documents owes it, since the reconciliation indexes the room whole.
+// resolves to no node, directly or through a moved_to tuple (R13 of the issue-tree spec): a node
+// that cites an address from its text and from one of its blocks counts once, a citation of a
+// block a document holds counts not at all, and a prose citation of a block no version holds
+// counts. A citation of a block of a document that owes its block index, by store_owed_at or by a
+// null version, is left out until the index stands, and so is one of a block of an issue room one
+// of whose documents owes it, since the reconciliation indexes the room whole.
 //
 // A move adds nothing to it: once the decisions document's ask block stands in the spec with a
 // moved_to from its old address, the citation of that address resolves through the tuple. With
@@ -121,17 +121,8 @@ func TestTheUnresolvedCitationsLineCountsEveryCitationThatResolvesToNoNode(t *te
 	// The spec and the decisions document stand in the issue's room, whose rows are keyed by its
 	// tree artifact.
 	var tree testDocument
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('CORE-1', 'CORE', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
-		returning id::text, ref_key
-	`).Scan(&tree.id, &tree.refKey); err != nil {
-		t.Fatalf("create the issue's tree: %v", err)
-	}
-	exec("move the spec and the decisions document into the issue room", `
-		with held as (insert into issue_trees (issue_key, artifact_id) values ('CORE-1', $1::uuid))
-		insert into document_rooms (artifact_id, room) values ($2::uuid, $1::uuid), ($3::uuid, $1::uuid)
-	`, tree.id, fixture.spec.id, fixture.decisions.id)
+	tree.id, tree.refKey = censusDocument(t, database, "tree", "tree", false)
+	joinIssueRoom(t, database, tree.id, fixture.spec.id, fixture.decisions.id)
 	insertTestBlock(t, database, tree, "room-only", "paragraph")
 	citeFromComment(t, database, third, fixture.spec.refKey+"#room-only")
 	requireUnresolved(t, database, "with the spec in its issue room", every...)

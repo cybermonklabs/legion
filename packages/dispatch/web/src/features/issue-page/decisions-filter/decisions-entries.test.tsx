@@ -11,7 +11,7 @@ import type { TreeNode } from "../issue-tree";
 import { DECISIONS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { inDocument } from "../slots/stage-fixtures";
-import { pagedAnswer, skipWithoutTreeNodeMarks, treeNode } from "../tree-read/tree-fixtures";
+import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
 import { useDecisionsEntries, useDecisionsTree } from "./decisions-entries";
 import {
@@ -48,9 +48,6 @@ import { entryStanding } from "./entry-standing";
  * author's marks. The view is the one the slot passes: the tree as the Decisions view leaves it
  * (`presetView`).
  */
-
-/** Skips the cases that need the tree read to answer a post's marks on its node. */
-const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
@@ -322,26 +319,23 @@ test("a Change its author deleted asks nothing, and its decision waits for revie
   expect(gone.review[0]).not.toHaveProperty("change");
 });
 
-// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// With the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
 // `deleted_by`): a decision's Change says when its author last edited it, read from the node the
 // read hangs under the decision.
-test.skipIf(withoutTreeNodeMarks)(
-  "a Change the seam takes from the tree read carries when its author last edited it",
-  async () => {
-    const editedAt = "2026-11-15T10:00:00Z";
-    const children = [statement("s1"), decisionNode("asked")];
-    const made = [decision("asked", { decision: { links: [shaped(specRef("s1"))] } })];
-    const asked = {
-      ...changeComment("change-asked", "asked", "2026-11-15T09:00:00Z", "Name the read."),
-      edited_at: editedAt,
-    };
-    const tree = treeAnswer([...made, asked]);
-    const parts = await entriesOf(children, tree, [], tree);
-    expect(
-      parts.yours.map((one) => (one.kind === "decision" ? one.change?.editedAt : undefined))
-    ).toEqual([editedAt]);
-  }
-);
+test("a Change the seam takes from the tree read carries when its author last edited it", async () => {
+  const editedAt = "2026-11-15T10:00:00Z";
+  const children = [statement("s1"), decisionNode("asked")];
+  const made = [decision("asked", { decision: { links: [shaped(specRef("s1"))] } })];
+  const asked = {
+    ...changeComment("change-asked", "asked", "2026-11-15T09:00:00Z", "Name the read."),
+    edited_at: editedAt,
+  };
+  const tree = treeAnswer([...made, asked]);
+  const parts = await entriesOf(children, tree, [], tree);
+  expect(
+    parts.yours.map((one) => (one.kind === "decision" ? one.change?.editedAt : undefined))
+  ).toEqual([editedAt]);
+});
 
 // A reading of an answered question is a person's write-up of that answer, and no entry of its
 // own: the question it restates is the person's decision. The tree places the reading under the

@@ -3,12 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
@@ -27,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// c-render-at-version, the cases of the api package (R15 of this issue's spec, with R14 and R7). A
+// c-render-at-version, the cases of the api package (R15 of the issue-tree spec, with R14 and R7). A
 // version the writer rendered from the tree holds a version_renders row, and every read of it
 // renders it again as of the time that row records (docs.RenderVersion). A version of a document no
 // query record covers - an upload no role names, a project's document, the issue's tree artifact -
@@ -88,19 +84,16 @@ func (row renderAtVersionRow) words() (at, readSeq, digest string) {
 	return at, readSeq, digest
 }
 
-// renderAtVersionStored is the stored markdown of version number of artifactID, "" where the
-// version stores none.
-func renderAtVersionStored(t *testing.T, database *store.Store, artifactID string, number int) string {
+// storedVersionMarkdown is the stored markdown of version number of the document artifactID, ""
+// where the version stores none.
+func storedVersionMarkdown(t *testing.T, database *store.Store, artifactID string, number int) string {
 	t.Helper()
-	var markdown *string
+	var markdown string
 	if err := database.Pool.QueryRow(context.Background(),
-		`select markdown from artifact_versions where artifact_id = $1::uuid and number = $2`, artifactID, number).Scan(&markdown); err != nil {
+		`select coalesce(markdown, '') from artifact_versions where artifact_id = $1::uuid and number = $2`, artifactID, number).Scan(&markdown); err != nil {
 		t.Fatalf("read the stored markdown of version %d of %s: %v", number, artifactID, err)
 	}
-	if markdown == nil {
-		return ""
-	}
-	return *markdown
+	return markdown
 }
 
 // renderAtVersionNewest is the number of the newest version of artifactID, 0 where it holds none.
@@ -112,13 +105,6 @@ func renderAtVersionNewest(t *testing.T, database *store.Store, artifactID strin
 		t.Fatalf("read the newest version of %s: %v", artifactID, err)
 	}
 	return newest
-}
-
-// renderAtVersionDigest is the sha256 of markdown, as artifact_version_text_sha256 takes it of a
-// version's stored markdown.
-func renderAtVersionDigest(markdown string) string {
-	sum := sha256.Sum256([]byte(markdown))
-	return hex.EncodeToString(sum[:])
 }
 
 // renderAtVersionFirstDifference is the first byte at which a and b differ, the length of the
@@ -227,12 +213,9 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 		{"the project document runbook.md of " + project, runbook.Artifact.ID},
 		{"the tree artifact of " + issue.Key, tree},
 	} {
-		var refKey string
-		if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, document.id).Scan(&refKey); err != nil {
-			t.Fatalf("read the ref_key of %s: %v", document.what, err)
-		}
+		refKey := refKeyOf(t, database, document.id)
 		address := graphstore.VersionID(refKey, 1)
-		stored := renderAtVersionStored(t, database, document.id, 1)
+		stored := storedVersionMarkdown(t, database, document.id, 1)
 		if document.id == notes.Artifact.ID {
 			notesStored, notesRef = stored, refKey
 		}
@@ -244,7 +227,7 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 		var answered *string
 		if err := database.Pool.QueryRow(ctx, `select artifact_version_text_sha256($1::uuid, 1)`, document.id).Scan(&answered); err != nil {
 			t.Errorf("read artifact_version_text_sha256 of %s: %v", address, err)
-		} else if want := renderAtVersionDigest(stored); answered == nil || *answered != want {
+		} else if want := contentHash(stored); answered == nil || *answered != want {
 			got := "null"
 			if answered != nil {
 				got = *answered
@@ -262,7 +245,7 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 	}
 
 	approval := reviewDocument(t, handler, notes.Artifact.ID, "alice", "approved", "")
-	want := renderAtVersionDigest(notesStored)
+	want := contentHash(notesStored)
 	switch {
 	case approval.Version != 1:
 		t.Errorf("alice's approval of %s is of version %d, want version 1", notesRef, approval.Version)
@@ -352,7 +335,7 @@ func requireRenderAtVersionDecisionsVersion(t *testing.T, database *store.Store,
 		at, readSeq, _ := row.words()
 		t.Errorf("the version_renders row of %s holds the time %s and the seq %s, want a time and a seq", address, at, readSeq)
 	}
-	stored := renderAtVersionStored(t, database, decisions.id, number)
+	stored := storedVersionMarkdown(t, database, decisions.id, number)
 	for _, held := range words {
 		if !strings.Contains(stored, held) {
 			t.Errorf("version %d of %s stores %q, want %q in it", number, decisions.refKey, stored, held)
@@ -360,34 +343,6 @@ func requireRenderAtVersionDecisionsVersion(t *testing.T, database *store.Store,
 	}
 	requireRenderAtVersionFromTree(t, database, decisions.refKey, decisions.id, number, stored)
 	return stored, row
-}
-
-// renderAtVersionPlacement is the current part_of of the block node address and its placement_seq
-// as the If-Match tag of a move of it, failing t where it stands under no one parent.
-func renderAtVersionPlacement(t *testing.T, database *store.Store, address string) (graphstore.Tuple, string) {
-	t.Helper()
-	held, err := graphstore.CurrentOut(context.Background(), database.Pool, refs.BlockNodeKind, address, []string{graphstore.TuplePartOf})
-	if err != nil || len(held) != 1 {
-		t.Fatalf("the block %s stands under %v (%v), want one parent", address, held, err)
-	}
-	return held[0], `"` + strconv.FormatInt(held[0].Seq, 10) + `"`
-}
-
-// renderAtVersionMove sends PATCH /api/v1/issues/{key}/nodes/{id} as alice, moving the node at id
-// under parent, with If-Match tag.
-func renderAtVersionMove(t *testing.T, handler http.Handler, key, id, tag, parent string) *httptest.ResponseRecorder {
-	t.Helper()
-	data, err := json.Marshal(map[string]any{"parent": parent})
-	if err != nil {
-		t.Fatalf("encode the move of %s: %v", id, err)
-	}
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+key+"/nodes/"+url.PathEscape(id), bytes.NewReader(data))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", "alice")
-	request.Header.Set("If-Match", tag)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
 }
 
 // TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow is c-render-at-version's case of the
@@ -448,16 +403,16 @@ func TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow(t *testing.T) {
 	// its answer.
 	spec := readDecisionDocument(t, database, key, "spec")
 	decision, criterion := spec.address("d2"), spec.address("k1")
-	_, tag := renderAtVersionPlacement(t, database, decision)
-	if moved := renderAtVersionMove(t, handler, key, decision, tag, criterion); moved.Code != http.StatusOK {
+	_, tag := placementOf(t, database, refs.BlockNodeKind, decision)
+	if moved := patchNode(t, handler, key, decision, tag, map[string]any{"parent": criterion}, "alice"); moved.Code != http.StatusOK {
 		t.Fatalf("the move of %s under %s answered %d %s, want 200", decision, criterion, moved.Code, moved.Body.String())
 	}
-	if placed, _ := renderAtVersionPlacement(t, database, decision); placed.ToID != criterion {
+	if placed, _ := placementOf(t, database, refs.BlockNodeKind, decision); placed.ToID != criterion {
 		t.Fatalf("the move of %s under %s left it under %s %s", decision, criterion, placed.ToKind, placed.ToID)
 	}
 	renderAtVersionQuiet(t, database, key, issue.PrimaryArtifactID)
 	movedTo := renderAtVersionNewest(t, database, decisions.id)
-	before, beforeRow := renderAtVersionStored(t, database, decisions.id, answered), renderAtVersionRowOf(t, database, decisions.id, answered)
+	before, beforeRow := storedVersionMarkdown(t, database, decisions.id, answered), renderAtVersionRowOf(t, database, decisions.id, answered)
 	if movedTo <= answered {
 		t.Errorf("the move of %s leaves %s at version %d, the version before it, want a version written for the moved record", decision, decisions.refKey, movedTo)
 	}

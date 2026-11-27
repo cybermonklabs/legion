@@ -56,6 +56,7 @@ const (
 func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 	t.Helper()
 	ctx := context.Background()
+	blocks, texts := strconv.Itoa(asOfSeedBlocks), strconv.Itoa(asOfSeedTexts)
 	for _, statement := range []string{
 		`insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
 		 values ('issue', 'SEED-1', 'issue', 'project', 'live', now() - interval '2 days', '{}', 0),
@@ -64,7 +65,7 @@ func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 		        ('artifact', 'SEED-2/spec', 'document', 'project', 'live', now() - interval '2 days', '{}', 0)`,
 		`insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
 		 select 'block', 'SEED-1/spec#b' || i, 'block', 'project', 'live', now() - interval '1 day' + i * interval '1 second', '{}', 0
-		 from generate_series(1, 480) i`,
+		 from generate_series(1, ` + blocks + `) i`,
 		`insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
 		 select 'block', 'SEED-2/spec#c' || i, 'block', 'project', 'live', now() - interval '1 day' + i * interval '1 second', '{}', 0
 		 from generate_series(1, 10) i`,
@@ -80,35 +81,35 @@ func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 		        case when i <= 100 then 'issue' else 'block' end,
 		        case when i <= 100 then 'SEED-1' else 'SEED-1/spec#b' || ((i - 1) % 100 + 1) end,
 		        now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, 'in_document', 'artifact', 'SEED-1/spec', now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, '` + AttributeRank + `', 'value',
 		        case i when 1 then '1a' when 2 then '1B' else '2' || lpad(i::text, 4, '0') end,
 		        now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, 'state', 'value', 'live', now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, '` + AttributePlacement + `', 'value', 'text', now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, '` + TupleTextParent + `',
 		        case when i <= 100 then 'artifact' else 'block' end,
 		        case when i <= 100 then 'SEED-1/spec' else 'SEED-1/spec#b' || ((i - 1) % 100 + 1) end,
 		        now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, '` + AttributeTextRank + `', 'value', '1' || lpad(i::text, 4, '0'), now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, 'text', 'value',
 		        ':::requirement{#b' || i || '}' || chr(10) || 'The words of b' || i || ', written ' || version || ' times.' || chr(10) || ':::' || chr(10),
 		        now() - interval '1 day' + version * interval '1 minute', '{}'::jsonb, 0
-		 from generate_series(1, 480) i, generate_series(1, 95) version`,
+		 from generate_series(1, ` + blocks + `) i, generate_series(1, ` + texts + `) version`,
 		// SEED-2's blocks, each in its own document and placed under SEED-1's first block.
 		`insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
 		 select 'block', 'SEED-2/spec#c' || i, 'part_of', 'block', 'SEED-1/spec#b1', now() - interval '1 day', '{}'::jsonb, 0
@@ -204,6 +205,10 @@ func asOfReads(seed asOfSeed) []asOfRead {
 // predicate and ordering, and bind the function's reached address as a parameter.
 var blockHop = regexp.MustCompile(`(?s)select moved\.to_kind, moved\.to_id into far_kind, far_end\s+from \(.*?\)\s*moved\s+where moved\.asserted and moved\.to_kind in \('block', 'ask'\)\s+order by moved\.at desc, moved\.seq desc\s+limit 1;`)
 
+// reachedAddress is the hop query's reference to the function's reached address, which the read
+// binds as a parameter.
+var reachedAddress = regexp.MustCompile(`\breached\b`)
+
 func blockResolutionReads(t *testing.T, database *store.Store) []asOfRead {
 	t.Helper()
 	var reads []asOfRead
@@ -221,7 +226,7 @@ func blockResolutionReads(t *testing.T, database *store.Store) []asOfRead {
 			t.Fatalf("cannot find the moved_to block lookup in %s:\n%s", reader.function, body)
 		}
 		query = strings.Replace(query, " into far_kind, far_end", "", 1)
-		query = regexp.MustCompile(`\breached\b`).ReplaceAllLiteralString(query, "$1::text")
+		query = reachedAddress.ReplaceAllLiteralString(query, "$1::text")
 		reads = append(reads, asOfRead{reader.name, strings.TrimSuffix(query, ";"), []any{"SEED-1/old#b3"},
 			[]string{"graph_tuples_as_of_out", "graph_tuples_current"}})
 	}

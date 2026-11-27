@@ -157,17 +157,19 @@ func TestAnAnswerTakesItsTimeFromTheDatabase(t *testing.T) {
 // The carry answers an open approval request in the transaction that writes the version
 // (docs.answerApprovalAsk): the request's answer `at` is that transaction's time, its
 // ask.answered event's created_at. The carry here is the restore's, of the version undoing the
-// agent's edit.
+// agent's edit. The document is one no query covers (uncoveredDocument): R14 carries a spec's
+// approval across an edit of its prose by the record carry, so a request on that spec opens no ask.
 func TestACarriedApprovalAnswerTakesItsTimeFromTheDatabase(t *testing.T) {
 	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carry on the database clock", "Context\n")
-	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
-	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
-	request := requestApproval(t, handler, issue.PrimaryArtifactID)
+	notes := uncoveredDocument(t, handler, issue.Key, "Context\n")
+	reviewDocument(t, handler, notes, "alice", "approved", "")
+	reviseDocument(t, handler, notes, "Context", "Context, revised", 2)
+	request := requestApproval(t, handler, notes)
 
-	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context, revised", "Context", 3)
-	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
+	reviseDocument(t, handler, notes, "Context, revised", "Context", 3)
+	requireReviewCarriedWith(t, handler, notes, 3, 1, restoreSentence(1), &request.ID)
 	answered := readBlockAsk(t, handler, request.ID)
 	if answered.State != "answered" || answered.Answer == nil {
 		t.Fatalf("request after the carry = state %q answer %#v, want answered", answered.State, answered.Answer)

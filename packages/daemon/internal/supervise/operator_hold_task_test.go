@@ -18,7 +18,7 @@ func TestAnOperatorSuspensionKeepsThePendingPhaseTaskForItsResume(t *testing.T) 
 	if pending := h.claim().Pending; pending == nil || pending.Task != "Continue testing." || pending.Phase != phase.Testing {
 		t.Fatalf("after the operator suspension pending %+v, want the phase task kept", pending)
 	}
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	h.reach(StateReady)
 	if pending := h.claim().Pending; pending == nil || pending.Task != "Continue testing." {
 		t.Fatalf("after the operator resume pending %+v, want the original phase task", pending)

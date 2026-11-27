@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -182,7 +181,7 @@ func personNodeListed(kind, id string) string {
 			left join issues i on i.key = c.issue_key
 			left join artifacts a on a.id = c.artifact_id
 			where c.id = (` + id + `)::uuid and (i.key is not null or a.id is not null))
-		when ` + graphstore.AddressKindSQL(kind, id) + ` in ('` + strings.Join(refs.StandingKinds(), `', '`) + `') then exists (
+		when ` + graphstore.AddressKindSQL(kind, id) + ` in (` + store.QuoteLiterals(refs.StandingKinds()) + `) then exists (
 			select 1 from graph_nodes n
 			where n.kind = ` + kind + ` and n.id = ` + id + ` and ` + refs.StandingIssueSQL("n.kind", "n.id") + ` is not null)
 		when ` + kind + ` = '` + graphstore.KindInteraction + `' then exists (

@@ -10,6 +10,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
+// The backfill's pass over the prevented_by tuples of the checks nobody runs any more. This build
+// retracts each prevented_by at a check block a version drops (refs' retractGonePointers) and at
+// each check of a document it retires (docs' retiredPreventions), in the transaction that drops or
+// retires it. A process of the release before, during a roll or after a rollback, does neither: it
+// states the block gone, or retires the document, and leaves each prevented_by at it asserted, so a
+// risk reads as prevented by a check of a retired document, and a check a later version restores
+// brings its old prevented_by back with it. The pass finds each such tuple by the store's own state
+// of the check and its document's row, not by a marker, and retracts it; a second run finds none.
+
 // endedChecks is an SQL array of the ended checks a risk asserted a prevented_by at: each far end of
 // such a tuple whose block the store holds gone, which a version dropped, or whose document is
 // retired (artifacts.retired_at), whose checks nobody runs. A block's node id names the artifact

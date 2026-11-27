@@ -13,13 +13,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { IssuePins } from "./IssuePins";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { CONTROL_LABELS } from "./page-words";
-import {
-  commentNode,
-  markedCommentNode,
-  skipWithoutTreeNodeMarks,
-  treeAnswer,
-  treeNode,
-} from "./tree-read/tree-fixtures";
+import { commentNode, markedCommentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswerNode } from "./tree-read/tree-read";
 import { issueMessagesQuery } from "./useIssueTree";
 
@@ -28,9 +22,6 @@ import { issueMessagesQuery } from "./useIssueTree";
  *  on its own, only while Details is open. */
 
 const KEY = "CORE-1";
-
-/** Skips the cases that need the tree read to answer a post's marks on its node. */
-const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -179,34 +170,31 @@ test("Pinned draws a held comment from the tree read and reads an unheld one onl
   }
 });
 
-// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// With the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
 // `deleted_by`): a pinned comment its author deleted, which the read answers with no text and
 // the delete's marks, is drawn as the deleted line from the read alone, with no read of its own.
-test.skipIf(withoutTreeNodeMarks)(
-  "a pinned comment the tree read answers deleted is drawn as the deleted line from that read",
-  async () => {
-    const comment = {
-      ...commentOf("3d4e5f6a-7b8c-4d9e-af0a-2b3c4d5e6f7a", "Ship the fix tonight."),
-      deleted_at: "2026-11-05T02:00:00Z",
-      deleted_by: { id: "alice", kind: "user" },
-    };
-    const reads = spyCommentReads([comment]);
-    const client = clientWith([markedCommentNode(comment)]);
-    const view = pinsOf(client, [comment.id], true);
-    try {
-      const pins = view.getByRole("region", { name: CONTROL_LABELS.pinned });
-      await waitFor(() =>
-        expect(
-          within(pins).getByRole("link").querySelector("[data-post-deleted]"),
-          "the pin is not drawn as the deleted line"
-        ).not.toBeNull()
-      );
-      expect(within(pins).getByRole("link").textContent).not.toContain("Ship the fix tonight.");
-      expect(reads.getComment).not.toHaveBeenCalled();
-      expect(reads.listComments).not.toHaveBeenCalled();
-    } finally {
-      view.unmount();
-      client.clear();
-    }
+test("a pinned comment the tree read answers deleted is drawn as the deleted line from that read", async () => {
+  const comment = {
+    ...commentOf("3d4e5f6a-7b8c-4d9e-af0a-2b3c4d5e6f7a", "Ship the fix tonight."),
+    deleted_at: "2026-11-05T02:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const reads = spyCommentReads([comment]);
+  const client = clientWith([markedCommentNode(comment)]);
+  const view = pinsOf(client, [comment.id], true);
+  try {
+    const pins = view.getByRole("region", { name: CONTROL_LABELS.pinned });
+    await waitFor(() =>
+      expect(
+        within(pins).getByRole("link").querySelector("[data-post-deleted]"),
+        "the pin is not drawn as the deleted line"
+      ).not.toBeNull()
+    );
+    expect(within(pins).getByRole("link").textContent).not.toContain("Ship the fix tonight.");
+    expect(reads.getComment).not.toHaveBeenCalled();
+    expect(reads.listComments).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    client.clear();
   }
-);
+});

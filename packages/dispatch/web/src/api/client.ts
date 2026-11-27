@@ -1,6 +1,7 @@
 import {
   AUTH_NO_IDENTITY,
   answerNotKept,
+  DISPATCH_ASKS_HEADER,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
   ID_AMBIGUOUS,
@@ -19,7 +20,7 @@ import {
   sleep,
 } from "@legion/contracts";
 
-import { decisionsFromTree } from "./decisions-tree";
+import { decisionsFromRead, decisionsFromTree } from "./decisions-tree";
 
 import {
   type Answer,
@@ -210,6 +211,12 @@ export type ReferenceSourceKind = NonNullable<
  *  policy, as a dropped connection is. A body that keeps moving, either way, goes on however long
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
+
+/** What a read of the text routes sends beside the page's own headers: `Dispatch-Asks: 1`
+ *  (`DISPATCH_ASKS_HEADER`), which says the page reads each ask's state and answer from the
+ *  answer's `asks` member, so Dispatch serves markdown with none of an ask block's server-owned
+ *  attributes rather than the form it keeps for one release for the readers of the release before. */
+const readsAsks: RequestInit = { headers: [[DISPATCH_ASKS_HEADER, "1"]] };
 
 /** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
  *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
@@ -484,6 +491,30 @@ export function isNoRoute(error: unknown): boolean {
     error.code === "NOT_FOUND" &&
     error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
   );
+}
+
+// Whether `error` is what a request throws once every attempt met a Dispatch process with no route
+// for it (`answered`'s `exhausted`): no process that answered serves the route, as a server of the
+// release before answers for a route this build added.
+function isNoRouteOnEveryAttempt(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 404 &&
+    error.code === "NOT_FOUND" &&
+    error.message === NO_ROUTE_ROLLING_RELEASE_MESSAGE
+  );
+}
+
+// What `read` answers, or null where every attempt of it met a Dispatch process with no route for
+// it (isNoRouteOnEveryAttempt), as a server of the release before answers for a route this build
+// added; any other failure is thrown.
+async function unlessNoRouteOnEveryAttempt<T>(read: Promise<T>): Promise<T | null> {
+  try {
+    return await read;
+  } catch (error) {
+    if (isNoRouteOnEveryAttempt(error)) return null;
+    throw error;
+  }
 }
 
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
@@ -1296,6 +1327,15 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}", { key });
   }
 
+  /** The issue whose spec the issue `key` is a view on, as its spec view's tree read answers
+   *  `view_of`, or null where it is none. A server of the release before serves no tree read and
+   *  holds no view, so a read every attempt of which met no route answers null. */
+  async getIssueViewOf(key: string): Promise<string | null> {
+    // kept for one release: view-of-route
+    const tree = await unlessNoRouteOnEveryAttempt(this.getIssueTree(key, { view: "spec" }));
+    return tree === null ? null : tree.view_of;
+  }
+
   /** What a reference to the issue or one of its documents shows: title, status and each
    *  document's name, kind and latest version, without the full issue read. */
   getIssueSummary(key: string) {
@@ -1692,20 +1732,33 @@ export class DispatchApiClient {
     return this.read("/api/v1/agents/{session_id}/artifacts", { session_id: sessionId });
   }
 
+  /** `GET /api/v1/artifacts/{id}/text`: the document's live markdown, token, version and asks.
+   *  The page reads each ask's state and answer from `asks`, so it sends `Dispatch-Asks: 1`
+   *  (`readsAsks`) and is served markdown with none of an ask block's server-owned attributes. */
   getArtifactText(id: string) {
-    return this.read("/api/v1/artifacts/{id}/text", { id });
+    return this.read("/api/v1/artifacts/{id}/text", { id }, undefined, readsAsks);
   }
 
   /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the
-   *  document `owner` holds under `slug`, which may be its slug or its filename. `404
-   *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
-   *  of a name reads. A conversation holds files and pictures and no document at all, and
-   *  serves no such route, which is why its owner is not one this takes. */
+   *  document `owner` holds under `slug`, which may be its slug or its filename, read as
+   *  `getArtifactText` reads it. `404 ARTIFACT_NOT_FOUND` when the owner holds no such document,
+   *  which is what the first upload of a name reads. A conversation holds files and pictures and
+   *  no document at all, and serves no such route, which is why its owner is not one this takes. */
   ownerArtifactText(owner: { issue: string } | { project: string }, slug: string) {
     if ("issue" in owner) {
-      return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: owner.issue, slug });
+      return this.read(
+        "/api/v1/issues/{key}/artifacts/{slug}/text",
+        { key: owner.issue, slug },
+        undefined,
+        readsAsks
+      );
     }
-    return this.read("/api/v1/projects/{key}/artifacts/{slug}/text", { key: owner.project, slug });
+    return this.read(
+      "/api/v1/projects/{key}/artifacts/{slug}/text",
+      { key: owner.project, slug },
+      undefined,
+      readsAsks
+    );
   }
 
   rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {
@@ -1727,9 +1780,15 @@ export class DispatchApiClient {
     return this.read("/api/v1/schema/blocks", {});
   }
 
-  /** The Decisions query, in the entry shape shared by the tab and the spec's marks. */
+  /** The Decisions query, in the entry shape shared by the tab and the spec's marks. A server of
+   *  the release before serves no tree read: where every attempt of the first page met no route,
+   *  the entries are read from that server's Decisions read instead (`decisionsFromRead`). */
   async getIssueDecisions(key: string) {
-    const first = await this.getIssueTree(key, { view: "decisions" });
+    const first = await unlessNoRouteOnEveryAttempt(this.getIssueTree(key, { view: "decisions" }));
+    if (first === null) {
+      // kept for one release: decisions-route
+      return decisionsFromRead(key, await this.read("/api/v1/issues/{key}/decisions", { key }));
+    }
     const nodes = [...(first.nodes ?? [])];
     const tuples = [...(first.tuples ?? [])];
     let cursor = first.cursor;

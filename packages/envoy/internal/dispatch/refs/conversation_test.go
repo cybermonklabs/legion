@@ -12,9 +12,16 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+)
+
+// The authors the conversation tests write their items as, each an actor as its row stores it: a
+// person, an agent's session and the Legion daemon's session of project CORE.
+const (
+	itemPerson = `{"kind":"user","id":"alice"}`
+	itemAgent  = `{"kind":"session","id":"architect-1"}`
+	itemDaemon = `{"kind":"session","id":"legion-daemon:CORE"}`
 )
 
 // conversationItem inserts an item of issueKey into table (asks, comments or messages) as author
@@ -25,41 +32,24 @@ func conversationItem(t *testing.T, tx pgx.Tx, table, issueKey, author, body str
 	t.Helper()
 	ctx := context.Background()
 	var id string
-	var err error
-	switch table {
-	case "asks":
-		err = tx.QueryRow(ctx, `insert into asks (issue_key, author, question, created_at) values ($1, $2, $3, $4) returning id::text`,
-			issueKey, author, body, at).Scan(&id)
-	case "comments":
-		err = tx.QueryRow(ctx, `insert into comments (issue_key, author, body, created_at, reply_to) values ($1, $2, $3, $4, nullif($5, '')::uuid) returning id::text`,
-			issueKey, author, body, at, replyTo).Scan(&id)
-	case "messages":
-		err = tx.QueryRow(ctx, `insert into messages (issue_key, author, body, created_at, in_reply_to) values ($1, $2, $3, $4, nullif($5, '')::uuid) returning id::text`,
-			issueKey, author, body, at, replyTo).Scan(&id)
-	}
-	if err != nil {
-		t.Fatalf("insert into %s: %v", table, err)
+	inserted := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("insert into %s: %v", table, err)
+		}
 	}
 	switch table {
 	case "asks":
-		ask := model.Ask{ID: id, IssueKey: &issueKey, Question: body, State: "open"}
-		stored, err := ReadItemIndex(ctx, tx, ItemAsk, id)
-		if err != nil {
-			t.Fatalf("read the part index of ask %s: %v", id, err)
-		}
-		indexing, err := PlanAskParts(stored, NewReader(ctx, tx, ask.Author, "ask", id, itemBlockServer), ask, at)
-		if err != nil {
-			t.Fatalf("index the parts of ask %s: %v", id, err)
-		}
-		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			indexing.Queue(b)
-			return nil
-		}); err != nil {
-			t.Fatalf("write the parts of ask %s: %v", id, err)
-		}
+		inserted(tx.QueryRow(ctx, `insert into asks (issue_key, author, question, created_at) values ($1, $2, $3, $4) returning id::text`,
+			issueKey, author, body, at).Scan(&id))
+		indexAskParts(t, tx, model.Ask{ID: id, IssueKey: &issueKey, Question: body, State: "open"}, at)
 	case "comments":
+		inserted(tx.QueryRow(ctx, `insert into comments (issue_key, author, body, created_at, reply_to) values ($1, $2, $3, $4, nullif($5, '')::uuid) returning id::text`,
+			issueKey, author, body, at, replyTo).Scan(&id))
 		indexItemAsAWriteDoes(t, tx, ItemComment, id, body, itemBlockServer, at)
 	case "messages":
+		inserted(tx.QueryRow(ctx, `insert into messages (issue_key, author, body, created_at, in_reply_to) values ($1, $2, $3, $4, nullif($5, '')::uuid) returning id::text`,
+			issueKey, author, body, at, replyTo).Scan(&id))
 		indexItemAsAWriteDoes(t, tx, ItemMessage, id, body, itemBlockServer, at)
 	}
 	var block string
@@ -68,6 +58,34 @@ func conversationItem(t *testing.T, tx pgx.Tx, table, issueKey, author, body str
 		t.Fatalf("read the first block of %s %s: %v", table, id, err)
 	}
 	return id, block
+}
+
+// checkBlockPointers checks the block pointers markdown holds, as a write of document holds them,
+// through the resolver docs' refuseBlockPointers calls (BlockTargets).
+func checkBlockPointers(t *testing.T, tx pgx.Tx, document, markdown string) error {
+	t.Helper()
+	tree, err := pmdoc.Parse(markdown)
+	if err != nil {
+		t.Fatalf("parse %q: %v", markdown, err)
+	}
+	return pmdoc.CheckBlockPointers(tree, nil, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
+		return BlockTargets(context.Background(), tx, document, storedAddress(t, tx, document), nil, targets)
+	})
+}
+
+// criterionUnder checks a criterion of document whose parent attribute names parent
+// (checkBlockPointers).
+func criterionUnder(t *testing.T, tx pgx.Tx, document, parent string) error {
+	t.Helper()
+	return checkBlockPointers(t, tx, document, ":::criterion{#k1 parent=\""+parent+"\"}\nI want it.\n:::\n")
+}
+
+// itemBlockReference is the reference a write names the block node nodeID of an item of CORE-1
+// by (ItemBlockRef).
+func itemBlockReference(nodeID string) string {
+	kind, id, block, _ := ParseItemBlockNode(nodeID)
+	issue := "CORE-1"
+	return ItemBlockRef(kind, &issue, "", "", id, block)
 }
 
 // R2's test (R2 of the issue-tree spec), read through both of its functions. An ask, a
@@ -92,24 +110,19 @@ func TestAConversationNodeIsWhatRTwoSaysItIs(t *testing.T) {
 	createReferenceIssue(t, tx, "CORE-1", "CORE")
 	spec, _ := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 
-	const (
-		person = `{"kind":"user","id":"alice"}`
-		agent  = `{"kind":"session","id":"architect-1"}`
-		daemon = `{"kind":"session","id":"legion-daemon:CORE"}`
-	)
 	t1 := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
 	second := func(n int) time.Time { return t1.Add(time.Duration(n) * time.Second) }
-	ask, askPart := conversationItem(t, tx, "asks", "CORE-1", agent, "Which order first?", second(0), "")
-	said, saidBlock := conversationItem(t, tx, "comments", "CORE-1", person, "I want the urgent asks first.\n\nThen the rest.", second(1), "")
-	status, statusBlock := conversationItem(t, tx, "comments", "CORE-1", agent, "Round 2 is done.", second(2), "")
-	wrote, wroteBlock := conversationItem(t, tx, "messages", "CORE-1", person, "Ship it on Friday.", second(3), "")
-	lifecycle, lifecycleBlock := conversationItem(t, tx, "messages", "CORE-1", daemon, "READY: the issue is claimed.", second(4), "")
-	thread, threadBlock := conversationItem(t, tx, "comments", "CORE-1", agent, "A note on the plan.", second(5), "")
-	reply, replyBlock := conversationItem(t, tx, "comments", "CORE-1", agent, "Done: the urgent asks come first.", second(10), said)
-	answer, answerBlock := conversationItem(t, tx, "messages", "CORE-1", daemon, "Withdrawn.", second(11), wrote)
-	followUp, _ := conversationItem(t, tx, "comments", "CORE-1", agent, "And a second note.", second(12), thread)
+	ask, askPart := conversationItem(t, tx, "asks", "CORE-1", itemAgent, "Which order first?", second(0), "")
+	said, saidBlock := conversationItem(t, tx, "comments", "CORE-1", itemPerson, "I want the urgent asks first.\n\nThen the rest.", second(1), "")
+	status, statusBlock := conversationItem(t, tx, "comments", "CORE-1", itemAgent, "Round 2 is done.", second(2), "")
+	wrote, wroteBlock := conversationItem(t, tx, "messages", "CORE-1", itemPerson, "Ship it on Friday.", second(3), "")
+	lifecycle, lifecycleBlock := conversationItem(t, tx, "messages", "CORE-1", itemDaemon, "READY: the issue is claimed.", second(4), "")
+	thread, threadBlock := conversationItem(t, tx, "comments", "CORE-1", itemAgent, "A note on the plan.", second(5), "")
+	reply, replyBlock := conversationItem(t, tx, "comments", "CORE-1", itemAgent, "Done: the urgent asks come first.", second(10), said)
+	answer, answerBlock := conversationItem(t, tx, "messages", "CORE-1", itemDaemon, "Withdrawn.", second(11), wrote)
+	followUp, _ := conversationItem(t, tx, "comments", "CORE-1", itemAgent, "And a second note.", second(12), thread)
 	before := second(20)
-	joined, _ := conversationItem(t, tx, "comments", "CORE-1", person, "Then size the plan.", second(30), thread)
+	joined, _ := conversationItem(t, tx, "comments", "CORE-1", itemPerson, "Then size the plan.", second(30), thread)
 	after := second(40)
 
 	for _, test := range []struct {
@@ -132,7 +145,7 @@ func TestAConversationNodeIsWhatRTwoSaysItIs(t *testing.T) {
 		{"a message of the daemon's session", "message", lifecycle, false, false},
 		{"a block of that message", "message_block", lifecycleBlock, false, false},
 		{"a message of the daemon's session in the person's thread", "message", answer, false, false},
-		{"a block of that reply", "message_block", answerBlock, false, false},
+		{"a block of the daemon's reply", "message_block", answerBlock, false, false},
 		{"an agent's thread a person replies in later", "comment", thread, false, true},
 		{"a block of that thread's head", "comment_block", threadBlock, false, true},
 		{"an agent's reply in that thread", "comment", followUp, false, true},
@@ -177,6 +190,9 @@ func TestAConversationNodeIsWhatRTwoSaysItIs(t *testing.T) {
 			// Each block follows its item, directly or after the item's earlier blocks.
 			if node.Parent == nil || len(items) == 0 || items[len(items)-1] != node.Parent.Kind+":"+node.Parent.ID {
 				t.Errorf("node %d, block %s, follows %v and names the parent %+v, want the item it is a block of", index, node.ID, items, node.Parent)
+				if node.Parent == nil {
+					continue
+				}
 			}
 			blocks[node.ID] = node.Parent.Kind + ":" + node.Parent.ID
 		}
@@ -197,27 +213,13 @@ func TestAConversationNodeIsWhatRTwoSaysItIs(t *testing.T) {
 	}
 
 	// A criterion's parent, through the resolver docs.refuseBlockPointers calls.
-	check := func(parent string) error {
-		t.Helper()
-		tree, err := pmdoc.Parse(":::criterion{#k1 parent=\"" + parent + "\"}\nI want it.\n:::\n")
-		if err != nil {
-			t.Fatalf("parse a criterion under %s: %v", parent, err)
-		}
-		return pmdoc.CheckBlockPointers(tree, nil, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
-			return BlockTargets(ctx, tx, spec, storedAddress(t, tx, spec), nil, targets)
-		})
-	}
-	blockRef := func(item, nodeID string) string {
-		_, id, block, _ := ParseItemBlockNode(nodeID)
-		return "dispatch://CORE-1/" + item + "/" + id + "#b-" + text.EncodeBlockID(block)
-	}
-	for _, taken := range []string{blockRef("comment", saidBlock), "dispatch://CORE-1/comment/" + said, "dispatch://CORE-1/ask/" + ask, blockRef("comment", replyBlock)} {
-		if err := check(taken); err != nil {
+	for _, taken := range []string{itemBlockReference(saidBlock), "dispatch://CORE-1/comment/" + said, "dispatch://CORE-1/ask/" + ask, itemBlockReference(replyBlock)} {
+		if err := criterionUnder(t, tx, spec, taken); err != nil {
 			t.Errorf("a criterion under %s = %v, want it taken", taken, err)
 		}
 	}
-	for _, refused := range []string{blockRef("comment", statusBlock), "dispatch://CORE-1/comment/" + status, blockRef("message", lifecycleBlock), "dispatch://CORE-1/message/" + lifecycle} {
-		err := check(refused)
+	for _, refused := range []string{itemBlockReference(statusBlock), "dispatch://CORE-1/comment/" + status, itemBlockReference(lifecycleBlock), "dispatch://CORE-1/message/" + lifecycle} {
+		err := criterionUnder(t, tx, spec, refused)
 		if !errors.Is(err, pmdoc.ErrBlockPointer) || !strings.Contains(err.Error(), `"parent"`) || !strings.Contains(err.Error(), "no conversation node") {
 			t.Errorf("a criterion under %s = %v, want it refused as no conversation node, naming the attribute", refused, err)
 		}

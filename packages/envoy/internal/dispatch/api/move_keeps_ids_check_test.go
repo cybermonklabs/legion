@@ -114,12 +114,13 @@ func readMoveKeepsIDsStore(t *testing.T, database *store.Store) moveKeepsIDsStor
 }
 
 // A version that moves one paragraph keeps the id of that paragraph and of every paragraph it
-// passes (this issue's spec R13): carryBlockIDs carries ids by an alignment of the old and the new
-// block sequences, not only to an unchanged block at its paired place. So a block_refs pointer and
-// an ask anchor into a passed paragraph still resolve, and the move writes no block node and no
-// tuple but the moved paragraph's and the new version's. The test runs twice: over 2,000
-// paragraphs, which the upload indexes itself, and over a heading and 2,000 paragraphs, 2,001
-// blocks, more than docs' deferBlockIndexBlocks, which the block-index reconciliation indexes.
+// passes (R13 of the issue-tree spec): carryBlockIDs carries ids by an alignment of the old and
+// the new block sequences, not only to an unchanged block at its paired place. So a block_refs
+// pointer and an ask anchor into a passed paragraph still resolve, and the move writes no block
+// node and no tuple but the moved paragraph's and the new version's. The test runs twice: over
+// 2,000 paragraphs, which the upload indexes itself, and over a heading and 2,000 paragraphs,
+// 2,001 blocks, more than docs' deferBlockIndexBlocks, which the block-index reconciliation
+// indexes.
 func TestAMoveOfOneParagraphKeepsEveryBlockID(t *testing.T) {
 	t.Parallel()
 	for _, arm := range []struct {
@@ -264,7 +265,7 @@ func moveKeepsIDsArm(t *testing.T, heading bool) {
 // moveKeepsIDsRequireWritten fails t unless the upload of version 2 and the reconciliation after
 // it, which appended every tuple past held's newest seq, added no node of kind block, appended out
 // of a block node only tuples out of movedNode, the moved paragraph's (its rank and its text_rank,
-// this issue's spec R1), and every other tuple out of version, the new version's node.
+// R1 of the issue-tree spec), and every other tuple out of version, the new version's node.
 func moveKeepsIDsRequireWritten(t *testing.T, database *store.Store, held moveKeepsIDsStore, movedNode, version string) {
 	t.Helper()
 	ctx := context.Background()

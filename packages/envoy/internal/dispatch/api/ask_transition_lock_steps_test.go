@@ -38,6 +38,11 @@ import (
 //     issue's owner lock, then in one batch the person's node, the decision_keeps row that
 //     projects the Keep, the decision.kept, and the kept_by and kept_text_sum under it.
 //
+// Each of them moves a node the decisions query takes - a question's answer state, a decision's
+// kept_by - so each ends its write phase with the mark of the issue's queries owed, which its
+// request drains once it has committed (R14): the settle of a question through
+// docs.Ledger.PlanSettle, and the Keep in its own batch (docs.QueueQueryMark).
+//
 // The ask's row is the row its node projects (asks.node_kind), and none of these paths writes
 // that node, so no node step orders the row; the answerer, whose node an answer writes, is the far
 // end of a tuple, which no row names. No path locks the ask's row before it writes it: every
@@ -92,7 +97,8 @@ func runOwnerLockStep(issue *string) storeStep {
 // takes the issue's owner lock (requireOpenOwner), reads the ask under it, and plans its settle
 // (asks.PlanSettle); its write phase writes the answerer's node, held for the event, and then the
 // ask's row, queues the answer's part, then appends ask.answered and the answer's facts under it
-// (graphstore.QueueCaused). Each run answers an ask of its own, opened just before it.
+// (graphstore.QueueCaused), and last marks the issue's queries owed (docs.Ledger.PlanSettle). Each
+// run answers an ask of its own, opened just before it.
 func (r *storeWriterRig) askAnswer() storeWriter {
 	return storeWriter{
 		name: "closeAskTx answering",
@@ -106,6 +112,7 @@ func (r *storeWriterRig) askAnswer() storeWriter {
 			askRowWrittenStep(),
 			eventAppendStep(),
 			tupleAppendStep(),
+			queryMarkStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			ask := decodeBody[model.Ask](t, created(t, "open the ask the run answers", dispatchRequest(t, r.handler, http.MethodPost,
@@ -140,10 +147,12 @@ func (r *storeWriterRig) plainIssueWithAsk(t *testing.T) string {
 }
 
 // patchIssueSteps are the steps a close or a reopen takes: the issue's owner lock, its ask's row
-// written, the ask's event and the facts its settle held for it. The settle of a withdrawal or a
-// restore writes no node, so its facts are graphstore's plain tuple append. issue is the run's.
+// written, the ask's event and the facts its settle held for it, and last the issue's query mark,
+// which the settle of a question queues at the end of the write phase (docs.Ledger.PlanSettle).
+// The settle of a withdrawal or a restore writes no node, so its facts are graphstore's plain
+// tuple append. issue is the run's.
 func patchIssueSteps(issue *string) []storeStep {
-	return []storeStep{runOwnerLockStep(issue), askRowWrittenStep(), eventAppendStep(), plainTupleAppendStep()}
+	return []storeStep{runOwnerLockStep(issue), askRowWrittenStep(), eventAppendStep(), plainTupleAppendStep(), queryMarkStep()}
 }
 
 // plainTupleAppendStep is tupleAppendStep for a write that wrote no node, whose tuples graphstore
@@ -208,8 +217,9 @@ func (r *storeWriterRig) issueReopenRestoring() storeWriter {
 // route, on a document of the issue the agent uploaded. It takes the issue's owner lock
 // (LockOwners), reads the node's keepers under it, and then in one batch (store.RunWrite) writes
 // the person's node (graphstore.QueueNodes), then the decision_keeps row that projects the Keep,
-// appends decision.kept, and appends the kept_by and the kept_text_sum under it
-// (graphstore.QueueCaused). Each run keeps the decision as a person no write has recorded.
+// appends decision.kept, appends the kept_by and the kept_text_sum under it
+// (graphstore.QueueCaused), and marks the issue's queries owed (docs.QueueQueryMark). Each run keeps
+// the decision as a person no write has recorded.
 func (r *storeWriterRig) decisionKeep(t *testing.T, ctx context.Context) storeWriter {
 	const name = "lock-steps-choices.md"
 	requireAgentWrite(t, "upload the agent's decision", sessionRequest(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
@@ -240,6 +250,7 @@ func (r *storeWriterRig) decisionKeep(t *testing.T, ctx context.Context) storeWr
 			},
 			eventAppendStep(),
 			tupleAppendStep(),
+			queryMarkStep(),
 		},
 		ready: func(t *testing.T, _ context.Context) storeWriterRun {
 			login := r.fresh("lock-keeper")

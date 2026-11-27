@@ -12,19 +12,35 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The migrations that restate graph_edges after 20261109215947: the one that adds the tuple arm's
-// class `store` and the arm answering a finding's relations as `lens_block`, the sibling branch's
-// that restates the view from its own arms with every change of the restatements before it, and
-// this branch's restatements after it, ending on the view this head ships (store.GraphEdgesView).
+// The migrations that restate graph_edges after the base's last restatement of it
+// (20261125163554_graph_edges_asks_and_tuple_arm_filter), in version order: this branch's
+// 20261126050001, which states the view with both children's changes; the sibling branch's
+// store-class restatement (20261126050002), which adds the tuple arm's class `store` and the arm
+// answering a finding's relations as `lens_block`, with the statement 20261126050001 makes; this
+// branch's issue-tree restatements 20261126050003 to 20261126050006; the sibling branch's
+// 20261126050007, which restates the view from its own arms, the arms of the base's last
+// restatement with the class `store` and the `lens_block` arm; and this branch's 20261126050008
+// and 20261126050009, ending on the view this head ships (store.GraphEdgesView).
 const (
-	storeClassRestatement     = "20261117020856_graph_edges_asks_and_store_class"
-	storeClassLastRestatement = "20261121104002_graph_edges_store_class_last"
+	storeClassRestatement     = "20261126050002_graph_edges_asks_and_store_class"
+	storeClassLastRestatement = "20261126050007_graph_edges_store_class_last"
 )
 
+// laterRestatements are this branch's restatements after the sibling branch's last one.
 var laterRestatements = []string{
-	"20261123180000_issue_tree_graph_edges_after_store_class_last",
-	"20261125150001_issue_tree_graph_edges_block_node_listed",
+	"20261126050008_issue_tree_graph_edges_after_store_class_last",
+	"20261126050009_issue_tree_graph_edges_block_node_listed",
 }
+
+// thisBranchRestatements are this branch's restatements of graph_edges: the ones a database that
+// holds the sibling branch's 20261126050002 and 20261126050007 has still to apply.
+var thisBranchRestatements = append([]string{
+	"20261126050001_issue_tree_graph_edges_both_arms",
+	"20261126050003_issue_tree_relations",
+	"20261126050004_issue_tree_components",
+	"20261126050005_issue_tree_artifact_refs",
+	"20261126050006_issue_tree_graph_edges_after_tuple_arm_filter",
+}, laterRestatements...)
 
 // The ids of the rows writeEveryGraphEdgesArm writes that the tests read back.
 const (
@@ -51,18 +67,19 @@ const (
 	restatedNotesFirstBlock = "CORE/notes#b1"
 )
 
-// The sibling branch's restatement of graph_edges (20261121104002) answers every row
-// 20261117020856's view answered, and no other. The database runs every migration but this
-// branch's restatements after it (laterRestatements), so 20261121104002 is the definition it
-// holds. The fixture gives every arm of that view at least one row. It holds a tuple of each kind
-// of the class `store` (changed_by_run, has_kind, triggered_by, constrained_by and prevented_by,
-// and the part_of and
-// authored_by of a lens, a risk, a constraint and an interaction), a finding's relations, which
-// the arm after the tuple arm answers as `lens_block`, an ask's relations from the asks arms and
-// from the tuple arm, and tuples neither view answers. The test reads the view under that
-// definition, then restates it with 20261117020856's own text in a transaction it rolls back, and
-// reads it again. The two answers are equal row for row, so a database that ran 20261117020856
-// alone reads the same rows after it runs 20261121104002.
+// The sibling branch's last restatement of graph_edges (20261126050007) answers every row
+// 20261126050002's view answered, and no other. The database runs every migration through
+// 20261126050007 and none after it (laterRestatements), as a database that ran everything through
+// that version and has the rest still to apply, so 20261126050007 is the definition it holds. The
+// fixture gives every arm of that view at least one row. It holds a tuple of each kind of the
+// class `store` (changed_by_run, has_kind, triggered_by, constrained_by and prevented_by, and the
+// part_of and authored_by of a lens, a risk, a constraint and an interaction), a finding's
+// relations, which the arm after the tuple arm answers as `lens_block`, an ask's relations from
+// the asks arms and from the tuple arm, and tuples neither view answers. The test reads the view
+// under that definition, then restates it with 20261126050002's own text, which is the statement
+// 20261126050001 makes too, in a transaction it rolls back, and reads it again. The two answers
+// are equal row for row, so a database that holds 20261126050007's view reads the same rows after
+// it applies 20261126050001, as a version it lacks.
 func TestTheLastGraphEdgesRestatementAnswersWhatTheStoreClassRestatementAnswered(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -134,37 +151,37 @@ func TestTheLastGraphEdgesRestatementAnswersWhatTheStoreClassRestatementAnswered
 }
 
 // graph_edges ends on one definition whatever order a database ran its restatements in. The
-// first database runs the set without 20261117020856 and this branch's later restatements, as a
-// database that ran 20261120122700, 20261121034242 and 20261121104002 before 20261117020856 did,
-// and then the whole set, so 20261117020856 runs after 20261121034242 and this branch's
-// restatements run last. The second runs the whole set from empty, so 20261121034242 runs after
-// 20261117020856. Both views have one definition, the last restatement's.
+// first database holds the sibling branch's 20261126050002 and 20261126050007 and none of this
+// branch's other restatements (thisBranchRestatements), and then applies them as pending
+// migrations: 20261126050001 sorts below both of the sibling branch's, and 20261126050003 to
+// 20261126050006 below 20261126050007, so each of them runs over the view the sibling branch's
+// restatements left, and 20261126050008 and 20261126050009 run last. The second runs the whole
+// set from empty, in version order. Both views have one definition, the last restatement's.
 func TestGraphEdgesEndsOnOneDefinitionWhateverOrderItsRestatementsRan(t *testing.T) {
 	ctx := context.Background()
-	ranLaterRestatementsFirst := openEmptyTestStore(t)
-	omitted := append([]string{storeClassRestatement}, laterRestatements...)
-	if err := ranLaterRestatementsFirst.migrate(ctx, migrationsWithout(t, omitted...)); err != nil {
-		t.Fatalf("migrate without %v: %v", omitted, err)
+	ranSiblingRestatementsFirst := openEmptyTestStore(t)
+	if err := ranSiblingRestatementsFirst.migrate(ctx, migrationsWithout(t, thisBranchRestatements...)); err != nil {
+		t.Fatalf("migrate without %v: %v", thisBranchRestatements, err)
 	}
-	if err := ranLaterRestatementsFirst.Migrate(ctx); err != nil {
+	if err := ranSiblingRestatementsFirst.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the rest of the set: %v", err)
 	}
 	fromEmpty := openEmptyTestStore(t)
 	if err := fromEmpty.Migrate(ctx); err != nil {
 		t.Fatalf("migrate from empty: %v", err)
 	}
-	const laterFirst = "20261120122700 and 20261121034242 before 20261117020856"
+	const siblingFirst = "20261126050002 and 20261126050007 before 20261126050001, 20261126050003 to 20261126050006, 20261126050008 and 20261126050009"
 	definitions := map[string]string{}
-	for name, database := range map[string]*Store{laterFirst: ranLaterRestatementsFirst, "from empty": fromEmpty} {
+	for name, database := range map[string]*Store{siblingFirst: ranSiblingRestatementsFirst, "from empty": fromEmpty} {
 		var definition string
 		if err := database.Pool.QueryRow(ctx, `select pg_get_viewdef('graph_edges', true)`).Scan(&definition); err != nil {
 			t.Fatalf("read graph_edges' definition %s: %v", name, err)
 		}
 		definitions[name] = definition
 	}
-	if definitions[laterFirst] != definitions["from empty"] {
+	if definitions[siblingFirst] != definitions["from empty"] {
 		t.Errorf("graph_edges' definition differs by the order its restatements ran in\n%s:\n%s\nfrom empty:\n%s",
-			laterFirst, definitions[laterFirst], definitions["from empty"])
+			siblingFirst, definitions[siblingFirst], definitions["from empty"])
 	}
 }
 

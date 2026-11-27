@@ -3,10 +3,10 @@ package docs
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -15,45 +15,14 @@ import (
 // decisionType is the block type whose server-owned attributes settlement holds to the store.
 const decisionType = "decision"
 
-// decisionServerAttribute is one server-owned attribute of the decision type: its name in the
-// markdown, and kind, the store name its value or its relation is kept under
-// (schemanodes.StoreName).
-type decisionServerAttribute struct{ name, kind string }
-
-// decisionServerAttributes is the decision type's server-owned attributes, read off the block
-// schema with their store names, and false where the installed manifest declares no decision
-// type. It depends on the installed manifest alone, so it is read once for each manifest
-// installed (decisionServerNames), as storedAskAttributes is, and every settlement shares the
-// list, which none writes.
-func decisionServerAttributes() ([]decisionServerAttribute, bool) {
-	schema, declared := pmdoc.BlockTypeAttributes(decisionType)
-	if !declared {
-		return nil, false
-	}
-	if read := decisionServerNames.Load(); read != nil && sameAttributeSchema(read.schema, schema) {
-		return read.attributes, true
-	}
-	var server []decisionServerAttribute
-	for _, attribute := range schema {
-		if attribute.Server {
-			server = append(server, decisionServerAttribute{name: attribute.Name, kind: schemanodes.StoreName(decisionType, attribute.Name)})
-		}
-	}
-	decisionServerNames.Store(&decisionServerNamesRead{schema: schema, attributes: server})
-	return server, true
+// decisionServerAttributes is the names of the decision type's server-owned attributes, read off
+// the installed manifest once when it was compiled (pmdoc.ServerAttributes), as the ask type's are
+// (pmdoc.ServerAttributesInMarkdown), and none where the installed manifest declares no decision
+// type. Every settlement shares the list, which none writes; the store keeps each attribute's
+// value or relation under its store name (schemanodes.StoreName).
+func decisionServerAttributes() []string {
+	return pmdoc.ServerAttributes(decisionType)
 }
-
-// decisionServerNamesRead is decisionServerAttributes's answer for one installed manifest: the
-// decision type's attribute schema as that manifest holds it, and the attributes read off it.
-type decisionServerNamesRead struct {
-	schema     pmdoc.BlockAttributes
-	attributes []decisionServerAttribute
-}
-
-// decisionServerNames holds decisionServerAttributes's last read. A manifest installed since
-// (pmdoc.Install, or one a test installs) is compiled whole into new slices, so its decision
-// schema is another slice and the read is made again for it (sameAttributeSchema).
-var decisionServerNames atomic.Pointer[decisionServerNamesRead]
 
 // reconcileDecisionBlocks holds the server-owned attributes of every decision block of tree, the
 // tree settlement read of document artifactID, to what the store holds of the block's node: an
@@ -70,8 +39,8 @@ var decisionServerNames atomic.Pointer[decisionServerNamesRead]
 // Each change is a repair (settlementReconciliation.repair), written into the live document with
 // the ask blocks' (repairLive); it emits no event, since it restores what the store already says.
 func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) error {
-	server, declared := decisionServerAttributes()
-	if !declared {
+	server := decisionServerAttributes()
+	if len(server) == 0 {
 		return nil
 	}
 	type claimed struct {
@@ -89,15 +58,15 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 			return true
 		}
 		seen[id] = struct{}{}
-		for _, attribute := range server {
-			if value, carried := node.Attrs[attribute.name]; carried && value != nil {
+		for _, name := range server {
+			if value, carried := node.Attrs[name]; carried && value != nil {
 				decisions = append(decisions, claimed{node: node, id: id})
 				break
 			}
 		}
 		return true
 	})
-	if len(server) == 0 || len(decisions) == 0 {
+	if len(decisions) == 0 {
 		return nil
 	}
 	var refKey string
@@ -109,17 +78,14 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 		addresses[index] = refs.BlockAddress(refKey, decision.id)
 	}
 	kinds := make([]string, len(server))
-	for index, attribute := range server {
-		kinds[index] = attribute.kind
+	for index, name := range server {
+		kinds[index] = schemanodes.StoreName(decisionType, name)
 	}
-	// The newest tuple of each kind each node holds: a relation of these kinds holds one far end
-	// at a time (decided_by is set once, a Keep names one person), and a value is its newest.
-	rows, err := tx.Query(ctx, `
-		select distinct on (t.from_id, t.kind) t.from_id, t.kind, t.to_id, t.asserted
-		from graph_tuples t
-		where t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = any($3::text[])
-		order by t.from_id, t.kind, t.seq desc
-	`, refs.BlockNodeKind, addresses, kinds)
+	// The newest tuple of each kind each node holds (graphstore.CurrentTupleRead): a relation of
+	// these kinds holds one far end at a time (decided_by is set once, a Keep names one person), and
+	// a value is its newest.
+	rows, err := tx.Query(ctx, graphstore.CurrentTupleRead(`t.from_id, t.kind`, `t.from_id, t.kind, t.to_id, t.asserted`,
+		`t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = any($3::text[])`), refs.BlockNodeKind, addresses, kinds)
 	if err != nil {
 		return fmt.Errorf("read the server attributes the store holds of the decisions of %s: %w", artifactID, err)
 	}
@@ -141,25 +107,25 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 	}
 	for index, decision := range decisions {
 		want := map[string]string{}
-		for _, attribute := range server {
-			if value, stored := held[[2]string{addresses[index], attribute.kind}]; stored {
-				want[attribute.name] = value
+		for at, name := range server {
+			if value, stored := held[[2]string{addresses[index], kinds[at]}]; stored {
+				want[name] = value
 			}
 		}
 		r.repair(decision.node, decision.id, func(node *pmdoc.Node) bool {
 			changed := false
-			for _, attribute := range server {
-				carried, present := node.Attrs[attribute.name]
+			for _, name := range server {
+				carried, present := node.Attrs[name]
 				if !present || carried == nil {
 					continue
 				}
-				stored, holds := want[attribute.name]
+				stored, holds := want[name]
 				switch {
 				case !holds:
-					delete(node.Attrs, attribute.name)
+					delete(node.Attrs, name)
 					changed = true
 				case carried != stored:
-					node.Attrs[attribute.name] = stored
+					node.Attrs[name] = stored
 					changed = true
 				}
 			}

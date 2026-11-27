@@ -2,9 +2,7 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
@@ -114,11 +110,7 @@ func (replay *twoCutsReplay) page(r headRig, handler http.Handler, served *serve
 	t.Helper()
 	target := "/api/v1/issues/" + key + "/tree" + query
 	if cursor != "" {
-		separator := "?"
-		if strings.Contains(query, "?") {
-			separator = "&"
-		}
-		target += separator + "cursor=" + url.QueryEscape(cursor)
+		target = treeCursorTarget(target, cursor)
 	}
 	request := func() *http.Request {
 		request := httptest.NewRequest(http.MethodGet, target, nil)
@@ -143,7 +135,7 @@ func (replay *twoCutsReplay) page(r headRig, handler http.Handler, served *serve
 				class, read, page, target, routeStatus, cut(route), uncutStatus, cut(uncut))
 		}
 		if routeStatus != uncutStatus || !bytes.Equal(route, uncut) {
-			at := twoCutsDifference(route, uncut)
+			at := renderAtVersionFirstDifference(string(route), string(uncut))
 			t.Errorf("the replay, after the %s write: %s, page %d (GET %s): the route answers status %d and the un-cut walk status %d, and the two answers differ "+
 				"from byte %d: the route's %q, the un-cut walk's %q", class, read, page, target, routeStatus, uncutStatus, at, twoCutsAround(route, at), twoCutsAround(uncut, at))
 		}
@@ -157,37 +149,22 @@ func (replay *twoCutsReplay) page(r headRig, handler http.Handler, served *serve
 	}
 }
 
-// unmarked runs read with the mark of key taken away for its length, as the head projection's
-// walkRead takes it, so the read walks the tuples, and puts the mark back as it stood; a key no mark
-// names is read as it stands.
+// unmarked runs read with the mark of key taken away for its length (headRig.withoutMark, as the
+// head projection's walkRead takes it), so the read walks the tuples, and puts the mark back as it
+// stood; a key no mark names is read as it stands.
 func (replay *twoCutsReplay) unmarked(r headRig, key string, read func() (int, []byte)) (int, []byte) {
-	t := replay.t
-	t.Helper()
-	ctx := context.Background()
-	var filled time.Time
-	err := r.database.Pool.QueryRow(ctx, `delete from issue_head_marks where issue_key = $1 returning filled_at`, key).Scan(&filled)
-	marked := err == nil
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("take the mark of %s away for the un-cut walk: %v", key, err)
-	}
-	status, body := read()
-	if marked {
-		if _, err := r.database.Pool.Exec(ctx, `insert into issue_head_marks (issue_key, filled_at) values ($1, $2) on conflict (issue_key) do nothing`, key, filled); err != nil {
-			t.Fatalf("put the mark of %s back: %v", key, err)
-		}
-	}
-	return status, body
+	replay.t.Helper()
+	return r.withoutMark(replay.t, key, false, read)
 }
 
-// twoCutsDifference is the index of the first byte two answers hold apart, the shorter one's length
-// where one is the other's start.
-func twoCutsDifference(left, right []byte) int {
-	for index := range min(len(left), len(right)) {
-		if left[index] != right[index] {
-			return index
-		}
+// treeCursorTarget is target, a GET of the tree route with its query or none, asking for the page
+// cursor names.
+func treeCursorTarget(target, cursor string) string {
+	separator := "?"
+	if strings.Contains(target, "?") {
+		separator = "&"
 	}
-	return min(len(left), len(right))
+	return target + separator + "cursor=" + url.QueryEscape(cursor)
 }
 
 // twoCutsAround is the bytes of answer from 80 before at to 200 after it, which a failure quotes.

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import document from "../schemas/dispatch-openapi.json";
 import type { BlockTypeSchema } from "./block-schema.generated";
 import {
   type Actor,
@@ -1533,7 +1534,10 @@ test("keeps document read tokens optional for older Dispatch servers", () => {
 test("keeps owed_documents optional on the coverage and tree reads for older Dispatch servers", () => {
   // A server names each document of the issue that owes its block index, by its id and the version
   // whose blocks wait; an issue that owes none, and a server of the release before, answer no
-  // member at all, which a reader takes as nothing owed.
+  // member at all, which a reader takes as nothing owed. tsc holds each literal below to its type,
+  // and the route table's document the types are generated from is read as the test runs: it
+  // declares owed_documents on both reads, each answer that leaves it out holds every field the
+  // document requires of its read, and the entry of owed_documents every field it requires of one.
   const coverage: IssueCoverage = {
     gaps: [],
     has_plan: false,
@@ -1553,13 +1557,20 @@ test("keeps owed_documents optional on the coverage and tree reads for older Dis
     view: "",
     view_of: null,
   };
-  expect("owed_documents" in coverage).toBe(false);
-  expect("owed_documents" in tree).toBe(false);
   const owed: IssueTreeRead = {
     ...tree,
     owed_documents: [{ artifact_id: "verification", version: 2 }],
   };
-  expect(owed.owed_documents ?? []).toEqual([{ artifact_id: "verification", version: 2 }]);
+  const declared = document.components.schemas;
+  for (const [answer, shape] of [
+    [coverage, declared.IssueCoverage],
+    [tree, declared.IssueTreeRead],
+  ] as const) {
+    expect(Object.keys(shape.properties)).toContain("owed_documents");
+    expect(shape.required.filter((field) => !(field in answer))).toEqual([]);
+  }
+  const entry = owed.owed_documents?.[0] ?? {};
+  expect(declared.OwedDocument.required.filter((field) => !(field in entry))).toEqual([]);
 });
 
 test("models a comment's and a direct message's blocks", () => {

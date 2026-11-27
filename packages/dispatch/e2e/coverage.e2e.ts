@@ -8,6 +8,7 @@ import {
   getIssueCoverage,
 } from "./api";
 import { sql } from "./psql";
+import { BLOCK_INDEX_LEASE, BLOCK_INDEX_PASS_MS } from "./seed";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -21,25 +22,29 @@ A requirement nothing checks is flagged.
 :::
 `;
 
-/** The block-index reconciliation's lease (docs.BlockIndexLease) as duty.Exclusive takes it: the
- *  first key every loop lease is taken under, 0x4C4F4F50 (duty's leaseNamespace), and the lease's
- *  name. While a session of the row's holds it no pass of the server's runs, which skips a tick
- *  whose lease another session holds. `sql` runs on one psql session of this worker's, so the lock
- *  it takes outlives the call, and the row makes no other `sql` call while it holds it. */
-const BLOCK_INDEX_LEASE = "1280266064, hashtext('block-index')";
-
 /** A bullet list past the blocks a version write indexes in its own request (deferBlockIndexBlocks
  *  in docs/reference_excerpts.go, 2,000): a list of n items is n + 1 blocks, and 2,100 items is
  *  the margin e2e/acceptance/coverage-states.sh writes past it. A version holding it leaves its
  *  blocks to the block-index reconciliation. */
 const DEFERRED_LIST = Array.from({ length: 2_100 }, () => "- x").join("\n");
 
+/** BlockIndexReconcileInterval (docs/block_index.go): how long a tick that found the lease held
+ *  waits before the next. */
+const RECONCILE_INTERVAL_MS = 30_000;
+
+/** How long the page's coverage takes to draw again once a pass's `artifact.indexed` is sent: the
+ *  live stream's delivery of the event, the refetch, which waits a second after the read before it
+ *  (MIN_REFETCH_INTERVAL_MS, web/src/api/query-refresh.ts), and the coverage read of the room just
+ *  indexed, whose 2,101 new blocks it reads. Five runs on one worker of four cores measured that
+ *  read at 0.7 s to 12.5 s, the first run's the longest, and the whole refresh at 1.1 s to 12.8 s
+ *  from the pass's end; the bound holds a little over twice the longest. */
+const REFRESH_MS = 30_000;
+
 /** How long a version whose blocks its write left to the reconciliation waits, once the lease is
  *  given back, until the open page has drawn it indexed: the next tick, which a tick that found the
- *  lease held leaves a whole BlockIndexReconcileInterval out (30 s, docs/block_index.go), that
- *  tick's pass over the version, and the page's refresh on the pass's `artifact.indexed`. That
- *  interval is the deadline the row holds the page to. */
-const INDEXED_WITHIN = 45_000;
+ *  lease held leaves a whole interval out, that tick's pass over the version, and the page's
+ *  refresh on the pass's `artifact.indexed`. That sum is the deadline the row holds the page to. */
+const INDEXED_WITHIN = RECONCILE_INTERVAL_MS + BLOCK_INDEX_PASS_MS + REFRESH_MS;
 
 /** How the coverage read's line for a document that owes its block index ends, after
  *  `<file name> version <n>` (owedGap in api/coverage.go). */
@@ -68,7 +73,10 @@ async function coverageOf(issue: string, blockId: string): Promise<RequirementCo
 test("a requirement no check serves is flagged on the Spec tab, and a check that serves it clears the flag @pr", async ({
   browser,
 }, testInfo) => {
-  test.setTimeout(120_000);
+  // The row's own steps take seconds, a minute at most under load, beside its two waits on the
+  // block index: the reset's for a pass an attempt before it left running (e2e/seed.ts), and the
+  // page's for the version owed its index.
+  test.setTimeout(BLOCK_INDEX_PASS_MS + INDEXED_WITHIN + 60_000);
   await createProject({ key: "COV", name: "Coverage" });
   const issue = await createIssue({ project: "COV", spec, title: "Requirement coverage" });
   const oneCheck = `:::check{#c1 serves="dispatch://${issue.key}/spec#b-r1" surface="browser" run="bun run e2e -- e2e/coverage.e2e.ts"}
@@ -118,9 +126,11 @@ A requirement nothing checks is flagged.
     await expect(page.getByTestId("spec-requirement-gap")).toHaveCount(0);
 
     // The next version drops c2 and holds a list past the block bound, so its write leaves its
-    // blocks to the block-index reconciliation, whose lease the row holds first: the version owes
-    // its index for as long as the row says. A try the lease's holder refuses - a tick running now
-    // - is made again until that tick ends.
+    // blocks to the block-index reconciliation, whose lease (BLOCK_INDEX_LEASE) the row holds
+    // first: the version owes its index for as long as the row says. A try the lease's holder
+    // refuses - a tick running now - is made again until that tick ends. `sql` runs on one psql
+    // session of this worker's, so the lock it takes outlives the call, and the row makes no other
+    // `sql` call while it holds it.
     await expect.poll(() => sql(`select pg_try_advisory_lock(${BLOCK_INDEX_LEASE})`)).toBe("t");
     leased = true;
     const deferred = await createIssueArtifact(issue.key, {

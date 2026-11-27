@@ -68,11 +68,13 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
-// TestMain runs the package's tests through the Dispatch harness's Main, which waits for their
-// databases to drop and drops their templates, inside the broker harness's Run, which then drops
-// the database brokerstoretest.URL made the contract rows' broker schemas in, and both inside
-// cmdtest.Run, which makes the directory the two dispatch binaries
-// tree_read_skeleton_bound_test.go builds are written into and removes it once the tests end.
+// TestMain runs the package's tests through the Dispatch harness's Main, which drops their
+// databases and their templates, inside the broker harness's Run, which then drops the database
+// brokerstoretest.URL made the contract rows' broker schemas in, and both inside cmdtest.Run, which
+// makes the directory the two dispatch binaries tree_read_skeleton_bound_test.go builds are written
+// into and removes it once the tests end. Both waits end at the bound testdb.TeardownDeadline gives
+// the test binary, and the broker's, which begins where the Dispatch harness's may have reached that
+// bound, still waits testdb's floor for its own drop.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
@@ -660,16 +662,22 @@ func databaseFingerprint(t *testing.T, database *store.Store) map[string]string 
 	}
 	fingerprint := make(map[string]string, len(tables))
 	for _, table := range tables {
-		var digest string
-		if err := database.Pool.QueryRow(ctx, fmt.Sprintf(
-			`select count(*) || ':' || coalesce(md5(string_agg(t::text, ',' order by t::text)), '') from %s t`,
-			pgx.Identifier{table}.Sanitize(),
-		)).Scan(&digest); err != nil {
-			t.Fatalf("fingerprint %s: %v", table, err)
-		}
-		fingerprint[table] = digest
+		fingerprint[table] = tableFingerprint(t, database, table)
 	}
 	return fingerprint
+}
+
+// tableFingerprint hashes every row of table: its row count and the md5 of its rows in order.
+func tableFingerprint(t *testing.T, database *store.Store, table string) string {
+	t.Helper()
+	var digest string
+	if err := database.Pool.QueryRow(context.Background(), fmt.Sprintf(
+		`select count(*) || ':' || coalesce(md5(string_agg(t::text, ',' order by t::text)), '') from %s t`,
+		pgx.Identifier{table}.Sanitize(),
+	)).Scan(&digest); err != nil {
+		t.Fatalf("fingerprint %s: %v", table, err)
+	}
+	return digest
 }
 
 // assertUnchanged fails for each table whose rows differ between two fingerprints of one database.
