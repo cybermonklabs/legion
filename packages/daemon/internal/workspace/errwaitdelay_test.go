@@ -24,7 +24,7 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "sleep.pid")
 	fakeGit := filepath.Join(dir, "git")
-	script := "#!/bin/sh\necho done\nsleep 3 & echo $! >" + pidFile + "\nexit 0\n"
+	script := "#!/bin/sh\necho done\nsleep 3 & echo $! >" + pidFile + "\nsleep 6\nexit 0\n"
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "sleep.pid")
 	fakeGit := filepath.Join(dir, "git")
-	script := "#!/bin/sh\necho 'fatal: unable to access' >&2\nsleep 30 & echo $! >" + pidFile + "\nexit 128\n"
+	script := "#!/bin/sh\necho 'fatal: unable to access' >&2\nsleep 30 & echo $! >" + pidFile + "\nsleep 1\nexit 128\n"
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 			t.Cleanup(func() { killPIDFile(t, pidFile) })
 			ctx, cancel := context.WithTimeout(context.Background(), testCase.budget)
 			defer cancel()
-			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; exit ` + strconv.Itoa(testCase.exit)
+			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; sleep 1; exit ` + strconv.Itoa(testCase.exit)
 
 			started := time.Now()
 			out, err := RunCommand(ctx, procgroup.NoReaper, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})

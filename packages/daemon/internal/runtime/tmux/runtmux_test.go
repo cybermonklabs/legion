@@ -39,7 +39,7 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 			dir := t.TempDir()
 			pidFile := filepath.Join(dir, "lingering.pid")
 			t.Cleanup(func() { killPIDFile(pidFile) })
-			client := fakeTmuxClient(t, dir, "echo answered; sleep 30 & echo $! >"+pidFile+"; exit "+strconv.Itoa(testCase.exit))
+			client := fakeTmuxClient(t, dir, "echo answered; sleep 30 & echo $! >"+pidFile+"; sleep 1; exit "+strconv.Itoa(testCase.exit))
 			r := &Runtime{tmuxPath: client, commandTimeout: testCase.timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 
 			started := time.Now()
