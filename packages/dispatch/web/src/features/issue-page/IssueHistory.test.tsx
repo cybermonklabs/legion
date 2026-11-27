@@ -11,12 +11,15 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ComponentProps, type ReactNode, useState } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
-import { installIntersectionObserver } from "../../__tests__/intersection-observer";
+import {
+  type IntersectionControl,
+  installIntersectionObserver,
+} from "../../__tests__/intersection-observer";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -30,6 +33,7 @@ import type {
   DispatchEvent,
   DisplayTree,
   Handoff,
+  HandoffBodies,
   HandoffSummary,
   IssueAskRow,
   IssueDetails,
@@ -47,7 +51,7 @@ import { defaultRuns, stepRecord } from "../steps/step-record-fixture";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { measureNearWords } from "./clamp-fixtures";
 import { DetailsHistory } from "./details-more";
-import { HistoryHandoff, useHandoffFold } from "./HistoryHandoff";
+import { useHandoffFold } from "./HistoryHandoff";
 import { historyLogKey } from "./history-log";
 import { arriveInHistoryLog } from "./history-log-fixture";
 import { HISTORY_EXCLUDED_TYPES } from "./history-model";
@@ -2776,31 +2780,69 @@ function handoffRecord(summary: string): Handoff {
   };
 }
 
-/** A handoff's fields, open until a press of its control folds them, as the history holds its
- *  fold (`HandoffFold`). */
-function HeldHandoff(): ReactNode {
-  const [folded, setFolded] = useState(false);
-  return <HistoryHandoff folded={folded} handoffId="handoff-1" onFold={setFolded} />;
+/** A handoff of `KEY` as its list gives it, with no body: `handoffRecord`'s, under the id `id`. */
+function listedRecord(id = "handoff-1"): HandoffSummary {
+  const { body: _body, ...listed } = handoffRecord("");
+  return { ...listed, id };
 }
 
-/** A handoff's fields in the history, drawn open, with nothing above them but a router and
- *  `queryClient`, a query client that never retries where the case gives none. */
-function drawHandoff(
-  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-): { queryClient: QueryClient; unmount: () => void } {
-  const { unmount } = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <HeldHandoff />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { queryClient, unmount };
+/** The bodies answer that holds the body of each of `ids`, whose summary is `summary`. */
+function bodiesOf(summary: string, ids: readonly string[] = ["handoff-1"]): HandoffBodies {
+  return { bodies: ids.map((id) => ({ body: handoffRecord(summary).body, id })), left: [] };
+}
+
+/** Brings the place of every handoff the history watches within one screen of Details' view, as
+ *  the browser's observer reports it, which sends their bodies' read, and lets an answer given at
+ *  once land. */
+async function showHandoffs(near: IntersectionControl): Promise<void> {
+  await act(async () => {
+    for (const element of near.observed()) near.show(element);
+  });
+}
+
+/** The history of `KEY`, with no event, holding the handoffs `ids` its list gives, each drawn
+ *  open, under the observer `near` the case installed: once their fold controls are drawn, their
+ *  places are brought within one screen of Details' view, which sends their bodies' read.
+ *  `prepare` is handed the history's query client before that. */
+async function drawHandoffs(
+  near: IntersectionControl,
+  ids: readonly string[] = ["handoff-1"],
+  prepare?: (queryClient: QueryClient) => void
+): Promise<{ queryClient: QueryClient; unmount: () => void }> {
+  handoffsRead().mockResolvedValue(ids.map((id) => listedRecord(id)));
+  const restoreReads = stubHistoryReads([]);
+  const drawn = drawHistory(undefined);
+  const unmount = () => {
+    drawn.unmount();
+    drawn.queryClient.clear();
+    restoreReads();
+  };
+  try {
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: CONTROL_LABELS.hide_fields })).toHaveLength(
+        ids.length
+      )
+    );
+    prepare?.(drawn.queryClient);
+    await showHandoffs(near);
+    return { queryClient: drawn.queryClient, unmount };
+  } catch (error) {
+    unmount();
+    throw error;
+  }
+}
+
+/** The entry of handoff `id`, which the history draws. */
+function handoffEntryOf(id: string): HTMLElement {
+  const found = document.querySelector<HTMLElement>(`[data-history-entry="handoff:${id}"]`);
+  if (found === null) throw new Error(`the history draws no entry of handoff ${id}`);
+  return found;
 }
 
 // Each handoff of the history is drawn open as the history draws its entry, from the list of the
-// issue's handoffs, its fields and each proof entry read with no press. Only the reader folds
-// it, by its Hide fields, and Show fields opens it again from the body read once.
+// issue's handoffs, its fields and each proof entry read with no press once the entry is within
+// one screen of the view. Only the reader folds it, by its Hide fields, and Show fields opens it
+// again from the body read once, though its entry is in view again.
 test("a handoff is drawn open with its fields and each proof entry, and a press on its line folds it", async () => {
   const restoreReads = stubHistoryReads([
     {
@@ -2809,20 +2851,27 @@ test("a handoff is drawn open with its fields and each proof entry, and a press 
       type: "handoff.recorded",
     } as DispatchEvent,
   ]);
-  const { body: _body, ...listed } = handoffRecord("Second pass");
-  handoffsRead().mockResolvedValue([listed]);
-  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue({
-    ...handoffRecord("Second pass"),
-    body: JSON.stringify({
-      proof: ["The unit cases pass.", "The type check passes."],
-      schemaVersion: 1,
-      summary: "Second pass",
-    }),
+  handoffsRead().mockResolvedValue([listedRecord()]);
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockResolvedValue({
+    bodies: [
+      {
+        body: JSON.stringify({
+          proof: ["The unit cases pass.", "The type check passes."],
+          schemaVersion: 1,
+          summary: "Second pass",
+        }),
+        id: "handoff-1",
+      },
+    ],
+    left: [],
   });
   let unmount: (() => void) | undefined;
 
   try {
     unmount = drawHistory(undefined).unmount;
+    await screen.findByRole("button", { name: CONTROL_LABELS.hide_fields });
+    await showHandoffs(near);
     await screen.findByText("Second pass");
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     expect(
@@ -2839,69 +2888,55 @@ test("a handoff is drawn open with its fields and each proof entry, and a press 
 
     await userEvent.click(toggle);
     await screen.findByText("Second pass");
+    await showHandoffs(near);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(getHandoff, "opening the handoff again read its body again").toHaveBeenCalledTimes(1);
+    expect(bodies, "opening the handoff again read its body again").toHaveBeenCalledTimes(1);
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
     restoreReads();
   }
 });
 
-/** Fails a refresh of the handoff over the body its opened fields draw (`Second pass`), and then
- *  its first read (`failRefreshOverHeld`). Where `refreshed` is given, it asserts as well that the
- *  handoff has been read that many times once the refresh has failed. */
-function failHandoffRefreshThenFirstRead(
-  queryClient: QueryClient,
-  getHandoff: Mock<typeof api.getHandoff>,
-  refreshed?: number
-): Promise<void> {
-  return failRefreshOverHeld({
-    client: queryClient,
-    failNextFetch: () => getHandoff.mockRejectedValueOnce(new Error("the handoff is down")),
-    held: "the fields",
-    queryKey: ["handoff", "handoff-1"],
-    refresh: () => queryClient.invalidateQueries(),
-    refreshFailed:
-      refreshed === undefined
-        ? undefined
-        : () => expect(getHandoff).toHaveBeenCalledTimes(refreshed),
-    stillDrawn: () => expect(screen.queryByText("Second pass")).not.toBeNull(),
-  });
-}
-
-// A handoff's opened fields hold its body whatever a later read's outcome, as the history holds
-// its log: an invalidation of every read after a write reads the body again, and a read that
-// fails then says no failure over the fields it held.
-test("a handoff's opened fields stay drawn when a read of them again fails", async () => {
-  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
+// A handoff's opened fields hold its body for the page's life, as a version never changes once
+// written: an invalidation of every read after a write reads the body no more, and a failure of
+// the bodies' read meanwhile says no failure over the fields held.
+test("a handoff's opened fields are not read again when every read of the page is, and stay drawn", async () => {
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockResolvedValue(bodiesOf("Second pass"));
   let unmount: (() => void) | undefined;
 
   try {
-    const drawn = drawHandoff();
+    const drawn = await drawHandoffs(near);
     unmount = drawn.unmount;
     await screen.findByText("Second pass");
 
-    getHandoff.mockRejectedValue(new Error("the handoff is down"));
+    bodies.mockRejectedValue(new Error("the bodies are down"));
     await act(async () => {
       await drawn.queryClient.invalidateQueries();
     });
-    expect(getHandoff).toHaveBeenCalledTimes(2);
+    await showHandoffs(near);
+    expect(
+      bodies,
+      "an invalidation of every read read the handoff's body again"
+    ).toHaveBeenCalledTimes(1);
     expect(
       screen.queryByRole("alert"),
-      "a failed read again of the handoff said a failure over the fields it held"
+      "the handoff said a failure over the fields it held"
     ).toBeNull();
     expect(
       screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
-      "a failed read again of the handoff offered a Retry over the fields it held"
+      "the handoff offered a Retry over the fields it held"
     ).toBeNull();
     expect(
       screen.queryByText("Second pass"),
-      "a failed read again of the handoff erased the fields it held"
+      "an invalidation of every read erased the fields the handoff held"
     ).not.toBeNull();
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
@@ -2909,20 +2944,21 @@ test("a handoff's opened fields stay drawn when a read of them again fails", asy
 // Retry sends is out. The focus of a keyboard reader on that Retry goes with its line, once the
 // read lands, to the fields it read, rather than falling to the page with the Retry.
 test("a handoff's Retry pressed by keyboard hands the focus on as its line goes, to the fields it read", async () => {
-  const getHandoff = spyOn(api, "getHandoff")
-    .mockRejectedValueOnce(new Error("the handoff is down"))
-    .mockResolvedValue(handoffRecord("Second pass"));
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockResolvedValue(bodiesOf("Second pass"));
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHandoff().unmount;
+    unmount = (await drawHandoffs(near)).unmount;
     const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     retry.focus();
     await userEvent.keyboard("{Enter}");
     await screen.findByText("Second pass");
 
-    expect(getHandoff).toHaveBeenCalledTimes(2);
+    expect(bodies).toHaveBeenCalledTimes(2);
     const active = document.activeElement;
     const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
     expect(
@@ -2931,31 +2967,42 @@ test("a handoff's Retry pressed by keyboard hands the focus on as its line goes,
     ).toBe(fields);
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
-// A handoff's Retry hands the focus on only after the reader's press of it. A read that answers on
-// its own - a window focus, an invalidation of every read after a write - takes the line away with
-// no press of the reader's, so the focus its Retry held stays on the page's body, as on every page
-// of Dispatch.
+// A handoff's Retry hands the focus on only after the reader's press of it. Another entry's
+// Retry, pressed for the same failed read, asks for this body again with its own and takes this
+// line away with no press of the reader's on it, so the focus its Retry held stays on the page's
+// body, as on every page of Dispatch.
 test("a handoff's Retry taken away by a read the reader did not press for leaves the focus on the page's body", async () => {
-  const getHandoff = spyOn(api, "getHandoff")
-    .mockRejectedValueOnce(new Error("the handoff is down"))
-    .mockResolvedValue(handoffRecord("Second pass"));
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockImplementation(async (_key, ids) => bodiesOf("Second pass", ids));
   let unmount: (() => void) | undefined;
 
   try {
-    const drawn = drawHandoff();
-    unmount = drawn.unmount;
-    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    unmount = (await drawHandoffs(near, ["handoff-1", "handoff-2"])).unmount;
+    const retry = await within(handoffEntryOf("handoff-1")).findByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
+    const other = await within(handoffEntryOf("handoff-2")).findByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
     act(() => retry.focus());
 
+    // The other entry's Retry, pressed with no move of the focus.
     await act(async () => {
-      await drawn.queryClient.invalidateQueries();
+      other.click();
     });
-    await screen.findByText("Second pass");
-    expect(getHandoff).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.getAllByText("Second pass")).toHaveLength(2));
+    expect(bodies).toHaveBeenCalledTimes(2);
+    expect(
+      [...(bodies.mock.calls.at(-1)?.[1] ?? [])].sort(),
+      "the other entry's Retry did not ask for this body again with its own"
+    ).toEqual(["handoff-1", "handoff-2"]);
     expect(retry.isConnected, "the handoff's Retry stayed once the read answered").toBe(false);
     expect(
       document.activeElement,
@@ -2963,36 +3010,35 @@ test("a handoff's Retry taken away by a read the reader did not press for leaves
     ).toBe(document.body);
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
 // With no body held, the line that says a read of it failed stays, its Retry busy, while the read
-// that Retry sent is out. A press of the busy Retry joins that read and sends no other. A press
-// moves no focus: a reader who presses the busy Retry, or comes back to it and presses it again,
-// keeps the focus there. A refresh that fails over a body held draws no line, so the Retry is a
-// read's that failed holding no body.
+// that Retry sent is out. A press of the busy Retry sends no other read. A press moves no focus: a
+// reader who presses the busy Retry, or comes back to it and presses it again, keeps the focus
+// there.
 test("a handoff's busy Retry sends no read while the one it sent is out, and keeps the focus", async () => {
-  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
+  const near = installIntersectionObserver();
   // The read the Retry sends is held out until the case lets it land.
-  const again = Promise.withResolvers<Handoff>();
+  const again = Promise.withResolvers<HandoffBodies>();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockImplementation(() => again.promise);
   let unmount: (() => void) | undefined;
 
   try {
-    const drawn = drawHandoff();
-    unmount = drawn.unmount;
-    await screen.findByText("Second pass");
-    await failHandoffRefreshThenFirstRead(drawn.queryClient, getHandoff, 2);
-    expect(getHandoff).toHaveBeenCalledTimes(3);
+    unmount = (await drawHandoffs(near)).unmount;
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
-    getHandoff.mockImplementation(() => again.promise);
+    expect(bodies).toHaveBeenCalledTimes(1);
 
     for (let press = 0; press < 3; press += 1) await userEvent.click(retry);
 
     expect(
-      getHandoff,
+      bodies,
       "each press of the busy Retry sent another read while one was out"
-    ).toHaveBeenCalledTimes(4);
+    ).toHaveBeenCalledTimes(2);
     expect(retry, "the Retry went while the read it sent is out").toBeInTheDocument();
     expect(retry, "Retry does not read busy while the read it sent is out").toHaveAttribute(
       "aria-busy",
@@ -3003,33 +3049,32 @@ test("a handoff's busy Retry sends no read while the one it sent is out, and kee
       "a press of the busy Retry moved the focus off it to the toggle"
     ).toBe(retry);
 
-    await act(async () => again.resolve(handoffRecord("Third pass")));
+    await act(async () => again.resolve(bodiesOf("Third pass")));
     await screen.findByText("Third pass");
     expect(screen.queryByRole("alert")).toBeNull();
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
 // A second press of a handoff's Retry made before React draws the read the first one sent finds
-// the render's `isFetching` still false. A press while the read is out joins it, sends no other
-// read, and moves no focus. A refresh that fails over a body held draws no line, so the Retry is a
-// read's that failed holding no body.
+// the render's state still that of no read out. A press while the read is out sends no other
+// read, and moves no focus.
 test("two presses of a handoff's Retry before a render send one read", async () => {
-  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
+  const near = installIntersectionObserver();
   // Every read sent from here is held out until the case lets it land.
-  const again = Promise.withResolvers<Handoff>();
+  const again = Promise.withResolvers<HandoffBodies>();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockImplementation(() => again.promise);
   let unmount: (() => void) | undefined;
 
   try {
-    const drawn = drawHandoff();
-    unmount = drawn.unmount;
-    await screen.findByText("Second pass");
-    await failHandoffRefreshThenFirstRead(drawn.queryClient, getHandoff, 2);
-    expect(getHandoff).toHaveBeenCalledTimes(3);
+    unmount = (await drawHandoffs(near)).unmount;
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
-    getHandoff.mockImplementation(() => again.promise);
+    expect(bodies).toHaveBeenCalledTimes(1);
     act(() => retry.focus());
 
     // Both presses in one task inside one `act`, so React draws nothing between them.
@@ -3038,21 +3083,22 @@ test("two presses of a handoff's Retry before a render send one read", async () 
       retry.click();
     });
     expect(
-      getHandoff,
-      "the second press ended the read the first one sent and sent another"
-    ).toHaveBeenCalledTimes(4);
+      bodies,
+      "the second press of Retry sent another read while the first one's was out"
+    ).toHaveBeenCalledTimes(2);
     expect(
       document.activeElement,
       "the press that sent the read moved the focus off the Retry, whose line stays while the read is out"
     ).toBe(retry);
 
-    await act(async () => again.resolve(handoffRecord("Third pass")));
+    await act(async () => again.resolve(bodiesOf("Third pass")));
     await screen.findByText("Third pass");
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(getHandoff).toHaveBeenCalledTimes(4);
+    expect(bodies).toHaveBeenCalledTimes(2);
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
@@ -3063,53 +3109,55 @@ test("two presses of a handoff's Retry before a render send one read", async () 
 // Show fields with the handoff's read failing, then Enter twice on Retry, left the toggle
 // reading "Show fields" and the fields shut once the read landed.
 test("a handoff's Retry pressed twice by keyboard leaves its fields open once the read lands", async () => {
-  const getHandoff = spyOn(api, "getHandoff").mockRejectedValueOnce(
-    new Error("the handoff is down")
-  );
+  const near = installIntersectionObserver();
   // The read the Retry sends is held out until the case lets it land.
-  const again = Promise.withResolvers<Handoff>();
+  const again = Promise.withResolvers<HandoffBodies>();
+  const bodies = spyOn(api, "getHandoffBodies").mockRejectedValueOnce(
+    new Error("the bodies are down")
+  );
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHandoff().unmount;
+    unmount = (await drawHandoffs(near)).unmount;
     const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
-    getHandoff.mockImplementation(() => again.promise);
+    bodies.mockImplementation(() => again.promise);
     retry.focus();
     await userEvent.keyboard("{Enter}{Enter}");
-    await act(async () => again.resolve(handoffRecord("Second pass")));
+    await act(async () => again.resolve(bodiesOf("Second pass")));
 
     expect(
       toggle,
       "the second press of Retry landed on the toggle and shut the fields it asked for"
     ).toHaveAttribute("aria-expanded", "true");
     await screen.findByText("Second pass");
-    expect(getHandoff, "the two presses read the handoff more than once").toHaveBeenCalledTimes(2);
+    expect(bodies, "the two presses read the handoff more than once").toHaveBeenCalledTimes(2);
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
-// With no body held, a fetch of the read clears its failure and puts it back to pending as it
-// starts, so a press of Retry drew the loading line in its line's place, and the reader's focus
-// went from the Retry to that line. The line that said the read failed stays instead, its Retry
-// busy and holding the focus while the read it sent is out, where a second Enter joins that read
-// and the fields stay open; it stays, with the same Retry and the focus, where the read fails
-// again, and goes once a read lands, handing the focus to the fields it drew.
+// With no body held, the line that said the read failed stays, its Retry busy and holding the
+// focus while the read it sent is out, where a second Enter sends nothing more and the fields
+// stay open; it stays, with the same Retry and the focus, where the read fails again, and goes
+// once a read lands, handing the focus to the fields it drew. The loading line never takes the
+// place of the failure its Retry reads again.
 test("a handoff's Retry with no body held keeps its line and the focus while its read is out, then hands it to what the read drew", async () => {
-  const getHandoff = spyOn(api, "getHandoff").mockRejectedValueOnce(
-    new Error("the handoff is down")
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockRejectedValueOnce(
+    new Error("the bodies are down")
   );
   // Each read a Retry sends is held out until the case lets it land.
-  let again = Promise.withResolvers<Handoff>();
+  let again = Promise.withResolvers<HandoffBodies>();
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHandoff().unmount;
+    unmount = (await drawHandoffs(near)).unmount;
     const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
-    getHandoff.mockImplementation(() => again.promise);
+    bodies.mockImplementation(() => again.promise);
     retry.focus();
     await userEvent.keyboard("{Enter}");
     await waitFor(() => {
@@ -3138,9 +3186,9 @@ test("a handoff's Retry with no body held keeps its line and the focus while its
     expect(document.activeElement, "the second press of the busy Retry moved the focus").toBe(
       retry
     );
-    expect(getHandoff, "the second press sent another read").toHaveBeenCalledTimes(2);
+    expect(bodies, "the second press sent another read").toHaveBeenCalledTimes(2);
 
-    await act(async () => again.reject(new Error("the handoff is still down")));
+    await act(async () => again.reject(new Error("the bodies are still down")));
     await waitFor(() =>
       expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
         "aria-busy"
@@ -3152,9 +3200,9 @@ test("a handoff's Retry with no body held keeps its line and the focus while its
     ).toBe(retry);
     expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
 
-    again = Promise.withResolvers<Handoff>();
+    again = Promise.withResolvers<HandoffBodies>();
     await userEvent.keyboard("{Enter}");
-    await act(async () => again.resolve(handoffRecord("Second pass")));
+    await act(async () => again.resolve(bodiesOf("Second pass")));
     await screen.findByText("Second pass");
     const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
     expect(fields?.tagName).toBe("DL");
@@ -3163,32 +3211,31 @@ test("a handoff's Retry with no body held keeps its line and the focus while its
       "the failure line went with the focus on its Retry and did not hand it to the fields the read drew"
     ).toBe(fields);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(getHandoff).toHaveBeenCalledTimes(3);
+    expect(bodies).toHaveBeenCalledTimes(3);
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
-// A refresh that fails over a body held draws no line, and the fields stay drawn. With no body
-// held, the line that says a read of it failed stays while the read its Retry sent is out, so the
-// focus of a keyboard reader stays on the busy Retry, where a second Enter joins that read and
-// the fields stay open; once the read lands, the line goes and hands the focus to the fields it
-// drew.
-test("a refresh that fails over a handoff's body held draws no line, and its Retry keeps the focus while its read is out, then hands it to the fields", async () => {
-  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
+// With no body held, the line that says a read of it failed stays while the read its Retry sent
+// is out, so the focus of a keyboard reader stays on the busy Retry, where a second Enter sends
+// nothing more and the fields stay open; once the read lands, the line goes and hands the focus
+// to the fields it drew.
+test("a handoff's Retry keeps the focus through a second Enter while its read is out, then hands it to the fields", async () => {
+  const near = installIntersectionObserver();
   // The read the Retry sends is held out until the case lets it land.
-  const again = Promise.withResolvers<Handoff>();
+  const again = Promise.withResolvers<HandoffBodies>();
+  const bodies = spyOn(api, "getHandoffBodies")
+    .mockRejectedValueOnce(new Error("the bodies are down"))
+    .mockImplementation(() => again.promise);
   let unmount: (() => void) | undefined;
 
   try {
-    const drawn = drawHandoff();
-    unmount = drawn.unmount;
+    unmount = (await drawHandoffs(near)).unmount;
     const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
-    await screen.findByText("Second pass");
-    await failHandoffRefreshThenFirstRead(drawn.queryClient, getHandoff);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
-    getHandoff.mockImplementation(() => again.promise);
     retry.focus();
 
     await userEvent.keyboard("{Enter}");
@@ -3204,9 +3251,9 @@ test("a refresh that fails over a handoff's body held draws no line, and its Ret
     expect(document.activeElement, "the second press of the busy Retry moved the focus").toBe(
       retry
     );
-    expect(getHandoff, "the second press sent another read").toHaveBeenCalledTimes(4);
+    expect(bodies, "the second press sent another read").toHaveBeenCalledTimes(2);
 
-    await act(async () => again.resolve(handoffRecord("Third pass")));
+    await act(async () => again.resolve(bodiesOf("Third pass")));
     await screen.findByText("Third pass");
     expect(screen.queryByRole("alert")).toBeNull();
     const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
@@ -3217,42 +3264,52 @@ test("a refresh that fails over a handoff's body held draws no line, and its Ret
     ).toBe(fields);
   } finally {
     unmount?.();
-    getHandoff.mockRestore();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
-// A handoff's prose field draws through the shared renderer from the server's reading
-// (`field_trees`), so a `dispatch://` reference in it reads as its target's name and links to
-// it, never as the raw address.
+// A handoff's prose field draws through the shared renderer from the server's reading in the
+// bodies answer (`field_trees`), so a `dispatch://` reference in it reads as its target's name
+// and links to it, never as the raw address.
 test("a handoff's prose field draws a reference as its target's name, not its address", async () => {
   await warmMarkdownRenderer();
   const reference = "dispatch://CORE-2";
   const summary = `Follows ${reference} and **keeps** the tests green.`;
-  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue({
-    ...handoffRecord(summary),
-    body: JSON.stringify({
-      files: ["a.ts"],
-      proof: [`See ${reference}`],
-      schemaVersion: 1,
-      summary,
-    }),
-    field_trees: {
-      "/proof/0": displayTree(`See ${reference}`) as DisplayTree,
-      "/summary": displayTree(summary) as DisplayTree,
-    },
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockResolvedValue({
+    bodies: [
+      {
+        body: JSON.stringify({
+          files: ["a.ts"],
+          proof: [`See ${reference}`],
+          schemaVersion: 1,
+          summary,
+        }),
+        field_trees: {
+          "/proof/0": displayTree(`See ${reference}`) as DisplayTree,
+          "/summary": displayTree(summary) as DisplayTree,
+        },
+        id: "handoff-1",
+      },
+    ],
+    left: [],
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(["issue-summary", "CORE-2"], {
-    documents: [],
-    key: "CORE-2",
-    project: "CORE",
-    status: "in_progress",
-    title: "Warm the cache",
-  });
-  const { unmount } = drawHandoff(queryClient);
   const summaryField = () => document.querySelector('[data-handoff-field="summary"]');
+  let unmount: (() => void) | undefined;
 
   try {
+    unmount = (
+      await drawHandoffs(near, ["handoff-1"], (queryClient) =>
+        queryClient.setQueryData(["issue-summary", "CORE-2"], {
+          documents: [],
+          key: "CORE-2",
+          project: "CORE",
+          status: "in_progress",
+          title: "Warm the cache",
+        })
+      )
+    ).unmount;
     const link = await waitFor(() => {
       const found = summaryField()?.querySelector<HTMLAnchorElement>(
         `a[data-dispatch-ref="${reference}"]`
@@ -3278,9 +3335,9 @@ test("a handoff's prose field draws a reference as its target's name, not its ad
       )
     ).toEqual(["a.ts"]);
   } finally {
-    unmount();
-    queryClient.clear();
-    getHandoff.mockRestore();
+    unmount?.();
+    near.restore();
+    bodies.mockRestore();
   }
 });
 
@@ -3607,7 +3664,8 @@ describe("the history is the issue's one timeline", () => {
   });
 
   // The handoff a run reports is drawn in that run's entry, open, from the list of handoffs, and
-  // nowhere else in the history.
+  // nowhere else in the history; its body, and the body of the handoff no run reports, come from
+  // one bodies read once their entries are within one screen of the view.
   test("T2: the handoff a run reports is drawn open in its entry", async () => {
     const restoreReads = stubHistoryReads([claim(1)]);
     stepsRead().mockResolvedValue(
@@ -3617,13 +3675,21 @@ describe("the history is the issue's one timeline", () => {
       listedHandoff("handoff-1", 60),
       listedHandoff("alone", 30, 2),
     ]);
-    const getHandoff = spyOn(api, "getHandoff").mockImplementation(async (id) => ({
-      ...handoffRecord(id === "handoff-1" ? "First pass" : "Second pass"),
-      id,
+    const near = installIntersectionObserver();
+    const bodies = spyOn(api, "getHandoffBodies").mockImplementation(async (_key, ids) => ({
+      bodies: ids.map((id) => ({
+        body: handoffRecord(id === "handoff-1" ? "First pass" : "Second pass").body,
+        id,
+      })),
+      left: [],
     }));
     let unmount: (() => void) | undefined;
     try {
       unmount = drawHistory(undefined).unmount;
+      await waitFor(() =>
+        expect(screen.getAllByRole("button", { name: CONTROL_LABELS.hide_fields })).toHaveLength(2)
+      );
+      await showHandoffs(near);
       await waitFor(() =>
         expect(
           runEntry("implement-1").querySelector('[data-handoff-field="summary"] dd')?.textContent
@@ -3647,9 +3713,11 @@ describe("the history is the issue's one timeline", () => {
           "Second pass"
         )
       );
+      expect(bodies).toHaveBeenCalledTimes(1);
     } finally {
       unmount?.();
-      getHandoff.mockRestore();
+      near.restore();
+      bodies.mockRestore();
       restoreReads();
     }
   });
@@ -3893,6 +3961,69 @@ describe("the history is the issue's one timeline", () => {
     } finally {
       unmount();
       queryClient.clear();
+      restoreReads();
+    }
+  });
+
+  // A body read for an entry above the one the reader reads grows that entry above Details'
+  // view. The history's anchor is told of the growth by the resize observer of its list, in the
+  // frame after the body's own commit, which is no commit of the anchor's, and scrolls Details by
+  // as much, so the reader's entry stays where it was on the screen.
+  test("T7: a body that arrives above the reader's entry leaves it in place", async () => {
+    // The newest entry is the handoff's; under it, twelve claims.
+    const restoreReads = stubHistoryReads(
+      Array.from({ length: 12 }, (_, index) => claimAgo(12 - index, 60 + index))
+    );
+    handoffsRead().mockResolvedValue([listedHandoff("handoff-1", 5)]);
+    const near = installIntersectionObserver();
+    // The bodies read is held out until the case lets it land.
+    const answer = Promise.withResolvers<HandoffBodies>();
+    const bodies = spyOn(api, "getHandoffBodies").mockImplementation(() => answer.promise);
+    // Details' own box, which the history scrolls in, at the top of the window.
+    const box = document.body.appendChild(document.createElement("div"));
+    box.style.overflowY = "auto";
+    Object.defineProperty(box, "clientHeight", { configurable: true, value: VIEW_HEIGHT });
+    // The handoff's entry is one row tall while its body is read, and 300 px once its fields are.
+    const restoreLayout = installDetailsLayout(box, (row) =>
+      row.querySelector("[data-handoff-field]") === null ? ROW_HEIGHT : 300
+    );
+    // The anchor hears a change of height outside its commits from resize observers, which
+    // happy-dom never calls back: the case calls them back as the frame after the change does.
+    const sizes = installResizeObserver();
+    let unmount: (() => void) | undefined;
+
+    try {
+      unmount = drawHistory(undefined, box).unmount;
+      await waitFor(() => expect(box.querySelectorAll("[data-event-seq]")).toHaveLength(13));
+      await showHandoffs(near);
+      expect(bodies).toHaveBeenCalledTimes(1);
+      // The reader scrolls down past the handoff's entry, and their focus goes to an entry
+      // below it, which names their place.
+      act(() => {
+        box.scrollTop = 200;
+        box.dispatchEvent(new Event("scroll"));
+      });
+      const reading = box.querySelectorAll<HTMLElement>("[data-event-seq]")[6];
+      if (reading === undefined) throw new Error("the history draws no seventh entry");
+      act(() => within(reading).getByRole("button").focus());
+      const before = reading.getBoundingClientRect().top;
+
+      await act(async () => answer.resolve(bodiesOf("Second pass")));
+      await screen.findByText("Second pass");
+      sizes.resize();
+
+      expect(
+        reading.getBoundingClientRect().top,
+        "the body that arrived above the reader's entry moved it"
+      ).toBe(before);
+      expect(box.scrollTop).toBe(200 + 300 - ROW_HEIGHT);
+    } finally {
+      unmount?.();
+      sizes.restore();
+      restoreLayout();
+      box.remove();
+      near.restore();
+      bodies.mockRestore();
       restoreReads();
     }
   });

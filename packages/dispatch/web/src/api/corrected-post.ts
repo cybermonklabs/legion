@@ -250,6 +250,8 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   "github-link": "a linked pull request as GitHub answers it",
   "github-link-checks": "a linked pull request's checks as GitHub answers them",
   handoff: "one phase handoff with its body: a handoff is no comment or message",
+  "handoff-body":
+    "one handoff's body, kept for the page's life: a handoff is no comment or message",
   handoffs: "an issue's phase handoffs, without their bodies",
   "issue-ancestors": "the parents of the issues a listing holds: keys and titles",
   "issue-summary": "an issue's title and status for a link's card (census C.15)",

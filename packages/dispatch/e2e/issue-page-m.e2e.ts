@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { type LegionRole, roleToken } from "@legion/contracts";
+import { HANDOFF_BODIES_MAX_IDS, type LegionRole, roleToken } from "@legion/contracts";
 
 import type { DispatchEvent, IssueAskThreadRow } from "../web/src/api/types";
 import { conversationItemId, pinnedItemMarker } from "../web/src/features/issue/pins";
@@ -116,6 +116,7 @@ import {
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
 import {
   askFacts,
+  bandPlaces,
   daemonOf,
   drawnInstant,
   fieldsPastTheirEntry,
@@ -133,6 +134,7 @@ import {
   historyRuns,
   historyShowMore,
   historyShowMoreState,
+  holdBodiesReads,
   newestHistoryEntry,
   olderPageAnswered,
   putStepExperiment,
@@ -6375,6 +6377,9 @@ async function seedRecentRuns(): Promise<{
 // never retries 500 ms apart. Retry, pressed after those two reads and long before the
 // catch-up's next at 15 s, reads the runs again, and each run's entry is drawn above the entries
 // drawn before, as each is newer than all of them (the check b-c-runs-failed, its runs half).
+// Then, on a load of its own, a read of the bodies Dispatch refuses says so in the entry of the
+// handoff it was for, with a Retry, and the handoff's phase, version, author and time stay; its
+// Retry, with the read let through, reads the body and the fields appear (its bodies half).
 // SLOW(>=2s): three step records and a handoff written, and the catch-up's two refused reads.
 test("the history says when the runs fail to read, with a Retry", async ({ browser }) => {
   await phase(browser, seedRecentRuns, async (page, seeded) => {
@@ -6428,6 +6433,46 @@ test("the history says when the runs fail to read, with a Retry", async ({ brows
     await expect(history.getByRole("alert")).toHaveCount(0);
     await expect(handoffLineOf(page, seeded.handoff)).toBeVisible();
     expect(reads, "Retry did not read the runs once more").toHaveLength(4);
+
+    // The bodies half, on a load of its own, whose page holds no body read yet.
+    const fields = handoffFieldsOf(page, seeded.handoff);
+    await expect(fields).toHaveText([/A test pass no run reports\.$/u]);
+    const line = (await handoffLineOf(page, seeded.handoff).textContent()) ?? "";
+    const bodiesReads: number[] = [];
+    let refusingBodies = true;
+    await page.route(
+      (url) => url.pathname === `/api/v1/issues/${seeded.key}/handoffs/bodies`,
+      (route) => {
+        bodiesReads.push(Date.now());
+        if (!refusingBodies) return route.fallback();
+        return route.fulfill({
+          body: JSON.stringify({ code: "INTERNAL", error: "refused" }),
+          contentType: "application/json",
+          status: 500,
+        });
+      }
+    );
+    await page.reload();
+    await issueRead(page);
+    await openDetails(page);
+    const entry = history.locator(`[data-history-entry="handoff:${seeded.handoff}"]`);
+    await expect(entry.getByRole("alert")).toHaveText(ANSWER_LINES.handoff_unreadable);
+    await expect(
+      handoffLineOf(page, seeded.handoff),
+      "the handoff's phase, version, author or time went with its failed read"
+    ).toHaveText(line);
+    await expect(handoffLineOf(page, seeded.handoff).locator("time")).toHaveCount(1);
+    await expect(fields).toHaveCount(0);
+    expect(bodiesReads, "the bodies were not read once").toHaveLength(1);
+
+    refusingBodies = false;
+    await entry.getByRole("button", { exact: true, name: CONTROL_LABELS.retry }).click();
+    await expect(fields, "Retry did not draw the handoff's fields").toHaveText([
+      /A test pass no run reports\.$/u,
+    ]);
+    await expect(entry.getByRole("alert")).toHaveCount(0);
+    await expect(handoffLineOf(page, seeded.handoff)).toHaveText(line);
+    expect(bodiesReads, "Retry did not read the bodies once more").toHaveLength(2);
   });
 });
 
@@ -6621,13 +6666,21 @@ interface TimelineSeed {
   readonly runs: readonly SeededRun[];
 }
 
+/** A commit's id, a path and an address as real handoffs hold them: each one word with no space,
+ *  40, 140 and 200 characters long, wider than an entry at 390 px. */
+const LONG_SHA = "3f9c2a7e1b4d6f8091a2b3c4d5e6f708192a3b4c";
+const LONG_PATH = `packages/dispatch/${"nested-directory/".repeat(6)}handoff-body-load.ts`;
+const LONG_URL = `https://example.com/${"segment-".repeat(22)}page`;
+
 /**
  * The issue of the one timeline: 22 threads the project's daemon began three days ago, more than
  * one page of the history and older than everything else; a run of the planner's on an earlier
  * day that reports the plan's handoff; today, an implementation that passed and reports its
- * handoff, whose body holds a list and an object; a review that failed, sent the task back to
- * step 2 and reports its handoff, whose findings are a list of objects; and the implementation's
- * second run, which runs and reports none; and the tester's handoff, which no run reports.
+ * handoff, whose body holds a list and an object, and a commit's id, a path and an address with
+ * no space in them, at the top, in a list and in an object; a review that failed, sent the task
+ * back to step 2 and reports its handoff, whose findings are a list of objects; and the
+ * implementation's second run, which runs and reports none; and the tester's handoff, which no
+ * run reports.
  */
 async function seedTimeline(): Promise<TimelineSeed> {
   await createProject({ key: "CORE", name: "Core" });
@@ -6650,6 +6703,9 @@ async function seedTimeline(): Promise<TimelineSeed> {
         "The first pass of the timeline: the history draws each run as one entry with the handoff it reported.",
       filesChanged: ["web/src/a.ts", "web/src/b.ts"],
       implementerProof: { verdict: "verified", how: "Each check passed." },
+      head: LONG_SHA,
+      commits: [LONG_PATH, LONG_SHA],
+      links: { pullRequest: LONG_URL },
     }),
     review: await write("review", {
       decision: "changes_requested",
@@ -6982,6 +7038,315 @@ test("the history is the one timeline: each run holds the handoff it reported @p
       "aria-expanded",
       "true"
     );
+  } finally {
+    await alice.close();
+  }
+});
+
+/** `count` short strings, each 40 characters, the first naming `label`. */
+function shortStrings(label: string, count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `${label}, entry ${index}`.padEnd(40, "."));
+}
+
+/**
+ * The body of a handoff whose stored text the bodies answer sends as exactly `size` bytes, as
+ * Go's `json.Marshal` of that text counts them: one JSON object with one list of short strings
+ * (`shortStrings`), the last padded to the size. The text holds no character JSON escapes but
+ * its quotes, so it is sent as its length, its own two quotes and one byte more for each quote
+ * in it: 45 bytes for each item of 40 characters, with its comma.
+ */
+function handoffSentAs(label: string, size: number): { items: string[] } {
+  const sent = (items: readonly string[]) => JSON.stringify(JSON.stringify({ items })).length;
+  const items = shortStrings(label, Math.floor((size - sent([])) / 45));
+  const last = items.length - 1;
+  items[last] = `${items[last]}${".".repeat(size - sent(items))}`;
+  if (sent(items) !== size) {
+    throw new Error(`the body of ${label} is sent as ${sent(items)} bytes, not ${size}`);
+  }
+  return { items };
+}
+
+/** An issue of the band's seed and its handoffs, newest first, as the history draws them. */
+interface BandIssue {
+  readonly handoffs: readonly string[];
+  readonly key: string;
+}
+
+/**
+ * The two issues of the band (the check b-c-band). `runs`: twenty runs of the implementer, two
+ * minutes apart, each reporting a handoff of about 20,000 bytes, whose summary names its run and
+ * whose notes are a list of 440 short strings, so the entries reach well past one screen at
+ * every width. `large`: six handoffs no run reports, each sent as 250,000 bytes, so the bodies
+ * route answers the first four asked and leaves two.
+ */
+async function seedBand(): Promise<{ readonly large: BandIssue; readonly runs: BandIssue }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const runs = await createIssue({
+    project: "CORE",
+    title: "Twenty runs, each with a large handoff",
+  });
+  const reported: string[] = [];
+  for (let run = 1; run <= 20; run += 1) {
+    const handoff = await createHandoff(
+      runs.key,
+      "implement",
+      {
+        phase: "implement",
+        summary: `The handoff of run ${run}.`,
+        notes: shortStrings(`Run ${run}`, 440),
+      },
+      implementer
+    );
+    const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    await putStep(runs.key, crypto.randomUUID(), {
+      agent: `legion-core-${runs.key.toLowerCase()}-implementer`,
+      ended_at: ago(60 - 2 * run),
+      generation: 1,
+      kind: "step",
+      model: "anthropic/claude-opus-5",
+      report: handoff.id,
+      result: "passed",
+      role: "implementer",
+      started_at: ago(61 - 2 * run),
+      step: 2,
+      task: "default",
+      type: "implementation",
+    });
+    reported.unshift(handoff.id);
+  }
+  const large = await createIssue({ project: "CORE", title: "Six handoffs of 250,000 bytes" });
+  const written: string[] = [];
+  for (let index = 1; index <= 6; index += 1) {
+    const body = handoffSentAs(`Handoff ${index}`, 250_000);
+    written.unshift((await createHandoff(large.key, "review", body, implementer)).id);
+  }
+  return {
+    large: { handoffs: written, key: large.key },
+    runs: { handoffs: reported, key: runs.key },
+  };
+}
+
+/** The entry of the history the point (`x`, `y`) of the page stands in: its id, and its top. */
+function entryAtPoint(page: Page, x: number, y: number): Promise<{ id: string; top: number }> {
+  return page.evaluate(
+    ([atX, atY]) => {
+      const entry = document.elementFromPoint(atX, atY)?.closest("[data-history-entry]");
+      const id = entry?.getAttribute("data-history-entry");
+      if (entry == null || id == null) throw new Error(`no entry of the history at ${atX}, ${atY}`);
+      return { id, top: entry.getBoundingClientRect().top };
+    },
+    [x, y] as const
+  );
+}
+
+/** The top of the history's entry `id` on the screen. */
+async function entryTop(page: Page, id: string): Promise<number> {
+  // The row waited for the entry drawn before it reads this, so one instant's box is its box.
+  const box = await historyPanel(page).locator(`[data-history-entry="${id}"]`).boundingBox();
+  if (box === null) throw new Error(`the history draws no entry ${id}`);
+  return box.y;
+}
+
+/**
+ * The band's first half, over `runs`: the first read of the bodies names only the handoffs
+ * within one screen of Details' view, in the order drawn, and while it is held each of their
+ * entries draws its handoff's phase, version, author and time and the word for a body being
+ * read. Then the reader turns the wheel until the topmost handoff not read yet stands half a
+ * screen above the view: the scroll sends the next read, which asks for it, and as the bodies of
+ * the entries above the reader's arrive, the entry under the reader's pointer keeps its top.
+ */
+async function readTheBand(page: Page, runs: BandIssue): Promise<void> {
+  const held = await holdBodiesReads(page, runs.key);
+  await gotoIssue(page, `/issues/${runs.key}/activity`);
+  await expect(historyPanel(page)).toBeVisible();
+  await expect.poll(() => held.reads.length, { message: "the history read no body" }).toBe(1);
+  const first = held.reads[0];
+  if (first === undefined) throw new Error("the history read no body");
+  // The read is held, so every entry stands where it stood as the page sent it.
+  const places = await bandPlaces(page, runs.handoffs);
+  const near = runs.handoffs.filter((id) => places[id]?.near === true);
+  const edge = runs.handoffs.filter((id) => places[id]?.edge === true);
+  expect(
+    runs.handoffs.length - near.length,
+    "every handoff stands within one screen of the view, so the seed proves nothing"
+  ).toBeGreaterThan(0);
+  expect(first.ids.length).toBeLessThanOrEqual(HANDOFF_BODIES_MAX_IDS);
+  expect(
+    first.ids.filter((id) => !near.includes(id) && !edge.includes(id)),
+    "the first read asks for a handoff beyond one screen of the view"
+  ).toEqual([]);
+  expect(
+    near.filter((id) => !first.ids.includes(id) && !edge.includes(id)),
+    "the first read leaves out a handoff within one screen of the view"
+  ).toEqual([]);
+  expect(first.ids, "the first read does not ask in the order drawn").toEqual(
+    runs.handoffs.filter((id) => first.ids.includes(id))
+  );
+  for (const id of first.ids) {
+    const version = runs.handoffs.length - runs.handoffs.indexOf(id);
+    const line = handoffLineOf(page, id);
+    await expect(
+      line,
+      `the pending handoff ${id} does not name its phase and version`
+    ).toContainText(`recorded the implement handoff, version ${version}`);
+    await expect(line, `the pending handoff ${id} does not name its author`).toContainText(
+      implementer.origin.session_title
+    );
+    await expect(line.locator("time"), `the pending handoff ${id} does not say when`).toHaveCount(
+      1
+    );
+    await expect(
+      historyPanel(page).locator(`[data-handoff-line="${id}"] ~ span [role="status"]`),
+      `the pending handoff ${id} does not say its body is being read`
+    ).toHaveText(ANSWER_LINES.loading_handoff);
+  }
+  await first.release();
+  for (const id of first.ids) {
+    await expect(handoffFieldsOf(page, id).filter({ hasText: "The handoff of run" })).toHaveCount(
+      1
+    );
+  }
+
+  // The reader turns the wheel, the pointer at the middle of Details' view, until the topmost
+  // handoff not read yet stands half a screen above the view.
+  const unread = runs.handoffs.find((id) => !first.ids.includes(id));
+  if (unread === undefined) throw new Error("the first read asked for every handoff");
+  const view = await historyViewport(page);
+  // The history was waited for visible above, so its box is drawn at this instant.
+  const panel = await historyPanel(page).boundingBox();
+  if (panel === null) throw new Error("the history has no box");
+  const x = panel.x + panel.width / 2;
+  const y = (view.top + view.bottom) / 2;
+  // Every handoff's line was drawn before the first read went out, so its place has a box now.
+  const unreadTop = await historyPanel(page)
+    .locator(`[data-handoff-line="${unread}"] ~ span`)
+    .boundingBox();
+  if (unreadTop === null) throw new Error(`the history draws no handoff ${unread}`);
+  await page.mouse.move(x, y);
+  await page.mouse.wheel(0, unreadTop.y - view.top + (view.bottom - view.top) / 2);
+  let last = Number.NaN;
+  await expect
+    .poll(
+      async () => {
+        const now = await historyScrollTop(page);
+        const still = now === last;
+        last = now;
+        return still;
+      },
+      { intervals: [200], message: "the wheel's scroll of Details never came to rest" }
+    )
+    .toBe(true);
+  await page.mouse.move(x, y + 1);
+  await expect.poll(() => held.reads.length, { message: "the scroll read no body" }).toBe(2);
+  const second = held.reads[1];
+  expect(second?.ids, "the scroll's read does not ask for the handoff it brought near").toContain(
+    unread
+  );
+  expect(
+    (await bandPlaces(page, [unread]))[unread]?.above,
+    "the handoff the scroll brought near stands in the view, not above it"
+  ).toBe(true);
+  const reading = await entryAtPoint(page, x, y + 1);
+  held.passAll();
+  for (const id of second?.ids ?? []) {
+    await expect(handoffFieldsOf(page, id).filter({ hasText: "The handoff of run" })).toHaveCount(
+      1
+    );
+  }
+  await expect
+    .poll(async () => Math.abs((await entryTop(page, reading.id)) - reading.top), {
+      message: `the entry under the reader's pointer (${reading.id}) moved as bodies above it arrived`,
+    })
+    .toBeLessThanOrEqual(1);
+}
+
+/**
+ * The band's second half, over `large`: the first read asks for the six handoffs newest first,
+ * and its answer leaves the two oldest. With the reader not scrolling, 2 seconds after that
+ * answer is drawn the page asks for the left ones whose entries stand within one screen of the
+ * view, as they stand once the answer is drawn, and for none beyond it; `every` says that the
+ * viewport holds the six in its view, so both are asked for. Answers the viewport's height that
+ * holds the six, as drawn once their bodies are.
+ */
+async function readTheLeftIds(page: Page, large: BandIssue, every: boolean): Promise<number> {
+  const held = await holdBodiesReads(page, large.key);
+  await gotoIssue(page, `/issues/${large.key}/activity`);
+  await expect.poll(() => held.reads.length, { message: "the history read no body" }).toBe(1);
+  const first = held.reads[0];
+  if (first === undefined) throw new Error("the history read no body");
+  expect(first.ids, "the first read does not ask for the six handoffs, newest first").toEqual(
+    large.handoffs
+  );
+  held.passAll();
+  await first.release();
+  const answered = first.answeredAt() ?? Date.now();
+  const kept = large.handoffs.slice(0, 4);
+  const left = large.handoffs.slice(4);
+  for (const id of kept) await expect(handoffFieldsOf(page, id)).toHaveCount(1);
+  const drawnAt = Date.now();
+  for (const id of left) {
+    await expect(
+      historyPanel(page).locator(`[data-handoff-line="${id}"] ~ span [role="status"]`),
+      `the answer did not leave handoff ${id}`
+    ).toHaveText(ANSWER_LINES.loading_handoff);
+  }
+  const places = await bandPlaces(page, left);
+  const near = left.filter((id) => places[id]?.near === true);
+  expect(
+    left.filter((id) => places[id]?.edge === true),
+    "a left handoff stands at an edge of the band, where the row cannot tell which side"
+  ).toEqual([]);
+  expect(near, "the viewport does not hold the six handoffs within one screen").toEqual(
+    every ? left : near
+  );
+  // The window the claim is about: 2 s after the answer is drawn the page asks for the left ids
+  // in the band, and 1.5 s more lets that read reach the route before the row reads what came.
+  await page.waitForTimeout(Math.max(0, drawnAt + 3_500 - Date.now()));
+  expect(
+    held.reads.slice(1).map((read) => read.ids),
+    "the reads after the first do not ask for the left handoffs within one screen alone"
+  ).toEqual([near].filter((ids) => ids.length > 0));
+  for (const read of held.reads.slice(1)) {
+    expect(
+      read.sentAt - answered,
+      "the left handoffs were asked for sooner than 2 s after the answer"
+    ).toBeGreaterThanOrEqual(1_900);
+  }
+  for (const id of near) await expect(handoffFieldsOf(page, id)).toHaveCount(1);
+  // The four bodies were waited for drawn above, so the last entry has its box at this instant.
+  const lastEntry = await historyPanel(page)
+    .locator(`[data-history-entry="handoff:${large.handoffs.at(-1)}"]`)
+    .boundingBox();
+  const view = await historyViewport(page);
+  const size = page.viewportSize();
+  if (lastEntry === null || size === null) throw new Error("the history has no box");
+  return size.height + Math.max(0, Math.ceil(lastEntry.y + lastEntry.height - view.bottom)) + 120;
+}
+
+// The history reads a handoff's body only once the handoff's entry is within one screen of
+// Details' view (the check b-c-band): the first read names those within one screen alone, each
+// pending entry draws its handoff's phase, version, author and time and the word for a body
+// being read, a scroll sends the next read, and the reader's entry keeps its place as the bodies
+// of entries above it arrive. An answer that leaves ids, as the route's 1 MiB leaves two of six
+// bodies of 250,000 bytes, is followed 2 seconds after it is drawn by a read of the left ids
+// within one screen and of none beyond; at a viewport tall enough that all six stand within one
+// screen, that read names both. It carries `@phone` for the reader's place at 390 px, where the
+// entries are tallest and the place-keeping control of the check is read.
+// SLOW(>=2s): 26 handoffs and 20 runs written, three loads, and two windows of 3.5 s.
+test("the history reads the bodies of the entries near the view and keeps the reader in place @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  const seeded = await seedBand();
+  const alice = await reader(browser, "alice");
+  try {
+    await readTheBand(await alice.newPage(), seeded.runs);
+    const height = await readTheLeftIds(await alice.newPage(), seeded.large, false);
+    const tall = await alice.newPage();
+    const size = tall.viewportSize();
+    if (size === null) throw new Error("the page has no viewport");
+    await tall.setViewportSize({ height, width: size.width });
+    await readTheLeftIds(tall, seeded.large, true);
   } finally {
     await alice.close();
   }

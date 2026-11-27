@@ -23,7 +23,7 @@ import { useCatchUp } from "../steps/StepsTab";
 import { stepVariant } from "../steps/steps-model";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
-import type { HandoffFold } from "./HistoryHandoff";
+import { type HandoffFold, useHandoffBodies } from "./HistoryHandoff";
 import { Entry, runKeys } from "./history-entries";
 import { historyLogKey, issueUnreadBoundaryQuery } from "./history-log";
 import {
@@ -184,7 +184,11 @@ export function IssueHistory({
   // again. A write of a run appends no event, so a run arrives by those reads alone.
   const runs = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
   const drawer = useMarginDrawer();
-  useCatchUp(issueKey, drawer === undefined || drawer.open);
+  const detailsOpen = drawer === undefined || drawer.open;
+  useCatchUp(issueKey, detailsOpen);
+  // The bodies of the handoffs it draws, read only while Details is open, for the entries within
+  // one screen of its view, once the history has landed (`useHandoffBodies`).
+  const bodies = useHandoffBodies(issueKey, detailsOpen);
   // Every handoff of the issue, with no body: each is drawn from its entry here, never from its
   // event, whose arrival reads the list again (`api/event-refresh.ts`).
   const handoffs = useQuery(handoffsQuery(issueKey));
@@ -437,6 +441,17 @@ export function IssueHistory({
     scrollElementToTop(element, box);
     element.dispatchEvent(new CustomEvent(HISTORY_HEADING_LANDED_EVENT, { bubbles: true }));
   });
+  // The bodies' loader starts once the history has landed where the address it is at lands it:
+  // the turn an address names, or the heading at `/activity`, after the landing above.
+  useEffect(() => {
+    if (
+      listDrawn &&
+      (item === undefined || landed.current === item.following) &&
+      (activityFollowing === undefined || headingLanded.current === activityFollowing)
+    ) {
+      bodies.band.landed();
+    }
+  });
   // The history is newest first, so every event the feed prepends lands above a reader who is
   // down in it: the anchor holds the entry they are on where it was, in the box it scrolls in -
   // Details' own, or the document outside the shell. It follows each entry's own id
@@ -449,6 +464,12 @@ export function IssueHistory({
   useLayoutEffect(() => {
     if (listDrawn) scroller.current = scrollingAncestor(anchorRoot.current);
   }, [listDrawn]);
+  // The band of the handoffs' bodies is the view of that box, one screen above and below it.
+  useLayoutEffect(() => {
+    if (!listDrawn) return;
+    bodies.band.observeIn(scroller.current);
+    return () => bodies.band.stop();
+  }, [bodies.band, listDrawn]);
   // A reader whose focus is on another control of the box the history scrolls in - a chord
   // left it on the collaborators, a field of Details is being edited - is reading that control,
   // not the history: the history holds no place then, or holding one would scroll the box off
@@ -755,6 +776,7 @@ export function IssueHistory({
                     const drawnId = drawnIds.get(entry.id) ?? entry.id;
                     return (
                       <Entry
+                        bodies={bodies.value}
                         drawnId={drawnId}
                         fold={fold}
                         entry={entry}

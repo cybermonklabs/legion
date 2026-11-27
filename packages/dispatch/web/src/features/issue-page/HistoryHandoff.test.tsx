@@ -6,11 +6,15 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import {
+  type IntersectionControl,
+  installIntersectionObserver,
+} from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { DisplayTree, Handoff, HandoffSummary, IssueDetails } from "../../api/types";
+import type { DisplayTree, HandoffSummary, IssueDetails } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import capturedBodies from "./fixtures/handoff-bodies.json";
-import { HistoryHandoff, useHandoffFold } from "./HistoryHandoff";
+import { useHandoffFold } from "./HistoryHandoff";
 import { IssueHistory } from "./IssueHistory";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -44,51 +48,57 @@ afterEach(() => {
   summaries?.mockRestore();
 });
 
-/** A handoff's fields with the fold the page holds for its issue (`useHandoffFold`). */
-function HeldHandoff({ id }: { id: string }): ReactNode {
-  const fold = useHandoffFold(KEY);
-  return (
-    <HistoryHandoff
-      folded={fold.folded(id)}
-      handoffId={id}
-      onFold={(folded) => fold.setFolded(id, folded)}
-    />
-  );
+/** Brings the place of every handoff the history watches within one screen of Details' view, as
+ *  the browser's observer reports it, and lets the read that sends land. */
+async function showHandoffs(near: IntersectionControl): Promise<void> {
+  await act(async () => {
+    for (const element of near.observed()) near.show(element);
+  });
 }
 
-/** Draws the fields of a handoff whose body is `body`, read with `trees` beside it where given,
- *  and waits until they are drawn. */
+/** Draws the history of `KEY` with the one handoff `LISTED`, whose body is `body` as the bodies
+ *  read answers it, with `trees` beside it where given; brings its entry within one screen of
+ *  the view, and waits until its fields are drawn. */
 async function drawBody(
   body: unknown,
   trees?: Record<string, DisplayTree>
-): Promise<{ fields: HTMLElement; unmount: () => void }> {
-  const answer: Handoff = {
-    ...LISTED,
-    body: JSON.stringify(body),
-    ...(trees === undefined ? {} : { field_trees: trees }),
-  };
-  getHandoff = spyOn(api, "getHandoff").mockResolvedValue(answer);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const { unmount } = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <HeldHandoff id={LISTED.id} />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  const toggle = screen.getByRole("button", { name: CONTROL_LABELS.hide_fields });
-  const fields = await waitFor(() => {
-    const found = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
-    if (found?.tagName !== "DL") throw new Error("the handoff's fields are not drawn");
-    return found;
+): Promise<{
+  bodies: Mock<typeof api.getHandoffBodies>;
+  fields: HTMLElement;
+  near: IntersectionControl;
+  unmount: () => void;
+}> {
+  const near = installIntersectionObserver();
+  const bodies = spyOn(api, "getHandoffBodies").mockResolvedValue({
+    bodies: [
+      {
+        body: JSON.stringify(body),
+        id: LISTED.id,
+        ...(trees === undefined ? {} : { field_trees: trees }),
+      },
+    ],
+    left: [],
   });
-  return {
-    fields,
-    unmount: () => {
-      unmount();
-      queryClient.clear();
-    },
+  const restore = drawHistoryWithHandoff();
+  const unmount = () => {
+    restore();
+    near.restore();
+    bodies.mockRestore();
   };
+  try {
+    const entry = await handoffEntry();
+    await showHandoffs(near);
+    const toggle = within(entry).getByRole("button", { name: CONTROL_LABELS.hide_fields });
+    const fields = await waitFor(() => {
+      const found = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+      if (found?.tagName !== "DL") throw new Error("the handoff's fields are not drawn");
+      return found;
+    });
+    return { bodies, fields, near, unmount };
+  } catch (error) {
+    unmount();
+    throw error;
+  }
 }
 
 /** The value of the top-level field `key` of the fields drawn. */
@@ -273,13 +283,14 @@ describe("a handoff's values are drawn as lists and keys", () => {
         }
       } finally {
         drawn.unmount();
-        getHandoff?.mockRestore();
       }
     }
   });
 
-  // A string field is drawn from the reading the server sent beside the body (`field_trees`),
-  // not read again on the page: where the two differ, the tree's words are drawn.
+  // A string field is drawn from the reading the server sent beside the body in the bodies
+  // answer (`field_trees`), not read again on the page: where the two differ, the tree's words
+  // are drawn. An entry that carries no trees - the first of an answer, whose trees alone would
+  // pass the answer's limit - is read by the renderer itself, from the words as stored.
   test("H8: a string field is drawn from the answer's tree", async () => {
     await warmMarkdownRenderer();
     const tree = displayTree("The **server's** reading of the summary.") as DisplayTree;
@@ -291,10 +302,20 @@ describe("a handoff's values are drawn as lists and keys", () => {
     } finally {
       drawn.unmount();
     }
+
+    const untreed = await drawBody({ summary: "The **stored** words, read on the page." });
+    try {
+      const summary = fieldValue(untreed.fields, "summary");
+      await waitFor(() => expect(summary.textContent).toBe("The stored words, read on the page."));
+      expect(summary.querySelector("strong")?.textContent).toBe("stored");
+    } finally {
+      untreed.unmount();
+    }
   });
 
-  // The fold control folds the fields and opens them again, from the body read once; a press
-  // anywhere else on the handoff - its fields, a value, its box - folds nothing.
+  // The fold control folds the fields and opens them again, from the body read once, though its
+  // entry is in view again as it opens; a press anywhere else on the handoff - its fields, a
+  // value, its box - folds nothing.
   test("H9: the fold control folds and opens, and is the only thing that folds", async () => {
     const drawn = await drawBody({
       summary: "First pass",
@@ -326,7 +347,10 @@ describe("a handoff's values are drawn as lists and keys", () => {
       expect(toggle).toHaveAttribute("aria-expanded", "true");
       expect(toggle).toHaveTextContent(CONTROL_LABELS.hide_fields);
       await screen.findByText("web/src/a.ts");
-      expect(getHandoff, "opening the handoff again read its body again").toHaveBeenCalledTimes(1);
+      await showHandoffs(drawn.near);
+      expect(drawn.bodies, "opening the handoff again read its body again").toHaveBeenCalledTimes(
+        1
+      );
     } finally {
       drawn.unmount();
     }
@@ -397,11 +421,13 @@ async function handoffEntry(): Promise<HTMLElement> {
 // and time, which the list gives, and the word for a body being read; it sends one bodies read
 // for it and no read of the handoff alone.
 test("H6: an entry whose body is not read draws the phase, the version, the author, the time and the loading word", async () => {
+  const near = installIntersectionObserver();
   const bodies = spyOn(api, "getHandoffBodies").mockImplementation(() => new Promise(() => {}));
   getHandoff = spyOn(api, "getHandoff").mockImplementation(() => new Promise(() => {}));
   const restore = drawHistoryWithHandoff();
   try {
     const entry = await handoffEntry();
+    await showHandoffs(near);
     expect(entry.textContent).toContain("recorded the implement handoff, version 2");
     expect(within(entry).getByText("Implementer")).toBeDefined();
     expect(entry.querySelector(`time[datetime="${LISTED.created_at}"]`)).not.toBeNull();
@@ -415,6 +441,7 @@ test("H6: an entry whose body is not read draws the phase, the version, the auth
     expect(bodies).toHaveBeenCalledWith(KEY, [LISTED.id]);
   } finally {
     restore();
+    near.restore();
     bodies.mockRestore();
   }
 });
@@ -422,11 +449,13 @@ test("H6: an entry whose body is not read draws the phase, the version, the auth
 // A bodies read that failed says so in the entry it was for, with a Retry that sends the read
 // again; the handoff's phase, version, author and time stay.
 test("H7: a failed read draws the failure line with Retry, and the phase, version, author and time stay", async () => {
+  const near = installIntersectionObserver();
   const bodies = spyOn(api, "getHandoffBodies").mockRejectedValue(new Error("the bodies are down"));
   getHandoff = spyOn(api, "getHandoff").mockRejectedValue(new Error("the handoff is down"));
   const restore = drawHistoryWithHandoff();
   try {
     const entry = await handoffEntry();
+    await showHandoffs(near);
     await waitFor(() =>
       expect(within(entry).getByRole("alert").textContent).toBe(ANSWER_LINES.handoff_unreadable)
     );
@@ -443,6 +472,7 @@ test("H7: a failed read draws the failure line with Retry, and the phase, versio
     expect(bodies.mock.calls.at(-1)).toEqual([KEY, [LISTED.id]]);
   } finally {
     restore();
+    near.restore();
     bodies.mockRestore();
   }
 });

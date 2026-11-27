@@ -28,7 +28,7 @@ import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { Identifier, Time } from "../steps/StepsTab";
 import type { StepRow } from "../steps/steps-model";
-import { type HandoffFold, HistoryHandoff } from "./HistoryHandoff";
+import { type HandoffBodies, type HandoffFold, HistoryHandoff } from "./HistoryHandoff";
 import {
   type HistoryBlock,
   type HistoryDay,
@@ -103,6 +103,7 @@ export function runKeys(
 
 /** One entry of the history (`HistoryEntry`). */
 export function Entry({
+  bodies,
   drawnId,
   entry,
   fold,
@@ -111,6 +112,8 @@ export function Entry({
   onPin,
   pinned,
 }: {
+  /** The reads of the bodies of the history's handoffs (`useHandoffBodies`). */
+  bodies: HandoffBodies;
   /** The id the entry is drawn under: its own, or a run's key (`runKeys`). */
   drawnId: string;
   entry: HistoryEntry;
@@ -147,6 +150,7 @@ export function Entry({
         {entry.handoff === undefined ? null : (
           <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
             <HandoffParts
+              bodies={bodies}
               fold={fold}
               handoff={entry.handoff}
               onPin={onPin}
@@ -166,6 +170,7 @@ export function Entry({
         {...{ [HISTORY_ENTRY_ATTRIBUTE]: drawnId }}
       >
         <HandoffParts
+          bodies={bodies}
           fold={fold}
           handoff={entry.handoff}
           onPin={onPin}
@@ -296,12 +301,14 @@ export function Entry({
  * on a row of their own in the flex line the caller draws them in.
  */
 function HandoffParts({
+  bodies,
   fold,
   handoff,
   onPin,
   pinned,
   recorded,
 }: {
+  bodies: HandoffBodies;
   fold: HandoffFold;
   handoff: HandoffSummary;
   onPin: (eventId: number) => void;
@@ -327,6 +334,7 @@ function HandoffParts({
         />
       )}
       <HistoryHandoff
+        bodies={bodies}
         folded={fold.folded(handoff.id)}
         handoffId={handoff.id}
         onFold={(folded) => fold.setFolded(handoff.id, folded)}

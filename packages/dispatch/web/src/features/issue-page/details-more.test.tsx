@@ -17,6 +17,7 @@ import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-d
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
+import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import {
   type FakeLiveSocket,
@@ -25,7 +26,6 @@ import {
 } from "../../__tests__/live-socket-harness";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
-import type { EventPages } from "../../api/event-feed";
 import { liveSocketFor } from "../../api/live-socket";
 import {
   issueCoverageQuery,
@@ -2203,19 +2203,21 @@ function folded(id: string): boolean {
 // the fold for the issue it draws, so it outlives the history it is drawn in.
 describe("a fold lasts while the reader stays on the issue", () => {
   /** Details' history in its drawer, opened at `path`, over `events` of the log and with the
-   *  handoffs `handoffs` listed, each one's body naming it; it waits until handoff `shown` is
-   *  drawn with its fields. */
+   *  handoffs `handoffs` listed, each one's body, which the bodies read answers, naming it; once
+   *  the history draws them, their entries are brought within one screen of Details' view, and
+   *  it waits until handoff `shown` is drawn with its fields. */
   async function openWith(
     handoffs: readonly HandoffSummary[],
     shown: string,
     events: readonly DispatchEvent[] = [claim(1)]
   ) {
     const sockets = installFakeLiveSockets();
+    const near = installIntersectionObserver();
     const reads = [
       spyOn(api, "getIssueEvents").mockResolvedValue([...events]),
-      spyOn(api, "getHandoff").mockImplementation(async (id) => ({
-        ...listedHandoff(id, 0),
-        body: JSON.stringify({ summary: `The body of ${id}` }),
+      spyOn(api, "getHandoffBodies").mockImplementation(async (_key, ids) => ({
+        bodies: ids.map((id) => ({ body: JSON.stringify({ summary: `The body of ${id}` }), id })),
+        left: [],
       })),
       spyOn(api, "listComments").mockResolvedValue([]),
       spyOn(api, "listIssueMessages").mockResolvedValue([]),
@@ -2236,6 +2238,9 @@ describe("a fold lasts while the reader stays on the issue", () => {
     await waitFor(() =>
       expect(document.querySelector(`[data-handoff-line="${shown}"]`)).not.toBeNull()
     );
+    await act(async () => {
+      for (const element of near.observed()) near.show(element);
+    });
     await screen.findByText(`The body of ${shown}`);
     return {
       client,
@@ -2245,6 +2250,7 @@ describe("a fold lasts while the reader stays on the issue", () => {
         view.unmount();
         liveSocketFor(client).close();
         sockets.restore();
+        near.restore();
         for (const read of reads) read.mockRestore();
       },
     };

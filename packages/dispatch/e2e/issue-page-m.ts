@@ -287,6 +287,105 @@ export function handoffFieldsOf(page: Page, id: string): Locator {
   return historyPanel(page).locator(`[data-handoff-line="${id}"] ~ span [data-handoff-field]`);
 }
 
+/** One read of an issue's handoff bodies the page sent (`GET /api/v1/issues/<key>/handoffs/bodies`),
+ *  as `holdBodiesReads` holds it. */
+export interface HeldBodiesRead {
+  /** When its answer reached the page, by the row's clock, or undefined while it is held or out. */
+  readonly answeredAt: () => number | undefined;
+  /** The ids it asks for, in the order asked. */
+  readonly ids: readonly string[];
+  /** Lets it through to the server, and resolves once its answer has reached the page. */
+  readonly release: () => Promise<void>;
+  /** When the page sent it, by the row's clock. */
+  readonly sentAt: number;
+}
+
+/** Holds each read of issue `key`'s handoff bodies the page sends from the call on until the row
+ *  releases it (`HeldBodiesRead`), or, once `passAll` is called, lets each through as it comes,
+ *  the ones held then among them. `reads` lists them in the order sent. */
+export async function holdBodiesReads(
+  page: Page,
+  key: string
+): Promise<{ readonly passAll: () => void; readonly reads: readonly HeldBodiesRead[] }> {
+  const reads: HeldBodiesRead[] = [];
+  const gates: (() => void)[] = [];
+  let passing = false;
+  const path = `/api/v1/issues/${key}/handoffs/bodies`;
+  await page.route(
+    (url) => url.pathname === path,
+    async (route) => {
+      const gate = Promise.withResolvers<void>();
+      const answered = Promise.withResolvers<void>();
+      let answeredAt: number | undefined;
+      reads.push({
+        answeredAt: () => answeredAt,
+        ids: (new URL(route.request().url()).searchParams.get("ids") ?? "").split(","),
+        release: async () => {
+          gate.resolve();
+          await answered.promise;
+        },
+        sentAt: Date.now(),
+      });
+      gates.push(gate.resolve);
+      if (passing) gate.resolve();
+      await gate.promise;
+      const response = await route.fetch();
+      await route.fulfill({ response });
+      answeredAt = Date.now();
+      answered.resolve();
+    }
+  );
+  return {
+    passAll: () => {
+      passing = true;
+      for (const open of gates) open();
+    },
+    reads,
+  };
+}
+
+/** Where a handoff's open fields stand against the band the history reads bodies in: the view of
+ *  the box Details scrolls in, and one screen of it above and below (`HistoryHandoff.tsx`'s
+ *  `NEAR_BAND`). */
+export interface BandPlace {
+  /** Whether the place lies wholly above the view. */
+  readonly above: boolean;
+  /** Whether the place lies within a few pixels of an edge of the band, where the page's observer
+   *  and this measure, which read the box's sides a little apart, can differ. */
+  readonly edge: boolean;
+  /** Whether the place crosses the band. */
+  readonly near: boolean;
+}
+
+/** Where the open fields of each handoff of `ids` stand against the band (`BandPlace`): its place,
+ *  the `span` that follows its line and holds its fold control and its fields. A handoff the
+ *  history does not draw, under its Show more, stands nowhere near. */
+export function bandPlaces(page: Page, ids: readonly string[]): Promise<Record<string, BandPlace>> {
+  return historyPanel(page).evaluate((history, handoffs) => {
+    let box: HTMLElement | null = history.parentElement;
+    while (box !== null && !["auto", "scroll"].includes(getComputedStyle(box).overflowY)) {
+      box = box.parentElement;
+    }
+    const view = box === null ? { bottom: innerHeight, top: 0 } : box.getBoundingClientRect();
+    const screen = view.bottom - view.top;
+    const band = { bottom: view.bottom + screen, top: view.top - screen };
+    const places: Record<string, { above: boolean; edge: boolean; near: boolean }> = {};
+    for (const id of handoffs) {
+      const place = history.querySelector(`[data-handoff-line="${CSS.escape(id)}"] ~ span`);
+      const at = place?.getBoundingClientRect();
+      places[id] =
+        at === undefined
+          ? { above: false, edge: false, near: false }
+          : {
+              above: at.bottom <= view.top,
+              edge: Math.abs(at.top - band.bottom) < 4 || Math.abs(at.bottom - band.top) < 4,
+              near: at.top < band.bottom && at.bottom > band.top,
+            };
+    }
+    return places;
+  }, ids);
+}
+
 /** The page's reads of one issue's steps, as `watchStepsReads` sees them, counted from 0 in the
  *  order the page sent them since the watch began. */
 export interface StepsReads {
