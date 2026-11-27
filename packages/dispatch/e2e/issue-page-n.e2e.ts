@@ -2113,20 +2113,22 @@ const HEADER_LABELS_MEASURE = "issue-header-labels";
 // reading of which label chips its line holds (`HeaderLabels`, `IssuePropertiesRow.tsx`) took
 // about 1.1 s of a load of INFRA-1196 with 20 labels, several forced layouts a reading on a page
 // that large. Each reading is one `issue-header-labels` measure, and the row sums them over one
-// cold load of the copy of INFRA-3149, the largest copy `e2e/scale-seed.ts` writes, written alone
-// (`seedLargestScaleCopy`) with 20 labels, signed in as its reader, who never read it: at 1440 px
-// under chromium and at 390 px under iphone, each project seeding a copy of its own. The sum is
-// read at network idle (`expectLoadSettled`) and one second more, and printed; then the line, at
-// rest, holds no chip past its first line or its end, and its count names every chip it leaves
-// out.
+// cold load of Conversation's address, `/issues/<key>/conversation`, the outline, where
+// production's reading of about 1.1 s was measured; the bare address opens Dashboard, a smaller
+// page, on which the merge-base's reading took 17.3 ms (builds Job e2e-rows-p6qk7) against
+// 125.6 ms at Conversation (e2e-rows-5ldfv). The load is of the copy of INFRA-3149, the largest
+// copy `e2e/scale-seed.ts` writes, written alone (`seedLargestScaleCopy`) with 20 labels, signed
+// in as its reader, who never read it: at 1440 px under chromium and at 390 px under iphone, each
+// project seeding a copy of its own. The sum is read at network idle (`expectLoadSettled`) and one
+// second more, and printed; then the line, at rest, holds no chip past its first line or its end,
+// and its count names every chip it leaves out.
 // SLOW(>=2s): the copy of INFRA-3149 written - 69 documents of 45,738 blocks, 39 files and 113
 // comments - and the block index's drain waited for, then one cold load of it.
 test("the header fits its labels within 50 ms of a load @phone", async ({ browser }) => {
-  // Not measured in a browser yet. Estimated from R21's row: under 2 min of writing the copy and
-  // waiting for the block index's cursor and drain (`e2e/scale-seed.ts`), and one cold load of
-  // about 10 s. The bound is about three times that, until the first e2e-rows Job measures the
-  // row and this line says what it took.
-  test.setTimeout(420_000);
+  // Measured in builds Job e2e-rows-5tkp5 at dd4508e8, with the cold load at Conversation's
+  // address: 1.1 min on chromium and 37.1 s on iphone, each the copy written and the block index
+  // drained, then one cold load; the bound is about three times the longer, for a slow leg.
+  test.setTimeout(200_000);
   const viewport = test.info().project.name === "iphone" ? IPHONE_13 : DESKTOP;
   const { copy, reader } = await seedLargestScaleCopy();
   await patchIssue(copy.key, { labels: [...HEADER_LABELS] });
@@ -2140,7 +2142,7 @@ test("the header fits its labels within 50 ms of a load @phone", async ({ browse
     const page = await context.newPage();
     await page.setViewportSize(viewport);
     const traffic = watchApiRequests(page);
-    await gotoIssue(page, `/issues/${copy.key}`);
+    await gotoIssue(page, `/issues/${copy.key}/conversation`);
     await expectHeaderDrawn(page);
     await expectLoadSettled(traffic);
     // The second past network idle that c-header-labels names: a reading the load's last answers
