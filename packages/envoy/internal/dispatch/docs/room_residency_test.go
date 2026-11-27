@@ -434,6 +434,7 @@ func (w *roomLoads) count() int {
 // goroutine and fires the observer there), and a third is the service projecting comment records.
 // Under -race the walk of the live tree is a data race with the other writers.
 func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -545,6 +546,8 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 // document, so a listing that held it past the room would keep that copy for a collection more
 // for every room the server evicts, and one that outlived the room would keep it for good.
 func TestAnEvictedRoomsReplicaGoesWithIt(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC, in its wait for the
+	// evicted room's document to be collected).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -613,6 +616,8 @@ func listedReplica(t *testing.T, service *Service, artifactID string) (weak.Poin
 // does not take. A running Dispatch process keeps one service for its whole life, so a record
 // the cleanup fails to take is one more for every room the process ever loads.
 func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC, in its wait for the
+	// evicted room's document to be collected).
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -919,6 +924,9 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 // commit returns either way. The longer the document, the longer its room's update observer
 // renders, and the wider that window.
 func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
+	// Not parallel: each trial orders its issue's close onto the owner lock before the write's
+	// commit by a 30 ms time.Sleep, which the load of the tests beside it could outlast, so a trial
+	// would pass without the interleaving it is for.
 	markdown := func(paragraphs int, tag string) string {
 		var text strings.Builder
 		for index := range paragraphs {
