@@ -195,3 +195,37 @@ func TestDeadlineModeWithoutDeadlineGivesUp(t *testing.T) {
 		t.Errorf("err = %v, want the *LockTimeoutError named", err)
 	}
 }
+
+// The tester's edge, now closed by the wrap: once a lock timeout has occurred, a later attempt the
+// deadline cuts still gives up NAMED -- the last *LockTimeoutError is joined into the give-up -- not
+// with a bare context error. Four 100 ms lock-timeout attempts, then a fifth that blocks until the
+// deadline cuts it: the construction the row's tester used to show the bare-context-error edge.
+func TestDeadlineModeNamesTheLockWhenALaterAttemptIsCut(t *testing.T) {
+	t.Parallel()
+	lte := &LockTimeoutError{Migration: "0001_x.up.sql"}
+	timedOut := func(err error) bool { var e *LockTimeoutError; return errors.As(err, &e) }
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	ctx = WithRetryPolicy(ctx, RetryPolicy{Pause: 0}) // deadline mode
+	n := 0
+	err := retryLockTimeouts(ctx, "a migration", "migration", "0001_x.up.sql", timedOut,
+		func(ctx context.Context) error {
+			n++
+			if n <= 4 {
+				time.Sleep(100 * time.Millisecond)
+				return lte
+			}
+			<-ctx.Done() // a longer attempt the deadline cuts before it can time out
+			return ctx.Err()
+		})
+	if n < 5 {
+		t.Fatalf("made %d attempts, want the fifth (the one the deadline cuts) to be reached", n)
+	}
+	var got *LockTimeoutError
+	if !errors.As(err, &got) {
+		t.Errorf("err = %v, want the *LockTimeoutError named even though the deadline cut the last attempt, not a bare context error", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want errors.Is(context.DeadlineExceeded) to still hold", err)
+	}
+}

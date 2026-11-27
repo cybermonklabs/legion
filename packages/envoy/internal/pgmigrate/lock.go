@@ -197,14 +197,18 @@ type RetryPolicy struct {
 var ProductionRetryPolicy = RetryPolicy{Attempts: LockTimeoutAttempts, Pause: LockTimeoutRetryPause}
 
 // DeadlineRetryPolicy retries until the context's deadline, pausing LockTimeoutRetryPause between
-// attempts and giving up — with the runner's named give-up error, not a bare context error — when
-// too little of the deadline is left for another attempt, measured from the attempt just made. A
-// loaded test suite, where the lock is held by a peer runner migrating its own template and not by a
-// stray holder, waits for it instead of failing after the production policy's fixed span; a lock held
-// to the binary's deadline still ends the runner with the named error, before go test's alarm, rather
-// than by it. Where the context has no deadline (a benchmark), it falls back to LockTimeoutAttempts
-// rather than retrying for ever. A test harness passes it through the context it gives Migrate;
-// production passes no policy, so it uses ProductionRetryPolicy and its behaviour does not move.
+// attempts and deciding on each attempt's own measured duration: it gives up when too little of the
+// deadline is left for another attempt (remaining < Pause + the last attempt's duration). A loaded
+// test suite, where the lock is held by a peer runner migrating its own template and not by a stray
+// holder, waits for it instead of failing after the production policy's fixed span. The give-up names
+// the lock — it carries the last *LockTimeoutError, so errors.As finds it — in every case once a lock
+// timeout has occurred, including when the context cuts a later, longer attempt before that attempt
+// could time out: the context error is joined to the last lock timeout (errors.Is still finds the
+// context error too). Only a deadline that cuts the very first attempt, before any lock timeout, gives
+// up with a bare context error, since no lock was contended. Where the context has no deadline (a
+// benchmark), it falls back to LockTimeoutAttempts rather than retrying for ever. A test harness
+// passes it through the context it gives Migrate; production passes no policy, so it uses
+// ProductionRetryPolicy and its behaviour does not move.
 func DeadlineRetryPolicy() RetryPolicy {
 	return RetryPolicy{Attempts: 0, Pause: LockTimeoutRetryPause}
 }
@@ -318,6 +322,7 @@ func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut fun
 	deadlineMode, attemptCap, deadline := policy.retryMode(ctx)
 	attempts := attemptsField(deadlineMode, attemptCap)
 	hadTimeout := false
+	var lastTimeout error
 	for n := 1; ; n++ {
 		start := time.Now()
 		err := attempt(ctx)
@@ -325,19 +330,28 @@ func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut fun
 			return nil
 		}
 		if !timedOut(err) {
-			// A context error (the caller's deadline or cancellation) that cut an attempt short comes
-			// back in the runner's named "after N attempts" form only in deadline mode or once a lock
-			// timeout has already made the runner retry — never under the production default on an
-			// attempt no lock timeout reached, whose context (a SIGTERM'd boot) must return its own
-			// error unchanged. Test the error itself, not ctx.Err(), so a real migration error that
-			// merely arrives while the context is done is not misread as the deadline's. Any other
-			// non-timeout error is the migration's and comes back as is.
-			if (deadlineMode || hadTimeout) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-				return fmt.Errorf("after %d attempts: %w", n, err)
+			// A context error (the caller's deadline or cancellation) that cut an attempt short. Once a
+			// lock timeout has already happened (hadTimeout), the give-up joins that last lock timeout,
+			// so it still names the lock even when the context cut a later, longer attempt before that
+			// attempt could time out: the give-up stays actionable (errors.As finds the *LockTimeoutError)
+			// and errors.Is still finds the context error. Before any lock timeout, a deadline-mode
+			// context error comes back in the named "after N attempts" form with nothing to name, and
+			// under the production default it comes back unchanged — a SIGTERM'd boot keeps its own error.
+			// Test the error itself, not ctx.Err(), so a real migration error that merely arrives while
+			// the context is done is not misread as the deadline's; any other non-timeout error is the
+			// migration's and comes back as is.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				if hadTimeout {
+					return fmt.Errorf("after %d attempts: %w", n, errors.Join(lastTimeout, err))
+				}
+				if deadlineMode {
+					return fmt.Errorf("after %d attempts: %w", n, err)
+				}
 			}
 			return err
 		}
 		hadTimeout = true
+		lastTimeout = err
 		took := time.Since(start)
 		// Give up with the lock timeout's own named error — never a bare context error — when no more
 		// attempts are allowed: a counted bound has reached its cap, or (deadline mode) too little of
