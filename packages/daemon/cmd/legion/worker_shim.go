@@ -51,8 +51,9 @@ func init() {
 // controller, which has no workspace — the shim builds the CodeGraph index of the workspace
 // LEGION_WORKSPACE names in the background once Oh My Pi has started (shim.Config.WarmCodegraph);
 // a build that finishes logs one success line with the build's duration and the time since the
-// role's launch. A stop before the build ends — the launcher's SIGTERM to the role's process
-// group, which ends Oh My Pi and the codegraph child together — ends the warm-up with Oh My Pi:
+// role's launch. A stop before the build ends — role-init's SIGTERM to every process of the role
+// (its kill(-1) as the role's PID 1), which ends Oh My Pi and the codegraph build together — ends
+// the warm-up with Oh My Pi:
 // the shim exits only once the build's lease is released, waiting at least shim.MinWarmUpDrain
 // and at most what --stop-grace leaves once the agent's own grace and the stdout drain are spent,
 // so the role's relaunch is never told a live build holds it. From shim.MinStopGrace up the whole
