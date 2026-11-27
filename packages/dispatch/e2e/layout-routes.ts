@@ -1,10 +1,11 @@
 /** The pages the layout layer reads against the layout rule: every reviewed page of
  *  `e2e/review-routes.ts`, the pages that list excludes only because a pixel comparison or a scan
  *  would not read them the same twice, two pages a reader's choice in this browser draws another
- *  way - the new issue page and the project's board - and the project page and its Architecture
- *  tab, which draw from the architecture source the stress layer syncs on the server. A route may
- *  also carry states - what the page draws once the reader has acted on it - each read at every
- *  width after the plain load.
+ *  way - the new issue page and the project's board - today's issue page on its Dashboard tab,
+ *  which no review route opens, and the project page and its Architecture tab, which draw from
+ *  the architecture source the stress layer syncs on the server. A route may also carry states -
+ *  what the page draws once the reader has acted on it - each read at every width after the plain
+ *  load.
  *
  *  `e2e/layout-rule.stub.e2e.ts` reads them all, against a recording of their HTTP answers and of
  *  the document and live sockets they draw from (`e2e/layout-sockets.ts`), on every pull request.
@@ -452,6 +453,24 @@ export const layoutRoutes: readonly LayoutRoute[] = [
         )
         .first(),
     ],
+  },
+  {
+    name: "issue-dashboard",
+    // Today's issue page on its first tab, Dashboard, which no review route opens: the page
+    // draws the tab's panel only once a reader opens it (`issue/IssuePage.tsx`). Its count of
+    // what waits is drawn once the reads its items come from have answered, and its tiles once
+    // the issue has (`dashboard/DashboardTab.tsx`).
+    path: (seed) => `/issues/${seed.issue}/dashboard`,
+    pattern: "/issues/:key/*",
+    ready: (page) => {
+      const panel = page.locator("#issue-dashboard-panel");
+      return [
+        panel.getByTestId("dashboard-waiting-count"),
+        panel.getByRole("region", { exact: true, name: "Progress" }),
+      ];
+    },
+    requiredGroups: ISSUE_HEADER_GROUPS,
+    states: ISSUE_STATES,
   },
   {
     name: "project-board",
