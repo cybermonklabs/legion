@@ -378,13 +378,16 @@ test("the block editor is drawn where the row's text stood @phone", async ({ bro
       const seen: string[] = [];
       Object.assign(element, { blockEditorFrames: seen });
       let firstKey = false;
-      element.addEventListener(
-        "keydown",
-        () => {
-          firstKey = true;
-        },
-        { capture: true, once: true }
-      );
+      const typed = (event: Event) => {
+        if (
+          !(event.target instanceof Element) ||
+          event.target.closest("[data-editor-box] [contenteditable]") === null
+        )
+          return;
+        firstKey = true;
+        element.removeEventListener("keydown", typed, true);
+      };
+      element.addEventListener("keydown", typed, true);
       const frame = () => {
         if (firstKey || !element.isConnected) return;
         const focused = element.querySelector("[data-editor-box] [contenteditable]:focus");

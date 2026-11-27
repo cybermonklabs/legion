@@ -156,6 +156,8 @@ export const KEY_REPORTS = freeze({
   nothing_under: "Nothing is under this row.",
   already_zoomed: "The tree is already zoomed to this row.",
   editor_closed: "This row's editor could not open.",
+  editor_block_removed: "The block you were editing was removed.",
+  editor_text_not_saved: "The block you were editing was removed, and your typing was not saved.",
   /** The zoom-out key, and Left on a row whose parent is the issue, the whole issue drawn. */
   whole_tree: "The tree is already showing the whole issue.",
   /** The row an address lands on, for a turn of a thread only agents wrote in. */

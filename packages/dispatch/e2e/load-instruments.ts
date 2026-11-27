@@ -672,6 +672,8 @@ export type ActTarget =
       readonly kind: "row";
       readonly row: string;
       readonly words: string;
+      /** Aim at the row rather than at words that now open the block editor. */
+      readonly outsideWords?: string;
     };
 
 /** How a step is made: the mouse at its target's box, or a key. */
@@ -1078,6 +1080,21 @@ export function instrumentPage(config: PageConfig): void {
     aim: RowAim,
     top: number
   ): { readonly x: number; readonly y: number } | null => {
+    if (aim.outsideWords !== undefined) {
+      const rect = row.getBoundingClientRect();
+      const left = Math.max(0, rect.left);
+      const right = Math.min(window.innerWidth, rect.right);
+      const bottom = Math.min(window.innerHeight, rect.bottom);
+      for (let y = Math.max(top, rect.top) + 1; y < bottom; y += 3) {
+        for (let x = left + 1; x < right; x += 3) {
+          const hit = document.elementFromPoint(x, y);
+          if (hit === null || hit.closest(config.viewRows) !== row) continue;
+          const taker = hit.closest(`${PRESSABLE}, ${aim.outsideWords}`);
+          if (taker === null || !row.contains(taker)) return { x, y };
+        }
+      }
+      return null;
+    }
     const line = row.querySelector(aim.words) ?? row;
     for (const rect of line.getClientRects()) {
       const y = rect.top + rect.height / 2;

@@ -291,8 +291,8 @@ const LEAVE_TEXT = stroke("Escape", "Escape", { kind: "focus" }, false);
 /**
  * `Enter` once the load has ended, named `name` and made in `on`, on a row of a document's block:
  * the first the view draws, or where `paging` names a paging control, the first of the rows that
- * control draws once it is pressed. The row is pressed on its words first, which puts the focus on
- * it, and Escape leaves its text after.
+ * control draws once it is pressed. The row is pressed outside its words first, which puts the
+ * focus on it without opening the editor. Escape leaves its text after.
  */
 function enterOn(name: string, on: Preset, paging: string | null): LoadAct {
   const pager = (selector: string) =>
@@ -302,6 +302,7 @@ function enterOn(name: string, on: Preset, paging: string | null): LoadAct {
     {
       drawn: paging === null ? "any" : "since",
       kind: "row",
+      outsideWords: "[data-node-words]",
       row: DOCUMENT_ROW_SELECTOR,
       words: ROW_WORDS,
     },
