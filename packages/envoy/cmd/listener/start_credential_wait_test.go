@@ -236,14 +236,18 @@ func (r *listenerStartRun) waitsUntil(t *testing.T, clock *heldClock, mark time.
 }
 
 // finish lets each further wait the start asks clock for end at once until the start returns, and
-// answers its outcome and those waits. It fails the test when a wait would end past watchdog on the
-// start's clock, counted from its first try, before the start has returned.
+// answers its outcome and those waits. It fails the test when the start's clock would read past
+// watchdog, counted from its first try, before the start has returned: a wait that would end past
+// it, or a return past it, as a wait the test let end before it called finish can carry the start.
 func (r *listenerStartRun) finish(t *testing.T, clock *heldClock, watchdog time.Duration) (startOutcome, []time.Duration) {
 	t.Helper()
 	var waits []time.Duration
 	for {
 		w, got := r.next(t, clock)
 		if got != nil {
+			if got.took > watchdog {
+				t.Fatalf("watchdog: the listener's start returned %s after its first try on its clock, past %s, having waited %v since the test let it go on: error %v", got.took, watchdog, waits, got.err)
+			}
 			return *got, waits
 		}
 		waits = append(waits, w.wait)
@@ -378,19 +382,23 @@ func heldNext[T any](t *testing.T, clock *heldClock, returned <-chan T, what str
 
 // heldFinish lets each further wait the start asks clock for end at once until returned receives,
 // and answers what it received and those waits. It fails the test, naming what it waited on, when
-// a wait would end past watchdog on the start's clock, counted from the moment it was called.
-func heldFinish[T any](t *testing.T, clock *heldClock, returned <-chan T, what string, watchdog time.Duration) (T, []time.Duration) {
+// the start's clock would read past by, a reading counted from the clock's first, before returned
+// receives: a wait that would end past it, or a return past it, as a wait the test let end before
+// it called heldFinish can carry the start.
+func heldFinish[T any](t *testing.T, clock *heldClock, returned <-chan T, what string, by time.Duration) (T, []time.Duration) {
 	t.Helper()
-	from := clock.since()
 	var waits []time.Duration
 	for {
 		w, got, done := heldNext(t, clock, returned, what)
 		if done {
+			if at := clock.since(); at > by {
+				t.Fatalf("watchdog: %s returned at %s on its clock, past %s, having waited %v since the test let it go on", what, at, by, waits)
+			}
 			return got, waits
 		}
 		waits = append(waits, w.wait)
-		if w.endsPast(from + watchdog) {
-			t.Fatalf("watchdog: %s had not returned %s on its clock after the test let it go on, having waited %v since", what, watchdog, waits)
+		if w.endsPast(by) {
+			t.Fatalf("watchdog: %s had not returned by %s on its clock, having waited %v since the test let it go on", what, by, waits)
 		}
 		w.end()
 	}

@@ -164,7 +164,9 @@ func TestALaterStepThatFailsAfterItsConnectGotInNamesNoCredential(t *testing.T) 
 		t.Fatalf("reload the server with the nkey admitted and its role-lane subscription refused: %v", err)
 	}
 	w.end()
-	got, _ := heldFinish(t, clock, returned, "the role lane's step", laterStepWatchdog)
+	// The server admitted the nkey while the lane's connect held its first wait, so the step returns
+	// within laterStepWatchdog of that wait's start on the start's clock.
+	got, _ := heldFinish(t, clock, returned, "the role lane's step", w.at+laterStepWatchdog)
 	if got.err == nil {
 		got.lane.stopWatch()
 		got.lane.client.Close()
@@ -237,19 +239,36 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
+			// The main client connects on a goroutine of its own: were it to ask the held clock for
+			// a wait, nothing on the test's goroutine would end it. Its drain is registered first,
+			// so it runs once the clock has freed its waits (heldStart) and the server has stopped,
+			// and it closes a client that connected after the test stopped waiting for it.
+			type connected struct {
+				client *bus.Client
+				err    error
+			}
+			mainClient := make(chan connected, 1)
+			var mainBegun, mainSettled bool
+			t.Cleanup(func() {
+				if !mainBegun || mainSettled {
+					return
+				}
+				select {
+				case late := <-mainClient:
+					if late.client != nil {
+						late.client.Close()
+					}
+				case <-time.After(startDrainBound):
+					t.Errorf("the start's main client still ran %s after the test's server stopped", startDrainBound)
+				}
+			})
 			seed, public := testnats.User(t)
 			_, fallback := testnats.User(t)
 			server, uri := testnats.StartConfig(t, nkeyAuthorization(fallback, nkeyUser(public)), []string{"-js"}, true)
 			cfg := config.Service{MachineID: "start-later-connects", NATSURLs: []string{uri}, NATSReplicas: 1}
 			start, clock := heldStart(t, seed)
 			base := serveStartRoutes(t, start)
-			// The main client connects on a goroutine of its own: were it to ask the held clock for a
-			// wait, nothing on the test's goroutine would end it.
-			type connected struct {
-				client *bus.Client
-				err    error
-			}
-			mainClient := make(chan connected, 1)
+			mainBegun = true
 			go func() {
 				client, err := connectListenerBus(cfg, nil, start)
 				mainClient <- connected{client, err}
@@ -258,6 +277,7 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 			if !connectedFirst {
 				t.Fatalf("the start's main client asked for a wait of %s at %s on its clock while the server admitted its nkey, want it to connect at its first try", held.wait, held.at)
 			}
+			mainSettled = true
 			if opened.err != nil {
 				t.Fatalf("the start's main client did not connect while the server admitted its nkey: %v", opened.err)
 			}
@@ -299,7 +319,9 @@ func TestTheListenerStartWaitsOutACredentialRefusalAtItsLaterConnects(t *testing
 				w.end()
 				break
 			}
-			got, _ := heldFinish(t, clock, returned, what, laterStepWatchdog)
+			// The server admitted the nkey again at laterConnectRefusedFor after the connect began
+			// on the start's clock, so the connect returns within laterStepWatchdog of that mark.
+			got, _ := heldFinish(t, clock, returned, what, began+laterConnectRefusedFor+laterStepWatchdog)
 			if got.err != nil {
 				t.Fatalf("%s returned %v %s after it began on the start's clock, want it to connect once the server admits the nkey again", what, got.err, clock.since()-began)
 			}
