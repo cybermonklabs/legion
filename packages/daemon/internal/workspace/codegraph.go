@@ -217,7 +217,7 @@ func WarmCodegraphIndex(ctx context.Context, start procgroup.Starter, dir string
 // record of the last build, with the wait for a stop that reached the build first. The shim's
 // warm-up runs with it (WarmCodegraphIndex), the daemon's warm-up of a tmux host's workspace
 // without it (WarmCodegraphIndexInBackground), which is the warm-up as it was before the cap, but
-// with CODEGRAPH_NO_WAL_DEFER=1 (codegraphEnvironment) and the failure line below.
+// with CODEGRAPH_NO_WAL_DEFER=1 (codegraphEnvironment).
 func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, start procgroup.Starter, podGuard bool, dir string, launched time.Time) {
 	codegraphPath, err := exec.LookPath("codegraph")
 	if err != nil {
@@ -369,19 +369,17 @@ func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, start procgroup.St
 		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s was ended by %s: %s\n", subcommand, dir, result.signal, strings.TrimSpace(result.stderr))
 		return
 	case result.exitCode != 0:
+		if !podGuard {
+			// A host's failure line is the one from before the cap, which promises nothing of the
+			// next provisioning: what that does depends on what the failed build left on the disk.
+			fmt.Fprintf(os.Stderr, "[legion] codegraph %s failed for %s (exit %d): %s\n", subcommand, dir, result.exitCode, strings.TrimSpace(result.stderr))
+			return
+		}
 		exits := running.Exits + 1
 		ended(exitOutcome(result.exitCode), 0, exits)
 		next := "later warm-ups on this disk build nothing"
 		if exits < warmExitsHeld {
 			next = "the next warm-up builds once more"
-		}
-		if !podGuard {
-			next = "the next provisioning builds again"
-			if _, repaired := indexed.Load(dir); repaired {
-				// indexed holds the workspace (an `index` this daemon ran, or one it ran before
-				// the workspace was made again at the same path): this daemon repairs it no more.
-				next = "this daemon does not repair the index again until it restarts"
-			}
 		}
 		fmt.Fprintf(os.Stderr, "[legion] codegraph %s failed for %s (exit %d; %s): %s\n", subcommand, dir, result.exitCode, next, strings.TrimSpace(result.stderr))
 		return

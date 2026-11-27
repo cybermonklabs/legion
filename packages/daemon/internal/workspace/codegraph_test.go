@@ -1146,6 +1146,7 @@ func TestWarmCodegraphIndexLogsOneSuccessLine(t *testing.T) {
 		}
 	})
 	t.Run("an init that failed: no line", func(t *testing.T) {
+		noStopSettle(t)
 		dir := t.TempDir()
 		binDir := t.TempDir()
 		script := `#!/bin/sh
@@ -1207,6 +1208,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		}
 	})
 	t.Run("a build a signal ended: the signal named", func(t *testing.T) {
+		noStopSettle(t)
 		callLog := filepath.Join(t.TempDir(), "calls.log")
 		dir := t.TempDir()
 		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; kill -KILL $$ ;;\n")

@@ -295,6 +295,7 @@ index) exit 0 ;;
 // disk.
 func warmUpTwiceAfterADeath(t *testing.T, initEnd, want string, first func(dir string)) {
 	t.Helper()
+	noStopSettle(t)
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	fakeCodegraphBundle(t, callLog, "1.5.0", recordedOutcomeStandIn(initEnd))
 	dir := t.TempDir()
@@ -668,6 +669,7 @@ func TestWarmCodegraphIndexClearsItsRecordOnACompleteIndex(t *testing.T) {
 // from the package.json of the image's bundle, or another cap, allows one new attempt. That
 // attempt's own death is recorded under the image's version, and holds the next warm-up.
 func TestWarmCodegraphIndexRetriesOnceWhenTheCodegraphPinChanged(t *testing.T) {
+	noStopSettle(t)
 	for _, tc := range []struct {
 		name    string
 		version string
