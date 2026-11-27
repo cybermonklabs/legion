@@ -377,8 +377,9 @@ func warmCodegraphIndexOn(ctx context.Context, c clock.Clock, start procgroup.St
 		}
 		if !podGuard {
 			next = "the next provisioning builds again"
-			if subcommand == "index" {
-				// indexed holds the workspace: this daemon repairs it at most once (indexed).
+			if _, repaired := indexed.Load(dir); repaired {
+				// indexed holds the workspace (an `index` this daemon ran, or one it ran before
+				// the workspace was made again at the same path): this daemon repairs it no more.
 				next = "this daemon does not repair the index again until it restarts"
 			}
 		}

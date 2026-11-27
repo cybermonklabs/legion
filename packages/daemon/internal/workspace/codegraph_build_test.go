@@ -434,11 +434,22 @@ func TestWarmCodegraphIndexDoesNotRepairABuildThatTimedOut(t *testing.T) {
 	})
 }
 
+// noStopSettle sets codegraphStopSettle to 0 for t: a test of exits on the real clock that does
+// not test the wait for a stop would otherwise sleep 2 s at each exit.
+// TestWarmCodegraphIndexRepairsAfterAStopThatReachedTheBuildFirst holds that wait on a fake clock.
+func noStopSettle(t *testing.T) {
+	t.Helper()
+	saved := codegraphStopSettle
+	codegraphStopSettle = 0
+	t.Cleanup(func() { codegraphStopSettle = saved })
+}
+
 // TestWarmCodegraphIndexHoldsASecondNonZeroExit: a build that failed with a status of its own is
 // recorded `exit N` with its count, and allows one more build at the next warm-up, since an exit
 // can be one that does not repeat (`database is locked`); a second exit in a row holds every later
 // warm-up on the disk, and an exit 0 after the first removes the record (INFRA-5717 R2, spec v12).
 func TestWarmCodegraphIndexHoldsASecondNonZeroExit(t *testing.T) {
+	noStopSettle(t)
 	for _, tc := range []struct {
 		name, indexEnd string
 		wantCalls      []string
@@ -488,6 +499,7 @@ index) `+tc.indexEnd+` ;;
 // version, another cap, or before the workspace was created holds nothing of the next build's
 // count: one more exit leaves the count at one, and the warm-up after it builds again.
 func TestWarmCodegraphIndexCountsExitsAnewUnderAnotherRun(t *testing.T) {
+	noStopSettle(t)
 	for _, tc := range []struct {
 		name, version string
 		cap           uint64
