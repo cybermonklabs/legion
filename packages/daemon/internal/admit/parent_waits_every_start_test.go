@@ -783,7 +783,7 @@ func pwDropsForward(t *testing.T, path pwPath, forward pwForward) {
 	pool := migratedPool(t)
 	admission := path.seed(t, pool)
 	asked := path.at
-	if !classify.MergeForwardStands(record.Issue{Phase: asked}, phase.Order) {
+	if place, _ := (workflow.Walk{Line: phase.Order}).PlaceOf(asked); !classify.MergeForwardStands(phase.Order, place) {
 		asked = phase.Implementing
 	}
 	pwSeedForward(t, pool, forward.asked(asked))

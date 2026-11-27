@@ -257,10 +257,10 @@ func TestAParentMovedBackOutOfMergingIsToldTheMoveThatHeldIt(t *testing.T) {
 	engine, _ := loggedEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	approveReview(t, pool, engine)
-	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	assertWalksAt(t, pool, engine, root.Key, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 
@@ -300,10 +300,10 @@ func TestAParentMovedBackOutOfMergingIsToldTheMoveThatHeldIt(t *testing.T) {
 // A parent whose plan holds the owner's sign-off before another step passes the sign-off with no
 // issue beneath it in the workflow, and a child enters the workflow beneath it after that. No
 // sign-off is left to refuse the parent while the child runs, and a parent is accepted after the
-// work beneath it, so the pass of its last step, the reviewer's approval, holds it before its
-// retro: issues.phase held, from retro for its children, its task held at the retro's place for
-// its children, no retro started, and its owner told once in a retro-held notice naming the child.
-// The child's leave
+// work beneath it, so the pass of its last step, the reviewer's approval, holds it before its retro:
+// issues.phase held, from retro for its children, its task held at the retro's place for its
+// children, no retro started, and its owner told once in a retro-held notice naming the child. The
+// child's leave
 // starts the retro, told the review the reviewer passed. The known pass is a plan whose sign-off
 // is its last step, which the sign-off moves into its retro with no hold.
 func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {

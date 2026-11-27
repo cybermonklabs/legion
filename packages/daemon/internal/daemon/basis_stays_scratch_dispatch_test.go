@@ -784,13 +784,14 @@ func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 	}
 }
 
-// recordTaskAt moves the task of issue's run to the place that stands in issue.Phase, as the
+// recordTaskAt moves the one task of issue's run to the place that stands in issue.Phase, as the
 // workflow's own move does (workflow's moveTask), for a record a test writes in a phase by hand:
 // issues.phase and the task's place are two records of where the issue stands, and every later
 // write of the issue (workflow.Engine.WriteIssue) refuses a record in which they disagree. The task
-// runs at the step that runs as the phase, at its retro or at its merge, and waits at no act at
-// admitted. A run with no plan rows has only its phase. It, seedTransact and
-// versionNewsPluginContract are the three seams of the approved-version-news driver that its
+// runs at the step that runs as the phase (planwords.RunsAs), at its retro or at its merge, and
+// waits at no act at admitted. A run with no plan rows has only its phase, and a plan of several
+// tasks is an error here, since no phase alone says where each of them stands. It, seedTransact
+// and versionNewsPluginContract are the three seams of the approved-version-news driver that its
 // negative control gives an older base a version of (scripts/e2e/approved-version-news.sh,
 // control_compat), so they live here, in a file the control does not copy.
 func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error {
@@ -798,10 +799,11 @@ func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue re
 	if err != nil || stored == nil {
 		return err
 	}
-	task, err := stored.Task()
-	if err != nil {
-		return err
+	if len(stored.Tasks) != 1 {
+		return fmt.Errorf("the plan of %s at generation %d holds %d tasks, and a record written in a phase by hand moves one",
+			issue.Key, issue.Generation, len(stored.Tasks))
 	}
+	task := stored.Tasks[0]
 	place, state := record.TaskPlace{}, record.TaskRunning
 	switch issue.Phase {
 	case phase.Admitted:
@@ -811,8 +813,8 @@ func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue re
 	case phase.Merging:
 		place.Kind = record.PlaceMerge
 	default:
-		roles, steps := planwords.BuiltinRoles(), stored.Steps[task.Task]
-		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return roles[step.Role].Phase == issue.Phase })
+		steps := stored.Steps[task.Task]
+		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return planwords.RunsAs(step.Role) == issue.Phase })
 		if at < 0 {
 			return fmt.Errorf("the task %s of %s runs no step as %s", task.Task, issue.Key, issue.Phase)
 		}
