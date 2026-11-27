@@ -534,9 +534,10 @@ func TestAKindListWithoutTheKindOfAWaitingRowFailsItsMigration(t *testing.T) {
 	if index < 0 {
 		t.Fatalf("no embedded migration is %d", doneByChecksVersion)
 	}
-	// The kind as the migration's list names it, with the comma before the next kind: block B of
-	// the header names it last in its list, with no comma, so the cut can reach the list alone.
-	const named = "'merge_holds_changed', "
+	// The kind as the migration's list names it: at the start of its own line, after the list's
+	// indent, with the comma before the next kind. Block B of the header names it inside one long
+	// comment line, after another kind, so the cut can reach the list alone.
+	const named = "\n  'merge_holds_changed', "
 	if count := strings.Count(all[index].SQL, named); count != 1 {
 		t.Fatalf("the migration holds %q %d times, want once, in its kind list", named, count)
 	}
@@ -557,7 +558,7 @@ func TestAKindListWithoutTheKindOfAWaitingRowFailsItsMigration(t *testing.T) {
 			}
 			set := slices.Clone(all)
 			if tc.cut {
-				set[index].SQL = strings.Replace(set[index].SQL, named, "", 1)
+				set[index].SQL = strings.Replace(set[index].SQL, named, "\n  ", 1)
 			}
 			_, err := store.migrate(ctx, set)
 			recorded := rowsAsText(t, store, fmt.Sprintf(`select count(*)::text from schema_version where version = %d`, doneByChecksVersion))
