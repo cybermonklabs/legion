@@ -5,10 +5,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -358,7 +356,8 @@ func eventsRule(project string) delivery.DeliverySettings {
 
 // postedDeploy is what a day's rows read of a posted deploy (postedDayAs): its row id, the moment
 // it finished, its repository ("" for none), and each pull request it names in the shape
-// `owner/repo#n` (parsePullRequestRef), in the order it names them.
+// `owner/repo#n`, the repository in lower case (prodevents.ParsePullRequest), in the order it names
+// them.
 type postedDeploy struct {
 	id         string
 	finishedAt time.Time
@@ -368,8 +367,8 @@ type postedDeploy struct {
 
 // postedRecord is a project's posted deploys that finished from a day on, read once
 // (postedDeploys), as a day's rows read them (postedDayAs): by the UTC day each finished, newest
-// first (ties by id, the greater first), and by each pull request one names (foldedRef), the first
-// to finish first (ties by id, the lesser first).
+// first (ties by id, the greater first), and by each pull request one names, its repository in
+// lower case, the first to finish first (ties by id, the lesser first).
 type postedRecord struct {
 	finishedOn map[time.Time][]postedDeploy
 	naming     map[pullRequestRef][]postedDeploy
@@ -387,15 +386,14 @@ func postedDeploys(ctx context.Context, q delivery.Querier, project string, from
 	for _, one := range posted {
 		deploy := postedDeploy{id: one.ID, finishedAt: one.FinishedAt, repo: one.Repo}
 		for _, ref := range one.PullRequests {
-			if repo, number, ok := parsePullRequestRef(ref); ok {
+			if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
 				deploy.shipped = append(deploy.shipped, pullRequestRef{repo: repo, number: number})
 			}
 		}
 		day := measures.Midnight(deploy.finishedAt)
 		record.finishedOn[day] = append(record.finishedOn[day], deploy)
 		for _, pr := range deploy.shipped {
-			key := foldedRef(pr.repo, pr.number)
-			record.naming[key] = append(record.naming[key], deploy)
+			record.naming[pr] = append(record.naming[pr], deploy)
 		}
 	}
 	for _, deploys := range record.naming {
@@ -407,9 +405,11 @@ func postedDeploys(ctx context.Context, q delivery.Querier, project string, from
 }
 
 // shipping is the posted deploy of p that ships pr, merged at merged: the first to finish at or
-// after its merge (ties by id) of those that name it, nil where none does.
+// after its merge (ties by id) of those that name it, nil where none does. pr's repository is
+// GitHub's spelling (delivery_pull_requests.repo), read in lower case, the form the record names a
+// pull request in.
 func (p postedRecord) shipping(pr delivery.DeliveryPullRequest, merged time.Time) *postedDeploy {
-	naming := p.naming[foldedRef(pr.Repo, pr.Number)]
+	naming := p.naming[pullRequestRef{repo: strings.ToLower(pr.Repo), number: pr.Number}]
 	at, _ := slices.BinarySearchFunc(naming, merged, func(deploy postedDeploy, merged time.Time) int {
 		return deploy.finishedAt.Compare(merged)
 	})
@@ -417,34 +417,6 @@ func (p postedRecord) shipping(pr delivery.DeliveryPullRequest, merged time.Time
 		return nil
 	}
 	return &naming[at]
-}
-
-// foldedRef is the key postedRecord holds a pull request by: its number, and its repository's name
-// with each rune the least of the runes strings.EqualFold holds equal to it (its
-// unicode.SimpleFold orbit), so two names EqualFold calls one are one key.
-func foldedRef(repo string, number int) pullRequestRef {
-	folded := strings.Map(func(r rune) rune {
-		least := r
-		for other := unicode.SimpleFold(r); other != r; other = unicode.SimpleFold(other) {
-			least = min(least, other)
-		}
-		return least
-	}, repo)
-	return pullRequestRef{repo: folded, number: number}
-}
-
-// parsePullRequestRef is the repository and number of a pull request a posted deploy names as
-// `owner/repo#n` (production_events.pull_requests), false for a name of no other shape.
-func parsePullRequestRef(ref string) (string, int, bool) {
-	hash := strings.LastIndex(ref, "#")
-	if hash <= 0 || !strings.Contains(ref[:hash], "/") {
-		return "", 0, false
-	}
-	number, err := strconv.ParseInt(ref[hash+1:], 10, 32)
-	if err != nil || number <= 0 {
-		return "", 0, false
-	}
-	return ref[:hash], int(number), true
 }
 
 // PostedMember is a posted deploy's row key in eval_day_members: `production_event:<id>`.

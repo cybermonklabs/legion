@@ -1,0 +1,26 @@
+-- 20261127200929_production_events_signal_reads.up.sql
+--
+-- Two reads the production signals make on each pass get an index of their own
+-- (dispatch://INFRA-978, R7).
+--
+--   production_events_pull_requests, a GIN index of pull_requests over the deploy rows, is the
+--     read of the deploy that names a pull request among those it shipped
+--     (prodevents.DeployForPullRequest), which every revert and every incident that links a pull
+--     request asks. It probes `pull_requests @> array[<name>]`, as production_events_commits
+--     serves the read of a commit, so every deploy row names its pull requests in one form:
+--     `owner/repo#n` with the repository in lower case and no trailing `.git`. The GitHub adapter
+--     writes them so (delivery.PullRequestName), the post route stores a posted pull request so
+--     (api's pullRequestRef), and the repository rename pass writes the new name in lower case.
+--   production_events_reverts, (source_ref) over the revert rows, is the check of the reverts
+--     read (delivery.ListRevertShips) that no revert row of any project holds a revert yet, keyed
+--     `revert:<repo>#<n>` (signals.RevertSourceRef): a revert row stays under the project it was
+--     written under when its repository's source moves to another project, and the revert makes
+--     no second row.
+--
+-- The release before this one has no production event record, so it neither reads nor writes
+-- production_events, and every database applies this migration in the boot that creates the
+-- table (20261123002035), before the server serves: the table holds no row, each index build reads
+-- none, and the SHARE lock it takes holds off no writer. The migration rewrites no row: every row
+-- this release writes names its pull requests in that one form. Its census answers 0.
+create index production_events_pull_requests on production_events using gin (pull_requests) where kind = 'deploy';
+create index production_events_reverts on production_events (source_ref) where source = 'reverts';

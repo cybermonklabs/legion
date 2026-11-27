@@ -66,11 +66,10 @@ type Revert struct {
 	MergeCommitSHA *string
 }
 
-// revertOf is the Revert of a merged pull request of repo as GitHub's REST API answered it, and of
-// the pull request its body names, and false where the pull request is not merged or its body names
-// no pull request (ParseRevert). reverted is GitHub's answer for the named pull request, nil where it
-// was not read; its merge commit is the one thing read of it.
-func revertOf(repo string, revert pullRequestPayload, reverted *pullRequestPayload) (Revert, bool) {
+// revertOf is the Revert of a merged pull request of repo as GitHub's REST API answered it, and
+// false where the pull request is not merged or its body names no pull request (ParseRevert). The
+// reverted pull request's merge commit is its caller's to read (recordRevertFromGitHub).
+func revertOf(repo string, revert pullRequestPayload) (Revert, bool) {
 	if revert.MergedAt == nil {
 		return Revert{}, false
 	}
@@ -78,14 +77,10 @@ func revertOf(repo string, revert pullRequestPayload, reverted *pullRequestPaylo
 	if !ok {
 		return Revert{}, false
 	}
-	recorded := Revert{
+	return Revert{
 		Repo: repo, Number: revert.Number, RevertsRepo: revertsRepo, RevertsNumber: revertsNumber,
 		MergedAt: revert.MergedAt.UTC(), MergeCommitSHA: lowerSHA(revert.MergeCommitSHA),
-	}
-	if reverted != nil {
-		recorded.RevertsMergeCommitSHA = lowerSHA(reverted.MergeCommitSHA)
-	}
-	return recorded, true
+	}, true
 }
 
 // lowerSHA is a commit as delivery_reverts keeps it: lower case, nil for none.
@@ -137,7 +132,7 @@ func recordRevertFromGitHub(ctx context.Context, pool *store.Pool, client *githu
 	if err != nil {
 		return err
 	}
-	revert, ok := revertOf(repo, payload, nil)
+	revert, ok := revertOf(repo, payload)
 	if !ok {
 		return nil
 	}
@@ -183,15 +178,25 @@ func revertedPullRequest(ctx context.Context, client *githubapp.Client, repo, to
 
 // RevertShip is a recorded revert with the deploy run that ships it: the first production deploy
 // GitHub created after the revert merged, by the shipping rule every reader of a deploy reads
-// (shippingRunJoin). ShipRunID and ShipCompletedAt are nil while no deploy has shipped it.
+// (shippingRunJoin), and when its production job completed.
 type RevertShip struct {
 	Revert
-	ShipRunID       *int64
-	ShipCompletedAt *time.Time
+	ShipRunID       int64
+	ShipCompletedAt time.Time
 }
 
-// ListRevertShips reads every recorded revert of rule's repository, oldest merge first, each with
-// the deploy run that ships it under rule.
+// ListRevertShips reads the recorded reverts of rule's repository that can make their failure now
+// (prodevents/signals' revertFailures), oldest merge first, each with the deploy run that ships it
+// under rule: a revert a deploy run ships, whose run completed on or after the earliest
+// failures_measured_since of the delivery-on projects that count reverts (FailureSourceReverts),
+// and that no revert row of the record holds yet, of any project. A revert row blames a deploy
+// that finished no later than the revert's own deploy, and the failure measures count no deploy
+// before a project's first day, so a revert shipped before every such day counts for no project.
+// A revert row is keyed revert:<repo>#<n>, the repository in lower case (signals'
+// RevertSourceRef), and stays under the project it was written under when the repository's
+// source moves, so the check reads every project's, through production_events_reverts (migration
+// 20261127200929). So a revert no deploy ships yet waits outside the read, and one whose row is
+// written leaves it.
 func ListRevertShips(ctx context.Context, q Querier, rule DeliverySettings) ([]RevertShip, error) {
 	production := rule.Production()
 	rows, err := q.Query(ctx, `
@@ -200,8 +205,13 @@ func ListRevertShips(ctx context.Context, q Querier, rule DeliverySettings) ([]R
 		from delivery_reverts pr
 		`+shippingRunJoin("$1", "$2", "$3")+`
 		where pr.repo = $1
+		  and not exists (select from production_events failure
+			where failure.source = 'reverts' and failure.source_ref = 'revert:' || lower(pr.repo) || '#' || pr.number)
+		  and ship.completed_at >= (
+			select min(s.failures_measured_since)::timestamp at time zone 'UTC' from project_delivery_settings s
+			where s.delivery and $4 = any(s.failure_sources))
 		order by pr.merged_at, pr.number
-	`, rule.DeployRepo, production.JobNames, production.ApplyStep)
+	`, rule.DeployRepo, production.JobNames, production.ApplyStep, FailureSourceReverts)
 	if err != nil {
 		return nil, fmt.Errorf("read the reverts of %s: %w", rule.DeployRepo, err)
 	}

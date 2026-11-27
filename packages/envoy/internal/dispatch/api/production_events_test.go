@@ -772,7 +772,8 @@ func TestARestoreCannotNameAnotherProjectsDeploy(t *testing.T) {
 // Invalid production event times and pull request references are refused without writing a row.
 // A post refuses backwards times, a finish or detection more than five minutes ahead of the
 // server, and malformed pull request references. Equal start and finish, a near-future detection,
-// and the largest stored pull request number are accepted.
+// and the largest stored pull request number are accepted, and a pull request is stored as the
+// record names one, `owner/repo#n` in lower case with no trailing `.git`, however the post spells it.
 func TestAPostRefusesAnImpossibleTimeAndAMalformedPullRequest(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -821,10 +822,10 @@ func TestAPostRefusesAnImpossibleTimeAndAMalformedPullRequest(t *testing.T) {
 	}
 	for name, body := range map[string]map[string]any{
 		"a deploy that finishes at its start a minute past the server's clock": deployOf(map[string]any{
-			"source_ref": "ci:taken", "started_at": now.Add(time.Minute), "finished_at": now.Add(time.Minute), "pull_requests": []string{" acme/app#2147483647 "},
+			"source_ref": "ci:taken", "started_at": now.Add(time.Minute), "finished_at": now.Add(time.Minute), "pull_requests": []string{" Acme/App.git#2147483647 "},
 		}),
 		"a failure found a minute past the server's clock": failureOf(map[string]any{
-			"source_ref": "alerts:taken", "detected_at": now.Add(time.Minute), "pull_requests": []string{"acme/app#2147483647"},
+			"source_ref": "alerts:taken", "detected_at": now.Add(time.Minute), "pull_requests": []string{"ACME/app#2147483647"},
 		}),
 	} {
 		posted := bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), body)
@@ -833,6 +834,8 @@ func TestAPostRefusesAnImpossibleTimeAndAMalformedPullRequest(t *testing.T) {
 		}
 		if row := decodeBody[prodevents.Event](t, posted); !slices.Equal(row.PullRequests, []string{"acme/app#2147483647"}) {
 			t.Errorf("%s: the row names pull requests %q, want acme/app#2147483647 alone", name, row.PullRequests)
+		} else if stored := readProductionEvent(t, database, "PRD", row.ID); !slices.Equal(stored.PullRequests, row.PullRequests) {
+			t.Errorf("%s: the stored row names pull requests %q, want acme/app#2147483647 alone", name, stored.PullRequests)
 		}
 	}
 }

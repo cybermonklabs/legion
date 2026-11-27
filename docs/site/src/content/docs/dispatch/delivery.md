@@ -211,15 +211,18 @@ Each row carries `source_ref`, its writer's own key, and a project holds one row
 Deploy rows come from two writers:
 
 - The GitHub adapter writes one row for each run of a `github_workflow` source's repository that the source's rule calls a deploy: a run of the deploy workflow on `main` whose production job succeeded, and whose apply step succeeded too where the source names one.
-  The row belongs to the project whose source reads the repository, with `source` `github`, `source_ref` `github:<run id>`, `status` `succeeded`, `started_at` the run's creation, `finished_at` the production job's completion, `commits` the run's head and the merge commit of each pull request it ships, and `pull_requests` the pull requests it ships first.
+  The row belongs to its run: it is written under the project whose source reads the repository, with `source` `github`, `source_ref` `github:<run id>`, `status` `succeeded`, `started_at` the run's creation, `finished_at` the production job's completion, `commits` the run's head and the merge commit of each pull request it ships, and `pull_requests` the pull requests it ships first, each `owner/repo#n` with the repository in lower case.
   The production signals loop writes the row in a transaction of its own after the run's write commits, and moves it in place where the run moves, as when GitHub runs it again.
-  When a repository's production jobs, its production apply step or the project whose source reads it change, the loop derives every deploy row of that repository again: a run the rule calls a deploy gains or keeps its row, and every other GitHub deploy row of the repository is deleted.
-  A row that a failure blames, or that a restore names, is kept instead with `status` `dropped` and the reason in its `note`, and each counted failure that blames it is rejected with that reason, which names the rule.
+  When a repository's production jobs, its production apply step or the project whose source reads it change, the loop derives every deploy row of that repository again.
+  A run the rule calls a deploy keeps its row, with its id, and the row moves to the project whose source reads the repository now, so every failure that blames the row and every restore that names it keep it.
+  Every other GitHub deploy row of the repository is kept with `status` `dropped` and the reason in its `note`, and each counted failure that blames it is rejected with that reason, which names the rule.
   A `dropped` row counts in no failure measure, and no signal finds it by a commit, a run or a pull request.
-  Where the rule calls its run a deploy of the same project again, the row is `succeeded` again, and the failures it lost stay rejected until someone counts them again.
+  When a later rule calls its run a deploy again, the same row is `succeeded` again, and each failure that a drop rejected counts again, with a reason that names the later rule.
+  A failure that a person or the project's controller rejected, or whose check result was retracted, stays rejected.
 
 - A system posts a deploy, `kind: deploy`, to `POST /api/v1/projects/{key}/production-events` with an agent or service token; its `source` is `api`.
   The record holds the deploys DORA counts, deploys to production that succeeded: a posted deploy's `environment` is `production` and its `status` is `succeeded` where it names none, and a post that names another environment or status is refused with `400 PRODUCTION_EVENT_INPUT`.
+  A posted deploy's or failure's `pull_requests` are stored in the one form the record names a pull request in, `owner/repo#n` with the repository in lower case and no trailing `.git`, however the post spells them.
 
 Failure rows come from five signals.
 A project's failure measures count each signal where the project has the failure source named beside it on, and a person's flag under any failure source:
@@ -233,7 +236,8 @@ A project's failure measures count each signal where the project has the failure
 
 - `revert` (failure source `reverts`): a merged pull request of a source repository whose body says `Reverts <owner>/<repo>#<n>`, the line GitHub's revert button writes, whoever wrote it.
   The pull-request intake records the revert as it merges, and the reconcile's search records one the intake missed.
-  Once the deploy that ships the revert has its deploy row, the loop writes the failure under the project whose source reads the repository.
+  Once the deploy that ships the revert has its deploy row, the loop writes the failure under the project whose source reads the repository, where some delivery-on project counts `reverts` from a day on or before that deploy's finish.
+  A revert is one row: when the repository's source moves to another project, the row stays under the project it was written under, and the loop writes no second one.
   It blames the deploy row that shipped the reverted pull request, or else the one whose commits hold that pull request's merge commit, and it is detected when the revert merged.
   The revert's own deploy restores it: `restored_at` is that deploy's finish, and `restored_by_deploy` is that deploy's row.
   Its `source_ref` is `revert:<owner>/<repo>#<n>`, the revert's own pull request.
@@ -365,6 +369,7 @@ The record has three routes, each of a project:
 - `POST /api/v1/projects/{key}/production-events` writes one deploy or failure, `{kind, source_ref, environment?, status?, url?, started_at?, finished_at?, detected_at?, repo?, commits?, pull_requests?, deploy_id?, commit_sha?, note?, actor?}`, and takes OpenTelemetry's `deployment.environment.name`, `deployment.status` and `cicd.pipeline.run.url.full` for `environment`, `status` and `url` (one name of a field, or both alike) and `cicd.pipeline.run.id` for a failure's GitHub run.
   It answers `201` with the new row, or `200` with the row the project already holds under that `source_ref`, writing nothing: a system's repeat is answered before the failure's deploy is looked up, so a retry after that deploy was dropped or stopped counting for the project gets its stored row.
   `note` is what the writer says of the event, kept as sent, at most 4,096 bytes.
+  Each `pull_requests` entry is stored as `owner/repo#n` with the repository in lower case and no trailing `.git`, however the post spells it.
   A deploy needs `finished_at`, and only an agent or service token posts one: a credential that holds the `person` scope is refused `403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN`.
   A deploy is one to production that succeeded: its `environment` is `production` and its `status` `succeeded` where it names none, and one that names another environment or status is `400 PRODUCTION_EVENT_INPUT` naming the field.
   A failure names the deploy it blames one way, by `deploy_id`, by `cicd.pipeline.run.id` with `repo`, or by `commit_sha`, and that deploy must count for the route's project, whichever project's record holds it, so a deploy shared with another project is taken.

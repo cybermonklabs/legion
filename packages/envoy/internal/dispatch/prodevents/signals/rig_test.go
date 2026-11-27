@@ -80,11 +80,37 @@ func rule(jobs ...string) delivery.DeliverySettings {
 	}
 }
 
-// saveRule saves ALPHA's delivery settings with acme/widgets's rule naming jobs.
+// revertsSince is the day the rig's projects count reverts from, the day before base, so every
+// revert the rig records and ships can make its failure (delivery.ListRevertShips).
+var revertsSince = base.AddDate(0, 0, -1)
+
+// saveRule saves ALPHA's delivery settings with acme/widgets, its default repository, read under
+// the rule naming jobs, and its reverts counted from revertsSince (saveSource).
 func (r *rig) saveRule(jobs ...string) {
 	r.t.Helper()
-	if _, err := deliveryseed.SaveRules(r.ctx, r.pool, alpha, rule(jobs...)); err != nil {
-		r.t.Fatalf("save the delivery settings: %v", err)
+	r.saveSource(alpha, nil, revertsSince, jobs...)
+}
+
+// saveSource saves project's delivery settings, delivery on with one source reading acme/widgets
+// under rule(jobs), named where repo is not nil and the project's default repository where it is,
+// and the project's reverts counted from since.
+func (r *rig) saveSource(project string, repo *string, since time.Time, jobs ...string) {
+	r.t.Helper()
+	settings := rule(jobs...)
+	if _, err := deliveryseed.SaveSettings(r.ctx, r.pool, delivery.ProjectSettingsInput{
+		Project: project, Delivery: true, Sources: []delivery.SourceInput{deliveryseed.SourceOf(settings, repo)},
+		PopulationAuthors: settings.PopulationAuthors, FailureSources: []string{delivery.FailureSourceReverts},
+		FailuresMeasuredSince: &since,
+	}, person); err != nil {
+		r.t.Fatalf("save the delivery settings of %s: %v", project, err)
+	}
+}
+
+// deliveryOff saves project's delivery off with no source, so no rule of it reads a repository.
+func (r *rig) deliveryOff(project string) {
+	r.t.Helper()
+	if _, err := deliveryseed.SaveSettings(r.ctx, r.pool, delivery.ProjectSettingsInput{Project: project}, person); err != nil {
+		r.t.Fatalf("turn the delivery of %s off: %v", project, err)
 	}
 }
 

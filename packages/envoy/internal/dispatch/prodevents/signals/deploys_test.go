@@ -1,7 +1,6 @@
 package signals
 
 import (
-	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
@@ -145,8 +145,8 @@ func TestAPruneBetweenTwoPagesOfTheDeploysFeedLosesItsCursor(t *testing.T) {
 
 // TestARuleChangeDerivesTheRepositorysDeployRowsAgain: a save that changes the repository's rule
 // derives its GitHub deploy rows again on the next pass. A run the new rule calls a deploy gains
-// its row; a row the new rule does not call a deploy is deleted; and one a failure blames stays,
-// dropped, with each failure on it rejected for a reason that names the rule change.
+// its row; a row the new rule does not call a deploy stays, dropped, whether a failure blames it or
+// not, and each failure on it is rejected for a reason that names the rule change.
 func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	r := newRig(t)
 	r.deployRun(130, at(60), sha("e"), prodJob, success, success)
@@ -172,8 +172,8 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	if added.ProjectKey != alpha || added.Status != prodevents.StatusSucceeded {
 		t.Errorf("the run the new rule calls a deploy = %+v", added)
 	}
-	if _, err := prodevents.Get(r.ctx, r.pool, alpha, unblamed.ID); !errors.Is(err, prodevents.ErrNotFound) {
-		t.Errorf("the row of run 131, which nothing blames, stayed")
+	if row, err := prodevents.Get(r.ctx, r.pool, alpha, unblamed.ID); err != nil || row.Status != prodevents.StatusDropped {
+		t.Errorf("the row of run 131, which nothing blames, = %+v (%v); want it kept, dropped", row, err)
 	}
 	kept, err := prodevents.Get(r.ctx, r.pool, alpha, blamed.ID)
 	if err != nil {
@@ -194,6 +194,185 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	if _, held, err := prodevents.DeployForCommit(r.ctx, r.pool, alpha, sha("e")); err != nil || held {
 		t.Errorf("a signal finds the dropped deploy by its commit (%v, %v): no signal blames it", held, err)
 	}
+}
+
+// TestARuleThatDropsADeployAndTakesItBackCountsItAndItsFailuresAgain (the architect's ruling,
+// dispatch://INFRA-978/comment/e6c99e06-0589-4692-b30f-ed64684bd33a, point 4): a rule change that no
+// longer calls runs 150 and 151 deploys keeps both rows, dropped, and rejects each counted failure
+// on run 150's; a later change back to the first rule counts the same two rows again, with their
+// ids, and each failure the drop rejected counts again, for a reason that names the later change.
+// A failure a person rejected before the drop, one a person rejected while the deploy was dropped,
+// and a check_fail whose result was retracted while the deploy was dropped stay rejected, each with
+// its own reason and writer.
+func TestARuleThatDropsADeployAndTakesItBackCountsItAndItsFailuresAgain(t *testing.T) {
+	r := newRig(t)
+	issue := r.issue(1)
+	r.deployRun(150, at(60), sha("a"), prodJob, success, success)
+	r.deployRun(151, at(120), sha("b"), prodJob, success, success)
+	r.passDeploys()
+	blamed, unblamed := r.deployOf(150), r.deployOf(151)
+	flag := func(login string) string {
+		t.Helper()
+		flagged, _, err := prodevents.Write(r.ctx, r.pool, prodevents.Event{
+			ProjectKey: alpha, Kind: prodevents.KindFailure, Source: prodevents.SourcePerson,
+			SourceRef: prodevents.PersonSourceRef(blamed.ID, login), Actor: model.Actor{Kind: "user", ID: login},
+			DeployID: new(blamed.ID), Signal: new(prodevents.SignalPerson), DetectedAt: new(at(200)),
+		}, nil)
+		if err != nil {
+			t.Fatalf("%s's flag of run 150's deploy: %v", login, err)
+		}
+		return flagged.ID
+	}
+	reject := func(id, reason string) {
+		t.Helper()
+		if _, err := prodevents.SetState(r.ctx, r.pool, alpha, id, prodevents.StateChange{
+			State: prodevents.StateRejected, Reason: reason, Actor: person, At: at(210),
+		}); err != nil {
+			t.Fatalf("reject %s: %v", id, err)
+		}
+	}
+	stateOf := func(id string) prodevents.Event {
+		t.Helper()
+		row, err := prodevents.Get(r.ctx, r.pool, alpha, id)
+		if err != nil {
+			t.Fatalf("read failure %s: %v", id, err)
+		}
+		return row
+	}
+	counted, before, after := flag("alice"), flag("bob"), flag("carol")
+	result := r.checkResult(issue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	r.passEvents()
+	checkFail := r.boundTo(result)
+	if checkFail == "" || stateOf(checkFail).State != prodevents.StateCounted {
+		t.Fatalf("the failed check on run 150's commit made no counted check_fail (row %q)", checkFail)
+	}
+	const beforeReason, afterReason, retracted = "a staging alert", "bob flagged this one already", "The check ran against staging."
+	reject(before, beforeReason)
+
+	r.saveRule(canaryJob)
+	r.passDeploys()
+	for _, was := range []prodevents.Event{blamed, unblamed} {
+		if row, err := prodevents.Get(r.ctx, r.pool, alpha, was.ID); err != nil || !row.Dropped() {
+			t.Fatalf("under the canary rule, the row of %s = %+v (%v); want it kept, dropped", was.SourceRef, row, err)
+		}
+	}
+	for _, id := range []string{counted, after, checkFail} {
+		if row := stateOf(id); row.State != prodevents.StateRejected || row.StateBy == nil || *row.StateBy != loopActor {
+			t.Fatalf("under the canary rule, failure %s = state %q by %v; want rejected by the drop", id, row.State, row.StateBy)
+		}
+	}
+	reject(after, afterReason)
+	r.retract(issue, result, "c1", sha("a"), retracted)
+	r.passEvents()
+
+	r.saveRule(prodJob)
+	r.passDeploys()
+	for _, was := range []prodevents.Event{blamed, unblamed} {
+		if row, err := prodevents.Get(r.ctx, r.pool, alpha, was.ID); err != nil || row.Status != prodevents.StatusSucceeded {
+			t.Errorf("back under the first rule, the row of %s = %+v (%v); want %s again, succeeded, ALPHA's", was.SourceRef, row, err, was.ID)
+		}
+	}
+	if rows := r.deploys(); len(rows) != 2 || rows[0].ID != blamed.ID || rows[1].ID != unblamed.ID {
+		t.Errorf("back under the first rule, the deploy rows = %+v; want runs 150 and 151's rows %s and %s alone", rows, blamed.ID, unblamed.ID)
+	}
+	if row := stateOf(counted); row.State != prodevents.StateCounted || row.StateReason == nil || row.StateBy == nil ||
+		!strings.Contains(*row.StateReason, "deploy rule of acme/widgets changed") || !strings.Contains(*row.StateReason, prodJob) ||
+		!strings.Contains(*row.StateReason, "a deploy again") || *row.StateBy != loopActor {
+		t.Errorf("the failure the drop rejected = state %q, reason %v, by %v; want counted again, naming the rule that takes the deploy back",
+			row.State, row.StateReason, row.StateBy)
+	}
+	for id, reason := range map[string]string{before: beforeReason, after: afterReason, checkFail: retracted} {
+		if row := stateOf(id); row.State != prodevents.StateRejected || row.StateReason == nil || *row.StateReason != reason ||
+			row.StateBy == nil || *row.StateBy != person {
+			t.Errorf("failure %s = state %q, reason %v, by %v; want it still rejected, for %q by %v", id, row.State, row.StateReason, row.StateBy, reason, person)
+		}
+	}
+	if found, held, err := prodevents.DeployForCommit(r.ctx, r.pool, alpha, sha("a")); err != nil || !held || found.ID != blamed.ID {
+		t.Errorf("a signal finds %q (held %v, %v) by run 150's commit, want its row %s again", found.ID, held, err, blamed.ID)
+	}
+}
+
+// TestASourceMovedToAnotherProjectAndBackKeepsItsDeployRowsAndTheirFailures (the architect's
+// ruling, dispatch://INFRA-978/comment/e6c99e06-0589-4692-b30f-ed64684bd33a, point 4): acme/widgets's
+// one source moves from ALPHA to BETA and back. At each step the record holds the same two GitHub
+// deploy rows, runs 400 and 401, with their ids, each of the project whose source reads the
+// repository, and run 400's deploy, which ships no pull request, counts for that project alone. It
+// holds the same two failures, each counted and blaming run 400's row: ALPHA-1's check_fail and the
+// revert of #5, restored by run 401's row. The revert stays one row: BETA, which counts reverts as
+// ALPHA does, writes no second one.
+func TestASourceMovedToAnotherProjectAndBackKeepsItsDeployRowsAndTheirFailures(t *testing.T) {
+	r := newRig(t)
+	r.project("BETA", "")
+	issue := r.issue(1)
+	r.deployRun(400, at(60), sha("a"), prodJob, success, success)
+	r.deployRun(401, at(120), sha("b"), prodJob, success, success)
+	r.passDeploys()
+	shipped, restoring := r.deployOf(400), r.deployOf(401)
+	r.checkResult(issue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	if err := delivery.RecordRevert(r.ctx, r.pool, delivery.Revert{
+		Repo: widgets, Number: 9, RevertsRepo: widgets, RevertsNumber: 5, RevertsMergeCommitSHA: new(sha("a")),
+		MergedAt: at(90), MergeCommitSHA: new(sha("9")),
+	}); err != nil {
+		t.Fatalf("record the revert: %v", err)
+	}
+	pass := func() {
+		t.Helper()
+		r.passDeploys()
+		r.passEvents()
+	}
+	requireStep := func(step, owner string) {
+		t.Helper()
+		deploys := r.deploys()
+		if len(deploys) != 2 || deploys[0].ID != shipped.ID || deploys[1].ID != restoring.ID {
+			t.Fatalf("%s, the deploy rows = %+v; want runs 400 and 401's rows %s and %s", step, deploys, shipped.ID, restoring.ID)
+		}
+		for _, deploy := range deploys {
+			if deploy.ProjectKey != owner || deploy.Status != prodevents.StatusSucceeded {
+				t.Errorf("%s, the row of %s is %s's, %s; want %s's, succeeded", step, deploy.SourceRef, deploy.ProjectKey, deploy.Status, owner)
+			}
+		}
+		facts, err := storedDeployFacts(r.ctx, r.pool, deploys[0])
+		if err != nil {
+			t.Fatalf("%s, read the facts of run 400's deploy: %v", step, err)
+		}
+		if projects := prodevents.DeployProjects(deploys[0], facts); !slices.Equal(projects, []string{owner}) {
+			t.Errorf("%s, run 400's deploy counts for %v, want %s alone", step, projects, owner)
+		}
+		var all int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from production_events where kind = 'failure'`).Scan(&all); err != nil {
+			t.Fatalf("%s, count the failure rows: %v", step, err)
+		}
+		failures, err := prodevents.FailuresOf(r.ctx, r.pool, []string{shipped.ID})
+		if err != nil {
+			t.Fatalf("%s, read the failures of run 400's deploy: %v", step, err)
+		}
+		signals := make([]string, len(failures))
+		for i, failure := range failures {
+			signals[i] = *failure.Signal
+			if failure.State != prodevents.StateCounted || failure.ProjectKey != alpha {
+				t.Errorf("%s, the %s row is %s's, %s; want ALPHA's, counted", step, *failure.Signal, failure.ProjectKey, failure.State)
+			}
+			if *failure.Signal == prodevents.SignalRevert && (failure.RestoredByDeploy == nil || *failure.RestoredByDeploy != restoring.ID) {
+				t.Errorf("%s, the revert is restored by %v, want run 401's row %s", step, failure.RestoredByDeploy, restoring.ID)
+			}
+		}
+		slices.Sort(signals)
+		if all != 2 || !slices.Equal(signals, []string{prodevents.SignalCheckFail, prodevents.SignalRevert}) {
+			t.Errorf("%s, the record holds %d failure rows, and run 400's deploy is blamed by %v; want the check_fail and the revert alone",
+				step, all, signals)
+		}
+	}
+
+	pass()
+	requireStep("under ALPHA's source", alpha)
+	r.deliveryOff(alpha)
+	r.saveSource("BETA", new(widgets), revertsSince, prodJob)
+	pass()
+	requireStep("once the source moved to BETA", "BETA")
+	r.deliveryOff("BETA")
+	r.saveRule(prodJob)
+	pass()
+	requireStep("once the source moved back to ALPHA", alpha)
 }
 
 // TestTheDeployRowWriteTakesNoChangeLogLock: the adapter writes a deploy row in a transaction of its

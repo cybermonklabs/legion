@@ -27,14 +27,12 @@ func readCapturedPullRequest(t *testing.T, name string) pullRequestPayload {
 
 // TestTheRevertParseReadsGitHubsRevertButtonPullRequest: the revert of cli/cli#14437 that GitHub's
 // revert button made (cli/cli#14462, captured with `gh api repos/cli/cli/pulls/14462`) is read as a
-// revert of cli/cli#14437, with the reverted pull request's merge commit read from GitHub's own
-// answer for it (`gh api repos/cli/cli/pulls/14437`), both from the captured body, which holds the
-// line inside a longer description, and from that line alone, cut from the capture, as the button
-// writes it bare. A body that names the pull request any other way, and an unmerged pull request,
-// read as no revert.
+// revert of cli/cli#14437, merged when GitHub says with its own merge commit, both from the
+// captured body, which holds the line inside a longer description, and from that line alone, cut
+// from the capture, as the button writes it bare. A body that names the pull request any other way,
+// and an unmerged pull request, read as no revert.
 func TestTheRevertParseReadsGitHubsRevertButtonPullRequest(t *testing.T) {
 	revert := readCapturedPullRequest(t, "revert-pull-cli-14462.json")
-	reverted := readCapturedPullRequest(t, "reverted-pull-cli-14437.json")
 	if !strings.Contains(revert.Body, "\r\n\r\nReverts cli/cli#14437\r\n\r\n") {
 		t.Fatalf("the captured body is not the longer description holding the revert line: %q", revert.Body)
 	}
@@ -50,9 +48,8 @@ func TestTheRevertParseReadsGitHubsRevertButtonPullRequest(t *testing.T) {
 
 	want := Revert{
 		Repo: "cli/cli", Number: 14462, RevertsRepo: "cli/cli", RevertsNumber: 14437,
-		RevertsMergeCommitSHA: new("38316c1c4f275030e3df6666382922e75410d68b"),
-		MergedAt:              time.Date(2026, 9, 15, 14, 11, 21, 0, time.UTC),
-		MergeCommitSHA:        new("0cf1092493af067646fc5f3db9421c6a6ec9c938"),
+		MergedAt:       time.Date(2026, 9, 15, 14, 11, 21, 0, time.UTC),
+		MergeCommitSHA: new("0cf1092493af067646fc5f3db9421c6a6ec9c938"),
 	}
 	for name, body := range map[string]string{"the captured body": revert.Body, "the bare line": bare} {
 		t.Run(name, func(t *testing.T) {
@@ -62,14 +59,14 @@ func TestTheRevertParseReadsGitHubsRevertButtonPullRequest(t *testing.T) {
 			}
 			payload := revert
 			payload.Body = body
-			got, ok := revertOf("cli/cli", payload, &reverted)
+			got, ok := revertOf("cli/cli", payload)
 			if !ok {
 				t.Fatalf("revertOf read no revert")
 			}
 			if got.Repo != want.Repo || got.Number != want.Number || got.RevertsRepo != want.RevertsRepo ||
 				got.RevertsNumber != want.RevertsNumber || !got.MergedAt.Equal(want.MergedAt) ||
-				*got.RevertsMergeCommitSHA != *want.RevertsMergeCommitSHA || *got.MergeCommitSHA != *want.MergeCommitSHA {
-				t.Fatalf("revertOf = %+v (reverted %s, merge %s), want %+v", got, *got.RevertsMergeCommitSHA, *got.MergeCommitSHA, want)
+				got.RevertsMergeCommitSHA != nil || *got.MergeCommitSHA != *want.MergeCommitSHA {
+				t.Fatalf("revertOf = %+v (merge %s), want %+v", got, *got.MergeCommitSHA, want)
 			}
 		})
 	}
@@ -81,7 +78,7 @@ func TestTheRevertParseReadsGitHubsRevertButtonPullRequest(t *testing.T) {
 	}
 	unmerged := revert
 	unmerged.MergedAt = nil
-	if got, ok := revertOf("cli/cli", unmerged, &reverted); ok {
+	if got, ok := revertOf("cli/cli", unmerged); ok {
 		t.Errorf("an unmerged pull request read as the revert %+v", got)
 	}
 }

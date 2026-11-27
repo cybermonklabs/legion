@@ -46,7 +46,10 @@ import (
 
 // loopActor writes every row the loop writes but a check_fail and an incident_issue, which carry
 // the actor of their result and of their event: the deploy rows, a revert's failure and its
-// restore, and the reject of a failure on a deploy a rule change dropped.
+// restore, the reject of a failure on a deploy a rule change dropped, and that failure's re-count
+// when a later rule calls its deploy a deploy again. So a failure whose reject names loopActor is
+// one a drop rejected, and every other reject is a person's, a controller's or a retraction's,
+// which no later rule undoes (prodevents.UpsertGitHubDeploy, RejectRetractedCheck).
 var loopActor = model.Actor{Kind: "system", ID: "production-signals"}
 
 // Lease names the lease every pass takes (duty.Exclusive with no period): two processes woken by

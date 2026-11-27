@@ -15,7 +15,8 @@ import (
 
 // The GitHub adapter (dispatch://INFRA-978, R6): the deploy row of each run of a deploy repository
 // that the repository's rule calls a deploy (delivery.DeployRowsIn), written under the repository's
-// owner (delivery.DeployRules) after the write that made the run a deploy has committed: the
+// owner (delivery.DeployRules), and moved with its id to the new owner where the owner moves
+// (prodevents.UpsertGitHubDeploy), after the write that made the run a deploy has committed: the
 // intake's workflow write, the reconcile's run write and its backfills, and the job intake's job
 // write each log a change of the run (delivery_changes, kinds run and run_job), and a pull request
 // write logs one of the pull request it ships (kind pull_request), which this feed reads after them
@@ -320,24 +321,29 @@ func deriveChanged(ctx context.Context, pool *store.Pool, rule delivery.Delivery
 }
 
 // apply writes desired, each deploy row of rule's repository the rule calls a deploy, under rule's
-// project (prodevents.UpsertGitHubDeploy: a row that would not move is not written), and drops each
-// row of stored that is not one of them under that project (prodevents.DropGitHubDeploy: deleted,
-// or kept with its failures rejected where a failure blames it), naming the rule in the reason. A
-// row dropped already stays as it is.
+// project (prodevents.UpsertGitHubDeploy: the run's row of any project moves there with its id, a
+// dropped one counting again with the failures its drop rejected, and a row that would not move is
+// not written), and drops each row of stored whose run is not one of them
+// (prodevents.DropGitHubDeploy: kept, with its failures rejected), naming the rule in each reason.
+// A row dropped already stays as it is.
 func apply(ctx context.Context, pool *store.Pool, rule delivery.DeliverySettings, desired []delivery.DeployRow, stored []prodevents.Event, at time.Time) error {
 	wanted := make(map[string]bool, len(desired))
+	var counted string
+	if len(desired) > 0 {
+		counted = countReason(rule, at)
+	}
 	for _, row := range desired {
 		event := deployEvent(rule, row)
 		wanted[event.SourceRef] = true
-		if _, _, err := prodevents.UpsertGitHubDeploy(ctx, pool, event); err != nil {
+		if _, _, err := prodevents.UpsertGitHubDeploy(ctx, pool, event, counted, at); err != nil {
 			return err
 		}
 	}
 	for _, old := range stored {
-		if wanted[old.SourceRef] && old.ProjectKey == rule.Project || old.Status == prodevents.StatusDropped {
+		if wanted[old.SourceRef] || old.Dropped() {
 			continue
 		}
-		if _, err := prodevents.DropGitHubDeploy(ctx, pool, old.ProjectKey, old.ID, dropReason(rule, old, at), loopActor, at); err != nil {
+		if err := prodevents.DropGitHubDeploy(ctx, pool, old.ProjectKey, old.ID, dropReason(rule, old, at), loopActor, at); err != nil {
 			return err
 		}
 	}
@@ -355,15 +361,27 @@ func deployEvent(rule delivery.DeliverySettings, row delivery.DeployRow) prodeve
 	}
 }
 
-// dropReason is why old is no deploy: the rule of its repository, as rule states it on at's day,
-// does not call its run a deploy of old's project. It is the reason each failure on old is rejected
-// with, so it names the rule.
-func dropReason(rule delivery.DeliverySettings, old prodevents.Event, at time.Time) string {
+// ruleChange names rule, its repository's rule as it stands on at's day, as the change it is: the
+// start of each reason a rule change writes on a failure.
+func ruleChange(rule delivery.DeliverySettings, at time.Time) string {
 	step := "no apply step"
 	if rule.ProductionApplyStepName != nil {
 		step = fmt.Sprintf("apply step %q", *rule.ProductionApplyStepName)
 	}
-	return fmt.Sprintf("the deploy rule of %s changed: on %s, project %s's rule (production jobs %s, %s) does not call %s (%s) a deploy of project %s",
-		rule.DeployRepo, at.UTC().Format(time.DateOnly), rule.Project, strings.Join(rule.ProductionJobNames, ", "), step,
-		old.SourceRef, old.URL, old.ProjectKey)
+	return fmt.Sprintf("the deploy rule of %s changed: on %s, project %s's rule (production jobs %s, %s)",
+		rule.DeployRepo, at.UTC().Format(time.DateOnly), rule.Project, strings.Join(rule.ProductionJobNames, ", "), step)
+}
+
+// dropReason is why old is no deploy: the rule of its repository, as rule states it on at's day,
+// does not call its run a deploy of old's project. It is the reason each failure on old is rejected
+// with, so it names the rule.
+func dropReason(rule delivery.DeliverySettings, old prodevents.Event, at time.Time) string {
+	return fmt.Sprintf("%s does not call %s (%s) a deploy of project %s", ruleChange(rule, at), old.SourceRef, old.URL, old.ProjectKey)
+}
+
+// countReason is why a failure a drop rejected counts again: the rule of its deploy's repository,
+// as rule states it on at's day, calls that deploy's run a deploy again. It names the rule, as the
+// drop's reason does.
+func countReason(rule delivery.DeliverySettings, at time.Time) string {
+	return ruleChange(rule, at) + " calls the deploy this failure blames a deploy again"
 }

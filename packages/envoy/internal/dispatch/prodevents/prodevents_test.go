@@ -145,14 +145,13 @@ func TestAFailureNeedsTheDeployItBlames(t *testing.T) {
 	}
 }
 
-// TestAFailureAndTheDropOfItsDeployWaitForEachOther: the GitHub adapter drops a deploy row that no
-// failure blames by locking it for update and deleting it (DropGitHubDeploy). A failure blaming
-// that row, written while such a drop is still open, waits for the drop, and once the row is gone
-// is refused PRODUCTION_EVENT_NO_DEPLOY, as a failure blaming no row is, rather than failing its
-// foreign key. And a drop of a row that a failure still being written blames waits for that
-// failure's commit and then keeps the row, the failure rejected with the drop's reason. Red where
-// the failure reads its deploy with no lock: its insert waits on the drop's lock and then fails the
-// foreign key (23503), which the route answers 500.
+// TestAFailureAndTheDropOfItsDeployWaitForEachOther: a failure blaming a deploy row that a delete
+// takes, written while that delete is still open, waits for it, and once the row is gone is
+// refused PRODUCTION_EVENT_NO_DEPLOY, as a failure blaming no row is, rather than failing its
+// foreign key. And the GitHub adapter's drop of a row that a failure still being written blames
+// (DropGitHubDeploy) waits for that failure's commit and then keeps the row, dropped, the failure
+// rejected with the drop's reason. Red where the failure reads its deploy with no lock: its insert
+// waits on the delete's lock and then fails the foreign key (23503), which the route answers 500.
 func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 	ctx := t.Context()
 	database := storetest.Open(t)
@@ -186,25 +185,25 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer drop.Rollback(ctx)
-	// The drop of a row no failure blames, held open before its commit.
+	// A delete of a row no failure blames, held open before its commit.
 	if _, err := drop.Exec(ctx, `select from production_events where id = $1 for update`, dropped.ID); err != nil {
-		t.Fatalf("lock the deploy row as the drop does: %v", err)
+		t.Fatalf("lock the deploy row as the delete does: %v", err)
 	}
 	if _, err := drop.Exec(ctx, `delete from production_events where id = $1`, dropped.ID); err != nil {
-		t.Fatalf("delete the deploy row as the drop does: %v", err)
+		t.Fatalf("delete the deploy row: %v", err)
 	}
 	written := make(chan error, 1)
 	go func() {
 		_, _, err := Write(ctx, pool, failure("ALPHA", "alerts:1", dropped.ID, SignalAPI), nil)
 		written <- err
 	}()
-	waitsOnALock("the failure blaming the deploy being dropped", written)
+	waitsOnALock("the failure blaming the deploy being deleted", written)
 	if err := drop.Commit(ctx); err != nil {
-		t.Fatalf("commit the drop: %v", err)
+		t.Fatalf("commit the delete: %v", err)
 	}
 	var refusal *Error
 	if err := testwait.Receive(t, "the failure's write", written); !errors.As(err, &refusal) || refusal.Code != CodeNoDeploy {
-		t.Fatalf("a failure blaming a deploy dropped while it was written answered %v, want %s", err, CodeNoDeploy)
+		t.Fatalf("a failure blaming a deploy deleted while it was written answered %v, want %s", err, CodeNoDeploy)
 	}
 
 	kept, _, err := Write(ctx, pool, deploy("ALPHA", "github:2", at(20)), nil)
@@ -221,19 +220,19 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 		t.Fatalf("write the failure blaming the deploy: %v", err)
 	}
 	const reason = "the rule no longer calls this run a deploy"
-	var deleted bool
 	droppedDone := make(chan error, 1)
 	go func() {
-		var err error
-		deleted, err = DropGitHubDeploy(ctx, pool, "ALPHA", kept.ID, reason, writer, *at(30))
-		droppedDone <- err
+		droppedDone <- DropGitHubDeploy(ctx, pool, "ALPHA", kept.ID, reason, writer, *at(30))
 	}()
 	waitsOnALock("the drop of a deploy a failure being written blames", droppedDone)
 	if err := failing.Commit(ctx); err != nil {
 		t.Fatalf("commit the failure: %v", err)
 	}
-	if err := testwait.Receive(t, "the drop", droppedDone); err != nil || deleted {
-		t.Fatalf("the drop of a deploy a failure blames deleted it %t (%v), want the row kept", deleted, err)
+	if err := testwait.Receive(t, "the drop", droppedDone); err != nil {
+		t.Fatalf("the drop of a deploy a failure blames: %v", err)
+	}
+	if row, err := Get(ctx, pool, "ALPHA", kept.ID); err != nil || !row.Dropped() || row.Note != reason {
+		t.Fatalf("the dropped deploy is %+v (%v), want it kept, dropped with the drop's reason", row, err)
 	}
 	if stored, err := Get(ctx, pool, "ALPHA", blamed.ID); err != nil || stored.State != StateRejected || stored.StateReason == nil || *stored.StateReason != reason {
 		t.Fatalf("the failure the drop found is %+v (%v), want it rejected with the drop's reason", stored, err)

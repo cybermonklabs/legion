@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -255,12 +253,8 @@ func storedDeployFacts(ctx context.Context, q delivery.Querier, deploy prodevent
 	var repos []string
 	var numbers []int32
 	for _, ref := range deploy.PullRequests {
-		repo, number, ok := refs.ParseExternalRef(ref)
-		if !ok {
-			continue
-		}
-		if n, err := strconv.ParseInt(number, 10, 32); err == nil && n > 0 {
-			repos, numbers = append(repos, repo), append(numbers, int32(n))
+		if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
+			repos, numbers = append(repos, repo), append(numbers, int32(number))
 		}
 	}
 	if len(repos) == 0 {
@@ -327,9 +321,11 @@ func issuePullRequests(ctx context.Context, q delivery.Querier, issue string) ([
 // RejectRetractedCheck rejects the check_fail row result id made or stands behind (rowOf), with the
 // retraction's reason, actor and time, and reports whether it rejected one. A row another fail of
 // the same check still stands behind (standsBehind) stays counted. A row rejected already, by a
-// person or by another retraction, or one no result made, writes nothing. The decision and the
-// reject commit together under the result's lock (lockResult) and the row's, in a transaction that
-// takes the delivery change log's lock nowhere and drains after its commit.
+// person or by another retraction, or one no result made, writes nothing; a row the drop of its
+// deploy rejected (rejectedByDrop) takes the retraction's reject over the drop's, so a later rule
+// that calls that deploy a deploy again leaves it rejected. The decision and the reject commit
+// together under the result's lock (lockResult) and the row's, in a transaction that takes the
+// delivery change log's lock nowhere and drains after its commit.
 func RejectRetractedCheck(ctx context.Context, pool *store.Pool, id, reason string, actor model.Actor, at time.Time) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -344,7 +340,7 @@ func RejectRetractedCheck(ctx context.Context, pool *store.Pool, id, reason stri
 		return false, err
 	}
 	row, made, err := rowOf(ctx, tx, result)
-	if err != nil || !made || row.State == prodevents.StateRejected {
+	if err != nil || !made || row.State == prodevents.StateRejected && !rejectedByDrop(row) {
 		return false, err
 	}
 	standing, err := standingFailsOf(ctx, tx, result)
@@ -366,6 +362,13 @@ func RejectRetractedCheck(ctx context.Context, pool *store.Pool, id, reason stri
 	}
 	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a check_fail reject")
 	return true, nil
+}
+
+// rejectedByDrop reports whether row is rejected by the drop of the deploy it blames: its reject
+// names loopActor, the drop's writer (prodevents.DropGitHubDeploy), and a later rule that calls
+// that deploy a deploy again counts it again (prodevents.UpsertGitHubDeploy).
+func rejectedByDrop(row prodevents.Event) bool {
+	return row.State == prodevents.StateRejected && row.StateBy != nil && *row.StateBy == loopActor
 }
 
 // rowOf is the check_fail row result made or stands behind, locked in tx `for update` and read

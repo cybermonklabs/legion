@@ -3087,6 +3087,7 @@ Migration `20261123041500_delivery_reverts` creates `delivery_reverts`, keyed by
 The revert button's author is often outside every project's population, so `delivery_pull_requests` does not hold such a pull request.
 A row holds the pull request it reverts (`reverts_repo`, `reverts_number`, and `reverts_merge_commit_sha` as GitHub answered it), when the revert merged (`merged_at`), its own merge commit and `recorded_at`; `delivery_reverts_merged` on `(repo, merged_at)` serves the read of a repository's reverts by when they merged.
 The pull-request intake records a revert as it merges, and the reconcile's search of each deploy repository records one the intake missed (`delivery.RecordRevert`); the production signals' loop writes the revert's failure once the deploy that ships the revert has its deploy row.
+The loop reads only the reverts it can write a failure of now (`delivery.ListRevertShips`): those a deploy run ships, whose run completed on or after the earliest `failures_measured_since` of the delivery-on projects that count `reverts`, and that no revert row of any project holds yet, so a revert is one row whichever project its repository's source moves to.
 A trigger notifies `dispatch_delivery_reverts` with the repository at each write, which wakes that loop (`signals.RevertsChannel`).
 A new table, an index, a function and a trigger on the new table: nothing existing is read, locked or rewritten, the release before this one neither reads nor writes it, and its census answers `0`.
 
@@ -3094,6 +3095,8 @@ Migration `20261123041501_production_signals` creates the bookkeeping of the pro
 `production_signal_cursors` holds one row per feed the loop reads, each a cursor of its own: `deploys`, the delivery change log, and `checks` and `incidents`, the event log, each with the position its last committed page read to, and for `deploys` the time of the change there.
 `production_deploy_rules`, keyed by `repo`, holds the project and the two fields of the rule (the production job names and the production apply step) a repository's GitHub deploy rows stand derived under.
 A pass that reads another project or another rule for a repository, or no row for it, derives every GitHub deploy row of that repository again and records the new row once those rows are written, so the first pass of this release writes the rows of every stored run; a repository no rule reads any more loses its row and keeps its deploy rows.
+A derive keeps each deploy row with its id, since the row belongs to its run (`prodevents.UpsertGitHubDeploy`): a run the rule calls a deploy moves its row to the rule's project, and a run it no longer calls one keeps its row as `dropped`, its counted failures rejected with a reason that names the rule (`prodevents.DropGitHubDeploy`).
+A later rule that calls the run a deploy again counts the same row again, and each failure whose reject names the signals' own writer, a drop's reject, counts again with a reason that names that rule; a reject of a person, a controller or a retraction stays.
 Two new tables: nothing existing is read, locked or rewritten, the release before this one neither reads nor writes them, and its census answers `0`.
 
 Migration `20261127022136_check_fail_bindings` creates the mapping from an after-merge check result to the failure row it first matched.
@@ -3103,6 +3106,19 @@ A retraction uses the binding and leaves the failure counted if another result s
 The foreign keys hold `SHARE ROW EXCLUSIVE` on `check_results` and `production_events` during the migration.
 The release before this one has no production event record, so the migration starts with no bindings and rewrites no row.
 Its census answers `0`.
+
+Migration `20261127200929_production_events_signal_reads` creates two indexes on `production_events`.
+`production_events_pull_requests`, a GIN index of `pull_requests` over the deploy rows, serves the read of the deploy that names a pull request among those it shipped (`prodevents.DeployForPullRequest`), which every revert and every incident that links a pull request asks: it probes `pull_requests @> array[<name>]` as `production_events_commits` serves a commit's read, so every deploy row names each pull request as `owner/repo#n` with the repository in lower case and no trailing `.git`.
+The GitHub adapter writes them so (`delivery.PullRequestName`), and the post route stores each pull request a posted deploy or failure names so, however the post spells it (`prodevents.ParsePullRequest`).
+`production_events_reverts` on `source_ref` over the revert rows serves the reverts read's check that no revert row of any project holds a revert yet (`delivery.ListRevertShips`).
+The release before this one has no production event record, so every database applies the migration in the boot that creates `production_events`, before the server serves: each index build reads no row, and its `SHARE` lock holds off no writer.
+It rewrites no row, since every row this release writes names its pull requests in that form, and its census answers `0`.
+
+Migration `20261127200930_delivery_pull_requests_lower_repo` builds `delivery_pull_requests_lower_repo` on `delivery_pull_requests (lower(repo), number)`.
+`delivery_pull_requests` keeps a repository as GitHub spells it, and the record names a pull request in lower case, so the day-row refresher's read of the merges of the pull requests a page names (`evals`' `deliveryItemDays`), which a posted deploy's pull requests reach, and the production signals' read of the issues of the pull requests a deploy ships compare `lower(repo)` and the number, one descent of this index for each pull request.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because the intake and the reconcile write `delivery_pull_requests` on every merge they record: a concurrent build takes `SHARE UPDATE EXCLUSIVE`, which no read or write of a pull request waits for.
+A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
+Its census answers `0`: an ordinary index refuses and rewrites no row.
 
 Migration `20261120222732_block_refs_to_source` creates `block_refs_to_source` on `block_refs (to_kind, to_id, ((artifact_id)::text))`, and `20261120222733_drop_block_refs_to` drops `0121`'s `block_refs_to` on `(to_kind, to_id)` behind it.
 `heldByABlock`'s probe of `block_refs` (`refs/graph.go`) compares all three columns, and through `block_refs_to` it read every block link into the node once for each document that mentions it and filtered the source document: 999,000 rows removed for an issue that 1,000 documents mention in their text and in two blocks each.
@@ -5806,24 +5822,30 @@ Each item below names a path with its method and identity, then its purpose.
 
   Post one event: `201` with the new row, or `200` with the row the project already holds under its `source_ref`, writing nothing (`unique (project_key, source_ref)`).
   A system's repeat is answered from that row before its failure's deploy is looked up, so a retry after the deploy was dropped or stopped counting for the project is answered with the stored row, not `409`.
-  The body is `{kind, source_ref, environment?, status?, url?, started_at?, finished_at?, detected_at?, repo?, commits?, pull_requests?, deploy_id?, commit_sha?, cicd.pipeline.run.id?, note?, actor?}`, and OpenTelemetry's `deployment.environment.name`, `deployment.status` and `cicd.pipeline.run.url.full` are taken for `environment`, `status` and `url` (one name of a field, or both alike; two values are `400 PRODUCTION_EVENT_INPUT`).
-  `note` is what the writer says of the event, kept as sent, at most 4,096 bytes (`productionEventNoteBytes`); a longer one is `400 PRODUCTION_EVENT_INPUT`.
-  A deploy (`kind: deploy`) needs `finished_at`, the moment it reached production, and is a system's: an agent or service token, any credential that holds no `person` scope; one that holds it is `403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN`.
-  A deploy is one to production that succeeded, the deploys DORA counts: `environment` is `production` and `status` is `succeeded` where the body names none, and a deploy that names another environment or status is `400 PRODUCTION_EVENT_INPUT` naming the field, so the record holds no staging or failed deploy (a failure's `environment` and `status` are kept as sent).
-  A deploy's own run is its `source_ref` and `url`, so a deploy naming `deploy_id`, `commit_sha`, `cicd.pipeline.run.id` or `detected_at` is `400 PRODUCTION_EVENT_INPUT`.
-  A failure (`kind: failure`) names the deploy it blames one way: `deploy_id` (that row's uuid), `cicd.pipeline.run.id` with `repo` (the deploy row the GitHub adapter wrote for that run), or `commit_sha` (the earliest deploy holding it, by `finished_at` and then `id`, among those that count for the route's project, `prodevents.DeploysForCommit`).
-  That deploy must count for the route's project (`evals.DeployCountsFor`), whichever project's record holds it, so a deploy shared with another project is taken; one no row matches and one that counts for other projects alone get one answer, `409 PRODUCTION_EVENT_NO_DEPLOY`, which shows nothing of another project's deploys.
-  The failure counts for the route's project alone, a system's where that project's failure sources hold `events` and a person's flag under any failure source (evals' `failureProject.counts`); an automatic signal's failure counts for every project its deploy counts for.
-  The automatic signals blame a deploy of any project but a deploy another project posted (`prodevents.DeployForCommit`, `DeployForPullRequest`), and write their row only where the blamed deploy counts for the row's project, judged from the stored settings' rules, each project's `default_repo` and the issues of the pull requests the deploy ships in the write's own transaction (`evals.DeployProjects`), so a row waits on no refresher pass; one whose deploy counts for other projects alone is logged and writes no row, as a commit that matches no deploy is.
-  A revert whose own deploy finished before the deploy it blames writes no row either, since that deploy restores none of its failures.
-  Its `detected_at` is the server's time where the body names none.
-  A `finished_at` before `started_at`, a `finished_at` or `detected_at` more than 5 minutes past the server's clock, and a `pull_requests` entry that is not `owner/repo#n` with `n` a positive number are each `400 PRODUCTION_EVENT_INPUT` naming the field.
-  A system's failure is the signal `api`, its actor the session its credential proves or its body names (`bearerSessionActor`), and its `source_ref` is required (`400 PRODUCTION_EVENT_INPUT` naming it).
-  A system's deploy or failure whose `source_ref` starts with an automatic source's prefix, `github:`, `person:`, `check:`, `revert:` or `incident:` (`prodevents.AutomaticSourceRefPrefix`), is `400 PRODUCTION_EVENT_INPUT` naming the prefix, and writes nothing.
-  Those are the keys of the rows the GitHub adapter, a person's flag and the production signals write, so a post under one would leave that source's write of its own row writing nothing.
-  A person's failure, the drill-down's flag from a credential holding `person`, is the signal `person`, the person its actor, and its `source_ref` the server's, `person:<deploy id>:<login>`, so a person's second flag of one deploy answers the first; a body naming another `source_ref` is `400 PRODUCTION_EVENT_INPUT`.
-  `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
-  The store writes the row in a transaction of its own, whose trigger logs a `production_events` change in the change log's outbox, and drains it after the commit (`delivery.DrainAfterCommit`).
+
+  - The body is `{kind, source_ref, environment?, status?, url?, started_at?, finished_at?, detected_at?, repo?, commits?, pull_requests?, deploy_id?, commit_sha?, cicd.pipeline.run.id?, note?, actor?}`, and OpenTelemetry's `deployment.environment.name`, `deployment.status` and `cicd.pipeline.run.url.full` are taken for `environment`, `status` and `url` (one name of a field, or both alike; two values are `400 PRODUCTION_EVENT_INPUT`).
+    `note` is what the writer says of the event, kept as sent, at most 4,096 bytes (`productionEventNoteBytes`); a longer one is `400 PRODUCTION_EVENT_INPUT`.
+    A `finished_at` before `started_at`, a `finished_at` or `detected_at` more than 5 minutes past the server's clock, and a `pull_requests` entry that is not `owner/repo#n` with `n` a positive number are each `400 PRODUCTION_EVENT_INPUT` naming the field.
+
+  - A deploy (`kind: deploy`) needs `finished_at`, the moment it reached production, and is a system's: an agent or service token, any credential that holds no `person` scope; one that holds it is `403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN`.
+    A deploy is one to production that succeeded, the deploys DORA counts: `environment` is `production` and `status` is `succeeded` where the body names none, and a deploy that names another environment or status is `400 PRODUCTION_EVENT_INPUT` naming the field, so the record holds no staging or failed deploy (a failure's `environment` and `status` are kept as sent).
+    A deploy's own run is its `source_ref` and `url`, so a deploy naming `deploy_id`, `commit_sha`, `cicd.pipeline.run.id` or `detected_at` is `400 PRODUCTION_EVENT_INPUT`.
+
+  - A failure (`kind: failure`) names the deploy it blames one way: `deploy_id` (that row's uuid), `cicd.pipeline.run.id` with `repo` (the deploy row the GitHub adapter wrote for that run), or `commit_sha` (the earliest deploy holding it, by `finished_at` and then `id`, among those that count for the route's project, `prodevents.DeploysForCommit`).
+    That deploy must count for the route's project (`evals.DeployCountsFor`), whichever project's record holds it, so a deploy shared with another project is taken; one no row matches and one that counts for other projects alone get one answer, `409 PRODUCTION_EVENT_NO_DEPLOY`, which shows nothing of another project's deploys.
+    The failure counts for the route's project alone, a system's where that project's failure sources hold `events` and a person's flag under any failure source (evals' `failureProject.counts`); an automatic signal's failure counts for every project its deploy counts for.
+    Its `detected_at` is the server's time where the body names none.
+
+  - The automatic signals blame a deploy of any project but a deploy another project posted (`prodevents.DeployForCommit`, `DeployForPullRequest`), and write their row only where the blamed deploy counts for the row's project, judged from the stored settings' rules, each project's `default_repo` and the issues of the pull requests the deploy ships in the write's own transaction (`prodevents.DeployProjects`), so a row waits on no refresher pass; one whose deploy counts for other projects alone is logged and writes no row, as a commit that matches no deploy is.
+    A revert whose own deploy finished before the deploy it blames writes no row either, since that deploy restores none of its failures.
+
+  - A system's failure is the signal `api`, its actor the session its credential proves or its body names (`bearerSessionActor`), and its `source_ref` is required (`400 PRODUCTION_EVENT_INPUT` naming it).
+    A system's deploy or failure whose `source_ref` starts with an automatic source's prefix, `github:`, `person:`, `check:`, `revert:` or `incident:` (`prodevents.AutomaticSourceRefPrefix`), is `400 PRODUCTION_EVENT_INPUT` naming the prefix, and writes nothing.
+    Those are the keys of the rows the GitHub adapter, a person's flag and the production signals write, so a post under one would leave that source's write of its own row writing nothing.
+    A person's failure, the drill-down's flag from a credential holding `person`, is the signal `person`, the person its actor, and its `source_ref` the server's, `person:<deploy id>:<login>`, so a person's second flag of one deploy answers the first; a body naming another `source_ref` is `400 PRODUCTION_EVENT_INPUT`.
+
+  - `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+    The store writes the row in a transaction of its own, whose trigger logs a `production_events` change in the change log's outbox, and drains it after the commit (`delivery.DrainAfterCommit`).
 
 - `/api/v1/projects/{key}/production-events/{id}/state` (PUT; cookie, trusted header, or bearer)
 

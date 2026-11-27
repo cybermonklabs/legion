@@ -107,3 +107,50 @@ func TestARevertWhoseDeployFinishedBeforeTheBlamedDeployMakesNoRow(t *testing.T)
 		t.Fatalf("failure rows = %+v, want only revert #10 blaming %s restored by %s", rows, earlier.ID, restoring.ID)
 	}
 }
+
+// TestARevertIsReadWhileItCanMakeItsFailure (dispatch://INFRA-978, R7): the reverts read
+// (delivery.ListRevertShips) holds a revert that a deploy run ships, that no revert row of any
+// project holds yet, and whose run completed on or after the earliest day a delivery-on project
+// counts reverts from. While ALPHA, the one such project, counts them from the day after the
+// revert's deploy, the read does not hold the revert and the pass makes no row; once ALPHA counts
+// them from the day before, the read holds it and the next pass makes its row, after which the
+// read holds it no more.
+func TestARevertIsReadWhileItCanMakeItsFailure(t *testing.T) {
+	r := newRig(t)
+	r.pullRequest(5, at(30), sha("5"), "")
+	r.deployRun(430, at(60), sha("a"), prodJob, success, success)
+	if err := delivery.RecordRevert(r.ctx, r.pool, delivery.Revert{
+		Repo: widgets, Number: 9, RevertsRepo: widgets, RevertsNumber: 5, RevertsMergeCommitSHA: new(sha("5")),
+		MergedAt: at(90), MergeCommitSHA: new(sha("9")),
+	}); err != nil {
+		t.Fatalf("record the revert: %v", err)
+	}
+	r.deployRun(431, at(120), sha("b"), prodJob, success, success)
+	read := func() []delivery.RevertShip {
+		t.Helper()
+		ships, err := delivery.ListRevertShips(r.ctx, r.pool, rule(prodJob))
+		if err != nil {
+			t.Fatalf("read the reverts: %v", err)
+		}
+		return ships
+	}
+
+	r.saveSource(alpha, nil, base.AddDate(0, 0, 1), prodJob)
+	r.passDeploys()
+	if ships, rows := read(), r.failures(); len(ships) != 0 || len(rows) != 0 {
+		t.Fatalf("with reverts counted from the day after the revert's deploy, the read holds %+v and the failure rows are %+v; want neither",
+			ships, rows)
+	}
+
+	r.saveRule(prodJob)
+	if ships := read(); len(ships) != 1 || ships[0].Number != 9 || ships[0].ShipRunID != 431 {
+		t.Fatalf("with reverts counted from the day before, the read holds %+v; want the revert #9 run 431 ships", ships)
+	}
+	r.passDeploys()
+	if rows := r.failures(); len(rows) != 1 || rows[0].SourceRef != RevertSourceRef(widgets, 9) {
+		t.Fatalf("after the pass, failure rows = %+v; want the revert's", rows)
+	}
+	if ships := read(); len(ships) != 0 {
+		t.Errorf("once its row is written, the read holds %+v; want the revert no more", ships)
+	}
+}

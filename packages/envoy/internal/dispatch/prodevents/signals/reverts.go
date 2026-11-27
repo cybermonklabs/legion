@@ -16,9 +16,11 @@ import (
 // revert's own deploy restores. It is written once the deploy that ships the revert has its deploy
 // row, under the owner of the repository's source (delivery.DeployRules), keyed by the revert
 // (RevertSourceRef), detected when the revert merged, restored at the revert's deploy's finish by
-// that deploy. A revert whose reverted pull request no deploy row holds makes none, and neither
-// does one whose blamed deploy counts for other projects than the owner alone (deployCountsForRow)
-// or finished after the revert's own deploy (prodevents.RestoresTooEarly), which is logged.
+// that deploy. It is one row whatever project its repository's source moves to: it stays under the
+// project it was written under, blaming the same deploy row, which moves with its run. A revert
+// whose reverted pull request no deploy row holds makes none, and neither does one whose blamed
+// deploy counts for other projects than the owner alone (deployCountsForRow) or finished after the
+// revert's own deploy (prodevents.RestoresTooEarly), which is logged.
 
 // RevertSourceRef is the source_ref of the revert row of repo#number: revert:<repo>#<number>, the
 // repository in lower case (delivery.PullRequestName).
@@ -26,39 +28,23 @@ func RevertSourceRef(repo string, number int) string {
 	return prodevents.RevertSourceRefPrefix + delivery.PullRequestName(repo, number)
 }
 
-// revertFailures writes the revert row of each revert of rule's repository whose deploy has its
-// deploy row and has none yet: blaming the deploy row that names the reverted pull request among
-// those it shipped (prodevents.DeployForPullRequest), else the one whose commits hold the reverted
-// pull request's merge commit (prodevents.DeployForCommit), each a deploy of any project but one
-// another project posted, and restored by the revert's deploy row (prodevents.DeployForRun of the
-// run that ships the revert, delivery.ListRevertShips). A blamed deploy that finished after the
-// revert's deploy is no failure that deploy restores, so that revert is logged and writes no row;
-// one that counts for other projects than rule's alone writes none either (countsForRow). Which of
-// the shipped reverts have their row already is read in one statement (prodevents.HeldSourceRefs).
+// revertFailures writes the revert row of each revert of rule's repository that can make one now
+// (delivery.ListRevertShips: shipped by a deploy run, after the earliest day a project counts
+// reverts from, and held by no revert row of any project yet): blaming the deploy row that names
+// the reverted pull request among those it shipped (prodevents.DeployForPullRequest), else the one
+// whose commits hold the reverted pull request's merge commit (prodevents.DeployForCommit), each a
+// deploy of any project but one another project posted, and restored by the revert's deploy row
+// (prodevents.DeployForRun of the run that ships the revert). A blamed deploy that finished after
+// the revert's deploy is no failure that deploy restores, so that revert is logged and writes no
+// row; one that counts for other projects than rule's alone writes none either (countsForRow).
 func revertFailures(ctx context.Context, pool *store.Pool, rule delivery.DeliverySettings) error {
 	ships, err := delivery.ListRevertShips(ctx, pool, rule)
 	if err != nil {
 		return err
 	}
-	var refs []string
 	for _, ship := range ships {
-		if ship.ShipRunID != nil {
-			refs = append(refs, RevertSourceRef(ship.Repo, ship.Number))
-		}
-	}
-	made, err := prodevents.HeldSourceRefs(ctx, pool, rule.Project, refs)
-	if err != nil {
-		return err
-	}
-	for _, ship := range ships {
-		if ship.ShipRunID == nil {
-			continue
-		}
 		ref := RevertSourceRef(ship.Repo, ship.Number)
-		if made[ref] {
-			continue
-		}
-		restoring, held, err := prodevents.DeployForRun(ctx, pool, rule.DeployRepo, *ship.ShipRunID)
+		restoring, held, err := prodevents.DeployForRun(ctx, pool, rule.DeployRepo, ship.ShipRunID)
 		if err != nil {
 			return err
 		}

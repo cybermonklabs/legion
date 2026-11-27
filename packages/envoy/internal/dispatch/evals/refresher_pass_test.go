@@ -1243,3 +1243,44 @@ func TestAPostedDeployWrittenAfterItsDayWasBuiltRewritesThatDay(t *testing.T) {
 	})
 	expectTruth(t, "after the late posted deploy", r.storedFigures(t), r.truthFigures(t))
 }
+
+// TestAPostedPullRequestRewritesTheMergeDayOfARepositoryGitHubSpellsInCapitals (dispatch://INFRA-978,
+// R12): delivery_pull_requests keeps a repository as GitHub spells it, Acme/Omega-Tools, and the
+// record names each pull request in lower case (prodevents.ParsePullRequest). Once the history has
+// settled with #5 of it, merged yesterday at 09:00 for OMEGA-1, and a deploy posted to OMEGA that
+// finished yesterday at 01:00 naming none, so that OMEGA's events repository starts yesterday
+// (readPostedRepos), a deploy posted to OMEGA that names acme/omega-tools#5 and finished today at
+// 01:00 rewrites the day #5 merged on, which no other change names, and OMEGA's merge-to-production
+// of its events repository times #5 there: 960 minutes. Red where the read of the posted pull
+// requests' merges compares the repository as stored: it finds no merge, and that day keeps no
+// minutes.
+func TestAPostedPullRequestRewritesTheMergeDayOfARepositoryGitHubSpellsInCapitals(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	const tools = "Acme/Omega-Tools"
+	merged := sourcesDay.Add(9 * time.Hour)
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: tools, Number: 5, Title: "OMEGA-1: change 5", URL: "https://github.com/" + tools + "/pull/5", Author: "dev-ana",
+		CreatedAt: new(merged.Add(-time.Hour)), MergedAt: new(merged), IssueKey: new("OMEGA-1"), Sessions: []string{},
+	}); err != nil {
+		t.Fatalf("write %s#5: %v", tools, err)
+	}
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(time.Hour))
+	r.settle(t)
+	r.post(t, "OMEGA", "release-5", refresherToday.Add(time.Hour), "acme/omega-tools#5")
+	report, _ := r.pass(t)
+	if !report.days[builtDay{family: walkDelivery, project: "OMEGA", day: sourcesDay}] {
+		t.Errorf("the pass after the post built %v, want OMEGA's day %s, the day #5 merged, among them", report.sorted(), sourcesDay.Format(time.DateOnly))
+	}
+	var minutes []float64
+	if err := r.database.Pool.QueryRow(t.Context(), `
+		select coalesce(samples, '{}') from eval_days
+		where eval_id = $1 and deploy_repo = $2 and series = 'minutes' and repo = '' and day = $3
+	`, EvalID("OMEGA", SlugMergeToProduction), EventsRepo("OMEGA"), sourcesDay).Scan(&minutes); err != nil {
+		t.Fatalf("read OMEGA's merge-to-production of its events repository: %v", err)
+	}
+	if !slices.Equal(minutes, []float64{960}) {
+		t.Errorf("OMEGA's posted merge-to-production of %s times %v, want #5's 960 minutes alone", sourcesDay.Format(time.DateOnly), minutes)
+	}
+	expectTruth(t, "after the post naming a pull request in lower case", r.storedFigures(t), r.truthFigures(t))
+}

@@ -316,7 +316,7 @@ func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 	}
 	var shipped []*delivery.DeliveryPullRequest
 	for _, ref := range deploy.PullRequests {
-		if repo, number, ok := parsePullRequestRef(ref); ok {
+		if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
 			shipped = append(shipped, &delivery.DeliveryPullRequest{Repo: repo, Number: number})
 		}
 	}
@@ -334,7 +334,7 @@ func readShippedAttribution(ctx context.Context, q delivery.Querier, attributor 
 			continue
 		}
 		for _, ref := range deploy.PullRequests {
-			if repo, number, ok := parsePullRequestRef(ref); ok {
+			if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
 				pulls = append(pulls, delivery.PullRequestKey{Repo: repo, Number: number})
 			}
 		}
@@ -392,7 +392,7 @@ func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributo
 		return prodevents.DeployFacts{}, err
 	}
 	for _, ref := range deploy.PullRequests {
-		if repo, number, ok := parsePullRequestRef(ref); ok {
+		if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
 			list := attribute.lists[PullRequestMember(repo, number)]
 			facts.Pulls = append(facts.Pulls, prodevents.PullAttribution{Conditions: list.conditions, Terminal: list.terminal})
 		}

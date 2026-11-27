@@ -892,7 +892,7 @@ func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[s
 			}
 			members = append(members, PostedMember(id))
 			for _, ref := range row.PullRequests {
-				if name, number, ok := parsePullRequestRef(ref); ok {
+				if name, number, ok := prodevents.ParsePullRequest(ref); ok {
 					prs[PullRequestMember(name, number)] = pullRequestRef{repo: name, number: number}
 				}
 			}

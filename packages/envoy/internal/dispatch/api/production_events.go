@@ -49,11 +49,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
@@ -135,8 +135,8 @@ type productionEventInput struct {
 	Note string `json:"note"`
 	// Commits are the commits a deploy shipped, compared in lower case.
 	Commits []string `json:"commits"`
-	// PullRequests are the pull requests a deploy shipped or a failure blames, each owner/repo#n
-	// (pullRequestRef).
+	// PullRequests are the pull requests a deploy shipped or a failure blames, each owner/repo#n,
+	// stored with the repository in lower case and no trailing .git (pullRequestRef).
 	PullRequests []string `json:"pull_requests"`
 	// DeployID names a failure's deploy by its row's id: the uuid of a deploy row that counts for
 	// the route's project, whichever project's row it is.
@@ -391,11 +391,11 @@ func (s *server) postProductionEvent(w http.ResponseWriter, r *http.Request) {
 // event is the row input asks for, before its project, its actor and a failure's deploy are
 // known: the plain and the OTel name of one field taken as one, a system's source_ref required and
 // refused where it starts with an automatic source's prefix (prodevents.AutomaticSourceRefPrefix),
-// the times no event has refused (checkedTimes) and each pull request it names held to
-// `owner/repo#n` (pullRequestRef), the fields of a failure's deploy refused on a deploy, a deploy
-// held to one to production that succeeded (its status succeeded where it names none), a
-// failure's signal and source the caller's (person or api), and its detected_at the server's time
-// where the body names none.
+// the times no event has refused (checkedTimes), each pull request it names held to `owner/repo#n`
+// and put in the form the record stores (pullRequestRef), the fields of a failure's deploy refused
+// on a deploy, a deploy held to one to production that succeeded (its status succeeded where it
+// names none), a failure's signal and source the caller's (person or api), and its detected_at the
+// server's time where the body names none.
 func (input productionEventInput) event(person bool) (prodevents.Event, error) {
 	if input.Kind != prodevents.KindDeploy && input.Kind != prodevents.KindFailure {
 		return prodevents.Event{}, productionEventInputError("kind must be deploy or failure, not %q", input.Kind)
@@ -494,15 +494,14 @@ func (input productionEventInput) checkedTimes(now time.Time) error {
 	return nil
 }
 
-// pullRequestRef is ref, a pull request an event names, trimmed of the space around it, and
-// refuses one that is not `owner/repo#n` by the one reading of such a reference
-// (refs.ParseExternalRef) with n a number a pull request's row holds, a positive int32, as the
-// evals read the record's pull requests (evals' parsePullRequestRef).
+// pullRequestRef is ref, a pull request an event names, in the one form the record stores a pull
+// request: `owner/repo#n`, the repository in lower case with no trailing `.git`
+// (prodevents.ParsePullRequest, delivery.PullRequestName), so every reader of the record reads it
+// back by that one parser, whatever spelling the system posted. It refuses a ref that is not
+// `owner/repo#n` with n a positive number a pull request's row holds, an int32.
 func pullRequestRef(ref string) (string, error) {
-	if _, number, ok := refs.ParseExternalRef(ref); ok {
-		if _, err := strconv.ParseInt(number, 10, 32); err == nil {
-			return strings.TrimSpace(ref), nil
-		}
+	if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
+		return delivery.PullRequestName(repo, number), nil
 	}
 	return "", productionEventInputError("pull_requests holds %q, which is no pull request owner/repo#n with n a positive number",
 		evals.BoundedField(ref))
