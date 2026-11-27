@@ -508,6 +508,16 @@ gen_out=$(python3 "$work/gen-control/scripts/shell_reader_forms.py" 2>&1) || gen
 check "control: with the += rule taken out, the generator fails" "$(is "$gen_status" 1)"
 check "naming a form an appended array after a decoy runs, which the log guard then misses" \
   "$(contains "$gen_out" '^UNLISTED if-false/array-appended-after-decoy .guard.')"
+# A control nobody has seen fail is not a control. Run the narrowed copy as the tree and the full
+# reader as --base: the full base finds the appended-array form the narrowed copy misses, so the
+# run must name a REGRESSION and exit 1. This proves --base compares the two readers, not one with
+# itself (the bug review 6078720727 found, where a cached import made --base self-compare and print
+# 0 regressions).
+gen_base_status=0
+gen_base_out=$(python3 "$work/gen-control/scripts/shell_reader_forms.py" --base "$script_dir" 2>&1) || gen_base_status=$?
+check "control: the narrowed copy against the full reader as --base names a regression" \
+  "$(contains "$gen_base_out" '^REGRESSION if-false/array-appended-after-decoy .guard.: bash runs the client and the base')"
+check "control: and that --base run fails" "$(is "$gen_base_status" 1)"
 
 echo "case: each routed form passes"
 root=$(fixture routed "$(cat <<'SH'

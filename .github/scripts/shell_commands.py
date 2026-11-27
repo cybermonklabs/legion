@@ -466,13 +466,14 @@ class Scanner:
     def scan(self, text: str) -> list[list[str]]:
         if not self.prepared:
             self.prepared = True
-            if "=(" in text or "]=" in text or "alias" in text:
-                first = type(self)()
-                first.collecting = first.prepared = True
-                first.every_body = self.every_body
-                first.arrays, first.aliases = self.arrays, self.aliases
-                first.scan(text)
-                self.arrays, self.aliases = first.arrays, first.aliases
+            # Always run the collecting first pass: a hand-kept trigger (`=(`, `]=`, `alias` in the
+            # text) drifts from what the pass reads (item C of review 6078720727 was such a drift).
+            first = type(self)()
+            first.collecting = first.prepared = True
+            first.every_body = self.every_body
+            first.arrays, first.aliases = self.arrays, self.aliases
+            first.scan(text)
+            self.arrays, self.aliases = first.arrays, first.aliases
         quote = None
         # The open `$(`, `<(`, `>(`, `(`, backticks and arrays' `name=(`, innermost last, each with
         # the quote it interrupted and the command it suspended (None for a subshell, which starts

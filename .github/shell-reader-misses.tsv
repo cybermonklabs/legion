@@ -43,6 +43,6 @@ path/*/xargs/*	release	a command behind xargs, reached by path, is the pass-thro
 */array-element-arithmetic	stderr	an arithmetic array index (a[1-1]=ci_log_guard_stderr) is not a numeric index this reader reads
 nonarithmetic/eval-*	stderr	a ci_log_guard_stderr call in a string eval runs is text to this reader, which reads a call only where the step writes it
 nonarithmetic/trap-fires/*	stderr	a ci_log_guard_stderr call in a string a trap runs is text to this reader, which reads a call only where the step writes it
-path/*/flock/interpreter-path	stderr	a call flock runs through its -c string is not one this by-line reader follows
+path/*/flock/interpreter-path	stderr	flock takes the ci_log_guard_stderr call's first word as its lock file and runs the rest with no block, inside a bash -c string; this by-line reader does not follow a call flock runs
 path/*bin/*/array-element-arithmetic	release	the element value is a runner or interpreter by a system path (/bin, /usr/bin, /usr/local/bin) with no script of its own; the client is a separate array element the reader does not join to it
 */array-element-arithmetic	guard	the arithmetic index (a[1-1]=) sets one array element to a value that is not a network client, and the client is a separate element; check-log-guard.sh's reader reads each element value on its own, not the command the expanded array runs
