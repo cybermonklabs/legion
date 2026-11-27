@@ -211,16 +211,23 @@ itself, whose tests import its sources by relative path.
   `socketDispatch` in `packages/envoy-client/src/__tests__/dispatch-keyed-writes.test.ts` reads a
   body only 1 MiB past what its server took.
 
-- A suite that needs a program this host may not have skips with that program's name. Call
-  `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
-  `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
-  and the file whose tests did not run (`@legion/test-fixtures/host-tools`), and a call per test
-  would print that line per test. A suite that needs a service does the same with the variable that
-  names it, and makes a database of its own rather than reading the one it finds
-  (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
-  both builds the two halves into a single list and prints one line, rather than calling
-  `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
-  (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+- A suite that needs a program this host may not have calls `skipWithout("docker")` once, at the
+  file's module scope, and hands the answer to every `describe.skipIf` and `test.skipIf` of the
+  file (`@legion/test-fixtures/host-tools`). Off GitHub Actions a missing program skips the file's
+  tests: it prints one line naming the missing programs and the file whose tests did not run, and
+  a call per test would print that line per test. Under `GITHUB_ACTIONS=true` it throws instead,
+  naming the programs and the file, so the file fails to load and its job fails: a CI job gives
+  each test it runs what that test needs, and a skip there would pass the job with the proof gone.
+  `requireOrSkip(what, present)` of the same module is that rule for a prerequisite that is no
+  program on `PATH` (a variable that names a server, a database URL, a capability of the
+  machine), and `testprereq.Require` of `packages/envoy/testprereq` is that rule for a Go test of
+  either module: each fails the test in CI and skips it elsewhere, naming the prerequisite. A
+  suite that needs a service gates on the variable that names it, and makes a database of its own
+  rather than reading the one it finds (`LEGION_TEST_PG_DSN`,
+  `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs both builds the two
+  halves into a single list and prints one line, rather than calling `skipWithout` beside a
+  warning of its own, so a host that has neither reads one line naming both (`hostTool` with the
+  variable, in that file and in `harness-stacks.test.ts`).
 
 - A test under `scripts/e2e/lib` gates on a host program with `hostGate` from the same module
   instead, declaring its gated rows with the gate's own `test` and `describe`: outside CI each
@@ -258,7 +265,8 @@ itself, whose tests import its sources by relative path.
   machine the row cannot run on too: it prints one `signal probe:` line either way, skips outside
   CI and fails under `GITHUB_ACTIONS`, whose runner starts `go test` with every signal at its
   default (`requireStartedAtDefault` in the same file). A skip there would leave `go test` green
-  with nothing proved, since CI runs it without `-v`.
+  with nothing proved: go test counts a skip as a pass, and nobody reads the `--- SKIP` line in the
+  log of a green job.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
@@ -882,7 +890,7 @@ Both are slow suites: a pull request runs them only with the label `full-ci` or 
 CI hands the detector to the test binary alone, as `-exec 'env GODEBUG=checkfinalizers=1'` on the go test line.
 Set on the go command itself, `GODEBUG` makes the go tool run the detector too, and the `checkfinalizers: queue:` lines it prints to its own standard error land under `=== Errors` in gotestsum's summary and stop a merge group's retry (`.github/scripts/go-test.sh`'s header says which lines of go's standard error do).
 
-The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
+The race run prints the test binary's own output (gotestsum's standard-verbose format, over `go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
 A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.

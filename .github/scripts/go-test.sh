@@ -36,9 +36,12 @@
 # not start with `# `, `go: copying`, `go: creating`, `go: downloading`, `go: extracting`,
 # `go: finding`, `HASH`, `testcache:` or `warning:` (cmd/rerunfails.go, hasErrors;
 # testjson/execution.go, readStderr): its summary lists those lines under `=== Errors`.
-# GO_TEST_RETRY=off turns the retry off on any event, for a run whose expected result is a failure
-# (each run of packages/envoy/scripts/airlock-mutants.sh against a mutant) or whose -run a rerun of
-# the root test would drop (kind's runtime legs); GO_TEST_RETRY=on turns it on on any event, for a
+# GO_TEST_RETRY=off turns the retry off on any event. It is the switch for a run whose expected
+# result is a failure (each run of packages/envoy/scripts/airlock-mutants.sh against a mutant) or
+# whose -run a rerun of the root test would drop (kind's runtime legs), where a job runs such a run
+# under this script. No job does today, and no workflow sets GO_TEST_RETRY: CI runs
+# airlock-mutants.sh only in its harness, over a fixture tree and a stand-in go, and kind's runtime
+# legs are no job of ci.yaml. GO_TEST_RETRY=on turns the retry on on any event, for a
 # workflow_dispatch run that proves the retry as a merge group would. These are the cases the
 # paragraph "The Go retry follows R22" of dispatch://INFRA-3411/artifact/decisions-md lists.
 #

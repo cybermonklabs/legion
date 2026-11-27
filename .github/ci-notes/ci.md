@@ -1878,14 +1878,21 @@ tree the change lands as, and that is where its result normally comes from; a pu
 it only when it carries the label `full-ci`, or that one when it carries its `lane:<output>`
 label (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). Each such output is false on a pull-request run without the label, so
 the skip is one `changes` chose: ci-ok reads it as it reads any other output, and no job's `if:`
-knows about the label. The label is read
-from the pull request the run's own event carries, so it takes effect at the next push,
-reopen or ready-for-review, not when it is added: this workflow takes no `labeled`
-trigger, which would start a run that joins this workflow's concurrency group and cancels the
-pull request's run in progress. Take the label off once the run it was added for passes,
-since every later push would run the slow suites again, unless a `ci_check` of the issue
-names one of them: without the label that job's own check run (`test`) concludes `skipped`,
-no job of the file it calls starts, and the run the check names (`test / test`) is absent.
+knows about the label. The label is read from the pull request the run's own event carries, and
+adding a label starts no run: this workflow takes no `labeled` trigger, which would start a run
+that joins this workflow's concurrency group and cancels the pull request's run in progress. So
+put the label on before the push whose run must carry it. At a head that must not move, start a
+run whose event carries the label with no commit: close the pull request and reopen it a minute
+later (.github/workflows/tests-closed.yaml says why the minute), or mark it a draft and then
+ready for review. Take the label off only after that run has started, since every later push
+would run the slow suites again, and keep it on while a `ci_check` of the issue names one of
+them: without the label that job's own check run (`test`) concludes `skipped`, no job of the
+file it calls starts, and the run the check names (`test / test`) is absent.
+
+ci-ok passes over a job a pull request held back. Before a pull request body or a message says
+CI is green, read the `not run at this head:` lines of the ci-ok job in the head's newest run
+(`gh run view <run id> --repo cybermonklabs/legion --job <ci-ok job id> --log`, or the job's
+summary) and name each job they list.
 
 ## A citation names a symbol, never a line
 
@@ -1989,10 +1996,10 @@ a pull request held back with the label that would run it, so a misspelt label s
 job not run. Failing the run on such a label would fail every check of it for a typo and need a
 step of its own that reads the labels. GitHub compares the label without regard to case.
 
-A lane label is read as `full-ci` is, from the pull request the run's own event carries: it
-takes effect at the next push, reopen or ready-for-review, not when it is added, since this
-workflow takes no `labeled` trigger. On a head with no new commit to push, close the pull
-request and reopen it. Take it off once the run it was added for passes, as `full-ci`.
+A lane label is read as `full-ci` is, from the pull request the run's own event carries, and
+adding it starts no run, since this workflow takes no `labeled` trigger. When to put it on, how
+to start a run at a head that must not move, and when to take it off are `full-ci`'s rule
+(.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request).
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
 own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
@@ -2885,8 +2892,9 @@ for it: the job envoy-go-docs-finalizers that ran all of its tests a second time
 detector alone (994.286 s, job 137289139624, against 1770.949 s for this run, job 137289139255)
 is gone.
 The package's TestMain count of the services its tests left alive, which that job ran with -v
-to print, prints here too, since -json streams the binary's own output (`docs: 1286 services
-built, 0 still alive` in job 137289139255), and fails the run as it did there. What the race
+to print, prints here too, since gotestsum's standard-verbose format prints the test binary's own
+output, as the step's earlier `go test -json` did (`docs: 1286 services built, 0 still alive` in
+job 137289139255), and fails the run as it did there. What the race
 build cannot run or runs shrunk runs plain, under the cleanup detector too: the room-memory
 bounds and the full-size render-reuse storms in envoy-go-race-impossible's step "Test what the
 race build cannot run at all or at full size", and the xid window tests, whose gap bound only a
@@ -3154,11 +3162,14 @@ group, with `--rerun-fails=1 --rerun-fails-run-root-test --rerun-fails-abort-on-
 that failed runs once more from its root test, and a pass then passes the step; on a pull request a
 test that fails once fails its step. gotestsum reruns nothing after a data race, a panic or a
 passed -timeout, a build error, more than 10 failed tests, or an error line of go test's own, and
-go-test.sh fails a package that failed with no test failing whatever a rerun did. A run whose
-expected result is a failure (airlock-mutants.sh against a mutant) or whose -run a rerun of the root
-test would widen (kind's runtime legs) sets GO_TEST_RETRY=off. The command keeps its own words, so
-check-ci-filters.sh, the test-reach search and go-test-step-expansion.py read it with the wrapper
-taken off, as they read a command behind race_memory.py.
+go-test.sh fails a package that failed with no test failing whatever a rerun did.
+GO_TEST_RETRY=off is the switch that takes the retry away from a run whose expected result is a
+failure (airlock-mutants.sh against a mutant) or whose -run a rerun of the root test would widen
+(kind's runtime legs), where a job runs such a run under go-test.sh. No job does today, and no
+workflow sets GO_TEST_RETRY: CI runs airlock-mutants.sh only in its harness, over a fixture tree
+and a stand-in go, and kind's runtime legs are no job of ci.yaml. The command keeps its own words,
+so check-ci-filters.sh, the test-reach search and go-test-step-expansion.py read it with the
+wrapper taken off, as they read a command behind race_memory.py.
 
 Each call writes a gotestsum jsonfile, and a job's last step, .github/actions/go-test-upload,
 uploads its jsonfiles and rerun reports as the artifact go-test-<job>[-<leg>]: the record of each

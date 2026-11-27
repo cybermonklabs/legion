@@ -1565,8 +1565,9 @@ LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
 LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
 # The packages whose skips envoy-go's unit step counts: each leg runs its packages through
-# packages/envoy/scripts/database-skips.sh --count-table, one `go test -json`, and the script
-# counts the skips of the packages of its default table (DEFAULT_PACKAGES there) among them: the
+# packages/envoy/scripts/database-skips.sh --count-table, one go test under
+# .github/scripts/go-test.sh, and the script counts the skips in that run's jsonfile of the
+# packages of its default table (DEFAULT_PACKAGES there) among them: the
 # broker's tree, internal/cipher and every package under it, its command, cmd/cipherd, and
 # DATABASE_SKIPS_PACKAGES, each the package alone: the writer hold's client, internal/holdrecord,
 # whose journal tests run on the broker's own routes over its Postgres. It fails on any skip there
@@ -1793,8 +1794,9 @@ ENVOY_RACE_SCRIPT = legs_script(ENVOY, ENVOY_RACE_JOB,
 
 # envoy-go-race-api's step runs its package through database-skips.sh, which counts the skips of
 # that same run, so the package's contract tests, which skip without BROKER_TEST_DATABASE_URL, and
-# the rest, which skip without DISPATCH_TEST_DATABASE_URL, cannot skip unseen in a step that runs
-# without -v. Its text is built from the lane's declaration: the race job's packages, and its
+# the rest, which skip without DISPATCH_TEST_DATABASE_URL, cannot skip unseen: go test counts a
+# skip as a pass, and nobody reads the `--- SKIP` lines in the log of a green step. Its text is
+# built from the lane's declaration: the race job's packages, and its
 # -timeout as the counter's --timeout.
 RACE_API = RACE_JOBS["envoy-go-race-api"]
 # The API's legs: each runs a group of internal/dispatch/api's tests, so the packages and the
@@ -2371,7 +2373,7 @@ GUARD_SCRIPT = under_runner(ENVOY, "go test -count=1 -run "
 
 # The claim model's job: the mention sender's claim model and the test of the rules it restates,
 # by name (CLAIM_MODEL_TESTS), the same declaration that leaves exactly those two out of envoy-go's
-# plain step. -run and -v are outside the simple form, so the step is pinned whole. A -run moves
+# plain step. -run is outside the simple form, so the step is pinned whole. A -run moves
 # no closure: the step compiles every test file of internal/dispatch/api, the source guards that
 # walk the module's source among them, so this gate reads what the API's plain tests read.
 CLAIM_MODEL_JOB = "envoy-go-claim-model"

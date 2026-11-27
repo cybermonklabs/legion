@@ -39,8 +39,10 @@ Two things this lane needs that the daemon's did not:
   the go command makes the go tool run the detector too, and the `checkfinalizers: queue:` lines
   it prints to its own standard error are listed under gotestsum's `=== Errors` and refuse a merge
   group's retry (job 140112941182 of run 45878794448 shows them).
-- the sampler reads the `-json` stream and writes its `Output` fields back out, so a run of this
-  lane is not a `-json` stream a rebalance can read as one.
-  `.github/scripts/go_legs_groups.py` reads such a run from its verbose lines instead
-  (`--- PASS: <test> (<seconds>s)` and `=== PAUSE <test>`), which carry each test's own seconds
-  and its pause.
+- the sampler names the tests running at each sample from the run's `go test -json` events, which
+  it reads from gotestsum's jsonfile as the file grows, and it writes its sample lines into the
+  step's log between gotestsum's verbose lines, so the log is no `-json` stream.
+  A rebalance can read each leg's jsonfile, which the leg uploads as the artifact
+  `go-test-envoy-go-race-docs-legs-<leg>`; `.github/scripts/go_legs_groups.py` also reads the
+  log's verbose lines (`--- PASS: <test> (<seconds>s)` and `=== PAUSE <test>`), which carry each
+  test's own seconds and its pause.

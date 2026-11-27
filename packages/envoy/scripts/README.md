@@ -614,13 +614,18 @@ so a store or use change cannot pass on one backend alone.
 packages/envoy/scripts/backend-count.sh PACKAGE... -- TEST...
 ```
 
-It runs only the named tests in only the named packages, `go test -json -count=1 -timeout 5m
--run '^(TEST|…)$' PACKAGE...`, each package a `./` path under `packages/envoy`, and prints
-`TEST aws=N gcp=M` for each, then `go_test_exit=E`. It exits 1 when no package or no test is
-named, when a package is not a `./` path, when a name is not a Go test name, when a named test
-has no passing run on either backend (a test in none of the named packages included), or when go
-test failed. It counts only the tests it names, so the `aws` and `gcp` subtests of other tests
-cannot stand in for a new test's.
+It runs only the named tests in only the named packages, `go test -count=1 -timeout 5m -run
+'^(TEST|…)$' PACKAGE...` under gotestsum through `.github/scripts/go-test.sh`, each package a
+`./` path under `packages/envoy`. Its jsonfile is `<GITHUB_JOB>-backend-count.json` under
+go-test.sh's reports directory, which the job uploads, and in a merge group a failed test runs
+once more (go-test.sh's header says when). It reads each subtest's result in the last attempt
+that ran it, so a test that failed once and passed on its rerun counts by its rerun, and prints
+`TEST aws=N gcp=M` for each, then `go_test_exit=E`, go-test.sh's exit status. It exits 1 when no
+package or no test is named, when a package is not a `./` path, when a name is not a Go test
+name, when a named test has no passing run on either backend (a test in none of the named
+packages included), when a test failed in its last attempt, or when go-test.sh failed. It counts
+only the tests it names, so the `aws` and `gcp` subtests of other tests cannot stand in for a
+new test's.
 `GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
@@ -630,10 +635,11 @@ step skips them by name (`BACKEND_COUNT_TESTS` in `.github/scripts/ci_job_reads.
 
 ## database-skips.sh
 
-The one skip counter of the module's database-backed packages: it runs `go test -json` and
-counts the tests that skipped, and fails on any. A database suite skips, which go test counts
-as a pass and prints nothing for without `-v`, when its variable is unset, and a `t.Skip`
-left in one skips it with the variable set.
+The one skip counter of the module's database-backed packages: it runs their go test under
+gotestsum through `.github/scripts/go-test.sh`, counts the tests that skipped in the jsonfile that
+run writes, and fails on any. A database suite skips, which go test counts as a pass and prints
+nothing for without `-v`, when its variable is unset, and a `t.Skip` left in one skips it with
+the variable set.
 
 ```bash
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
@@ -648,8 +654,12 @@ its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packag
 `DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
 auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
 in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
-anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, then it
-reads that report. `--var NAME` names a variable the packages need, and repeats; with none it is
+anything else). That is one `go-test.sh go test -count=1 -timeout 15m` from `packages/envoy`,
+which prints gotestsum's test log as the tests run and in a merge group runs a failed test once
+more (go-test.sh's header says when); then it reads the jsonfile,
+`<GITHUB_JOB>-database-skips-<pid>.json` under go-test.sh's reports directory, which the job
+uploads, taking each test's result from the last attempt that ran it. `--var NAME` names a
+variable the packages need, and repeats; with none it is
 `BROKER_TEST_DATABASE_URL`. A named variable that is unset or empty prints
 `database_skips=UNKNOWN` naming it, and nothing runs.
 `--race` adds `-race`, and `--timeout D` replaces the `-timeout`, as `GO_TEST_TIMEOUT` does
@@ -673,21 +683,23 @@ refuses the six options that shape a run (`--var`, `--race`, `--timeout`, `--ski
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
-listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. The tests
+listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`, go-test.sh's
+exit status. The tests
 `EXPECTED_SKIPS` names in the script skip by their own design in every CI run, which sets the
 database variables and none of what those tests need (a corpus, a seeded database, a built
 Lean model), and are not counted; each line gives its reason, and a line without one
 is refused. A report that is missing or empty, one in which a listed package with test files
 holds no test that passed or failed (its tests all skipped, or its `TestMain` returned before
 it ran them), and an `EXPECTED_SKIPS` line whose package is listed but whose test the report
-does not hold, print `database_skips=UNKNOWN`, name what could not be read, and exit 1. A
-failed test fails the count, read from a report as in a run. It exits 0 only when tests ran,
-none skipped but the expected ones, none failed, and go test passed. A failure prints, on
-stderr, each failed test, each test a failed package never finished, that package's output
-from its first `panic: ` on, that of its tests that did not pass, and any line test2json files
-under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary's goroutine
-dump and a data race report among them), the build output and, for a run of its own, go test's
-stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
+does not hold, print `database_skips=UNKNOWN`, name what could not be read, and exit 1. A test
+that failed in its last attempt fails the count, read from a report as in a run. It exits 0 only
+when tests ran, none skipped but the expected ones, none failed in its last attempt, and
+go-test.sh passed. A failure prints, on stderr, each test that failed in its last attempt, each
+test a failed package never finished, that package's output from its first `panic: ` on, that of
+its tests that did not pass, and any line test2json files under a test after that test's own
+`--- PASS` or `--- SKIP` (a timed-out binary's goroutine dump and a data race report among them),
+the build output and, for a run of its own, go-test.sh's stderr. A run of its own also prints
+each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs its unit legs through it as "Unit test envoy Go package", each
 over the packages `.github/go-legs.yaml` lists for that leg, with `--timeout 20m`, `--skip` of
@@ -736,13 +748,18 @@ It copies nats-server's module at the version it runs out of the module cache, a
 `testdata/hooked/zz_measure.go` (the event, the hook and the reporting helpers) and that version's
 `zz_measure_write.go` (its consumer state writer, and on 2.15.1 the duplicate-window hooks, which
 read that version's own fields). It then runs
-`go test -tags odatrace -race -v -run '^TestForcedOrder'` with
+`go test -tags odatrace -race -count=1 -run '^TestForcedOrder'` under gotestsum through
+`.github/scripts/go-test.sh`, with
 nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
 absolute `use` paths, so every other module version is the one CI's own build links; for a module
 with no workspace, on a copy of the module's `go.mod`. A workspace that does not use the module,
 or that holds a replace, is refused, and so is a module whose `go.mod` replaces nats-server, since
-the hooked copy would take the replacement's place. It reads go's JSON with `jq`. Nothing else of nats-server
-changes, the repository's own files are never written, and no other build sees a hook.
+the hooked copy would take the replacement's place. It reads go's JSON with `jq`: what
+`go work edit -json`, `go list -m -json` and `go mod download -json` print, and the run's
+jsonfile, `<GITHUB_JOB>-forced-order-<pid>.json` under go-test.sh's reports directory, which the
+job uploads. In a merge group a failed test runs once more (go-test.sh's header says when).
+Nothing else of nats-server changes, the repository's own files are never written, and no other
+build sees a hook.
 The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
 place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply`,
 `stream.apply`, and `dedupe.reset` and `dedupe.purged` (2.15.1 alone: a stream update past its
@@ -765,8 +782,8 @@ fails waiting for its hold, and with `-drop server.shutdown` the test that stops
 fails at its own deadline, since the stop then waits for the parked goroutine. A name no hook of
 that version reports is refused before anything is built, so a mistyped point cannot fail a test
 on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
-test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
-line).
+test, or runs none because every one skipped, read off the jsonfile in the last attempt that ran
+each test (that package's `ok` line is printed as a `FAIL` line).
 `GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to five of
 those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
 an empty `-C`, a module that replaces nats-server), with the fixture package
