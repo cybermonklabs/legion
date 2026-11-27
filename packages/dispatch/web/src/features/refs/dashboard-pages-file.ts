@@ -20,8 +20,8 @@
  * `bun web/src/features/refs/dashboard-pages-file.ts --write` (from `packages/dispatch`) writes it,
  * and `bun run gen:go` (from `packages/contracts`) then writes the server's copy;
  * `dashboard-pages-file.test.ts` renders the file again and fails when the committed file differs,
- * so a tab added to `ISSUE_TABS` fails that test until the file is written again, and the
- * contracts' `check:go` fails until the copy is.
+ * so a tab added to `ISSUE_TABS` whose page names something in text fails that test until the
+ * file is written again, and the contracts' `check:go` fails until the copy is.
  */
 import type { Artifact, DocumentRole, IssueDetails } from "../../api/types";
 import { issueDocuments } from "../issue/issue-documents";
@@ -114,6 +114,12 @@ export function renderDashboardPages(): string {
   const tabs = ISSUE_TABS.flatMap((tab) => {
     const href = `/issues/${key}/${tab}`;
     const route = referenceRouteFromHref(href, origin);
+    // A tab whose page names nothing in text - Dashboard's, a page of the web alone, which the
+    // route table opens as its tab and reads as no reference (`parseIssuePath`, `pageRoutes`) -
+    // has no reference for a reader to take, so the file names it nowhere.
+    if (route === undefined && parseIssuePath(href)?.kind === tab) {
+      return [];
+    }
     if (route === undefined) {
       throw new Error(`the dashboard reads the page of the tab ${tab}, ${href}, as no reference`);
     }
