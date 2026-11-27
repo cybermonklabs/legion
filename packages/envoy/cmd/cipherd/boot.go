@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"os"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -316,6 +317,9 @@ type brokerStop struct {
 // nothing in a stop may be cancelled by the signal that began it, least of all the shutdown that
 // is finishing the last requests.
 func stop(ctx context.Context, s brokerStop) {
+	// CONTROL ONLY: when the stop began, which is when the broker read its SIGTERM, and what the
+	// plant exit-at-old-budget counts the old 10 s budget from.
+	stopBegan := time.Now()
 	// The drain comes first and the listener stays open through it, rather than the reverse: a pod
 	// leaves its Service's EndpointSlice concurrently with the kubelet beginning termination, not
 	// before it, so for a while after SIGTERM the kubelet is still routing new connections here.
@@ -341,6 +345,13 @@ func stop(ctx context.Context, s brokerStop) {
 	}
 	s.Log.Info("broker shutting down")
 	shutdownCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+	// CONTROL ONLY: the plant exit-at-old-budget gives the whole stop the old 10 s budget — the
+	// figure row 6 measures from the SIGTERM, with the drain inside it — and ends the process once
+	// that budget has run out.
+	plant := os.Getenv("ENVOY_CONTROL_PLANT")
+	if plant == "exit-at-old-budget" {
+		shutdownCtx, cancel = context.WithDeadline(ctx, stopBegan.Add(10*time.Second))
+	}
 	defer cancel()
 	// Every port drains out of the one budget, and beside the others rather than one after
 	// another: a command streaming an answer through the proxy and a caller waiting on the API
@@ -355,6 +366,9 @@ func stop(ctx context.Context, s brokerStop) {
 	metricsDrained := drainBeside(shutdownCtx, s.ShutdownMetrics)
 	if err := s.Shutdown(shutdownCtx); err != nil {
 		s.Log.Warn("broker: shutdown", "error", err)
+		if plant == "exit-at-old-budget" {
+			os.Exit(1)
+		}
 	}
 	// A reread a route answered 202 for runs after its answer, and Shutdown does not wait for it
 	// (api.Detached): it is waited for here, out of the same budget, so it finishes and tells the
