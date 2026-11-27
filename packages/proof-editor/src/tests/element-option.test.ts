@@ -1,5 +1,3 @@
-import { Plugin, PluginKey } from "@milkdown/kit/prose/state";
-import type { EditorView } from "@milkdown/kit/prose/view";
 import { prosemirrorToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
@@ -114,38 +112,8 @@ await test("with element the view holds that block alone, with its type and attr
   const r2 = findBlock(fragment, "r2");
   const r2Before = r2.toString();
 
-  const hostPluginKey = new PluginKey("element-option-host-test");
-  let sawEmptyBeforeConnect = false;
-  let beforeConnectCalls = 0;
-
-  await withEditor(
-    room,
-    {
-      beforeConnect: (view: EditorView) => {
-        beforeConnectCalls += 1;
-        sawEmptyBeforeConnect = view.state.doc.textContent === "";
-        view.updateState(
-          view.state.reconfigure({
-            plugins: [...view.state.plugins, new Plugin({ key: hostPluginKey })],
-          })
-        );
-      },
-      element: r1,
-    },
-    (handle) => {
+  await withEditor(room, { element: r1 }, (handle) => {
       const { view } = handle;
-      assert(
-        beforeConnectCalls === 1,
-        `expected beforeConnect to run once, ran ${beforeConnectCalls} times`
-      );
-      assert(
-        sawEmptyBeforeConnect,
-        "expected beforeConnect to run before collabService.connect() drew Yjs content"
-      );
-      assert(
-        view.state.plugins.some((plugin) => plugin.spec.key === hostPluginKey),
-        "expected plugins installed by beforeConnect to survive collabService.connect()"
-      );
       assert(
         view.state.doc.type.name === "requirement",
         `expected root node type "requirement", got ${JSON.stringify(view.state.doc.type.name)}`

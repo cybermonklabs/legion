@@ -95,10 +95,9 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
     In `src/typed-block-commands.ts`: `validateValue`'s `minutes` case calling it.
     In `src/tests/block-schema.test.ts`: its import and the suite's case for the kind.
 
-31. Single-block editors (`element` and `beforeConnect` options, decision 544).
-    `src/lib.ts`'s `CreateProofEditorOptions` gains `element?: Y.XmlElement` and `beforeConnect?: (view: EditorView) => void`.
+31. Single-block editors (the `element` option, decision 544).
+    `src/lib.ts`'s `CreateProofEditorOptions` gains `element?: Y.XmlElement`.
     When `element` is given, `createProofEditor` refuses a document-level node (`XmlFragment` or `doc`), wraps `serializerCtx` before `.use(listener)` so a non-`doc` root serializes inside `doc`, sets `editorStateOptionsCtx` and `schema.topNodeType` to the element's own node type and attributes, and binds `collabService` to `opts.element` instead of `opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror')` (the one rewritten line).
-    When `beforeConnect` is given, it runs with `view` right before `collabService.connect()` and carries the installed plugins into `prosePluginsCtx`.
 
 32. A `block[]` attribute's `items`, the item kinds its values may point at besides a block of a document - an issue's ask, comment or message, a block of one, or an issue - with their `item_versions`, and the `parent` attribute.
     In `src/block-schema.ts`: the import of `PARENT_ATTRIBUTE` and `pointerItemKind` from `@legion/contracts`; `creatableValue` reading `item_versions` for each item a `block[]` value points at; `validateBlockSchema` refusing `items` on any other kind, an item kind `ITEM_KINDS` does not name or one named twice, and a `parent` attribute of any kind but `block[]`; and `parseAttribute`'s `block[]` case passing `attribute.items` to `parseBlockPointers`.

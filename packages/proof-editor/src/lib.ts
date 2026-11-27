@@ -178,9 +178,6 @@ export interface CreateProofEditorOptions {
    *  fragment, with the root node of the element's own type and attributes. Document-level nodes
    *  (a bare fragment or a `doc` element) are refused. */
   element?: Y.XmlElement;
-  /** Called with the ProseMirror view right before `collabService.connect()` binds and renders
-   *  Yjs content, so host node views and plugins install once before the first draw. */
-  beforeConnect?: (view: EditorView) => void;
   /** Host-owned awareness instance (e.g. from HocuspocusProvider#awareness).
    *  Pass null/undefined to run without collaborative cursors. */
   awareness?: Awareness | null;
@@ -616,10 +613,6 @@ export async function createProofEditor(
     relaxAskContentCheck(ctx.get(schemaCtx));
     // This package's own edit of the copied file: upstream calls bindDoc, which binds the
     // 'prosemirror' fragment, and an issue's room holds one fragment per document.
-    if (opts.beforeConnect) {
-      opts.beforeConnect(view);
-      ctx.set(prosePluginsCtx, [...view.state.plugins]);
-    }
     collabService.bindXmlFragment(opts.element ?? opts.ydoc.getXmlFragment(opts.fragment ?? 'prosemirror'));
     collabService.mergeOptions({
       yCursorOpts: { cursorBuilder: collabCursorBuilder, selectionBuilder: collabSelectionBuilder },
