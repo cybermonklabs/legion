@@ -172,6 +172,60 @@ test("invalid records are refused before outcome.json is written", () => {
   expect(existsSync(path.join(dir, "outcome.json"))).toBe(false);
 });
 
+// A skill read's `beforeFirstAction` is whether it came before the run's first scored action, the
+// first action of outcome.json, by their places on the host clock the transcript and the logs
+// share (heldout-case.ts's SkillRead). A tool call that is no scored action, a `bash` that runs
+// `git status`, comes first here and decides nothing.
+test("a skill read is before the first action where it precedes outcome.json's first scored action", () => {
+  const { dir, write } = syntheticRun();
+  const call = (at: string, id: string, name: string, args: object, result: string) => [
+    {
+      type: "message",
+      timestamp: at,
+      message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: name,
+        toolCallId: id,
+        content: [{ type: "text", text: result }],
+      },
+    },
+  ];
+  write(
+    "sessions/example.jsonl",
+    [
+      { type: "session", id: "ses-synthetic", timestamp: "2026-01-07T15:00:00Z" },
+      ...call("2026-01-07T15:00:01.000Z", "status", "bash", { command: "git status" }, "clean"),
+      ...call(
+        "2026-01-07T15:00:01.500Z",
+        "entry",
+        "read",
+        { path: "skill://legion-worker" },
+        "A café"
+      ),
+      // The first scored action, P05's result, is at 15:00:02.000000001 (syntheticRun).
+      ...call(
+        "2026-01-07T15:00:03.000Z",
+        "reference",
+        "read",
+        { path: "skill://legion-worker/references/merge-gate.md" },
+        "Details"
+      ),
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")
+  );
+  const got = writeOutcome(dir);
+  expect(got.actions[0]?.at).toBe("2030-01-07T15:00:02.000000001Z");
+  expect(got.skillReads.map(({ path, beforeFirstAction }) => [path, beforeFirstAction])).toEqual([
+    ["SKILL.md", true],
+    ["references/merge-gate.md", false],
+  ]);
+});
+
 /** `dir`'s dispatch-readback.json with `events` added to its event log. */
 function addEvents(dir: string, ...events: object[]) {
   const file = path.join(dir, "dispatch-readback.json");

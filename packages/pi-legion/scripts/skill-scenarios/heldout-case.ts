@@ -10,10 +10,11 @@
 // (heldoutGaps) reports them, so a draft parses before it is complete.
 //
 //   heldout-case.ts gaps <heldout or devcase file> [<skilluse file>]
-//       each file's gaps: its number of gaps alone on stdout (`<file>: <n> gaps`), each gap line on
-//       stderr (`<file>: <gap>`); exits 1 when a file has a gap, 0 when none has. The roles are
-//       HELDOUT_ROLES, the agents packages/pi-legion/agents/*.md, and the partition is the one
-//       scripts/pi-plugin-prepack.sh gives @sjawhar/pi-legion, staged as its prepack stages it.
+//       each file's gaps (caseFileGaps): its number of gaps alone on stdout (`<file>: <n> gaps`),
+//       each gap line on stderr (`<file>: <gap>`); exits 1 when a file has a gap, 0 when none has.
+//       The roles are HELDOUT_ROLES, the agents packages/pi-legion/agents/*.md, and the partition
+//       is the one scripts/pi-plugin-prepack.sh gives @sjawhar/pi-legion, staged as its prepack
+//       stages it. A devcase file, a development set of a few cases and no population, has none.
 //   heldout-case.ts parse <file>
 //       validates one case file, its `set` choosing the shape, and prints its set and case count.
 // A file that does not parse exits 2, with its error on stderr.
@@ -77,8 +78,6 @@ export function legionPartition(): string[] {
     rmSync(path.dirname(staged), { recursive: true, force: true });
   }
 }
-
-const AGENTS = legionAgents();
 
 const Name = z
   .string()
@@ -817,6 +816,15 @@ export function skillUseGaps(
   return gaps;
 }
 
+/** The gaps of a case file's population, which a batch of the file refuses to start on: a held-out
+ * set's heldoutGaps and a skill-use set's skillUseGaps, against this checkout's agents and Legion
+ * skill partition. A development set holds a few cases and no population, so it has none. */
+export function caseFileGaps(file: HeldoutFile | SkillUseFile): string[] {
+  if (file.set === "skilluse") return skillUseGaps(legionPartition(), file.cases);
+  if (file.set === "heldout") return heldoutGaps(HELDOUT_ROLES, legionAgents(), file.cases);
+  return [];
+}
+
 // The command line.
 
 const USAGE =
@@ -858,14 +866,8 @@ function main(argv: string[]): number {
     return 0;
   }
   if (command === "gaps" && first !== undefined && files.length <= 2) {
-    const heldout = load(first, parseHeldoutFile);
-    const counted: [string, string[]][] = [
-      [first, heldoutGaps(HELDOUT_ROLES, AGENTS, heldout.cases)],
-    ];
-    if (second !== undefined) {
-      const skillUse = load(second, parseSkillUseFile);
-      counted.push([second, skillUseGaps(legionPartition(), skillUse.cases)]);
-    }
+    const counted: [string, string[]][] = [[first, caseFileGaps(load(first, parseHeldoutFile))]];
+    if (second !== undefined) counted.push([second, caseFileGaps(load(second, parseSkillUseFile))]);
     for (const [file, gaps] of counted) {
       for (const gap of gaps) console.error(`${file}: ${gap}`);
       console.log(`${file}: ${gaps.length} gaps`);

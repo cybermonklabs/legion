@@ -430,10 +430,14 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
   const inverse = Object.fromEntries(
     Object.entries(mapping).map(([caseId, actual]) => [actual, caseId])
   );
-  const ordered = actions
+  const timed = actions
     .map((action) => ({ action, ns: nanos(action.at) }))
-    .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0))
-    .map(({ action, ns }, i) => ({ ...action, at: shifted(ns, offset), seq: i + 1 }));
+    .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0));
+  const ordered = timed.map(({ action, ns }, i) => ({
+    ...action,
+    at: shifted(ns, offset),
+    seq: i + 1,
+  }));
   const others = dispatch.others
     .map((write) => ({ write, ns: nanos(write.at) }))
     .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0))
@@ -450,7 +454,9 @@ export function writeOutcome(dir: string, agent?: string): OutcomeRecord {
       actions: translateCommits(ordered, inverse),
       ...(others.length === 0 ? {} : { otherWrites: translateCommits(others, inverse) }),
       ...(agentReport === undefined ? {} : { agentReport: translateCommits(agentReport, inverse) }),
-      skillReads: skillReads(role),
+      // A read is before the first scored action by the host clock both records share: the time
+      // of the outcome's first action, before it moves onto the case's timeline.
+      skillReads: skillReads(role, timed[0]?.ns),
       dispatchFirstInjected: dispatchFirstInjected(role, onWire),
       lastText: translateCommits(lastText, inverse),
     })

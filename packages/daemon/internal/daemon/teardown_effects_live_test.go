@@ -456,7 +456,7 @@ func (r *teardownEffectsRun) setupGit(world teardownEffectsWorld, runDir string)
 	}
 	r.git.Run(r.workspace, fixturegit.JJInit("", true)...)
 	r.git.Run(filepath.Dir(r.remote), fixturegit.InitBare(r.remote, r.base)...)
-	r.git.Run(r.workspace, "jj", "git", "remote", "add", "origin", r.remote)
+	r.git.Run(r.workspace, "jj", "git", "remote", "add", r.remoteName, r.remote)
 	if world.Git == nil {
 		return
 	}
@@ -487,7 +487,7 @@ func (r *teardownEffectsRun) setupGit(world teardownEffectsWorld, runDir string)
 		r.push(b.Name, r.sha(b.Head))
 	}
 	// Git's object store can hold a commit that jj has not imported. Give jj a local
-	// ref for the standing commit without giving origin either the ref or its object.
+	// ref for the standing commit without giving the remote either the ref or its object.
 	standing := r.sha(world.Git.Workspace.StandingOn)
 	const localRef = "refs/heads/fixture-standing"
 	r.git.Run(r.workspace, "git", "update-ref", localRef, standing)
@@ -552,7 +552,7 @@ func (r *teardownEffectsRun) push(branch, head string) {
 	ref := "refs/heads/" + branch
 	r.git.Run(r.workspace, "git", "update-ref", ref, head)
 	r.git.Run(r.workspace, "git", "--git-dir", r.remote, "fetch", "--quiet", r.workspace, "+"+ref+":"+ref)
-	r.git.Run(r.workspace, "jj", "git", "fetch", "--remote", "origin")
+	r.git.Run(r.workspace, "jj", "git", "fetch", "--remote", r.remoteName)
 }
 
 func (r *teardownEffectsRun) document(name, body string) {

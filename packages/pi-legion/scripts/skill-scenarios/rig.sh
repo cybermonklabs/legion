@@ -1257,7 +1257,7 @@ connections_needed() {
 # operator gave (given_services) or two containers it starts, and the Envoy listener built from
 # this checkout, which the services file ($services_env) names with the NATS and the listener
 # token. PARALLEL is how many runs the batch runs at once, SKILL_SCENARIOS_PARALLEL (default 5)
-# when it is not given; an owner-walk batch runs one at a time and gives 1.
+# when it is not given; an owner-walk batch and a case batch each run one at a time and give 1.
 #
 # Each run's Dispatch server opens at most store.ConnectionsPerProcess connections to the batch's
 # Postgres: its counted pools and its permanent listeners (packages/envoy/internal/dispatch/store/
@@ -2693,14 +2693,17 @@ cmd_case_world() {
   bun "$here/case-world.ts" prepare "$dir" "$file" "$1" "$2"
 }
 
-# Read the label's daemon module for the pane, never a restatement of its role prompt.
+# Read the label's daemon module for the pane, never a restatement of its role prompt. The stand-in
+# and the pane are given the one repository and default branch case-world.ts wrote to launch.json
+# (caseRepository), so the pane's addressing names the branch the stand-in's record of the issue
+# answers, as a real daemon tells a launch its record's own.
 case_legion_pane() {
   local role=$1 issue tree claim port repo branch project
   local -a answers=()
   issue=$(jq -er .dispatch.issue.key "$R/launch-world.json")
   tree=$(jq -er '.dispatch.issue | .parent // .key' "$R/launch-world.json")
-  repo=$(jq -er '.github.repository // "example/widgets"' "$R/launch-world.json")
-  branch=$(jq -er '[.git.remote.branches[]?.name] | if index("main") then "main" else .[0] // "main" end' "$R/launch-world.json")
+  repo=$(jq -er .repository "$R/launch.json")
+  branch=$(jq -er .defaultBranch "$R/launch.json")
   claim=$role
   case $role in
     root-architect | child-architect) claim=architect ;;
@@ -2725,7 +2728,8 @@ case_legion_pane() {
     --clock-real "$R/clock-real.txt" --tree "$tree" --gh-calls "$R/calls.jsonl" "${answers[@]}"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
-  bun "$here/case-world.ts" pane "$R" "$co" "$port" "$profile" "$project" "$claim" "$issue" "$tree"
+  bun "$here/case-world.ts" pane "$R" "$co" "$port" "$profile" "$project" "$claim" "$issue" "$tree" \
+    "$repo" "$branch"
   mv "$R/worker.env" "$R/pane.env"
 }
 
@@ -2828,7 +2832,8 @@ cmd_case_batch() {
   mkdir -p "$work/runs"
   lock_services
   on_exit stop_batch
-  services_up
+  # One `rig.sh run` at a time, below: the services are sized for one run.
+  services_up 1
   export SKILL_SCENARIOS_CASES=$file
   for ((n=0; n<pairs; n++)); do
     order=$(bun "$here/case-world.ts" order "$seed" "$scenario:$id:$n" "$@") || exit 1

@@ -399,9 +399,6 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 		}
 		c := teardownEffectsChange{Kind: "github", Source: fmt.Sprintf("calls.jsonl:%d", n+1), What: action + ": gh " + strings.Join(row.Argv, " "), from: row.At, to: *row.Done, pull: row.Pull}
 		if row.Exit != 0 {
-			if row.Pull == nil {
-				continue
-			}
 			c.fault = fmt.Sprintf("gh-standin kept a pull request change (%s) from a call that exited %d, which the daemon stand-in did not count", row.Pull.Action, row.Exit)
 		}
 		changes = append(changes, c)
